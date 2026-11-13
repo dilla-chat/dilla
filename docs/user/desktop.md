@@ -22,6 +22,116 @@ Use the existing recovery/enrolment flow when testing a desktop device, and keep
 working browser device and your recovery key. A reload must preserve IndexedDB and
 OPFS; real enrolment/recovery acceptance is still required on every platform.
 
+## Native desktop preview (GPUI)
+
+The native desktop preview is a second desktop client, written in Rust with the GPUI toolkit (`clients/desktop`). It
+is meant to replace the Electron app described in the rest of this page, and it draws the same Signal screens at
+pixel parity with the web client on Linux. **It is a preview for people who build dilla from source.** It has no
+installer, no updater and no tray yet, and the Electron app and the browser client stay the way to use dilla every
+day. The list of what works, screen by screen, is in the [README](../../README.md#the-native-desktop-preview-gpui).
+
+![The native preview: Midgard Crew with the channel list, a conversation in #general and the members](screenshots/gpui-shell-conversation.png)
+
+### A tour
+
+These are frames of the preview itself (Linux, 1280 by 800 at twice the scale), shot from the app's test fixtures.
+
+![A thread open beside #general: the root message, two replies and the reply composer](screenshots/gpui-thread-open.png)
+
+![The voice channel harbour with Mira, Björn (muted) and Ada on the stage, the dock and the call controls](screenshots/gpui-voice-stage.png)
+
+![Server settings, Overview: the server's name and AFK timeout](screenshots/gpui-server-settings.png)
+
+![Your settings, Profile: display name, status and bio, with the card others see](screenshots/gpui-user-settings.png)
+
+![The search palette with results for "bridge"](screenshots/gpui-search.png)
+
+![Sign-up, step 3 of 6: the recovery key, shown once](screenshots/gpui-onboarding-recovery-key.png)
+
+### Run it
+
+You need the pinned Rust toolchain (`rust-toolchain.toml`) and, on Linux, clang 21 or newer and the X11 and Wayland
+development packages (the list is in `.github/workflows/desktop-gpui.yml`). From the repository root:
+
+```sh
+# Linux
+CC=clang-21 CXX=clang++-21 cargo run -p dilla-desktop
+# macOS: nothing extra
+cargo run -p dilla-desktop
+# Windows (PowerShell): libwebrtc uses the static MSVC runtime
+$env:RUSTFLAGS="-C target-feature=+crt-static"; cargo run -p dilla-desktop
+```
+
+The first window is "Dilla - your instances". Type the instance's address (HTTPS) to connect, or paste an invite to
+join, then sign in or sign up. Each instance gets its own window; `--instance=<n>` opens only instance `n` (a second
+copy of the app on another instance, beside the first), and a debug build accepts `--allow-loopback` for an
+`http://localhost` test instance. Per-OS build notes are in `clients/desktop/README.md`.
+
+The preview keeps its data apart from the Electron app and the browser. Like them, it is a **new device** on your
+account: sign in, complete your second factor, then enrol it with your saved 52-character recovery key. Messages sent
+before it joined are not shown on it. Keep another signed-in device and the recovery key at hand.
+
+### What is different from the Electron app
+
+- It is one native program: no embedded browser, no web worker, no bundled web client. The store, the keys (in the
+  operating system's keychain) and the end-to-end encryption run in the same process.
+- One window and one client per instance. Closing a window keeps its client running until you remove the instance or
+  quit the app; opening the instance again shows a new window on the running client.
+- Inline audio plays in the app (MP3, AAC, Vorbis, Opus, FLAC, WAV). A video shows its poster and opens in your
+  system's player; a copy handed to the player is deleted when the app starts and quits.
+- Message search runs on this device's own decrypted history, as in the browser.
+- The screens are drawn, not laid out by a browser, so the keyboard works through the app's own focus order
+  (Tab and Shift+Tab) and its own shortcuts, below.
+
+### Keyboard shortcuts
+
+On macOS, read Control as ⌘ and Alt as ⌥.
+
+| Keys | What it does |
+|---|---|
+| Control+K, Control+/ | Opens search (Escape closes it; the arrows choose, Enter opens) |
+| Control+, | Opens your settings |
+| Alt+Arrow Up, Alt+Arrow Down | Opens the previous or next channel |
+| Alt+Arrow Left, Alt+Arrow Right | Goes back or forward through the places you have been |
+| Control+Shift+M | Mutes or unmutes, in a call or before the next one |
+| Control+Shift+D | Deafens or undeafens, in a call or before the next one |
+| Push-to-talk key (Settings → Voice) | Opens the microphone while held, in a call, when this window has focus and no text field does |
+| Page Up, Page Down | Scrolls the message log |
+| Up, in an empty composer | Edits your newest message |
+| Enter, Shift+Enter | Sends, starts a new line |
+| Tab, Shift+Tab | Next and previous control; a dialog keeps them inside |
+| Escape | Closes the open search, dialog, thread pane, lightbox or GIF picker |
+| Enter, Escape on an incoming ring | Answers, declines |
+| Arrow Up, Arrow Down, Tab, Enter, Escape in the `/` list | Chooses, completes, runs, closes |
+
+Settings → Keyboard lists seven shortcuts. Two of them are not bound in the preview yet: Control+End (jump to the
+newest message) and Control+Shift+Enter (call the open direct message). Scroll with the wheel or Page Down, and use the
+call button in the direct message's header.
+
+### Known gaps
+
+The preview does not do these yet. Most are the next plans after the screens: native integrations, capture,
+the updater and packaging.
+
+- **Tray and background:** no tray icon, close to tray, badge count, autostart. A second copy of the app cannot open an
+  instance that another copy holds, but it does not hand the launch over to the running one.
+- **Deep links:** `dilla://invite/...` is not handled. Join with the address and the invite code in the instances window.
+- **Updater and packaging:** no automatic update, DMG, Windows installer, AppImage, deb, rpm or AUR package. Build
+  from source.
+- **Screen capture and camera:** the camera and screen-share buttons are drawn but start nothing (the share is
+  treated as cancelled), and there is no screen picker or per-application audio. You still see other people's camera
+  and screen shares, and hear and speak in calls.
+- **Operating-system notifications:** none are raised, including for an incoming ring (the ring banner and sound
+  work while the window is open). The Notifications settings are kept for when they arrive.
+- **Quit guards and permission prompts:** quitting does not warn about an active call or an unsent draft (the draft
+  is kept per channel), and the operating system's microphone prompt is the system's own.
+- **Screen readers:** not supported yet. They come after the switch, with AccessKit.
+- **Push to talk outside the window:** the key works only while the app has focus. Operating-system-wide push to talk
+  comes after the switch.
+- **Linux, AltGr and push to talk:** a push-to-talk key is accepted only on its own, and the app refuses Control, Alt,
+  Shift and ⌘ with it, but on Linux holding AltGr with the key still opens the microphone.
+- **Other people's messages:** the Delete action is only offered on your own messages.
+
 ## Browser migration preparation (disabled)
 
 The server has an explicit `dillad serve` flag, `--desktop-downloads`, which defaults
