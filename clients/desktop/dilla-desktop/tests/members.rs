@@ -221,9 +221,9 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_members_pane => "members/pane", "needs its reference (shoot.mjs) and the shell handing its slot context to screens::members::sync (Task 8, at merge)";
+    parity_members_pane => "members/pane", "chrome 0.49 % (allowed 0.2 %): mostly the channel header members toggle the web draws pressed (Task 8 header)";
     parity_members_pane_b => "members/pane-b", "needs its reference (shoot.mjs) and the shell handing its slot context to screens::members::sync (Task 8, at merge)";
-    parity_members_profile_card => "members/profile-card", "needs its reference (shoot.mjs) and the shell handing its slot context to screens::members::sync (Task 8, at merge)";
+    parity_members_profile_card => "members/profile-card", "chrome 0.56 % (allowed 0.2 %): mostly the channel header members toggle the web draws pressed (Task 8 header)";
     parity_members_profile_card_b => "members/profile-card-b", "needs its reference (shoot.mjs) and the shell handing its slot context to screens::members::sync (Task 8, at merge)";
     parity_members_context_menu => "members/context-menu", "cannot be shot: shoot.mjs has no shift-f10 (Playwright wants F10) and the chord grammar no contextmenu key (Task 5); also needs members::sync from the shell";
     parity_members_context_menu_b => "members/context-menu-b", "cannot be shot: shoot.mjs has no shift-f10 (Playwright wants F10) and the chord grammar no contextmenu key (Task 5); also needs members::sync from the shell";
