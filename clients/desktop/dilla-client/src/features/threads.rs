@@ -485,24 +485,22 @@ fn request_of(
     .encode()
 }
 
-/// `send_prepare`: the post (or fold) goes to the group's outbox; answers its message id.
+/// `send_prepare` behind the trust retry ([`crate::sync::Engine::send_with_trust_retry`], controller.ts
+/// `sendWithTrustRetry`): the post (or fold) goes to the group's outbox; answers its message id. A reply, a thread
+/// reply, an edit and a delete right after a peer's new device joined are queued as a post is, never refused for it.
 async fn prepare(
     inner: &Inner,
     group: [u8; 16],
     request: Vec<u8>,
 ) -> Result<[u8; 16], ClientError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let raw = try_core(inner.engine().core(), move |c| {
-        c.send_prepare(&group, &request, now)
-    })
-    .await
-    .map_err(|e| ClientError::Sync(e.to_string()))?
-    .map_err(|e| sync_err(e.code))?;
-    let v = value::decode(&raw).map_err(decode_err)?;
-    let first = arr(&v, 1).map_err(decode_err)?;
-    bin16(&first[0]).map_err(decode_err)
+    inner
+        .engine()
+        .send_with_trust_retry(group, zeroize::Zeroizing::new(request))
+        .await
+        .map_err(|e| match e {
+            crate::sync::SyncError::Core(e) => sync_err(e.code),
+            other => sync_err(other.code()),
+        })
 }
 
 /// What one read of the open thread answered.

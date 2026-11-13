@@ -20,7 +20,6 @@ use tokio::sync::oneshot;
 use crate::client::{Client, ClientError, Inner};
 use crate::gateway::frames::Value;
 use crate::state::{ChannelId, MessageId};
-use crate::sync::api::with_core;
 
 /// The fold type that adds the sender's reaction (`send.ts` types: 3 react, 4 unreact).
 const FOLD_REACT: u64 = 3;
@@ -91,13 +90,11 @@ impl Reactions {
                 )
                 .await?;
             let request = fold_request(msg, &emoji, on);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            with_core(engine.core(), move |c| c.send_prepare(&g, &request, now))
+            // Behind the trust retry, as every send is (controller.ts `sendWithTrustRetry`).
+            engine
+                .send_with_trust_retry(g, zeroize::Zeroizing::new(request))
                 .await
-                .map_err(|e| ClientError::Sync(e.to_string()))?;
-            engine.request_drain(g);
+                .map_err(|e| ClientError::Sync(e.code()))?;
             Ok(())
         })
     }

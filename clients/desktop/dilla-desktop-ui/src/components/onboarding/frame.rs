@@ -275,23 +275,50 @@ impl RenderOnce for OnboardingFrame {
             }
             card = card.child(footer);
         }
-        div()
-            .size_full()
-            .relative()
-            .bg(color::BG)
-            .flex()
-            .items_center()
-            .justify_center()
-            .p(px(20.0))
-            .child(
-                div()
-                    .absolute()
-                    .left(px(24.0))
-                    .top(px(22.0))
-                    .child(BrandMark),
-            )
-            .child(card)
+        centred_scroll(
+            (self.id, "page"),
+            PAGE_PAD,
+            div()
+                .absolute()
+                .left(px(24.0))
+                .top(px(22.0))
+                .child(BrandMark),
+            card,
+        )
     }
+}
+
+/// The page's padding round the card.
+const PAGE_PAD: f32 = 20.0;
+
+/// The page an authentication card sits on (the sign-up, sign-in and factor screens): `--bg`, the card centred while it
+/// fits, and a vertical scroll when it does not, as the web's page scrolls a card taller than the window. The compact
+/// authentication window keeps its fixed size (Task 8), so every step's controls stay reachable by scrolling. `brand`
+/// is drawn over the page's top-left corner (absolutely placed by the caller) and scrolls with the card.
+pub fn centred_scroll(
+    id: impl Into<ElementId>,
+    pad: f32,
+    brand: impl IntoElement,
+    card: impl IntoElement,
+) -> AnyElement {
+    div()
+        .id(id.into())
+        .size_full()
+        .bg(color::BG)
+        .overflow_y_scroll()
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .min_h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(pad))
+                .child(brand)
+                .child(card),
+        )
+        .into_any_element()
 }
 
 pub(crate) type Click = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;

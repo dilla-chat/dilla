@@ -3,6 +3,7 @@
 //! mode, and the stage has a tile per stream. The parity tests (S4) and the two-device behaviour tests through
 //! `Driver` wait on the shell's stage hook and the call seeding of the parity world (see the task report).
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use dilla_client::calls::CallPhase;
@@ -12,8 +13,8 @@ use dilla_client::state::{
 };
 use dilla_desktop::screens::voice::{self, VoiceUi};
 use gpui::{
-    Context, FocusHandle, IntoElement, ParentElement, Render, Styled, TestAppContext,
-    VisualTestContext, Window, div,
+    App, Context, FocusHandle, IntoElement, ParentElement, Render, Styled, TestAppContext,
+    VisualTestContext, Window, WindowId, div,
 };
 
 const VOICE: ChannelId = ChannelId([9; 16]);
@@ -93,21 +94,23 @@ impl Render for Host {
 }
 
 fn host(cx: &mut TestAppContext, s: Arc<AppState>) -> &mut VisualTestContext {
-    cx.update(|cx| {
-        dilla_desktop::install(cx);
-        voice::sync(s, None, cx);
-    });
+    cx.update(dilla_desktop::install);
     let (_, cx) = cx.add_window_view(|_, _| Host);
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), s, None, cx);
+        window.refresh();
+    });
     cx.run_until_parked();
     cx
 }
 
+/// The voice area of the test's window.
+fn area<R>(cx: &mut VisualTestContext, f: impl FnOnce(&mut VoiceUi) -> R) -> R {
+    cx.update(|window, cx| f(voice::ui_mut(voice::wid(window), cx)))
+}
+
 fn stage_focus(cx: &mut VisualTestContext) -> FocusHandle {
-    cx.update(|_, cx| {
-        cx.global::<VoiceUi>()
-            .stage_focus_handle()
-            .expect("the stage drew")
-    })
+    area(cx, |ui| ui.stage_focus_handle().expect("the stage drew"))
 }
 
 fn press(cx: &mut VisualTestContext, key: &'static str) {
@@ -120,7 +123,7 @@ fn press(cx: &mut VisualTestContext, key: &'static str) {
 #[gpui::test]
 fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     let cx = host(cx, state(3));
-    let tiles = cx.update(|_, cx| voice::tiles(&cx.global::<VoiceUi>().state, VOICE));
+    let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
     assert_eq!(tiles.len(), 4, "three people and one screen");
     assert!(tiles[3].screen);
     let focus = stage_focus(cx);
@@ -128,21 +131,18 @@ fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     for _ in 0..3 {
         press(cx, "right");
     }
-    assert_eq!(cx.update(|_, cx| cx.global::<VoiceUi>().selected), 3);
+    assert_eq!(area(cx, |ui| ui.selected), 3);
     press(cx, "enter");
-    let focused = cx.update(|_, cx| cx.global::<VoiceUi>().focused.clone());
+    let focused = area(cx, |ui| ui.focused.clone());
     assert_eq!(
         focused,
         Some(tiles[3].clone()),
         "the screen share is focused"
     );
     press(cx, "left");
-    assert_eq!(cx.update(|_, cx| cx.global::<VoiceUi>().selected), 2);
+    assert_eq!(area(cx, |ui| ui.selected), 2);
     press(cx, "escape");
-    assert_eq!(
-        cx.update(|_, cx| cx.global::<VoiceUi>().focused.clone()),
-        None
-    );
+    assert_eq!(area(cx, |ui| ui.focused.clone()), None);
 }
 
 /// Twelve people with long names (the -b fixtures' world) draw without a panic, and the people group per user.
@@ -162,35 +162,252 @@ fn twelve_people_with_long_names_draw(cx: &mut TestAppContext) {
 #[gpui::test]
 fn leaving_resets_the_stage(cx: &mut TestAppContext) {
     let cx = host(cx, state(3));
-    cx.update(|_, cx| {
-        let ui = cx.global_mut::<VoiceUi>();
+    area(cx, |ui| {
         ui.selected = 2;
         ui.focused = Some(voice::tiles(&ui.state, VOICE)[0].clone());
     });
     let mut idle = (*state(3)).clone();
     idle.voice.call = OwnCall::default();
-    cx.update(|_, cx| voice::sync(Arc::new(idle), None, cx));
-    let (selected, focused) = cx.update(|_, cx| {
-        let ui = cx.global::<VoiceUi>();
-        (ui.selected, ui.focused.clone())
-    });
+    cx.update(|window, cx| voice::sync(voice::wid(window), Arc::new(idle), None, cx));
+    let (selected, focused) = area(cx, |ui| (ui.selected, ui.focused.clone()));
     assert_eq!((selected, focused), (0, None));
-    assert!(!voice::joined(
-        &cx.update(|_, cx| cx.global::<VoiceUi>().state.clone()),
-        VOICE
-    ));
+    assert!(!voice::joined(&area(cx, |ui| ui.state.clone()), VOICE));
 }
 
 /// The stream-quality menu opens over the controls with the share options (1080p at 30 by default) and draws.
 #[gpui::test]
 fn the_quality_menu_draws_the_share_options(cx: &mut TestAppContext) {
     let cx = host(cx, state(2));
-    cx.update(|_, cx| {
-        let ui = cx.global_mut::<VoiceUi>();
+    area(cx, |ui| {
         assert_eq!(ui.share_options, dilla_media::ShareOptions::default());
         ui.share_menu = true;
-        cx.refresh_windows();
     });
+    cx.update(|_, cx| cx.refresh_windows());
     cx.run_until_parked();
     assert_eq!(voice::frame_stat(1080, 30), "1080p · 30 fps");
+}
+
+/// Review C1: a call belongs to its instance window. Window B's syncs (every state its client publishes) never replace
+/// window A's voice state, and one repaint loop runs per live call, ending when the call does or its window closes.
+#[gpui::test]
+fn another_window_s_sync_leaves_this_window_s_call_alone(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let a = cx.add_window(|_, _| Host);
+    let b = cx.add_window(|_, _| Host);
+    let (wa, wb): (WindowId, WindowId) = (a.window_id(), b.window_id());
+    let mut idle = (*state(3)).clone();
+    idle.voice.call = OwnCall::default();
+    let idle = Arc::new(idle);
+    let in_call = state(3);
+    let loops = |cx: &mut TestAppContext| cx.update(|cx: &mut App| voice::repaint_loops(cx));
+    let phase = |cx: &mut TestAppContext, w: WindowId| {
+        cx.update(|cx: &mut App| voice::ui_of(w, cx).map(|u| u.state.voice.call.phase))
+    };
+    for _ in 0..10 {
+        cx.update(|cx| voice::sync(wa, in_call.clone(), None, cx));
+        cx.update(|cx| voice::sync(wb, idle.clone(), None, cx));
+        cx.run_until_parked();
+    }
+    assert_eq!(phase(cx, wa), Some(CallPhase::In), "A's call stays A's");
+    assert_eq!(phase(cx, wb), Some(CallPhase::Idle));
+    assert_eq!(
+        loops(cx),
+        1,
+        "one repaint loop for the one live call, however often the windows sync"
+    );
+    // The call ends: its loop ends with it.
+    cx.update(|cx| voice::sync(wa, idle.clone(), None, cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    assert_eq!(loops(cx), 0);
+    // A new call in A, then A closes: the loop ends, and A's area is let go at B's next sync.
+    cx.update(|cx| voice::sync(wa, in_call.clone(), None, cx));
+    assert_eq!(loops(cx), 1);
+    a.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| voice::sync(wb, idle.clone(), None, cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    assert_eq!(loops(cx), 0);
+    assert_eq!(phase(cx, wa), None, "a closed window's area is let go");
+}
+
+// ---- with a real dillad: the window's call, its close, and one call per device ---------------------------------------
+
+#[path = "../../dilla-client/tests/support/call_world.rs"]
+mod call_world;
+
+/// A real instance with a voice channel, alice and bob in its community, and a runtime for the waits.
+struct CallWorld {
+    rt: tokio::runtime::Runtime,
+    _host: call_world::Host,
+    alice: Rc<dilla_client::Client>,
+    bob: Rc<dilla_client::Client>,
+    voice: ChannelId,
+}
+
+const CALL_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+
+fn call_world(tag: &'static str) -> CallWorld {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (host, alice, bob, voice) = rt.block_on(async {
+        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
+        let bob = call_world::sign_up(&host, &invite, "bob", tag).await;
+        let (host, alice, bob, voice) = tokio::task::spawn_blocking(move || {
+            let (_, v) = call_world::voice_community(&host, &alice, &[&bob]);
+            call_world::clear_session(&alice);
+            call_world::clear_session(&bob);
+            (host, alice, bob, ChannelId(v))
+        })
+        .await
+        .unwrap();
+        let a = call_world::start(&alice).await;
+        call_world::connected(&a).await;
+        a.voice().start();
+        let b = call_world::start(&bob).await;
+        call_world::connected(&b).await;
+        b.voice().start();
+        for c in [&a, &b] {
+            until(c, "the voice channel is listed", |s| {
+                s.channel(voice).is_some()
+            })
+            .await;
+        }
+        (host, a, b, voice)
+    });
+    CallWorld {
+        rt,
+        _host: host,
+        alice: Rc::new(alice),
+        bob: Rc::new(bob),
+        voice,
+    }
+}
+
+/// Waits until `pred` holds for `client`'s own state.
+async fn until(
+    client: &dilla_client::Client,
+    what: &str,
+    pred: impl Fn(&AppState) -> bool,
+) -> Arc<AppState> {
+    until_within(client, what, CALL_WAIT, pred).await
+}
+
+/// [`until`] within `wait`.
+async fn until_within(
+    client: &dilla_client::Client,
+    what: &str,
+    wait: std::time::Duration,
+    pred: impl Fn(&AppState) -> bool,
+) -> Arc<AppState> {
+    let mut rx = client.state();
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let s = rx.borrow_and_update().clone();
+        if pred(&s) {
+            return s;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!left.is_zero(), "{what}: never; voice {:?}", s.voice);
+        let _ = tokio::time::timeout(
+            left.min(std::time::Duration::from_millis(500)),
+            rx.changed(),
+        )
+        .await;
+    }
+}
+
+fn phase_of(client: &dilla_client::Client) -> CallPhase {
+    client.state().borrow().voice.call.phase
+}
+
+/// Opens a window whose voice area follows `client`, as its shell does.
+fn window_for(
+    cx: &mut TestAppContext,
+    client: &Rc<dilla_client::Client>,
+) -> gpui::WindowHandle<Host> {
+    let w = cx.add_window(|_, _| Host);
+    let id = w.window_id();
+    let state = client.state().borrow().clone();
+    cx.update(|cx| voice::sync(id, state, Some(client), cx));
+    w
+}
+
+/// Review I4: closing the window of a call leaves the call at once (no other shell needs to sync): the media link is
+/// cut, the client publishes Idle, and the window's media session is dropped.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn closing_the_window_leaves_its_call(cx: &mut TestAppContext) {
+    let w = call_world("t-close-call");
+    cx.update(dilla_desktop::install);
+    // The app's close hook (installed with the manager, as the shipping app does).
+    cx.update(|cx| {
+        dilla_desktop::windows::open_manager(cx, &dilla_desktop::Launch::empty(), false)
+            .expect("the manager opens")
+    });
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    let session = cx
+        .update(|cx: &mut App| voice::session_of(wa, cx))
+        .map(|s| Rc::downgrade(&s))
+        .expect("the window's media session");
+    a.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+    // At once: the leave is the close's own, not the instance's eventual timeout of a silent device.
+    w.rt.block_on(until_within(
+        &w.alice,
+        "the closed window's call is left at once",
+        std::time::Duration::from_secs(3),
+        |s| s.voice.call.phase == CallPhase::Idle,
+    ));
+    assert!(
+        w.alice.voice().media().borrow().is_none(),
+        "the media link is cut"
+    );
+    assert!(session.upgrade().is_none(), "the media session is dropped");
+    assert!(cx.update(|cx: &mut App| voice::ui_of(wa, cx).is_none()));
+}
+
+/// Review N3: one call per device. Alice's window is in the call; a join in bob's window (another instance's) leaves
+/// alice's call first, through alice's own client.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_join_in_another_window_leaves_this_window_s_call(cx: &mut TestAppContext) {
+    let w = call_world("t-one-call");
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let b = window_for(cx, &w.bob);
+    let (wa, wb) = (a.window_id(), b.window_id());
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    assert_eq!(
+        cx.update(|cx: &mut App| voice::client_of(wa, cx).map(|c| Rc::ptr_eq(&c, &w.alice))),
+        Some(true),
+        "A's area acts through A's client"
+    );
+    // B's join right away: B's window has not synced alice's new state, the client's own state says she is in.
+    cx.update(|cx| voice::join(w.voice, wb, cx));
+    w.rt.block_on(until(&w.alice, "alice's call is left", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    }));
+    w.rt.block_on(until(&w.bob, "bob is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    assert_eq!(phase_of(&w.alice), CallPhase::Idle);
 }

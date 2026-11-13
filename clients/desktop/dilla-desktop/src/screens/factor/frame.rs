@@ -334,16 +334,12 @@ impl AuthFrame {
                         .children(self.below),
                 )
             });
-        div()
-            .size_full()
-            .bg(color::BG)
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(brand_mark())
-            .child(card)
-            .into_any_element()
+        dilla_desktop_ui::components::onboarding::frame::centred_scroll(
+            "auth-page",
+            0.0,
+            brand_mark(),
+            card,
+        )
     }
 }
 

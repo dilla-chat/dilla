@@ -304,6 +304,8 @@ pub struct Engine {
     /// The single-flight trust refresh and its revision (Task 13, `trust::TrustPass`).
     trust_pass: trust::TrustPass,
     gateway: Mutex<Option<Arc<WsGateway>>>,
+    /// How many sends a leaf verdict refused and [`Engine::send_with_trust_retry`] queued again (tests read it).
+    trust_retries: std::sync::atomic::AtomicU64,
 }
 
 fn key(g: &Gid) -> String {
@@ -342,6 +344,7 @@ impl Engine {
             stopped: AtomicBool::new(false),
             trust: tokio::sync::Mutex::default(),
             trust_pass: trust::TrustPass::default(),
+            trust_retries: std::sync::atomic::AtomicU64::new(0),
             gateway: Mutex::new(None),
         })
     }
@@ -2108,8 +2111,24 @@ impl Engine {
             Value::Null,
         ])
         .encode();
+        self.send_with_trust_retry(g, zeroize::Zeroizing::new(request))
+            .await
+    }
+
+    /// controller.ts `sendWithTrustRetry` for an encoded send request (`[type, reply_to, body, [attachments],
+    /// thread_id]`, the core's `send_prepare`): every send goes through it (posts, replies, thread replies, posts with
+    /// files, folds). A leaf verdict reads the group's leaves again and queues once more, once; the core alone decides
+    /// the second answer. A changed key (`E_UMK_CHANGED`) and every other refusal are answered at once. The request is
+    /// held zeroized (a post with files carries their keys), its copy for the retry too.
+    pub async fn send_with_trust_retry(
+        self: &Arc<Self>,
+        g: Gid,
+        request: zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Gid, SyncError> {
         match self.send_prepared(g, request.clone()).await {
             Err(SyncError::Core(e)) if LEAF_VERDICTS.contains(&e.code) => {
+                self.trust_retries
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.refresh_group_trust(g).await;
                 self.send_prepared(g, request).await
             }
@@ -2117,8 +2136,19 @@ impl Engine {
         }
     }
 
+    /// How many sends were queued again after a leaf verdict (feature `testing`: the tests prove the retry ran).
+    #[cfg(feature = "testing")]
+    pub fn trust_retries(&self) -> u64 {
+        self.trust_retries
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// send.ts `sendRequest`'s queueing: the core's refusal is answered at once and nothing else runs.
-    async fn send_prepared(self: &Arc<Self>, g: Gid, request: Vec<u8>) -> Result<Gid, SyncError> {
+    async fn send_prepared(
+        self: &Arc<Self>,
+        g: Gid,
+        request: zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Gid, SyncError> {
         if self.stopped() {
             return Err(SyncError::Stopped);
         }

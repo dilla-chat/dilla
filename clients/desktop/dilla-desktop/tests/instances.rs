@@ -776,6 +776,8 @@ fn the_window_receives_the_invite_and_one_start_runs(cx: &mut TestAppContext) {
         .unwrap();
     let launch = Launch::live(Some(root.clone()), Arc::new(MemoryKeychain::new()));
     cx.update(dilla_desktop::install);
+    // The window's client start runs on a real OS thread ("dilla-client-start"); the deterministic scheduler must allow it.
+    cx.executor().allow_parking();
     cx.update(|cx| windows::open_instance(cx, &launch, cfg.clone(), Some("CODE-9".into()), false))
         .expect("the window opens");
     let window = cx.windows()[0]

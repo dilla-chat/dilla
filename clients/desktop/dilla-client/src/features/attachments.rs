@@ -21,7 +21,7 @@ use crate::http::routes::{self as r, NoBody, Raw};
 use crate::state::attachments::{TrayItem, TrayPhase};
 use crate::state::{ChannelId, MessageId, hex};
 use crate::sync::api::{Api, ApiError, with_core};
-use crate::sync::value::{self, bin16};
+use crate::sync::value;
 
 /// crypto.ts `BROWSER_ATTACHMENT_CAP`: 25 MiB, the largest file sent or opened.
 pub const ATTACHMENT_CAP: u64 = 25 * 1024 * 1024;
@@ -1196,20 +1196,13 @@ impl Attachments {
             }
             let (request, _) = encode_send(&body, &attachments);
             drop(attachments);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            let raw = with_core(inner.engine().core(), move |c| {
-                c.send_prepare(&g, &request, now)
-            })
-            .await
-            .map_err(|e| ClientError::Sync(e.code.to_owned()))?;
-            let v =
-                value::decode(&raw).map_err(|_| ClientError::Sync("E_CBOR_SHAPE".to_owned()))?;
-            let msg = value::arr(&v, 1)
-                .and_then(|a| bin16(&a[0]))
-                .map_err(|_| ClientError::Sync("E_CBOR_SHAPE".to_owned()))?;
-            inner.engine().request_drain(g);
+            // Queued behind the trust retry, as every send is (controller.ts `sendWithTrustRetry`): a post with files
+            // right after a peer's new device joined is not refused for it.
+            let msg = inner
+                .engine()
+                .send_with_trust_retry(g, request)
+                .await
+                .map_err(|e| ClientError::Sync(e.code()))?;
             Ok(MessageId(msg))
         })
     }

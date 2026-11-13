@@ -1,7 +1,7 @@
 {
-  "digest": "216e3950979463d5da1338153f5a8c989e9a716782a35daf84aae9f11065f0d2",
+  "digest": "20e6a10b7cc0f02dafb33813f140d9fd43a071596004b516ef27cc6db5e8f066",
   "shift": 36726,
-  "hand_migrated": false,
+  "hand_migrated": true,
   "ids": {
     "channel:midgard/afk": "da7c6e67fbed811677635d2ae84c8f05",
     "channel:midgard/general": "f4bfecbed8a57283a39fc33935e48dee",

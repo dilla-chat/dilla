@@ -176,6 +176,8 @@ pub struct ShellView {
     controls: bool,
     /// The text channel last opened in each server: the AFK page's Come back returns there (Shell.tsx `lastText`).
     last_text: HashMap<CommunityId, ChannelId>,
+    /// The window this shell is drawn in: the voice area keeps its state per window (one per instance).
+    window_id: gpui::WindowId,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -233,11 +235,12 @@ impl ShellView {
             aside_splitter: cx.focus_handle().tab_stop(true),
             controls: false,
             last_text: HashMap::new(),
+            window_id: window.window_handle().window_id(),
             _subscriptions: vec![sent],
         };
         this.settle_selection(cx);
         // The voice area's hooks read this state and client (17).
-        crate::screens::voice::sync(this.state.clone(), this.client.as_ref(), cx);
+        crate::screens::voice::sync(this.window_id, this.state.clone(), this.client.as_ref(), cx);
         let route = this.current_route();
         this.history = History::new(route);
         this.log.scroll_to_bottom();
@@ -300,7 +303,7 @@ impl ShellView {
             state.timelines.get(&c).map(|t| t.items.len())
                 != self.state.timelines.get(&c).map(|t| t.items.len())
         });
-        crate::screens::voice::sync(state.clone(), self.client.as_ref(), cx);
+        crate::screens::voice::sync(self.window_id, state.clone(), self.client.as_ref(), cx);
         self.state = state;
         self.settle_selection(cx);
         if grew {
@@ -687,7 +690,7 @@ impl ShellView {
     fn toggle_aside(&mut self, kind: AsideKind, cx: &mut Context<Self>) {
         match kind {
             // The open thread is the threads area's (11): it closes it, or reopens the last one.
-            AsideKind::Threads => crate::screens::threads::toggle_pane(cx),
+            AsideKind::Threads => crate::screens::threads::toggle_pane(&self.slot_cx(), cx),
             // The member list's open state is the members area's (Task 14: open by default, as the web's).
             AsideKind::Members => crate::screens::members::toggle_pane(cx),
         }
@@ -882,7 +885,7 @@ impl Render for ShellView {
         let ctx = self.slot_cx();
         // The threads area reads this shell's view (its pane, the header's toggle, the reply keys), and the Threads button
         // is pressed while a thread is open (11).
-        crate::screens::threads::sync(&ctx, cx);
+        crate::screens::threads::sync(&ctx, window, cx);
         self.aside = crate::screens::threads::is_open(&ctx, cx).then_some(AsideKind::Threads);
         // What the viewer may do in the open channel, from the roles slice (14), gates reply and thread (11); told only
         // when it changes, so the publish does not loop.
@@ -1169,6 +1172,7 @@ impl Render for ShellView {
         // The AFK page's Come back opens a text channel this person can send in (Shell.tsx `onLeaveAfk`).
         let back = shell.clone();
         crate::screens::voice::set_come_back(
+            self.window_id,
             Rc::new(move |_, cx| {
                 let _ = back.update(cx, |shell, cx| shell.leave_afk(cx));
             }),
@@ -1182,8 +1186,17 @@ impl Render for ShellView {
             let in_call = crate::screens::voice::joined(&state, id);
             let live = crate::screens::voice::count(&state, id) > 0;
             crate::screens::ring::dm_call_start(&state, id, in_call, live).map(|label| {
-                let on_call: header::OnCall =
-                    Rc::new(move |_, cx| crate::screens::voice::join(id, cx));
+                // As the ring's answer does: one call per device, the DM's call joined through the ring gate.
+                let on_call: header::OnCall = Rc::new(move |window, cx| {
+                    let w = crate::screens::voice::wid(window);
+                    let Some(client) = crate::screens::voice::client_of(w, cx) else {
+                        return;
+                    };
+                    let voice = client.voice();
+                    crate::screens::voice::after_leaving_other_calls(w, cx, move || {
+                        drop(voice.join_dm(id))
+                    });
+                });
                 (label, on_call)
             })
         });

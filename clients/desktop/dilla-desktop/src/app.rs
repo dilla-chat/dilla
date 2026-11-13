@@ -1031,7 +1031,7 @@ impl AppView {
         // An invite this window was opened with (Task 27), for a running client: the join dialog takes it (a sign-up's
         // own join is done by the sign-up).
         if !after_signup && let Some(invite) = self.launch.invite.take() {
-            crate::screens::create::open_join(Some(invite), cx);
+            crate::screens::create::open_join_in(window, Some(invite), cx);
         }
         let starts_ready = client.state().borrow().account.phase == AccountPhase::Ready;
         if after_signup || !starts_ready {

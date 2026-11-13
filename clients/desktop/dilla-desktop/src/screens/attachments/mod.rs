@@ -41,6 +41,24 @@ use ui::{CardKey, CardStatus, ImageKey, Player, Slot, TrayPreview};
 /// gaps, and ends before the row's right padding. The cards wrap within it.
 const BODY_INSET: f32 = 44.0 + 10.0 + 30.0 + 10.0 + 16.0;
 
+/// The area's sizes, logical px, named after the packages/ui CSS they come from (R21: no literal `px(..)` in screens).
+mod m {
+    /// Composer.css `.d-composer__tool`: 26x24, 2px apart, the 14px glyph; the GIF tool's 6px side padding.
+    pub const TOOL_H: f32 = 24.0;
+    pub const TOOL_W: f32 = 26.0;
+    pub const TOOL_GAP: f32 = 2.0;
+    pub const TOOL_GLYPH: f32 = 14.0;
+    pub const GIF_PAD_X: f32 = 6.0;
+    /// The GIF-in-a-DM notice: 12px in, 8px between its rows and its buttons.
+    pub const NOTICE_PAD: f32 = 12.0;
+    pub const NOTICE_GAP: f32 = 8.0;
+    /// The GIF picker sits 8px over the composer.
+    pub const PICKER_LIFT: f32 = 8.0;
+    /// GifPicker.css search field: 30px tall, 10px in.
+    pub const SEARCH_H: f32 = 30.0;
+    pub const SEARCH_PAD_X: f32 = 10.0;
+}
+
 fn click(f: impl Fn(&mut Window, &mut App) + 'static) -> OnClick {
     Rc::new(move |_, w, cx| f(w, cx))
 }
@@ -372,8 +390,8 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
 fn tool(id: &'static str, label: &'static str, f: OnClick) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .h(px(24.0))
-        .min_w(px(26.0))
+        .h(px(m::TOOL_H))
+        .min_w(px(m::TOOL_W))
         .flex_none()
         .flex()
         .items_center()
@@ -392,7 +410,7 @@ fn tool(id: &'static str, label: &'static str, f: OnClick) -> gpui::Stateful<gpu
 /// The composer's attach and GIF buttons (`slots::composer_buttons`, first), and the area's overlays.
 pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     ui::track(window, ctx.client.clone(), ctx.channel, cx);
-    let mut row = div().flex().items_center().gap(px(2.0)).child(
+    let mut row = div().flex().items_center().gap(px(m::TOOL_GAP)).child(
         tool(
             "composer-attach",
             "shell.composer.attach",
@@ -400,7 +418,7 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Opti
         )
         .child(
             Icon::new(IconName::Paperclip)
-                .size(px(14.0))
+                .size(px(m::TOOL_GLYPH))
                 .color(color::FG_3),
         ),
     );
@@ -431,7 +449,7 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Opti
             .is_some_and(|g| g.owner == Some(here));
         row = row.child(
             tool("composer-gif", "gif.button", action)
-                .px(px(6.0))
+                .px(px(m::GIF_PAD_X))
                 .when_open(open)
                 .child(
                     dilla_desktop_ui::text::line(
@@ -502,7 +520,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .relative()
             .child(element);
         out.push(
-            deferred(anchored().position(point(px(0.0), px(0.0))).child(full))
+            deferred(anchored().position(gpui::Point::default()).child(full))
                 .with_priority(3)
                 .into_any_element(),
         );
@@ -512,9 +530,9 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .id("gif-dm-notice")
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(px(m::NOTICE_GAP))
             .w(px(gif_picker::WIDTH))
-            .p(px(12.0))
+            .p(px(m::NOTICE_PAD))
             .bg(color::SURFACE_2)
             .border_1()
             .border_color(color::LINE_STRONG)
@@ -535,7 +553,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .child(
                 div()
                     .flex()
-                    .gap(px(8.0))
+                    .gap(px(m::NOTICE_GAP))
                     .child(
                         dilla_desktop_ui::components::button::Button::new(
                             "gif-dm-use",
@@ -564,7 +582,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             deferred(
                 anchored()
                     .snap_to_window()
-                    .child(div().mb(px(8.0)).child(picker)),
+                    .child(div().mb(px(m::PICKER_LIFT)).child(picker)),
             )
             .with_priority(2)
             .into_any_element(),
@@ -681,8 +699,8 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
     });
     Some(gif_picker::gif_picker(gif_picker::GifPickerProps {
         search: div()
-            .h(px(30.0))
-            .px(px(10.0))
+            .h(px(m::SEARCH_H))
+            .px(px(m::SEARCH_PAD_X))
             .flex()
             .items_center()
             .bg(color::BG_2)

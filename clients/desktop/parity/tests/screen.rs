@@ -35,6 +35,12 @@ fn shoot_with(name: &str, env: &[(&str, &str)], grow: f32) -> (RgbaImage, TextMa
     let loaded = fixture::load(&fixture_path(name), Os::Linux).unwrap();
     let mut driver = Driver::launch_fixture(&fixture_path(name), loaded.shot_path.as_deref(), env);
     driver.wait_idle();
+    // The fixture's steps, as `assert_screen` replays them (the channel views close the member list the shell opens).
+    for step in &loaded.fixture.steps {
+        dilla_parity::screen::replay(&mut driver, step);
+    }
+    dilla_parity::screen::rest_before_frame(&mut driver, &loaded.fixture);
+    driver.wait_idle();
     let shot = driver.screenshot();
     let mask = text_mask(&mut driver, grow);
     (shot, mask)
@@ -358,14 +364,16 @@ fn named_keys_reach_focused_element() {
         "Tab moves the focus on"
     );
     app.press("escape");
-    app.press("ctrl-k");
+    // Chords the app binds to no action: an app-wide binding (Ctrl+K opens the search, Ctrl+Shift+M mutes) takes its
+    // key before any key-down listener, as Tab does below, so the harness proves delivery with free chords.
+    app.press("ctrl-j");
     app.press("shift-tab");
     assert_eq!(
         app.focused().as_deref(),
         Some("field-a"),
         "Shift-Tab moves it back"
     );
-    app.press("ctrl-shift-m");
+    app.press("ctrl-shift-y");
     assert_eq!(
         app.harness_log(),
         [
@@ -373,8 +381,8 @@ fn named_keys_reach_focused_element() {
             // key-down listener sees it: they move the focus and log nothing.
             "field-a:enter",
             "field-b:escape",
-            "field-b:ctrl-k",
-            "field-a:ctrl-shift-m",
+            "field-b:ctrl-j",
+            "field-a:ctrl-shift-y",
         ]
     );
 }

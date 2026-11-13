@@ -355,6 +355,7 @@ impl Session {
         let _ = self
             .cx
             .update_window(window, |_, window: &mut Window, cx: &mut App| {
+                sync_viewport(window, cx);
                 window.refresh();
                 window.draw(cx).clear(cx);
             });
@@ -566,6 +567,16 @@ impl Session {
             .save_with_format(path, image::ImageFormat::Png)
             .map_err(|error| format!("write failed: {error}"))?;
         Ok(image.dimensions())
+    }
+}
+
+/// Lays the window out at the size its platform window has. A real platform answers `Window::resize` (the compact
+/// windows take their shape in place: `AppView::fit_window`) with a resize event, which runs `bounds_changed`; GPUI's
+/// headless test window only records the new size and sends no event, so the view would go on laying out at the old
+/// size (the start window's 280px tall) inside a frame the capture takes at the new one. This is that event.
+fn sync_viewport(window: &mut Window, cx: &mut App) {
+    if window.bounds().size != window.viewport_size() {
+        window.bounds_changed(cx);
     }
 }
 

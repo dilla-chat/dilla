@@ -101,6 +101,16 @@ impl Drop for Host {
 
 /// dilla-testhost with production's ACL and its in-process LiveKit.
 pub fn start_host(tag: &str) -> Host {
+    start_host_with(tag, false)
+}
+
+/// [`start_host`] whose call starts name its own listener as the LiveKit URL (`ws://127.0.0.1:<port>`, dilla-testhost's
+/// `-web-root` rule), so a client's own media layer (the desktop's media session) reaches the SFU unchanged.
+pub fn start_host_reachable(tag: &str) -> Host {
+    start_host_with(tag, true)
+}
+
+fn start_host_with(tag: &str, reachable: bool) -> Host {
     let root = repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
         .map_or_else(|| root.join("target/dilla-testhost"), PathBuf::from);
@@ -124,8 +134,26 @@ pub fn start_host(tag: &str) -> Host {
     ));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
-    let mut child = Command::new(bin)
-        .args(["-listen", "127.0.0.1:0", "-control", "127.0.0.1:0"])
+    let listen = if reachable {
+        format!("127.0.0.1:{}", free_port())
+    } else {
+        "127.0.0.1:0".to_owned()
+    };
+    let mut cmd = Command::new(bin);
+    if reachable {
+        // A one-page client tree its manifest describes (dillad verifies the tree it serves).
+        let web = data.join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("index.html"), "<!doctype html>").unwrap();
+        std::fs::write(
+            web.join("dilla-manifest.json"),
+            r#"{"v":1,"files":[{"path":"index.html","sha256":"fe26c59e91ac8de694b2531dc3bdc1b7faf471d3d7e4e00870af60f5f22897cb","size":15}]}"#,
+        )
+        .unwrap();
+        cmd.arg("-web-root").arg(web);
+    }
+    let mut child = cmd
+        .args(["-listen", &listen, "-control", "127.0.0.1:0"])
         .args(["-log-level", "warn", "-production-acl", "-sfu"])
         .args(["-sfu-port", &free_port().to_string()])
         .args(["-sfu-udp-port", &free_port().to_string()])

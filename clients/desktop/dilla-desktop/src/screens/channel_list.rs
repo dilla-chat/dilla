@@ -346,7 +346,9 @@ fn row(
                         crate::strings::t("voice.join"),
                     )
                     .size(dilla_desktop_ui::components::icon_button::IconButtonSize::S28)
-                    .on_click(move |_, _, cx| crate::screens::voice::join(id, cx)),
+                    .on_click(move |_, window, cx| {
+                        crate::screens::voice::join(id, crate::screens::voice::wid(window), cx)
+                    }),
                 ),
         );
     }
