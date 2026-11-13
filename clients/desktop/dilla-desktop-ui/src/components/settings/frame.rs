@@ -164,6 +164,51 @@ fn header_at(title: impl Into<SharedString>, sub: Option<&str>, measure: f32) ->
     head
 }
 
+/// The space between a section's blocks (`.d-settings-frame__body > section > * + * { margin-top: 14px }`).
+pub const SECTION_GAP: f32 = 14.0;
+
+/// A section (`.d-settings-frame__body > section`, `gap: 0`): its [`section_header`], then its blocks. The first block sits
+/// the header's 22px under the title (`h2 + :not(p)`, `h2 + p + *`); each later block is [`SECTION_GAP`] under the one
+/// above (`> * + *`), except a paragraph: the web app's `.dw-settings-section p { margin: 0 }` (app.css) ties that rule's
+/// specificity and comes later, so a section's `p` sits flush under the block above. Rows that touch
+/// (`.d-settings-row + .d-settings-row { margin-top: 0 }`) are one block: put them in one column.
+pub struct Section {
+    col: gpui::Div,
+    blocks: usize,
+}
+
+impl Section {
+    pub fn new(header: gpui::Div) -> Self {
+        Self {
+            col: div().flex().flex_col().w_full().child(header),
+            blocks: 0,
+        }
+    }
+
+    /// A block (a group of rows, a table, a row of its own).
+    pub fn block(self, block: impl IntoElement) -> Self {
+        let top = if self.blocks == 0 { 0.0 } else { SECTION_GAP };
+        self.push(top, block)
+    }
+
+    /// A paragraph of the section (`<p>`): no space above it, after the first block.
+    pub fn paragraph(self, paragraph: impl IntoElement) -> Self {
+        self.push(0.0, paragraph)
+    }
+
+    fn push(mut self, top: f32, child: impl IntoElement) -> Self {
+        self.col = self
+            .col
+            .child(div().flex().flex_col().pt(px(top)).child(child));
+        self.blocks += 1;
+        self
+    }
+
+    pub fn into_div(self) -> gpui::Div {
+        self.col
+    }
+}
+
 /// A group's micro heading (10px 600, 0.12em, uppercase, `--fg-3`): 22px under the block above, 8px over its group.
 pub fn group_heading(text_: impl Into<SharedString>) -> gpui::Div {
     div().pt(px(22.0)).pb(px(8.0)).child(

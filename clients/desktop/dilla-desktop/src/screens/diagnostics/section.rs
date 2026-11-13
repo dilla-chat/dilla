@@ -10,9 +10,8 @@ use dilla_client::state::{AppState, ConnectionStatus};
 use gpui::{AnyElement, App, ClipboardItem, IntoElement, ParentElement, Styled, Window, div, px};
 
 use dilla_desktop_ui::components::button::Button;
-use dilla_desktop_ui::components::settings::frame::section_header;
+use dilla_desktop_ui::components::settings::frame::{Section, section_header};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
-use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{MONO_ADVANCE, line, line_height};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
@@ -268,28 +267,25 @@ pub fn render(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
     let errors = shown_errors(state);
     let routes = shown_routes(state);
     let copy = copy_text(&state.diagnostics);
-    let mut section = div()
-        .flex()
-        .flex_col()
-        .gap(Density::Regular.group_gap())
-        .child(section_header(t("diagnostics.title"), None))
-        .child(group);
+    let mut section = Section::new(section_header(t("diagnostics.title"), None)).block(group);
     if !routes.is_empty() {
-        section = section.child(routes_table(routes));
+        section = section.block(routes_table(routes));
     }
-    section = section.child(if errors.is_empty() {
-        div()
-            .child(line(
-                t("diagnostics.empty"),
-                text::SM,
-                line_height(text::SM, 1.5),
-                color::FG_2,
-            ))
-            .into_any_element()
+    section = if errors.is_empty() {
+        section.paragraph(
+            div()
+                // `.d-settings-frame__body > section > p`: 12px `--fg-2`.
+                .child(line(
+                    t("diagnostics.empty"),
+                    text::UI,
+                    line_height(text::UI, 1.5),
+                    color::FG_2,
+                )),
+        )
     } else {
-        errors_list(errors)
-    });
-    section = section.child(tracked_box(
+        section.block(errors_list(errors))
+    };
+    section = section.block(tracked_box(
         "diag-copy",
         SettingsRow::new("diag-copy-row", t("diagnostics.copy")).child(tracked_focus(
             "diag-copy-button",
@@ -301,7 +297,7 @@ pub fn render(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
                 }),
         )),
     ));
-    section.into_any_element()
+    section.into_div().into_any_element()
 }
 
 #[cfg(test)]
