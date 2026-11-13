@@ -988,6 +988,10 @@ pub fn ptt_root(w: WindowId) -> impl IntoElement {
     .size_0()
 }
 
+/// The key context every text field carries (gpui-component's inputs, the composer's included): push to talk never
+/// acts while one holds the focus (ptt.ts `isEditable`).
+const TEXT_FIELD_CONTEXT: &str = "Input";
+
 /// The push-to-talk key's handlers, on the window's root element (review I1): an ancestor of whatever holds the focus,
 /// so a key is heard on every screen. The key counts while this window's call is on.
 pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
@@ -996,22 +1000,50 @@ pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
             .filter(|u| in_a_call(u))
             .and_then(|u| u.ptt_key.clone())
     };
-    root.capture_key_down(move |e: &gpui::KeyDownEvent, _, cx| {
+    root.capture_key_down(move |e: &gpui::KeyDownEvent, window, cx| {
+        let stack = window.context_stack();
+        // ptt.ts `inDialog`: a modal dialog (or the settings frame, its kin) lets go and takes no key.
+        if stack
+            .iter()
+            .any(|c| c.contains(dilla_desktop_ui::components::dialog::OVERLAY_CONTEXT))
+        {
+            release_ptt(w, cx);
+            return;
+        }
         let Some((key, _)) = key_of(cx) else { return };
-        if !e.is_held && e.keystroke.key.eq_ignore_ascii_case(&key) {
-            ui_mut(w, cx).ptt.press();
-            if let Some(v) = voice(w, cx) {
-                v.set_ptt_held(true);
-            }
+        // ptt.ts: only the bare key (no Ctrl, Alt, Shift, Cmd/Meta or AltGr, which comes as Ctrl+Alt), and never while
+        // a text field holds the focus, where the key types as usual (Shift+Insert pastes).
+        let m = e.keystroke.modifiers;
+        if !e.keystroke.key.eq_ignore_ascii_case(&key)
+            || m.control
+            || m.alt
+            || m.shift
+            || m.platform
+            || m.function
+            || stack.iter().any(|c| c.contains(TEXT_FIELD_CONTEXT))
+        {
+            return;
+        }
+        // ptt.ts `preventDefault`: the key is push to talk's, nobody else's.
+        cx.stop_propagation();
+        if e.is_held || ui_of(w, cx).is_some_and(|u| u.ptt.is_down()) {
+            return;
+        }
+        ui_mut(w, cx).ptt.press();
+        if let Some(v) = voice(w, cx) {
+            v.set_ptt_held(true);
         }
     })
     .capture_key_up(move |e: &gpui::KeyUpEvent, _, cx| {
         let Some((key, release_ms)) = key_of(cx) else {
             return;
         };
-        if !e.keystroke.key.eq_ignore_ascii_case(&key) {
+        if !e.keystroke.key.eq_ignore_ascii_case(&key)
+            || !ui_of(w, cx).is_some_and(|u| u.ptt.is_down())
+        {
             return;
         }
+        cx.stop_propagation();
         ui_mut(w, cx).ptt.let_go(ptt_now_ms());
         cx.spawn(async move |cx| {
             cx.background_executor()

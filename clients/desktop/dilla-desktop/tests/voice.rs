@@ -13,8 +13,8 @@ use dilla_client::state::{
 };
 use dilla_desktop::screens::voice::{self, VoiceUi};
 use gpui::{
-    App, Context, FocusHandle, IntoElement, ParentElement, Render, Styled, TestAppContext,
-    VisualTestContext, Window, WindowId, div,
+    App, Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Styled,
+    TestAppContext, VisualTestContext, Window, WindowId, div,
 };
 
 const VOICE: ChannelId = ChannelId([9; 16]);
@@ -310,6 +310,92 @@ fn the_call_ending_releases_push_to_talk(cx: &mut TestAppContext) {
     assert!(
         !vcx.update(|_, cx| voice::ptt_sending(w, cx)),
         "the call ended"
+    );
+}
+
+/// A window with a text field (as the composer is) under the app's root push-to-talk handlers.
+struct FieldHost {
+    field: gpui::Entity<gpui_component::input::InputState>,
+    root: FocusHandle,
+}
+
+impl Render for FieldHost {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        voice::ptt_keys(voice::wid(window), div().track_focus(&self.root))
+            .size_full()
+            .child(gpui_component::input::Input::new(&self.field))
+            .child(voice::ptt_root(voice::wid(window)))
+    }
+}
+
+/// A call on, push to talk on Insert, a text field in the window; answers the window's id and the field's focus.
+fn field_host(cx: &mut TestAppContext) -> (&mut VisualTestContext, WindowId, FocusHandle) {
+    use gpui::AppContext as _;
+    cx.update(dilla_desktop::install);
+    let (host, vcx) = cx.add_window_view(|window, cx| FieldHost {
+        field: cx.new(|cx| gpui_component::input::InputState::new(window, cx)),
+        root: cx.focus_handle(),
+    });
+    let w = vcx.update(|window, _| voice::wid(window));
+    vcx.update(|_, cx| {
+        voice::sync(w, state(2), None, cx);
+        voice::set_ptt_key(w, Some(("insert".into(), 200)), cx);
+    });
+    vcx.update(|window, _| window.activate_window());
+    let field = host.read_with(vcx, |h, cx| {
+        gpui::Focusable::focus_handle(h.field.read(cx), cx)
+    });
+    let root = host.read_with(vcx, |h, _| h.root.clone());
+    vcx.update(|window, cx| root.focus(window, cx));
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    (vcx, w, field)
+}
+
+fn key_down(vcx: &mut VisualTestContext, key: &'static str) {
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse(key).unwrap(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.run_until_parked();
+}
+
+/// Review A (web ptt.ts): Shift+Insert (paste) in a text field never opens the mic.
+#[gpui::test]
+fn push_to_talk_ignores_a_modified_key(cx: &mut TestAppContext) {
+    let (vcx, w, field) = field_host(cx);
+    vcx.update(|window, cx| field.focus(window, cx));
+    vcx.run_until_parked();
+    key_down(vcx, "shift-insert");
+    assert!(
+        !vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "a modifier: not push to talk"
+    );
+}
+
+/// Review A (web ptt.ts): the key types as usual in a text field; the mic stays closed.
+#[gpui::test]
+fn push_to_talk_is_off_in_a_text_field(cx: &mut TestAppContext) {
+    let (vcx, w, field) = field_host(cx);
+    vcx.update(|window, cx| field.focus(window, cx));
+    vcx.run_until_parked();
+    key_down(vcx, "insert");
+    assert!(
+        !vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "in a text field: not push to talk"
+    );
+}
+
+/// Review A: the key with the focus outside any text field opens the mic.
+#[gpui::test]
+fn push_to_talk_opens_the_mic_outside_text_fields(cx: &mut TestAppContext) {
+    let (vcx, w, _) = field_host(cx);
+    // The focus is on the window's root (no text field): `field_host` put it there.
+    key_down(vcx, "insert");
+    assert!(
+        vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "held: sending"
     );
 }
 
