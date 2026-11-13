@@ -184,6 +184,7 @@ pub fn reaction_bar(
         &Target::Message {
             key: item.key.clone(),
         },
+        window,
         cx,
     );
     if item.reactions.is_empty() && grid.is_none() {
@@ -317,7 +318,7 @@ pub fn emoji_button(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<A
         .read(cx)
         .clone();
     let from = window.use_keyed_state("composer-emoji-from", cx, |_, _| None::<gpui::FocusHandle>);
-    let open = picker::is_open(&Target::Composer, cx);
+    let open = picker::is_open(&Target::Composer, window, cx);
     let (fg, bg) = if open {
         (color::ACCENT, color::ACCENT_SOFT)
     } else {
@@ -343,7 +344,7 @@ pub fn emoji_button(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<A
         .child(Icon::new(IconName::Smile).size(px(TOOL_GLYPH)).color(fg))
         .child(
             canvas(
-                |bounds, _window, cx| picker::set_opener_bounds(bounds, cx),
+                |bounds, window, cx| picker::set_opener_bounds(bounds, window, cx),
                 |_, (), _, _| {},
             )
             .absolute()
@@ -355,7 +356,7 @@ pub fn emoji_button(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<A
             remember.update(cx, |from, _| *from = focused);
         })
         .on_click(move |_, window, cx| {
-            if picker::is_open(&Target::Composer, cx) {
+            if picker::is_open(&Target::Composer, window, cx) {
                 picker::close(window, cx, true);
                 return;
             }
@@ -375,8 +376,8 @@ pub fn emoji_button(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<A
 }
 
 /// The composer's grid, where the web draws `.d-composer-pop`: 16px from the composer's left, 6px above it.
-pub fn emoji_popup(_ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let grid = picker::grid_for(&Target::Composer, cx)?;
+pub fn emoji_popup(_ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let grid = picker::grid_for(&Target::Composer, window, cx)?;
     Some(
         div()
             .flex()
@@ -426,6 +427,34 @@ mod tests {
         // 1280 less rail and sidebar is 980; an open 340px thread pane leaves 640.
         assert_eq!(column_of(980.0), 980.0 - 94.0 - 16.0);
         assert_eq!(column_of(980.0 - 340.0), 640.0 - 94.0 - 16.0);
+    }
+
+    /// Final review sweep: an emoji grid opened in window A belongs to A: window B's composer shows none, and B's
+    /// close leaves A's grid open.
+    #[gpui::test]
+    fn an_emoji_grid_stays_in_its_window(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            picker::open(Target::Composer, &SlotCx::default(), None, None, window, cx);
+            assert!(picker::is_open(&Target::Composer, window, cx));
+        });
+        let b = cx.add_empty_window();
+        b.update(|window, cx| {
+            assert!(
+                !picker::is_open(&Target::Composer, window, cx),
+                "B shows no grid"
+            );
+            picker::close(window, cx, false);
+        });
+        let a = cx.windows()[0];
+        a.update(cx, |_, window, cx| {
+            assert!(
+                picker::is_open(&Target::Composer, window, cx),
+                "A's grid stays open"
+            );
+        })
+        .unwrap();
     }
 
     #[gpui::test]

@@ -10,7 +10,7 @@ use std::rc::Rc;
 use dilla_client::state::ChannelId;
 use dilla_desktop_ui::components::reactions::{EmojiGrid, EmojiItem, GridEvent, Part};
 use gpui::{
-    App, AppContext as _, Bounds, Entity, FocusHandle, Global, IntoElement as _, Keystroke, Pixels,
+    App, AppContext as _, Bounds, Entity, FocusHandle, IntoElement as _, Keystroke, Pixels,
     SharedString, Subscription, Window,
 };
 
@@ -40,6 +40,8 @@ struct Open {
     _subscription: Subscription,
 }
 
+/// One window's emoji grid (final review sweep: per window, so a grid opened in one window never shows in another's
+/// composer or log).
 #[derive(Default)]
 struct Picker {
     open: Option<Open>,
@@ -47,31 +49,26 @@ struct Picker {
     opener: Option<Bounds<Pixels>>,
 }
 
-impl Global for Picker {}
-
-fn picker(cx: &mut App) -> &mut Picker {
-    if !cx.has_global::<Picker>() {
-        cx.set_global(Picker::default());
-    }
-    cx.global_mut::<Picker>()
+fn picker<'a>(window: &Window, cx: &'a mut App) -> &'a mut Picker {
+    crate::per_window::get_mut::<Picker>(window.window_handle().window_id(), cx)
 }
 
-/// The open grid when it is for `target`.
-pub fn grid_for(target: &Target, cx: &App) -> Option<Entity<EmojiGrid>> {
-    cx.try_global::<Picker>()
+/// The open grid of `window` when it is for `target`.
+pub fn grid_for(target: &Target, window: &Window, cx: &App) -> Option<Entity<EmojiGrid>> {
+    crate::per_window::get::<Picker>(window.window_handle().window_id(), cx)
         .and_then(|p| p.open.as_ref())
         .filter(|o| &o.target == target)
         .map(|o| o.grid.clone())
 }
 
 /// Whether a grid is open for `target`.
-pub fn is_open(target: &Target, cx: &App) -> bool {
-    grid_for(target, cx).is_some()
+pub fn is_open(target: &Target, window: &Window, cx: &App) -> bool {
+    grid_for(target, window, cx).is_some()
 }
 
 /// Records where the composer's emoji button is, so a press on it does not close the grid it is about to toggle.
-pub fn set_opener_bounds(bounds: Bounds<Pixels>, cx: &mut App) {
-    let p = picker(cx);
+pub fn set_opener_bounds(bounds: Bounds<Pixels>, window: &Window, cx: &mut App) {
+    let p = picker(window, cx);
     p.opener = Some(bounds);
     if let Some(open) = &p.open {
         let grid = open.grid.clone();
@@ -122,7 +119,7 @@ pub fn open(
         }));
     });
     if composer {
-        let bounds = picker(cx).opener;
+        let bounds = picker(window, cx).opener;
         grid.update(cx, |g, _| g.set_opener(bounds));
     }
     let on_event = {
@@ -135,7 +132,7 @@ pub fn open(
         }
     };
     let subscription = window.subscribe(&grid, cx, on_event);
-    picker(cx).open = Some(Open {
+    picker(window, cx).open = Some(Open {
         target,
         grid: grid.clone(),
         back,
@@ -150,7 +147,7 @@ pub fn open(
 
 /// Closes the open grid; with `restore`, focus goes back to its opener.
 pub fn close(window: &mut Window, cx: &mut App, restore: bool) {
-    let Some(open) = picker(cx).open.take() else {
+    let Some(open) = picker(window, cx).open.take() else {
         return;
     };
     if restore && let Some(back) = open.back {
@@ -161,7 +158,7 @@ pub fn close(window: &mut Window, cx: &mut App, restore: bool) {
 
 /// What a pick does.
 fn picked(target: &Target, ctx: &SlotCx, emoji: &str, window: &mut Window, cx: &mut App) {
-    let open = picker(cx).open.take();
+    let open = picker(window, cx).open.take();
     match target {
         Target::Message { key } => {
             if let Some(back) = open.as_ref().and_then(|o| o.back.clone()) {
