@@ -1,0 +1,12 @@
+{
+  "digest": "48b2e63254bce5e16024024da1f22bcb5f78343faa6bc4b63f965cbdeeb49d32",
+  "shift": 37185,
+  "hand_migrated": false,
+  "ids": {
+    "channel:midgard/general": "053010539b10e7c032da9e5dbf708ae6",
+    "person:ada": "f2de7f5116669e61dd78b68607bd21e4",
+    "person:bjorn": "04f9fe65ee8a52a724672f641e58d56f",
+    "person:mira": "c497fdcb1045944fda02dec5681fdcf3",
+    "server:midgard": "21182599825b340a6ff6178e3f17cfc7"
+  }
+}

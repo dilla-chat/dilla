@@ -1,0 +1,81 @@
+{
+  "name": "voice-settings/enhanced-unavailable-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/settings/voice",
+  "clock": 1794481765,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      },
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "mira",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=switch[name=\"Echo cancellation\"]",
+      "gpui": "voice-echo"
+    },
+    {
+      "do": "click",
+      "web": "role=radio[name=\"Lightweight\"]",
+      "gpui": "voice-noise"
+    },
+    {
+      "do": "key",
+      "chord": "left"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

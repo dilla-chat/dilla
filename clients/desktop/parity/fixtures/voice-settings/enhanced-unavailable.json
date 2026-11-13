@@ -1,0 +1,64 @@
+{
+  "name": "voice-settings/enhanced-unavailable",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/settings/voice",
+  "clock": 1794481764,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=radio[name=\"Lightweight\"]",
+      "gpui": "voice-noise"
+    },
+    {
+      "do": "key",
+      "chord": "left"
+    },
+    {
+      "do": "click",
+      "web": "role=button[name=\"Let’s check\"]",
+      "gpui": "voice-check"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

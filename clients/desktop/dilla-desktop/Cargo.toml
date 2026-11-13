@@ -27,6 +27,7 @@ gpui-component = "=0.9.1"
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
 url = "2"
 zeroize = "1"
+# Task 19: the Voice section's device, microphone-test and sound threads log what they could not do (already in the lock through dilla-media).
 log = "0.4"
 # Message times in the local zone (already in the lock through gpui-component).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
