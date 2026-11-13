@@ -204,6 +204,8 @@ pub(crate) async fn leave_if_cancelled<C: CallCore, R: CallRoutes + ?Sized>(
                 phase: super::join::Phase::Failed,
                 leave: None,
                 alone: false,
+                users: Vec::new(),
+                reported: None,
             })
         }
         Err(r) => {

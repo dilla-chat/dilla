@@ -469,6 +469,66 @@ async fn a_gate_refusal_posts_nothing_and_is_a_block() {
         ["join_external 44 info", "discard 44"],
         "the staged group is discarded"
     );
+    assert_eq!(refused.users, vec![], "an empty room names nobody");
+    assert_eq!(refused.reported, None, "the refusal named no leaf");
+}
+
+/// join.ts `e.users` and core-port.ts `changedUser` (Task 18 review I1): a gate refusal carries the room's users as the
+/// last call read listed them, and the leaf the core named in its detail.
+#[tokio::test]
+async fn a_gate_refusal_carries_the_rooms_users_and_the_leaf_the_core_named() {
+    use dilla_client::calls::CallParticipant;
+    use dilla_client::state::UserId;
+    let named = "b2".repeat(16);
+    let core = Mutex::new(gated(
+        vec![Err(CoreRefusal {
+            code: "E_UMK_CHANGED".into(),
+            detail: named.clone(),
+        })],
+        vec![],
+    ));
+    core.lock().unwrap().inner.groups = vec![GroupSummary {
+        group_id: GROUP,
+        kind: 1,
+        target_id: CHANNEL,
+        state: 1,
+        epoch: 0,
+        next_seq: 0,
+        pending_commit: false,
+    }];
+    let routes = FakeRoutes::default();
+    let p = |u: u8, d: u8| CallParticipant {
+        user_id: [u; 16],
+        device_id: [d; 16],
+        flags: 0,
+    };
+    routes.calls.lock().unwrap().push_back(ChannelCall {
+        group_id: Some(GROUP),
+        call_id: Some(CHANNEL),
+        participants: vec![p(0xc3, 1), p(0xc3, 2), p(0xd4, 3)],
+    });
+    let refused = join_call(&core, &routes, &hooks(), &target())
+        .await
+        .unwrap_err();
+    assert_eq!(refused.users, vec![UserId([0xc3; 16]), UserId([0xd4; 16])]);
+    assert_eq!(refused.reported, Some(UserId([0xb2; 16])));
+    // A detail that is not exactly one user id names nobody.
+    for detail in ["", "B2B2", &"zz".repeat(16)] {
+        let e = CoreRefusal {
+            code: "E_UMK_CHANGED".into(),
+            detail: detail.into(),
+        };
+        assert_eq!(
+            dilla_client::calls::join::reported_user(&e),
+            None,
+            "{detail:?}"
+        );
+    }
+    let other = CoreRefusal {
+        code: "E_CREDENTIAL".into(),
+        detail: named,
+    };
+    assert_eq!(dilla_client::calls::join::reported_user(&other), None);
 }
 
 #[tokio::test]

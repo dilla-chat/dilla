@@ -24,6 +24,7 @@ use super::{
     CallCore, CallPhase, CallRoutes, CallStarted, ChannelCall, CoreRefusal, MediaEpoch, RouteError,
     lock,
 };
+use crate::state::UserId;
 
 /// join.ts `JOIN_READS_MAX`: the most GroupInfo/tree read pairs one external join makes when the
 /// pair disagrees (a commit landed between the reads).
@@ -83,6 +84,54 @@ pub struct JoinRefused {
     pub phase: Phase,
     pub leave: Option<[u8; 16]>,
     pub alone: bool,
+    /// join.ts `e.users`: the users of the call's room as the last read of the call listed them (deduplicated), the
+    /// candidates a refusal may name as its changed contact (ruling I2, review M4).
+    pub users: Vec<UserId>,
+    /// core-port.ts `CoreError.changedUser`: the leaf of the call tree the core's gate named in an `E_UMK_CHANGED`
+    /// refusal (its detail, 32 hex digits), when it named one.
+    pub reported: Option<UserId>,
+}
+
+/// The changed contact a core refusal names: `E_UMK_CHANGED` with exactly 32 lower-case hex digits as its detail
+/// (core-port.ts `CHANGED_USER`).
+pub fn reported_user(e: &CoreRefusal) -> Option<UserId> {
+    if e.code != "E_UMK_CHANGED" || e.detail.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, b) in out.iter_mut().enumerate() {
+        let pair = &e.detail[2 * i..2 * i + 2];
+        if !pair
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
+            return None;
+        }
+        *b = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(UserId(out))
+}
+
+/// A refusal of the core, with the changed contact it names.
+fn core_refused(e: &CoreRefusal, leave: Option<[u8; 16]>) -> JoinRefused {
+    JoinRefused {
+        reported: reported_user(e),
+        ..refused(&e.code, leave)
+    }
+}
+
+/// The participants of the last call read (join.ts `seen.read`).
+type Seen = Mutex<Vec<UserId>>;
+
+fn record(seen: &Seen, read: &ChannelCall) {
+    if let Ok(mut s) = seen.lock() {
+        s.clear();
+        for p in &read.participants {
+            if !s.contains(&UserId(p.user_id)) {
+                s.push(UserId(p.user_id));
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +164,8 @@ fn refused(code: &str, leave: Option<[u8; 16]>) -> JoinRefused {
         },
         leave,
         alone: false,
+        users: Vec::new(),
+        reported: None,
     }
 }
 
@@ -127,7 +178,7 @@ fn route_code(e: &RouteError) -> String {
 
 impl From<CoreRefusal> for JoinRefused {
     fn from(e: CoreRefusal) -> Self {
-        refused(&e.code, None)
+        core_refused(&e, None)
     }
 }
 
@@ -175,7 +226,13 @@ pub async fn join_call<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
     target: &JoinTarget,
 ) -> Result<Joined, JoinRefused> {
     hooks.phase(CallPhase::Joining);
-    let joined = join_loop(core, routes, hooks, target).await;
+    let seen = Seen::default();
+    let joined = join_loop(core, routes, hooks, target, &seen)
+        .await
+        .map_err(|mut e| {
+            e.users = seen.lock().map(|s| s.clone()).unwrap_or_default();
+            e
+        });
     hooks.phase(if joined.is_ok() {
         CallPhase::In
     } else {
@@ -189,14 +246,12 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
     routes: &R,
     hooks: &H,
     target: &JoinTarget,
+    seen: &Seen,
 ) -> Result<Joined, JoinRefused> {
     let mut reread_exists = true;
     let mut reread_closed = true;
     let mut wait_since: Option<Instant> = None;
-    let mut read = routes
-        .get_channel_call(&target.channel)
-        .await
-        .map_err(|e| refused(&route_code(&e), None))?;
+    let mut read = reread(routes, target, seen).await?;
     loop {
         forget_stale(core, &target.channel, read.group_id.as_ref());
         let group;
@@ -230,7 +285,7 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
                         // call once more and join theirs.
                         if e.is(409, "E_GROUP_EXISTS") && reread_exists {
                             reread_exists = false;
-                            read = reread(routes, target).await?;
+                            read = reread(routes, target, seen).await?;
                             continue;
                         }
                         return Err(refused(&route_code(&e), None));
@@ -250,8 +305,10 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
                         hooks.phase(CallPhase::WaitingForRemove);
                         Instant::now()
                     });
-                    read = wait_for_remove(routes, hooks, target, e.refused, since, &group, &info)
-                        .await?;
+                    read = wait_for_remove(
+                        routes, hooks, target, seen, e.refused, since, &group, &info,
+                    )
+                    .await?;
                     continue;
                 }
             }
@@ -290,7 +347,7 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
                 if e.is(503, "E_UNAVAILABLE") && reread_closed {
                     reread_closed = false;
                     let _ = lock(core).map(|mut c| c.call_group_forget(&group));
-                    read = reread(routes, target).await?;
+                    read = reread(routes, target, seen).await?;
                     continue;
                 }
                 let mut r = refused(&route_code(&e), Some(group));
@@ -305,10 +362,15 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
 /// call, and while it still names the refused group, its GroupInfo; it answers the call read once
 /// either has changed (the call ended or moved on, or a commit landed: perhaps the Remove), and
 /// fails with `refusal` once the bound has passed or the join is cancelled.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the wait reads the call as the join does, recording its users (join.ts seen.read)"
+)]
 async fn wait_for_remove<R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
     routes: &R,
     hooks: &H,
     target: &JoinTarget,
+    seen: &Seen,
     refusal: JoinRefused,
     since: Instant,
     group: &[u8; 16],
@@ -323,7 +385,7 @@ async fn wait_for_remove<R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
         if hooks.cancelled() {
             return Err(refusal);
         }
-        let read = reread(routes, target).await?;
+        let read = reread(routes, target, seen).await?;
         // A leave during a read stops the wait there; the join goes no further.
         if hooks.cancelled() {
             return Err(refusal);
@@ -347,11 +409,14 @@ async fn wait_for_remove<R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
 async fn reread<R: CallRoutes + ?Sized>(
     routes: &R,
     target: &JoinTarget,
+    seen: &Seen,
 ) -> Result<ChannelCall, JoinRefused> {
-    routes
+    let read = routes
         .get_channel_call(&target.channel)
         .await
-        .map_err(|e| refused(&route_code(&e), None))
+        .map_err(|e| refused(&route_code(&e), None))?;
+    record(seen, &read);
+    Ok(read)
 }
 
 /// The external join: a hard verdict refuses at the core's join and nothing is posted; a pending
@@ -389,12 +454,12 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
         let body = match joined {
             Ok(body) => Zeroizing::new(body),
             Err(e) if e.code == "E_CORE_INPUT" && again => continue,
-            Err(e) => return Err(refused(&e.code, None).into()),
+            Err(e) => return Err(core_refused(&e, None).into()),
         };
         let checked = check(core, hooks, group).await;
         if let Err(e) = checked {
             discard(core, group);
-            return Err(refused(&e.code, None).into());
+            return Err(core_refused(&e, None).into());
         }
         if hooks.cancelled() {
             discard(core, group);
@@ -445,10 +510,10 @@ async fn join_epoch<C: CallCore, H: JoinHooks + ?Sized>(
     match media_epoch(core, group) {
         Ok(m) => return Ok(m),
         Err(e) if e.code == "E_DEVICE_LIST_STALE" => {}
-        Err(e) => return Err(refused(&e.code, Some(*group))),
+        Err(e) => return Err(core_refused(&e, Some(*group))),
     }
     hooks.refresh_leaves(group).await;
-    media_epoch(core, group).map_err(|e| refused(&e.code, Some(*group)))
+    media_epoch(core, group).map_err(|e| core_refused(&e, Some(*group)))
 }
 
 async fn moved_since<R: CallRoutes + ?Sized>(routes: &R, group: &[u8; 16], info: &[u8]) -> bool {
