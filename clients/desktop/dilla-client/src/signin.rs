@@ -587,15 +587,18 @@ impl SignIn {
             Ok(fetched) => self.complete(&key, &fetched).await,
             Err(e) => Err(e),
         };
-        // controller.ts `enrolWithKey`: once the core wrote the enrolment (it left phase 3), a later step that failed is
-        // not the sign-in's (an account an operator reset refuses the state backup with E_FACTOR_REQUIRED): entering
-        // ready publishes and uploads what is missing, or takes the forced set-up. A list race or an eviction stays one.
+        // controller.ts `enrolWithKey`: a list race or an eviction once the core wrote the enrolment (phase 2, an
+        // identity no list may name) wipes this device's store, so the next attempt starts from nothing. Every other
+        // failure after the write stays the sign-in's error (`complete` tolerates only the state backup an account that
+        // owes a factor is refused); the store keeps the enrolment, and `Client::start` publishes an unpublished list,
+        // checks the instance's signer pin and uploads the backups before anything else runs.
         if let Err(e) = &result
-            && !matches!(e, SignInError::ListRace | SignInError::Evicted)
+            && matches!(e, SignInError::ListRace | SignInError::Evicted)
             && self.enrolment_written()?
         {
             self.auth.clear();
-            return Ok(());
+            self.wipe()?;
+            return result;
         }
         if result
             .as_ref()
@@ -786,12 +789,34 @@ impl SignIn {
         self.establish().await?;
         let (instance_id, signer) = self.instance().await?;
         self.with_core(|c| c.instance_signer_key_pin(&instance_id, &signer))?;
-        self.http
+        match self
+            .http
             .call::<r::PutBackup>(&["1"], cbor_list_of_bytes(&state_sealed))
             .await
-            .map_err(|e| http_error(&e))?;
+        {
+            Ok(_) => {}
+            // An account an operator reset owes a factor, and the instance refuses its backups until one is set up:
+            // the state object stays unmarked, and the first ready past the forced set-up uploads it (ensure_backups).
+            Err(e) if refused(&e) == Some((403, "E_FACTOR_REQUIRED")) => return Ok(()),
+            Err(e) => return Err(http_error(&e)),
+        }
         self.with_core(|c| c.state_sealed_uploaded())?;
         Ok(())
+    }
+
+    /// controller.ts `wipe` after a list race or an eviction: the store this ceremony wrote goes (its key deleted from the
+    /// keychain, a crypto-erase, then its data dir), so the instance stays listed with an empty store and the next
+    /// sign-in enrols afresh.
+    fn wipe(&mut self) -> Result<(), SignInError> {
+        // The last handle of the core: dropping it closes the store before its files go.
+        self.core = None;
+        crate::instances::delete_instance_key(self.kc.as_ref(), &self.cfg)
+            .map_err(|e| SignInError::Store(e.to_string()))?;
+        match std::fs::remove_dir_all(&self.cfg.data_dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(SignInError::Store(e.to_string())),
+        }
     }
 
     /// session.ts `establish` for the device just listed: only an enrolled session (scope 0) is accepted.

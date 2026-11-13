@@ -35,7 +35,7 @@ use crate::state::{
     MessageId, TIMELINE_PAGE, UserId,
 };
 use crate::store::{StoreError, open_store};
-use crate::sync::api::{Api, CoreHandle, Identity, SessionError, try_core};
+use crate::sync::api::{Api, CoreHandle, Identity, SessionError, try_core, with_core};
 use crate::sync::removals::FeedFailure;
 use crate::sync::requests::SocketRequests;
 use crate::sync::{ConnectionEvent, Engine, ExpectedGroup, GroupRow, Membership, SyncHooks};
@@ -348,12 +348,25 @@ impl Client {
                         .get_instance()
                         .await
                         .map_err(|e| ClientError::Network(e.to_string()))?;
+                    // controller.ts `enterReady` (b) and (c), (d): the instance's signer key against the pin, then a
+                    // list this device has not published yet (a sign-in whose publish failed after the core wrote the
+                    // enrolment), then an enrolled session in place of the pending one it may still hold.
+                    check_instance_signer_pin(&core, &instance).await?;
+                    if !identity.list_published {
+                        publish_own_list(&api, &core, &user_id).await?;
+                    }
                     // controller.ts `enterReady`'s factor gate: an account that owes a second factor stops at
                     // factor setup, with no gateway (the instance refuses it until a factor is added).
                     let owed = factors_owed(&api).await.map_err(|e| match e.status {
                         0 => ClientError::Network(e.detail),
                         _ => ClientError::Sync(e.code),
                     })?;
+                    // controller.ts `keyPackagesOwed`: a device's first batch goes up before it is ready (before any
+                    // join), past the factor gate (an owed factor refuses it). The instance's own count decides, so a
+                    // device that already has its batch publishes nothing; a refusal is left to the ready's refill.
+                    if !owed {
+                        let _ = crate::account::top_up_key_packages(&core, &api).await;
+                    }
                     Ok::<_, ClientError>((instance, owed))
                 })
             })
@@ -879,6 +892,48 @@ async fn guarded<T>(
             Err(ClientError::Stopped)
         }
     }
+}
+
+/// controller.ts `checkInstanceSignerPin`: the instance's external-sender key, read over the device's authenticated
+/// session, must be the one this device pinned at enrolment (the core writes only a missing pin, as for a store
+/// enrolled before the check existed, and refuses a changed one or another instance). A refusal fails the start closed.
+pub(crate) async fn check_instance_signer_pin(
+    core: &CoreHandle,
+    instance: &crate::sync::api::InstanceInfo,
+) -> Result<(), ClientError> {
+    let (id, key) = (instance.instance_id, instance.external_sender_pub);
+    with_core(core, move |c| c.instance_signer_key_pin(&id, &key))
+        .await
+        .map_err(|e| ClientError::Sync(e.code.to_string()))
+}
+
+/// enrol.ts `publishDeviceList` for a store whose own list is not published yet, then session.ts `establish` for the
+/// enrolled session the list makes possible. A 409 is a list race (the sign-in starts over); a 401 is a revoked row.
+async fn publish_own_list(
+    api: &Api,
+    core: &CoreHandle,
+    user: &[u8; 16],
+) -> Result<(), ClientError> {
+    let body = with_core(core, |c| c.device_list_body())
+        .await
+        .map_err(|e| ClientError::Sync(e.code.to_string()))?;
+    match api.put_device_list(user, body).await {
+        Ok(()) => {}
+        Err(e) if e.status == 409 => return Err(ClientError::Sync("E_LIST_RACE".into())),
+        Err(e) if e.status == 401 => return Err(ClientError::Revoked),
+        Err(e) if e.status == 0 => return Err(ClientError::Network(e.detail)),
+        Err(e) => return Err(ClientError::Sync(e.code)),
+    }
+    with_core(core, |c| c.device_list_published())
+        .await
+        .map_err(|e| ClientError::Sync(e.code.to_string()))?;
+    api.establish().await.map_err(|e| match e {
+        SessionError::NoIdentity => ClientError::NoIdentity,
+        SessionError::Revoked | SessionError::Scope => ClientError::Revoked,
+        SessionError::Api(a) if a.status == 0 => ClientError::Network(a.detail),
+        SessionError::Api(a) => ClientError::Sync(a.code),
+        SessionError::Core(c) => ClientError::Sync(c),
+    })
 }
 
 /// routes.ts `getFactors`' `owed` (`GET /v1/auth/factors`, element 0): whether the account owes a second factor.
