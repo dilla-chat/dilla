@@ -557,6 +557,42 @@ pub async fn start(p: &Person) -> Client {
         .unwrap()
 }
 
+/// A new device of `person`'s account, signed in as the app does on a fresh install (password, authenticator code,
+/// recovery key), on a data root of its own under `target/` (named by `tag`), and started. Answers the client and the
+/// data root (the caller's to delete).
+pub async fn second_device(host: &Host, person: &mut Person, tag: &str) -> (Client, PathBuf) {
+    use crate::signin::{Owed, SignIn};
+    let root = repo_root().join(format!(
+        "target/testing-client-{tag}-{}-second-{}",
+        person.username,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let cfg = Instances::load(&root)
+        .expect("an instance list")
+        .add(person.cfg.server.clone())
+        .expect("an instance");
+    let kc = Arc::new(MemoryKeychain::new());
+    let mut sign_in = SignIn::new(cfg.clone(), kc.clone()).expect("a sign-in");
+    let owed = sign_in
+        .login(&person.username, PASSWORD)
+        .await
+        .expect("the password");
+    assert_eq!(owed, Owed::Code);
+    let code = person.next_code(host);
+    sign_in.code(&code).await.expect("the code");
+    sign_in
+        .add_device(&person.recovery_key)
+        .await
+        .expect("the recovery key");
+    drop(sign_in);
+    let client =
+        tokio::task::spawn_blocking(move || Client::start(cfg, kc).expect("the device starts"))
+            .await
+            .unwrap();
+    (client, root)
+}
+
 /// Waits (at most `within`) until `pred` holds for the client's state, answering that state.
 pub async fn wait_for(
     client: &Client,

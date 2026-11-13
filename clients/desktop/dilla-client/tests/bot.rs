@@ -435,3 +435,179 @@ async fn enter_to_first_answer_is_within_rtt_plus_100ms_at_p95() {
     );
     a.stop();
 }
+
+/// e2e/web/bot-runtime.spec.ts "literal music command text never executes through the native runtime": with the Music
+/// capability on and a member in the channel, `//music` and `//play northern lights` post their text literally; the Bot
+/// runs neither (no Bot post on either device, no private row).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn literal_music_command_text_never_executes() {
+    let (_host, pa, pb, c) = two_people_with_bot("t28-literal").await;
+    let a = start(&pa).await;
+    let channel = general(&a, c).await;
+    a.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("a opens general");
+    enable_bot(&a, c, cap::MUSIC).await;
+    let b = start(&pb).await;
+    general(&b, c).await;
+    b.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("b joins general");
+    let here = Conversation {
+        channel,
+        thread: None,
+    };
+    let community = Some(CommunityId(c));
+    for draft in ["//music", "//play northern lights"] {
+        let RunOutcome::Post(text) = a.bot().run(here, community, draft) else {
+            panic!("{draft} posts its text");
+        };
+        assert_eq!(text, &draft[1..]);
+        a.send_text(channel, text).await.unwrap().expect("queued");
+    }
+    let want = vec!["/music".to_owned(), "/play northern lights".to_owned()];
+    wait_for(&b, Duration::from_secs(30), "b to see both literals", |s| {
+        bodies(s, channel) == want
+    })
+    .await;
+    // Long enough for a Bot that had taken either as a command to answer in the channel.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    for (who, client) in [("a", &a), ("b", &b)] {
+        let s = client.state().borrow().clone();
+        let items = &s.timelines[&channel].items;
+        assert!(
+            items.iter().all(|i| !i.bot),
+            "{who}: no Bot post: {:?}",
+            bodies(&s, channel)
+        );
+        assert_eq!(bodies(&s, channel), want, "{who}");
+        assert!(s.bot.private_results.is_empty(), "{who}: no private row");
+    }
+    a.stop();
+    b.stop();
+}
+
+/// e2e/web/slash-commands.spec.ts "reminders sync across devices and remain due after Bot restart and reload": a
+/// reminder set on one device is listed on the account's second device; across a Bot restart, and with the first device
+/// gone, it falls due; the first device restarted lists it due; dismissed on the second, the first no longer lists it.
+/// With the Bot stopped, a restarted device holds no answer of the sealed command and runs nothing again (the reminder
+/// lives in the Bot alone).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn reminders_sync_across_devices_and_stay_due_after_a_bot_restart() {
+    use dilla_client::testing::host::bot::wait_for_catalog;
+    use dilla_client::testing::host::second_device;
+    let (host, mut pa, _pb, c) = two_people_with_bot("t28-remind2").await;
+    let a = start(&pa).await;
+    let channel = general(&a, c).await;
+    a.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("a opens general");
+    let community = CommunityId(c);
+    enable_bot(&a, c, cap::REMINDERS).await;
+    let here = Conversation {
+        channel,
+        thread: None,
+    };
+    let text = format!("cross-device reminder {}", std::process::id());
+    let row = run_bot(
+        &a,
+        here,
+        community,
+        &format!("/remind when:1m text:\"{text}\""),
+    );
+    let answer = settled(&a, here, row, Duration::from_secs(90)).await;
+    assert_eq!(answer.status, ResultStatus::Success, "{answer:?}");
+    assert!(
+        answer.text.starts_with("Saved. I’ll remind you ")
+            && answer.text.ends_with(&format!(": {text}")),
+        "{answer:?}"
+    );
+
+    let (a2, root2) = second_device(&host, &mut pa, "t28-remind2").await;
+    wait_for_catalog(&a2, c, Duration::from_secs(90)).await;
+    let listed = a2.utilities().refresh_reminders(community).await.unwrap();
+    assert!(
+        listed.iter().any(|r| r.text == text),
+        "the second device lists it: {listed:?}"
+    );
+
+    let host = tokio::task::spawn_blocking(move || {
+        host.restart_bot();
+        host
+    })
+    .await
+    .unwrap();
+    a.stop();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let due = loop {
+        let all = a2
+            .utilities()
+            .refresh_reminders(community)
+            .await
+            .unwrap_or_default();
+        if let Some(r) = all
+            .iter()
+            .find(|r| r.text == text && r.state == ReminderStatus::Due)
+        {
+            break r.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reminder never fell due: {all:?}"
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    };
+
+    let a = start(&pa).await;
+    wait_for_catalog(&a, c, Duration::from_secs(90)).await;
+    let first = a.utilities().refresh_reminders(community).await.unwrap();
+    assert!(
+        first
+            .iter()
+            .any(|r| r.text == text && r.state == ReminderStatus::Due),
+        "the restarted first device lists it due: {first:?}"
+    );
+    a2.utilities()
+        .settle_reminder(community, due.id, true)
+        .await
+        .unwrap();
+    let first = a.utilities().refresh_reminders(community).await.unwrap();
+    assert!(
+        first.iter().all(|r| r.text != text),
+        "dismissed on the second device, gone on the first: {first:?}"
+    );
+
+    // With the Bot stopped, a restarted device holds no answer of the sealed command and runs nothing again.
+    let host = tokio::task::spawn_blocking(move || {
+        host.stop_bot();
+        host
+    })
+    .await
+    .unwrap();
+    a.stop();
+    let a = start(&pa).await;
+    wait_for(&a, Duration::from_secs(30), "a to sync again", |s| {
+        s.channel(channel).is_some()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let s = a.state().borrow().clone();
+    assert!(
+        s.bot.private_results.is_empty(),
+        "no answer is kept across a restart"
+    );
+    assert!(
+        bodies(&s, channel).is_empty(),
+        "nothing of the command reached the channel"
+    );
+    a.stop();
+    a2.stop();
+    drop(host);
+    let _ = std::fs::remove_dir_all(root2);
+}
