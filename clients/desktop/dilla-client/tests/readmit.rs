@@ -9,8 +9,12 @@ mod world;
 
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use dilla_client::Client;
-use dilla_client::state::{ChannelGroupState, ChannelId, CommunityId};
+use dilla_client::state::{AppState, ChannelGroupState, ChannelId, CommunityId, TimelineItemState};
+use dilla_client::store::open_store;
+use dilla_client::sync::GroupRow;
 use world::*;
 
 async fn sends(client: &Client, channel: ChannelId, body: &str) {
@@ -85,8 +89,8 @@ async fn holds_leaf(host: &Host, p: &Person, group: [u8; 16]) -> bool {
     status == 200
 }
 
-/// Alice and Bob in one channel's group, a message read; then Alice kicks Bob, his client loses the server and Alice's
-/// client commits the Remove of his leaf. Answers `(host, alice, bob, a, b, community, channel, group)`.
+/// Alice and Bob in one channel's group, a message of Bob's read by Alice; then Alice kicks Bob, his client loses the
+/// server and Alice's client commits the Remove of his leaf. Answers `(host, alice, bob, a, b, community, channel, group)`.
 async fn kicked(
     tag: &str,
 ) -> (
@@ -106,11 +110,11 @@ async fn kicked(
     let ch = general(&a, c).await;
     general(&b, c).await;
     both_in(&a, &b, ch).await;
-    sends(&a, ch, "before the kick").await;
+    sends(&b, ch, "before the kick").await;
     receives(
-        &b,
+        &a,
         ch,
-        alice.user_id,
+        bob.user_id,
         "before the kick",
         Duration::from_secs(30),
     )
@@ -227,9 +231,14 @@ async fn a_resync_refused_while_kicked_is_tried_again_on_readmission() {
     let (host, alice, bob, a, b, c, ch, group) = kicked("readmit-ready").await;
     stop(b).await;
     let b = start(&bob).await;
-    // The ready's catch-up meets the 404 of the lost leaf and its resync is refused (Bob is not a member). Nothing in
-    // the state shows a channel of a server Bob is not in, so the test gives the ready time to get there.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // The ready's catch-up meets the 404 of the lost leaf and its resync is refused (Bob is not a member). No state
+    // shows a channel of a server Bob is not in, so the engine's test probe says when: readmission comes only after.
+    poll(
+        Duration::from_secs(30),
+        "the ready's resync refused",
+        || async { (dilla_client::sync::probes::resyncs_refused(group) >= 1).then_some(()) },
+    )
+    .await;
     assert!(
         !holds_leaf(&host, &bob, group).await,
         "the resync was refused"
@@ -252,4 +261,96 @@ async fn a_resync_refused_while_kicked_is_tried_again_on_readmission() {
     )
     .await;
     active(&b, ch).await;
+}
+
+const MODERATED: &str = "before the kick";
+
+/// Alice's signed removal of `seq` in `group` (removals.rs `remove`): the proof signed from her store (her client is
+/// stopped), posted over a socket of her sign-up session. Answers the HTTP status.
+async fn remove(host: &Host, alice: &Person, group: [u8; 16], seq: u64) -> u16 {
+    let now = host_now(host).await;
+    let body = {
+        let mut core = open_store(&alice.cfg, alice.kc.as_ref()).unwrap();
+        let rows = GroupRow::decode_all(&core.groups().unwrap()).unwrap();
+        assert!(rows.iter().any(|r| r.group_id == group && r.state == 2));
+        let mut request = [0u8; 16];
+        getrandom::fill(&mut request).unwrap();
+        core.sign_removal(&request, &group, seq, now + 30, now)
+            .expect("signed removal")
+    };
+    let socket = Socket::open(host, alice).await;
+    let (status, _) = socket
+        .request(
+            "POST",
+            format!("/v1/groups/{}/moderation/removals", hex(&group)),
+            body,
+        )
+        .await;
+    status
+}
+
+fn shows_moderated(s: &AppState) -> bool {
+    format!("{s:?}").contains(MODERATED)
+}
+
+/// Jonas (2026-11-13), stricter than the web: history stays hidden until the removal feed is read. A message a
+/// moderator removed while Bob was kicked is still in his store; once he is admitted again, no snapshot shows its
+/// plaintext, and the channel's timeline after the rejoin shows its tombstone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_message_removed_while_kicked_never_shows_after_readmission() {
+    let (host, alice, bob, a, b, c, ch, group) = kicked("readmit-removed").await;
+    // The seq of the message Bob wrote before the kick (gone from his state with the server). Its author is Bob: a
+    // moderator removes only a message of someone below them in the hierarchy.
+    let seq = {
+        let s = wait_for(&a, Duration::from_secs(20), "alice's message stored", |s| {
+            s.timelines.get(&ch).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .any(|i| i.body == MODERATED && i.seq.is_some())
+            })
+        })
+        .await;
+        s.timelines[&ch]
+            .items
+            .iter()
+            .find(|i| i.body == MODERATED)
+            .and_then(|i| i.seq)
+            .expect("alice holds the message")
+    };
+    assert!(!shows_moderated(&b.state().borrow()), "bob lost the server");
+    stop(a).await;
+    assert_eq!(
+        remove(&host, &alice, group, seq).await,
+        200,
+        "the removal is accepted"
+    );
+
+    let mut snapshots = b.snapshots();
+    readmit(&host, &alice, &bob, c).await;
+    b.refresh();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    let mut seen = 0;
+    loop {
+        let s: Arc<AppState> = tokio::time::timeout_at(deadline, snapshots.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no tombstone after {seen} snapshots"))
+            .unwrap();
+        seen += 1;
+        assert!(
+            !shows_moderated(&s),
+            "snapshot {seen} shows the removed message"
+        );
+        if s.timelines.get(&ch).is_some_and(|t| {
+            t.items
+                .iter()
+                .any(|i| i.seq == Some(seq) && i.state == TimelineItemState::Deleted)
+        }) {
+            break;
+        }
+    }
+    assert!(
+        holds_leaf(&host, &bob, group).await,
+        "bob rejoined the group"
+    );
 }

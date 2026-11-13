@@ -1546,6 +1546,8 @@ impl Engine {
                 true
             }
             Err(e) => {
+                #[cfg(feature = "testing")]
+                probes::resync_refused(g);
                 // A refusal before the join leaves an active row in state 2; it is never discarded.
                 if self.state_of(g).await == Some(1) {
                     let _ = with_core(&self.core, move |c| c.group_discard(&g)).await;
@@ -2447,6 +2449,36 @@ pub enum Source {
     Frame,
     CatchUp,
     Commit,
+}
+
+/// Test-only probes (feature `testing`): what the engine did that no published state shows.
+#[cfg(feature = "testing")]
+pub mod probes {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static REFUSED: Mutex<Option<HashMap<[u8; 16], u32>>> = Mutex::new(None);
+
+    fn refused() -> std::sync::MutexGuard<'static, Option<HashMap<[u8; 16], u32>>> {
+        REFUSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn resync_refused(group: [u8; 16]) {
+        *refused()
+            .get_or_insert_with(HashMap::new)
+            .entry(group)
+            .or_default() += 1;
+    }
+
+    /// How many resyncs of `group` were refused so far, in this process.
+    pub fn resyncs_refused(group: [u8; 16]) -> u32 {
+        refused()
+            .as_ref()
+            .and_then(|m| m.get(&group).copied())
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
