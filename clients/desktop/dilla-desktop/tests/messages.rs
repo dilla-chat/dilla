@@ -7,8 +7,6 @@
 //!   client test, `dilla-client/tests/messages.rs`);
 //! - the keyboard tests drive the automation build on a fixture (`--features automation`).
 
-use std::path::{Path, PathBuf};
-
 use dilla_client::state::{
     AppState, Channel, ChannelGroupState, ChannelId, Community, CommunityId, DeviceId, MessageId,
     TimelineItem, TimelineItemState, UserId,
@@ -17,16 +15,6 @@ use dilla_desktop::screens::messages::body;
 use dilla_desktop::screens::messages::composing::{self, Blocked};
 use dilla_desktop::screens::messages::markdown::{Body, Pill, parse_markdown};
 use dilla_desktop::screens::messages::slow;
-
-fn parity() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity")
-}
-
-fn fixture(name: &str) -> PathBuf {
-    parity()
-        .join("fixtures/messages")
-        .join(format!("{name}.json"))
-}
 
 fn channel(mode: u8, slowmode: u32) -> Channel {
     Channel {
@@ -152,11 +140,22 @@ fn a_body_is_drawn_from_its_markdown() {
 
 #[cfg(feature = "automation")]
 mod driven {
+    use std::path::{Path, PathBuf};
 
     use dilla_parity::Driver;
     use dilla_parity::screen::assert_screen;
 
-    use super::fixture;
+    // Only the automation build draws the fixtures, so the paths live with it (a build without the feature has no use
+    // for them: clippy's dead_code otherwise).
+    fn parity() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity")
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        parity()
+            .join("fixtures/messages")
+            .join(format!("{name}.json"))
+    }
 
     /// The parity of a fixture against its committed reference. A test with a reason after `ignore` is a measured gap
     /// that is not closed yet; its numbers are in the reason.
