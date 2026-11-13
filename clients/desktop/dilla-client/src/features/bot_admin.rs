@@ -1147,12 +1147,8 @@ fn webhook_address(
 ) -> Result<WebhookAddress, ClientError> {
     // Whatever text the decoded tree holds is wiped when it drops, on every path out of here, a value that is not the
     // expected array included.
-    let mut items = WipeValues(vec![
-        Value::decode(body).map_err(|_| decode_err(v::DecodeError("not CBOR")))?,
-    ]);
-    let Some(Value::Array(inner)) = items.0.pop() else {
-        return Err(decode_err(v::DecodeError("not an array")));
-    };
+    let top = Value::decode(body).map_err(|_| decode_err(v::DecodeError("not CBOR")))?;
+    let inner = array_or_wipe(top).map_err(|_| decode_err(v::DecodeError("not an array")))?;
     let mut items = WipeValues(inner);
     if items.0.len() != len {
         return Err(decode_err(v::DecodeError("an array of the wrong length")));
@@ -1173,6 +1169,18 @@ fn webhook_address(
         webhook_id,
         url: Zeroizing::new(url),
     })
+}
+
+/// The items of a decoded top-level array. Any other value is wiped before it is handed back (and dropped), so a body that
+/// is not the array it should be never frees its text unwiped.
+fn array_or_wipe(value: Value) -> Result<Vec<Value>, Value> {
+    match value {
+        Value::Array(items) => Ok(items),
+        mut other => {
+            wipe_values(std::slice::from_mut(&mut other));
+            Err(other)
+        }
+    }
 }
 
 /// A decoded array whose strings and byte strings are zeroized when it drops.
@@ -1492,6 +1500,23 @@ mod tests {
                 Value::Bytes(Vec::new()),
                 Value::Array(vec![Value::Text(String::new())])
             ]
+        );
+    }
+
+    #[test]
+    fn a_top_level_value_that_is_not_an_array_is_wiped_before_it_is_dropped() {
+        // The value handed back by the refusal is the one that is dropped: it must already be empty.
+        assert_eq!(
+            array_or_wipe(Value::Text("SECRET".into())).unwrap_err(),
+            Value::Text(String::new())
+        );
+        assert_eq!(
+            array_or_wipe(Value::Bytes(vec![7; 8])).unwrap_err(),
+            Value::Bytes(Vec::new())
+        );
+        assert_eq!(
+            array_or_wipe(Value::Array(vec![Value::Uint(1)])).unwrap(),
+            vec![Value::Uint(1)]
         );
     }
 
