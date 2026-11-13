@@ -1,0 +1,284 @@
+{
+  "name": "threads/count-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481830,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481700,
+        "body": "the weekly sync notes are in the wiki, shout if something is missing"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481712,
+        "body": "who takes the on-call next week?"
+      },
+      {
+        "key": "t1",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481732,
+        "body": "reply 1",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481734,
+        "body": "reply 2",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481736,
+        "body": "reply 3",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t4",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481738,
+        "body": "reply 4",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t5",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481740,
+        "body": "reply 5",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t6",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481742,
+        "body": "reply 6",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t7",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481744,
+        "body": "reply 7",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t8",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481746,
+        "body": "reply 8",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t9",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481748,
+        "body": "reply 9",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t10",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481750,
+        "body": "reply 10",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t11",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481752,
+        "body": "reply 11",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t12",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481754,
+        "body": "reply 12",
+        "thread_of": "m1"
+      },
+      {
+        "key": "u1",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481771,
+        "body": "answer 1",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u2",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481772,
+        "body": "answer 2",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481773,
+        "body": "answer 3",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u4",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481774,
+        "body": "answer 4",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u5",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481775,
+        "body": "answer 5",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u6",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481776,
+        "body": "answer 6",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u7",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481777,
+        "body": "answer 7",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u8",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481778,
+        "body": "answer 8",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u9",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481779,
+        "body": "answer 9",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u10",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481780,
+        "body": "answer 10",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u11",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481781,
+        "body": "answer 11",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u12",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481782,
+        "body": "answer 12",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u13",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481783,
+        "body": "answer 13",
+        "thread_of": "m2"
+      },
+      {
+        "key": "u14",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481784,
+        "body": "answer 14",
+        "thread_of": "m2"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481820,
+        "body": "I can take it"
+      }
+    ]
+  },
+  "steps": []
+}

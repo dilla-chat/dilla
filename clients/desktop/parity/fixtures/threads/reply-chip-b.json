@@ -1,0 +1,92 @@
+{
+  "name": "threads/reply-chip-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481700,
+        "body": "the sealed-command retry fix is in review: it changes how the bot re-sends a command whose first attempt timed out on a flaky link, and it needs a second pair of eyes before merge"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481709,
+        "body": "on it, give me ten minutes"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481717,
+        "body": "thanks both. I will cut the release once it is merged and the e2e run on all three platforms is green again, so nobody needs to wait around for me",
+        "reply_to": "m1"
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481724,
+        "body": "ship it",
+        "reply_to": "m3"
+      },
+      {
+        "key": "m5",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "done"
+      }
+    ]
+  },
+  "steps": []
+}
