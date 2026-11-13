@@ -52,42 +52,39 @@ fn parity(name: &str) {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2021 % (on Task 8's shell)"]
+#[ignore = "parity after T6c: chrome 0.2375 % (half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_search_palette() {
     parity("palette");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: re-shoot (members pane default-open) 1.0264 % pixels"]
 fn parity_search_palette_b() {
     parity("palette-b");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2059 % (on Task 8's shell)"]
+#[ignore = "parity after T6c: chrome 0.2178 % (half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_search_results() {
     parity("results");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: re-shoot (members pane default-open) 1.0350 % pixels"]
 fn parity_search_results_b() {
     parity("results-b");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2519 % (on Task 8's shell)"]
+#[ignore = "parity after T6c: chrome 0.2459 % (half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_search_scope_settings() {
     parity("scope-settings");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: re-shoot (members pane default-open) 0.8446 % pixels"]
 fn parity_search_scope_settings_b() {
     parity("scope-settings-b");
 }

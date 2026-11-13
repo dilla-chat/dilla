@@ -172,25 +172,24 @@ mod driven {
 
     parity! {
         parity_messages_conversation_actions => "conversation-actions",
-            ignore "parity after T6c: shared: the toolbar lacks react, reply and thread (T10 and T11 fill slots::message_actions); chrome 0.243 % over 0.2 %";
+            ignore "parity after T6c: chrome 0.3094 % (the hover toolbar lacks react, reply and thread: T10 and T11 fill slots::message_actions; half-px snap: Chromium paints box edges at whole css px, half up)";
         parity_messages_conversation_actions_b => "conversation-actions-b",
-            ignore "parity after T6c: re-shoot (members pane default-open) 0.8187 % over 0.5 %";
+            ignore "parity after T6c: chrome 0.2528 % (half-px snap: Chromium paints box edges at whole css px, half up)";
         parity_messages_edit => "edit",
-            ignore "parity after T6c: T9 gap: 0.507 % over 0.5 % (the field's focus ring: the web shot is blurred, the GPUI editor holds the focus)";
+            ignore "parity after T6c: chrome 0.5841 % (half-px snap: Chromium paints box edges at whole css px, half up: the timeline floors its fractional row tops, the field and its foot sit 1 css px high)";
         parity_messages_edit_b => "edit-b",
-            ignore "parity after T6c: T9 gap: 0.994 % over 0.5 % (wrapped-line rows of the textarea and the focus ring)";
+            ignore "parity after T6c: 0.5528 % over 0.5 % (half-px snap: Chromium paints box edges at whole css px, half up, as edit)";
         parity_messages_mention => "mention",
-            ignore "parity after T6c: T9 gap: chrome 0.270 % over 0.2 % (the typed text and send button of the composer, thin text-edge differences)";
+            ignore "parity after T6c: chrome 0.2450 % (the send button is 1 css px wider: the ↵ glyph advance; half-px snap: Chromium paints box edges at whole css px, half up)";
         parity_messages_mention_b => "mention-b",
-            ignore "parity after T6c: T9 gap: chrome 0.367 % over 0.2 % (as the mention pair)";
+            ignore "parity after T6c: chrome 0.3710 % (as mention)";
         parity_messages_code_block => "code-block",
-            ignore "parity after T6c: T9 gap: 0.646 % over 0.5 % (code card and inline spans: sub-pixel text positions)";
+            ignore "parity after T6c: 0.6577 % over 0.5 % (code card and inline spans: sub-pixel text positions)";
         parity_messages_code_block_b => "code-block-b",
-            ignore "parity after T6c: T9 gap: 0.968 % over 0.5 % (as the code-block pair; json and sh cards)";
+            ignore "parity after T6c: 0.9297 % over 0.5 % (as code-block; json and sh cards)";
         parity_messages_slow_mode => "slow-mode",
-            ignore "parity after T6c: re-shoot (members pane default-open) 0.5382 % over 0.5 %";
-        parity_messages_slow_mode_b => "slow-mode-b",
-            ignore "parity after T6c: re-shoot (members pane default-open) 0.8050 % over 0.5 %";
+            ignore "parity after T6c: chrome 0.2141 % (half-px snap: Chromium paints box edges at whole css px, half up)";
+        parity_messages_slow_mode_b => "slow-mode-b";
     }
 
     fn launch(name: &str) -> Driver {

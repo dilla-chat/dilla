@@ -44,42 +44,41 @@ fn parity(name: &str) {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome gate 0.2 %, measured 0.318 % (composer order fixed at merge)"]
+#[ignore = "parity after T6c: 0.9955 % over 0.5 % (reaction chips: rows and chip boxes 1-2 px off)"]
 fn parity_reactions_bar() {
     parity("bar");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: passes with the composer order fixed; the placeholder smile fails it on this branch (composer order fixed at merge)"]
+#[ignore = "parity after T6c: 1.0183 % over 0.5 % (as bar)"]
 fn parity_reactions_bar_b() {
     parity("bar-b");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: gate 0.5 %, measured 0.543 % (composer order fixed at merge)"]
+#[ignore = "parity after T6c: 0.5632 % over 0.5 % (reaction chips wrap to another row split)"]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: gate 0.5 %, measured 0.555 % (composer order fixed at merge)"]
+#[ignore = "parity after T6c: 0.6203 % over 0.5 % (as many-wrapping)"]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome gate 0.2 %, measured 0.47 % (composer order fixed at merge)"]
+#[ignore = "parity after T6c: chrome 0.5055 % (the picker grid; half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: passes with the composer order fixed; the placeholder smile fails it on this branch (composer order fixed at merge)"]
 fn parity_reactions_emoji_grid_b() {
     parity("emoji-grid-b");
 }
