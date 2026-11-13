@@ -52,6 +52,9 @@ const ROW_TOP: f32 = 7.0;
 const ROW_BOTTOM: f32 = 3.0;
 const FOLLOW_PAD: f32 = 1.0;
 const GUTTER_TOP: f32 = 18.0;
+/// MessageRow.css `data-reply`: a reply's avatar moves 20px down (`margin-top: 1.25rem`), and so does its gutter's time
+/// (`padding-top: 2.375rem`, the 18px plus 20px).
+const REPLY_AVATAR_SHIFT: f32 = 20.0;
 /// The row grid's 1px gap, and the empty attachment slot's 4px margin (`0.25rem`) every row keeps but the log's last.
 const MAIN_GAP: f32 = 1.0;
 const ATTACHMENTS_MARGIN: f32 = 4.0;
@@ -96,6 +99,9 @@ struct Shown<'a> {
     /// What other areas draw under the body ([`slots::message_extras`]), and its height.
     extras: Option<AnyElement>,
     extras_height: f32,
+    /// What another area draws above the head (the reply line, [`slots::message_before_head`]), and its height.
+    before: Option<AnyElement>,
+    before_height: f32,
     /// The row's hover group.
     group: String,
     /// The row's place in the log: its automation ids are numbered by it.
@@ -107,6 +113,7 @@ impl Shown<'_> {
         RowShape {
             grouped: self.grouped,
             last: self.last,
+            before: before_shift(self.before_height),
             body: self.body.height(),
             extras: self.extras_height,
             divider: self.divider.is_some(),
@@ -154,6 +161,8 @@ impl Plan {
 struct RowShape {
     grouped: bool,
     last: bool,
+    /// How far the head and the body move down for what is drawn above the head ([`before_shift`]).
+    before: f32,
     /// The height of the row's body (its text, code cards and quotes, or the editor).
     body: f32,
     /// The height of the row's extras under its body (0 when no area draws any).
@@ -171,7 +180,7 @@ fn row_tops(start: f32, rows: &[RowShape]) -> (Vec<f32>, f32) {
             y += divider_height();
         }
         tops.push(y);
-        y += row_height(r.grouped, r.last, r.body, r.extras);
+        y += row_height(r.grouped, r.last, r.before, r.body, r.extras);
     }
     (tops, y)
 }
@@ -317,10 +326,17 @@ fn attachments_slot(last: bool) -> f32 {
     }
 }
 
-/// The height Chromium gives a row with a body `body` px high and `extras` px of other areas' parts under the body.
-fn row_height(grouped: bool, last: bool, body: f32, extras: f32) -> f32 {
+/// How far the head and the body move down for a part `height` px high above the head (the reply line, `order: -1` in
+/// the row's grid): its height and the grid's 1px gap; nothing without one.
+fn before_shift(height: f32) -> f32 {
+    if height > 0.0 { height + MAIN_GAP } else { 0.0 }
+}
+
+/// The height Chromium gives a row with a body `body` px high, `extras` px of other areas' parts under the body and
+/// `before` px (a [`before_shift`]) above its head.
+fn row_height(grouped: bool, last: bool, before: f32, body: f32, extras: f32) -> f32 {
     let slot = attachments_slot(last);
-    let body = body + extras;
+    let body = before + body + extras;
     if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
     } else {
@@ -481,20 +497,38 @@ fn draw_row(
     let item = shown.item;
     let local = top - base;
     // The body's box sits on a whole pixel; its lines keep the CSS position's fraction.
+    let shift = before_shift(shown.before_height);
     let frac = {
-        let at = local + body_offset(shown.grouped);
+        let at = local + shift + body_offset(shown.grouped);
         at - at.floor()
     };
     let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
-    let height = row_height(shown.grouped, shown.last, laid.height, shown.extras_height);
+    let height = row_height(
+        shown.grouped,
+        shown.last,
+        shift,
+        laid.height,
+        shown.extras_height,
+    );
     let mut placer = Placer { out: Vec::new() };
+    // The reply line (11) sits where the head would, and the head, the avatar and the gutter move down (`data-reply`).
+    let avatar_shift = if shown.before.is_some() {
+        REPLY_AVATAR_SHIFT
+    } else {
+        0.0
+    };
+    if let Some(before) = shown.before {
+        let top = local + if shown.grouped { FOLLOW_PAD } else { ROW_TOP };
+        placer.block(CONTENT_X, top, before);
+    }
     let meta_color = if item.mention {
         color::FG_2
     } else {
         color::FG_3
     };
     if !shown.grouped {
-        let head = local + ROW_TOP;
+        let head = local + ROW_TOP + shift;
+        let row_top = local + ROW_TOP + avatar_shift;
         let name = author(cx_row.state, cx_row.members, item);
         let zone = |secs: i64| zone_of(cx_row.clock, secs);
         let time = format::time_in(item.ts, &zone);
@@ -503,11 +537,11 @@ fn draw_row(
         placer.line(
             line(time, text::META, meta_line(), color::FG_QUIET),
             GUTTER - time_width,
-            head + GUTTER_TOP,
+            row_top + GUTTER_TOP,
         );
         placer.block(
             GUTTER + COLUMN_GAP,
-            head,
+            row_top,
             Avatar::new(
                 gpui::SharedString::from(format!("avatar-{}", item.key)),
                 name.clone(),
@@ -558,7 +592,7 @@ fn draw_row(
             x += w + HEAD_GAP;
         }
     }
-    let body_top = local + body_offset(shown.grouped);
+    let body_top = local + shift + body_offset(shown.grouped);
     let content_w = cx_row.width - CONTENT_X - ROW_RIGHT;
     let body_end = body_top + laid.height;
     placer.out.push(
@@ -673,6 +707,8 @@ pub fn render(
             _ => color::FG_3,
         };
         let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
+        let (before, before_height) = slots::message_before_head(item, ctx, window, cx)
+            .map_or((None, 0.0), |b| (Some(b.element), b.height));
         let editing = editing_key.as_deref() == Some(item.key.as_str());
         let laid = if editing {
             let current = ui
@@ -717,6 +753,8 @@ pub fn render(
             body: laid,
             extras: Some(extras),
             extras_height,
+            before,
+            before_height,
             group: format!("message-row-{}", item.key),
 
             index: n,
@@ -736,6 +774,13 @@ pub fn render(
     y += placer.welcome(y, title, body_lines);
     let (tops, _) = row_tops(y, &shapes);
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
+    // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.
+    if let Some(msg) = crate::screens::threads::take_jump(cx)
+        && let Some(found) = items.iter().find(|i| i.msg_id == Some(msg))
+    {
+        let key = found.key.clone();
+        ui.update(cx, |u, cx| u.jump_to(key, cx));
+    }
     let jump = ui.update(cx, |u, _| u.jump.take());
     let jumped = jump
         .as_deref()
@@ -769,7 +814,14 @@ pub fn render(
         if let Some(label) = s.divider.clone() {
             placer.divider(top - divider_height(), width, label);
         }
-        let bottom = top + row_height(s.grouped, s.last, s.body.height(), s.extras_height);
+        let bottom = top
+            + row_height(
+                s.grouped,
+                s.last,
+                before_shift(s.before_height),
+                s.body.height(),
+                s.extras_height,
+            );
         let editing = matches!(s.body, Plan::Editor(_));
         if viewport > 0.0 && !editing && (bottom < from || top > to) {
             continue;
@@ -911,9 +963,9 @@ mod tests {
     fn heights_come_from_the_css() {
         // The reference's DOM: 54.89 for a row, 49.89 for the log's last row, 75.03 for two lines; 131 for the welcome.
         let lh = body_line();
-        assert!((row_height(false, false, lh, 0.0) - 54.890_625).abs() < 1e-4);
-        assert!((row_height(false, true, lh, 0.0) - 49.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, 2.0 * lh, 0.0) - 75.031_25).abs() < 1e-4);
+        assert!((row_height(false, false, 0.0, lh, 0.0) - 54.890_625).abs() < 1e-4);
+        assert!((row_height(false, true, 0.0, lh, 0.0) - 49.890_625).abs() < 1e-4);
+        assert!((row_height(false, false, 0.0, 2.0 * lh, 0.0) - 75.031_25).abs() < 1e-4);
         assert_eq!(welcome_height(1, 1), 131.0);
         assert_eq!(divider_height(), 23.0);
     }
@@ -989,6 +1041,7 @@ mod tests {
         let row = |extras: f32, last: bool| RowShape {
             grouped: false,
             last,
+            before: 0.0,
             body: lh,
             extras,
             divider: false,
@@ -996,6 +1049,7 @@ mod tests {
         let follow = RowShape {
             grouped: true,
             last: true,
+            before: 0.0,
             body: 2.0 * lh,
             extras: 0.0,
             divider: true,
@@ -1018,6 +1072,7 @@ mod tests {
         let one = RowShape {
             grouped: false,
             last: false,
+            before: 0.0,
             body: lh,
             extras: 0.0,
             divider: false,

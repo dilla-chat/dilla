@@ -205,6 +205,8 @@ async fn main() {
     let mut order: Vec<&spec::MessageSpec> = f.world.messages.iter().collect();
     order.sort_by_key(|m| m.ts);
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut posted: std::collections::HashMap<String, dilla_client::state::MessageId> =
+        Default::default();
     for m in order {
         let at = m.ts + shift;
         let now = read_clock(&host);
@@ -219,12 +221,17 @@ async fn main() {
         }
         let channel = channel_real(&m.channel);
         let client = &clients.iter().find(|(id, _)| *id == m.sender).unwrap().1;
-        client
-            .send_text(channel, m.body.clone())
-            .await
-            .unwrap()
-            .expect("queued");
+        let sent = match seed::post(m, client, channel, &posted).await {
+            Some(sent) => sent,
+            None => client.send_text(channel, m.body.clone()).await.unwrap(),
+        };
+        posted.insert(m.key.clone(), sent.expect("queued"));
         let n = counts.entry(&m.channel).or_default();
+        // A thread reply is not a row of the channel: it is not counted, and the clients get a moment to hold it.
+        if m.thread_of.is_some() {
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            continue;
+        }
         *n += 1;
         let want = *n;
         // Every client holds the message before the next one goes out, so the order is the fixture's.

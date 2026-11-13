@@ -96,9 +96,9 @@ pub struct Extra {
     pub height: f32,
 }
 
-/// Under a message's body: the reply chip (11), the attachments (12), the poll card (20), the reactions (10), the thread
-/// count (11), in this order, stacked without gaps. Answers the stack and its height (the sum of the parts'; 0 when
-/// every guest has nothing), which the timeline adds to the row's height.
+/// Under a message's body (after its attachments slot): the attachments (12), the poll card (20), the reactions (10),
+/// the thread count (11), in this order, stacked without gaps. Answers the stack and its height (the sum of the parts';
+/// 0 when every guest has nothing), which the timeline adds to the row's height.
 pub fn message_extras(
     item: &TimelineItem,
     ctx: &SlotCx,
@@ -106,13 +106,23 @@ pub fn message_extras(
     cx: &mut App,
 ) -> (AnyElement, f32) {
     let parts = [
-        threads::reply_chip(item, ctx, window, cx),
         attachments::attachment_cards(item, ctx, window, cx),
         commands::poll_card(item, ctx, window, cx),
         reactions::reaction_bar(item, ctx, window, cx),
         threads::thread_count(item, ctx, window, cx),
     ];
     stack(parts.into_iter().flatten())
+}
+
+/// Above a message's head (the row's grid `order: -1`): the reply line (11). The timeline moves the head, the body and
+/// what follows down by its height and the grid's gap, and the avatar and the gutter's time by `data-reply`'s 20px.
+pub fn message_before_head(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    threads::reply_chip(item, ctx, window, cx)
 }
 
 /// [`Extra`]s stacked in order, each in a box of its height, and the total height.
@@ -130,9 +140,9 @@ pub fn stack(parts: impl IntoIterator<Item = Extra>) -> (AnyElement, f32) {
 
 /// The message toolbar's and context menu's entries: the message's own (9), then reply and thread (11), then react
 /// (10).
-pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
+pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> {
     let mut out = messages::message_actions(item);
-    out.extend(threads::message_actions(item));
+    out.extend(threads::message_actions(item, ctx));
     out.extend(reactions::message_actions(item));
     out
 }

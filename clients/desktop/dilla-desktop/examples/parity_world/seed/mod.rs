@@ -16,6 +16,8 @@ mod reactions;
 mod roles;
 mod threads;
 
+pub use threads::post;
+
 /// What this world cannot seed yet, by facet; empty when it can seed the fixture.
 pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
     let mut out = Vec::new();

@@ -75,7 +75,6 @@ fn ui(cx: &mut App) -> &mut Ui {
 
 /// Remembers `ctx` for the hooks that get none and asks the client to keep `ctx.channel`'s thread summaries.
 fn remember(ctx: &SlotCx, cx: &mut App) {
-    LAST.with(|last| *last.borrow_mut() = Some(ctx.clone()));
     let mut change = None;
     {
         let u = ui(cx);
@@ -98,19 +97,31 @@ fn remember(ctx: &SlotCx, cx: &mut App) {
     }
 }
 
-thread_local! {
-    /// The last view a hook was drawn for, for the hook that gets no `App` (`message_actions`).
-    static LAST: std::cell::RefCell<Option<SlotCx>> = const { std::cell::RefCell::new(None) };
+/// The shell's view, each time it draws (the shell calls it before its slots): the pane, the header's toggle and the
+/// reply keys read this one, not whichever hook drew last.
+pub fn sync(ctx: &SlotCx, cx: &mut App) {
+    remember(ctx, cx);
 }
 
-/// Whether the viewer may send in the channel the log shows: MessageItem.tsx `canSend`.
-fn can_send_here() -> bool {
-    LAST.with(|last| {
-        last.borrow()
-            .as_ref()
-            .and_then(|ctx| ctx.channel.map(|c| ctx.state.threads.can_send(c)))
-            .unwrap_or(true)
-    })
+/// Whether a thread is open in `ctx`'s view: the header draws its Threads button pressed.
+pub fn is_open(ctx: &SlotCx, cx: &mut App) -> bool {
+    open_of(ctx, cx).is_some()
+}
+
+/// Escape in the channel composer: the reply aimed at `ctx`'s channel is cancelled. True when there was one.
+pub fn cancel_reply(ctx: &SlotCx, cx: &mut App) -> bool {
+    let aimed = replying_of(ctx, cx).is_some_and(|t| Some(t.channel) == ctx.channel);
+    if aimed {
+        set_replying(None, ctx, cx);
+    }
+    aimed
+}
+
+/// Whether the viewer may send in `ctx`'s channel: MessageItem.tsx `canSend` (unknown bits allow, as the web does).
+fn can_send_in(ctx: &SlotCx) -> bool {
+    ctx.channel
+        .map(|c| ctx.state.threads.can_send(c))
+        .unwrap_or(true)
 }
 
 /// Whether the message a reply names is no longer readable here (deleted, removed, cannot be read): the bar must not keep
@@ -343,13 +354,13 @@ pub fn thread_count(
 }
 
 /// This area's entries in the message toolbar and context menu: reply, and open the thread (a reply in a thread has none).
-pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
+pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> {
     // MessageItem.tsx: reply and thread lead to the composer, so a reader who cannot send there is not offered them, and
     // only a stored, readable message (`state ok`, a seq) can be replied to or threaded.
     let (Some(msg_id), true, true) = (
         item.msg_id,
         item.state == TimelineItemState::Ok && item.seq.is_some(),
-        can_send_here(),
+        can_send_in(ctx),
     ) else {
         return Vec::new();
     };
@@ -360,7 +371,10 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
         icon: IconName::Reply,
         area: Area::Threads,
         run: Rc::new(move |ctx, _window, cx| {
-            let Some(channel) = ctx.channel else { return };
+            // The bits may have changed since the menu was drawn.
+            let Some(channel) = ctx.channel.filter(|_| can_send_in(ctx)) else {
+                return;
+            };
             set_replying(
                 Some(ReplyTarget {
                     channel,
@@ -379,7 +393,7 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
         icon: IconName::MessagesSquare,
         area: Area::Threads,
         run: Rc::new(move |ctx, _window, cx| {
-            if let Some(channel) = ctx.channel {
+            if let Some(channel) = ctx.channel.filter(|_| can_send_in(ctx)) {
                 open_thread(channel, msg_id, ctx, cx);
             }
         }),
@@ -469,7 +483,7 @@ mod tests {
     #[test]
     fn a_readable_message_offers_reply_and_thread_and_others_offer_nothing() {
         let ids = |i: &TimelineItem| {
-            message_actions(i)
+            message_actions(i, &SlotCx::default())
                 .iter()
                 .map(|a| a.id.to_string())
                 .collect::<Vec<_>>()
@@ -527,7 +541,7 @@ mod tests {
         let window = cx.add_empty_window();
         window.update(|window, cx| {
             assert!(reply_bar(&ctx, window, cx).is_none(), "no target, no bar");
-            let reply = &message_actions(&item(TimelineItemState::Ok, "two\nlines"))[0];
+            let reply = &message_actions(&item(TimelineItemState::Ok, "two\nlines"), &ctx)[0];
             (reply.run)(&ctx, window, cx);
             let target = replying_of(&ctx, cx).expect("aimed");
             assert_eq!(target.excerpt, "two lines");
@@ -580,23 +594,33 @@ mod tests {
     fn a_read_only_channel_offers_neither_action(cx: &mut TestAppContext) {
         use dilla_client::state::threads::SEND_MESSAGES;
         let window = cx.add_empty_window();
-        window.update(|_, cx| {
-            let ids = || {
-                message_actions(&item(TimelineItemState::Ok, "hi"))
+        window.update(|window, cx| {
+            let ids = |ctx: &SlotCx| {
+                message_actions(&item(TimelineItemState::Ok, "hi"), ctx)
                     .iter()
                     .map(|a| a.id.to_string())
                     .collect::<Vec<_>>()
             };
-            remember(&channel_ctx(Some(0)).0, cx);
-            assert!(ids().is_empty(), "no send bit: nothing to offer");
-            remember(&channel_ctx(Some(SEND_MESSAGES | 1)).0, cx);
-            assert_eq!(ids(), ["reply", "thread"]);
-            remember(&channel_ctx(None).0, cx);
+            assert!(
+                ids(&channel_ctx(Some(0)).0).is_empty(),
+                "no send bit: nothing to offer"
+            );
+            let (allowed, _) = channel_ctx(Some(SEND_MESSAGES | 1));
+            assert_eq!(ids(&allowed), ["reply", "thread"]);
             assert_eq!(
-                ids(),
+                ids(&channel_ctx(None).0),
                 ["reply", "thread"],
                 "unknown bits allow, as the web does"
             );
+            // A menu drawn while sending was allowed does nothing once the bit is gone (re-checked when chosen).
+            let reply = &message_actions(&item(TimelineItemState::Ok, "hi"), &allowed)[0];
+            let (denied, _) = channel_ctx(Some(0));
+            (reply.run)(&denied, window, cx);
+            assert_eq!(replying_of(&denied, cx), None);
+            // Escape cancels an aimed reply once.
+            (reply.run)(&allowed, window, cx);
+            assert!(cancel_reply(&allowed, cx));
+            assert!(!cancel_reply(&allowed, cx));
         });
     }
 
@@ -620,7 +644,7 @@ mod tests {
                 state: Arc::new(readable_state.clone()),
                 ..ctx
             };
-            let reply = &message_actions(&item(TimelineItemState::Ok, "secret words"))[0];
+            let reply = &message_actions(&item(TimelineItemState::Ok, "secret words"), &ctx)[0];
             (reply.run)(&ctx, window, cx);
             assert!(reply_bar(&ctx, window, cx).is_some());
             // The original is deleted: the bar goes, the target with it, and no send names it.

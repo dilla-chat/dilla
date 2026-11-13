@@ -1422,6 +1422,69 @@ pub fn members_of(members: &[crate::state::Member]) -> Vec<([u8; 16], Vec<RoleId
     out.into_iter().collect()
 }
 
+/// The viewer's resolved bits in `channel` (perm.ts `resolveChannel`), from the roles slice: what the threads area's
+/// `can_send` reads (`Threads::set_channel_bits`). `None` while any input is not read yet (the access, @everyone's id,
+/// the overwrites, the roles or the viewer's own roles): the threads area then allows, as the web does.
+pub fn viewer_channel_bits(state: &crate::state::AppState, channel: ChannelId) -> Option<u64> {
+    let ch = state.channel(channel)?;
+    let community = ch.community_id;
+    let me = state.account.user_id?;
+    let owner = state.communities.iter().find(|c| c.id == community)?.owner;
+    if owner == me {
+        return Some(u64::from(perm::PERM_ALL));
+    }
+    let access = state.roles.access.get(&community)?;
+    let everyone_id = access
+        .everyone_id
+        .filter(|_| access.loaded && access.overwrites_loaded)?;
+    let roles: Vec<perm::PermRole> = state
+        .roles
+        .roles
+        .get(&community)?
+        .iter()
+        .map(|r| perm::PermRole {
+            id: r.id,
+            position: r.position,
+            allow: r.allow,
+            deny: r.deny,
+        })
+        .collect();
+    let held = &state
+        .members
+        .get(&community)?
+        .iter()
+        .find(|m| m.user_id == me)?
+        .role_ids;
+    let overwrites: Vec<perm::PermOverwrite> = state
+        .roles
+        .overwrites
+        .get(&community)
+        .and_then(|o| o.get(&channel))
+        .map(|o| {
+            o.iter()
+                .map(|o| perm::PermOverwrite {
+                    kind: o.kind,
+                    target_id: o.target_id,
+                    allow: o.allow,
+                    deny: o.deny,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let bits = perm::resolve_channel(
+        &perm::PermInput {
+            owner: owner.0,
+            everyone_id,
+            roles: &roles,
+            held,
+        },
+        &overwrites,
+        me.0,
+        false,
+    );
+    Some(u64::from(bits))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -1495,5 +1558,93 @@ mod tests {
             .unwrap_err();
         assert_eq!((e.status, e.code.as_str()), (403, "E_FACTOR_REQUIRED"));
         assert_eq!(*seen.lock().unwrap(), ["E_FACTOR_REQUIRED"]);
+    }
+
+    /// Integration item (Task 11 + 14): the threads area's send gate is fed the viewer's resolved channel bits; while the
+    /// roles slice is not read the bits are unknown (`None`, which allows), and an overwrite denying send takes it away.
+    #[test]
+    fn the_viewer_s_channel_bits_come_from_the_roles_slice() {
+        use crate::features::roles::{perm, viewer_channel_bits};
+        use crate::state::channels::{Channel, ChannelGroupState, Community};
+        use crate::state::members::Member;
+        use crate::state::roles::{CommunityAccess, OverwriteSummary, RoleSummary};
+        use crate::state::{AppState, ChannelId, CommunityId, UserId};
+        let (community, channel, everyone) = (CommunityId([1; 16]), ChannelId([2; 16]), [3; 16]);
+        let me = UserId([4; 16]);
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: community,
+            name: "c".into(),
+            owner: UserId([9; 16]),
+            policy_version: 0,
+        });
+        s.channels.push(Channel {
+            id: channel,
+            community_id: community,
+            kind: 0,
+            mode: 0,
+            name: "news".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        });
+        s.members.insert(
+            community,
+            vec![Member {
+                user_id: me,
+                username: "me".into(),
+                display: String::new(),
+                kind: 0,
+                role_ids: Vec::new(),
+                status_msg: String::new(),
+                bio: String::new(),
+            }],
+        );
+        s.roles.roles.insert(
+            community,
+            vec![RoleSummary {
+                id: everyone,
+                name: "@everyone".into(),
+                color: 0,
+                position: 0,
+                hoist: false,
+                mentionable: false,
+                allow: perm::VIEW_CHANNEL | perm::SEND_MESSAGES,
+                deny: 0,
+                members: 1,
+            }],
+        );
+        assert_eq!(viewer_channel_bits(&s, channel), None, "no access read yet");
+        s.roles.access.insert(
+            community,
+            CommunityAccess {
+                loaded: true,
+                everyone_id: Some(everyone),
+                overwrites_loaded: true,
+                ..CommunityAccess::default()
+            },
+        );
+        let open = viewer_channel_bits(&s, channel).expect("read");
+        assert_ne!(open & u64::from(perm::SEND_MESSAGES), 0);
+        s.roles.overwrites.entry(community).or_default().insert(
+            channel,
+            vec![OverwriteSummary {
+                kind: 0,
+                target_id: everyone,
+                allow: 0,
+                deny: perm::SEND_MESSAGES,
+            }],
+        );
+        let shut = viewer_channel_bits(&s, channel).expect("read");
+        assert_eq!(
+            shut & u64::from(perm::SEND_MESSAGES),
+            0,
+            "the overwrite denies send"
+        );
+        assert_ne!(shut & u64::from(perm::VIEW_CHANNEL), 0);
     }
 }

@@ -511,10 +511,19 @@ impl ShellView {
         let (Some(client), Some(channel)) = (&self.client, self.channel) else {
             return;
         };
-        // A post with files goes through the attachments area (12), which confirms each file first. Otherwise a DM's
-        // message goes through the DM area (13), which opens the DM's group; a channel's through the client.
+        // A post with files goes through the attachments area (12), which confirms each file first; it carries no reply
+        // reference, so an aimed reply stays for the next send. A reply goes through the threads area (11), once.
+        // Otherwise a DM's message goes through the DM area (13), which opens the DM's group; a channel's through the
+        // client.
+        let reply = if files.is_empty() {
+            crate::screens::threads::take_reply(&self.slot_cx(), channel, cx)
+        } else {
+            None
+        };
         let queued = if !files.is_empty() {
             client.attachments().send(channel, text, files)
+        } else if let Some(to) = reply {
+            client.threads().reply(channel, to, text)
         } else if self.dm_view {
             client.dms().send_text(channel, text)
         } else {
@@ -623,14 +632,8 @@ impl ShellView {
     /// the panes (11, 14) keep their own state and are told.
     fn toggle_aside(&mut self, kind: AsideKind, cx: &mut Context<Self>) {
         match kind {
-            AsideKind::Threads => {
-                self.aside = if self.aside == Some(kind) {
-                    None
-                } else {
-                    Some(kind)
-                };
-                crate::screens::threads::toggle_pane(cx);
-            }
+            // The open thread is the threads area's (11): it closes it, or reopens the last one.
+            AsideKind::Threads => crate::screens::threads::toggle_pane(cx),
             // The member list's open state is the members area's (Task 14: open by default, as the web's).
             AsideKind::Members => crate::screens::members::toggle_pane(cx),
         }
@@ -810,6 +813,18 @@ impl Render for ShellView {
         let online = usize::from(state.connection.status == ConnectionStatus::Online);
         let (me, status) = self.me();
         let ctx = self.slot_cx();
+        // The threads area reads this shell's view (its pane, the header's toggle, the reply keys), and the Threads button
+        // is pressed while a thread is open (11).
+        crate::screens::threads::sync(&ctx, cx);
+        self.aside = crate::screens::threads::is_open(&ctx, cx).then_some(AsideKind::Threads);
+        // What the viewer may do in the open channel, from the roles slice (14), gates reply and thread (11); told only
+        // when it changes, so the publish does not loop.
+        if let (Some(client), Some(open)) = (&self.client, self.channel.filter(|_| !self.dm_view)) {
+            let bits = dilla_client::features::roles::viewer_channel_bits(&state, open);
+            if state.threads.channel_bits.get(&open).copied() != bits {
+                client.threads().set_channel_bits(open, bits);
+            }
+        }
         let shell = cx.entity().downgrade();
         let window_width = f32::from(window.viewport_size().width);
         let column = window_width >= COLUMN_FROM;

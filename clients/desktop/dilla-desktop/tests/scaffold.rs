@@ -43,7 +43,7 @@ fn stubs_change_nothing(cx: &mut TestAppContext) {
         channel: Some(ChannelId([2; 16])),
     };
     let ctx = SlotCx::default();
-    assert!(slots::message_actions(&item()).is_empty());
+    assert!(slots::message_actions(&item(), &ctx).is_empty());
     let window = cx.add_empty_window();
     window.update(|window, cx| {
         assert!(slots::composer_popup(&ctx, window, cx).is_none());

@@ -315,8 +315,12 @@ pub(crate) fn build_timeline(
         });
     }
     for row in outbox {
-        // An edit, delete, reaction or pin is never an item of its own.
-        if row.kind != 0 || stored.contains(&row.msg_id) {
+        // An edit, delete, reaction or pin is never an item of its own; nor is a pending thread reply, which is not a
+        // row of the channel (controller.ts `threadSends`; Task 11).
+        if row.kind != 0
+            || stored.contains(&row.msg_id)
+            || crate::features::threads::is_thread_send(&row.msg_id)
+        {
             continue;
         }
         let failed = row.state == 2;

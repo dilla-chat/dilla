@@ -386,8 +386,13 @@ impl Composer {
         }
         // Escape is a plain key; the arrows and Tab are bound to actions, which the textarea and the app take before a
         // key listener sees them, so they come through `capture_action` below.
-        if k.key == "escape" {
-            self.nav("escape", window, cx);
+        if k.key == "escape" && !self.nav("escape", window, cx) {
+            // ComposerArea.tsx: with no mention list open, Escape cancels the reply the composer is aimed at (11).
+            let slots = self.slots.clone();
+            if crate::screens::threads::cancel_reply(&slots, cx) {
+                cx.stop_propagation();
+                cx.notify();
+            }
         }
     }
 

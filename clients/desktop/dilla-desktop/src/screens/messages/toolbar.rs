@@ -46,7 +46,7 @@ pub fn toolbar(
     cx: &mut App,
 ) -> Option<AnyElement> {
     let _ = window;
-    let actions = slots::message_actions(item);
+    let actions = slots::message_actions(item, ctx);
     if actions.is_empty() {
         return None;
     }
