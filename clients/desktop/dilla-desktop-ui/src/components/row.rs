@@ -205,15 +205,20 @@ impl RenderOnce for Row {
             );
         }
         row = row.child(div().flex_1());
-        if self.mentions > 0 {
-            row = row.child(
+        // The trailing slot is always there (ChannelRow.tsx `<TrailingSlot>`): empty it still holds `--slot-w`, so a long
+        // name is cut short of it, and a badge sits flush right in it.
+        let slot = super::trailing_slot::TrailingSlot::new((id.clone(), "slot")).in_row();
+        row = row.child(if self.mentions > 0 {
+            slot.child(
                 Badge::new((id.clone(), "badge"), BadgeKind::Mention, self.mentions)
                     .text(format!("@{}", capped(self.mentions)))
                     .in_row(),
-            );
+            )
         } else if unread > 0 {
-            row = row.child(Badge::new((id, "badge"), BadgeKind::Unread, unread).in_row());
-        }
+            slot.child(Badge::new((id, "badge"), BadgeKind::Unread, unread).in_row())
+        } else {
+            slot
+        });
         match self.on_click {
             Some(handler) => row.on_click(handler).into_any_element(),
             None => row.into_any_element(),

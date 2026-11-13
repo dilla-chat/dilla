@@ -1,0 +1,30 @@
+{
+  "digest": "80b317f2635624b0c11c05cd3c46059492e4f7ea9ed2b3ccbe37629d20a2bb11",
+  "shift": 37983,
+  "hand_migrated": false,
+  "ids": {
+    "channel:northern/afk": "f095fb1746956885d47632a8f0247a82",
+    "channel:northern/boats": "b19710e02dccb1a792707a612dc6993b",
+    "channel:northern/critique": "d521e9dc4c20185bfdde416780efa1c0",
+    "channel:northern/design": "adf10f42aeb74c3f675544628c3fd3d8",
+    "channel:northern/general": "5f46cad66202a0fb2c9045f7aa76e254",
+    "channel:northern/harbour": "7e79cccd2b6a63cea38c88d535d373fd",
+    "channel:northern/loot": "41f6c208b933f9014d8d0f184d9ea80b",
+    "channel:northern/lounge": "fe5596fdbebf7b502af9115607f3fa77",
+    "channel:northern/moodboards-and-references": "72e2f0c7abcb6b965912afb1f39cc71d",
+    "channel:northern/raids": "efbdb69a78ca75dbb37b395c7a7bd12d",
+    "person:ada": "abc7bec9af2066d46a2197e89a04d0de",
+    "person:bjorn": "dd291fb0908683230177e612f75d9a91",
+    "person:glenn": "6c32bcd7adc9a47604ad5aa9bb974c29",
+    "person:ines": "cbcff31f6d57912dd2b271e888826fe5",
+    "person:kari": "41af1ccd95c8c7d21df04e42c2ce5ffa",
+    "person:liv": "6798b9d49f21cc1e66ff4ef51afb4270",
+    "person:mira": "2557c7b883dc79a01d6b3b9de75b4438",
+    "person:nils": "fc1ce226132145564a6fc9f8a27bbe76",
+    "person:ole": "d9e1e1ab1cde40085fe7d51358ce4156",
+    "person:sven": "21468f25f406afc655951d9822df25c3",
+    "person:tove": "566a2bc1c08deaea9a056c6c366335aa",
+    "person:ulf": "6018d5a4129d73a527a3fb93fa30804b",
+    "server:northern": "eff333b863e616dd9a78fe45dc5cbf0c"
+  }
+}

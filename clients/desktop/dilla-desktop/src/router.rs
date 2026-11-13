@@ -229,6 +229,95 @@ impl Route {
     }
 }
 
+impl Route {
+    /// Whether this route is one of the settings screens (user or server), which the shell draws over the route it was
+    /// opened from ([`History::settings_from`]).
+    pub fn is_settings(&self) -> bool {
+        matches!(self, Route::Settings(_) | Route::ServerSettings { .. })
+    }
+}
+
+/// The route history of a window (the browser's `history` of router.ts): the entries visited and where the window stands
+/// among them. A push drops the entries ahead; pushing the route the window is already at changes nothing, as
+/// `navigate` does for an identical path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct History {
+    entries: Vec<Route>,
+    at: usize,
+}
+
+/// The most entries a window keeps (the oldest fall away).
+const HISTORY_CAP: usize = 100;
+
+impl History {
+    /// A history standing on `route`.
+    pub fn new(route: Route) -> Self {
+        Self {
+            entries: vec![route],
+            at: 0,
+        }
+    }
+
+    pub fn current(&self) -> &Route {
+        &self.entries[self.at]
+    }
+
+    /// Goes to `route` as a new entry. Answers whether the window moved.
+    pub fn push(&mut self, route: Route) -> bool {
+        if *self.current() == route {
+            return false;
+        }
+        self.entries.truncate(self.at + 1);
+        self.entries.push(route);
+        if self.entries.len() > HISTORY_CAP {
+            self.entries.remove(0);
+        }
+        self.at = self.entries.len() - 1;
+        true
+    }
+
+    /// Replaces the current entry (a redirect, a route that settled on its default).
+    pub fn replace(&mut self, route: Route) {
+        let at = self.at;
+        self.entries[at] = route;
+    }
+
+    pub fn can_back(&self) -> bool {
+        self.at > 0
+    }
+
+    pub fn can_forward(&self) -> bool {
+        self.at + 1 < self.entries.len()
+    }
+
+    /// One entry back; the route now current, or `None` at the first entry.
+    pub fn back(&mut self) -> Option<&Route> {
+        if !self.can_back() {
+            return None;
+        }
+        self.at -= 1;
+        Some(self.current())
+    }
+
+    pub fn forward(&mut self) -> Option<&Route> {
+        if !self.can_forward() {
+            return None;
+        }
+        self.at += 1;
+        Some(self.current())
+    }
+
+    /// Where closing settings goes: the nearest earlier entry that is not a settings route, else `fallback`.
+    pub fn settings_from(&self, fallback: Route) -> Route {
+        self.entries[..self.at]
+            .iter()
+            .rev()
+            .find(|r| !r.is_settings() && !matches!(r, Route::Welcome { .. }))
+            .cloned()
+            .unwrap_or(fallback)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,5 +572,53 @@ mod tests {
             server,
             ids(ServerSection::ALL.iter().map(|s| s.id()).collect())
         );
+    }
+
+    #[test]
+    fn history_pushes_steps_and_drops_the_forward_entries() {
+        let a = Route::Channel {
+            community: community(C),
+            channel: Some(channel(CH)),
+        };
+        let mut h = History::new(Route::Root);
+        assert!(!h.can_back() && !h.can_forward());
+        assert!(h.push(a.clone()));
+        assert!(!h.push(a.clone()), "the same route is no new entry");
+        assert!(h.push(Route::Activity));
+        assert_eq!(h.back(), Some(&a));
+        assert_eq!(h.back(), Some(&Route::Root));
+        assert_eq!(h.back(), None);
+        assert_eq!(h.forward(), Some(&a));
+        // A push from the middle drops what was ahead.
+        assert!(h.push(Route::You));
+        assert!(!h.can_forward());
+        assert_eq!(h.back(), Some(&a));
+    }
+
+    #[test]
+    fn closing_settings_goes_to_the_route_it_was_opened_from() {
+        let a = Route::Channel {
+            community: community(C),
+            channel: Some(channel(CH)),
+        };
+        let mut h = History::new(a.clone());
+        h.push(Route::Settings(None));
+        h.push(Route::Settings(Some(UserSection::Voice)));
+        assert_eq!(h.settings_from(Route::Root), a);
+        let h = History::new(Route::Settings(None));
+        assert_eq!(h.settings_from(Route::Dms), Route::Dms);
+    }
+
+    #[test]
+    fn history_is_capped() {
+        let mut h = History::new(Route::Root);
+        for n in 0..(HISTORY_CAP + 20) {
+            let mut id = [0u8; 16];
+            id[0] = (n % 250) as u8;
+            id[1] = (n / 250) as u8;
+            h.push(Route::Dm(ChannelId(id)));
+        }
+        assert_eq!(h.entries.len(), HISTORY_CAP);
+        assert!(!h.can_forward());
     }
 }

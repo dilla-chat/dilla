@@ -3652,3 +3652,22 @@ test('the GPUI ignored-coverage guard counts only live Linux run lines and sees 
   assert.ok(checkDesktopGpuiWorkflow(root).length > 0, 'a step guarded by false must not count');
   rmSync(root, { recursive: true, force: true });
 });
+
+test('parity tests parked until the shared-component pass need no --ignored run, but any other ignore in the file still does', () => {
+  const root = releaseRoot();
+  const dir = join(root, 'clients/desktop/dilla-desktop/tests');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[ignore = "parity after T6c: chrome 0.25 % (voice row)"]\nfn parity_a() {}\n');
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a parked parity test alone needs no run line');
+  writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[ignore = "parity after T6c: chrome 0.25 %"]\nfn parity_a() {}\n#[test]\n#[ignore = "needs dillad"]\nfn live() {}\n');
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'another ignore in the same file still needs its run line');
+  writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[ignore = "parity later"]\nfn parity_a() {}\n');
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'only the exact R22 reason is exempt');
+  // An off-Linux ignore owes no Linux --ignored run; a macro forwarding only R22 reasons is parked; any other forwarded reason is not.
+  const macro = (why) => `macro_rules! p { ($($t:ident $(; $why:literal)?),*) => {$(#[test] $(#[ignore = $why])? #[cfg_attr(not(target_os = "linux"), ignore = "refs are Linux only")] fn $t() {})*}; }\np!(a; "${why}", b);\n`;
+  writeFileSync(join(dir, 'parked.rs'), macro('parity after T6c: chrome 0.3 %'));
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'off-Linux ignore and R22-only macro reasons need no run line');
+  writeFileSync(join(dir, 'parked.rs'), macro('needs dillad'));
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a macro forwarding another reason still needs its run line');
+  rmSync(root, { recursive: true, force: true });
+});

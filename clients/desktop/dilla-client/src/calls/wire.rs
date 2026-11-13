@@ -56,6 +56,73 @@ pub struct GroupSummary {
     pub kind: u64,
     pub target_id: [u8; 16],
     pub state: u64,
+    pub epoch: u64,
+    /// This device's cursor: the first seq it has not applied.
+    pub next_seq: u64,
+    /// A commit of this device is pending (built, neither confirmed nor aborted).
+    pub pending_commit: bool,
+}
+
+/// The handshake kinds that take an epoch (`KindCommit`, `KindExternalJoin`); 0 is a proposal.
+const COMMIT_KINDS: [u64; 2] = [1, 2];
+
+/// A `GET /v1/groups/{id}/handshakes` page (rows `[seq, epoch, kind, sender|null, blob]`, in seq
+/// order), as a rotation's reconciliation reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandshakePage {
+    /// The page's commits, in seq order: `(seq, epoch, blob)`, where `epoch` is the row's epoch, the
+    /// one the commit opened. The commit that took epoch `n` is the row of epoch `n + 1`; the cursor
+    /// does not move past a commit this device confirmed from its answer, so rows of epochs it
+    /// already holds can precede it.
+    pub commits: Vec<(u64, u64, Vec<u8>)>,
+    pub rows: usize,
+    /// The seq of the page's last row.
+    pub last: Option<u64>,
+}
+
+pub fn decode_handshake_page(body: &[u8]) -> Result<HandshakePage, RouteError> {
+    let rows = match parse(body)? {
+        Value::Array(rows) => rows,
+        _ => return Err(shape("handshake page")),
+    };
+    let mut page = HandshakePage {
+        rows: rows.len(),
+        ..HandshakePage::default()
+    };
+    for row in rows {
+        let r = at_least(row, 5, "handshake row")?;
+        let seq = uint(&r[0], "handshake seq")?;
+        page.last = Some(seq);
+        if COMMIT_KINDS.contains(&uint(&r[2], "handshake kind")?) {
+            let epoch = uint(&r[1], "handshake epoch")?;
+            match &r[4] {
+                Value::Bytes(b) => page.commits.push((seq, epoch, b.clone())),
+                _ => return Err(shape("handshake blob")),
+            }
+        }
+    }
+    Ok(page)
+}
+
+/// A commit body the core built (`commit_build`/`call_rotate`: `[epoch, commit, group_info,
+/// welcomes, null]`): the epoch it commits from and the MLS commit the instance stores as the
+/// handshake's blob.
+pub fn decode_commit_body(body: &[u8]) -> Result<(u64, Vec<u8>), String> {
+    decode_strict(body, |d| {
+        d.array(5)?;
+        let epoch = d.uint()?;
+        let commit = d.bytes()?.to_vec();
+        d.bytes()?;
+        let n = d.array_len()?;
+        for _ in 0..n {
+            d.array(2)?;
+            d.bytes()?;
+            d.bytes()?;
+        }
+        d.null()?;
+        Ok((epoch, commit))
+    })
+    .map_err(|e| format!("E_CBOR_SHAPE: {e:?}"))
 }
 
 fn shape(what: &str) -> RouteError {
@@ -232,14 +299,18 @@ pub fn decode_groups(body: &[u8]) -> Result<Vec<GroupSummary>, String> {
             d.opt_bytes_exact::<16>()?;
             let target_id = d.bytes_exact::<16>()?;
             let state = d.uint()?;
-            for _ in 0..4 {
-                d.uint()?;
-            }
+            let epoch = d.uint()?;
+            let next_seq = d.uint()?;
+            d.uint()?;
+            let pending_commit = d.uint()? == 1;
             out.push(GroupSummary {
                 group_id,
                 kind,
                 target_id,
                 state,
+                epoch,
+                next_seq,
+                pending_commit,
             });
         }
         Ok(out)
