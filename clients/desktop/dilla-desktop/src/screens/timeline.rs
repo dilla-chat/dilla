@@ -298,6 +298,18 @@ fn mention_pill(state: &AppState, members: &[Member], target: &str, mentions_me:
     }
 }
 
+/// The automation ids of the private results after the log's last message (Task 20's `private_results`).
+const PRIVATE_RESULT_IDS: [&str; 8] = [
+    "private-result-0",
+    "private-result-1",
+    "private-result-2",
+    "private-result-3",
+    "private-result-4",
+    "private-result-5",
+    "private-result-6",
+    "private-result-7",
+];
+
 /// A webhook post (Task 21's `decode_webhook_label`, MessageItem.tsx): the unedited message of `community`'s pinned Bot
 /// user ending in its label line. Only that user's posts are read for it: the Bot defangs `[dilla-` in every text it
 /// posts, a sender's included, so anyone else's stays text.
@@ -821,7 +833,14 @@ pub fn render(
     let (title, body_lines) = welcome_lines(&channel.name, width);
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
     let (_, rows_end) = row_tops(0.0, &shapes);
-    let content = LOG_TOP + welcome_height(title.len(), body_lines.len()) + LOG_BOTTOM + rows_end;
+    // Task 20's private results: the rows only this device shows, after the conversation's last message.
+    let privates = crate::screens::commands::private_results(ctx, width, window, cx);
+    let privates_height: f32 = privates.iter().map(|(_, h)| *h).sum();
+    let content = LOG_TOP
+        + welcome_height(title.len(), body_lines.len())
+        + LOG_BOTTOM
+        + rows_end
+        + privates_height;
     // Chromium's scroll range is whole pixels: the content's height rounds, and at the end that rounding sits below the
     // last row. A log shorter than its viewport keeps to the viewport's bottom (`margin-top: auto`).
     let viewport = f32::from(scroll.bounds().size.height);
@@ -830,7 +849,7 @@ pub fn render(
     let mut placer = Placer { out: Vec::new() };
     let mut y = lift + LOG_TOP;
     y += placer.welcome(y, title, body_lines);
-    let (tops, _) = row_tops(y, &shapes);
+    let (tops, rows_bottom) = row_tops(y, &shapes);
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
     // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.
     if let Some(msg) = crate::screens::threads::take_jump(window, cx)
@@ -888,6 +907,24 @@ pub fn render(
         let base = top.floor();
         let el = draw_row(&row_cx, s, top, base, &ui, ctx, window, cx);
         placer.out.push(el);
+    }
+    let mut private_top = rows_bottom;
+    for (n, (el, h)) in privates.into_iter().enumerate() {
+        let id: &'static str = PRIVATE_RESULT_IDS
+            .get(n)
+            .copied()
+            .unwrap_or("private-result");
+        placer.block(
+            0.0,
+            private_top,
+            div()
+                .id(id)
+                .debug_selector(move || id.to_owned())
+                .w(px(width))
+                .h(px(h))
+                .child(el),
+        );
+        private_top += h;
     }
     let pager = scroll.clone();
     let focus = ui.update(cx, |u, cx| {
