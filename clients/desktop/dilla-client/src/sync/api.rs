@@ -323,10 +323,29 @@ impl Api {
     where
         R::Request: Clone,
     {
+        self.http_call_bounded::<R>(args, req, idempotent, None)
+            .await
+    }
+
+    /// [`Self::http_call`] with an optional per-call success body bound (client.ts `maxBodyBytes`).
+    async fn http_call_bounded<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+        cap: Option<u64>,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
         let auth = r::lookup(&R::METHOD, R::PATH).is_some_and(|e| e.auth);
         let mut reauthenticated = false;
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
-            let error = match self.http.call::<R>(args, req.clone()).await {
+            let answer = match cap {
+                Some(cap) => self.http.call_capped::<R>(args, req.clone(), cap).await,
+                None => self.http.call::<R>(args, req.clone()).await,
+            };
+            let error = match answer {
                 Ok(v) => return Ok(v),
                 Err(e) => ApiError::of_http(&e),
             };
@@ -355,6 +374,47 @@ impl Api {
             return Err(error);
         }
         unreachable!("the loop returns on its last attempt")
+    }
+
+    // ---- the Wave 1 areas' routes (Task 12: blobs and GIFs) ----
+
+    /// One HTTP row of the route table for an area feature, with [`Self::http_call`]'s retries and re-authentication.
+    pub(crate) async fn http_route<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
+        self.http_call::<R>(args, req, idempotent).await
+    }
+
+    /// [`Self::http_route`] with a success body bound of the caller's (routes.ts `getBlob(.., size + 16)`, `gifMedia`):
+    /// a longer body is `E_BODY_TOO_LARGE`, refused before the rest is read.
+    pub(crate) async fn http_route_capped<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+        cap: u64,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
+        self.http_call_bounded::<R>(args, req, idempotent, Some(cap))
+            .await
+    }
+
+    /// One gateway row of the route table for an area feature: the accepted answer's status and body.
+    pub(crate) async fn socket_route<R: Route>(
+        &self,
+        args: &[&str],
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, Vec<u8>), ApiError> {
+        let answer = self.socket_call::<R>(args, body, None, true).await?;
+        Ok((answer.status, answer.body))
     }
 
     // ---- the device session (session.ts) ----

@@ -212,8 +212,19 @@ fn encode_into(out: &mut String, arg: &str) {
 
 /// The success body of `response`, at most `cap` bytes (`maxBodyBytes` in client.ts): a longer `Content-Length` is refused
 /// before a byte is read, and a body that outgrows the cap while streaming stops being read.
-async fn read_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8>, HttpError> {
-    let too_large = || HttpError::Decode(format!("the response body is larger than {cap} bytes"));
+async fn read_capped(response: reqwest::Response, cap: u64) -> Result<Vec<u8>, HttpError> {
+    read_capped_or(response, cap, || {
+        HttpError::Decode(format!("the response body is larger than {cap} bytes"))
+    })
+    .await
+}
+
+/// [`read_capped`] with the caller's error for a body over `cap`.
+async fn read_capped_or(
+    mut response: reqwest::Response,
+    cap: u64,
+    too_large: impl Fn() -> HttpError,
+) -> Result<Vec<u8>, HttpError> {
     if response.content_length().is_some_and(|n| n > cap) {
         return Err(too_large());
     }
@@ -244,12 +255,24 @@ pub(crate) fn body_of<R: Route>(
     }
 }
 
-#[async_trait::async_trait]
-impl Http for ReqwestHttp {
-    async fn call<R: Route>(
+impl ReqwestHttp {
+    /// [`Http::call`] with a success body bound of the caller's (client.ts `maxBodyBytes` given per call, as routes.ts
+    /// `getBlob(.., size + 16)` and `gifMedia` give it). A longer body is refused as soon as the bound is passed,
+    /// before the rest is read, as `Status { code: E_BODY_TOO_LARGE }` (client.ts's `DillaHttpError` with that code).
+    pub async fn call_capped<R: Route>(
         &self,
         path_args: &[&str],
         req: R::Request,
+        cap: u64,
+    ) -> Result<R::Response, HttpError> {
+        self.call_bounded::<R>(path_args, req, Some(cap)).await
+    }
+
+    async fn call_bounded<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+        cap: Option<u64>,
     ) -> Result<R::Response, HttpError> {
         let entry = routes::lookup(&R::METHOD, R::PATH).ok_or_else(|| {
             HttpError::Transport(format!(
@@ -306,8 +329,28 @@ impl Http for ReqwestHttp {
                 code: body.as_deref().and_then(error_code),
             });
         }
-        let body = read_capped(response, entry.max_body.unwrap_or(BODY_CEILING)).await?;
+        let body = match cap {
+            Some(cap) => {
+                read_capped_or(response, cap, || HttpError::Status {
+                    status,
+                    code: Some("E_BODY_TOO_LARGE".to_owned()),
+                })
+                .await?
+            }
+            None => read_capped(response, entry.max_body.unwrap_or(BODY_CEILING)).await?,
+        };
         answer_of::<R>(entry, status, body)
+    }
+}
+
+#[async_trait::async_trait]
+impl Http for ReqwestHttp {
+    async fn call<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+    ) -> Result<R::Response, HttpError> {
+        self.call_bounded::<R>(path_args, req, None).await
     }
 }
 
