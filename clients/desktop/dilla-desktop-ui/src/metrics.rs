@@ -101,6 +101,11 @@ pub fn spread_ring(color: Hsla, spread: f32) -> Vec<BoxShadow> {
     }]
 }
 
+/// A CSS shadow token `0 <y>px <blur>px <color>` as GPUI draws it: the blur through [`css_blur`].
+pub fn css_shadow(color: Hsla, y: f32, blur: f32) -> Vec<BoxShadow> {
+    shadow(color, y, blur)
+}
+
 fn shadow(color: Hsla, y: f32, blur: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
         color,

@@ -541,13 +541,7 @@ pub struct CardAction {
 
 /// `--shadow-profile`: `0 24px 60px rgba(0,0,0,0.6)`.
 fn shadow_profile() -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color: gpui::hsla(0., 0., 0., 0.6),
-        offset: point(px(0.), px(24.)),
-        blur_radius: px(60.),
-        spread_radius: px(0.),
-        inset: false,
-    }]
+    crate::metrics::css_shadow(gpui::hsla(0., 0., 0., 0.6), 24.0, 60.0)
 }
 
 /// The profile card (Signal §5.7): 300px, `--surface-2` in the `--control-edge-field` line, 12px corners; the 56px band
@@ -850,4 +844,13 @@ pub mod space {
     /// ProfileCard.tsx: the card sits 14px beside the pointer and 24px above it.
     pub const POINTER_GAP: Pixels = px(14.);
     pub const POINTER_RISE: Pixels = px(24.);
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    /// Review m6: `--shadow-profile`'s 60px blur is drawn as GPUI's deviation, half of it (`metrics::css_blur`).
+    #[test]
+    fn the_profile_card_shadow_blurs_as_css_does() {
+        assert_eq!(super::shadow_profile()[0].blur_radius, gpui::px(30.0));
+    }
 }
