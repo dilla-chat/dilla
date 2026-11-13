@@ -63,6 +63,60 @@ async fn an_action_that_unwinds_answers_stopped() {
     assert!(rx.try_recv().is_err(), "an answer is not a failure");
 }
 
+/// Integration-1 follow-up 4: a command that fails with the code the Api refusal hook already recorded is recorded once,
+/// not again by `guarded`; a failure the hook never saw (or with another code) is still recorded.
+#[tokio::test]
+async fn a_refused_command_is_recorded_once() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let applies = |rx: &mut mpsc::UnboundedReceiver<Update>| {
+        let mut n = 0;
+        while let Ok(u) = rx.try_recv() {
+            if matches!(u, Update::Apply(_)) {
+                n += 1;
+            }
+        }
+        n
+    };
+    let refused: Result<(), ClientError> = guarded(
+        async {
+            // What the Api refusal hook does: it records the code (one Apply) and marks it recorded.
+            let _ = tx.send(Update::Apply(Box::new(
+                crate::features::diagnostics::error_update("E_FORBIDDEN"),
+            )));
+            refusal_recorded("E_FORBIDDEN");
+            Err(ClientError::Sync("E_FORBIDDEN".into()))
+        },
+        &tx,
+    )
+    .await;
+    assert!(refused.is_err());
+    assert_eq!(applies(&mut rx), 1, "the refusal is recorded once");
+
+    let local: Result<(), ClientError> =
+        guarded(async { Err(ClientError::Sync("E_LOCAL".into())) }, &tx).await;
+    assert!(local.is_err());
+    assert_eq!(
+        applies(&mut rx),
+        1,
+        "a failure the hook never saw is recorded"
+    );
+
+    let other: Result<(), ClientError> = guarded(
+        async {
+            refusal_recorded("E_FORBIDDEN");
+            Err(ClientError::Sync("E_DECODE".into()))
+        },
+        &tx,
+    )
+    .await;
+    assert!(other.is_err());
+    assert_eq!(
+        applies(&mut rx),
+        1,
+        "another code than the refused one is still recorded"
+    );
+}
+
 /// An in-memory core, an API on an address nothing answers, and an engine whose hooks send to `tx`.
 fn offline_parts(tx: mpsc::UnboundedSender<Update>) -> (CoreHandle, Arc<Api>, Arc<Engine>) {
     let conn = rusqlite::Connection::open_in_memory().unwrap();

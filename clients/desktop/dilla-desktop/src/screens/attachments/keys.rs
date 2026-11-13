@@ -66,11 +66,16 @@ pub fn classify(
     if paste { Key::Paste } else { Key::None }
 }
 
-fn intercept(e: &KeystrokeEvent, _window: &mut Window, cx: &mut App) {
+fn intercept(e: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
     let k = &e.keystroke;
+    // Only the window that draws the lightbox or the picker takes its keys.
+    let here = ui::window_id(window);
     let (lightbox, gifs) = {
         let u = ui::ui(cx);
-        (u.lightbox.is_some(), u.gif.is_some())
+        (
+            u.lightbox.as_ref().is_some_and(|l| l.owner == here),
+            u.gif.as_ref().is_some_and(|g| g.owner == Some(here)),
+        )
     };
     let m = &k.modifiers;
     match classify(
@@ -108,7 +113,9 @@ fn intercept(e: &KeystrokeEvent, _window: &mut Window, cx: &mut App) {
             }
         }
         Key::Paste => {
-            if ui::ui(cx).channel.is_none() {
+            // A paste goes to this window's own composer target, never another window's.
+            let to = ui::target(window, cx);
+            if to.channel.is_none() || to.client.is_none() {
                 return;
             }
             let Some(item) = cx.read_from_clipboard() else {
@@ -123,7 +130,7 @@ fn intercept(e: &KeystrokeEvent, _window: &mut Window, cx: &mut App) {
                 })
                 .collect();
             if !images.is_empty() {
-                ui::attach_images(images, cx);
+                ui::attach_images(to, images, cx);
                 cx.stop_propagation();
             }
         }

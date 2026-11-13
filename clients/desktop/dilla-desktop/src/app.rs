@@ -245,8 +245,6 @@ impl AppView {
             let wrong = crate::screens::instances::copy::ERROR_WRONG_INSTANCE;
             return self.show_sign_in(Some(wrong.into()), window, cx);
         }
-        // The instance's played-video directory is wiped at open, and remembered for the wipe at quit (Task 12).
-        crate::screens::attachments::ui::instance_opened(&cfg.data_dir, cx);
         self.instance = Some(cfg.id);
         // A window opened again on an instance whose client kept running shows that client (windows.rs).
         if let Some(client) = crate::windows::running_client(cx, cfg.id) {
@@ -278,6 +276,10 @@ impl AppView {
             .detach();
             return;
         };
+        // The instance's played-video directory is wiped at open, and remembered for the wipe at quit (Task 12). Only
+        // the window that starts the client wipes: a second window on a live instance (above) must not, while its
+        // player may hold a file there.
+        crate::screens::attachments::ui::instance_opened(&cfg.data_dir, cx);
         let retry = cfg.clone();
         let keychain = self.launch.keychain.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();

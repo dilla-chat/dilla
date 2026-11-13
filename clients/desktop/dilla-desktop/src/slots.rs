@@ -186,18 +186,23 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     }
 }
 
-/// Over everything, in paint order: the search palette (23), the DM picker and the safety-number comparison (13), then
-/// the ring banner (18). Toasts (Task 6) and other dialogs join at merge.
+/// The modal surfaces over everything, in paint order: the search palette (23), the DM picker and the safety-number
+/// comparison (13). Toasts (Task 6) and other dialogs join at merge. While any is drawn, Ctrl+K does not open the
+/// palette (the shell's guard).
 pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     [
         search::palette(window, cx),
         dms::picker_overlay(&ctx.state, window, cx),
         dms::compare_overlay(&ctx.state, window, cx),
-        ring::ring_banner(window, cx),
     ]
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// The non-modal surfaces over the shell, after [`overlays`]: the ring banner (18). They never block Ctrl+K.
+pub fn non_modal_overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+    ring::ring_banner(window, cx).into_iter().collect()
 }
 
 /// Over the main column: the offline link banner and the version refusal (24), then the conversation's trust surfaces (13).

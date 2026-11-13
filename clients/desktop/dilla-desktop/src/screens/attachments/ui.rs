@@ -11,7 +11,7 @@
 //! person saves (after their choice of path) and a video handed to the system player (`media::write_for_system_player`,
 //! in the instance's own directory, wiped at start and exit).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use dilla_client::features::attachments::{
 };
 use dilla_client::features::gifs::{GifItem, GifVariant};
 use dilla_client::state::{ChannelId, CommunityId};
-use gpui::{App, FocusHandle, Global, Image, ImageFormat, Window};
+use gpui::{App, FocusHandle, Global, Image, ImageFormat, Window, WindowId};
 
 use super::media::{self, MediaDecoder, Playback};
 use crate::strings::{t, tf};
@@ -74,6 +74,9 @@ pub struct LightboxState {
     pub images: Vec<(u32, String, u64)>,
     pub at: usize,
     pub close_focus: FocusHandle,
+    /// The client whose message it shows, and the window it is drawn in (multi-instance: never another window's).
+    pub client: Rc<Client>,
+    pub owner: WindowId,
 }
 
 /// The GIF picker (GifPicker.tsx's state).
@@ -93,6 +96,9 @@ pub struct GifState {
     pub turn: u64,
     /// The search field, made when the picker first draws.
     pub search: Option<gpui::Entity<gpui_component::input::InputState>>,
+    /// The client that searches and attaches the pick, and the window the picker is drawn in.
+    pub client: Option<Rc<Client>>,
+    pub owner: Option<WindowId>,
 }
 
 /// A tray entry's picture, kept by its tray id (Attachments.tsx `trayPreviews`).
@@ -115,11 +121,28 @@ pub struct AttachmentsUi {
     pub dm_notice: Option<DmNotice>,
     /// `gifStatus` per server: `None` while asked.
     pub gif_on: HashMap<CommunityId, Option<bool>>,
-    /// The channel the composer last drew for: where a paste or a drop goes.
-    pub channel: Option<ChannelId>,
+    /// Per window, what its composer last drew for: where a paste, a drop or a pick in that window goes. Keyed by
+    /// window, so with two instances open a file never goes to the other window's client or channel.
+    pub targets: HashMap<WindowId, Target>,
+    /// Every opened instance's data directory: each one's played-video directory is wiped at quit.
+    pub instance_dirs: BTreeSet<PathBuf>,
+}
+
+/// A window's composer target: its client and its open channel.
+#[derive(Clone, Default)]
+pub struct Target {
     pub client: Option<Rc<Client>>,
-    /// The instance's data directory (from its prefs file): where a video for the system player goes.
-    pub instance_dir: Option<PathBuf>,
+    pub channel: Option<ChannelId>,
+}
+
+/// The composer target of `window` (empty until its composer draws).
+pub fn target(window: &Window, cx: &mut App) -> Target {
+    let id = window_id(window);
+    ui(cx).targets.get(&id).cloned().unwrap_or_default()
+}
+
+pub(crate) fn window_id(window: &Window) -> WindowId {
+    window.window_handle().window_id()
 }
 
 impl Global for AttachmentsUi {}
@@ -177,29 +200,39 @@ pub(crate) fn picture(bytes: &[u8]) -> Option<Arc<Image>> {
     image_format(bytes).map(|f| Arc::new(Image::from_bytes(f, bytes.to_vec())))
 }
 
-/// Remembers the client and the channel the composer draws for.
-pub fn track(client: Option<Rc<Client>>, channel: Option<ChannelId>, cx: &mut App) {
+/// Remembers the client and the channel `window`'s composer draws for. Windows that are gone are let go (with the
+/// client they held).
+pub fn track(
+    window: &Window,
+    client: Option<Rc<Client>>,
+    channel: Option<ChannelId>,
+    cx: &mut App,
+) {
+    let live: HashSet<WindowId> = cx.windows().iter().map(|w| w.window_id()).collect();
+    let dir = client
+        .as_ref()
+        .and_then(|c| c.prefs().path().parent().map(PathBuf::from));
     let u = ui(cx);
-    if let Some(c) = &client
-        && u.instance_dir.is_none()
-    {
-        u.instance_dir = c.prefs().path().parent().map(PathBuf::from);
+    if let Some(dir) = dir {
+        u.instance_dirs.insert(dir);
     }
-    u.client = client;
-    u.channel = channel;
+    u.targets.retain(|w, _| live.contains(w));
+    u.targets
+        .insert(window_id(window), Target { client, channel });
 }
 
 /// The instance at `data_dir` opens (its client is about to start): a video an earlier run left for the system
 /// player (a crash, a kill) is wiped. The app calls it from `start_client` (the controller's hook, Task 12's report).
 pub fn instance_opened(data_dir: &std::path::Path, cx: &mut App) {
     media::wipe_open_dir(data_dir);
-    ui(cx).instance_dir = Some(data_dir.to_owned());
+    ui(cx).instance_dirs.insert(data_dir.to_owned());
 }
 
-/// The app quits: every video handed to the system player is wiped (the hook in `main.rs`, Task 12's report).
+/// The app quits: every video handed to the system player, by any instance opened in this run, is wiped (the hook in
+/// `main.rs`, Task 12's report).
 pub fn on_quit(cx: &mut App) {
-    if let Some(d) = ui(cx).instance_dir.clone() {
-        media::wipe_open_dir(&d);
+    for d in &ui(cx).instance_dirs {
+        media::wipe_open_dir(d);
     }
 }
 
@@ -214,8 +247,8 @@ pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
 
 /// Attachments.tsx `attachFiles`: the files join the tray (a toast for a file over 25 MB, the tray's own refusal of
 /// an eleventh file), each picture with its preview.
-pub fn attach(files: Vec<NewFile>, previews: Vec<Option<TrayPreview>>, cx: &mut App) {
-    let (Some(client), Some(channel)) = (ui(cx).client.clone(), ui(cx).channel) else {
+pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>>, cx: &mut App) {
+    let (Some(client), Some(channel)) = (to.client, to.channel) else {
         return;
     };
     if files.is_empty() {
@@ -266,7 +299,7 @@ pub fn file_from_path(path: &std::path::Path) -> Option<(NewFile, Option<TrayPre
 }
 
 /// Pasted pictures (Ctrl+V): each becomes a PNG-named file with its preview.
-pub fn attach_images(images: Vec<Image>, cx: &mut App) {
+pub fn attach_images(to: Target, images: Vec<Image>, cx: &mut App) {
     let mut files = Vec::new();
     let mut previews = Vec::new();
     for (i, image) in images.into_iter().enumerate() {
@@ -289,11 +322,12 @@ pub fn attach_images(images: Vec<Image>, cx: &mut App) {
         });
         files.push(NewFile::from_bytes(&name, mime, image.bytes));
     }
-    attach(files, previews, cx);
+    attach(to, files, previews, cx);
 }
 
-/// Opens the person's file dialog and attaches what they pick (the paperclip).
-pub fn pick_files(cx: &mut App) {
+/// Opens the person's file dialog and attaches what they pick (the paperclip) to `window`'s channel as it is now.
+pub fn pick_files(window: &Window, cx: &mut App) {
+    let to = target(window, cx);
     let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
         files: true,
         directories: false,
@@ -304,29 +338,26 @@ pub fn pick_files(cx: &mut App) {
         let Ok(Ok(Some(paths))) = rx.await else {
             return;
         };
-        attach_paths(paths, cx).await;
+        attach_paths(to, paths, cx).await;
     })
     .detach();
 }
 
 /// Picked or dropped files: their sizes and previews are read off the UI thread, then they join the tray.
-pub async fn attach_paths(paths: Vec<PathBuf>, cx: &mut gpui::AsyncApp) {
+pub async fn attach_paths(to: Target, paths: Vec<PathBuf>, cx: &mut gpui::AsyncApp) {
     let picked: Vec<_> = cx
         .background_executor()
         .spawn(async move { paths.iter().filter_map(|p| file_from_path(p)).collect() })
         .await;
     cx.update(|cx| {
         let (files, previews) = picked.into_iter().unzip();
-        attach(files, previews, cx);
+        attach(to, files, previews, cx);
     });
 }
 
 /// Removes a tray entry (and its preview).
-pub fn discard(channel: ChannelId, id: String, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else {
-        return;
-    };
-    let tray = tray_of(&client, channel, cx);
+pub fn discard(client: &Client, channel: ChannelId, id: String, cx: &mut App) {
+    let tray = tray_of(client, channel, cx);
     ui(cx).tray_previews.remove(&(channel, id.clone()));
     client.attachments().discard(&tray, id);
     cx.refresh_windows();
@@ -350,10 +381,7 @@ pub fn take_for_send(
 }
 
 /// Opens a thumbnail or a whole picture once; the card or the lightbox draws it when it is ready.
-pub fn ensure_image(key: ImageKey, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else {
-        return;
-    };
+pub fn ensure_image(client: &Client, key: ImageKey, cx: &mut App) {
     if ui(cx).images.contains_key(&key) {
         return;
     }
@@ -376,10 +404,7 @@ pub fn ensure_image(key: ImageKey, cx: &mut App) {
 
 /// Saves an attachment where the person chooses (only after their action): it is opened, the save dialog asks for a
 /// path, and the plaintext is written there.
-pub fn save(key: CardKey, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else {
-        return;
-    };
+pub fn save(client: &Client, key: CardKey, cx: &mut App) {
     ui(cx).cards.insert(key, CardStatus::Loading);
     cx.refresh_windows();
     let rx = client
@@ -427,10 +452,12 @@ fn dirs_home() -> PathBuf {
 
 /// The media card's play: an audio file is opened and played inline (symphonia, rodio); a video is written to the
 /// instance's directory and opened in the system player.
-pub fn play(key: CardKey, video: bool, mime: String, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else {
-        return;
-    };
+pub fn play(client: &Client, key: CardKey, video: bool, mime: String, cx: &mut App) {
+    // The video goes to this client's own instance directory, which the quit wipes.
+    let dir = client.prefs().path().parent().map(PathBuf::from);
+    if let Some(d) = &dir {
+        ui(cx).instance_dirs.insert(d.clone());
+    }
     if matches!(ui(cx).players.get(&key), Some(Player::Loading)) {
         return;
     }
@@ -451,7 +478,6 @@ pub fn play(key: CardKey, video: bool, mime: String, cx: &mut App) {
             }
         };
         // The file write or the decoder's probe runs off the UI thread; only the device's player starts on it.
-        let dir = cx.update(|cx| ui(cx).instance_dir.clone());
         let prepared = cx
             .background_executor()
             .spawn(async move {
@@ -520,6 +546,7 @@ pub fn toggle(key: CardKey, cx: &mut App) {
 
 /// Opens the lightbox on image `index` of a message's images, focus on close.
 pub fn open_lightbox(
+    client: Rc<Client>,
     channel: ChannelId,
     seq: u64,
     images: Vec<(u32, String, u64)>,
@@ -527,6 +554,7 @@ pub fn open_lightbox(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let owner = window_id(window);
     let at = images.iter().position(|(i, _, _)| *i == index).unwrap_or(0);
     let close_focus = cx.focus_handle();
     window.focus(&close_focus, cx);
@@ -536,6 +564,8 @@ pub fn open_lightbox(
         images,
         at,
         close_focus,
+        client,
+        owner,
     });
     cx.refresh_windows();
 }
@@ -560,13 +590,10 @@ pub fn close_lightbox(cx: &mut App) {
 }
 
 /// Asks once per server whether its GIFs are on (`gifStatus`): the composer's GIF button shows only then.
-pub fn gif_on(community: CommunityId, cx: &mut App) -> bool {
+pub fn gif_on(client: &Client, community: CommunityId, cx: &mut App) -> bool {
     if let Some(known) = ui(cx).gif_on.get(&community) {
         return known.unwrap_or(false);
     }
-    let Some(client) = ui(cx).client.clone() else {
-        return false;
-    };
     ui(cx).gif_on.insert(community, None);
     let rx = client.gifs().status(community);
     cx.spawn(async move |cx| {
@@ -581,7 +608,13 @@ pub fn gif_on(community: CommunityId, cx: &mut App) -> bool {
 }
 
 /// Opens or closes the GIF picker of `channel` in `community`, searching trending at once.
-pub fn toggle_gifs(channel: ChannelId, community: CommunityId, cx: &mut App) {
+pub fn toggle_gifs(
+    client: Rc<Client>,
+    owner: WindowId,
+    channel: ChannelId,
+    community: CommunityId,
+    cx: &mut App,
+) {
     if ui(cx).gif.take().is_some() {
         cx.refresh_windows();
         return;
@@ -589,6 +622,8 @@ pub fn toggle_gifs(channel: ChannelId, community: CommunityId, cx: &mut App) {
     ui(cx).gif = Some(GifState {
         channel: Some(channel),
         community: Some(community),
+        client: Some(client),
+        owner: Some(owner),
         ..GifState::default()
     });
     search_gifs(String::new(), false, cx);
@@ -596,24 +631,30 @@ pub fn toggle_gifs(channel: ChannelId, community: CommunityId, cx: &mut App) {
 
 /// The DM GIF notice (DmGifPrivacy.test.tsx): it names the server a 1:1 DM's GIFs would go through; nothing is
 /// searched until the person chooses "Use GIFs".
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct DmNotice {
     pub channel: ChannelId,
     pub community: CommunityId,
     pub server: String,
+    /// The client that asked, and the window the notice is drawn in.
+    pub client: Rc<Client>,
+    pub owner: WindowId,
 }
 
 /// The GIF button of a 1:1 DM with `peer` (use-gif-community.ts `findCommunity`, only on the press): the shared
 /// servers are asked with `gifStatus` only; none with GIFs on says so; a server this device consented to for DMs
 /// opens the picker; any other opens the notice naming it.
-pub fn open_dm_gifs(channel: ChannelId, peer: dilla_client::state::UserId, cx: &mut App) {
+pub fn open_dm_gifs(
+    client: Rc<Client>,
+    owner: WindowId,
+    channel: ChannelId,
+    peer: dilla_client::state::UserId,
+    cx: &mut App,
+) {
     if ui(cx).gif.take().is_some() || ui(cx).dm_notice.take().is_some() {
         cx.refresh_windows();
         return;
     }
-    let Some(client) = ui(cx).client.clone() else {
-        return;
-    };
     let rx = client.gifs().find_dm_community(peer);
     cx.spawn(async move |cx| {
         let found = rx.await.ok().and_then(Result::ok).flatten();
@@ -621,7 +662,7 @@ pub fn open_dm_gifs(channel: ChannelId, peer: dilla_client::state::UserId, cx: &
             match found {
                 None => dilla_desktop_ui::components::toast::show_toast(t("gif.unavailable"), cx),
                 Some(community) if client.gifs().dm_consent_for(community) => {
-                    toggle_gifs(channel, community, cx);
+                    toggle_gifs(client.clone(), owner, channel, community, cx);
                 }
                 Some(community) => {
                     let server = client
@@ -636,6 +677,8 @@ pub fn open_dm_gifs(channel: ChannelId, peer: dilla_client::state::UserId, cx: &
                         channel,
                         community,
                         server,
+                        client: client.clone(),
+                        owner,
                     });
                 }
             }
@@ -647,10 +690,10 @@ pub fn open_dm_gifs(channel: ChannelId, peer: dilla_client::state::UserId, cx: &
 
 /// The notice's "Use GIFs": consent for the named server is saved first; only then does the picker open.
 pub fn accept_dm_notice(cx: &mut App) {
-    let (Some(n), Some(client)) = (ui(cx).dm_notice.take(), ui(cx).client.clone()) else {
+    let Some(n) = ui(cx).dm_notice.take() else {
         return;
     };
-    if client
+    if n.client
         .gifs()
         .set_dm_consent(Some(&n.community.hex()))
         .is_err()
@@ -659,7 +702,7 @@ pub fn accept_dm_notice(cx: &mut App) {
         cx.refresh_windows();
         return;
     }
-    toggle_gifs(n.channel, n.community, cx);
+    toggle_gifs(n.client, n.owner, n.channel, n.community, cx);
 }
 
 /// The notice's "Not now": nothing is saved or searched.
@@ -670,11 +713,10 @@ pub fn dismiss_dm_notice(cx: &mut App) {
 
 /// Searches (or, with `more`, reads the next page of) the picker's query.
 pub fn search_gifs(query: String, more: bool, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else {
+    let Some(g) = ui(cx).gif.as_mut() else { return };
+    let (Some(community), Some(client)) = (g.community, g.client.clone()) else {
         return;
     };
-    let Some(g) = ui(cx).gif.as_mut() else { return };
-    let Some(community) = g.community else { return };
     let offset = if more { g.next.unwrap_or(0) } else { 0 };
     if !more {
         g.items.clear();
@@ -727,13 +769,18 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
 /// Picks a GIF: its full file is fetched through the instance and attached as an ordinary attachment (the worker's
 /// note: "a GIF crosses back as a Blob and the page sends it with attachFiles").
 pub fn pick_gif(index: usize, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else {
-        return;
-    };
     let Some(g) = ui(cx).gif.as_mut() else { return };
     if g.picking.is_some() {
         return;
     }
+    // The pick goes to the picker's own client and channel, whatever window drew last.
+    let Some(client) = g.client.clone() else {
+        return;
+    };
+    let to = Target {
+        client: Some(client.clone()),
+        channel: g.channel,
+    };
     let (Some(item), Some(community)) = (g.items.get(index).cloned(), g.community) else {
         return;
     };
@@ -755,6 +802,7 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                     let name = format!("{}.gif", safe_name(&title, "gif"));
                     ui(cx).gif = None;
                     attach(
+                        to,
                         vec![NewFile::from_bytes(&name, "image/gif", bytes)],
                         vec![Some(TrayPreview::Gif)],
                         cx,
@@ -789,11 +837,74 @@ mod tests {
         assert!(!left.exists(), "wiped at open");
         std::fs::create_dir_all(&left).unwrap();
         std::fs::write(left.join("b.mp4"), b"x").unwrap();
-        cx.update(|cx| track(None, None, cx));
+        let w = cx.add_window(|_, _| Blank);
+        w.update(cx, |_, w, cx| track(w, None, None, cx)).unwrap();
         assert!(left.exists(), "a composer's draw never wipes");
         cx.update(on_quit);
         assert!(!left.exists(), "wiped at quit");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Integration-1 follow-up 1: with two instances open, the played videos of both are wiped at quit, not only the
+    /// last-opened one's.
+    #[gpui::test]
+    fn every_open_instance_s_videos_go_at_quit(cx: &mut gpui::TestAppContext) {
+        let base = std::env::temp_dir().join(format!("dilla-t12-multi-{}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        cx.update(|cx| instance_opened(&a, cx));
+        cx.update(|cx| instance_opened(&b, cx));
+        for d in [&a, &b] {
+            let left = media::open_dir(d);
+            std::fs::create_dir_all(&left).unwrap();
+            std::fs::write(left.join("v.mp4"), b"x").unwrap();
+        }
+        cx.update(on_quit);
+        assert!(
+            !media::open_dir(&a).exists(),
+            "the first instance's video is wiped too"
+        );
+        assert!(
+            !media::open_dir(&b).exists(),
+            "the last instance's video is wiped"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    struct Blank;
+    impl gpui::Render for Blank {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    /// Integration-1 follow-up 2: what a paste, a drop or a pick goes to is the window's own composer target, never the
+    /// last-drawn window's: window A drawn first and B last, A's paste still goes to A's channel.
+    #[gpui::test]
+    fn each_window_attaches_to_its_own_channel(cx: &mut gpui::TestAppContext) {
+        let (one, two) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let a = cx.add_window(|_, _| Blank);
+        let b = cx.add_window(|_, _| Blank);
+        a.update(cx, |_, w, cx| track(w, None, Some(one), cx))
+            .unwrap();
+        b.update(cx, |_, w, cx| track(w, None, Some(two), cx))
+            .unwrap();
+        let in_a = a.update(cx, |_, w, cx| target(w, cx).channel).unwrap();
+        let in_b = b.update(cx, |_, w, cx| target(w, cx).channel).unwrap();
+        assert_eq!(in_a, Some(one), "A's paste goes to A's channel");
+        assert_eq!(in_b, Some(two));
+        // A window that is gone lets its target (and the client it holds) go.
+        cx.update(|cx| {
+            a.update(cx, |_, w, _| w.remove_window()).unwrap();
+        });
+        cx.run_until_parked();
+        b.update(cx, |_, w, cx| track(w, None, Some(two), cx))
+            .unwrap();
+        let kept = cx.update(|cx| ui(cx).targets.len());
+        assert_eq!(kept, 1, "a closed window's target is pruned");
     }
 
     #[test]

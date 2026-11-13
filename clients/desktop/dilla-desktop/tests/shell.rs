@@ -40,8 +40,8 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_shell_conversation => "shell/conversation"; "parity after T6c: 0.5234 % pixels (members pane open by default since Task 14; the reference closed it: re-shoot)",
-    parity_shell_conversation_b => "shell/conversation-b"; "parity after T6c: 1.1482 % pixels (members pane open by default since Task 14; the reference closed it: re-shoot)",
+    parity_shell_conversation => "shell/conversation"; "parity after T6c: re-shoot (members pane default-open) 0.5234 % pixels",
+    parity_shell_conversation_b => "shell/conversation-b"; "parity after T6c: re-shoot (members pane default-open) 1.1482 % pixels",
     parity_shell_categories => "shell/categories"; "parity after T6c: chrome 0.2319 % (voice row 29.5 px)",
     parity_shell_categories_b => "shell/categories-b"; "parity after T6c: chrome 0.2504 % (voice row 29.5 px)",
     parity_shell_panes_resized => "shell/panes-resized"; "parity after T6c: chrome 0.2533 % (voice row 29.5 px)",

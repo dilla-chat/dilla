@@ -1035,6 +1035,8 @@ impl Render for ShellView {
         }
         // The open palette is one of these too; a second Ctrl+K over it is ignored either way.
         self.overlay_open = !overlays.is_empty();
+        // A non-modal surface (the ring banner) draws over the shell too, but never blocks Ctrl+K.
+        overlays.extend(slots::non_modal_overlays(window, cx));
 
         let weak = shell.clone();
         let on_toggle: header::OnToggle = Rc::new(move |kind, _, cx| {
@@ -1155,11 +1157,13 @@ impl Render for ShellView {
             .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
             // Ctrl+K (23) does not open the palette over the channel menu or another overlay (the web's guard).
-            .capture_action(cx.listener(|this, _: &search::keys::OpenSearch, _, cx| {
-                if this.overlay_open {
-                    cx.stop_propagation();
-                }
-            }))
+            .capture_action(
+                cx.listener(|this, _: &search::keys::OpenSearch, window, cx| {
+                    if palette_refused(this.overlay_open, &window.context_stack()) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .on_action(
@@ -1217,6 +1221,16 @@ impl Render for ShellView {
             // The search palette, the ring banner (23, 18) and the channel menu, over everything.
             .children(overlays)
     }
+}
+
+/// The web's M-01 guard (Shell.tsx): Ctrl+K never opens the palette under a modal: a modal overlay the shell drew last
+/// frame (`overlay_open`: the channel menu, the palette itself, a DM dialog), or focus inside a dialog or the settings
+/// frame (`contexts`, the focused path's key contexts, carry the ui crate's overlay context).
+fn palette_refused(overlay_open: bool, contexts: &[gpui::KeyContext]) -> bool {
+    overlay_open
+        || contexts
+            .iter()
+            .any(|c| c.contains(dilla_desktop_ui::components::dialog::OVERLAY_CONTEXT))
 }
 
 #[cfg(test)]
@@ -1342,6 +1356,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Integration-1 follow-up 6 (the web's M-01 guard): Ctrl+K opens the palette over the shell, but not over the
+    /// channel menu (or another modal overlay) nor while focus is in a dialog or the settings frame (the ui crate's
+    /// overlay key context); a non-modal surface (the ring banner) never blocks it.
+    #[gpui::test]
+    fn ctrl_k_is_refused_only_under_a_modal(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let state = world();
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        let open = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| search::inspect(window, cx).is_some_and(|p| p.open))
+        };
+        let focus = shell.update(vcx, |s, _| s.focus.clone());
+        vcx.update(|window, cx| focus.focus(window, cx));
+        vcx.run_until_parked();
+        // The channel menu is open: Ctrl+K is refused.
+        shell.update(vcx, |s, cx| {
+            s.open_menu(
+                ChannelId([3; 16]),
+                gpui::point(gpui::px(10.0), gpui::px(10.0)),
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| focus.focus(window, cx));
+        vcx.simulate_keystrokes("ctrl-k");
+        vcx.run_until_parked();
+        assert!(!open(vcx), "no palette over the channel menu");
+        shell.update(vcx, |s, cx| {
+            s.menu = None;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| focus.focus(window, cx));
+        vcx.simulate_keystrokes("ctrl-k");
+        vcx.run_until_parked();
+        assert!(open(vcx), "Ctrl+K opens the palette over the bare shell");
+        // Focus in a dialog or the settings frame (their panels carry the overlay key context) refuses it.
+        let dialog =
+            gpui::KeyContext::parse(dilla_desktop_ui::components::dialog::OVERLAY_CONTEXT).unwrap();
+        let plain = gpui::KeyContext::parse(keys::CONTEXT).unwrap();
+        assert!(palette_refused(false, &[plain.clone(), dialog]));
+        assert!(palette_refused(true, std::slice::from_ref(&plain)));
+        assert!(!palette_refused(false, &[plain]));
+    }
+
     /// A folded category and a muted channel are kept per device, in the layout preferences.
     #[gpui::test]
     fn folds_and_mutes_persist(cx: &mut gpui::TestAppContext) {
@@ -1373,7 +1441,7 @@ mod tests {
             [ChannelId([4; 16]).hex()]
         );
         // The mute is the notify area's account setting (Task 22), not a layout key.
-        assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED).is_empty());
+        assert!(prefs.get::<Vec<String>>("layout.mutedChannels").is_none());
         assert!(notify::is_muted(&prefs, ChannelId([3; 16]), None));
         shell.update(vcx, |s, cx| {
             s.choose(ChannelId([3; 16]), "mute", cx);

@@ -188,11 +188,10 @@ pub fn attachment_cards(
                     index: k.index,
                     thumb: true,
                 });
-                if let Some(k) = thumb_key {
-                    ui::ensure_image(k, cx);
-                }
-                if let Some(k) = full {
-                    ui::ensure_image(k, cx);
+                if let Some(c) = &ctx.client {
+                    for k in thumb_key.into_iter().chain(full) {
+                        ui::ensure_image(c, k, cx);
+                    }
                 }
                 let ready = |k: Option<ImageKey>, cx: &mut App| match k
                     .and_then(|k| ui::ui(cx).images.get(&k).cloned())
@@ -216,8 +215,19 @@ pub fn attachment_cards(
                 let w = if gif { GIF_W } else { IMAGE_W };
                 let open = key.map(|k| {
                     let images = images.clone();
+                    let client = ctx.client.clone();
                     click(move |w, cx| {
-                        ui::open_lightbox(k.channel, k.seq, images.clone(), k.index, w, cx)
+                        if let Some(c) = &client {
+                            ui::open_lightbox(
+                                c.clone(),
+                                k.channel,
+                                k.seq,
+                                images.clone(),
+                                k.index,
+                                w,
+                                cx,
+                            )
+                        }
                     })
                 });
                 let el = image_tile(id, w, shown, badge, open);
@@ -225,6 +235,9 @@ pub fn attachment_cards(
             }
             AttachmentKind::Audio | AttachmentKind::Video if !too_large && key.is_some() => {
                 let k = key.expect("checked");
+                // A fixture (no client) draws the card; its buttons do nothing.
+                let client = ctx.client.clone();
+                let saver = client.clone();
                 let video = kind == AttachmentKind::Video;
                 let state = match ui::ui(cx).players.get(&k) {
                     None => PlayerState::Idle,
@@ -247,9 +260,17 @@ pub fn attachment_cards(
                     loading_label: t("media.loading").into(),
                     error_label: t("media.error").into(),
                     save_text: t("media.save").into(),
-                    on_play: click(move |_, cx| ui::play(k, video, mime.clone(), cx)),
+                    on_play: click(move |_, cx| {
+                        if let Some(c) = &client {
+                            ui::play(c, k, video, mime.clone(), cx)
+                        }
+                    }),
                     on_toggle: click(move |_, cx| ui::toggle(k, cx)),
-                    on_save: Some(click(move |_, cx| ui::save(k, cx))),
+                    on_save: Some(click(move |_, cx| {
+                        if let Some(c) = &saver {
+                            ui::save(c, k, cx)
+                        }
+                    })),
                 });
                 cards.push(Card {
                     element: Box::new(move |_| el),
@@ -259,9 +280,14 @@ pub fn attachment_cards(
             }
             _ => {
                 let meta = card::file_meta(&name, &size);
-                let save = key
-                    .filter(|_| !too_large)
-                    .map(|k| click(move |_, cx| ui::save(k, cx)));
+                let save = key.filter(|_| !too_large).map(|k| {
+                    let client = ctx.client.clone();
+                    click(move |_, cx| {
+                        if let Some(c) = &client {
+                            ui::save(c, k, cx)
+                        }
+                    })
+                });
                 let state = state_text.clone();
                 let element: Box<dyn FnOnce(f32) -> AnyElement> = Box::new(move |line_h| {
                     let own = line_h
@@ -297,6 +323,7 @@ pub fn attachment_cards(
 /// The attachment tray over the composer (`slots::composer_leading`, after the reply bar).
 pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let channel = ctx.channel?;
+    let client = ctx.client.clone();
     let items = ctx.state.attachments.tray(channel).to_vec();
     let entries = items
         .into_iter()
@@ -321,6 +348,7 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
                 None => Preview::None,
             };
             let id = item.id.clone();
+            let client = client.clone();
             TrayEntry {
                 id: item.id.clone().into(),
                 name: item.name.clone().into(),
@@ -329,7 +357,11 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
                 step,
                 preview,
                 remove_label: tf("shell.tray.remove", &[("name", &item.name)]).into(),
-                on_remove: click(move |_, cx| ui::discard(channel, id.clone(), cx)),
+                on_remove: click(move |_, cx| {
+                    if let Some(c) = &client {
+                        ui::discard(c, channel, id.clone(), cx)
+                    }
+                }),
             }
         })
         .collect();
@@ -359,12 +391,12 @@ fn tool(id: &'static str, label: &'static str, f: OnClick) -> gpui::Stateful<gpu
 
 /// The composer's attach and GIF buttons (`slots::composer_buttons`, first), and the area's overlays.
 pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    ui::track(ctx.client.clone(), ctx.channel, cx);
+    ui::track(window, ctx.client.clone(), ctx.channel, cx);
     let mut row = div().flex().items_center().gap(px(2.0)).child(
         tool(
             "composer-attach",
             "shell.composer.attach",
-            click(|_, cx| ui::pick_files(cx)),
+            click(|w, cx| ui::pick_files(w, cx)),
         )
         .child(
             Icon::new(IconName::Paperclip)
@@ -376,17 +408,27 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Opti
     // a thread. `SlotCx` does not say yet whether it draws a thread or a DM's peer (the controller's merge item in
     // Task 12's report): until it does, a DM and a thread pass `None` and `false` here and offer no GIF button.
     let scope = gif_scope(ctx.community, None, false);
-    let action: Option<OnClick> = match (scope, ctx.channel, ctx.client.is_some()) {
-        (GifScope::Server(community), Some(channel), true) if ui::gif_on(community, cx) => {
-            Some(click(move |_, cx| ui::toggle_gifs(channel, community, cx)))
+    let action: Option<OnClick> = match (scope, ctx.channel, ctx.client.clone()) {
+        (GifScope::Server(community), Some(channel), Some(client))
+            if ui::gif_on(&client, community, cx) =>
+        {
+            Some(click(move |w, cx| {
+                let owner = ui::window_id(w);
+                ui::toggle_gifs(client.clone(), owner, channel, community, cx)
+            }))
         }
-        (GifScope::Direct(peer), Some(channel), true) => {
-            Some(click(move |_, cx| ui::open_dm_gifs(channel, peer, cx)))
-        }
+        (GifScope::Direct(peer), Some(channel), Some(client)) => Some(click(move |w, cx| {
+            let owner = ui::window_id(w);
+            ui::open_dm_gifs(client.clone(), owner, channel, peer, cx)
+        })),
         _ => None,
     };
     if let Some(action) = action {
-        let open = ui::ui(cx).gif.is_some();
+        let here = ui::window_id(window);
+        let open = ui::ui(cx)
+            .gif
+            .as_ref()
+            .is_some_and(|g| g.owner == Some(here));
         row = row.child(
             tool("composer-gif", "gif.button", action)
                 .px(px(6.0))
@@ -426,8 +468,10 @@ impl OpenTool for gpui::Stateful<gpui::Div> {
 fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     let mut out = Vec::new();
     let viewport = window.viewport_size();
-    // Files dragged over the window: the overlay over the main pane, which takes the drop.
-    if cx.has_active_drag() && ui::ui(cx).channel.is_some() {
+    let here = ui::window_id(window);
+    // Files dragged over the window: the overlay over the main pane, which takes the drop into this window's channel.
+    let to = ui::target(window, cx);
+    if cx.has_active_drag() && to.channel.is_some() && to.client.is_some() {
         let left = layout::RAIL + layout::SIDEBAR;
         let top = layout::TOPBAR;
         let pane = div()
@@ -435,9 +479,10 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .relative()
             .w(viewport.width - left)
             .h(viewport.height - top)
-            .on_drop(|paths: &ExternalPaths, _, cx| {
+            .on_drop(move |paths: &ExternalPaths, _, cx| {
                 let paths = paths.paths().to_vec();
-                cx.spawn(async move |cx| ui::attach_paths(paths, cx).await)
+                let to = to.clone();
+                cx.spawn(async move |cx| ui::attach_paths(to, paths, cx).await)
                     .detach();
             })
             .child(drop_overlay::drop_overlay(
@@ -450,7 +495,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                 .into_any_element(),
         );
     }
-    if let Some(element) = lightbox_overlay(cx) {
+    if let Some(element) = lightbox_overlay(here, cx) {
         let full = div()
             .w(viewport.width)
             .h(viewport.height)
@@ -462,7 +507,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                 .into_any_element(),
         );
     }
-    if let Some(n) = ui::ui(cx).dm_notice.clone() {
+    if let Some(n) = ui::ui(cx).dm_notice.clone().filter(|n| n.owner == here) {
         let notice = div()
             .id("gif-dm-notice")
             .flex()
@@ -514,7 +559,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                 .into_any_element(),
         );
     }
-    if let Some(picker) = gif_overlay(window, cx) {
+    if let Some(picker) = gif_overlay(here, window, cx) {
         out.push(
             deferred(
                 anchored()
@@ -528,9 +573,10 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     out
 }
 
-fn lightbox_overlay(cx: &mut App) -> Option<AnyElement> {
-    let l = ui::ui(cx).lightbox.as_ref()?;
+fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
+    let l = ui::ui(cx).lightbox.as_ref().filter(|l| l.owner == here)?;
     let (channel, seq, at, count) = (l.channel, l.seq, l.at, l.images.len());
+    let client = l.client.clone();
     let (index, name, size) = l.images.get(at)?.clone();
     let focus = l.close_focus.clone();
     let key = ImageKey {
@@ -539,7 +585,7 @@ fn lightbox_overlay(cx: &mut App) -> Option<AnyElement> {
         index,
         thumb: false,
     };
-    ui::ensure_image(key, cx);
+    ui::ensure_image(&client, key, cx);
     let image = match ui::ui(cx).images.get(&key) {
         Some(Slot::Ready(i)) => Some(i.clone()),
         _ => None,
@@ -557,7 +603,7 @@ fn lightbox_overlay(cx: &mut App) -> Option<AnyElement> {
         .into(),
         image,
         save_label: t("shell.lightbox.save").into(),
-        on_save: click(move |_, cx| ui::save(card, cx)),
+        on_save: click(move |_, cx| ui::save(&client, card, cx)),
         close_label: t("shell.lightbox.close").into(),
         on_close: click(|_, cx| ui::close_lightbox(cx)),
         close_focus: focus,
@@ -576,8 +622,8 @@ fn lightbox_overlay(cx: &mut App) -> Option<AnyElement> {
     }))
 }
 
-fn gif_overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    ui::ui(cx).gif.as_ref()?;
+fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    ui::ui(cx).gif.as_ref().filter(|g| g.owner == Some(here))?;
     if ui::ui(cx).gif.as_ref().is_some_and(|g| g.search.is_none()) {
         let input = cx.new(|cx| {
             gpui_component::input::InputState::new(window, cx)

@@ -145,8 +145,8 @@ pub fn names_a_secret(key: &str) -> bool {
 }
 
 /// The shell's own preferences, the `layout.*` keys (Task 8): the two pane widths the person dragged to (CSS px; absent =
-/// the default), the categories collapsed per server and the channels muted from their row's menu. A wrong-typed or
-/// non-positive width reads as absent, as `readPaneWidths` does on the web.
+/// the default) and the categories collapsed per server. A channel's mute is the notify area's account setting (Task
+/// 22), not a layout key. A wrong-typed or non-positive width reads as absent, as `readPaneWidths` does on the web.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutPrefs {
     pub sidebar: Option<f32>,
@@ -157,7 +157,6 @@ impl LayoutPrefs {
     pub const SIDEBAR: &'static str = "layout.sidebarWidth";
     pub const ASIDE: &'static str = "layout.asideWidth";
     pub const COLLAPSED: &'static str = "layout.collapsedCategories";
-    pub const MUTED: &'static str = "layout.mutedChannels";
 
     /// The widths `prefs` keeps.
     pub fn read(prefs: &Prefs) -> Self {

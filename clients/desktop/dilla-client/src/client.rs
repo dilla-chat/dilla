@@ -323,6 +323,7 @@ impl Client {
                 let _ = refused_errors.send(Update::Apply(Box::new(
                     crate::features::diagnostics::error_update(code),
                 )));
+                refusal_recorded(code);
                 if code == "E_FACTOR_REQUIRED" {
                     let _ = refusals.send(Update::FactorRequired);
                 }
@@ -787,6 +788,18 @@ async fn load_structure(api: &Api) -> Result<Loaded, ClientError> {
     })
 }
 
+tokio::task_local! {
+    /// While a command runs under [`guarded`]: the stable code the Api refusal hook last recorded for it, so the
+    /// command's failure with that same code is not recorded a second time (integration-1 follow-up 4).
+    static REFUSAL_RECORDED: std::cell::RefCell<Option<String>>;
+}
+
+/// The Api refusal hook recorded `code`: a command running under [`guarded`] notes it (outside one, nothing to note).
+fn refusal_recorded(code: &str) {
+    let code = crate::features::diagnostics::stable_code(code).to_owned();
+    let _ = REFUSAL_RECORDED.try_with(|r| *r.borrow_mut() = Some(code));
+}
+
 /// An action's answer, also when it unwinds: then [`ClientError::Stopped`], never a dropped oneshot. The unwind is also
 /// reported to the publisher ([`Update::Panicked`]): a core call on a poisoned core is the publisher's `Failed`
 /// already, and any other panic means engine code stopped half way (a lane, a timer, an outbox row), so the client fails
@@ -796,13 +809,22 @@ async fn guarded<T>(
     updates: &mpsc::UnboundedSender<Update>,
 ) -> Result<T, ClientError> {
     use futures_util::FutureExt;
-    match std::panic::AssertUnwindSafe(f).catch_unwind().await {
+    let (answer, recorded) = REFUSAL_RECORDED
+        .scope(std::cell::RefCell::new(None), async {
+            let answer = std::panic::AssertUnwindSafe(f).catch_unwind().await;
+            (answer, REFUSAL_RECORDED.with(|r| r.borrow_mut().take()))
+        })
+        .await;
+    match answer {
         Ok(Err(e)) => {
-            // A failed command is recorded in the diagnostics by its stable code (Task 24).
+            // A failed command is recorded in the diagnostics by its stable code (Task 24), unless the Api refusal hook
+            // recorded this very code for it already.
             let code = crate::features::diagnostics::client_error_code(&e);
-            let _ = updates.send(Update::Apply(Box::new(
-                crate::features::diagnostics::error_update(code),
-            )));
+            if recorded.as_deref() != Some(code) {
+                let _ = updates.send(Update::Apply(Box::new(
+                    crate::features::diagnostics::error_update(code),
+                )));
+            }
             Err(e)
         }
         Ok(answer) => answer,
