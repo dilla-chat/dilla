@@ -1,0 +1,108 @@
+{
+  "name": "search/results-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481751,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "sven",
+        "display": "Sven"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew and the Long Pantry Collective",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "sven"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general",
+            "position": 0
+          },
+          {
+            "id": "duty",
+            "kind": "text",
+            "name": "stove-duty-rota-for-the-north-kitchen-and-the-long-pantry",
+            "position": 0
+          },
+          {
+            "id": "stove",
+            "kind": "voice",
+            "name": "stove",
+            "position": 0
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "sven",
+        "ts": 1794481730,
+        "body": "the stove in the harbour is out again"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "the stove in the north kitchen needs a deep clean before anyone cooks the soup for forty people on Saturday, and somebody has to remember to order the extra pots from the supplier by Thursday at the latest"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "sven",
+        "ts": 1794481730,
+        "body": "stove duty moves to Sven after the weekend"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "key",
+      "chord": "ctrl-k"
+    },
+    {
+      "do": "type",
+      "web": "role=combobox[name=\"Search channels, people and messages\"]",
+      "gpui": "search-input",
+      "text": "stove"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}
