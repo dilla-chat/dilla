@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn a_clock_time_is_the_next_one_in_the_zone() {
         // 2027-01-15 08:00:00 UTC.
-        let now = 1_799_913_600 + 8 * 3600;
+        let now = 1_799_971_200 + 8 * 3600;
         assert_eq!(
             registry_when("09:00", now, &utc).as_deref(),
             Some("2027-01-15T09:00")
