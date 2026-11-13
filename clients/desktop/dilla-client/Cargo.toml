@@ -60,8 +60,10 @@ hmac = { version = "0.13", optional = true }
 sha1 = { version = "0.11", optional = true }
 
 [dev-dependencies]
-# Tests and examples get the real-dillad helpers (src/testing/host.rs) without a feature flag.
-dilla-client = { path = ".", features = ["testing-host"] }
+# Tests and examples get the real-dillad helpers (src/testing/host.rs) without a feature flag, and every test target
+# builds with the `testing` feature (Client::snapshots, the feed fault hooks), so a plain `cargo test -p dilla-client`
+# and `clippy --all-targets` compile the tests gated on it instead of skipping them.
+dilla-client = { path = ".", features = ["testing", "testing-host"] }
 # The real-dillad tests enrol an account the way every native peer does.
 dilla-testkit = { path = "../../../testkit" }
 # RFC 6238 for the sign-in tests; both are already in the lock (the testkit's second factor uses them).

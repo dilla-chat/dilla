@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::account::Upkeep;
 use crate::auth::AuthToken;
 use crate::features::Area;
 use crate::gateway::frames::Frame;
@@ -26,6 +27,7 @@ use crate::state::channels::{
     channel_group, channel_group_state, decode_channels, decode_communities,
 };
 use crate::state::members::decode_members;
+use crate::state::messages::TimelineUnavailable;
 use crate::state::messages::{build_timeline, decode_outbox, decode_timeline};
 use crate::state::unread::{build_badges, decode_activity};
 use crate::state::{
@@ -34,6 +36,7 @@ use crate::state::{
 };
 use crate::store::{StoreError, open_store};
 use crate::sync::api::{Api, CoreHandle, Identity, SessionError, try_core};
+use crate::sync::removals::FeedFailure;
 use crate::sync::requests::SocketRequests;
 use crate::sync::{ConnectionEvent, Engine, ExpectedGroup, GroupRow, Membership, SyncHooks};
 
@@ -102,6 +105,26 @@ enum Update {
     MarkRead(ChannelId, oneshot::Sender<Result<(), ClientError>>),
     /// An area's change to its own slice ([`Inner::publish`]).
     Apply(Box<dyn FnOnce(&mut AppState) + Send>),
+    /// The account's second factor was set up ([`Client::factor_completed`]).
+    FactorCompleted,
+    /// The instance's answer to the factor read [`Client::factor_completed`] starts: whether a factor is still owed.
+    FactorChecked(bool),
+    /// A job of the engine or an action panicked without poisoning the core: the client fails, as for a poisoned core.
+    Panicked,
+    /// The removal feeds of ready `generation` were read; the answers are the groups whose feed is still unread.
+    RemovalsRead {
+        generation: u64,
+        answers: FeedAnswers,
+    },
+    /// A group's removal feed was read to its end ([`SyncHooks::removals_read`]).
+    RemovalsCleared([u8; 16]),
+    /// A retry of `groups`' feeds ended; the answers are those still unread.
+    RemovalsRetried {
+        groups: Vec<[u8; 16]>,
+        answers: FeedAnswers,
+    },
+    /// The refreshed own device list leaves this device out (controller.ts `refreshOwnDeviceList` `!listed`): revoked.
+    Unlisted,
 }
 
 struct Loaded {
@@ -136,6 +159,12 @@ impl SyncHooks for Hooks {
             crate::sync::route::dispatch(area, &inner, &frame);
         }
     }
+    fn failed(&self) {
+        let _ = self.tx.send(Update::Panicked);
+    }
+    fn removals_read(&self, group: [u8; 16]) {
+        let _ = self.tx.send(Update::RemovalsCleared(group));
+    }
 }
 
 /// The gateway connection's owner: the one place a gateway is started, replaced or stopped.
@@ -161,7 +190,20 @@ pub(crate) struct Inner {
     state: watch::Receiver<Arc<AppState>>,
     runtime: tokio::runtime::Handle,
     prefs: Prefs,
+    upkeep: Arc<Upkeep>,
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            dead_code,
+            reason = "Client::snapshots (feature testing) is its reader"
+        )
+    )]
+    taps: Taps,
 }
+
+/// Every published snapshot, for the subscribers of `Client::snapshots` (feature `testing`): the watch channel keeps
+/// only the newest, and a test that must see that a value never appeared needs them all.
+type Taps = Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<AppState>>>>>;
 
 /// A runtime that, unless handed on, is shut down in the background when dropped: safe on any thread, an async task's
 /// included (a plain drop there panics).
@@ -192,14 +234,22 @@ pub struct Client {
 
 impl Client {
     /// Opens the instance's store, establishes the device session (from the device key; a stored session is used
-    /// while it is not within an hour of expiring), connects the gateway and starts syncing, on a runtime of its own.
+    /// while it is not within an hour of either expiry) and reads the instance document, on a runtime of its own; then
+    /// starts the gateway and the sync engine in the background and returns.
     ///
-    /// It blocks the calling thread until the session is established (a few round trips), so call it from the UI's
-    /// thread or `spawn_blocking`, not from an async task where it would stall a worker. It never panics on a caller
-    /// inside a tokio runtime: the wait runs on a thread of its own, outside any runtime context (tokio refuses a
-    /// `block_on` inside one; `Handle::try_current` cannot tell that case from a legitimate `spawn_blocking` caller).
-    /// A failure of that thread is [`ClientError::Runtime`]. A start that fails (offline, revoked, no identity, a store
-    /// error) shuts the runtime it built down in the background, so failing does not panic there either.
+    /// It blocks the calling thread only for the session and the instance document (a few round trips), so call it
+    /// from the UI's thread or `spawn_blocking`, not from an async task where it would stall a worker. It never panics
+    /// on a caller inside a tokio runtime: the wait runs on a thread of its own, outside any runtime context (tokio
+    /// refuses a `block_on` inside one; `Handle::try_current` cannot tell that case from a legitimate
+    /// `spawn_blocking` caller).
+    ///
+    /// It fails with [`ClientError::Store`] (the store did not open), [`ClientError::NoIdentity`] (no finished
+    /// sign-up or sign-in), [`ClientError::Revoked`] (the instance refused the device's challenge),
+    /// [`ClientError::Network`] (the instance could not be reached), [`ClientError::Sync`] (any other refusal, with
+    /// its code) or [`ClientError::Runtime`] (the runtime or its thread failed). A start that fails shuts the runtime
+    /// it built down in the background, so failing does not panic there either. What happens after a successful start
+    /// is reported in [`Client::state`], never as an error here: the gateway connecting, an owed second factor
+    /// ([`AccountPhase::FactorSetup`]), a refused version, a revocation.
     pub fn start(cfg: InstanceConfig, kc: Arc<dyn Keychain>) -> Result<Client, ClientError> {
         Self::start_with(cfg, kc, GatewayOptions::default())
     }
@@ -209,6 +259,28 @@ impl Client {
         cfg: InstanceConfig,
         kc: Arc<dyn Keychain>,
         options: GatewayOptions,
+    ) -> Result<Client, ClientError> {
+        Self::start_tapped(cfg, kc, options, Taps::default())
+    }
+
+    /// Feature `testing`: [`Client::start`], with every snapshot it ever publishes also sent to the receiver (the first
+    /// one included), so a test can show that a value appeared in no snapshot at all.
+    #[cfg(feature = "testing")]
+    pub fn start_observed(
+        cfg: InstanceConfig,
+        kc: Arc<dyn Keychain>,
+    ) -> Result<(Client, mpsc::UnboundedReceiver<Arc<AppState>>), ClientError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let taps = Taps::new(Mutex::new(vec![tx]));
+        let client = Self::start_tapped(cfg, kc, GatewayOptions::default(), taps)?;
+        Ok((client, rx))
+    }
+
+    fn start_tapped(
+        cfg: InstanceConfig,
+        kc: Arc<dyn Keychain>,
+        options: GatewayOptions,
+        taps: Taps,
     ) -> Result<Client, ClientError> {
         let core: CoreHandle = Arc::new(Mutex::new(open_store(&cfg, kc.as_ref())?));
         let identity = {
@@ -262,14 +334,23 @@ impl Client {
                         SessionError::Api(a) => ClientError::Sync(a.code),
                         SessionError::Core(c) => ClientError::Sync(c),
                     })?;
-                    api.get_instance()
+                    let instance = api
+                        .get_instance()
                         .await
-                        .map_err(|e| ClientError::Network(e.to_string()))
+                        .map_err(|e| ClientError::Network(e.to_string()))?;
+                    // controller.ts `enterReady`'s factor gate: an account that owes a second factor stops at
+                    // factor setup, with no gateway (the instance refuses it until a factor is added).
+                    let owed = factors_owed(&api).await.map_err(|e| match e.status {
+                        0 => ClientError::Network(e.detail),
+                        _ => ClientError::Sync(e.code),
+                    })?;
+                    Ok::<_, ClientError>((instance, owed))
                 })
             })
             .join()
         })
         .map_err(|_| ClientError::Runtime("the start thread panicked".into()))??;
+        let (instance, owed) = instance;
 
         let area_inner = Arc::new(OnceLock::new());
         let hooks = Arc::new(Hooks {
@@ -277,9 +358,20 @@ impl Client {
             inner: area_inner.clone(),
         });
         let engine = Engine::new(core.clone(), api.clone(), hooks, instance);
+        let upkeep = Upkeep::new(
+            core.clone(),
+            api.clone(),
+            runtime.handle().clone(),
+            user_id,
+            device_id,
+        );
         let initial = AppState {
             account: crate::state::AccountState {
-                phase: AccountPhase::Ready,
+                phase: if owed {
+                    AccountPhase::FactorSetup
+                } else {
+                    AccountPhase::Ready
+                },
                 user_id: Some(UserId(user_id)),
                 device_id: Some(DeviceId(device_id)),
                 username: identity.username.clone(),
@@ -287,6 +379,8 @@ impl Client {
             ..AppState::default()
         };
         let (state_tx, state_rx) = watch::channel(Arc::new(initial.clone()));
+        // A tap set before the start gets the initial snapshot first (before the publisher can publish any other).
+        lock_taps(&taps).retain(|t| t.send(state_rx.borrow().clone()).is_ok());
         let link = Arc::new(Link {
             engine: engine.clone(),
             socket,
@@ -305,6 +399,8 @@ impl Client {
             state: state_rx,
             runtime: runtime.handle().clone(),
             prefs: Prefs::instance(&cfg.data_dir),
+            upkeep: upkeep.clone(),
+            taps: taps.clone(),
         });
         let _ = area_inner.set(Arc::downgrade(&inner));
         let publisher = Publisher {
@@ -321,13 +417,18 @@ impl Client {
             not_member: HashSet::new(),
             resyncing: HashSet::new(),
             renew: RenewGate::default(),
+            upkeep,
+            inner: area_inner,
+            removals_due: false,
+            removals: RemovalGate::default(),
+            taps,
         };
         runtime.spawn(watch_poison(
             publisher.core.clone(),
             publisher.updates.clone(),
         ));
         runtime.spawn(publisher.run(updates_rx));
-        {
+        if !owed {
             let _enter = runtime.enter();
             link.connect();
         }
@@ -340,6 +441,17 @@ impl Client {
     /// The observable state: a new snapshot is published on every change.
     pub fn state(&self) -> watch::Receiver<Arc<AppState>> {
         self.inner.state.clone()
+    }
+
+    /// Feature `testing`: every snapshot published from now on, in order (the current one first). [`Client::state`]
+    /// coalesces; this is for a test that must show a value never appeared in any snapshot.
+    #[cfg(feature = "testing")]
+    pub fn snapshots(&self) -> mpsc::UnboundedReceiver<Arc<AppState>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut taps = lock_taps(&self.inner.taps);
+        let _ = tx.send(self.inner.state.borrow().clone());
+        taps.push(tx);
+        rx
     }
 
     /// This instance's non-secret preferences (`<data_dir>/prefs.json`).
@@ -357,10 +469,11 @@ impl Client {
         f: impl std::future::Future<Output = Result<T, ClientError>> + Send + 'static,
     ) -> oneshot::Receiver<Result<T, ClientError>> {
         let (tx, rx) = oneshot::channel();
+        let updates = self.inner.updates.clone();
         match &self.runtime {
             Some(rt) => {
                 rt.spawn(async move {
-                    let _ = tx.send(guarded(f).await);
+                    let _ = tx.send(guarded(f, &updates).await);
                 });
             }
             None => {
@@ -425,6 +538,31 @@ impl Client {
         self.inner.link.disconnect();
     }
 
+    /// The account's second factor was set up (by the factor screens, over the instance's routes): the account leaves
+    /// [`AccountPhase::FactorSetup`] and the gateway, refused while the factor was owed, connects again on the same
+    /// client (no rebuild). Its ready publishes the key packages and backups the owed account could not. If the
+    /// instance still finds a factor owed, the refusal brings the account back to `FactorSetup`. Does nothing in any
+    /// other phase.
+    pub fn factor_completed(&self) {
+        let _ = self.inner.updates.send(Update::FactorCompleted);
+    }
+
+    /// The last key-package publish, as Diagnostics shows it (controller.ts `keyPackages`).
+    pub fn key_packages(&self) -> crate::account::KeyPackageStatus {
+        self.inner.upkeep.key_package_status()
+    }
+
+    /// The last ready's backup pass: what failed in it, if anything (a failed own-list refresh skips the repair).
+    pub fn backups(&self) -> crate::account::BackupStatus {
+        self.inner.upkeep.backup_status()
+    }
+
+    /// The instance holds a backup root this device did not seal (enrol.ts `E_ROOT_MISMATCH`, BACKUPS-RECOVERY-04): every
+    /// later recovery from it would fail, so the UI alerts. Cleared by a later backup pass that finds the roots equal.
+    pub fn backup_root_mismatch(&self) -> bool {
+        self.inner.upkeep.root_mismatch()
+    }
+
     /// Connects the gateway again after [`Client::disconnect`]: a fresh session, then the ready's catch-up.
     pub fn reconnect(&self) {
         if let Some(rt) = &self.runtime {
@@ -440,6 +578,7 @@ impl Client {
     }
 
     fn shutdown(&mut self) {
+        self.inner.upkeep.stop();
         self.inner.engine.stop();
         self.inner.link.disconnect();
         self.inner.link.socket.close();
@@ -458,12 +597,16 @@ impl Drop for Client {
 impl Link {
     /// A new gateway on the shared session token; its events go to the engine's event loop. Must run inside the
     /// client's runtime.
+    ///
+    /// `app_offline` is read under the gateway's lock: [`Client::disconnect`] sets it before it takes that lock, so a
+    /// connect racing a disconnect (a renewal's restart) either sees it and connects nothing, or installs its gateway
+    /// before the disconnect takes it down. The app's offline choice always wins.
     fn connect(&self) {
         let mut slot = self
             .gateway
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if slot.is_some() || self.engine.stopped() {
+        if slot.is_some() || self.engine.stopped() || self.app_offline.load(Ordering::Acquire) {
             return;
         }
         let gateway = Arc::new(WsGateway::connect_with(
@@ -548,10 +691,16 @@ impl Inner {
         f: impl std::future::Future<Output = Result<T, ClientError>> + Send + 'static,
     ) -> oneshot::Receiver<Result<T, ClientError>> {
         let (tx, rx) = oneshot::channel();
+        let updates = self.updates.clone();
         self.runtime.spawn(async move {
-            let _ = tx.send(guarded(f).await);
+            let _ = tx.send(guarded(f, &updates).await);
         });
         rx
+    }
+
+    /// The account's upkeep (key packages, backups: [`crate::account`]).
+    pub(crate) fn upkeep(&self) -> &Arc<Upkeep> {
+        &self.upkeep
     }
 
     /// The channel's text group, opened.
@@ -609,16 +758,33 @@ async fn load_structure(api: &Api) -> Result<Loaded, ClientError> {
     })
 }
 
-/// An action's answer, also when it unwinds (a core call on a poisoned core ends its caller): then
-/// [`ClientError::Stopped`], never a dropped oneshot.
+/// An action's answer, also when it unwinds: then [`ClientError::Stopped`], never a dropped oneshot. The unwind is also
+/// reported to the publisher ([`Update::Panicked`]): a core call on a poisoned core is the publisher's `Failed`
+/// already, and any other panic means engine code stopped half way (a lane, a timer, an outbox row), so the client fails
+/// as for a poisoned core instead of carrying on as if nothing happened.
 async fn guarded<T>(
     f: impl std::future::Future<Output = Result<T, ClientError>>,
+    updates: &mpsc::UnboundedSender<Update>,
 ) -> Result<T, ClientError> {
     use futures_util::FutureExt;
-    std::panic::AssertUnwindSafe(f)
-        .catch_unwind()
-        .await
-        .unwrap_or(Err(ClientError::Stopped))
+    match std::panic::AssertUnwindSafe(f).catch_unwind().await {
+        Ok(answer) => answer,
+        Err(_) => {
+            let _ = updates.send(Update::Panicked);
+            Err(ClientError::Stopped)
+        }
+    }
+}
+
+/// routes.ts `getFactors`' `owed` (`GET /v1/auth/factors`, element 0): whether the account owes a second factor.
+async fn factors_owed(api: &Api) -> Result<bool, crate::sync::api::ApiError> {
+    use crate::http::routes::{self as r, NoBody, Raw};
+    let Raw(raw) = api.http_call::<r::GetFactors>(&[], NoBody, true).await?;
+    let decode =
+        |e: crate::sync::value::DecodeError| crate::sync::api::ApiError::local(0, "E_DECODE", e.0);
+    let v = crate::sync::value::decode(&raw).map_err(decode)?;
+    let a = crate::sync::value::at_least(&v, 5).map_err(decode)?;
+    Ok(crate::sync::value::uint(&a[0]).map_err(decode)? == 1)
 }
 
 /// What a refused session (gateway 4004, 4003, upgrade 401) leads to.
@@ -640,6 +806,8 @@ enum AfterRenewal {
     /// The app took the connection down meanwhile: its own reconnect uses the new session.
     Stay,
     SignOut,
+    /// The account owes a second factor: factor setup, with no gateway.
+    FactorSetup,
 }
 
 /// The renewals of refused sessions: one per ready, one at a time.
@@ -648,6 +816,9 @@ struct RenewGate {
     in_flight: bool,
     /// A renewal ran since the last ready.
     spent: bool,
+    /// A gateway reached ready while the renewal was out (the app reconnected meanwhile, on a session the HTTP
+    /// layer's own re-authentication had already renewed): that gateway is working, and the renewal must not restart it.
+    ready_meanwhile: bool,
 }
 
 impl RenewGate {
@@ -659,21 +830,27 @@ impl RenewGate {
         } else {
             self.in_flight = true;
             self.spent = true;
+            self.ready_meanwhile = false;
             OnRefused::Renew
         }
     }
 
     fn done(&mut self, outcome: Renewal, app_offline: bool) -> AfterRenewal {
         self.in_flight = false;
+        let ready_meanwhile = std::mem::take(&mut self.ready_meanwhile);
         match outcome {
             Renewal::SignedOut => AfterRenewal::SignOut,
-            Renewal::Renewed if app_offline => AfterRenewal::Stay,
+            Renewal::FactorOwed => AfterRenewal::FactorSetup,
+            Renewal::Renewed if app_offline || ready_meanwhile => AfterRenewal::Stay,
             Renewal::Renewed => AfterRenewal::Restart,
         }
     }
 
     fn ready(&mut self) {
         self.spent = false;
+        if self.in_flight {
+            self.ready_meanwhile = true;
+        }
     }
 }
 
@@ -691,6 +868,8 @@ fn phase_on_ready(current: AccountPhase) -> AccountPhase {
 enum Renewal {
     Renewed,
     SignedOut,
+    /// Renewed, and the account owes a second factor (the factor read after the renewal).
+    FactorOwed,
 }
 
 /// The wait before the `n`th retry of a re-establishment that did not reach a verdict: 1 s doubling to 30 s.
@@ -737,6 +916,125 @@ struct Publisher {
     resyncing: HashSet<GroupId>,
     /// The renewals of refused sessions (one per ready, one at a time).
     renew: RenewGate,
+    /// The account's upkeep, started on every ready.
+    upkeep: Arc<Upkeep>,
+    /// The client, once built (what the account and removal entry points take).
+    inner: Arc<OnceLock<Weak<Inner>>>,
+    /// A ready came since the last structure load: the next one reads the removal feeds first.
+    removals_due: bool,
+    /// Which timelines may not be read yet because a removal feed is unread.
+    removals: RemovalGate,
+    taps: Taps,
+}
+
+fn lock_taps(taps: &Taps) -> std::sync::MutexGuard<'_, Vec<mpsc::UnboundedSender<Arc<AppState>>>> {
+    taps.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What keeps a timeline unread until its removal feed is: a ready's read in flight (every timeline), and each group
+/// whose read failed or could not run (its timeline), retried with the key-package backoff.
+#[derive(Debug, Default)]
+struct RemovalGate {
+    /// The newest ready whose feeds are being read (a token: an older ready's answer does not clear a newer one).
+    generation: u64,
+    pending: Option<u64>,
+    /// Groups whose read failed transiently: retried with the backoff.
+    unread: HashSet<[u8; 16]>,
+    /// Groups whose read failed for good: shown as the channel's state, not retried (a later ready reads them again).
+    failed: HashMap<[u8; 16], TimelineUnavailable>,
+    delay_ms: u64,
+    retrying: bool,
+    /// Orders the answers: each clearing is a tick, and a read's answer for a group cleared after the read started
+    /// (by an apply's or an open's own read) is stale.
+    clock: u64,
+    cleared_at: HashMap<[u8; 16], u64>,
+}
+
+/// The answer of one read of removal feeds: when it started ([`RemovalGate::clock`]) and what is still unread.
+type FeedAnswers = (u64, HashMap<[u8; 16], FeedFailure>);
+
+impl RemovalGate {
+    /// A ready's read starts: its generation and the tick it starts at.
+    fn start(&mut self) -> (u64, u64) {
+        self.generation += 1;
+        self.pending = Some(self.generation);
+        (self.generation, self.clock)
+    }
+
+    /// Takes a read's answers, skipping a group cleared since the read started.
+    fn apply(&mut self, (started, answers): FeedAnswers) {
+        for (g, why) in answers {
+            if self.cleared_at.get(&g).is_some_and(|at| *at > started) {
+                continue;
+            }
+            match why {
+                FeedFailure::Transient(_) => {
+                    self.failed.remove(&g);
+                    self.unread.insert(g);
+                }
+                FeedFailure::Terminal(why) => {
+                    self.unread.remove(&g);
+                    self.failed.insert(g, why);
+                }
+            }
+        }
+        if self.unread.is_empty() {
+            self.delay_ms = 0;
+        }
+    }
+
+    /// A ready's read ended: answers whether it was the newest one.
+    fn read(&mut self, generation: u64, answers: FeedAnswers) -> bool {
+        self.apply(answers);
+        if self.pending == Some(generation) {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cleared(&mut self, group: &[u8; 16]) {
+        self.clock += 1;
+        self.cleared_at.insert(*group, self.clock);
+        self.unread.remove(group);
+        self.failed.remove(group);
+        if self.unread.is_empty() {
+            self.delay_ms = 0;
+        }
+    }
+
+    /// Whether `group`'s timeline may be read now.
+    fn readable(&self, group: &[u8; 16]) -> bool {
+        self.pending.is_none() && !self.unread.contains(group) && !self.failed.contains_key(group)
+    }
+
+    /// The next retry's wait, the tick it starts at and the groups it reads, unless one is out or nothing transient
+    /// is unread.
+    fn next_retry(&mut self) -> Option<(Duration, u64, Vec<[u8; 16]>)> {
+        if self.retrying || self.unread.is_empty() {
+            return None;
+        }
+        self.retrying = true;
+        self.delay_ms = crate::account::keypackages::next_delay_ms(self.delay_ms);
+        Some((
+            Duration::from_millis(self.delay_ms),
+            self.clock,
+            self.unread.iter().copied().collect(),
+        ))
+    }
+
+    /// A retry ended. Its groups are taken off first (a group that read is not in the answers), then its answers.
+    fn retried(&mut self, groups: &[[u8; 16]], answers: FeedAnswers) {
+        self.retrying = false;
+        for g in groups {
+            if !answers.1.contains_key(g) {
+                self.unread.remove(g);
+            }
+        }
+        self.apply(answers);
+    }
 }
 
 impl Publisher {
@@ -748,6 +1046,8 @@ impl Publisher {
             }
             let mut groups: HashSet<[u8; 16]> = HashSet::new();
             let mut structure = false;
+            let mut panicked = false;
+            let mut reread_all = false;
             for update in batch {
                 match update {
                     Update::Group(g) => {
@@ -769,15 +1069,14 @@ impl Publisher {
                         groups.insert(g.0);
                     }
                     Update::Connection(event) => structure |= self.on_connection(event),
-                    Update::FactorRequired => {
-                        self.state.account.phase = AccountPhase::FactorSetup;
-                    }
+                    Update::FactorRequired => self.factor_required(),
                     Update::Renewed(outcome) => {
                         let offline = self.link.app_offline.load(Ordering::Acquire);
                         match self.renew.done(outcome, offline) {
                             AfterRenewal::Restart => self.link.restart(),
                             AfterRenewal::Stay => {}
                             AfterRenewal::SignOut => self.sign_out(),
+                            AfterRenewal::FactorSetup => self.factor_required(),
                         }
                     }
                     Update::Structure => structure = true,
@@ -794,9 +1093,34 @@ impl Publisher {
                         groups.insert([0; 16]);
                     }
                     Update::Apply(f) => f(&mut self.state),
+                    Update::FactorCompleted => self.check_factor(),
+                    Update::FactorChecked(owed) => self.factor_completed(owed),
+                    Update::Panicked => panicked = true,
+                    Update::Unlisted => self.sign_out(),
+                    Update::RemovalsRead {
+                        generation,
+                        answers,
+                    } => {
+                        // The newest ready's read: every channel the gate held back is read now (its structure
+                        // load may have failed, and nothing else would read them).
+                        reread_all |= self.removals.read(generation, answers);
+                        self.retry_removals();
+                    }
+                    Update::RemovalsCleared(g) => {
+                        self.removals.cleared(&g);
+                        groups.insert(g);
+                    }
+                    Update::RemovalsRetried {
+                        groups: tried,
+                        answers,
+                    } => {
+                        self.removals.retried(&tried, answers);
+                        groups.extend(tried);
+                        self.retry_removals();
+                    }
                 }
             }
-            if self.core.is_poisoned() {
+            if self.core.is_poisoned() || panicked {
                 self.fail();
                 self.publish();
                 // Every action still queued answers Stopped (none is dropped unanswered); later ones find the channel
@@ -812,6 +1136,16 @@ impl Publisher {
             if structure {
                 self.load_structure();
             }
+            if reread_all {
+                let all: HashSet<[u8; 16]> = self
+                    .engine
+                    .groups()
+                    .await
+                    .iter()
+                    .map(|r| r.group_id)
+                    .collect();
+                groups.extend(all);
+            }
             if !groups.is_empty() {
                 self.refresh_groups(&groups).await;
             }
@@ -820,11 +1154,16 @@ impl Publisher {
     }
 
     fn publish(&self) {
-        self.tx.send_replace(Arc::new(self.state.clone()));
+        let snapshot = Arc::new(self.state.clone());
+        // Under the taps' lock, so a subscriber added meanwhile sees either this snapshot as its first or receives it.
+        let mut taps = lock_taps(&self.taps);
+        taps.retain(|t| t.send(snapshot.clone()).is_ok());
+        self.tx.send_replace(snapshot);
     }
 
     /// The device is revoked: final for this client (a later ready never says otherwise, see [`phase_on_ready`]).
     fn sign_out(&mut self) {
+        self.upkeep.stop();
         self.link.disconnect();
         self.state.connection.status = ConnectionStatus::Offline;
         self.state.account.phase = AccountPhase::Revoked;
@@ -842,6 +1181,8 @@ impl Publisher {
                 self.state.account.phase = phase_on_ready(self.state.account.phase);
                 let engine = self.engine.clone();
                 tokio::spawn(async move { engine.reset_trust_memory().await });
+                self.after_ready(&info);
+                self.removals_due = true;
                 true
             }
             ConnectionEvent::Down => {
@@ -861,7 +1202,13 @@ impl Publisher {
                         self.state.connection.status = ConnectionStatus::Connecting;
                         let (api, updates) = (self.api.clone(), self.updates.clone());
                         tokio::spawn(async move {
-                            let outcome = renew(|| api.establish(), renewal_backoff).await;
+                            let outcome = match renew(|| api.establish(), renewal_backoff).await {
+                                // The new session is fine, but the account owes a factor: the gateway would refuse it.
+                                Renewal::Renewed if factors_owed(&api).await.unwrap_or(false) => {
+                                    Renewal::FactorOwed
+                                }
+                                other => other,
+                            };
                             let _ = updates.send(Update::Renewed(outcome));
                         });
                     }
@@ -872,29 +1219,155 @@ impl Publisher {
                 }
                 false
             }
-            ConnectionEvent::Refused(refusal, _) => {
+            ConnectionEvent::Refused(Refusal::SecondFactorRequired, _) => {
                 self.state.connection.status = ConnectionStatus::Offline;
-                self.state.account.phase = match refusal {
-                    Refusal::Revoked => AccountPhase::Revoked,
-                    Refusal::SecondFactorRequired => AccountPhase::FactorSetup,
-                    Refusal::UpgradeRequired => AccountPhase::VersionRefused { upgrade: true },
-                    Refusal::InstanceOutdated | Refusal::VersionUnsupported => {
-                        AccountPhase::VersionRefused { upgrade: false }
-                    }
-                };
+                self.state.account.phase = AccountPhase::FactorSetup;
+                false
+            }
+            ConnectionEvent::Refused(Refusal::UpgradeRequired, _) => {
+                self.state.connection.status = ConnectionStatus::Offline;
+                self.state.account.phase = AccountPhase::VersionRefused { upgrade: true };
+                false
+            }
+            ConnectionEvent::Refused(
+                Refusal::InstanceOutdated | Refusal::VersionUnsupported,
+                _,
+            ) => {
+                self.state.connection.status = ConnectionStatus::Offline;
+                self.state.account.phase = AccountPhase::VersionRefused { upgrade: false };
                 false
             }
         }
     }
 
-    /// Reads the structure off the publisher's loop; the result comes back as `Loaded`.
-    fn load_structure(&self) {
+    /// controller.ts `onReady`, the account's part: the key packages topped up from the ready's count, and the backup
+    /// pass in the controller's order (ensure, refresh the own device list, repair only a listed device). A device the
+    /// refreshed list leaves out is signed out ([`Update::Unlisted`]); every other failure is kept in the upkeep's
+    /// [`crate::account::BackupStatus`] ([`Client::backups`]) and the next ready tries again. None of it holds the ready
+    /// up. (The removal feeds are read by the structure load this ready starts, before any timeline:
+    /// [`Publisher::load_structure`].)
+    fn after_ready(&self, info: &crate::gateway::ReadyInfo) {
+        if self.state.account.phase != AccountPhase::Ready {
+            return;
+        }
+        let Some(inner) = self.inner.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let remaining = u32::try_from(info.keypackages_remaining).unwrap_or(u32::MAX);
+        crate::account::refill_key_packages(&inner, remaining);
+        let backups = inner.clone();
+        let updates = self.updates.clone();
+        drop(inner.spawn(async move {
+            match crate::account::backups_after_ready(&backups).await {
+                Ok(crate::account::backups::AfterReady::Unlisted) => {
+                    let _ = updates.send(Update::Unlisted);
+                }
+                Ok(crate::account::backups::AfterReady::Listed { .. }) => {}
+                // Recorded in the upkeep's BackupStatus (Client::backups); the next ready tries again.
+                Err(e) => return Err(ClientError::Sync(e.to_string())),
+            }
+            Ok(())
+        }));
+    }
+
+    /// controller.ts `onFactorRequired`: the account owes a second factor (a refusal named `E_FACTOR_REQUIRED`, the
+    /// gateway's "second factor required", or a renewed session the factor read finds owing): factor setup, with the
+    /// gateway stopped, since the instance refuses it until a factor is added (a refused gateway left running would be
+    /// taken for a revoked session and sign the device out).
+    fn factor_required(&mut self) {
+        if matches!(
+            self.state.account.phase,
+            AccountPhase::Revoked | AccountPhase::Failed
+        ) {
+            return;
+        }
+        self.state.account.phase = AccountPhase::FactorSetup;
+        self.state.connection.status = ConnectionStatus::Offline;
+        self.link.disconnect();
+    }
+
+    /// [`Client::factor_completed`]: the factors are read again (controller.ts `factorSetupDone`), off the loop.
+    fn check_factor(&self) {
+        if self.state.account.phase != AccountPhase::FactorSetup {
+            return;
+        }
+        let (api, updates) = (self.api.clone(), self.updates.clone());
+        tokio::spawn(async move {
+            // An unreadable answer leaves the account where it is; the factor screens may complete again.
+            if let Ok(owed) = factors_owed(&api).await {
+                let _ = updates.send(Update::FactorChecked(owed));
+            }
+        });
+    }
+
+    /// The factor read after [`Client::factor_completed`]: still owed, the account stays in `FactorSetup`; else it
+    /// leaves it and connects again on the same client, unless the app has taken the connection down (its own
+    /// reconnect then connects).
+    fn factor_completed(&mut self, owed: bool) {
+        if owed || self.state.account.phase != AccountPhase::FactorSetup {
+            return;
+        }
+        self.state.account.phase = AccountPhase::Loading;
+        self.renew = RenewGate::default();
+        if self.link.app_offline.load(Ordering::Acquire) {
+            self.state.connection.status = ConnectionStatus::Offline;
+        } else {
+            self.state.connection.status = ConnectionStatus::Connecting;
+            self.link.restart();
+        }
+    }
+
+    /// Reads the structure off the publisher's loop; the result comes back as `Loaded`, whose handling reads every
+    /// channel's timeline. After a ready, every community group's removal feed is read first
+    /// ([`crate::sync::removals::recover_moderation_removals`]): a removal made while this device was away is a
+    /// tombstone before any timeline shows the message.
+    fn load_structure(&mut self) {
         let api = self.api.clone();
         let updates = self.updates.clone();
+        let removals = std::mem::take(&mut self.removals_due)
+            .then(|| self.inner.get().and_then(Weak::upgrade))
+            .flatten();
+        // Until the feeds are read, no timeline is read (a trust refresh or a catch-up of this ready may report a
+        // group changed first): the store may still hold a message removed while this device was away.
+        let generation = removals.as_ref().map(|_| self.removals.start());
         tokio::spawn(async move {
+            if let (Some(inner), Some((generation, started))) = (removals, generation) {
+                let unread = crate::sync::removals::recover_moderation_removals(&inner).await;
+                drop(inner);
+                let _ = updates.send(Update::RemovalsRead {
+                    generation,
+                    answers: (started, unread),
+                });
+            }
             if let Ok(loaded) = load_structure(&api).await {
                 let _ = updates.send(Update::Loaded(Box::new(loaded)));
             }
+        });
+    }
+
+    /// Retries the unread removal feeds after the backoff (5 s doubling to 5 min, as a key-package publish); a feed
+    /// read on the way (an apply, an open) clears its group without waiting.
+    fn retry_removals(&mut self) {
+        let Some((wait, started, groups)) = self.removals.next_retry() else {
+            return;
+        };
+        let inner = self.inner.get().cloned();
+        let updates = self.updates.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            let still = match inner.and_then(|w| w.upgrade()) {
+                Some(inner) => {
+                    crate::sync::removals::retry_moderation_removals(&inner, groups.clone()).await
+                }
+                None => groups
+                    .iter()
+                    .map(|g| (*g, FeedFailure::Transient("E_SYNC_STOPPED".into())))
+                    .collect(),
+            };
+            let _ = updates.send(Update::RemovalsRetried {
+                groups,
+                answers: (started, still),
+            });
         });
     }
 
@@ -953,6 +1426,24 @@ impl Publisher {
             let Some(group) = channel_group(id, &rows).filter(|g| g.state != 4).cloned() else {
                 continue;
             };
+            // A removal feed not read yet: the store may hold a message removed meanwhile. The timeline is shown as
+            // loading (no timeline), never with what the store holds; a feed that cannot be read is the channel's
+            // state (`messages.unavailable`), with why.
+            if !self.removals.readable(&group.group_id) {
+                if self.removals.pending.is_none() {
+                    self.state.timelines.remove(&id);
+                }
+                match self.removals.failed.get(&group.group_id) {
+                    Some(why) => {
+                        self.state.messages.unavailable.insert(id, why.clone());
+                    }
+                    None => {
+                        self.state.messages.unavailable.remove(&id);
+                    }
+                }
+                continue;
+            }
+            self.state.messages.unavailable.remove(&id);
             let timeline = self.read_timeline(id, group_state, &group).await;
             if let Some(t) = timeline {
                 self.state.timelines.insert(id, t);
@@ -1028,8 +1519,10 @@ impl Publisher {
             .map_err(|e| ClientError::Sync(e.code.to_owned()))
     }
 
-    /// The core is poisoned: stop syncing for good (no job uses it again), drop the gateway, and say so.
+    /// The core is poisoned, or a job panicked: stop syncing for good (no job uses it again), drop the gateway, and say
+    /// so.
     fn fail(&mut self) {
+        self.upkeep.stop();
         self.engine.stop();
         self.link.disconnect();
         self.link.socket.close();

@@ -20,8 +20,12 @@
 //! ([`Engine::run_events`]) only decodes and hands work to lanes, so a slow decrypt never stalls the event stream (the
 //! gateway tears a connection down when an event is left untaken for its ack timeout).
 //!
-//! Not ported in this task (see the report): the moderation-removal feed recovery (removals.ts) that runs before a
-//! community group's timeline is published, attachments (`beforeSend`), DMs, calls and Bot groups.
+//! - **Moderation removals** ([`removals`]): a community group's signed removal feed is read before the group is
+//!   reported changed (every apply), on every `message.deleted`, when its channel is opened, and after every ready.
+//! - **Failure**: every job the engine spawns is watched; one that panics stops the engine and is reported
+//!   ([`SyncHooks::failed`]), never lost silently with its lane.
+//!
+//! Not ported here: attachments (`beforeSend`), DMs, calls and Bot groups (the screens plan's areas).
 
 pub mod api;
 pub mod lanes;
@@ -237,6 +241,12 @@ pub trait SyncHooks: Send + Sync {
     /// A frame the engine does not consume, for the area [`route::route`] names (presence, typing, voice state, rings,
     /// AFK, the app build, the Bot's frames). The client hands it to that area's feature.
     fn area_frame(&self, _area: crate::features::Area, _frame: Frame) {}
+    /// A job of the engine panicked without poisoning the core (a bug in the engine, not the store): the engine has
+    /// stopped, and the client is to report itself failed rather than carry on with a lane that silently lost a job.
+    fn failed(&self) {}
+    /// A community group's removal feed was read to its end (the core holds every tombstone the instance has): its
+    /// timeline may be published again ([`Engine::recover_removals_all`] lists those whose read failed).
+    fn removals_read(&self, _group: Gid) {}
 }
 
 /// The gateway's lifecycle as the model sees it.
@@ -272,6 +282,9 @@ struct St {
     count425: HashMap<Gid, u32>,
     reframed_once: HashSet<(Gid, Gid)>,
     trust_retried: HashMap<(Gid, Gid), bool>,
+    /// Groups whose removal recovery already reset the trust memory for a moderator this ready (once per group per
+    /// ready, as `trust_retried` bounds a send's trust retry).
+    removal_trust_tried: HashSet<Gid>,
     resync_tried: HashSet<Gid>,
     recovery_generation: HashMap<Gid, u64>,
     quiet: HashSet<Gid>,
@@ -386,18 +399,79 @@ impl Engine {
         self.instance
     }
 
+    /// `job`, watched: a panic in it stops the engine and is reported through [`SyncHooks::failed`] (a panic that
+    /// poisoned the core is the publisher's own `Failed` already). Every job the engine spawns runs through this.
+    pub(crate) fn watched<F>(self: &Arc<Self>, job: F) -> impl Future<Output = ()> + Send + 'static
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        use futures_util::FutureExt;
+        let this = Arc::clone(self);
+        async move {
+            if std::panic::AssertUnwindSafe(job)
+                .catch_unwind()
+                .await
+                .is_err()
+            {
+                this.panicked();
+            }
+        }
+    }
+
+    /// [`Engine::watched`] for a job with an answer: `None` when it panicked.
+    async fn watched_value<T>(self: &Arc<Self>, job: impl Future<Output = T>) -> Option<T> {
+        use futures_util::FutureExt;
+        match std::panic::AssertUnwindSafe(job).catch_unwind().await {
+            Ok(v) => Some(v),
+            Err(_) => {
+                self.panicked();
+                None
+            }
+        }
+    }
+
+    /// A job panicked: nothing more runs, and the client is told.
+    fn panicked(&self) {
+        self.stop();
+        self.hooks.failed();
+    }
+
+    /// [`Lanes::spawn`] of a watched job.
+    fn lane_spawn<F>(self: &Arc<Self>, key: &str, job: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.lanes.spawn(key, self.watched(job));
+    }
+
+    /// [`Lanes::coalesce`] of a watched job.
+    fn lane_coalesce<F>(self: &Arc<Self>, key: &str, tag: &'static str, job: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.lanes.coalesce(key, tag, self.watched(job))
+    }
+
+    /// `tokio::spawn` of a watched job.
+    fn spawn_watched<F>(self: &Arc<Self>, job: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        tokio::spawn(self.watched(job));
+    }
+
     fn arm<F, Fut>(self: &Arc<Self>, after: Duration, f: F) -> AbortHandle
     where
         F: FnOnce(Arc<Self>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let this = Arc::clone(self);
-        let handle = tokio::spawn(async move {
+        let handle = tokio::spawn(self.watched(async move {
             tokio::time::sleep(after).await;
             if !this.stopped() {
                 f(this).await;
             }
-        })
+        }))
         .abort_handle();
         let mut st = self.st();
         st.timers.retain(|t| !t.is_finished());
@@ -536,7 +610,11 @@ impl Engine {
                     hex(&info.boot_id)
                 );
                 if let Some(h) = &hello {
-                    self.st().backoff = (h.backoff_ms, h.backoff_jitter_ms);
+                    use crate::gateway::bounded_server_wait;
+                    self.st().backoff = (
+                        bounded_server_wait(h.backoff_ms),
+                        bounded_server_wait(h.backoff_jitter_ms),
+                    );
                 }
                 self.api.socket().on_ready(incarnation);
                 self.hooks
@@ -607,7 +685,7 @@ impl Engine {
                 };
                 let this = Arc::clone(self);
                 let gateway = gateway.clone();
-                tokio::spawn(async move {
+                self.spawn_watched(async move {
                     if this.state_of(g).await != Some(2) {
                         return;
                     }
@@ -627,18 +705,15 @@ impl Engine {
             }
             Op::HANDSHAKE | Op::MESSAGE_CT => {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn(&key(&g), async move { this.frame_job(f).await });
+                self.lane_spawn(&key(&g), async move { this.frame_job(f).await });
             }
             Op::MESSAGE_DELETED => {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn(&key(&g), async move { this.deleted_job(f).await });
+                self.lane_spawn(&key(&g), async move { this.deleted_job(f).await });
             }
             Op::WELCOME => {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn("w", async move { this.welcome_frame(f).await });
+                self.lane_spawn("w", async move { this.welcome_frame(f).await });
             }
             _ => {}
         }
@@ -656,9 +731,10 @@ impl Engine {
             st.quiet.clear();
             st.resync_tried.clear();
             st.heal_blocked.clear();
+            st.removal_trust_tried.clear();
         }
         let this = Arc::clone(self);
-        self.lanes.spawn("w", async move {
+        self.lane_spawn("w", async move {
             let groups = this.groups().await;
             {
                 let mut st = this.st();
@@ -698,7 +774,7 @@ impl Engine {
                     }
                 } else if g.state == 3 && !this.st().resync_tried.contains(&id) {
                     let t = Arc::clone(&this);
-                    this.lanes.coalesce(&key(&id), "resync", async move {
+                    this.lane_coalesce(&key(&id), "resync", async move {
                         t.resync(id).await;
                     });
                 }
@@ -799,9 +875,16 @@ impl Engine {
             {
                 Ok(result) => {
                     let active = result.state == 2;
-                    self.clone().apply_hook(g, result, Source::Frame).await;
-                    if active {
-                        self.arm_cursor(g);
+                    match self.clone().apply_hook(g, result, Source::Frame).await {
+                        Ok(()) if active => self.arm_cursor(g),
+                        Ok(()) => {}
+                        // engine.ts frameJob: a core refusal reports what the core holds and catches up; any other
+                        // failure (the removal feed) leaves the group unpublished until the next apply or ready.
+                        Err(SyncError::Core(_)) => {
+                            self.report_current(g);
+                            self.request_catch_up(g);
+                        }
+                        Err(_) => {}
                     }
                 }
                 Err(_) => {
@@ -828,13 +911,19 @@ impl Engine {
         if self.row(g).await.is_none_or(|r| r.state == 4) {
             return;
         }
-        match with_core(&self.core, move |c| c.message_deleted(&g, seq)).await {
-            Ok(raw) => {
-                if ApplyResult::decode(&raw).is_ok_and(|r| !r.new_seqs.is_empty()) {
-                    self.hooks.group_changed(g);
-                }
-            }
-            Err(_) => self.report_current(g),
+        let mut changed = match with_core(&self.core, move |c| c.message_deleted(&g, seq)).await {
+            Ok(raw) => ApplyResult::decode(&raw).is_ok_and(|r| !r.new_seqs.is_empty()),
+            Err(_) => true,
+        };
+        // A removal frame (screens plan, Task 2): the signed feed entry behind a moderator's removal is ingested now,
+        // on this lane, so the tombstone is the core's durable record and not only this frame's.
+        if self.is_community_group(g).await
+            && let Ok(n) = self.recover_removals(g).await
+        {
+            changed |= n > 0;
+        }
+        if changed {
+            self.report_current(g);
         }
     }
 
@@ -849,8 +938,7 @@ impl Engine {
         let handle = self.arm(CURSOR_DEBOUNCE, move |this| async move {
             this.st().cursor_timer.remove(&g);
             let t = Arc::clone(&this);
-            this.lanes
-                .spawn(&key(&g), async move { t.cursor_step(g).await });
+            this.lane_spawn(&key(&g), async move { t.cursor_step(g).await });
         });
         self.st().cursor_timer.insert(g, handle);
     }
@@ -920,7 +1008,7 @@ impl Engine {
                             with_core(&self.core, move |c| c.group_apply(&g, &h, &m, through))
                                 .await?;
                         let result = ApplyResult::decode(&raw)?;
-                        self.clone().apply_hook(g, result, source).await;
+                        self.clone().apply_hook(g, result, source).await?;
                     }
                     carry = hs.last;
                     if self.state_of(g).await != Some(2) {
@@ -972,9 +1060,19 @@ impl Engine {
         }
     }
 
-    /// engine.ts `applyHook` (without the moderation-removal recovery; see the module doc).
-    fn apply_hook(self: Arc<Self>, g: Gid, r: ApplyResult, source: Source) -> BoxFut<()> {
+    /// engine.ts `applyHook`. A community group's removal feed is reconciled first (removals.rs): until it is, the
+    /// group is not reported changed, so a removed message's plaintext is never published. A failed reconciliation ends
+    /// the hook with its error, as the TS hook throws.
+    fn apply_hook(
+        self: Arc<Self>,
+        g: Gid,
+        r: ApplyResult,
+        source: Source,
+    ) -> BoxFut<Result<(), SyncError>> {
         Box::pin(async move {
+            if self.is_community_group(g).await {
+                self.recover_removals(g).await?;
+            }
             self.hooks.group_changed(g);
             if r.own_adopted {
                 let rows = self.outbox(g).await;
@@ -1025,9 +1123,140 @@ impl Engine {
             // A leaf the core cannot judge yet holds its rows: read its signed list now.
             if r.epoch_changed || !r.new_seqs.is_empty() {
                 let this = Arc::clone(&self);
-                tokio::spawn(async move { this.refresh_trust().await });
+                self.spawn_watched(async move { this.refresh_trust().await });
             }
+            Ok(())
         })
+    }
+
+    /// [`removals::recover_group`] for `g`. The core verifies a removal only against a moderator whose user key this
+    /// device pinned (a trust refresh of the moderator's leaf). A moderator this device has not judged yet (no message
+    /// from them read, a refresh that has not run since the ready) is refused `E_CORE_INPUT`: the pending leaves are
+    /// read once (the leaf refresh controller.ts runs on every ready) and the feed is read again. That refresh reports
+    /// no group changed: a group whose feed has not been read yet must not have its timeline published by it (the
+    /// caller reports `g` once its feed is in).
+    ///
+    /// The trust memory is reset at most once per group per ready. A success is reported ([`SyncHooks::removals_read`]).
+    async fn recover_removals(&self, g: Gid) -> Result<u64, SyncError> {
+        let read = match removals::recover_group(&self.core, &self.api, g).await {
+            Err(SyncError::Core(e))
+                if e.code == "E_CORE_INPUT"
+                    && !self.stopped()
+                    && self.st().removal_trust_tried.insert(g) =>
+            {
+                *self.trust.lock().await = trust::TrustMemory::default();
+                if trust::refresh_once(&self.api, &self.core, &self.trust, now_s()).await {
+                    self.hooks.trust_changed();
+                }
+                removals::recover_group(&self.core, &self.api, g).await
+            }
+            other => other,
+        };
+        if read.is_ok() {
+            self.hooks.removals_read(g);
+        }
+        read
+    }
+
+    /// An active, settled group bound to a community (kind 0 with a community id, no commit of its own pending): the
+    /// groups whose removal feed the core can ingest.
+    async fn is_community_group(&self, g: Gid) -> bool {
+        self.row(g).await.is_some_and(|r| {
+            r.kind == 0 && r.state == 2 && r.community_id.is_some() && !r.pending_commit
+        })
+    }
+
+    /// Reads every active community group's removal feed, each on its own lane, and answers once all of them have run:
+    /// a recovery that ingested anything reports its group changed. A failure is left for the next apply, ready or open.
+    pub async fn recover_removals_all(self: &Arc<Self>) -> HashMap<Gid, removals::FeedFailure> {
+        if self.stopped() {
+            return HashMap::new();
+        }
+        let groups = self
+            .groups()
+            .await
+            .into_iter()
+            .filter(|r| r.kind == 0 && r.community_id.is_some() && r.state != 4)
+            .map(|r| r.group_id)
+            .collect();
+        self.recover_removals_of(groups).await
+    }
+
+    /// Reads the removal feed of each of `groups` on its own lane; answers those whose feed is still unread, with why
+    /// ([`removals::FeedFailure`]). A group that is not active (registering, joining, waiting for a resync) is not read
+    /// now and stays held back (a transient failure, retried); its channel shows that state. A group with a commit of its own pending is a transient
+    /// failure (the core ingests only a settled group). A lost leaf (404 on an active group) is resynced and its feed
+    /// read once more (engine.ts `openChannel`). Each group read is reported changed.
+    pub async fn recover_removals_of(
+        self: &Arc<Self>,
+        groups: Vec<Gid>,
+    ) -> HashMap<Gid, removals::FeedFailure> {
+        let asked = groups.clone();
+        let jobs: Vec<_> = groups
+            .into_iter()
+            .map(|g| {
+                let this = Arc::clone(self);
+                async move {
+                    let lane = Arc::clone(&this.lanes);
+                    let read = lane.run(&key(&g), this.clone().feed_read(g)).await;
+                    read.err().map(|why| (g, why))
+                }
+            })
+            .collect();
+        // A read that panicked answers every group unread (never released without a read).
+        match self
+            .watched_value(futures_util::future::join_all(jobs))
+            .await
+        {
+            Some(answers) => answers.into_iter().flatten().collect(),
+            None => asked
+                .into_iter()
+                .map(|g| (g, removals::FeedFailure::Transient("E_PANICKED".into())))
+                .collect(),
+        }
+    }
+
+    /// One group's read for [`Engine::recover_removals_of`], on its lane.
+    async fn feed_read(self: Arc<Self>, g: Gid) -> Result<(), removals::FeedFailure> {
+        use removals::FeedFailure;
+        if self.stopped() {
+            return Err(FeedFailure::Transient("E_SYNC_STOPPED".into()));
+        }
+        let Some(row) = self.row(g).await else {
+            return Ok(());
+        };
+        if row.kind != 0 || row.community_id.is_none() || row.state == 4 {
+            return Ok(());
+        }
+        // Jonas (2026-11-13), stricter than the web: a community group that is registering, joining or waiting for a
+        // resync keeps its history hidden until its feed is read. Nothing is requested now (the core cannot ingest
+        // into it); the retry reads it once the group is active again. Its channel shows the group's state meanwhile.
+        if row.state != 2 {
+            return Err(FeedFailure::Transient("E_GROUP_NOT_ACTIVE".into()));
+        }
+        if row.pending_commit {
+            return Err(FeedFailure::Transient("E_COMMIT_PENDING".into()));
+        }
+        let read = match self.recover_removals(g).await {
+            Err(e) if self.membership_lost(g, &e).await => {
+                // engine.ts openChannel: a device that rejoined before its catch-up noticed its Remove is refused the
+                // member-only feed with the 404 of a lost leaf; one resync, then the feed is read again.
+                if !self.clone().resync_group(g, true).await {
+                    return Err(removals::classify(&e));
+                }
+                self.st().heal_blocked.remove(&g);
+                self.recover_removals(g).await
+            }
+            other => other,
+        };
+        match read {
+            Ok(_) => {
+                // Reported whatever was ingested: a trust refresh on the way may have released held rows.
+                self.hooks.group_changed(g);
+                Ok(())
+            }
+            Err(e) => Err(removals::classify(&e)),
+        }
     }
 
     pub fn request_catch_up(self: &Arc<Self>, g: Gid) {
@@ -1035,7 +1264,7 @@ impl Engine {
             return;
         }
         let this = Arc::clone(self);
-        self.lanes.coalesce(&key(&g), "catch-up", async move {
+        self.lane_coalesce(&key(&g), "catch-up", async move {
             this.catch_up_now(g, Source::CatchUp).await;
         });
     }
@@ -1045,8 +1274,7 @@ impl Engine {
             return;
         }
         let this = Arc::clone(self);
-        self.lanes
-            .coalesce(&key(&g), "drain", async move { this.drain_one(g).await });
+        self.lane_coalesce(&key(&g), "drain", async move { this.drain_one(g).await });
     }
 
     fn request_commit(self: &Arc<Self>, g: Gid, attempt: u32) {
@@ -1054,7 +1282,7 @@ impl Engine {
             return;
         }
         let this = Arc::clone(self);
-        self.lanes.coalesce(&key(&g), "commit", async move {
+        self.lane_coalesce(&key(&g), "commit", async move {
             this.commit_now(g, attempt).await;
         });
     }
@@ -1128,7 +1356,7 @@ impl Engine {
                 }
                 let raw = with_core(&self.core, move |c| c.commit_confirm(&g)).await?;
                 let result = ApplyResult::decode(&raw)?;
-                self.clone().apply_hook(g, result, Source::Commit).await;
+                self.clone().apply_hook(g, result, Source::Commit).await?;
                 Ok(())
             }
             .await;
@@ -1414,8 +1642,7 @@ impl Engine {
             let _ = self.api.delete_welcome(id).await;
             if outcome == 0 {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn(&key(&g), async move { this.activate(g).await });
+                self.lane_spawn(&key(&g), async move { this.activate(g).await });
             }
         }
     }
@@ -1446,7 +1673,7 @@ impl Engine {
             st.join_all.running = true;
         }
         let this = Arc::clone(self);
-        tokio::spawn(async move { this.join_all_pass().await });
+        self.spawn_watched(async move { this.join_all_pass().await });
     }
 
     async fn join_all_pass(self: Arc<Self>) {
@@ -1548,7 +1775,70 @@ impl Engine {
         let this = Arc::clone(self);
         self.lanes
             .run(&format!("c:{}", hex(&channel)), async move {
-                this.open_channel_flow(community, channel, text_group).await
+                let g = this
+                    .open_channel_flow(community, channel, text_group)
+                    .await?;
+                if community.is_some() {
+                    this.open_removals(g).await?;
+                }
+                Ok(g)
+            })
+            .await
+    }
+
+    /// engine.ts `openChannel`: an opened community group's removal feed is read on its lane before the caller
+    /// publishes its timeline. A device that rejoined before its catch-up noticed its Remove is refused the feed with
+    /// the 404 of a lost leaf: the group is resynced once on its lane and the feed read again.
+    async fn open_removals(self: &Arc<Self>, g: Gid) -> Result<(), SyncError> {
+        let observed = self.st().recovery_generation.get(&g).copied().unwrap_or(0);
+        let this = Arc::clone(self);
+        let first = self
+            .lanes
+            .run(&key(&g), async move {
+                if this.stopped() {
+                    return Err(SyncError::Stopped);
+                }
+                if !this.is_community_group(g).await {
+                    return Ok(());
+                }
+                this.recover_removals(g).await.map(|_| ())
+            })
+            .await;
+        let Err(e) = first else { return Ok(()) };
+        if !self.membership_lost(g, &e).await {
+            return Err(e);
+        }
+        let this = Arc::clone(self);
+        let resynced = self
+            .lanes
+            .run(&key(&g), async move {
+                if this.stopped() {
+                    return Err(SyncError::Stopped);
+                }
+                // A proposal or catch-up on this lane may have replaced the leaf after the failed read: read again.
+                if this.st().recovery_generation.get(&g).copied().unwrap_or(0) != observed {
+                    return Ok(true);
+                }
+                let joined = this.clone().resync_group(g, true).await;
+                if joined {
+                    this.st().heal_blocked.remove(&g);
+                }
+                Ok(joined)
+            })
+            .await?;
+        if !resynced {
+            return Err(e);
+        }
+        let this = Arc::clone(self);
+        self.lanes
+            .run(&key(&g), async move {
+                if this.stopped() {
+                    return Err(SyncError::Stopped);
+                }
+                if !this.is_community_group(g).await {
+                    return Ok(());
+                }
+                this.recover_removals(g).await.map(|_| ())
             })
             .await
     }
@@ -1774,7 +2064,7 @@ impl Engine {
     fn arm_echo_wait(self: &Arc<Self>, g: Gid, msg: Gid) {
         let handle = self.arm(ECHO_WAIT, move |this| async move {
             let t = Arc::clone(&this);
-            this.lanes.spawn(&key(&g), async move {
+            this.lane_spawn(&key(&g), async move {
                 let reached = t.clone().catch_up_now(g, Source::CatchUp).await;
                 let fresh = t.outbox(g).await.into_iter().find(|x| x.msg_id == msg);
                 if fresh.as_ref().is_some_and(|r| r.state == 1) && !reached {
@@ -1885,7 +2175,7 @@ impl Engine {
                 // The leaf may be listed in a newer list than the cached one: refresh the group's trust once.
                 self.st().trust_retried.insert(reframe, true);
                 let this = Arc::clone(&self);
-                tokio::spawn(async move {
+                self.spawn_watched(async move {
                     this.refresh_trust().await;
                     if let Some(p) = this.st().trust_retried.get_mut(&reframe) {
                         *p = false;

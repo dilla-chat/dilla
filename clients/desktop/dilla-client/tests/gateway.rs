@@ -358,7 +358,7 @@ async fn next_event(rx: &mut mpsc::Receiver<GatewayEvent>, within: Duration) -> 
 #[tokio::test]
 async fn heartbeat_timeout_reconnects() {
     let script = Script {
-        heartbeat_ms: 200,
+        heartbeat_ms: 500,
         max_frame_bytes: 131_584,
         ack_first: false,
         ..Script::default()
@@ -407,7 +407,7 @@ async fn heartbeat_timeout_reconnects() {
         panic!("expected Disconnected after the unanswered heartbeat");
     };
     assert_eq!(reason, DisconnectReason::Network);
-    // heartbeat every min(200 / 2, 15000) = 100 ms, the first unanswered one times out after 300 ms.
+    // heartbeat every min(500 / 2, 15000) = 250 ms (the floor), the first unanswered one times out after 300 ms.
     let down = t0.elapsed();
     assert!(down < Duration::from_secs(2), "took {down:?} to notice");
 
@@ -564,7 +564,7 @@ fn heartbeats_seen(seen: &mut mpsc::UnboundedReceiver<Seen>) -> usize {
 #[tokio::test]
 async fn blocked_write_still_times_out() {
     let script = Script {
-        heartbeat_ms: 200,
+        heartbeat_ms: 500,
         max_frame_bytes: 4 << 20,
         ack_first: false,
         deaf_first: true,
@@ -607,7 +607,7 @@ async fn blocked_write_still_times_out() {
         panic!("expected Disconnected");
     };
     assert_eq!(reason, DisconnectReason::Network);
-    // One heartbeat interval (100 ms) plus the ack timeout, plus margin.
+    // One heartbeat interval (250 ms) plus the ack timeout, plus margin.
     let took = t0.elapsed();
     assert!(
         took < ack_timeout + Duration::from_millis(1_500),
@@ -621,29 +621,29 @@ async fn blocked_write_still_times_out() {
 #[tokio::test]
 async fn full_event_channel_keeps_heartbeats() {
     let script = Script {
-        heartbeat_ms: 100,
+        heartbeat_ms: 500,
         push: 50,
         ..Script::default()
     };
     let (addr, mut seen) = scripted_server(script).await;
     let base = url::Url::parse(&format!("http://{addr}")).unwrap();
     let options = GatewayOptions {
-        ack_timeout: Duration::from_millis(1_000),
+        ack_timeout: Duration::from_millis(2_000),
         event_capacity: 2,
         ..GatewayOptions::default()
     };
     let gw = WsGateway::connect_with(base, AuthToken::new("tok-slow"), options);
     let mut events = gw.events();
 
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    // A beat every 50 ms (heartbeat_ms / 2) while the channel is full.
+    tokio::time::sleep(Duration::from_millis(1_600)).await;
+    // A beat every 250 ms (heartbeat_ms / 2, the floor) while the channel is full.
     let beats = heartbeats_seen(&mut seen);
     assert!(
         beats >= 5,
         "only {beats} heartbeats while the event channel was full"
     );
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
     let mut log = Vec::new();
     let found = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(e) = events.recv().await {
