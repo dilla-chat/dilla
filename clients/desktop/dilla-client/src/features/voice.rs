@@ -506,9 +506,10 @@ impl Voice {
             .spawn(async move { this.join_inner(channel, None, None).await })
     }
 
-    /// Takes over a join the ring area's gate already let through (Task 18: an answered ring, `effects::hand_to_voice`):
-    /// this device follows it as its own call, as [`Voice::join`] does (the phases, then the media, the dock and the
-    /// stage).
+    /// Takes over a join the ring area's gate already let through ([`Ring::join`]'s [`GatedJoin`]): this device follows
+    /// it as its own call, as [`Voice::join`] does (the phases, then the media, the dock and the stage). The desktop
+    /// answers a ring with [`Voice::join_dm`], which leaves this device's call before the gate posts anything; this entry
+    /// is for a caller that already holds a gated join (`join_gated_follows_the_handed_join` in tests/ring.rs).
     pub fn join_gated(
         &self,
         channel: ChannelId,
