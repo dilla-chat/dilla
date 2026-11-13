@@ -960,6 +960,8 @@ impl Render for ShellView {
             0.0
         };
         let log_width = window_width - f32::from(layout::RAIL) - panes.sidebar - aside_width;
+        // The reaction bars wrap to the message column (10).
+        crate::screens::reactions::set_log_width(cx, log_width);
         let log = match channel {
             Some(c) => {
                 let weak = shell.clone();

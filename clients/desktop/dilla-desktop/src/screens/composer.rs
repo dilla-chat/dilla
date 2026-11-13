@@ -197,10 +197,9 @@ impl Render for Composer {
             .px(px(6.))
             .pb(px(6.))
             .child(tool(IconName::Paperclip))
-            .child(tool(IconName::Smile))
-            .child(tool(IconName::CodeXml))
-            // The other areas' buttons (12, 10). Before the flexible spacer, which absorbs the gap an empty slot adds.
+            // The other areas' buttons (12, 10): attach, then emoji, then the code tool (the web's order).
             .child(buttons)
+            .child(tool(IconName::CodeXml))
             .child(div().flex_1())
             .child(div().ml(px(10.)).child(line(
                 "⇧↵ new line",
