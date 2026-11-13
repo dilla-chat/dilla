@@ -1142,6 +1142,13 @@ impl Engine {
         })
     }
 
+    /// The trust memory's step before a removal feed is read again for an unjudged moderator: every leaf is read again
+    /// (controller.ts `onReady`'s `fetchedLeaves.clear()`, which is what the web relies on here), and the annotations
+    /// (unlisted, history pending, refused own leaves) are kept until a pass reads those users again.
+    pub(crate) async fn forget_before_removal_retry(&self) {
+        self.trust.lock().await.forget_read_leaves();
+    }
+
     /// [`removals::recover_group`] for `g`. The core verifies a removal only against a moderator whose user key this
     /// device pinned (a trust refresh of the moderator's leaf). A moderator this device has not judged yet (no message
     /// from them read, a refresh that has not run since the ready) is refused `E_CORE_INPUT`: the pending leaves are
@@ -1149,7 +1156,8 @@ impl Engine {
     /// no group changed: a group whose feed has not been read yet must not have its timeline published by it (the
     /// caller reports `g` once its feed is in).
     ///
-    /// The trust memory is reset at most once per group per ready. A success is reported ([`SyncHooks::removals_read`]).
+    /// The read leaves are forgotten at most once per group per ready (the annotations kept). A success is reported
+    /// ([`SyncHooks::removals_read`]).
     async fn recover_removals(&self, g: Gid) -> Result<u64, SyncError> {
         let read = match removals::recover_group(&self.core, &self.api, g).await {
             Err(SyncError::Core(e))
@@ -1157,7 +1165,7 @@ impl Engine {
                     && !self.stopped()
                     && self.st().removal_trust_tried.insert(g) =>
             {
-                *self.trust.lock().await = trust::TrustMemory::default();
+                self.forget_before_removal_retry().await;
                 self.refresh_trust().await;
                 removals::recover_group(&self.core, &self.api, g).await
             }
