@@ -124,6 +124,8 @@ enum Screen {
     /// The sign-up's step 6, over the started client (Task 25).
     Done(Entity<DoneView>),
     Shell(Entity<ShellView>),
+    /// Task 26: the account owes a second factor.
+    Factor(Entity<crate::screens::factor::forced::ForcedFactorView>),
 }
 
 impl Screen {
@@ -131,7 +133,7 @@ impl Screen {
     fn mode(&self) -> WindowMode {
         match self {
             Screen::Starting | Screen::Fatal(..) => WindowMode::Starting,
-            Screen::SignIn(_) | Screen::Signup(_) => WindowMode::Authentication,
+            Screen::SignIn(_) | Screen::Signup(_) | Screen::Factor(_) => WindowMode::Authentication,
             Screen::Shell(_) | Screen::Done(_) => WindowMode::Workspace,
         }
     }
@@ -151,6 +153,8 @@ pub struct AppView {
     after_signup: bool,
     shell: Option<Entity<ShellView>>,
     _subscriptions: Vec<Subscription>,
+    /// Task 26: why the last Forget did not finish, for the forced screen the client comes back to.
+    forget_note: Option<String>,
 }
 
 impl AppView {
@@ -164,6 +168,7 @@ impl AppView {
             after_signup: false,
             shell: None,
             _subscriptions: Vec::new(),
+            forget_note: None,
         };
         if this.launch.shipping {
             this.keep_bounds(window, cx);
@@ -213,6 +218,8 @@ impl AppView {
         }
         if let Some(client) = this.launch.handoff.take() {
             this.after_signup = std::mem::take(&mut this.launch.after_signup);
+            // Task 26: the factor area follows the client into the workspace window.
+            crate::screens::factor::register_window_client(&client, window, cx);
             this.show_shell(client, window, cx);
             return this;
         }
@@ -314,7 +321,7 @@ impl AppView {
 
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
-        let view = cx.new(|cx| SignInView::new(root, keychain, error, window, cx));
+        let view = cx.new(|cx| SignInView::new(root, keychain, None, error, window, cx));
         self._subscriptions = vec![cx.subscribe_in(
             &view,
             window,
@@ -425,8 +432,10 @@ impl AppView {
             }
             // A device the instance no longer knows is the sign-in's to answer (the web's `enterRevoked`); any other failed
             // start is a splash with its stable code (Task 24: `boot::classify`).
+            // Task 26 (Task 2's note): with the start's error in the sign-in screen's words.
             Err(e) if boot::classify(&e) == boot::StartFailure::SignIn => {
-                return self.show_sign_in(None, window, cx);
+                let copy = crate::screens::factor::start_error_copy(&e);
+                return self.show_sign_in(Some(copy), window, cx);
             }
             Err(e) => {
                 self.screen = Screen::Fatal(e, cfg);
@@ -442,6 +451,13 @@ impl AppView {
         // The Diagnostics section's instance fact and the connecting line's node: the server's host.
         if let Some(host) = cfg.server.host_str() {
             client.diagnostics().set_instance_name(host);
+        }
+        // Task 26: the factor area knows this window's client and its instance (the system-browser ceremony, step-up,
+        // Forget this device).
+        crate::screens::factor::register_instance(&client, cfg, cx);
+        crate::screens::factor::register_window_client(&client, window, cx);
+        if client.state().borrow().account.phase == dilla_client::state::AccountPhase::FactorSetup {
+            return self.show_factor(client, window, cx);
         }
         if self.launch.shipping && self.screen.mode().is_compact() {
             return self.open_workspace(client, window, cx);
@@ -471,6 +487,123 @@ impl AppView {
         }
     }
 
+    /// Task 26: the forced-factor screen; it goes on to the shell once the factor is set, or forgets the device.
+    fn show_factor(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::screens::factor::forced::{ForcedEvent, ForcedFactorView};
+        use crate::screens::factor::setup::Origin;
+        let Some(cfg) = crate::screens::factor::instance_of(&client, cx) else {
+            let copy = crate::strings::tf("factor.error.other", &[("code", "E_INSTANCE")]);
+            return self.show_sign_in(Some(copy), window, cx);
+        };
+        let view = cx.new(|cx| {
+            ForcedFactorView::new(
+                client.clone(),
+                cfg.server.clone(),
+                Origin::Required,
+                window,
+                cx,
+            )
+        });
+        let held = client.clone();
+        self._subscriptions = vec![cx.subscribe_in(
+            &view,
+            window,
+            move |this, _, e: &ForcedEvent, window, cx| match e {
+                ForcedEvent::Completed => {
+                    let client = held.clone();
+                    if this.launch.shipping && this.screen.mode().is_compact() {
+                        this.open_workspace(client, window, cx);
+                    } else {
+                        this.show_shell(client, window, cx);
+                    }
+                }
+                ForcedEvent::Forget => this.forget(held.clone(), cfg.clone(), window, cx),
+            },
+        )];
+        if let Some(note) = self.forget_note.take() {
+            view.update(cx, |v, cx| v.forget_failed(note, cx));
+        }
+        self.screen = Screen::Factor(view);
+        self.fit_window(window, cx);
+        cx.notify();
+    }
+
+    /// Task 26 (ForgetBrowser): the device signs out on the instance and forgets it, then the sign-in. Every view that
+    /// held the client is dropped first; the client halts through the shared handle, so a clone left anywhere cannot
+    /// keep it running. A refusal is shown on the forced screen's banner, never swallowed.
+    fn forget(
+        &mut self,
+        client: Rc<Client>,
+        cfg: InstanceConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            if let Err(message) = crate::screens::factor::sign_out(&client).await {
+                let _ = this.update(cx, |this, cx| this.forget_failed(message, cx));
+                return;
+            }
+            // Every view that held the client goes first; then the last handle stops it and the wipe waits for the
+            // store to close.
+            let _ = this.update(cx, |this, cx| {
+                crate::screens::factor::forget_instance(&client, cx);
+                this._subscriptions.clear();
+                this.screen = Screen::Starting;
+                cx.notify();
+            });
+            let mut client = client;
+            let mut frames = 0;
+            let owned = loop {
+                match Rc::try_unwrap(client) {
+                    Ok(owned) => break Ok(owned),
+                    Err(shared) if frames < 250 => {
+                        client = shared;
+                        frames += 1;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(20))
+                            .await;
+                    }
+                    Err(shared) => break Err(shared),
+                }
+            };
+            let store = || crate::strings::tf("factor.error.other", &[("code", "E_FORGET_STORE")]);
+            match owned {
+                Ok(owned) => {
+                    let result =
+                        crate::screens::factor::close_and_wipe(owned, cfg.clone(), root, keychain)
+                            .await;
+                    let _ = this.update_in(cx, |this, window, cx| match result {
+                        Ok(()) => this.show_sign_in(None, window, cx),
+                        // Never a halted client: it starts again on the forced screen, which says why and can retry
+                        // (the sessions are gone, so the retry's sign-out is a 401, which counts as done).
+                        Err(message) => {
+                            this.forget_note = Some(message);
+                            this.start_client(cfg, window, cx);
+                        }
+                    });
+                }
+                // A view still holds the client: it was never stopped, nothing was wiped; back on the forced screen.
+                Err(shared) => {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        crate::screens::factor::register_instance(&shared, cfg, cx);
+                        this.forget_note = Some(store());
+                        shared.reconnect();
+                        this.show_factor(shared, window, cx);
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// A Forget that did not go through: said on the forced screen.
+    fn forget_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        if let Screen::Factor(view) = &self.screen {
+            view.update(cx, |v, cx| v.forget_failed(message, cx));
+        }
+    }
+
     // ROUTE: the shell, for a running client.
     fn show_shell(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         let mut states = client.state();
@@ -481,9 +614,17 @@ impl AppView {
                 .with_controls(controls)
         });
         let weak = shell.downgrade();
-        cx.spawn(async move |_, cx| {
+        let factor_client = client.clone();
+        cx.spawn_in(window, async move |this, cx| {
             while states.changed().await.is_ok() {
                 let next = states.borrow_and_update().clone();
+                // Task 26: a renewal or a refusal found a factor owed: the forced screen.
+                if next.account.phase == dilla_client::state::AccountPhase::FactorSetup {
+                    let client = factor_client.clone();
+                    let _ =
+                        this.update_in(cx, |this, window, cx| this.show_factor(client, window, cx));
+                    break;
+                }
                 if weak
                     .update(cx, |shell, cx| shell.set_state(next, cx))
                     .is_err()
@@ -634,6 +775,7 @@ impl Render for AppView {
             Screen::Signup(view) => view.clone().into_any_element(),
             Screen::Done(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
+            Screen::Factor(view) => view.clone().into_any_element(),
         };
         // A window that draws its own frame is resized from strips at its rim.
         let size = window.viewport_size();

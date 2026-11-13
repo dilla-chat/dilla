@@ -349,9 +349,9 @@ pub async fn sign_up_at(
     let Raw(enrol) = authed
         .call::<r::TotpEnroll>(
             &[],
-            Raw(cbor(|e| {
+            r::Secret(zeroize::Zeroizing::new(cbor(|e| {
                 e.array(1).null();
-            })),
+            }))),
         )
         .await
         .expect("totp enroll");
@@ -378,9 +378,9 @@ pub async fn sign_up_at(
     authed
         .call::<r::TotpConfirm>(
             &[],
-            Raw(cbor(|e| {
+            r::Secret(zeroize::Zeroizing::new(cbor(|e| {
                 e.array(1).text(&code);
-            })),
+            }))),
         )
         .await
         .expect("totp confirm");

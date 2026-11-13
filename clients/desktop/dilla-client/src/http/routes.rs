@@ -581,7 +581,7 @@ routes! {
     NegotiateSession { "negotiate_session", POST, "/v1/sessions/negotiate", Cbor, Body, true, [200], None, Http, Raw => NegotiatedAnswer }
     PasskeyLoginBegin { "passkey_login_begin", POST, "/v1/auth/passkey/login/begin", Cbor, Body, false, [], None, Http, Raw => Raw }
     PasskeyLoginFinish { "passkey_login_finish", POST, "/v1/auth/passkey/login/finish", Cbor, Body, false, [], None, Http, Secret => Raw }
-    PasskeyRegisterBegin { "passkey_register_begin", POST, "/v1/auth/passkey/register/begin", Cbor, Body, true, [], None, Http, Raw => Raw }
+    PasskeyRegisterBegin { "passkey_register_begin", POST, "/v1/auth/passkey/register/begin", Cbor, Body, true, [], None, Http, Secret => Raw }
     PasskeyRegisterFinish { "passkey_register_finish", POST, "/v1/auth/passkey/register/finish", Cbor, Body, true, [], None, Http, Raw => Raw }
     PasswordLogin { "password_login", POST, "/v1/auth/password/login", Cbor, Body, false, [], None, Http, Secret => PasswordLoginAnswer }
     PatchBotProfile { "patch_bot_profile", PATCH, "/v1/communities/{community_id}/bot/profile", Cbor, Body, true, [], None, Socket, Raw => Raw }
@@ -634,8 +634,8 @@ routes! {
     StepUp { "step_up", POST, "/v1/auth/stepup", Cbor, Body, true, [], None, Socket, Raw => Raw }
     StepUpPasskeyBegin { "step_up_passkey_begin", POST, "/v1/auth/stepup/passkey/begin", Cbor, Body, true, [], None, Socket, Raw => Raw }
     StepUpPasskeyFinish { "step_up_passkey_finish", POST, "/v1/auth/stepup/passkey/finish", Cbor, Body, true, [], None, Socket, Raw => Raw }
-    TotpConfirm { "totp_confirm", POST, "/v1/auth/totp/confirm", Cbor, Body, true, [], None, Http, Raw => Raw }
-    TotpEnroll { "totp_enroll", POST, "/v1/auth/totp/enroll", Cbor, Body, true, [], None, Http, Raw => Raw }
+    TotpConfirm { "totp_confirm", POST, "/v1/auth/totp/confirm", Cbor, Body, true, [], None, Http, Secret => Raw }
+    TotpEnroll { "totp_enroll", POST, "/v1/auth/totp/enroll", Cbor, Body, true, [], None, Http, Secret => Raw }
     TotpVerify { "totp_verify", POST, "/v1/auth/totp/verify", Cbor, Body, false, [], None, Http, Secret => TotpVerifyAnswer }
     TransferOwnership { "transfer_ownership", POST, "/v1/communities/{community_id}/owner", Cbor, None, true, [], None, Socket, Raw => () }
     UnmarkBotChannel { "unmark_bot_channel", DELETE, "/v1/communities/{community_id}/channels/{channel_id}/bot-channel", None, None, true, [204], Some(0), Socket, NoBody => () }

@@ -81,9 +81,9 @@ async fn pay_factor(host: &Host, cfg: &InstanceConfig, token: &str) -> String {
     let Raw(enrol) = authed
         .call::<r::TotpEnroll>(
             &[],
-            Raw(cbor(|e| {
+            r::Secret(zeroize::Zeroizing::new(cbor(|e| {
                 e.array(1).null();
-            })),
+            }))),
         )
         .await
         .expect("totp enroll");
@@ -101,9 +101,9 @@ async fn pay_factor(host: &Host, cfg: &InstanceConfig, token: &str) -> String {
     authed
         .call::<r::TotpConfirm>(
             &[],
-            Raw(cbor(|e| {
+            r::Secret(zeroize::Zeroizing::new(cbor(|e| {
                 e.array(1).text(&code);
-            })),
+            }))),
         )
         .await
         .expect("totp confirm");
