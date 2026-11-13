@@ -231,4 +231,7 @@ bar, the 30px panel avatar in the 63px panel, the 28px search field in the 44px 
 drew one device px off, which read as anti-aliasing on their rounded edges. With the patch `shell/conversation` goes from
 0.21 % to 0.09 % chrome difference. A fractional scale keeps upstream's device-pixel snapping, so edges stay crisp there.
 
+The rule is `util::snap_layout_edge`, re-exported as `gpui::snap_layout_edge` so the client can pin it: the test
+`box_edges_snap_as_chromium_paints_them` in `clients/desktop/dilla-desktop-ui/src/metrics.rs`.
+
 Keep this patch while the Linux parity references are Chromium frames.

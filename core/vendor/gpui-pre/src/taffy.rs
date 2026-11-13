@@ -2,7 +2,7 @@ use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Edges, GridTemplate, Length, Pixels, Point, Size,
     Style, Window, size,
     util::{
-        ceil_to_device_pixel, round_half_toward_zero, round_stroke_to_device_pixel,
+        ceil_to_device_pixel, round_stroke_to_device_pixel,
         round_to_device_pixel,
     },
 };
@@ -383,13 +383,7 @@ impl TaffyLayoutEngine {
         // web client's frames do (Chromium snaps a box's painted edges to whole CSS px with `round`, so a box laid out at
         // 51.5px paints from 52px); a fractional scale keeps upstream's device-pixel snapping. core/vendor/README.md,
         // "gpui-pre 0.3.12".
-        let snap = |v: f32| {
-            if scale_factor.fract() == 0.0 {
-                (v / scale_factor + 0.5).floor() * scale_factor
-            } else {
-                round_half_toward_zero(v)
-            }
-        };
+        let snap = |v: f32| crate::util::snap_layout_edge(v, scale_factor);
         let snapped_bounds = Bounds::from_corners(
             absolute_outer_origin.map(snap),
             absolute_far.map(snap),

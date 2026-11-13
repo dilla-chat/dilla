@@ -144,6 +144,25 @@ pub fn focus_ring() -> Vec<BoxShadow> {
 mod tests {
     use super::*;
 
+    /// The vendored GPUI's box-edge snap (core/vendor/README.md, "gpui-pre 0.3.12"): at a whole scale factor an edge goes
+    /// to a whole logical px, half up, as Chromium paints the web client's boxes; at a fractional scale it keeps
+    /// upstream's device-px rounding (midpoints toward zero). Device px in, device px out.
+    #[test]
+    fn box_edges_snap_as_chromium_paints_them() {
+        use gpui::snap_layout_edge as snap;
+        // Scale 2: 51.5px paints from 52px; 51.25px from 51px; 51.75px from 52px.
+        assert_eq!(snap(103.0, 2.0), 104.0);
+        assert_eq!(snap(102.5, 2.0), 102.0);
+        assert_eq!(snap(103.5, 2.0), 104.0);
+        assert_eq!(snap(104.0, 2.0), 104.0);
+        // Scale 1: half up.
+        assert_eq!(snap(50.5, 1.0), 51.0);
+        assert_eq!(snap(50.49, 1.0), 50.0);
+        // A fractional scale keeps device-px rounding, midpoints toward zero.
+        assert_eq!(snap(77.5, 1.5), 77.0);
+        assert_eq!(snap(77.6, 1.5), 78.0);
+    }
+
     const TOKENS_TS: &str = include_str!("../../../../packages/design-tokens/src/tokens.ts");
 
     /// The number that follows `key` in tokens.ts (`labelTracking: '0.08em'` gives 0.08).

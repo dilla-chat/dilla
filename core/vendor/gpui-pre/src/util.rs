@@ -136,6 +136,18 @@ pub(crate) fn round_half_toward_zero_f64(value: f64) -> f64 {
     (value.abs() - 0.5).ceil().copysign(value)
 }
 
+/// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): where a laid-out box edge at `device` px lands. At a whole
+/// scale factor it goes to a whole logical px, half up, as Chromium paints the web client's boxes (51.5px paints from
+/// 52px); at a fractional scale it keeps upstream's device-px rounding, midpoints toward zero, so edges stay crisp.
+#[inline]
+pub fn snap_layout_edge(device: f32, scale_factor: f32) -> f32 {
+    if scale_factor.fract() == 0.0 {
+        (device / scale_factor + 0.5).floor() * scale_factor
+    } else {
+        round_half_toward_zero(device)
+    }
+}
+
 #[inline]
 pub(crate) fn round_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
     round_half_toward_zero(logical * scale_factor)
