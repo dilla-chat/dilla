@@ -28,6 +28,8 @@ pub struct Editing {
     pub key: String,
     pub channel: ChannelId,
     pub msg: MessageId,
+    /// Set from the item when the editor opened; only an own message gets one.
+    pub own: bool,
     pub input: Entity<TextareaState>,
     /// `None` while a fixture is drawn: saving then only closes the editor.
     client: Option<Rc<Client>>,
@@ -116,6 +118,10 @@ impl MessageUi {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Only the own message can be edited (the instance refuses another's fold, and a foreign row must never show an editor).
+        if !item.own {
+            return;
+        }
         let (Some(channel), Some(msg)) = (ctx.channel, item.msg_id) else {
             return;
         };
@@ -127,7 +133,9 @@ impl MessageUi {
             .map(Vec::as_slice)
             .unwrap_or_default();
         let roles: Vec<RoleInfo> = Vec::new();
-        let broadcast = item.body.contains("<@everyone>") || item.body.contains("<@here>");
+        // T14: the right to mention @everyone and @here comes from the channel's permission bits; until the roles slice
+        // exists nobody is offered it, so an edit never turns text into a broadcast.
+        let broadcast = false;
         let self_user = state.account.user_id.map(|u| u.hex());
         let text = editable_text(
             &item.body,
@@ -149,6 +157,7 @@ impl MessageUi {
             key: item.key.clone(),
             channel,
             msg,
+            own: item.own,
             input,
             client,
             members: members
@@ -197,7 +206,8 @@ impl MessageUi {
 
     /// Saves the edit: the fold is queued and the editor closes (the row changes when the core folds it).
     pub fn save_edit(&mut self, cx: &mut Context<Self>) {
-        if !self.can_save(cx) {
+        // Own messages only (begin_edit refuses the rest; checked again here against the timeline the editor was opened on).
+        if !self.can_save(cx) || !self.editing.as_ref().is_some_and(|e| e.own) {
             return;
         }
         let Some(e) = self.editing.take() else { return };

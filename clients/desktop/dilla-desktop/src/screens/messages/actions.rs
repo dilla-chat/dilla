@@ -36,6 +36,8 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
         });
     }
     let pinned = item.pinned;
+    // T14: pin and unpin need the channel's pin_messages bit (offered to every reader until the roles slice exists); a
+    // delete of another person's message needs manage_messages (moderation removal, not offered either).
     out.push(MessageAction {
         id: SharedString::from("pin"),
         label: if pinned {

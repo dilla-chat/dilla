@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod body;
+pub mod cache;
 pub mod composing;
 pub mod dialogs;
 pub mod editor;
@@ -23,6 +24,22 @@ use dilla_client::state::TimelineItem;
 use gpui::{AnyElement, App, Window};
 
 pub use ui::open_pins;
+
+/// Where gpui-component's textarea draws its first glyph inside its own box: 10px right of and 8px below the box's
+/// corner. A field that CSS pads by its own amount moves the textarea back by this much, so the text lands where the
+/// CSS puts it (the placeholder, drawn by the field, already does).
+pub const TEXTAREA_PAD_X: f32 = 10.0;
+pub const TEXTAREA_PAD_Y: f32 = 8.0;
+
+/// `child` (a textarea) shifted back by the component's own padding.
+pub fn textarea_origin(child: impl gpui::IntoElement) -> gpui::Div {
+    use gpui::{ParentElement, Styled};
+    gpui::div()
+        .relative()
+        .left(gpui::px(-TEXTAREA_PAD_X))
+        .top(gpui::px(-TEXTAREA_PAD_Y))
+        .child(child)
+}
 
 /// The stylesheet's own lengths. Every length this area draws is written in the CSS it ports (MessageRow.css,
 /// Composer.css, CodeBlock.css, MentionList.css, MessageToolbar.css, MessageEditor.css, PinsDialog.css), so it is a named

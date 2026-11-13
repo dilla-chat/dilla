@@ -9,7 +9,9 @@
 //! is answered from an index built once per call, so a parse is O(n log n); link attempts draw on a fixed work budget.
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
+use super::cache::{Lru, Shared};
 use super::mentions::{Part, split_mentions};
 
 /// A parsed body before mentions are resolved to pills (the web's `Tree`).
@@ -634,6 +636,23 @@ fn strip(p: Tree) -> Tree {
     }
 }
 
+static TREES: OnceLock<Shared<Parsed>> = OnceLock::new();
+
+fn trees() -> &'static Shared<Parsed> {
+    TREES.get_or_init(|| Shared::new(Lru::web()))
+}
+
+/// [`parse`] remembered by the body text (least recently used goes first, within the web's limits), so a re-draw of an
+/// unchanged message, or of a hostile one, does not parse again (markdown.ts `parseTree`).
+pub fn parse_cached(body: &str) -> Arc<Parsed> {
+    trees().memo(body, || parse(body))
+}
+
+/// What the parse memo holds: (entries, characters of keys).
+pub fn cache_size() -> (usize, usize) {
+    (trees().len(), trees().used_chars())
+}
+
 /// A body part as the row draws it: the tree with each mention resolved to its pill.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Body {
@@ -660,8 +679,8 @@ pub struct Pill {
 
 /// The tree with each mention token turned into the pill `resolve` names (the web's `parseMarkdown`).
 pub fn parse_markdown(body: &str, resolve: &dyn Fn(&str) -> Pill) -> Vec<Body> {
-    let Parsed { tree, links } = parse(body);
-    resolve_tree(&tree, resolve, links)
+    let parsed = parse_cached(body);
+    resolve_tree(&parsed.tree, resolve, parsed.links)
 }
 
 fn resolve_tree(tree: &[Tree], resolve: &dyn Fn(&str) -> Pill, links: bool) -> Vec<Body> {
@@ -670,6 +689,8 @@ fn resolve_tree(tree: &[Tree], resolve: &dyn Fn(&str) -> Pill, links: bool) -> V
             Tree::Text(t) => Body::Text(t.clone()),
             Tree::Ref(target) => {
                 let mut pill = resolve(target);
+                // A label is one line: a name with a line break in it must not break the row's text.
+                pill.label = pill.label.replace(['\n', '\r'], " ");
                 if links {
                     pill.label = unbidi(&pill.label);
                 }
@@ -1044,6 +1065,18 @@ mod tests {
         assert!(matches!(&parts[0], Body::Mention(p) if p.label == "@bob"));
     }
 
+    fn best_of(runs: usize, f: impl Fn()) -> std::time::Duration {
+        f();
+        (0..runs)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                f();
+                t.elapsed()
+            })
+            .min()
+            .expect("a run")
+    }
+
     #[test]
     fn survives_deep_nesting_and_long_runs_of_markers() {
         for s in [
@@ -1057,7 +1090,151 @@ mod tests {
                 ">".repeat(3000)
             ),
         ] {
-            let _ = parse(&s);
+            // Not just survived: each is parsed in a bounded time (a debug build, a loaded machine).
+            let took = best_of(3, || drop(parse(&s)));
+            assert!(
+                took < std::time::Duration::from_secs(2),
+                "{took:?} for {}",
+                s.len()
+            );
+        }
+    }
+
+    /// markdown.test.ts F2: the parse is linear. One 32k parse costs less than 3x eight 4k parses (linear is about 1,
+    /// quadratic 8), and 4000 characters parse in bounded time whatever they are. The absolute bounds are the web's 25 ms
+    /// and 250 ms, times 10 for a debug build on a shared machine.
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn the_parse_is_linear_on_hostile_input() {
+        let cases: Vec<(&str, Box<dyn Fn(usize) -> String>)> = vec![
+            (
+                "a url then ) repeated",
+                Box::new(|n| format!("http://a/{}", ")".repeat(n - 9))),
+            ),
+            ("(h repeated", Box::new(|n| "(h".repeat(n / 2))),
+            (
+                "a url then dots",
+                Box::new(|n| format!("http://a{}", ".".repeat(n - 8))),
+            ),
+            ("unclosed fences", Box::new(|n| "```a\n".repeat(n / 5))),
+            ("unclosed stars", Box::new(|n| "*a ".repeat(n / 3))),
+            (
+                "unclosed tildes and underscores",
+                Box::new(|n| "~~a_a ".repeat(n / 6)),
+            ),
+            (
+                "backtick runs of growing length",
+                Box::new(|n| {
+                    let mut s = String::new();
+                    let mut k = 1;
+                    while s.len() < n {
+                        s.push_str(&"`".repeat(k));
+                        s.push('a');
+                        k += 1;
+                    }
+                    s.truncate(n);
+                    s
+                }),
+            ),
+            ("quotes", Box::new(|n| "> *a\n".repeat(n / 5))),
+            ("links in brackets", Box::new(|n| "(http://a".repeat(n / 9))),
+            (
+                "many short links",
+                Box::new(|n| "http://a.b/c ".repeat(n / 13)),
+            ),
+            (
+                "links with parentheses",
+                Box::new(|n| "https://a.b/(x)) ".repeat(n / 17)),
+            ),
+            (
+                "links in emphasis",
+                Box::new(|n| "*http://a.b/c* ".repeat(n / 15)),
+            ),
+        ];
+        let ms = std::time::Duration::from_millis;
+        for (name, make) in &cases {
+            let (small, large) = (make(4000), make(32000));
+            assert!(
+                best_of(5, || drop(parse(&small))) < ms(250),
+                "{name}: 4000 characters"
+            );
+            assert!(
+                best_of(3, || drop(parse(&make(50_000)))) < ms(2500),
+                "{name}: 50000 characters"
+            );
+            // Eight 4k parses against one 32k, in turns, the best of five of each.
+            let mut eight = std::time::Duration::MAX;
+            let mut one = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                for _ in 0..8 {
+                    drop(parse(&small));
+                }
+                eight = eight.min(t.elapsed());
+                let t = std::time::Instant::now();
+                drop(parse(&large));
+                one = one.min(t.elapsed());
+            }
+            let growth = one.as_secs_f64() / eight.as_secs_f64().max(0.000_1);
+            assert!(
+                growth < 3.0,
+                "{name}: 8x the input cost {growth:.1}x (eight 4k: {eight:?}, one 32k: {one:?})"
+            );
+        }
+    }
+
+    /// markdown.test.ts F2, last case: the memo hands back the same parse of a body, and a fresh parse of it is another.
+    #[test]
+    fn remembers_the_parse_of_a_body() {
+        let body = format!("**x** https://example.com {}", ID);
+        assert!(Arc::ptr_eq(&parse_cached(&body), &parse_cached(&body)));
+        assert_eq!(parse_cached(&body).tree, parse(&body).tree);
+    }
+
+    /// N1: the memo is bounded: 200 bodies, 2 MB of body text, and a body over 4000 characters is not kept.
+    #[test]
+    fn the_parse_memo_is_bounded() {
+        for k in 0..700 {
+            let body = format!("{k} {} ", "y".repeat(3900));
+            parse_cached(&body);
+            let (entries, chars) = cache_size();
+            assert!(entries <= super::super::cache::ENTRIES);
+            assert!(chars <= super::super::cache::CHARS);
+        }
+        let long = format!("{}{}", "a".repeat(super::super::cache::BODY + 1), ID);
+        assert!(!Arc::ptr_eq(&parse_cached(&long), &parse_cached(&long)));
+        assert_eq!(parse_cached(&long).tree, parse(&long).tree);
+    }
+
+    /// markdown.test.ts: every link that comes out is canonical, safe and shown as its own href (the web's alphabet,
+    /// with the bidi controls and the lookalike letter).
+    #[test]
+    fn fuzz_every_link_is_canonical_safe_and_its_own_text() {
+        fn walk(parts: &[Tree]) {
+            for p in parts {
+                match p {
+                    Tree::Link { href, text } => {
+                        assert_eq!(safe_link(href).as_deref(), Some(href.as_str()));
+                        assert_eq!(text, href);
+                    }
+                    Tree::Strong(c) | Tree::Em(c) | Tree::Strike(c) | Tree::Quote(c) => walk(c),
+                    _ => {}
+                }
+            }
+        }
+        let alphabet: Vec<&str> = vec![
+            "a", " ", "*", "_", "`", "\n", "(", ")", "http", "https://", "mailto:", "x@y.z", "a.b",
+            "/", ":", ".", "\u{202e}", "\u{61c}", "\u{3164}", "\u{430}", "?", "#",
+        ];
+        let mut seed: u64 = 3;
+        let mut rand = |n: usize| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345) & 0x7fff_ffff;
+            ((seed >> 8) as usize) % n
+        };
+        for _ in 0..3000 {
+            let len = rand(60);
+            let input: String = (0..len).map(|_| alphabet[rand(alphabet.len())]).collect();
+            walk(&parse(&input).tree);
         }
     }
 

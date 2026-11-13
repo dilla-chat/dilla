@@ -104,8 +104,21 @@
         "sender": "bjorn",
         "ts": 1794481730,
         "body": "> a quote that is long enough to wrap onto a second line of the quote block in the log, to check the rule"
+      },
+      {
+        "key": "m9",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481731,
+        "body": "plain last line"
       }
     ]
   },
-  "steps": []
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    }
+  ]
 }

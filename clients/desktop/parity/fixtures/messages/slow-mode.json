@@ -96,10 +96,16 @@
         "key": "m7",
         "channel": "midgard/general",
         "sender": "mira",
-        "ts": 1794481728,
+        "ts": 1794481733,
         "body": "just posted this"
       }
     ]
   },
-  "steps": []
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    }
+  ]
 }

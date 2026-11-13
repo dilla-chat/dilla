@@ -97,10 +97,16 @@ pub fn line_height(size: Pixels, ratio: f32) -> f32 {
     layout_unit(f32::from(size) * ratio)
 }
 
+/// The font's ascent and descent at `size`, each rounded to a whole pixel as Chromium's `SimpleFontData` does: the box an
+/// inline span's background and border cover (a code span, a mention pill), and what text decorations are measured from.
+pub fn ascent_descent(face: Face, size: f32) -> (f32, f32) {
+    let (a, d) = face.metrics();
+    ((a * size).round(), (d * size).round())
+}
+
 /// Where Chromium puts the baseline below a line box's top: the half-leading floored, then the rounded ascent.
 pub fn chromium_baseline(face: Face, size: f32, line_height: f32) -> f32 {
-    let (a, d) = face.metrics();
-    let (ascent, descent) = ((a * size).round(), (d * size).round());
+    let (ascent, descent) = ascent_descent(face, size);
     ((line_height - ascent - descent) / 2.0).floor() + ascent
 }
 

@@ -70,6 +70,11 @@ pub struct Composer {
     active: usize,
     dismissed: Option<usize>,
     /// The pending draft write, and the one-second tick while slow mode counts down.
+    /// The text `used` was worked out for, and the bytes of it as posted (mentions encoded).
+    /// When this composer first drew (unix seconds): only own posts from then on start slow mode's wait.
+    opened_s: Option<u64>,
+    used_for: SharedString,
+    used: usize,
     save: Option<Task<()>>,
     tick: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -119,6 +124,9 @@ impl Composer {
             loaded: None,
             active: 0,
             dismissed: None,
+            opened_s: None,
+            used_for: SharedString::default(),
+            used: 0,
             save: None,
             tick: None,
             _subscriptions: vec![sub],
@@ -196,7 +204,7 @@ impl Composer {
         match event {
             InputEvent::Change => {
                 self.active = 0;
-                let empty = input.read(cx).value().is_empty();
+                let empty = input.read(cx).value().trim().is_empty();
                 if let (Some(client), Some(channel)) = (&self.slots.client, self.loaded) {
                     // Someone writing signals typing (at most every 3 s); an emptied field stops it.
                     client.messages().typing(channel, !empty);
@@ -226,7 +234,7 @@ impl Composer {
 
     /// The mention list's lines for the field now: empty when it is closed.
     fn open_options(&self, cx: &gpui::App) -> Vec<MentionOption> {
-        if self.blocked().is_some() {
+        if self.blocked().is_some() || !self.input.read(cx).value().contains('@') {
             return Vec::new();
         }
         let state = self.input.read(cx);
@@ -548,13 +556,14 @@ impl Render for Composer {
         };
         let blocked = self.blocked();
         // Slow mode (never for a read-only composer: its line says why nothing can be sent).
+        let opened_s = *self.opened_s.get_or_insert(now_ms / 1000);
         let slow_wait = self.channel().filter(|_| blocked.is_none()).map(|c| {
             let items = ctx
                 .channel
                 .and_then(|id| ctx.state.timelines.get(&id))
                 .map(|tl| tl.items.as_slice())
                 .unwrap_or_default();
-            composing::slow_state(c, items, false, now_ms)
+            composing::slow_state_since(c, items, false, now_ms, opened_s)
         });
         let waiting = slow_wait.is_some_and(|s| s.until_ms > now_ms);
         self.arm_tick(waiting, cx);
@@ -585,10 +594,12 @@ impl Render for Composer {
                 "composer",
                 &self.input.read(cx).focus_handle(cx),
                 div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
-                    Textarea::new(&self.input)
-                        .appearance(false)
-                        .disabled(blocked.is_some())
-                        .h(px(rows as f32 * FIELD_LINE)),
+                    crate::screens::messages::textarea_origin(
+                        Textarea::new(&self.input)
+                            .appearance(false)
+                            .disabled(blocked.is_some())
+                            .h(px(rows as f32 * FIELD_LINE)),
+                    ),
                 ),
             ))
             .children(empty.then(|| {
@@ -694,7 +705,16 @@ impl Render for Composer {
         };
         let name = self.channel().map(|c| c.name.clone()).unwrap_or_default();
         let reason = blocked.map(|_| tf("announce.readOnly", &[("name", &name)]));
-        let used = self.encoded(&value).len() as i64;
+        // The budget used is worked out when the text changes (compared in place, no copy), not on every draw.
+        if self.used_for != value {
+            self.used = if value.contains('@') {
+                self.encoded(&value).len()
+            } else {
+                value.len()
+            };
+            self.used_for = value.clone();
+        }
+        let used = self.used as i64;
         let remaining = MAX_LEN as i64 - used;
         let box_ = div()
             .w_full()

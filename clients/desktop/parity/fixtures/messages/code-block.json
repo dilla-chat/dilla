@@ -97,8 +97,21 @@
         "sender": "bjorn",
         "ts": 1794481730,
         "body": "the config:\n```yaml\nraid:\n  when: \"20:00\"\n  party:\n    - name: rope\n    - name: torches   # two\n  loot: true\n```\nand `inline code` with a **bold** word, https://example.com/a?b=1 and\n> quoted *text*"
+      },
+      {
+        "key": "m8",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481731,
+        "body": "looks right to me"
       }
     ]
   },
-  "steps": []
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    }
+  ]
 }

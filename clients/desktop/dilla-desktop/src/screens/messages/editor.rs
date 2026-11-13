@@ -20,15 +20,16 @@ const LINE: f32 = 20.0;
 const PAD_Y: f32 = 5.0;
 const PAD_X: f32 = 12.0;
 /// `min-height: 1.875rem` and `max-height: 10rem`, both on the content box.
-const MIN_CONTENT: f32 = 30.0;
-const MAX_CONTENT: f32 = 160.0;
+const MIN_FIELD: f32 = 30.0;
+const MAX_FIELD: f32 = 160.0;
 /// A foot button's height (`Button`'s Md size).
 const FOOT: f32 = 32.0;
 const GAP: f32 = 4.0;
 
 /// The field's height for `lines` lines of text: the content box (clamped) plus padding and the 1px edge.
 pub fn field_height(lines: usize) -> f32 {
-    (lines as f32 * LINE).clamp(MIN_CONTENT, MAX_CONTENT) + 2.0 * PAD_Y + 2.0
+    // `box-sizing: border-box` (the 5px padding and the 1px edge are inside the 30px minimum and the 10rem maximum).
+    (lines as f32 * LINE + 2.0 * PAD_Y + 2.0).clamp(MIN_FIELD, MAX_FIELD)
 }
 
 /// The editor's height: the field, the gap, the foot.
@@ -41,9 +42,14 @@ pub fn counter_visible(remaining: i64) -> bool {
     remaining <= (EDIT_MAX / 10) as i64
 }
 
-/// The lines of the text being edited (a soft wrap is not counted, as in the composer).
-pub fn lines_of(value: &str) -> usize {
-    value.split('\n').count().max(1)
+/// The rows of the text being edited in a field `width` px wide (the textarea grows with its soft-wrapped lines,
+/// `field-sizing: content`): each hard line takes as many rows as the mono pre-wrap breaks it into.
+pub fn lines_of(value: &str, width: f32) -> usize {
+    let inner = width - 2.0 * PAD_X - 2.0;
+    let columns = dilla_desktop_ui::text::columns(text::INPUT, inner);
+    dilla_desktop_ui::text::wrap_mono(value, columns)
+        .len()
+        .max(1)
 }
 
 /// The editor of `editing`, `width` wide, as an element of height [`height`].
@@ -56,7 +62,7 @@ pub fn editor(
     cx: &mut App,
 ) -> AnyElement {
     let value = input.read(cx).value();
-    let lines = lines_of(&value);
+    let lines = lines_of(&value, width);
     let used = used as i64;
     let remaining = EDIT_MAX as i64 - used;
     let refused = value.trim().is_empty() || remaining < 0;
@@ -73,13 +79,11 @@ pub fn editor(
         .line_height(px(LINE))
         .font_family(font::MONO)
         .text_color(color::FG)
-        .child(
+        .child(super::textarea_origin(
             Textarea::new(input)
                 .appearance(false)
-                .h(px((lines as f32 * LINE)
-                    .clamp(MIN_CONTENT, MAX_CONTENT)
-                    .min(MAX_CONTENT))),
-        );
+                .h(px(field_height(lines) - 2.0 * PAD_Y - 2.0)),
+        ));
     let mut foot = div()
         .flex()
         .items_center()
@@ -151,10 +155,10 @@ mod tests {
 
     #[test]
     fn the_field_is_30px_of_content_plus_padding_and_edge_and_grows_to_10rem() {
-        assert_eq!(field_height(1), 30.0 + 10.0 + 2.0);
-        assert_eq!(field_height(3), 60.0 + 12.0);
-        assert_eq!(field_height(50), 160.0 + 12.0);
-        assert_eq!(height(1), 42.0 + 4.0 + 32.0);
+        assert_eq!(field_height(1), 32.0);
+        assert_eq!(field_height(5), 112.0);
+        assert_eq!(field_height(50), 160.0);
+        assert_eq!(height(1), 32.0 + 4.0 + 32.0);
     }
 
     #[test]
@@ -166,7 +170,9 @@ mod tests {
 
     #[test]
     fn lines_are_the_hard_breaks() {
-        assert_eq!(lines_of(""), 1);
-        assert_eq!(lines_of("a\nb\n"), 3);
+        assert_eq!(lines_of("", 400.0), 1);
+        assert_eq!(lines_of("a\nb\n", 400.0), 3);
+        // 400px less the padding and edge is 48 columns of 7.8px: a 100-character line takes three rows.
+        assert_eq!(lines_of(&"x".repeat(100), 400.0), 3);
     }
 }

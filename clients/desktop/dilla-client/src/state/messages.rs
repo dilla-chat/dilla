@@ -458,6 +458,8 @@ pub struct MessagesState {
     /// The channels this device has signalled typing in, with the time of the last signal (unix ms): the 3 s throttle of
     /// gateway.ts `sendTyping`.
     pub typing_sent: HashMap<ChannelId, u64>,
+    /// The channels whose typing rows have a sweep running (one per channel, however many frames arrive).
+    pub typing_sweeping: HashSet<ChannelId>,
 }
 
 /// `pins` rows: `[target_seq, msg_id, pinned_seq, by_user, author|null, excerpt, target_ts, thread_root?]`.

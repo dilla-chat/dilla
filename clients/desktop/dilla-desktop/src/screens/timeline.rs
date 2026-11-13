@@ -91,8 +91,8 @@ struct Shown<'a> {
     grouped: bool,
     divider: Option<String>,
     last: bool,
-    /// The body, laid out (or the editor, which replaces it).
-    body: Laid,
+    /// The body: its height now (from the memo), its elements only when the row is drawn.
+    body: Plan,
     /// What other areas draw under the body ([`slots::message_extras`]), and its height.
     extras: Option<AnyElement>,
     extras_height: f32,
@@ -107,9 +107,44 @@ impl Shown<'_> {
         RowShape {
             grouped: self.grouped,
             last: self.last,
-            body: self.body.height,
+            body: self.body.height(),
             extras: self.extras_height,
             divider: self.divider.is_some(),
+        }
+    }
+}
+
+/// A row's body before it is drawn: the editor (always drawn), or the text and what it needs to be laid out.
+enum Plan {
+    Editor(Laid),
+    Text {
+        parts: Vec<Body>,
+        color: gpui::Hsla,
+        height: f32,
+    },
+}
+
+impl Plan {
+    fn height(&self) -> f32 {
+        match self {
+            Self::Editor(l) => l.height,
+            Self::Text { height, .. } => *height,
+        }
+    }
+
+    /// The elements, laid out in `width`.
+    fn laid(self, width: f32, y0: f32) -> Laid {
+        match self {
+            Self::Editor(l) => l,
+            Self::Text {
+                parts,
+                color,
+                height,
+            } => {
+                let mut laid = body::layout_from(&parts, width, color, y0);
+                laid.height = height;
+                laid
+            }
         }
     }
 }
@@ -439,12 +474,13 @@ fn draw_row(
 ) -> AnyElement {
     let item = shown.item;
     let local = top - base;
-    let height = row_height(
-        shown.grouped,
-        shown.last,
-        shown.body.height,
-        shown.extras_height,
-    );
+    // The body's box sits on a whole pixel; its lines keep the CSS position's fraction.
+    let frac = {
+        let at = local + body_offset(shown.grouped);
+        at - at.floor()
+    };
+    let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
+    let height = row_height(shown.grouped, shown.last, laid.height, shown.extras_height);
     let mut placer = Placer { out: Vec::new() };
     let meta_color = if item.mention {
         color::FG_2
@@ -518,15 +554,15 @@ fn draw_row(
     }
     let body_top = local + body_offset(shown.grouped);
     let content_w = cx_row.width - CONTENT_X - ROW_RIGHT;
-    let body_end = body_top + shown.body.height;
+    let body_end = body_top + laid.height;
     placer.out.push(
         div()
             .absolute()
             .left(px(CONTENT_X))
             .top(px(body_top.floor()))
             .w(px(content_w))
-            .h(px(shown.body.height.ceil()))
-            .child(div().relative().size_full().children(shown.body.elements))
+            .h(px(laid.height.ceil()))
+            .child(div().relative().size_full().children(laid.elements))
             .into_any_element(),
     );
     if let Some(extras) = shown.extras {
@@ -638,26 +674,31 @@ pub fn render(
                 .map(|ed| (ed.input.clone(), ed.used(cx)));
             match current {
                 Some((input, used)) => {
-                    let lines = editor::lines_of(&input.read(cx).value());
+                    let lines = editor::lines_of(&input.read(cx).value(), body_width);
                     let el = editor::editor(&input, used, &ui, body_width, window, cx);
-                    Laid {
+                    Plan::Editor(Laid {
                         height: editor::height(lines),
                         elements: vec![el],
-                    }
+                    })
                 }
-                None => Laid {
+                None => Plan::Editor(Laid {
                     height: 0.0,
                     elements: Vec::new(),
-                },
+                }),
             }
         } else {
             let parts = body_parts(state, members, item);
-            let mut laid = body::layout(&parts, body_width, body_color);
+            // The height comes from the memo (by the parts and the width): a body is laid out once, not on every draw.
+            let mut height = body::height_cached(&parts, body_width);
             // An empty body still keeps its line (the web's row holds the empty text node's line box).
             if parts.is_empty() {
-                laid.height = body_line();
+                height = body_line();
             }
-            laid
+            Plan::Text {
+                parts,
+                color: body_color,
+                height,
+            }
         };
         shown.push(Shown {
             item,
@@ -706,9 +747,23 @@ pub fn render(
         clock,
         width,
     };
+    // Only the rows near the viewport are drawn (a screen above and below it): the rest keep their height from the memo.
+    let at = if jumped.is_some() {
+        -f32::from(scroll.offset().y)
+    } else if pinned && viewport > 0.0 {
+        (height - viewport).max(0.0)
+    } else {
+        -f32::from(scroll.offset().y)
+    };
+    let (from, to) = (at - viewport, at + 2.0 * viewport);
     for (s, top) in shown.into_iter().zip(tops) {
         if let Some(label) = s.divider.clone() {
             placer.divider(top - divider_height(), width, label);
+        }
+        let bottom = top + row_height(s.grouped, s.last, s.body.height(), s.extras_height);
+        let editing = matches!(s.body, Plan::Editor(_));
+        if viewport > 0.0 && !editing && (bottom < from || top > to) {
+            continue;
         }
         let base = top.floor();
         let el = draw_row(&row_cx, s, top, base, &ui, ctx, window, cx);

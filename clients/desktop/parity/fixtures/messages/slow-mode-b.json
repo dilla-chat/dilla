@@ -110,10 +110,16 @@
         "key": "m9",
         "channel": "midgard/general",
         "sender": "ada",
-        "ts": 1794481688,
-        "body": "posted a minute ago"
+        "ts": 1794481733,
+        "body": "posted a bit ago"
       }
     ]
   },
-  "steps": []
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    }
+  ]
 }

@@ -3,6 +3,10 @@
 //! rule and taking the earliest match (the first rule wins a tie). The rules are the web's regular expressions written by
 //! hand (the lookaheads and the one lookbehind included), so the crate takes no regex dependency.
 
+use std::sync::{Arc, OnceLock};
+
+use super::cache::{Lru, Shared};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Key,
@@ -461,6 +465,15 @@ pub fn highlight_line(line: &str, rules: &[(Rule, TokenKind)]) -> Vec<Token> {
     out
 }
 
+/// [`highlight`] remembered by (language, code): a code card is tokenized once, however often the log is drawn.
+pub fn highlight_cached(lang: Option<&str>, code: &str) -> Arc<Vec<Vec<Token>>> {
+    static TOKENS: OnceLock<Shared<Vec<Vec<Token>>>> = OnceLock::new();
+    let key = format!("{}\u{0}{code}", lang.unwrap_or(""));
+    TOKENS
+        .get_or_init(|| Shared::new(Lru::web()))
+        .memo(&key, || highlight(lang, code))
+}
+
 /// Every line of `code`, tokenized for `lang`.
 pub fn highlight(lang: Option<&str>, code: &str) -> Vec<Vec<Token>> {
     let rules = rules_for(lang);
@@ -601,6 +614,16 @@ mod tests {
             }]
         );
         assert_eq!(highlight(None, "x")[0][0].text, "x");
+    }
+
+    #[test]
+    fn a_card_is_tokenized_once() {
+        let code = "a: 1\nb: [x]";
+        let a = highlight_cached(Some("yaml"), code);
+        assert!(Arc::ptr_eq(&a, &highlight_cached(Some("yaml"), code)));
+        assert_eq!(*a, highlight(Some("yaml"), code));
+        // The language is part of the key.
+        assert_ne!(*highlight_cached(Some("json"), code), *a);
     }
 
     #[test]

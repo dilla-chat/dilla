@@ -88,10 +88,22 @@ pub struct Slow {
 /// The wait on `channel`, from the timeline: the channel's slow-mode seconds after the newest own stored post. A post
 /// of this device still pending in the outbox is the queued one.
 pub fn slow_state(channel: &Channel, items: &[TimelineItem], bypass: bool, now_ms: u64) -> Slow {
+    slow_state_since(channel, items, bypass, now_ms, 0)
+}
+
+/// [`slow_state`] counting only own posts made at or after `since_s` (unix seconds): the web starts a channel's wait when
+/// its own post is confirmed in the running session, so a post from an earlier session starts none.
+pub fn slow_state_since(
+    channel: &Channel,
+    items: &[TimelineItem],
+    bypass: bool,
+    now_ms: u64,
+    since_s: u64,
+) -> Slow {
     let last = items
         .iter()
         .rev()
-        .find(|i| i.own && i.state == TimelineItemState::Ok && i.seq.is_some())
+        .find(|i| i.own && i.state == TimelineItemState::Ok && i.seq.is_some() && i.ts >= since_s)
         .map(|i| i.ts);
     let until_ms = slow::wait_until_ms(channel.slowmode, last, bypass, now_ms);
     Slow {
@@ -224,6 +236,22 @@ mod tests {
         );
         // Over: no wait, so nothing is queued either.
         assert_eq!(slow_state(&ch, &items, false, 2_000_000), Slow::default());
+    }
+
+    /// An own post from before this session starts no wait (the web's slow slice starts at a post confirmed while it runs).
+    #[test]
+    fn a_post_from_an_earlier_session_starts_no_wait() {
+        let now = 1_000 * 1000;
+        let ch = channel(0, 30);
+        let items = [item(true, TimelineItemState::Ok, 990)];
+        assert_eq!(
+            slow_state_since(&ch, &items, false, now, 995),
+            Slow::default()
+        );
+        assert_eq!(
+            slow_state_since(&ch, &items, false, now, 990).until_ms,
+            1_020_000
+        );
     }
 
     #[test]

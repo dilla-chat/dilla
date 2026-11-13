@@ -314,18 +314,37 @@ async fn peer_sees_what_author_makes() {
 async fn typing_is_sent_and_received() {
     let (_host, pa, _pb, a, b, channel) = both("msg-typing").await;
     // The gateway has to be up on both sides.
-    wait_for(&a, SHORT, "a online", |s| {
-        s.connection.status == dilla_client::state::ConnectionStatus::Online
+    for who in [&a, &b] {
+        wait_for(who, SHORT, "online", |s| {
+            s.connection.status == dilla_client::state::ConnectionStatus::Online
+        })
+        .await;
+    }
+    // The signal is only taken once the receiver holds the channel's timeline, so it is sent again (the 3 s throttle
+    // allows one every 3 s) until the receiver shows it.
+    wait_for(&b, SHORT, "b holds the channel", |s| {
+        s.timelines.contains_key(&channel)
     })
     .await;
-    a.messages().typing(channel, true);
-    let s = wait_for(&b, SHORT, "b to see a typing", |s| {
-        s.messages
-            .typing
-            .get(&channel)
-            .is_some_and(|t| !t.is_empty())
-    })
-    .await;
+    let mut seen = None;
+    for _ in 0..6 {
+        a.messages().typing(channel, true);
+        if let Ok(s) = tokio::time::timeout(
+            Duration::from_millis(3500),
+            wait_for(&b, SHORT, "b to see a typing", |s| {
+                s.messages
+                    .typing
+                    .get(&channel)
+                    .is_some_and(|t| !t.is_empty())
+            }),
+        )
+        .await
+        {
+            seen = Some(s);
+            break;
+        }
+    }
+    let s = seen.expect("b sees a typing");
     assert_eq!(s.messages.typing[&channel][0].user, UserId(pa.user_id));
     assert!(!s.messages.typing[&channel][0].name.is_empty(), "named");
     // The sender never sees its own signal.
@@ -344,36 +363,96 @@ async fn typing_is_sent_and_received() {
     .await;
 }
 
-/// Own: the receiver never fetches a link preview. The sender's message names a URL on a local listener that records
-/// every connection; the receiver reads the message (and so would draw it), and nothing connects.
+/// Own, a guard: the receiver never fetches a link preview. The web client has no link-preview feature (a link is drawn as
+/// its own text and never opened, `markdown.ts`), and neither has this one, so nothing here may start one.
+///
+/// Every outgoing request of a client reaches the world through the process's HTTP proxy settings. The proxy here is a
+/// recording double: it answers nothing and writes down the request line of whatever reaches it, so it is both the
+/// recording `Http` and, for a hostname that resolves nowhere else, the recording resolver (a name only a proxy can
+/// resolve). The positive control makes a real `reqwest` request to the link and sees it recorded; then the sender posts
+/// the link, the receiver reads it, and the record holds nothing for the link's host.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
 async fn receiver_never_fetches_link_preview() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counter = hits.clone();
-    tokio::spawn(async move {
-        while listener.accept().await.is_ok() {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    });
+    let seen = recorder();
+    let link = "http://preview.recorded.invalid/card?x=1";
+    // The control: a fetch of the link by any reqwest-based code is seen by the double.
+    let _ = reqwest::Client::new().get(link).send().await;
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("preview.recorded.invalid")),
+        "the double sees a fetch of the link (control)"
+    );
+    seen.lock().unwrap().clear();
+
     let (_host, _pa, _pb, a, b, channel) = both("msg-preview").await;
-    let url = format!("http://127.0.0.1:{port}/preview?x=1");
     let id = a
-        .send_text(channel, format!("look {url}"))
+        .send_text(
+            channel,
+            format!("look {link} and https://preview.recorded.invalid/s"),
+        )
         .await
         .unwrap()
         .unwrap();
     until(&b, channel, id, "b to read the link", |i| {
-        i.body.contains(&url)
+        i.body.contains(link)
     })
     .await;
     // Give a fetch every chance to happen.
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(
-        hits.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "nothing connected to the link's host"
+    let record = seen.lock().unwrap().clone();
+    assert!(
+        record
+            .iter()
+            .all(|l| !l.contains("preview.recorded.invalid")),
+        "nothing asked for the link's host: {record:?}"
     );
+}
+
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// The recording proxy, started once for the process; every client of this file reaches the instance (127.0.0.1) around
+/// it (`NO_PROXY`) and anything else through it.
+fn recorder() -> Seen {
+    static SEEN: std::sync::OnceLock<Seen> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Seen = Seen::default();
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let log = log.clone();
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    let mut reader = BufReader::new(stream);
+                    if reader.read_line(&mut line).is_ok() {
+                        log.lock().unwrap().push(line.trim().to_owned());
+                    }
+                    let _ = reader
+                        .into_inner()
+                        .write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n");
+                });
+            }
+        });
+        // SAFETY: set once, before this test starts any client or request, in a process whose other tests only read it.
+        #[allow(unsafe_code)]
+        unsafe {
+            for (k, v) in [
+                ("HTTP_PROXY", format!("http://127.0.0.1:{port}")),
+                ("http_proxy", format!("http://127.0.0.1:{port}")),
+                ("HTTPS_PROXY", format!("http://127.0.0.1:{port}")),
+                ("https_proxy", format!("http://127.0.0.1:{port}")),
+                ("NO_PROXY", "127.0.0.1,localhost,::1".to_owned()),
+                ("no_proxy", "127.0.0.1,localhost,::1".to_owned()),
+            ] {
+                std::env::set_var(k, v);
+            }
+        }
+        seen
+    })
+    .clone()
 }

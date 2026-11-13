@@ -12,10 +12,15 @@
 
 use gpui::{AnyElement, FontWeight, Hsla, IntoElement, ParentElement, Styled, div, px};
 
-use dilla_desktop_ui::text::{Face, MONO_ADVANCE, chromium_baseline, line, line_height};
+use dilla_desktop_ui::text::{
+    Face, MONO_ADVANCE, ascent_descent, chromium_baseline, line, line_height,
+};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
-use super::highlight::{TokenKind, highlight};
+use std::sync::OnceLock;
+
+use super::cache::{Lru, Shared};
+use super::highlight::{TokenKind, highlight_cached};
 use super::markdown::{Body, Pill};
 use crate::screens::messages::css::len;
 use crate::strings::{t, tf};
@@ -34,6 +39,8 @@ const QUOTE_INDENT: f32 = 2.0 + 12.0;
 const CODE_SCALE: f32 = 0.9;
 const CODE_PAD: f32 = 1.0 + 4.0;
 const MENTION_PAD: f32 = 4.0;
+/// MessageRow.css `.d-link`: `text-underline-offset: 0.15em`.
+const UNDERLINE_OFFSET: f32 = 0.15;
 
 /// CodeBlock.css: the card's 640px maximum, its 30px head (and 1px rule), 8px body padding, 19px lines, 320px maximum
 /// body, 38px number gutter and 16px right padding.
@@ -302,8 +309,7 @@ fn draw_line(out: &mut Vec<AnyElement>, flow: &Flow, cells: &[Cell], x0: f32, to
             })
             .collect();
         let sz = st.size;
-        let ascent = (1.02 * sz).round();
-        let descent = (0.3 * sz).round();
+        let (ascent, descent) = ascent_descent(Face::Mono, sz);
         // The span's box: the font's content area around the shared baseline.
         if st.code {
             out.push(frame(
@@ -334,7 +340,8 @@ fn draw_line(out: &mut Vec<AnyElement>, flow: &Flow, cells: &[Cell], x0: f32, to
         if st.underline {
             out.push(rule(
                 x,
-                (parent_baseline + 0.15 * sz + 1.0).round(),
+                // `text-underline-offset: 0.15em` from the baseline (MessageRow.css `.d-link`); 1px thick.
+                (parent_baseline + UNDERLINE_OFFSET * sz).round(),
                 width,
                 color_of(st),
             ));
@@ -342,7 +349,8 @@ fn draw_line(out: &mut Vec<AnyElement>, flow: &Flow, cells: &[Cell], x0: f32, to
         if st.strike {
             out.push(rule(
                 x,
-                (parent_baseline - 0.3 * sz).round(),
+                // Blink puts a line-through a third of the ascent above the baseline.
+                (parent_baseline - ascent / 3.0).round(),
                 width,
                 color_of(st),
             ));
@@ -456,7 +464,7 @@ fn code_height(lines: usize) -> f32 {
 /// A fenced code card at (`x`, `top`) (README §6.4): the language, the line count, Copy, and the numbered, highlighted
 /// lines.
 fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
-    let rows = highlight(lang, code);
+    let rows = highlight_cached(lang, code);
     let height = code_height(rows.len());
     let inner = width - 2.0;
     let mut kids: Vec<AnyElement> = Vec::new();
@@ -586,18 +594,37 @@ fn token_color(kind: TokenKind) -> (Hsla, FontWeight) {
     (c, font::WEIGHT_BODY)
 }
 
+/// What the height memo holds: heights by the parts and the width (the keys are bounded by the parts' debug text, so the
+/// body limit is the web's 4000 characters of body times the markup around them).
+fn heights() -> &'static Shared<f32> {
+    static HEIGHTS: OnceLock<Shared<f32>> = OnceLock::new();
+    HEIGHTS.get_or_init(|| Shared::new(Lru::new(2000, 2_000_000, 40_000)))
+}
+
+/// [`layout`]'s height, remembered by (parts, width): a draw of a body already laid out in this width costs one lookup.
+pub fn height_cached(parts: &[Body], width: f32) -> f32 {
+    let key = format!("{:x}|{parts:?}", width.to_bits());
+    *heights().memo(&key, || layout(parts, width, color::FG_BODY).height)
+}
+
 /// The body `parts` laid out in `width` px, in the colour `fg`.
 pub fn layout(parts: &[Body], width: f32, fg: Hsla) -> Laid {
+    layout_from(parts, width, fg, 0.0)
+}
+
+/// [`layout`] with the first line `y0` px below the box's top: the box sits on a whole pixel and the body's own position
+/// has a fraction, which the lines keep (they are placed at the CSS position, not rounded with the box).
+pub fn layout_from(parts: &[Body], width: f32, fg: Hsla, y0: f32) -> Laid {
     let mut out: Vec<AnyElement> = Vec::new();
     if !parts.iter().any(|p| matches!(p, Body::CodeBlock { .. })) {
-        let h = layout_run(&mut out, parts, 0.0, width, fg);
+        let h = layout_run(&mut out, parts, y0, width, fg);
         return Laid {
             height: h,
             elements: out,
         };
     }
     // A grid of runs and cards with a 6px gap.
-    let mut y = 0.0;
+    let mut y = y0;
     let mut first = true;
     let mut run: Vec<Body> = Vec::new();
     let flush_run =
@@ -635,7 +662,7 @@ pub fn layout(parts: &[Body], width: f32, fg: Hsla) -> Laid {
     }
     flush_run(&mut out, &mut run, &mut y, &mut first);
     Laid {
-        height: y,
+        height: y - y0,
         elements: out,
     }
 }
@@ -703,6 +730,43 @@ mod tests {
     fn a_code_card_scrolls_after_320px_of_lines() {
         assert_eq!(code_height(1), 2.0 + 30.0 + 1.0 + 19.0 + 16.0);
         assert_eq!(code_height(100), 2.0 + 30.0 + 1.0 + 320.0 + 16.0);
+    }
+
+    /// The height memo answers what a layout would, for every body and width, and a second ask is a lookup.
+    #[test]
+    fn the_height_memo_agrees_with_the_layout() {
+        for text in [
+            "a",
+            "one two three four five six seven",
+            "> q\nb",
+            "```yaml\na: 1\n```\nafter",
+            "`c` **b** https://example.com/x",
+        ] {
+            for width in [60.0, 200.0, 400.0] {
+                let p = parts(text);
+                let direct = layout(&p, width, color::FG_BODY).height;
+                assert_eq!(height_cached(&p, width), direct, "{text:?} at {width}");
+                assert_eq!(height_cached(&p, width), direct);
+            }
+        }
+        // A different width is a different entry.
+        let p = parts("one two three four five six seven");
+        assert_ne!(height_cached(&p, 60.0), height_cached(&p, 400.0));
+    }
+
+    /// Underlines and strikes are placed from the CSS offset and the font's ascent, not from fixed guesses: a link and a
+    /// struck word draw a rule each.
+    #[test]
+    fn links_and_strikes_draw_their_rules() {
+        let plain = layout(&parts("word"), 400.0, color::FG_BODY).elements.len();
+        let link = layout(&parts("https://example.com/x"), 400.0, color::FG_BODY)
+            .elements
+            .len();
+        let strike = layout(&parts("~~word~~"), 400.0, color::FG_BODY)
+            .elements
+            .len();
+        assert_eq!(link, plain + 1);
+        assert_eq!(strike, plain + 1);
     }
 
     #[test]

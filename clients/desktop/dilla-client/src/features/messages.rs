@@ -126,8 +126,9 @@ impl Messages {
         self.fold(channel, msg, if on { PIN } else { UNPIN }, String::new())
     }
 
-    /// Reads the channel's pins into [`crate::state::messages::MessagesState::pins`] (the pins dialog opening, or a pin
-    /// folding while it is open).
+    /// Reads the channel's pins into [`crate::state::messages::MessagesState::pins`]. The caller asks: when the pins
+    /// dialog opens and after it unpins; a pin that folds while the dialog is open shows at the next open (no refresh
+    /// is wired to the fold).
     pub fn load_pins(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
         let inner = self.inner.clone();
         self.inner.spawn(async move {
@@ -187,13 +188,19 @@ fn name_of(state: &crate::state::AppState, channel: ChannelId, user: UserId) -> 
         .channel(channel)
         .and_then(|c| state.members.get(&c.community_id))
         .and_then(|m| m.iter().find(|m| m.user_id == user))
-        .map_or_else(String::new, |m| {
-            if m.display.is_empty() {
-                m.username.clone()
-            } else {
-                m.display.clone()
-            }
-        })
+        .map_or_else(
+            // A person no member list names yet: the first eight digits of the id, as the log names an unknown author.
+            || user.hex()[..8].to_owned(),
+            |m| {
+                if !m.display.is_empty() {
+                    m.display.clone()
+                } else if !m.username.is_empty() {
+                    m.username.clone()
+                } else {
+                    user.hex()[..8].to_owned()
+                }
+            },
+        )
 }
 
 impl AreaFrames for Messages {
@@ -237,15 +244,46 @@ impl AreaFrames for Messages {
                 });
             }
         });
-        if on == 1 {
-            // The sweep: the row is dropped when it lapses unless a later frame renewed it.
+        if on == 1 && !inner.snapshot().messages.typing_sweeping.contains(&channel) {
+            // One sweep per channel, however many frames arrive: it sleeps to the nearest expiry, drops what lapsed and
+            // looks again, until no row is left.
+            inner.publish(move |s| {
+                s.messages.typing_sweeping.insert(channel);
+            });
             let swept = inner.clone();
             drop(inner.spawn(async move {
-                tokio::time::sleep(Duration::from_millis(TYPING_WINDOW_MS + 50)).await;
+                loop {
+                    let now = now_ms();
+                    let nearest = swept
+                        .snapshot()
+                        .messages
+                        .typing
+                        .get(&channel)
+                        .and_then(|rows| rows.iter().map(|r| r.expires_at_ms).min());
+                    let Some(nearest) = nearest else {
+                        // Nothing to wait for (the first publish may not have landed yet): look once more shortly.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        if swept
+                            .snapshot()
+                            .messages
+                            .typing
+                            .get(&channel)
+                            .is_none_or(Vec::is_empty)
+                        {
+                            break;
+                        }
+                        continue;
+                    };
+                    let wait = nearest.saturating_sub(now) + 50;
+                    tokio::time::sleep(Duration::from_millis(wait.max(50))).await;
+                    swept.publish(move |s| {
+                        if let Some(rows) = s.messages.typing.get_mut(&channel) {
+                            rows.retain(|r| r.expires_at_ms > now_ms());
+                        }
+                    });
+                }
                 swept.publish(move |s| {
-                    if let Some(rows) = s.messages.typing.get_mut(&channel) {
-                        rows.retain(|r| r.expires_at_ms > now_ms());
-                    }
+                    s.messages.typing_sweeping.remove(&channel);
                 });
                 Ok::<(), ClientError>(())
             }));
