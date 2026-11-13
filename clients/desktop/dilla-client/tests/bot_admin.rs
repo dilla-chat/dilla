@@ -14,8 +14,9 @@
 use std::time::Duration;
 
 use dilla_client::state::{ChannelId, CommunityId};
+use dilla_client::testing::host::bot::enable_bot;
 use dilla_client::testing::host::{
-    Person, clear_session, community, sign_up, start, start_host, wait_for,
+    Host, Person, clear_session, community, sign_up, start, start_bot_host, start_host, wait_for,
 };
 
 async fn owner(tag: &str) -> (dilla_client::testing::host::Host, Person, [u8; 16]) {
@@ -177,4 +178,64 @@ async fn a_mark_re_reads_the_bot_channels() {
     )
     .await;
     client.stop();
+}
+
+/// [`owner`] on a host that runs the Bot (Task 28, `testing::host::bot`).
+async fn bot_owner(tag: &str) -> (Host, Person, [u8; 16]) {
+    let host = tokio::task::spawn_blocking({
+        let tag = tag.to_owned();
+        move || start_bot_host(&tag, "127.0.0.1:0")
+    })
+    .await
+    .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let a = sign_up(&host, &invite, "alice", "alice", tag).await;
+    tokio::task::spawn_blocking(move || {
+        let c = community(&host, &a, "gpui", &[]);
+        clear_session(&a);
+        (host, a, c)
+    })
+    .await
+    .unwrap()
+}
+
+/// e2e/web/bot-runtime.spec.ts "a bot enabled through server settings reaches ready through the native runtime": no
+/// installation at first; the owner enables the Bot (an empty capability mask) behind a password step-up; the operator
+/// runtime lists the one installation ready (state 3), and the owner's read says ready ("admin.bot.status.ready").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn a_bot_enabled_in_server_settings_reaches_ready() {
+    let (host, pa, c) = bot_owner("t28-ready").await;
+    let a = start(&pa).await;
+    let community = CommunityId(c);
+    wait_for(&a, Duration::from_secs(30), "the community", |s| {
+        s.members.contains_key(&community)
+    })
+    .await;
+    assert_eq!(
+        recv(a.bot_admin().refresh_installation(community)).await,
+        None,
+        "no Bot before it is enabled (admin.bot.none)"
+    );
+    let installation = enable_bot(&a, c, 0).await;
+    assert_eq!((installation.state, installation.capabilities), (3, 0));
+    let (host, listed) = tokio::task::spawn_blocking(move || {
+        let rows = host.bot_installations();
+        (host, rows)
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        listed,
+        vec![(c, 3)],
+        "the runtime lists one ready installation"
+    );
+    let s = a.state().borrow().clone();
+    assert_eq!(
+        s.bot_admin.installation.get(&community).map(|i| i.state),
+        Some(3),
+        "the settings page reads ready"
+    );
+    a.stop();
+    drop(host);
 }

@@ -38,7 +38,7 @@ Totals: 233 e2e tests; 141 with a Rust test, 42 n/a (browser/phone only), 21 nex
 | `e2e/web/bot-commands.spec.ts` | /remind round trip | TODO: dilla-client::tests/bot::remind_round_trip_through_sealed_commands |
 | `e2e/web/bot-commands.spec.ts` | Enter to first answer is within RTT + 100 ms at p95 | TODO: dilla-client::tests/bot::enter_to_first_answer_is_within_rtt_plus_100ms_at_p95 |
 | `e2e/web/bot-runtime.spec.ts` | the Firefox web guard exempts only its browser-chrome favicon refusal | n/a (browser/phone only): the Firefox browser-chrome console guard of the web e2e |
-| `e2e/web/bot-runtime.spec.ts` | a bot enabled through server settings reaches ready through the native runtime | TODO: dilla-client::tests/bot_admin::a_bot_enabled_in_server_settings_reaches_ready |
+| `e2e/web/bot-runtime.spec.ts` | a bot enabled through server settings reaches ready through the native runtime | dilla-client::tests/bot_admin::a_bot_enabled_in_server_settings_reaches_ready |
 | `e2e/web/bot-runtime.spec.ts` | literal music command text never executes through the native runtime | TODO: dilla-client::tests/bot::literal_music_command_text_never_executes |
 | `e2e/web/bot-runtime.spec.ts` | the moderation log reads through sealed Bot commands on each device, across a Bot restart | dilla-desktop::src/screens/members/modlog::the_log_reads_pages_as_the_web_does |
 | `e2e/web/bot-runtime.spec.ts` | a Roles-enabled bot applies the configured join role on join and rejoin | TODO: dilla-client::tests/bot_admin::a_roles_bot_applies_the_join_role_on_join_and_rejoin |
