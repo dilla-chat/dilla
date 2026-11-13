@@ -196,7 +196,7 @@ mod behaviour {
         let d = tray.take_all().unwrap();
         alice
             .attachments()
-            .send(channel, "the shanty".into(), d)
+            .send(channel, "the shanty".into(), d, None)
             .await
             .unwrap()
             .unwrap();
