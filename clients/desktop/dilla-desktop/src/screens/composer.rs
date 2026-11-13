@@ -44,6 +44,20 @@ use crate::tracked_focus;
 
 /// Composer.css `.d-composer__input`: 20px lines, 5px above and below, at most 13.75rem (220px) high.
 const FIELD_LINE: f32 = 20.0;
+
+/// `field` (the box the textarea draws its text in, at the text's first line) with the typed text's line boxes recorded
+/// for the R13 mask in the automation build ([`crate::automation::typed_text_probe`]); unchanged elsewhere.
+pub(crate) fn typed_text(field: gpui::Div, value: &str, line: f32) -> gpui::Div {
+    #[cfg(feature = "automation")]
+    let field = field.child(crate::automation::typed_text_probe(
+        value.to_owned(),
+        text::INPUT,
+        line,
+    ));
+    #[cfg(not(feature = "automation"))]
+    let _ = (value, line);
+    field
+}
 /// The face Chromium falls back to for the ⇧ and ↵ JetBrains Mono lacks (fontconfig's sans-serif on the reference
 /// machine).
 const SYMBOL_FALLBACK: &str = "DejaVu Sans";
@@ -632,16 +646,23 @@ impl Render for Composer {
             .child(tracked_focus(
                 "composer",
                 &self.input.read(cx).focus_handle(cx),
-                div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
-                    crate::screens::messages::textarea_origin(
-                        // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which wins.
-                        Textarea::new(&self.input)
-                            .appearance(false)
-                            .disabled(blocked.is_some())
-                            .text_size(text::INPUT)
-                            .line_height(px(FIELD_LINE))
-                            .h(px(rows as f32 * FIELD_LINE)),
-                    ),
+                typed_text(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(rows as f32 * FIELD_LINE))
+                        .child(crate::screens::messages::textarea_origin(
+                            // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which
+                            // wins.
+                            Textarea::new(&self.input)
+                                .appearance(false)
+                                .disabled(blocked.is_some())
+                                .text_size(text::INPUT)
+                                .line_height(px(FIELD_LINE))
+                                .h(px(rows as f32 * FIELD_LINE)),
+                        )),
+                    &value,
+                    FIELD_LINE,
                 ),
             ))
             .children(empty.then(|| {

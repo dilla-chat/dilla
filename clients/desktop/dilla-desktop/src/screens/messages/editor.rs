@@ -102,6 +102,17 @@ pub fn editor(
         .line_height(px(LINE))
         .font_family(font::MONO)
         .text_color(color::FG)
+        // The typed text's line boxes for the R13 mask (automation build only), over the field's text box.
+        .child(crate::screens::composer::typed_text(
+            div()
+                .absolute()
+                .left(px(PAD_X))
+                .top(px(PAD_Y))
+                .w(px(text_width(width)))
+                .h(px(lines as f32 * LINE)),
+            &value,
+            LINE,
+        ))
         .child(super::textarea_origin(
             // The textarea's own size sets 14px text; the field's 13px on 20px lines are set on it, which wins.
             Textarea::new(input)
