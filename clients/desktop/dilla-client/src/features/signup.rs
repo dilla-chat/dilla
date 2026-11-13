@@ -102,6 +102,119 @@ pub fn extract_invite_code(input: &str) -> String {
     trimmed.to_owned()
 }
 
+/// An invite link as the desktop takes it: the instance it names (canonical, `scheme://host[:port]/`) and its code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InviteLink {
+    pub instance: url::Url,
+    pub code: String,
+}
+
+/// Why a pasted invite link is refused before anything is stored or sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InviteLinkError {
+    /// Not a link of the form `https://host/i/<code>` (a bare code, another page, a bad code or encoding).
+    #[error("not an invite link")]
+    Invalid,
+    /// Not https (http only to the loopback, and only in a debug build).
+    #[error("an HTTPS instance is required")]
+    Insecure,
+    /// It carries a user name, a password, a query or a fragment.
+    #[error("instance links cannot contain credentials, queries or fragments")]
+    Credentials,
+}
+
+/// The desktop's `policy.ts canonicalInstance` and invite route, for a pasted invite link (Task 27's
+/// `address::canonical_instance` is the same rule on its branch: dedup at merge). At most 2048 characters with no white
+/// space, backslash or control character, no `%2f`, `%5c`, `%00` or `%2e`; no user info, query or fragment; https, or
+/// http to `127.0.0.1`, `[::1]` or `localhost` when `allow_loopback` (debug builds); a host not ending in a dot; and
+/// the path exactly `/i/<code>` with the code `[A-Za-z0-9_-]{1,128}`.
+pub fn parse_invite_link(input: &str, allow_loopback: bool) -> Result<InviteLink, InviteLinkError> {
+    let input = input.trim();
+    let lower = input.to_ascii_lowercase();
+    if input.is_empty()
+        || input.len() > 2048
+        || input
+            .chars()
+            .any(|c| c.is_whitespace() || c == '\\' || c.is_control())
+        || ["%2f", "%5c", "%00", "%2e"]
+            .iter()
+            .any(|s| lower.contains(s))
+    {
+        return Err(InviteLinkError::Invalid);
+    }
+    let url = url::Url::parse(input).map_err(|_| InviteLinkError::Invalid)?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(InviteLinkError::Credentials);
+    }
+    if url.query().is_some()
+        || url.fragment().is_some()
+        || input.contains('#')
+        || input.contains('?')
+    {
+        return Err(InviteLinkError::Credentials);
+    }
+    let host = url.host_str().ok_or(InviteLinkError::Invalid)?;
+    if host.is_empty() || host.ends_with('.') {
+        return Err(InviteLinkError::Invalid);
+    }
+    let loopback = matches!(host, "127.0.0.1" | "[::1]" | "localhost");
+    match url.scheme() {
+        "https" => {}
+        "http" if allow_loopback && loopback => {}
+        "http" => return Err(InviteLinkError::Insecure),
+        _ => return Err(InviteLinkError::Invalid),
+    }
+    let path = url.path();
+    let code = path
+        .strip_prefix("/i/")
+        .map(|c| c.strip_suffix('/').unwrap_or(c))
+        .filter(|c| {
+            (1..=128).contains(&c.len())
+                && c.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
+        .ok_or(InviteLinkError::Invalid)?;
+    let instance = url::Url::parse(&format!("{}/", url.origin().ascii_serialization()))
+        .map_err(|_| InviteLinkError::Invalid)?;
+    Ok(InviteLink {
+        instance,
+        code: code.to_owned(),
+    })
+}
+
+/// Writes the recovery key file the person chose: a new temporary file in the same directory (created exclusively,
+/// mode 0600, never through a symlink), synced, then renamed over `path`. A file already at `path` is replaced (its
+/// old mode does not carry over), and a symlink there is replaced, never followed. The temporary file is removed on
+/// any failure.
+pub fn write_key_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut salt = [0u8; 8];
+    getrandom::fill(&mut salt).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let temp = dir.join(format!(".dilla-key-{}.tmp", hex(&salt)));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let written = (|| {
+        let mut file = options.open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
 /// `decodeURIComponent`, or the raw text when it is not valid percent-encoding of UTF-8.
 fn percent_decoded(raw: &str) -> String {
     let bytes = raw.as_bytes();
@@ -492,6 +605,10 @@ pub struct Signup {
     http: ReqwestHttp,
     core: Option<Arc<Mutex<ClientCore>>>,
     instance: Option<InstanceInfo>,
+    /// An account POST was answered (2xx) on this sign-up: never POST again, never reset.
+    answered: bool,
+    #[cfg(feature = "testing")]
+    fault_account_decode: bool,
 }
 
 impl std::fmt::Debug for Signup {
@@ -552,6 +669,9 @@ impl Signup {
             http,
             core: None,
             instance: None,
+            answered: false,
+            #[cfg(feature = "testing")]
+            fault_account_decode: false,
         })
     }
 
@@ -614,11 +734,19 @@ impl Signup {
 
     /// The worker's `signupReset`: the pending keys (and with them the shown recovery key) are forgotten. Refused once
     /// the account is registered (the core keeps what the instance knows).
+    /// Refused ([`SignupError::Stalled`]) once an account POST was answered on this sign-up: the account may exist,
+    /// and its keys are the only way into it. The kept join goes with the keys.
     pub fn reset(&mut self) -> Result<(), SignupError> {
+        if self.answered {
+            return Err(SignupError::Stalled);
+        }
         if self.identity()?.phase != 1 {
             return Ok(());
         }
-        self.with_core(|c| c.signup_reset())
+        self.with_core(|c| {
+            c.signup_reset()?;
+            c.setting_delete(PENDING_JOIN_KEY)
+        })
     }
 
     /// The worker's `signupSubmit` and signup.ts `submit`: the invite is read first (a refused one is
@@ -645,30 +773,53 @@ impl Signup {
                 Err(_) => {}
             }
         }
+        if self.answered {
+            // A POST was answered on this sign-up: the account may exist, so only `resume` goes on.
+            return Err(SignupError::Stalled);
+        }
         let body = self.with_core(|c| {
             c.signup_request(invite, &username, "", password)
                 .map(Zeroizing::new)
         })?;
+        // Kept before the POST, so an account whose later steps stall still joins after its factor; a refused POST
+        // forgets it with the keys (`reset`).
+        self.keep_pending_join(community, invite)?;
         let answer = self
             .http
             .call::<PostAccountSecret>(&[], Secret(body))
             .await
             .map_err(|e| refusal(&e, true))?;
-        let (user_id, token, expires) = decode_account(&answer.0)
-            .ok_or_else(|| SignupError::Other("E_DECODE account".into()))?;
-        self.with_core(|c| c.session_store(&token, expires, expires))?;
-        self.auth.set(token.as_str());
-        drop(token);
-        let signer = self.authenticated_signer().await?;
-        let name = username.clone();
-        self.with_core(|c| c.signup_complete(&user_id, &name, now_s(), &signer))?;
-        // From here the account exists: a failure to publish is finished by `resume`, never by a second POST.
-        self.publish_device_list().await?;
-        self.keep_pending_join(community, invite)?;
+        // Answered: from here on every failure is Stalled (resume only), and `reset` is refused.
+        self.answered = true;
+        #[cfg(feature = "testing")]
+        let answer = if std::mem::take(&mut self.fault_account_decode) {
+            Raw(b"\xff".to_vec())
+        } else {
+            answer
+        };
+        let finished = async {
+            let (user_id, token, expires) =
+                decode_account(&answer.0).ok_or(SignupError::Stalled)?;
+            self.with_core(|c| c.session_store(&token, expires, expires))?;
+            self.auth.set(token.as_str());
+            drop(token);
+            let signer = self.authenticated_signer().await?;
+            let name = username.clone();
+            self.with_core(|c| c.signup_complete(&user_id, &name, now_s(), &signer))?;
+            self.publish_device_list().await
+        }
+        .await;
+        finished.map_err(|_| SignupError::Stalled)?;
         Ok(Submitted {
             username,
             pending_join: community.map(CommunityId),
         })
+    }
+
+    /// Test fault (feature `testing`): the next account POST's answer reads as undecodable, as a garbled answer would.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_account_decode(&mut self) {
+        self.fault_account_decode = true;
     }
 
     /// signup.ts `resume`: an account registered but not finished (the answer was lost, the app closed) is finished
@@ -686,6 +837,10 @@ impl Signup {
             2 => {}
             1 => {
                 let Some(token) = self.stored_session()? else {
+                    if self.answered {
+                        // Answered but the answer unreadable: the keys stay; nothing here can finish it.
+                        return Err(SignupError::Stalled);
+                    }
                     self.reset()?;
                     return Ok(Resumed::Fresh);
                 };
@@ -921,6 +1076,8 @@ pub struct MadeInvite {
 pub struct SignupResult {
     pub community: Option<CommunityId>,
     pub join_error: Option<FlowError>,
+    /// The invite code the join was tried with: a refused join is offered again in the join dialog (App.tsx).
+    pub invite: Option<String>,
 }
 
 /// The onboarding area's handle on a running client: create and join. Cheap to clone, no I/O on construction. A
@@ -992,10 +1149,12 @@ impl Onboarding {
                 Ok(()) => SignupResult {
                     community: Some(community),
                     join_error: None,
+                    invite: Some(invite),
                 },
                 Err(e) => SignupResult {
                     community: None,
                     join_error: Some(e),
+                    invite: Some(invite),
                 },
             })
         });
@@ -1004,8 +1163,22 @@ impl Onboarding {
             Err(e) => SignupResult {
                 community: None,
                 join_error: Some(e),
+                invite: None,
             },
         }
+    }
+
+    /// Whether a sign-up's join is kept in the store, waiting for the account's factor ([`Onboarding::finish_signup`]).
+    /// The app asks at every start of a client that is not ready yet, so a restart at the factor step still joins.
+    pub async fn has_pending_join(&self) -> bool {
+        let core = self.inner.engine().core().clone();
+        crate::sync::api::try_core(&core, |c| c.settings())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .as_deref()
+            .and_then(stored_pending_join)
+            .is_some()
     }
 
     /// The worker's `createCommunity`: `POST /v1/communities [name, policy "{}"... ]`. The name is checked first
@@ -1229,7 +1402,18 @@ async fn announcement_overwrites(
             out.push((1, me.0, PERM_SEND_MESSAGES, 0));
         }
     }
+    check_overwrite_count(out.len())?;
     Ok(out)
+}
+
+/// routes.ts `OVERWRITES_PER_CREATE_MAX`: a create carries at most this many overwrites.
+pub const OVERWRITES_PER_CREATE_MAX: usize = 100;
+
+fn check_overwrite_count(n: usize) -> Result<(), FlowError> {
+    if n > OVERWRITES_PER_CREATE_MAX {
+        return Err(FlowError::local("E_BAD_INPUT"));
+    }
+    Ok(())
 }
 
 /// `GET /v1/communities/{id}/roles`: the @everyone role is the one at position 0.
@@ -1296,6 +1480,107 @@ fn decode_invite(raw: &[u8]) -> Option<MadeInvite> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invite_links_follow_canonical_instance() {
+        let ok = parse_invite_link(" https://dilla.example/i/AB_12-x ", false).unwrap();
+        assert_eq!(ok.instance.as_str(), "https://dilla.example/");
+        assert_eq!(ok.code, "AB_12-x");
+        assert_eq!(
+            parse_invite_link("https://dilla.example:8443/i/AB/", false)
+                .unwrap()
+                .instance
+                .as_str(),
+            "https://dilla.example:8443/"
+        );
+        use InviteLinkError::*;
+        for (link, why) in [
+            ("http://dilla.example/i/AB", Insecure),
+            ("http://127.0.0.1:8453/i/AB", Insecure),
+            ("https://evil@dilla.example/i/AB", Credentials),
+            ("https://user:pw@dilla.example/i/AB", Credentials),
+            ("https://dilla.example/i/AB?x=1", Credentials),
+            ("https://dilla.example/i/AB#x", Credentials),
+            ("https://dilla.example/i/A%2fB", Invalid),
+            ("https://dilla.example/%2e%2e/i/AB", Invalid),
+            ("https://dilla.example/i/A B", Invalid),
+            ("https://dilla.example./i/AB", Invalid),
+            ("https://dilla.example/welcome", Invalid),
+            ("https://dilla.example/i/", Invalid),
+            ("https://dilla.example/i/a.b", Invalid),
+            ("AB12", Invalid),
+            ("javascript:alert(1)", Invalid),
+        ] {
+            assert_eq!(parse_invite_link(link, false), Err(why), "{link}");
+        }
+        let long = format!("https://dilla.example/i/{}", "a".repeat(129));
+        assert_eq!(parse_invite_link(&long, false), Err(Invalid));
+        // Loopback http only when allowed (debug builds).
+        for host in ["127.0.0.1:8453", "[::1]:8453", "localhost"] {
+            assert!(
+                parse_invite_link(&format!("http://{host}/i/AB"), true).is_ok(),
+                "{host}"
+            );
+        }
+        assert_eq!(
+            parse_invite_link("http://10.0.0.1/i/AB", true),
+            Err(Insecure)
+        );
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../../target/t25-unit-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_key_file_is_private_and_never_follows_a_link() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = scratch("keyfile");
+        // An existing world-readable file ends up 0600 with only the key.
+        let path = dir.join("key.txt");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_key_file(&path, b"KEY").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"KEY");
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        // A symlink at the path is replaced, and its target is untouched.
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"target").unwrap();
+        let link = dir.join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_key_file(&link, b"KEY").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"target");
+        assert!(
+            !std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::metadata(&link).unwrap().mode() & 0o777, 0o600);
+        // No temporary file is left behind.
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty());
+        // A failure (no such directory) is an error, not silence.
+        assert!(write_key_file(&dir.join("missing/key.txt"), b"KEY").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_create_carries_at_most_100_overwrites() {
+        assert!(check_overwrite_count(100).is_ok());
+        assert_eq!(check_overwrite_count(101).unwrap_err().code, "E_BAD_INPUT");
+    }
 
     #[test]
     fn usernames_follow_handle_go() {

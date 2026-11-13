@@ -89,6 +89,8 @@ pub struct CreateFlows {
     partial: Option<Partial>,
     invite_state: InviteState,
     invite_status: Option<SharedString>,
+    /// The invite the join dialog opened with (its refusal stays until the person types).
+    prefilled: Option<String>,
     /// Counts the opens; work from an earlier one is ignored once its dialog closed.
     session: u64,
     first_choice: FocusHandle,
@@ -113,12 +115,16 @@ impl CreateFlows {
                     match e {
                         InputEvent::PressEnter { .. } => this.submit(window, cx),
                         InputEvent::Change => {
-                            if this.error.take().is_some() {
-                                cx.notify();
-                            } else {
-                                // The channel hint follows the name.
-                                cx.notify();
+                            // Typing clears the refusal; the prefilled invite landing in the field does not.
+                            let prefilled = this
+                                .prefilled
+                                .as_deref()
+                                .is_some_and(|p| this.invite.read(cx).value() == p);
+                            if !prefilled {
+                                this.error = None;
                             }
+                            // The channel hint follows the name.
+                            cx.notify();
                         }
                         _ => {}
                     }
@@ -142,6 +148,7 @@ impl CreateFlows {
             partial: None,
             invite_state: InviteState::Creating,
             invite_status: None,
+            prefilled: None,
             session: 0,
             first_choice: cx.focus_handle().tab_stop(true),
             _subscriptions: subscriptions,
@@ -159,6 +166,16 @@ impl CreateFlows {
 
     pub fn dialog(&self) -> Option<Dialog> {
         self.dialog
+    }
+
+    /// The refusal the open dialog shows, if any.
+    pub fn refusal(&self) -> Option<SharedString> {
+        self.error.clone()
+    }
+
+    /// The join dialog's field as it stands.
+    pub fn invite_value(&self, cx: &gpui::App) -> String {
+        self.invite.read(cx).value().to_string()
     }
 
     fn community_name(&self, community: CommunityId) -> String {
@@ -180,8 +197,10 @@ impl CreateFlows {
         match which {
             Open::AddServer => self.dialog = Some(Dialog::AddServer),
             Open::CreateServer => self.dialog = Some(Dialog::CreateServer),
-            Open::Join { invite } => {
+            Open::Join { invite, refusal } => {
+                self.error = refusal.map(Into::into);
                 self.dialog = Some(Dialog::Join);
+                self.prefilled.clone_from(&invite);
                 if let Some(code) = invite {
                     self.invite
                         .update(cx, |s, cx| s.set_value(code, window, cx));
@@ -212,6 +231,7 @@ impl CreateFlows {
         self.kind = NewChannelKind::Text;
         self.invite_state = InviteState::Creating;
         self.invite_status = None;
+        self.prefilled = None;
         for input in [&self.server_name, &self.channel_name, &self.invite] {
             input.update(cx, |s, cx| s.set_value("", window, cx));
         }
@@ -694,7 +714,14 @@ impl Render for CreateFlows {
                     AddServerChoice::new("add-server-join", t("layout.add.join"))
                         .focus(&self.first_choice)
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.open(Open::Join { invite: None }, window, cx);
+                            this.open(
+                                Open::Join {
+                                    invite: None,
+                                    refusal: None,
+                                },
+                                window,
+                                cx,
+                            );
                         })),
                 );
                 let create = tracked_box(

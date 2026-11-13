@@ -81,6 +81,7 @@ fn escape_backs_out_of_create_dialogs(cx: &mut TestAppContext) {
         Open::CreateServer,
         Open::Join {
             invite: Some("https://dilla.test/i/AB12".into()),
+            refusal: None,
         },
         Open::CreateChannel {
             community,
@@ -132,6 +133,49 @@ fn add_server_choices_open_their_flows(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     assert!(!dialog_open(cx));
+}
+
+/// Fix round 1 (item 3): a sign-up's join refused after the factor is offered again on "Open dilla": the join dialog
+/// with the invite in its field and the refusal under it (App.tsx), which stays until the person types.
+#[gpui::test]
+fn a_refused_join_is_offered_again_with_its_invite(cx: &mut TestAppContext) {
+    use dilla_client::features::signup::{FlowError, SignupResult};
+    install(cx);
+    let (host, cx) = cx.add_window_view(|_, _| OverlayHost);
+    let joined = SignupResult {
+        community: Some(dilla_client::state::CommunityId([1; 16])),
+        join_error: None,
+        invite: Some("AB12".into()),
+    };
+    let refused = SignupResult {
+        community: None,
+        join_error: Some(FlowError {
+            code: "E_INVITE_INVALID".into(),
+            status: 404,
+        }),
+        invite: Some("AB12".into()),
+    };
+    cx.update(|window, cx| {
+        window.activate_window();
+        assert!(
+            !create::offer_refused_join(&joined, cx),
+            "a join that worked offers nothing"
+        );
+        assert!(create::offer_refused_join(&refused, cx));
+    });
+    host.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    let (dialog, refusal, value) = cx.update(|window, cx| {
+        let flows = create::flows(window, cx).expect("the flows");
+        let f = flows.read(cx);
+        (f.dialog(), f.refusal(), f.invite_value(cx))
+    });
+    assert_eq!(dialog, Some(Dialog::Join));
+    assert_eq!(value, "AB12");
+    assert_eq!(
+        refusal.as_deref(),
+        Some(create::join_refusal("E_INVITE_INVALID").as_str())
+    );
 }
 
 /// A window with the recovery key field.
@@ -204,6 +248,72 @@ fn keyboard_onboarding_focus_order() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Fix round 1 (item 1): a pasted invite link names a host the person has not seen. An http link to a non-loopback host
+/// and a link with user info are refused on step 1; a good link shows "Connect to <host>?" first, and until "Connect"
+/// nothing is added to the device's instances and no request reaches the host. Cancel goes back with nothing stored.
+#[test]
+#[ignore = "launches the automation build (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn an_invite_link_is_confirmed_before_anything_is_stored_or_sent() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let root = scratch_dir("confirm");
+    let instances = |root: &std::path::Path| {
+        dilla_client::instances::Instances::load(root)
+            .map(|l| l.list().len())
+            .unwrap_or(0)
+    };
+    let mut app = Driver::launch(&root);
+    app.wait_for("onboarding-invite", WAIT);
+    for refused in [
+        "http://dilla.example/i/AB12",
+        "https://evil@dilla.example/i/AB12",
+    ] {
+        app.type_text("onboarding-invite", refused);
+        app.press("enter");
+        app.wait_idle();
+        assert!(
+            app.element("onboarding-confirm").is_none(),
+            "{refused} refused"
+        );
+        assert!(app.element("onboarding-username").is_none());
+        app.press("ctrl-a");
+        app.press("backspace");
+    }
+    // The debug build takes http to the loopback (policy.ts allowLoopback).
+    app.type_text(
+        "onboarding-invite",
+        &format!("http://127.0.0.1:{port}/i/AB12"),
+    );
+    app.press("enter");
+    app.wait_for("onboarding-confirm", WAIT);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(instances(&root), 0, "nothing stored before Connect");
+    assert!(listener.accept().is_err(), "no request before Connect");
+    app.click("onboarding-back");
+    app.wait_for("onboarding-invite", WAIT);
+    assert_eq!(instances(&root), 0, "Cancel stores nothing");
+    assert!(listener.accept().is_err());
+    // Connect: now the instance is added and asked.
+    app.press("enter");
+    app.wait_for("onboarding-confirm", WAIT);
+    app.click("onboarding-next");
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        if listener.accept().is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Connect reached the host"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(instances(&root), 1);
+    drop(app);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `e2e/web/signup.spec.ts` "a server invite, a name and a written-down key make an account that lands in that
 /// server", in the window up to the account on the instance: the invite link, Enter; the name and password, Enter; the
 /// key step refuses Enter until the key is ticked as saved; then the account exists (its owner signs in with the
@@ -254,6 +364,10 @@ fn invite_name_written_key_lands_in_server() {
     app.wait_for("onboarding-invite", WAIT);
     app.type_text("onboarding-invite", &link);
     keep(&mut app, "1-invite");
+    app.press("enter");
+    // The host is shown for confirmation first; Enter (on Connect) goes on.
+    app.wait_for("onboarding-confirm", WAIT);
+    keep(&mut app, "1-confirm");
     app.press("enter");
     app.wait_idle();
     keep(&mut app, "1-after-enter");

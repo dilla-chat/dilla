@@ -2071,6 +2071,7 @@ dependencies = [
  "http",
  "image",
  "keyring",
+ "libc",
  "libsqlite3-sys",
  "open",
  "reqwest 0.13.5",

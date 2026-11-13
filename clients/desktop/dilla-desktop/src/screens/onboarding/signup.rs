@@ -14,7 +14,13 @@
 //!
 //! **Secrets.** The recovery key lives in a zeroizing buffer while step 3 shows; its text is drawn and never written
 //! anywhere by the app ("Save as file" writes it only to the file the person picks). The password is read from its field
-//! into a zeroizing buffer for the one submit.
+//! into a zeroizing buffer for the one submit, and the field is cleared on Back, on sign-in and after the account is
+//! made. Drawing the key makes copies the app cannot zeroize: each frame builds a `SharedString` per group of four, and
+//! GPUI's text system shapes (and may cache) those lines. They live only while step 3 is drawn; nothing else holds them.
+//!
+//! **The instance.** Step 1 checks the link (`parse_invite_link`, the desktop's `canonicalInstance`) and shows an
+//! instance this device does not know yet for confirmation ("Connect to <host>?", main.ts `confirmInstance`) before it
+//! is added to the device or asked anything.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,7 +72,17 @@ pub enum Step {
     Keys,
     /// The instance takes no new accounts.
     Closed,
+    /// "Connect to <host>?": an instance this device does not know yet, shown before anything is stored or sent.
+    Confirm,
 }
+
+// main.ts `confirmInstance`'s copy. It is the desktop's own (not in the web strings `strings.rs` is generated from), so
+// it lives here until the generator takes desktop copy; the controller decides at merge.
+const CONFIRM_TITLE: &str = "Connect to {host}?";
+const CONFIRM_INSTANCE: &str = "Instance: {instance}";
+const CONFIRM_DETAIL: &str = "Only continue if you recognize this address.";
+const CONFIRM_CONNECT: &str = "Connect";
+const CONFIRM_CANCEL: &str = "Cancel";
 
 #[derive(Clone)]
 struct BannerState {
@@ -108,6 +124,8 @@ pub struct SignupView {
     instance: Option<InstanceInfo>,
     key: Option<RecoveryKey>,
     acknowledged: bool,
+    /// The invite link step 1 checked, waiting for "Connect" (nothing stored or sent yet).
+    confirming: Option<su::InviteLink>,
     handles: Handles,
     _subscriptions: Vec<Subscription>,
 }
@@ -266,6 +284,7 @@ impl SignupView {
             instance: None,
             key: None,
             acknowledged: false,
+            confirming: None,
             handles: Handles {
                 next: cx.focus_handle().tab_stop(true),
                 back: cx.focus_handle().tab_stop(true),
@@ -367,8 +386,20 @@ impl SignupView {
             Step::Identity => self.username.update(cx, |s, cx| s.focus(window, cx)),
             Step::Keys => window.focus(&self.handles.ack, cx),
             Step::Closed => window.focus(&self.handles.sign_in, cx),
+            Step::Confirm => window.focus(&self.handles.next, cx),
         }
         cx.notify();
+    }
+
+    /// Enter outside a field. In a field the field's own Enter (`PressEnter`) submits, and the frame's binding sees the
+    /// same keystroke: it is ignored there, so one Enter never takes two steps (step 1 then straight past "Connect").
+    fn submit_from_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let in_field = [&self.invite, &self.username, &self.password]
+            .iter()
+            .any(|f| f.focus_handle(cx).contains_focused(window, cx));
+        if !in_field {
+            self.submit(window, cx);
+        }
     }
 
     /// Enter in a field, the step's action, or Enter anywhere in the frame.
@@ -380,6 +411,7 @@ impl SignupView {
             Step::Connect => self.connect_next(window, cx),
             Step::Identity => self.identity_next(window, cx),
             Step::Keys => self.keys_next(window, cx),
+            Step::Confirm => self.connect_confirmed(window, cx),
             Step::Closed => {}
         }
     }
@@ -404,16 +436,47 @@ impl SignupView {
         Signup::new(cfg, self.keychain.clone())
     }
 
+    /// Step 1's Continue: the link is checked (`parse_invite_link`, policy.ts `canonicalInstance`) and nothing is stored
+    /// or sent yet. An instance already on this device goes on at once; any other is shown for confirmation first
+    /// (main.ts `confirmInstance`).
     fn connect_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.banner = None;
         let typed = self.invite.read(cx).value().to_string();
-        let Some(server) = server_of(&typed) else {
-            self.errors.invite = Some(t("onboarding.error.inviteRequired").into());
-            self.focus_first_error(window, cx);
-            cx.notify();
-            return;
+        let link = match su::parse_invite_link(&typed, cfg!(debug_assertions)) {
+            Ok(link) => link,
+            Err(e) => {
+                let key = if typed.trim().is_empty()
+                    || e == su::InviteLinkError::Invalid && server_of(&typed).is_none()
+                {
+                    "onboarding.error.inviteRequired"
+                } else {
+                    "onboarding.error.inviteInvalid"
+                };
+                self.errors.invite = Some(t(key).into());
+                self.focus_first_error(window, cx);
+                cx.notify();
+                return;
+            }
         };
-        let code = su::extract_invite_code(&typed);
+        let known = self
+            .root
+            .as_deref()
+            .and_then(|root| Instances::load(root).ok())
+            .is_some_and(|list| list.list().iter().any(|c| c.server == link.instance));
+        self.confirming = Some(link);
+        if known {
+            self.connect_confirmed(window, cx);
+        } else {
+            self.go(Step::Confirm, window, cx);
+        }
+    }
+
+    /// "Connect": only now is the instance added to this device and asked anything.
+    fn connect_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(link) = self.confirming.clone() else {
+            return self.go(Step::Connect, window, cx);
+        };
+        let (server, code) = (link.instance, link.code);
         let flow = match self.flow_for(server) {
             Ok(flow) => flow,
             Err(e) => return self.apply_refusal(&e, window, cx),
@@ -588,8 +651,13 @@ impl SignupView {
             return;
         }
         self.banner = None;
+        self.clear_password(window, cx);
         match self.step {
             Step::Identity => self.go(Step::Connect, window, cx),
+            Step::Confirm => {
+                self.confirming = None;
+                self.go(Step::Connect, window, cx);
+            }
             Step::Keys => {
                 // The shown key is never offered again.
                 if let Some(mut flow) = self.flow.take() {
@@ -602,10 +670,16 @@ impl SignupView {
         }
     }
 
-    fn sign_in(&mut self, cx: &mut Context<Self>) {
+    fn clear_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.password
+            .update(cx, |s, cx| s.set_value("", window, cx));
+    }
+
+    fn sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.blocked() {
             return;
         }
+        self.clear_password(window, cx);
         if self.step == Step::Keys
             && let Some(mut flow) = self.flow.take()
         {
@@ -642,9 +716,23 @@ impl SignupView {
             .or_else(std::env::home_dir)
             .unwrap_or_default();
         let chosen = cx.prompt_for_new_path(&dir, Some(&file.name));
-        cx.background_spawn(async move {
-            if let Ok(Ok(Some(path))) = chosen.await {
-                let _ = write_private(&path, file.text.as_bytes());
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            // Off the UI thread: a temporary file beside it (0600, never through a link), synced, renamed over it.
+            let written = cx
+                .background_spawn(async move { su::write_key_file(&path, file.text.as_bytes()) })
+                .await;
+            if written.is_err() {
+                let _ = this.update(cx, |this, cx| {
+                    this.banner = Some(BannerState {
+                        tone: BannerTone::Danger,
+                        text: t(SAVE_FAILED).into(),
+                        reload: false,
+                    });
+                    cx.notify();
+                });
             }
         })
         .detach();
@@ -657,22 +745,14 @@ impl SignupView {
             Step::Keys if self.busy => t("onboarding.keys.submitting").into(),
             Step::Keys => t("onboarding.keys.submit").into(),
             Step::Closed => String::new(),
+            Step::Confirm => CONFIRM_CONNECT.into(),
         }
     }
 }
 
-/// Writes `bytes` to `path`, readable by its owner only where the OS has modes.
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)?.write_all(bytes)
-}
+/// The refusal a failed "Save as file" shows. The web has no `onboarding.keys.saveFailed` (its download cannot fail
+/// in the page), so the generated strings carry none yet: the settings' save failure says it until one is added.
+const SAVE_FAILED: &str = "settings.editing.saveFailed";
 
 impl Render for SignupView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -699,15 +779,20 @@ impl Render for SignupView {
                 &self.handles.sign_in,
                 NavLink::new("onboarding-signin", t("onboarding.connect.signIn"))
                     .focus(&self.handles.sign_in)
-                    .on_click(cx.listener(|this, _, _, cx| this.sign_in(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.sign_in(window, cx))),
             )
             .into_any_element()
         });
-        let back = matches!(self.step, Step::Identity | Step::Keys).then(|| {
+        let back_label = if self.step == Step::Confirm {
+            CONFIRM_CANCEL
+        } else {
+            t("onboarding.back")
+        };
+        let back = matches!(self.step, Step::Identity | Step::Keys | Step::Confirm).then(|| {
             tracked_focus(
                 "onboarding-back",
                 &self.handles.back,
-                NavLink::new("onboarding-back", t("onboarding.back"))
+                NavLink::new("onboarding-back", back_label)
                     .back()
                     .focus(&self.handles.back)
                     .on_click(cx.listener(|this, _, window, cx| this.back(window, cx))),
@@ -724,6 +809,35 @@ impl Render for SignupView {
                 .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
         );
         let frame_el: AnyElement = match self.step {
+            Step::Confirm => {
+                let (host, instance) = self
+                    .confirming
+                    .as_ref()
+                    .map(|l| {
+                        (
+                            l.instance.host_str().unwrap_or_default().to_owned()
+                                + &l.instance
+                                    .port()
+                                    .map(|p| format!(":{p}"))
+                                    .unwrap_or_default(),
+                            l.instance.to_string(),
+                        )
+                    })
+                    .unwrap_or_default();
+                let mut f =
+                    OnboardingFrame::new("onboarding", CONFIRM_TITLE.replace("{host}", &host))
+                        .step(step_label(1))
+                        .progress(1, TOTAL)
+                        .child(frame::body_paragraph(
+                            &CONFIRM_INSTANCE.replace("{instance}", &instance),
+                            color::FG_2,
+                        ))
+                        .child(frame::body_paragraph(CONFIRM_DETAIL, color::FG_2));
+                if let Some(b) = banner {
+                    f = f.banner(b);
+                }
+                tracked("onboarding-confirm", f.primary(primary).nav(back, None)).into_any_element()
+            }
             Step::Closed => OnboardingFrame::new(
                 "onboarding",
                 tf("onboarding.closed.title", &[("instance", &name)]),
@@ -878,7 +992,9 @@ impl Render for SignupView {
                 .key_context(super::keys::CONTEXT)
                 .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
                 .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
-                .on_action(cx.listener(|this, _: &Submit, window, cx| this.submit(window, cx)))
+                .on_action(
+                    cx.listener(|this, _: &Submit, window, cx| this.submit_from_key(window, cx)),
+                )
                 .on_action(cx.listener(|this, _: &Back, window, cx| this.back(window, cx)))
                 .size_full()
                 .bg(color::BG)

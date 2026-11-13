@@ -342,6 +342,111 @@ async fn invite_name_written_key_lands_in_server() {
     stop(owner_client).await;
 }
 
+/// Fix round 1 (item 5): once the account POST is answered, a later failure (here an undecodable answer) is Stalled;
+/// the keys are never reset and no second POST is sent (a second submit is refused before it), so the account the
+/// first POST made stays the only one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad"]
+async fn an_answered_post_is_never_sent_again_nor_reset() {
+    let host =
+        tokio::task::spawn_blocking(|| host::start_host("t25-answered", "127.0.0.1:0", None))
+            .await
+            .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let (cfg, kc, _root) = new_device(&host, "answered");
+    let mut signup = Signup::new(cfg.clone(), kc.clone()).unwrap();
+    signup.begin().await.expect("keys");
+    signup.fail_next_account_decode();
+    assert_eq!(
+        signup.submit(&invite, "garbled", Some(PASSWORD)).await,
+        Err(SignupError::Stalled)
+    );
+    assert_eq!(
+        signup.reset(),
+        Err(SignupError::Stalled),
+        "the keys are kept"
+    );
+    assert_eq!(
+        signup.submit(&invite, "garbled", Some(PASSWORD)).await,
+        Err(SignupError::Stalled),
+        "never a second POST"
+    );
+    assert_eq!(signup.resume().await, Err(SignupError::Stalled));
+    // The keys are still pending in the store.
+    let phase = {
+        let core = open_store(&cfg, kc.as_ref()).unwrap();
+        decode_strict(&core.identity().unwrap(), |d| {
+            let len = d.array_len()?;
+            let p = d.uint()?;
+            for _ in 1..len {
+                d.skip()?;
+            }
+            Ok(p)
+        })
+        .unwrap()
+    };
+    assert_eq!(phase, 1);
+    drop(signup);
+    // The first POST made the account: the name is taken.
+    let (cfg2, kc2, _root2) = new_device(&host, "answered-2");
+    let mut other = Signup::new(cfg2, kc2).unwrap();
+    other.begin().await.expect("keys");
+    assert_eq!(
+        other.submit(&invite, "garbled", Some(PASSWORD)).await,
+        Err(SignupError::UsernameTaken)
+    );
+}
+
+/// Fix round 1 (item 2): a client that starts in FactorSetup after a restart still finds the sign-up's kept join,
+/// and joins it once the factor is in place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad"]
+async fn the_pending_join_survives_a_restart_at_the_factor() {
+    let host = tokio::task::spawn_blocking(|| host::start_host("t25-restart", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let (_owner, owner_client, community, link) = owner_with_server(&host, "t25-restart").await;
+    let (cfg, kc, _root) = new_device(&host, "restart");
+    let mut signup = Signup::new(cfg.clone(), kc.clone()).unwrap();
+    signup.begin().await.expect("keys");
+    let code = dilla_client::features::signup::extract_invite_code(&link);
+    signup
+        .submit(&code, "later", Some(PASSWORD))
+        .await
+        .expect("account");
+    drop(signup);
+    let first = start_cfg(&cfg, &kc).await;
+    host::wait_for(&first, WAIT, "factor setup", |s| {
+        s.account.phase == AccountPhase::FactorSetup
+    })
+    .await;
+    assert!(first.onboarding().has_pending_join().await);
+    stop(first).await;
+    // The app closed at the factor step and opened again.
+    let client = start_cfg(&cfg, &kc).await;
+    host::wait_for(&client, WAIT, "factor setup again", |s| {
+        s.account.phase == AccountPhase::FactorSetup
+    })
+    .await;
+    assert!(
+        client.onboarding().has_pending_join().await,
+        "kept across the restart"
+    );
+    let token = stored_token(&cfg, &kc);
+    pay_factor(&host, &cfg, &token).await;
+    client.factor_completed();
+    host::wait_for(&client, WAIT, "ready", |s| {
+        s.account.phase == AccountPhase::Ready
+    })
+    .await;
+    let result = client.onboarding().finish_signup().await;
+    assert_eq!(result.community, Some(community));
+    assert_eq!(result.invite.as_deref(), Some(code.as_str()));
+    assert!(!client.onboarding().has_pending_join().await, "spent");
+    stop(client).await;
+    stop(owner_client).await;
+}
+
 async fn advance(host: &Host, seconds: u64) {
     let control = host.control.clone();
     tokio::task::spawn_blocking(move || {

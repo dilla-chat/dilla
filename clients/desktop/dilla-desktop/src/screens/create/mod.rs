@@ -20,7 +20,7 @@ use gpui::{AnyElement, App, AppContext as _, Entity, Global, IntoElement, Window
 
 use dilla_desktop_ui::components::empty_state::EmptyState;
 
-pub use flows::{CreateFlows, Dialog};
+pub use flows::{CreateFlows, Dialog, join_refusal};
 
 use crate::slots::SlotCx;
 use crate::strings::t;
@@ -45,7 +45,11 @@ pub enum Open {
     CreateServer,
     /// "Join a server", with an invite to show in its field (a pasted link handed in at launch, Task 27's
     /// `Launch.invite`, or the join a sign-up was refused).
-    Join { invite: Option<String> },
+    Join {
+        invite: Option<String>,
+        /// Why the join was refused before (a sign-up's join after its factor, App.tsx), shown as the field's error.
+        refusal: Option<String>,
+    },
     /// "New channel in {server}", inside the category `parent` (its header's "+") or at the top level.
     CreateChannel {
         community: CommunityId,
@@ -96,7 +100,13 @@ pub fn open_add_server(cx: &mut App) {
 
 /// Opens the join dialog with `invite` in its field (Task 27's pasted invite, the GPUI form of `/welcome?invite=`).
 pub fn open_join(invite: Option<String>, cx: &mut App) {
-    open(Open::Join { invite }, cx);
+    open(
+        Open::Join {
+            invite,
+            refusal: None,
+        },
+        cx,
+    );
 }
 
 /// The window's running client and the shell's navigation, for the flows' submits. The app calls it when the shell
@@ -138,6 +148,33 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     flows.read(cx).is_open().then(|| flows.into_any_element())
 }
 
+/// After the sign-up's "Open dilla" (App.tsx): a join that was refused after the factor opens the join dialog with the
+/// invite in its field and the refusal under it. Answers whether it opened one.
+pub fn offer_refused_join(
+    result: &dilla_client::features::signup::SignupResult,
+    cx: &mut App,
+) -> bool {
+    let Some(error) = &result.join_error else {
+        return false;
+    };
+    open(
+        Open::Join {
+            invite: result.invite.clone(),
+            refusal: Some(flows::join_refusal(&error.code)),
+        },
+        cx,
+    );
+    true
+}
+
+/// The window's flows entity, if one was made (tests read its refusal and field).
+pub fn flows(window: &Window, cx: &App) -> Option<Entity<CreateFlows>> {
+    cx.try_global::<Windows>()?
+        .flows
+        .get(&window.window_handle().window_id())
+        .cloned()
+}
+
 /// The dialog open in `window`, if any.
 pub fn current(window: &Window, cx: &App) -> Option<Dialog> {
     cx.try_global::<Windows>()?
@@ -161,7 +198,13 @@ pub fn empty_view(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> AnyElem
             open(Open::CreateServer, cx)
         })
         .secondary(t("shell.noServer.action"), |_, _, cx| {
-            open(Open::Join { invite: None }, cx)
+            open(
+                Open::Join {
+                    invite: None,
+                    refusal: None,
+                },
+                cx,
+            )
         }),
     )
     .into_any_element()
