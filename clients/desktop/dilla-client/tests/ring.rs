@@ -1173,11 +1173,17 @@ async fn blocked_dm() {
         .expect("the trusted DM opens");
     peer_calls(&other, odm).await;
     wait_for(&p.client, WAIT, "the trusted ring", |s| ringing(s, odm)).await;
-    assert_eq!(
-        seen.lock().unwrap().clone(),
-        vec![odm],
-        "the blocked DM never had a ring listed"
-    );
+    // The recorder reads the snapshot taps on its own task: it may not have reached the snapshot `wait_for` saw yet.
+    let deadline = std::time::Instant::now() + WAIT;
+    while !seen.lock().unwrap().contains(&odm) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the recorder never saw the trusted ring"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let listed = seen.lock().unwrap().clone();
+    assert_eq!(listed, vec![odm], "the blocked DM never had a ring listed");
     // The blocked DM's call is refused before anything is sent, with the changed contact named.
     let block = join(&p.client, dm, None)
         .await
