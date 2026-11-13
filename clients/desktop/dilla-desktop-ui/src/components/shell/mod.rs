@@ -2,6 +2,7 @@
 
 pub mod bar_button;
 pub mod panes;
+pub mod present;
 pub mod splitter;
 
 pub use bar_button::BarButton;

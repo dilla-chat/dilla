@@ -570,6 +570,17 @@ impl ShellView {
         }
     }
 
+    /// The log follows its newest message again (Ctrl+End, the present bar's "jump to present").
+    pub fn jump_to_present(&mut self, cx: &mut Context<Self>) {
+        self.pinned = true;
+        cx.notify();
+    }
+
+    /// Whether the log follows its newest message (false while the person reads older ones).
+    pub fn at_present(&self) -> bool {
+        self.pinned
+    }
+
     fn send(
         &mut self,
         text: String,
@@ -1282,18 +1293,8 @@ impl Render for ShellView {
             let live = crate::screens::voice::count(&state, id) > 0;
             crate::screens::ring::dm_call_start(&state, id, in_call, live).map(|label| {
                 // As the ring's answer does: one call per device, the DM's call joined through the ring gate.
-                let on_call: header::OnCall = Rc::new(move |window, cx| {
-                    let w = crate::screens::voice::wid(window);
-                    let Some(client) = crate::screens::voice::client_of(w, cx) else {
-                        return;
-                    };
-                    crate::screens::voice::after_leaving_other_calls(
-                        w,
-                        client.voice(),
-                        move |voice| voice.join_dm(id),
-                        cx,
-                    );
-                });
+                let on_call: header::OnCall =
+                    Rc::new(move |window, cx| start_dm_call(id, window, cx));
                 (label, on_call)
             })
         });
@@ -1334,7 +1335,27 @@ impl Render for ShellView {
                     &on_toggle,
                 ))
                 .children(dm_strip.map(|s| div().flex_none().child(s)))
-                .child(div().flex_1().min_h_0().child(log))
+                .child({
+                    // MessageLog.tsx `present`: away from the newest message, a bar over the log's foot says so and
+                    // offers the jump back.
+                    let away = channel.is_some() && !self.pinned;
+                    let weak = shell.clone();
+                    let bar = away.then(|| {
+                        let bar = dilla_desktop_ui::components::shell::present::PresentBar::new(
+                            "log-jump",
+                            t("layout.log.older"),
+                            t("layout.log.jump"),
+                        )
+                        .on_jump(move |_, _, cx| {
+                            let _ = weak.update(cx, |shell, cx| shell.jump_to_present(cx));
+                        });
+                        let wrapped = div().absolute().left_0().right_0().bottom_0().child(bar);
+                        #[cfg(feature = "automation")]
+                        let wrapped = wrapped.child(crate::automation::bounds_probe("log-present"));
+                        wrapped
+                    });
+                    div().flex_1().min_h_0().relative().child(log).children(bar)
+                })
                 .child(div().flex_none().child(self.composer.clone())),
         };
         #[cfg(feature = "automation")]
@@ -1461,6 +1482,33 @@ impl Render for ShellView {
             }))
             .on_action(cx.listener(|this, _: &keys::OpenSettings, _, cx| {
                 this.navigate(Route::Settings(None), cx);
+            }))
+            // Ctrl+End: only while the log is away from its newest message and no overlay is up; else the key goes on.
+            .on_action(cx.listener(|this, _: &keys::JumpToPresent, _, cx| {
+                if this.pinned
+                    || this.channel.is_none()
+                    || this.overlay_open
+                    || this.server_menu_open
+                {
+                    cx.propagate();
+                    return;
+                }
+                this.jump_to_present(cx);
+            }))
+            // Ctrl+Shift+Enter: the open DM's call, as its header button (none while in it, or while a block holds it).
+            .on_action(cx.listener(|this, _: &keys::CallOpenDm, window, cx| {
+                let dm = this.channel.filter(|_| this.dm_view);
+                let startable = dm.is_some_and(|id| {
+                    let in_call = crate::screens::voice::joined(&this.state, id);
+                    let live = crate::screens::voice::count(&this.state, id) > 0;
+                    crate::screens::ring::dm_call_start(&this.state, id, in_call, live).is_some()
+                });
+                match dm {
+                    Some(id) if startable && !this.overlay_open && !this.server_menu_open => {
+                        start_dm_call(id, window, cx)
+                    }
+                    _ => cx.propagate(),
+                }
             }))
             .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
                 if let Some(drag) = this.drag
@@ -1935,4 +1983,19 @@ mod tests {
         );
         shell.read_with(vcx, |s, _| assert_eq!(s.route(), &Route::Settings(None)));
     }
+}
+
+/// Starts the call of the DM `id` from `window` (its header button, Ctrl+Shift+Enter): one call per device, so a call
+/// another instance window is in is left first, and the DM's call is joined through the ring gate.
+fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
+    let w = crate::screens::voice::wid(window);
+    let Some(client) = crate::screens::voice::client_of(w, cx) else {
+        return;
+    };
+    crate::screens::voice::after_leaving_other_calls(
+        w,
+        client.voice(),
+        move |voice| voice.join_dm(id),
+        cx,
+    );
 }
