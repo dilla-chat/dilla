@@ -79,33 +79,50 @@ pub(crate) fn register_side(handle: &ScrollHandle, window: &Window, cx: &mut App
     sides.insert(window.window_handle().window_id(), handle.clone());
 }
 
-/// The nav's scroll-into-view of its current item: which item, whether it is in view, and how many frames it took.
+/// The nav's scroll-into-view of its current item: which item, whether it is in view, and the geometry each try saw.
 #[derive(Default)]
 struct ScrolledTo {
     id: Option<SharedString>,
     done: bool,
-    tries: u8,
+    /// The frames tried for this item.
+    frames: u8,
+    /// The port and item edges the last try saw, and how many tries in a row saw the same.
+    last: Option<[f32; 4]>,
+    stable: u8,
 }
 
 impl ScrolledTo {
-    /// The frames a newly current item may take to come into view.
-    const TRIES: u8 = 4;
+    /// The tries that may see the same layout before the item counts as out of reach (a column with no size or no room
+    /// to scroll): the layout is stable, so another frame would not bring it.
+    const STABLE: u8 = 2;
+    /// The most frames a newly current item may take, however long its layout keeps moving.
+    const MAX_FRAMES: u8 = 32;
 
-    /// Whether to try (again) to bring `id` into view: always for a newly current item, then until it is in view or the
-    /// tries run out.
+    /// Whether to try (again) to bring `id` into view: always for a newly current item, then until it is in view, the
+    /// layout is stable without it, or the frames run out.
     fn try_for(&mut self, id: &SharedString) -> bool {
         if self.id.as_ref() != Some(id) {
             *self = Self {
                 id: Some(id.clone()),
-                done: false,
-                tries: 0,
+                ..Self::default()
             };
         }
-        if self.done || self.tries >= Self::TRIES {
+        if self.done || self.stable >= Self::STABLE || self.frames >= Self::MAX_FRAMES {
             return false;
         }
-        self.tries += 1;
+        self.frames += 1;
         true
+    }
+
+    /// What a try saw: the port's and the item's top and bottom. The same as the last try's counts toward a stable
+    /// layout; a change starts the count again.
+    fn observe(&mut self, seen: [f32; 4]) {
+        if self.last == Some(seen) {
+            self.stable += 1;
+        } else {
+            self.stable = 0;
+            self.last = Some(seen);
+        }
     }
 }
 
@@ -241,8 +258,8 @@ impl RenderOnce for SettingsNav {
                 row = row.child(
                     canvas(
                         move |bounds, window, cx| {
-                            // One frame per try: a column that cannot show the item (no size, no room to scroll) stops
-                            // asking after a few.
+                            // One frame per try, while the layout still moves: a column that cannot show the item (no
+                            // size, no room to scroll) stops asking once its layout is stable; at most MAX_FRAMES.
                             if !scrolled_to.update(cx, |s, _| s.try_for(&current_id)) {
                                 return;
                             }
@@ -254,6 +271,13 @@ impl RenderOnce for SettingsNav {
                                 return;
                             };
                             let port = side.bounds();
+                            let seen = [
+                                f32::from(port.top()),
+                                f32::from(port.bottom()),
+                                f32::from(bounds.top()),
+                                f32::from(bounds.bottom()),
+                            ];
+                            scrolled_to.update(cx, |s, _| s.observe(seen));
                             if port.size.height <= px(0.0) {
                                 // The column is not laid out yet (its first frame): try again on the next one.
                                 redraw(window, cx);
@@ -346,6 +370,41 @@ mod tests {
         );
         // In view: no change.
         assert_eq!(nearest_offset(0.0, (100.0, 134.0), (0.0, 700.0)), None);
+    }
+
+    /// Task 28 (T6c re-review, I1's cap): the scroll-into-view tries again while the layout still moves (no fixed frame
+    /// count that one more late frame would exceed), stops once the layout is stable and the item still cannot come
+    /// into view, and is bounded either way.
+    #[test]
+    fn the_scroll_into_view_retries_until_the_layout_is_stable() {
+        let id: SharedString = "danger".into();
+        let mut s = ScrolledTo::default();
+        // A layout that settles late: every frame a new geometry, more frames than the old fixed cap of four.
+        for n in 0..8 {
+            assert!(s.try_for(&id), "frame {n}: the layout still moves");
+            s.observe([0.0, 700.0, 760.0 - n as f32, 794.0]);
+        }
+        // Stable and still out of view (a column with no room to scroll): a few more tries, then it stops.
+        let mut tries = 0;
+        while s.try_for(&id) {
+            s.observe([0.0, 700.0, 760.0, 794.0]);
+            tries += 1;
+            assert!(tries < 10, "a stable layout stops the tries");
+        }
+        assert!(tries >= 2, "a stable layout gets a second look ({tries})");
+        // A layout that never settles is bounded too.
+        let mut s = ScrolledTo::default();
+        let mut frames = 0;
+        while s.try_for(&id) {
+            s.observe([0.0, 700.0, frames as f32, 34.0 + frames as f32]);
+            frames += 1;
+            assert!(frames <= 64, "bounded");
+        }
+        // A newly current item starts again.
+        assert!(s.try_for(&"profile".into()));
+        // An item found in view is done.
+        s.done = true;
+        assert!(!s.try_for(&"profile".into()));
     }
 
     #[test]

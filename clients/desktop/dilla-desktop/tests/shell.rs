@@ -182,6 +182,33 @@ fn afk_channel_listed_last_for_owner_and_member() {
     }
 }
 
+/// Task 28 (Settings -> Keyboard's "jump to present", MessageLog.tsx `present`): a log scrolled away from its newest
+/// message shows the "viewing older messages" bar; Ctrl+End (outside a text field) jumps back and the bar goes.
+#[test]
+fn ctrl_end_jumps_the_log_back_to_the_present() {
+    let mut app = launch("shell/conversation");
+    app.wait_idle();
+    assert!(
+        app.element("log-present").is_none(),
+        "at the present: no bar"
+    );
+    app.scroll("shell-main", 2000.0);
+    app.wait_idle();
+    assert!(
+        app.element("log-present").is_some(),
+        "away from the present: the bar"
+    );
+    // Off the composer (a text field keeps the chord): the rail takes the focus.
+    app.press("tab");
+    app.wait_idle();
+    app.press("ctrl-end");
+    app.wait_idle();
+    assert!(
+        app.element("log-present").is_none(),
+        "Ctrl+End jumped back to the present"
+    );
+}
+
 /// e2e/web/keyboard.spec.ts `messaging_flow_on_keyboard_alone_in_fixed_order` (the shell's part): Tab goes rail, then the
 /// channel list, one stop each (the rail and the list rove with the arrows), and the list's arrows step its rows.
 #[test]

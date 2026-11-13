@@ -274,7 +274,7 @@ async fn a_post_with_a_file_right_after_a_new_device_joined_is_delivered() {
         after_a_new_device("newdevfile", true).await;
     let retries = a.trust_retries();
     a.attachments()
-        .send(channel, "file after".into(), descriptors)
+        .send(channel, "file after".into(), descriptors, None)
         .await
         .unwrap()
         .expect("the post with a file is queued, not refused for the new device");

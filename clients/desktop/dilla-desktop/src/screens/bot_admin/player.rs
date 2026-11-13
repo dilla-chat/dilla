@@ -15,7 +15,7 @@ use dilla_client::{Client, features::music::Music};
 use dilla_desktop_ui::components::bot_admin::now_playing::{
     NowPlaying, NowPlayingLabels, NowPlayingVariant, PlayerTrack, QueueRow, up_next,
 };
-use dilla_desktop_ui::components::toast::show_toast;
+use dilla_desktop_ui::components::toast::show_toast_in;
 use gpui::{AnyElement, App, IntoElement, SharedString, Window};
 
 use crate::strings::{t, tf};
@@ -330,7 +330,10 @@ fn control(
             .spawn(cx, async move |cx| {
                 if let Ok(Err(error)) = rx.await {
                     let key = error.toast_key();
-                    cx.update(|_, cx| show_toast(t(key), cx)).ok();
+                    cx.update(|window, cx| {
+                        show_toast_in(Some(window.window_handle().window_id()), t(key), cx)
+                    })
+                    .ok();
                 }
             })
             .detach();

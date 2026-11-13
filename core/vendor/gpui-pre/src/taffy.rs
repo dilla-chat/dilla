@@ -350,6 +350,16 @@ impl TaffyLayoutEngine {
     // snapped independently, but the raw content-box origin can carry a
     // 1dp residual into descendants.
 
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): a box's laid-out size in logical px, before any edge
+    /// snap: what Chromium decides text overflow against (`Window::laid_out_size`).
+    pub fn laid_out_size(&self, id: LayoutId, scale_factor: f32) -> Size<Pixels> {
+        let layout = self.taffy.layout(id.into()).expect(EXPECT_MESSAGE);
+        Size {
+            width: Pixels(layout.size.width / scale_factor),
+            height: Pixels(layout.size.height / scale_factor),
+        }
+    }
+
     pub fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels> {
         if let Some(layout) = self.absolute_layout_bounds.get(&id).cloned() {
             return layout;

@@ -154,8 +154,14 @@ impl ApiError {
 
     fn of_http(e: &HttpError) -> Self {
         match e {
-            HttpError::Status { status, code } => {
-                Self::local(*status, code.as_deref().unwrap_or("E_HTTP"), "")
+            HttpError::Status {
+                status,
+                code,
+                retry_after_ms,
+            } => {
+                let mut e = Self::local(*status, code.as_deref().unwrap_or("E_HTTP"), "");
+                e.retry_after_ms = *retry_after_ms;
+                e
             }
             HttpError::Transport(d) => Self::local(0, "E_NETWORK", d),
             HttpError::Decode(d) => Self::local(0, "E_DECODE", d),

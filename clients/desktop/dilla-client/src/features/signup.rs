@@ -498,13 +498,17 @@ impl From<StoreError> for SignupError {
 /// refusalView over an instance's answer. `creating`: the account POST was sent, so a lost answer stalls.
 fn refusal(e: &HttpError, creating: bool) -> SignupError {
     match e {
-        HttpError::Status { status, code } => match (code.as_deref(), *status) {
+        HttpError::Status {
+            status,
+            code,
+            retry_after_ms,
+        } => match (code.as_deref(), *status) {
             (Some("E_INVITE_INVALID"), _) => SignupError::InviteInvalid,
             (Some("E_INVALID_REQUEST"), 409) => SignupError::UsernameTaken,
             (Some("E_INVALID_REQUEST"), _) => SignupError::DetailsRefused,
             (Some("E_FORBIDDEN"), _) => SignupError::Closed,
             (Some("E_RATE_LIMITED"), _) | (_, 429) => SignupError::RateLimited {
-                retry_after_ms: None,
+                retry_after_ms: *retry_after_ms,
             },
             (_, s) if s >= 500 && creating => SignupError::Stalled,
             (_, s) if s >= 500 => SignupError::Network,
@@ -998,7 +1002,7 @@ impl From<ApiError> for FlowError {
 impl From<HttpError> for FlowError {
     fn from(e: HttpError) -> Self {
         match e {
-            HttpError::Status { status, code } => Self {
+            HttpError::Status { status, code, .. } => Self {
                 code: code.unwrap_or_else(|| "E_HTTP".into()),
                 status,
             },
@@ -1691,6 +1695,7 @@ mod tests {
         let st = |status, code: &str| HttpError::Status {
             status,
             code: Some(code.into()),
+            retry_after_ms: None,
         };
         assert_eq!(
             refusal(&st(404, "E_INVITE_INVALID"), true),
@@ -1709,6 +1714,20 @@ mod tests {
             refusal(&st(429, "E_RATE_LIMITED"), true),
             SignupError::RateLimited { .. }
         ));
+        // Task 28 item 22: the refusal's delay comes through.
+        assert_eq!(
+            refusal(
+                &HttpError::Status {
+                    status: 429,
+                    code: Some("E_RATE_LIMITED".into()),
+                    retry_after_ms: Some(2500),
+                },
+                true
+            ),
+            SignupError::RateLimited {
+                retry_after_ms: Some(2500)
+            }
+        );
         assert_eq!(refusal(&st(503, "E_HTTP"), true), SignupError::Stalled);
         assert_eq!(
             refusal(&HttpError::Transport("x".into()), true),

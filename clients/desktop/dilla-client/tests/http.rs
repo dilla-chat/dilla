@@ -327,7 +327,7 @@ async fn http_error_carries_e_code() {
         .await
         .expect_err("403 is an error");
     match &err {
-        HttpError::Status { status, code } => {
+        HttpError::Status { status, code, .. } => {
             assert_eq!((*status, code.as_deref()), (403, Some("E_PERM")));
         }
         other => panic!("{other:?}"),
@@ -351,7 +351,8 @@ async fn http_error_carries_e_code() {
             err,
             HttpError::Status {
                 status: 404,
-                code: None
+                code: None,
+                ..
             }
         ),
         "{err:?}"
@@ -376,11 +377,46 @@ async fn http_error_carries_e_code() {
             .await
             .expect_err("403");
         match err {
-            HttpError::Status { status: 403, code } => {
+            HttpError::Status {
+                status: 403, code, ..
+            } => {
                 assert_eq!(code.as_deref(), expect, "a {total}-byte refusal");
             }
             other => panic!("{other:?}"),
         }
+        let _ = served.join();
+    }
+}
+
+/// Task 28 item 22: a refusal's delay (`[code, detail, delay]`, errors.ts `retryAfterMs`) comes through `HttpError`, so
+/// the sign-in's "too many attempts" can say how long to wait.
+#[tokio::test]
+async fn http_error_carries_the_retry_after() {
+    for (delay, want) in [(Some(4500), Some(4500)), (None, None)] {
+        let body = cbor_error("E_RATE_LIMITED", "slow down", delay);
+        let mut response = format!(
+            "HTTP/1.1 429 Too Many Requests\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&body);
+        let (url, served) = mock(Box::leak(response.into_boxed_slice()));
+        let err = http_at(&url, "tok")
+            .call::<GetAccountMe>(&[], NoBody)
+            .await
+            .expect_err("429");
+        match &err {
+            HttpError::Status {
+                status: 429,
+                code,
+                retry_after_ms,
+            } => {
+                assert_eq!(code.as_deref(), Some("E_RATE_LIMITED"));
+                assert_eq!(*retry_after_ms, want);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(err.retry_after_ms(), want);
         let _ = served.join();
     }
 }

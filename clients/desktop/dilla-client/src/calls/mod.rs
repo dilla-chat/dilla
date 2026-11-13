@@ -105,7 +105,7 @@ impl RouteError {
 impl From<HttpError> for RouteError {
     fn from(e: HttpError) -> Self {
         match e {
-            HttpError::Status { status, code } => Self {
+            HttpError::Status { status, code, .. } => Self {
                 status: Some(status),
                 detail: format!("status {status}"),
                 code,

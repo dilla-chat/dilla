@@ -159,12 +159,8 @@ fn keyboard_user_settings_every_shortcut_is_a_keystroke() {
     }
 }
 
-/// The shortcuts whose owning area has not registered its binding yet (jump 9, DM call 13), by action. The test fails when
-/// one of them appears in the keymap or when a listed one that is not here goes missing, so the Keyboard table cannot drift
-/// from the real registrations unnoticed. Integration 3: search (23) and the voice controls (17) are registered on the
-/// integration branch. Task 28 empties this list.
-const EXPECTED_MISSING: [&str; 2] = ["signalSettings.keyboard.jump", "keyboard.dmCallAction"];
-
+/// Every action Settings -> Keyboard lists has a registered binding (no exception list: Task 28 bound the last two, the
+/// jump and the open DM's call, which this test used to allow as "expected missing" and so never caught).
 #[gpui::test]
 fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {
     cx.update(dilla_desktop::install);
@@ -177,10 +173,9 @@ fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {
                 .collect()
         });
         let registered = names.iter().any(|n| !n.starts_with("input::"));
-        let expected_missing = EXPECTED_MISSING.contains(&s.action);
-        assert_eq!(
-            registered, !expected_missing,
-            "{} ({}): registered = {registered} {names:?}, but the expected-missing list says {expected_missing}",
+        assert!(
+            registered,
+            "{} ({}) is listed in Settings -> Keyboard but bound nowhere: {names:?}",
             s.action, s.keystroke
         );
     }

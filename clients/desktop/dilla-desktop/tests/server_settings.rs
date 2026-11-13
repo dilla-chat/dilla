@@ -156,6 +156,41 @@ fn keyboard_server_settings_tab_reaches_leave_and_shift_tab_leaves_it() {
     assert_ne!(driver.focused().as_deref(), Some("server-settings-leave"));
 }
 
+/// Task 28 (T6c review m9): in a narrow settings body the GIF settings column shrinks to the row, as the web's
+/// content-sized track does, instead of keeping the width its widest part would take: every part ends inside the
+/// window.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the headless renderer is Linux only here"
+)]
+fn the_gif_settings_column_shrinks_in_a_narrow_body() {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("gifs")).unwrap()).unwrap();
+    let width = 560.0;
+    json["window"] = serde_json::json!([width as u32, 800]);
+    let dir = tempfile_dir("t28-gifs-narrow");
+    let narrow = dir.join("gifs-narrow.json");
+    std::fs::write(&narrow, json.to_string()).unwrap();
+    let mut driver = dilla_parity::Driver::launch_fixture(&narrow, None, &[]);
+    driver.wait_idle();
+    let column = driver
+        .element("gif-settings")
+        .expect("the GIF settings drew");
+    assert!(
+        column.x + column.width <= width,
+        "the column ends at {} in a {width}px window",
+        column.x + column.width
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn tempfile_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 /// Integration 3, step 2: the server menu's chevron, then its Server settings, opens Task 15's `ServerSettingsView` over the shell (THE server
 /// settings host), one at a time, and Close brings the shell back.
 #[cfg(feature = "automation")]

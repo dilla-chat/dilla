@@ -507,12 +507,18 @@ fn cbor_opt_uint(out: &mut Vec<u8>, n: Option<u32>) {
     }
 }
 
-/// The core's send request `[0, null, body, [attachment...], null]` (`send_prepare`), encoded by hand into one
+/// The core's send request `[0, reply_to, body, [attachment...], null]` (`send_prepare`; `reply_to` null without a reply),
+/// encoded by hand into one
 /// zeroizing buffer sized up front, so the attachments' keys exist only there (no `Value` tree, no grown buffer
 /// leaving a copy behind). Answers the buffer and the capacity it was made with.
-fn encode_send(body: &str, attachments: &[Descriptor]) -> (Zeroizing<Vec<u8>>, usize) {
+fn encode_send(
+    body: &str,
+    attachments: &[Descriptor],
+    reply: Option<MessageId>,
+) -> (Zeroizing<Vec<u8>>, usize) {
     // A head is at most 9 bytes; an element has 10 of them plus its payloads.
     let capacity = 64
+        + 16
         + body.len()
         + attachments
             .iter()
@@ -529,7 +535,10 @@ fn encode_send(body: &str, attachments: &[Descriptor]) -> (Zeroizing<Vec<u8>>, u
     let mut out = Zeroizing::new(Vec::with_capacity(capacity));
     cbor_head(&mut out, 4, 5);
     cbor_head(&mut out, 0, 0);
-    out.push(0xf6);
+    match reply {
+        Some(to) => cbor_bytes(&mut out, &to.0),
+        None => out.push(0xf6),
+    }
     cbor_text(&mut out, body);
     cbor_head(&mut out, 4, attachments.len() as u64);
     for d in attachments {
@@ -1168,7 +1177,8 @@ impl Attachments {
     }
 
     /// send.ts `sendMessage` with attachments: each reference is confirmed (the worker's `beforeSend`), then the post
-    /// is queued in the group's outbox and drained.
+    /// is queued in the group's outbox and drained. A reply with files carries `reply` in the same post (Shell.tsx's
+    /// one `send` with `replyTo` and `attachments`).
     ///
     /// Deviation, until the sync engine runs `beforeSend` itself (sync/mod.rs, Task 2's file; see Task 12's report): the
     /// confirms run here, once, before the post is queued, not before every upload attempt.
@@ -1177,6 +1187,7 @@ impl Attachments {
         channel: ChannelId,
         body: String,
         attachments: Vec<Descriptor>,
+        reply: Option<MessageId>,
     ) -> tokio::sync::oneshot::Receiver<Result<MessageId, ClientError>> {
         let inner = self.inner.clone();
         let routes = self.routes();
@@ -1194,7 +1205,7 @@ impl Attachments {
                     }
                 })?;
             }
-            let (request, _) = encode_send(&body, &attachments);
+            let (request, _) = encode_send(&body, &attachments, reply);
             drop(attachments);
             // Queued behind the trust retry, as every send is (controller.ts `sendWithTrustRetry`): a post with files
             // right after a peer's new device joined is not refused for it.
@@ -1508,7 +1519,26 @@ mod tests {
             Value::Null,
         ])
         .encode();
-        let (got, capacity) = encode_send(&body, &[d, e]);
+        let (got, capacity) = encode_send(&body, &[d, e], None);
+        assert_eq!(*got, want);
+        assert_eq!(got.capacity(), capacity, "sized once, never reallocated");
+    }
+
+    /// Task 28 item 8 (review M1): a reply with files carries its reply reference in the same request, as the web's one
+    /// `send` with `replyTo` and `attachments` (Shell.tsx).
+    #[test]
+    fn a_reply_with_files_carries_its_reply_reference() {
+        let (d, _) = descriptor(b"abc");
+        let to = MessageId([0x5a; 16]);
+        let want = Value::Array(vec![
+            Value::Uint(0),
+            Value::Bytes(to.0.to_vec()),
+            Value::Text("re".into()),
+            Value::Array(vec![element(&d)]),
+            Value::Null,
+        ])
+        .encode();
+        let (got, capacity) = encode_send("re", &[d], Some(to));
         assert_eq!(*got, want);
         assert_eq!(got.capacity(), capacity, "sized once, never reallocated");
     }

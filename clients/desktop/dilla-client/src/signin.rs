@@ -95,10 +95,14 @@ impl From<StoreError> for SignInError {
 
 fn http_error(e: &HttpError) -> SignInError {
     match e {
-        HttpError::Status { status: 429, .. } => SignInError::TooMany(None),
-        HttpError::Status { status: s, code } => {
-            SignInError::Other(code.clone().unwrap_or_else(|| format!("HTTP {s}")))
-        }
+        HttpError::Status {
+            status: 429,
+            retry_after_ms,
+            ..
+        } => SignInError::TooMany(*retry_after_ms),
+        HttpError::Status {
+            status: s, code, ..
+        } => SignInError::Other(code.clone().unwrap_or_else(|| format!("HTTP {s}"))),
         HttpError::Transport(t) => SignInError::Network(t.clone()),
         HttpError::Decode(d) => SignInError::Other(format!("decode: {d}")),
         HttpError::Unanswered { code, detail } => SignInError::Network(format!("{code}: {detail}")),
@@ -154,7 +158,9 @@ struct Assertion {
 /// The status and code of a refused route.
 fn refused(e: &HttpError) -> Option<(u16, &str)> {
     match e {
-        HttpError::Status { status, code } => Some((*status, code.as_deref().unwrap_or("E_HTTP"))),
+        HttpError::Status { status, code, .. } => {
+            Some((*status, code.as_deref().unwrap_or("E_HTTP")))
+        }
         _ => None,
     }
 }
@@ -864,6 +870,21 @@ fn decode_signed_lists(raw: &[u8]) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 28 item 22: a 429's delay reaches the sign-in's "too many attempts" (the screen says how long to wait).
+    #[test]
+    fn too_many_attempts_carries_the_delay() {
+        let st = |retry_after_ms| HttpError::Status {
+            status: 429,
+            code: Some("E_RATE_LIMITED".into()),
+            retry_after_ms,
+        };
+        assert!(matches!(
+            http_error(&st(Some(30_000))),
+            SignInError::TooMany(Some(30_000))
+        ));
+        assert!(matches!(http_error(&st(None)), SignInError::TooMany(None)));
+    }
 
     #[test]
     fn chain_row_cuts_five_and_eight_element_heads() {

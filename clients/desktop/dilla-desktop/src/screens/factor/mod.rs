@@ -2,8 +2,9 @@
 //! section. The sign-in screen itself is `screens::sign_in`.
 //!
 //! The hooks below are where `crate::slots` and the app draw this area: [`settings_section`] (Settings → Sign-in),
-//! [`ask_step_up`] (Task 21's `bot_page::StepUp`) with [`step_up_overlay`], and [`register_instance`], which the app
-//! calls when it starts a client so this area knows the instance's address for the system-browser ceremony.
+//! [`ask_step_up`] (Task 21's `bot_page::StepUp`) with [`step_up_overlay`], and [`register_window_client`], which the
+//! app calls when a window shows a client. The instance's address (the system-browser ceremony) is the client's own
+//! (`Client::instance`).
 
 pub mod code;
 pub mod forced;
@@ -23,31 +24,8 @@ use zeroize::Zeroizing;
 
 use crate::slots::{SectionId, SlotCx};
 
-/// The instance address of each running client (the app registers it when it starts the client): the system-browser
-/// ceremony opens that instance's page. Keyed by the client's allocation, removed when the client is dropped from it.
-#[derive(Default)]
-struct Instances(HashMap<usize, dilla_client::seams::InstanceConfig>);
-
-impl Global for Instances {}
-
 fn key(client: &Rc<Client>) -> usize {
     Rc::as_ptr(client) as usize
-}
-
-/// The app's hook: `client` serves `server` (call when the client starts; the controller hook in `app.rs`).
-pub fn register_instance(
-    client: &Rc<Client>,
-    cfg: dilla_client::seams::InstanceConfig,
-    cx: &mut App,
-) {
-    cx.default_global::<Instances>().0.insert(key(client), cfg);
-}
-
-/// The app's hook: the client stopped.
-pub fn forget_instance(client: &Rc<Client>, cx: &mut App) {
-    if cx.has_global::<Instances>() {
-        cx.global_mut::<Instances>().0.remove(&key(client));
-    }
 }
 
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): a step-up waiting in a window that shows
@@ -72,10 +50,9 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
         .retain(|(_, c), _| *c != k);
 }
 
-/// The instance `client` was registered with ([`register_instance`]).
-pub fn instance_of(client: &Rc<Client>, cx: &App) -> Option<dilla_client::seams::InstanceConfig> {
-    cx.try_global::<Instances>()
-        .and_then(|i| i.0.get(&key(client)).cloned())
+/// The instance `client` serves.
+pub fn instance_of(client: &Rc<Client>) -> dilla_client::seams::InstanceConfig {
+    client.instance().clone()
 }
 
 /// Task 26 (ForgetBrowser), the server half: the gateway goes down and the device signs out on the instance
@@ -133,9 +110,8 @@ pub async fn close_and_wipe(
     }
 }
 
-fn server_of(client: &Rc<Client>, cx: &App) -> Option<url::Url> {
-    cx.try_global::<Instances>()
-        .and_then(|i| i.0.get(&key(client)).map(|c| c.server.clone()))
+fn server_of(client: &Rc<Client>) -> url::Url {
+    client.instance().server.clone()
 }
 
 /// Draws one of this area's settings sections (`slots::settings_sections` points here): Settings → Sign-in.
@@ -145,10 +121,8 @@ pub fn settings_section(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let (Some(client), Some(server)) = (
-        ctx.client.clone(),
-        ctx.client.as_ref().and_then(|c| server_of(c, cx)),
-    ) else {
+    let (Some(client), Some(server)) = (ctx.client.clone(), ctx.client.as_ref().map(server_of))
+    else {
         return Empty.into_any_element();
     };
     // One per window and client, kept in a map release empties at once (review M5: the window's keyed state would hold
@@ -264,7 +238,7 @@ pub fn start_error_copy(e: &dilla_client::ClientError) -> String {
 fn window_client(window: &Window, cx: &App) -> Option<(Rc<Client>, url::Url)> {
     let id = window.window_handle().window_id();
     let client = cx.try_global::<WindowClients>()?.0.get(&id)?.upgrade()?;
-    let server = server_of(&client, cx)?;
+    let server = server_of(&client);
     Some((client, server))
 }
 
@@ -273,7 +247,7 @@ struct WindowClients(HashMap<gpui::WindowId, std::rc::Weak<Client>>);
 
 impl Global for WindowClients {}
 
-/// The app's hook: this window now shows `client` (the controller hook in `app.rs`, beside [`register_instance`]).
+/// The app's hook: this window now shows `client` (the controller hook in `app.rs`).
 pub fn register_window_client(client: &Rc<Client>, window: &Window, cx: &mut App) {
     cx.default_global::<WindowClients>()
         .0

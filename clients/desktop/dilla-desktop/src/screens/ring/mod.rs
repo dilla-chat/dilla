@@ -244,11 +244,12 @@ fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) 
     let Some(client) = env.ctx.client.clone() else {
         return;
     };
-    let (voice, channel) = (client.voice(), ring.channel);
+    let channel = ring.channel;
     crate::screens::voice::after_leaving_other_calls(
         crate::screens::voice::wid(window),
+        client.voice(),
+        move |voice| voice.join_dm(channel),
         cx,
-        move || drop(voice.join_dm(channel)),
     );
 }
 

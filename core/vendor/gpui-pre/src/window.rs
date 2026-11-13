@@ -5518,6 +5518,16 @@ impl Window {
         self.layout_engine = Some(layout_engine);
     }
 
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): the size `layout_id` was laid out at, in logical px,
+    /// before its edges snap ([`Window::layout_bounds`] answers the snapped box). Call it during `prepaint`.
+    pub fn laid_out_size(&mut self, layout_id: LayoutId) -> Size<Pixels> {
+        let scale_factor = self.scale_factor();
+        self.layout_engine
+            .as_ref()
+            .unwrap()
+            .laid_out_size(layout_id, scale_factor)
+    }
+
     /// Obtain the bounds computed for the given LayoutId relative to the window. This method will usually be invoked by
     /// GPUI itself automatically in order to pass your element its `Bounds` automatically.
     ///

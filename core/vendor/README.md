@@ -231,12 +231,18 @@ bar, the 30px panel avatar in the 63px panel, the 28px search field in the 44px 
 drew one device px off, which read as anti-aliasing on their rounded edges. With the patch `shell/conversation` goes from
 0.21 % to 0.09 % chrome difference. A fractional scale keeps upstream's device-pixel snapping, so edges stay crisp there.
 
-Before that snap, at a whole scale factor, authored lengths lie on Chromium's layout unit (1/64 css px, floored:
+Before that snap, at a whole scale factor, authored lengths lie on Chromium's layout unit (1/64 css px, truncated toward zero as `LayoutUnit(float)` is, a whole unit off only by f32 noise kept whole:
 `util::layout_length`) and measured sizes (text) are ceiled onto it (`util::measured_length`), where upstream rounds
 both to whole device px: a box's fractions (a 42.609375px button whose "3" is 6.609375px) carry to the edge snap as
 in Chromium. A fractional scale keeps upstream's device-px lengths.
 
 The edge rule is `util::snap_layout_edge`, re-exported with the two length rules as `gpui::{snap_layout_edge, layout_length, measured_length}` so the client can
 pin them: the tests `box_edges_snap_as_chromium_paints_them` and `lengths_lay_out_on_chromiums_layout_unit` in `clients/desktop/dilla-desktop-ui/src/metrics.rs`.
+
+`Window::laid_out_size` (with `TaffyLayoutEngine::laid_out_size`, Task 28) answers a box's laid-out size before its edges
+snap. Chromium decides `text-overflow: ellipsis` against that width, in layout units; the snapped box can be up to 1px
+narrower, so a decision on it kept whole a text that overflowed by under a pixel (the web shows "…"). The client's text
+painter (`dilla-desktop-ui/src/text.rs`, `LinePaint`) reads it; the test `laid_out_size_is_the_unsnapped_box` in
+`clients/desktop/dilla-desktop/tests/vendored_patches.rs` pins it.
 
 Keep this patch while the Linux parity references are Chromium frames.

@@ -1,4 +1,4 @@
-//! The attachments area's view state (one [`AttachmentsUi`] global per app) and its actions: the trays (one per
+//! The attachments area's view state (one [`AttachmentsUi`] global per app) and its actions: the trays (one per client and
 //! channel, as the worker keeps `trays`), the opened thumbnails and images, the cards' open and save states, the
 //! lightbox, the players, the GIF picker and whether files are dragged over the window.
 //!
@@ -28,9 +28,12 @@ use gpui::{App, FocusHandle, Global, Image, ImageFormat, Window, WindowId};
 use super::media::{self, MediaDecoder, Playback};
 use crate::strings::{t, tf};
 
-/// Which opened picture: a message's attachment, its thumbnail or the whole file.
+/// Which opened picture: a message's attachment, its thumbnail or the whole file, as one client opened it (review M2:
+/// two accounts of one server see the same channel and seq; each keeps its own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageKey {
+    /// The opening client's [`Client::serial`].
+    pub client: u64,
     pub channel: ChannelId,
     pub seq: u64,
     pub index: u32,
@@ -45,9 +48,11 @@ pub enum MediaKey {
     Player(CardKey),
 }
 
-/// A card's attachment.
+/// A card's attachment, as one client shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CardKey {
+    /// The client's [`Client::serial`].
+    pub client: u64,
     pub channel: ChannelId,
     pub seq: u64,
     pub index: u32,
@@ -118,21 +123,24 @@ pub enum TrayPreview {
 
 /// The attachments area's state. One per app, and that is safe by construction (final review sweep): what belongs to a
 /// window is keyed by it (`targets`) or carries its owner window and is drawn only there (the lightbox, the GIF picker,
-/// the DM notice); what belongs to a client records its owner client (or is keyed by its channels) and goes
-/// with it in [`release`] (trays by `tray_owners`, images, cards and players by `media_owners`); the
-/// played-video directories are per instance and are wiped at open and at quit.
+/// the DM notice); what belongs to a client is keyed by its [`Client::serial`] (review M2: trays, previews, images,
+/// cards and players) and goes with it in [`release`]; the played-video directories are per instance and are wiped at
+/// open and at quit.
 #[derive(Default)]
 pub struct AttachmentsUi {
-    pub trays: HashMap<ChannelId, Tray>,
-    /// Which client (by the address of its `Client`) made each tray: [`release`] lets go of that client's trays.
-    pub tray_owners: HashMap<ChannelId, usize>,
-    pub tray_previews: HashMap<(ChannelId, String), TrayPreview>,
+    /// Each client's tray of each channel, by `(Client::serial, channel)`.
+    pub trays: HashMap<(u64, ChannelId), Tray>,
+    pub tray_previews: HashMap<(u64, ChannelId, String), TrayPreview>,
     pub images: HashMap<ImageKey, Slot>,
     pub cards: HashMap<CardKey, CardStatus>,
     pub players: HashMap<CardKey, Player>,
-    /// Which client (by the address of its `Client`) opened each image, card and player: [`release`] drops what that
-    /// client opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
-    pub media_owners: HashMap<MediaKey, usize>,
+    /// The newest open's generation of each image, card and player (the key names its client): [`release`] drops what
+    /// that client opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
+    pub media_owners: HashMap<MediaKey, u64>,
+    /// The saves in flight, by generation: each one writes the path its own dialog chose.
+    pub saves: HashMap<u64, CardKey>,
+    /// The last open's generation (images, players, saves).
+    pub opens: u64,
     pub lightbox: Option<LightboxState>,
     pub gif: Option<GifState>,
     /// The DM GIF notice, while it asks.
@@ -146,11 +154,12 @@ pub struct AttachmentsUi {
     pub instance_dirs: BTreeSet<PathBuf>,
 }
 
-/// A window's composer target: its client and its open channel.
+/// A window's composer target: its client and its open channel, and the window (its toasts show there).
 #[derive(Clone, Default)]
 pub struct Target {
     pub client: Option<Rc<Client>>,
     pub channel: Option<ChannelId>,
+    pub window: Option<WindowId>,
 }
 
 /// The composer target of `window` (empty until its composer draws).
@@ -235,8 +244,15 @@ pub fn track(
         u.instance_dirs.insert(dir);
     }
     u.targets.retain(|w, _| live.contains(w));
-    u.targets
-        .insert(window_id(window), Target { client, channel });
+    let id = window_id(window);
+    u.targets.insert(
+        id,
+        Target {
+            client,
+            channel,
+            window: Some(id),
+        },
+    );
 }
 
 /// The instance at `data_dir` opens (its client is about to start): a video an earlier run left for the system
@@ -260,8 +276,8 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     if !cx.has_global::<AttachmentsUi>() {
         return;
     }
+    let owner = owner_of(client);
     let u = ui(cx);
-    let owner = Rc::as_ptr(client) as usize;
     u.targets
         .retain(|_, t| !t.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
     if u.lightbox
@@ -276,35 +292,41 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     {
         u.gif = None;
     }
-    let gone: Vec<ChannelId> = u
-        .tray_owners
-        .iter()
-        .filter(|(_, o)| **o == owner)
-        .map(|(c, _)| *c)
-        .collect();
-    for channel in gone {
-        u.trays.remove(&channel);
-        u.tray_owners.remove(&channel);
-        u.tray_previews.retain(|(c, _), _| *c != channel);
-    }
+    u.trays.retain(|(c, _), _| *c != owner);
+    u.tray_previews.retain(|(c, _, _), _| *c != owner);
     // The decrypted images, the cards' state and the players the client opened go too (re-review N3: by owner, so a
     // DM's, a left channel's and a thread's go as well): a released account's media is not left in the process.
     forget_owner(owner, cx);
 }
 
-/// `client` opened `key`.
-fn owns(client: &Client, key: MediaKey, cx: &mut App) {
-    ui(cx).media_owners.insert(key, owner_of(client));
+/// An open of `key` starts: it gets the next generation, which [`still_waiting`] compares (an older open's completion
+/// never lands on a newer one's entry).
+fn owns(key: MediaKey, cx: &mut App) -> u64 {
+    let u = ui(cx);
+    u.opens += 1;
+    let open = u.opens;
+    u.media_owners.insert(key, open);
+    open
 }
 
-/// Drops the images, cards and players the client `owner` (by the address of its `Client`) opened.
-pub fn forget_owner(owner: usize, cx: &mut App) {
+impl MediaKey {
+    /// The client (its [`Client::serial`]) whose entry this is.
+    pub fn client(&self) -> u64 {
+        match self {
+            MediaKey::Image(k) => k.client,
+            MediaKey::Card(k) | MediaKey::Player(k) => k.client,
+        }
+    }
+}
+
+/// Drops the images, cards, saves and players the client `owner` (its [`Client::serial`]) opened.
+pub fn forget_owner(owner: u64, cx: &mut App) {
     let u = ui(cx);
     let gone: Vec<MediaKey> = u
         .media_owners
-        .iter()
-        .filter(|(_, o)| **o == owner)
-        .map(|(k, _)| *k)
+        .keys()
+        .filter(|k| k.client() == owner)
+        .copied()
         .collect();
     for key in gone {
         u.media_owners.remove(&key);
@@ -320,19 +342,24 @@ pub fn forget_owner(owner: usize, cx: &mut App) {
             }
         }
     }
+    // Every entry names its client: a card's save state (kept by `saves`, not `media_owners`) goes too.
+    u.images.retain(|k, _| k.client != owner);
+    u.cards.retain(|k, _| k.client != owner);
+    u.players.retain(|k, _| k.client != owner);
+    u.saves.retain(|_, k| k.client != owner);
 }
 
-/// The address `owns` records for `client`.
-fn owner_of(client: &Client) -> usize {
-    std::ptr::from_ref(client) as usize
+/// What the keys record for `client`: its serial, never reused within the process.
+pub fn owner_of(client: &Client) -> u64 {
+    client.serial()
 }
 
-/// Whether the open of `key` that `owner` started may still land: its `media_owners` tag is still `owner`'s and the
-/// entry still waits for it. A release ([`forget_owner`]) while the open was in flight drops both, and the completion then
+/// Whether the open of `key` with generation `open` may still land: it is still the entry's newest open and the entry
+/// still waits for it. A release ([`forget_owner`]) while the open was in flight drops both, and the completion then
 /// keeps nothing (re-review N3: a late completion never brings plaintext or a player back without an owner).
-fn still_waiting(owner: usize, key: MediaKey, cx: &mut App) -> bool {
+fn still_waiting(open: u64, key: MediaKey, cx: &mut App) -> bool {
     let u = ui(cx);
-    u.media_owners.get(&key) == Some(&owner)
+    u.media_owners.get(&key) == Some(&open)
         && match key {
             MediaKey::Image(k) => matches!(u.images.get(&k), Some(Slot::Loading)),
             MediaKey::Card(k) => matches!(u.cards.get(&k), Some(CardStatus::Loading)),
@@ -342,36 +369,58 @@ fn still_waiting(owner: usize, key: MediaKey, cx: &mut App) -> bool {
 
 /// An image's open landed: `slot` is kept only while [`still_waiting`]; otherwise it is dropped. Answers whether it was
 /// kept.
-fn land_image(owner: usize, key: ImageKey, slot: Slot, cx: &mut App) -> bool {
-    if !still_waiting(owner, MediaKey::Image(key), cx) {
+fn land_image(open: u64, key: ImageKey, slot: Slot, cx: &mut App) -> bool {
+    if !still_waiting(open, MediaKey::Image(key), cx) {
         return false;
     }
     ui(cx).images.insert(key, slot);
     true
 }
 
-/// A card's save finished: its failure (`Some`) is shown, or the card is done (`None`), only while [`still_waiting`].
-/// Answers whether it landed.
-fn land_card(owner: usize, key: CardKey, status: Option<CardStatus>, cx: &mut App) -> bool {
-    if !still_waiting(owner, MediaKey::Card(key), cx) {
+/// A save starts: it has its own generation in `saves` (two saves of one card each write their own path), and the
+/// card shows it opening.
+fn save_started(key: CardKey, cx: &mut App) -> u64 {
+    let u = ui(cx);
+    u.opens += 1;
+    let open = u.opens;
+    u.saves.insert(open, key);
+    u.cards.insert(key, CardStatus::Loading);
+    open
+}
+
+/// Whether the save `open` may go on: its client was not released.
+fn save_live(open: u64, cx: &mut App) -> bool {
+    ui(cx).saves.contains_key(&open)
+}
+
+/// The save `open` finished: its failure (`Some`) is shown, or, once no other save of the card is in flight, the card is
+/// done (`None`). A released client's save lands nothing. Answers whether it landed.
+fn land_save(open: u64, status: Option<CardStatus>, cx: &mut App) -> bool {
+    let u = ui(cx);
+    let Some(key) = u.saves.remove(&open) else {
         return false;
-    }
-    match status {
-        Some(s) => ui(cx).cards.insert(key, s),
-        None => ui(cx).cards.remove(&key),
     };
+    match status {
+        Some(s) => {
+            u.cards.insert(key, s);
+        }
+        None if !u.saves.values().any(|k| *k == key) => {
+            u.cards.remove(&key);
+        }
+        None => {}
+    }
     true
 }
 
 /// A player's open landed: `start` (which starts the device's playback, or opens the system player) runs only while
 /// [`still_waiting`], so a released client's audio never starts; its player, if any, is kept. Answers whether it ran.
 fn land_player(
-    owner: usize,
+    open: u64,
     key: CardKey,
     start: impl FnOnce(&mut App) -> Option<Player>,
     cx: &mut App,
 ) -> bool {
-    if !still_waiting(owner, MediaKey::Player(key), cx) {
+    if !still_waiting(open, MediaKey::Player(key), cx) {
         return false;
     }
     match start(cx) {
@@ -381,14 +430,11 @@ fn land_player(
     true
 }
 
-/// The tray of `channel`, made on first use.
+/// `client`'s tray of `channel`, made on first use.
 pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
-    let u = ui(cx);
-    u.tray_owners
-        .entry(channel)
-        .or_insert(std::ptr::from_ref(client) as usize);
-    u.trays
-        .entry(channel)
+    ui(cx)
+        .trays
+        .entry((owner_of(client), channel))
         .or_insert_with(|| client.attachments().tray(channel))
         .clone()
 }
@@ -396,23 +442,28 @@ pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
 /// Attachments.tsx `attachFiles`: the files join the tray (a toast for a file over 25 MB, the tray's own refusal of
 /// an eleventh file), each picture with its preview.
 pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>>, cx: &mut App) {
-    let (Some(client), Some(channel)) = (to.client, to.channel) else {
+    let (Some(client), Some(channel), shown_in) = (to.client, to.channel, to.window) else {
         return;
     };
     if files.is_empty() {
         return;
     }
     let tray = tray_of(&client, channel, cx);
+    let owner = owner_of(&client);
     let over = files.iter().any(|f| f.size > ATTACHMENT_CAP);
     if over && tray.entries().len() + files.len() <= MAX_ATTACHMENTS {
-        dilla_desktop_ui::components::toast::show_toast(t("shell.tray.overLimitToast"), cx);
+        dilla_desktop_ui::components::toast::show_toast_in(
+            shown_in,
+            t("shell.tray.overLimitToast"),
+            cx,
+        );
     }
     match client.attachments().attach(&tray, files) {
         Ok(ids) => {
             let u = ui(cx);
             for (id, p) in ids.into_iter().zip(previews) {
                 if let Some(p) = p {
-                    u.tray_previews.insert((channel, id), p);
+                    u.tray_previews.insert((owner, channel, id), p);
                 }
             }
         }
@@ -422,7 +473,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
             } else {
                 tf("shell.banner.commandError", &[("code", &e.code())])
             };
-            dilla_desktop_ui::components::toast::show_toast(text, cx);
+            dilla_desktop_ui::components::toast::show_toast_in(shown_in, text, cx);
         }
     }
     cx.refresh_windows();
@@ -506,39 +557,62 @@ pub async fn attach_paths(to: Target, paths: Vec<PathBuf>, cx: &mut gpui::AsyncA
 /// Removes a tray entry (and its preview).
 pub fn discard(client: &Client, channel: ChannelId, id: String, cx: &mut App) {
     let tray = tray_of(client, channel, cx);
-    ui(cx).tray_previews.remove(&(channel, id.clone()));
+    ui(cx)
+        .tray_previews
+        .remove(&(owner_of(client), channel, id.clone()));
     client.attachments().discard(&tray, id);
     cx.refresh_windows();
 }
 
-/// The descriptors a send carries, taken from the tray of `channel`; `Err` with the toast's text while a file is not
-/// ready (`shell.tray.notReady`). The composer's send calls it (the integration hook named in Task 12's report).
+/// Whether `client`'s tray of `channel` holds a file.
+pub fn has_files(client: &Client, channel: ChannelId, cx: &mut App) -> bool {
+    ui(cx)
+        .trays
+        .get(&(owner_of(client), channel))
+        .is_some_and(|t| !t.entries().is_empty())
+}
+
+/// The descriptors a send carries, taken from `client`'s tray of `channel`; `Err` with the toast's text while a file is
+/// not ready (`shell.tray.notReady`). The composer's send calls it (the integration hook named in Task 12's report).
 pub fn take_for_send(
+    client: &Client,
     channel: ChannelId,
     cx: &mut App,
 ) -> Result<Vec<dilla_client::features::attachments::Descriptor>, &'static str> {
-    let Some(tray) = ui(cx).trays.get(&channel).cloned() else {
+    let owner = owner_of(client);
+    let Some(tray) = ui(cx).trays.get(&(owner, channel)).cloned() else {
         return Ok(Vec::new());
     };
     if !tray.all_ready() {
         return Err(t("shell.tray.notReady"));
     }
     let out = tray.take_all().map_err(|_| t("shell.tray.notReady"))?;
-    ui(cx).tray_previews.retain(|(c, _), _| *c != channel);
+    ui(cx)
+        .tray_previews
+        .retain(|(o, c, _), _| (*o, *c) != (owner, channel));
     Ok(out)
 }
+
+/// What an open answers: the decrypted file (`Zeroizing`), or why not.
+pub type OpenAnswer = tokio::sync::oneshot::Receiver<
+    Result<dilla_client::features::attachments::Opened, dilla_client::ClientError>,
+>;
 
 /// Opens a thumbnail or a whole picture once; the card or the lightbox draws it when it is ready.
 pub fn ensure_image(client: &Client, key: ImageKey, cx: &mut App) {
     if ui(cx).images.contains_key(&key) {
         return;
     }
-    ui(cx).images.insert(key, Slot::Loading);
-    owns(client, MediaKey::Image(key), cx);
-    let owner = owner_of(client);
     let rx = client
         .attachments()
         .open(key.channel, key.seq, key.index, key.thumb);
+    ensure_image_from(key, rx, cx);
+}
+
+/// [`ensure_image`] with the open already started (`rx`); the tests drive it with their own answers.
+pub fn ensure_image_from(key: ImageKey, rx: OpenAnswer, cx: &mut App) {
+    ui(cx).images.insert(key, Slot::Loading);
+    let open = owns(MediaKey::Image(key), cx);
     cx.spawn(async move |cx| {
         // The decrypted bytes are `Zeroizing`: they are wiped when `opened` drops, here.
         let slot = match rx.await {
@@ -547,7 +621,7 @@ pub fn ensure_image(client: &Client, key: ImageKey, cx: &mut App) {
         };
         cx.update(|cx| {
             // Released meanwhile: the decoded picture is dropped, never cached without an owner.
-            if land_image(owner, key, slot, cx) {
+            if land_image(open, key, slot, cx) {
                 cx.refresh_windows();
             }
         });
@@ -556,31 +630,37 @@ pub fn ensure_image(client: &Client, key: ImageKey, cx: &mut App) {
 }
 
 /// Saves an attachment where the person chooses (only after their action): it is opened, the save dialog asks for a
-/// path, and the plaintext is written there.
+/// path, and the plaintext is written there. Each save is its own: a second save of the card while the first is in
+/// flight writes the path its own dialog chose, or shows its own failure.
 pub fn save(client: &Client, key: CardKey, cx: &mut App) {
-    ui(cx).cards.insert(key, CardStatus::Loading);
-    owns(client, MediaKey::Card(key), cx);
-    cx.refresh_windows();
     let rx = client
         .attachments()
         .open(key.channel, key.seq, key.index, false);
-    let owner = owner_of(client);
-    let home = dirs_home();
+    save_from(key, rx, dirs_home(), cx);
+}
+
+/// [`save`] with the open already started (`rx`) and the dialog starting at `home`; the tests drive it.
+pub fn save_from(key: CardKey, rx: OpenAnswer, home: PathBuf, cx: &mut App) {
+    let open = save_started(key, cx);
+    cx.refresh_windows();
     cx.spawn(async move |cx| {
         let opened = match rx.await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 cx.update(|cx| {
-                    if land_card(owner, key, Some(CardStatus::Failed(e.to_string())), cx) {
+                    if land_save(open, Some(CardStatus::Failed(e.to_string())), cx) {
                         cx.refresh_windows();
                     }
                 });
                 return;
             }
-            Err(_) => return,
+            Err(_) => {
+                cx.update(|cx| land_save(open, None, cx));
+                return;
+            }
         };
         // Released meanwhile: the plaintext (`Zeroizing`) is wiped as it drops; no save dialog asks for it.
-        if !cx.update(|cx| still_waiting(owner, MediaKey::Card(key), cx)) {
+        if !cx.update(|cx| save_live(open, cx)) {
             return;
         }
         let shown = safe_name(&opened.name, t("shell.attachment.unnamed"));
@@ -591,7 +671,7 @@ pub fn save(client: &Client, key: CardKey, cx: &mut App) {
         };
         // Released while the dialog asked: nothing is written.
         let result = match path {
-            Some(path) if cx.update(|cx| still_waiting(owner, MediaKey::Card(key), cx)) => {
+            Some(path) if cx.update(|cx| save_live(open, cx)) => {
                 dilla_client::features::attachments::Attachments::save(&path, &opened.bytes)
                     .map_err(|_| "E_SAVE".to_owned())
             }
@@ -600,7 +680,7 @@ pub fn save(client: &Client, key: CardKey, cx: &mut App) {
         drop(opened);
         cx.update(|cx| {
             let status = result.err().map(CardStatus::Failed);
-            if land_card(owner, key, status, cx) {
+            if land_save(open, status, cx) {
                 cx.refresh_windows();
             }
         });
@@ -617,21 +697,33 @@ fn dirs_home() -> PathBuf {
 /// The media card's play: an audio file is opened and played inline (symphonia, rodio); a video is written to the
 /// instance's directory and opened in the system player.
 pub fn play(client: &Client, key: CardKey, video: bool, mime: String, cx: &mut App) {
-    // The video goes to this client's own instance directory, which the quit wipes.
-    let dir = client.prefs().path().parent().map(PathBuf::from);
-    if let Some(d) = &dir {
-        ui(cx).instance_dirs.insert(d.clone());
-    }
     if matches!(ui(cx).players.get(&key), Some(Player::Loading)) {
         return;
     }
-    ui(cx).players.insert(key, Player::Loading);
-    owns(client, MediaKey::Player(key), cx);
-    cx.refresh_windows();
-    let owner = owner_of(client);
+    // The video goes to this client's own instance directory, which the quit wipes.
+    let dir = client.prefs().path().parent().map(PathBuf::from);
     let rx = client
         .attachments()
         .open(key.channel, key.seq, key.index, false);
+    play_from(key, video, mime, dir, rx, cx);
+}
+
+/// [`play`] with the open already started (`rx`) and the instance directory a video goes to (`dir`); the tests drive
+/// it.
+pub fn play_from(
+    key: CardKey,
+    video: bool,
+    mime: String,
+    dir: Option<PathBuf>,
+    rx: OpenAnswer,
+    cx: &mut App,
+) {
+    if let Some(d) = &dir {
+        ui(cx).instance_dirs.insert(d.clone());
+    }
+    ui(cx).players.insert(key, Player::Loading);
+    let owner = owns(MediaKey::Player(key), cx);
+    cx.refresh_windows();
     cx.spawn(async move |cx| {
         let opened = match rx.await {
             Ok(Ok(o)) => o,
@@ -846,7 +938,11 @@ pub fn open_dm_gifs(
         let found = rx.await.ok().and_then(Result::ok).flatten();
         cx.update(|cx| {
             match found {
-                None => dilla_desktop_ui::components::toast::show_toast(t("gif.unavailable"), cx),
+                None => dilla_desktop_ui::components::toast::show_toast_in(
+                    Some(owner),
+                    t("gif.unavailable"),
+                    cx,
+                ),
                 Some(community) if client.gifs().dm_consent_for(community) => {
                     toggle_gifs(client.clone(), owner, channel, community, cx);
                 }
@@ -884,7 +980,11 @@ pub fn accept_dm_notice(cx: &mut App) {
         .set_dm_consent(Some(&n.community.hex()))
         .is_err()
     {
-        dilla_desktop_ui::components::toast::show_toast(t("workspace.preference.error"), cx);
+        dilla_desktop_ui::components::toast::show_toast_in(
+            Some(n.owner),
+            t("workspace.preference.error"),
+            cx,
+        );
         cx.refresh_windows();
         return;
     }
@@ -966,12 +1066,14 @@ pub fn pick_gif(index: usize, cx: &mut App) {
     let to = Target {
         client: Some(client.clone()),
         channel: g.channel,
+        window: g.owner,
     };
     let (Some(item), Some(community)) = (g.items.get(index).cloned(), g.community) else {
         return;
     };
     g.picking = Some(item.id.clone());
     cx.refresh_windows();
+    let shown_in = to.window;
     let rx = client
         .gifs()
         .media(community, item.id.clone(), GifVariant::Full);
@@ -998,7 +1100,11 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                     if let Some(g) = ui(cx).gif.as_mut() {
                         g.picking = None;
                     }
-                    dilla_desktop_ui::components::toast::show_toast(t("gif.pickFailed"), cx);
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        shown_in,
+                        t("gif.pickFailed"),
+                        cx,
+                    );
                 }
             }
             cx.refresh_windows();
@@ -1016,115 +1122,273 @@ mod tests {
     #[gpui::test]
     fn a_release_drops_the_media_the_client_opened(cx: &mut gpui::TestAppContext) {
         let (mine, theirs) = (ChannelId([1; 16]), ChannelId([2; 16]));
-        let key = |channel| ImageKey {
+        let key = |client, channel| ImageKey {
+            client,
             channel,
             seq: 1,
             index: 0,
             thumb: true,
         };
+        let card = |client, channel| CardKey {
+            client,
+            channel,
+            seq: 1,
+            index: 0,
+        };
         cx.update(|cx| {
             let u = ui(cx);
             // `mine` is a DM of client 1: no channel list names it.
-            u.images.insert(key(mine), Slot::Failed);
-            u.images.insert(key(theirs), Slot::Failed);
-            u.media_owners.insert(MediaKey::Image(key(mine)), 1);
-            u.media_owners.insert(MediaKey::Image(key(theirs)), 2);
-            let card = |channel| CardKey {
-                channel,
-                seq: 1,
-                index: 0,
-            };
-            u.cards.insert(card(mine), CardStatus::Loading);
-            u.cards.insert(card(theirs), CardStatus::Loading);
-            u.media_owners.insert(MediaKey::Card(card(mine)), 1);
-            u.media_owners.insert(MediaKey::Card(card(theirs)), 2);
+            u.images.insert(key(1, mine), Slot::Failed);
+            u.images.insert(key(2, theirs), Slot::Failed);
+            u.media_owners.insert(MediaKey::Image(key(1, mine)), 10);
+            u.media_owners.insert(MediaKey::Image(key(2, theirs)), 11);
+            u.cards.insert(card(1, mine), CardStatus::Loading);
+            u.cards.insert(card(2, theirs), CardStatus::Loading);
+            u.media_owners.insert(MediaKey::Card(card(1, mine)), 12);
+            u.media_owners.insert(MediaKey::Card(card(2, theirs)), 13);
             forget_owner(1, cx);
             let u = ui(cx);
-            assert!(!u.images.contains_key(&key(mine)) && u.images.contains_key(&key(theirs)));
+            assert!(
+                !u.images.contains_key(&key(1, mine)) && u.images.contains_key(&key(2, theirs))
+            );
             assert_eq!(u.cards.len(), 1);
         });
     }
 
-    /// Re-review N3 (late completion): an open in flight when its client is released lands nothing. The decoded picture
-    /// is not cached, the card's state does not come back, and a player's start (the device's playback) never runs.
-    #[gpui::test]
-    fn an_open_that_lands_after_the_release_keeps_nothing(cx: &mut gpui::TestAppContext) {
-        let channel = ChannelId([3; 16]);
-        let image = ImageKey {
-            channel,
+    const CHANNEL: ChannelId = ChannelId([3; 16]);
+
+    fn image_key() -> ImageKey {
+        ImageKey {
+            client: 7,
+            channel: CHANNEL,
             seq: 1,
             index: 0,
             thumb: false,
-        };
-        let card = CardKey {
-            channel,
+        }
+    }
+
+    fn card_key() -> CardKey {
+        CardKey {
+            client: 7,
+            channel: CHANNEL,
             seq: 1,
             index: 0,
-        };
+        }
+    }
+
+    type Answer = tokio::sync::oneshot::Sender<
+        Result<dilla_client::features::attachments::Opened, dilla_client::ClientError>,
+    >;
+
+    fn answer() -> (Answer, OpenAnswer) {
+        tokio::sync::oneshot::channel()
+    }
+
+    fn opened(
+        bytes: Vec<u8>,
+        name: &str,
+        mime: &str,
+    ) -> dilla_client::features::attachments::Opened {
+        dilla_client::features::attachments::Opened {
+            bytes: zeroize::Zeroizing::new(bytes),
+            name: name.to_owned(),
+            mime: mime.to_owned(),
+        }
+    }
+
+    fn png() -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([9, 9, 9]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// One second of silence, 16-bit mono WAV at 8 kHz.
+    fn wav() -> Vec<u8> {
+        let (rate, n) = (8000u32, 8000u32);
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(36 + n * 2).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(n * 2).to_le_bytes());
+        out.extend(std::iter::repeat_n(0u8, (n * 2) as usize));
+        out
+    }
+
+    /// Coordinator item 3 (re-review N3, driven through `ensure_image` itself): a picture whose client is released while
+    /// it opens is never cached.
+    #[gpui::test]
+    fn ensure_image_keeps_nothing_after_a_release_mid_open(cx: &mut gpui::TestAppContext) {
+        let (tx, rx) = answer();
+        cx.update(|cx| ensure_image_from(image_key(), rx, cx));
+        cx.update(|cx| forget_owner(7, cx));
+        tx.send(Ok(opened(png(), "a.png", "image/png"))).ok();
+        cx.run_until_parked();
         cx.update(|cx| {
-            // The opens start (as `ensure_image`, `save` and `play` mark them) for client 1 ...
-            let u = ui(cx);
-            u.images.insert(image, Slot::Loading);
-            u.cards.insert(card, CardStatus::Loading);
-            u.players.insert(card, Player::Loading);
-            u.media_owners.insert(MediaKey::Image(image), 1);
-            u.media_owners.insert(MediaKey::Card(card), 1);
-            u.media_owners.insert(MediaKey::Player(card), 1);
-            // ... the client is released ...
-            forget_owner(1, cx);
-            // ... then the decrypts land.
-            land_image(1, image, Slot::Failed, cx);
-            land_card(1, card, Some(CardStatus::Failed("E".into())), cx);
-            let mut started = false;
-            land_player(
-                1,
-                card,
-                |_| {
-                    started = true;
-                    Some(Player::Error)
-                },
-                cx,
-            );
-            assert!(!started, "no player starts for a released client");
             let u = ui(cx);
             assert!(u.images.is_empty(), "no picture cached without an owner");
-            assert!(u.cards.is_empty());
-            assert!(u.players.is_empty(), "no player is live");
             assert!(u.media_owners.is_empty());
+        });
+        // Without a release the same open lands.
+        let (tx, rx) = answer();
+        cx.update(|cx| ensure_image_from(image_key(), rx, cx));
+        tx.send(Ok(opened(png(), "a.png", "image/png"))).ok();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(matches!(
+                ui(cx).images.get(&image_key()),
+                Some(Slot::Ready(_))
+            ))
         });
     }
 
-    /// The same completions land while the open still waits for them, and only for the client that started it.
+    /// Coordinator item 3, driven through `save` itself: a client released while its file opens gets no save dialog.
     #[gpui::test]
-    fn an_open_that_lands_before_the_release_is_kept(cx: &mut gpui::TestAppContext) {
-        let channel = ChannelId([4; 16]);
-        let image = ImageKey {
-            channel,
-            seq: 1,
-            index: 0,
-            thumb: false,
-        };
-        let card = CardKey {
-            channel,
-            seq: 1,
-            index: 0,
-        };
+    fn save_asks_for_no_path_after_a_release_mid_open(cx: &mut gpui::TestAppContext) {
+        let (tx, rx) = answer();
+        cx.update(|cx| save_from(card_key(), rx, std::env::temp_dir(), cx));
+        cx.update(|cx| forget_owner(7, cx));
+        tx.send(Ok(opened(b"secret".to_vec(), "a.txt", "text/plain")))
+            .ok();
+        cx.run_until_parked();
+        assert!(
+            !cx.did_prompt_for_new_path(),
+            "no save dialog after the release"
+        );
         cx.update(|cx| {
             let u = ui(cx);
-            u.images.insert(image, Slot::Loading);
-            u.players.insert(card, Player::Loading);
-            u.media_owners.insert(MediaKey::Image(image), 1);
-            u.media_owners.insert(MediaKey::Player(card), 1);
-            assert!(
-                !land_image(2, image, Slot::Failed, cx),
-                "another client's open never lands here"
-            );
-            assert!(land_image(1, image, Slot::Failed, cx));
-            assert!(land_player(1, card, |_| Some(Player::Error), cx));
-            let u = ui(cx);
-            assert!(matches!(u.images.get(&image), Some(Slot::Failed)));
-            assert!(matches!(u.players.get(&card), Some(Player::Error)));
+            assert!(u.cards.is_empty() && u.saves.is_empty());
         });
+    }
+
+    /// Coordinator item 3, driven through `play` itself: a released client's audio never starts, and its video is never
+    /// written for (or opened in) the system player.
+    #[gpui::test]
+    fn play_starts_nothing_after_a_release_mid_open(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("dilla-t28-play-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let audio = card_key();
+        let video = CardKey {
+            index: 1,
+            ..card_key()
+        };
+        let (tx_a, rx_a) = answer();
+        let (tx_v, rx_v) = answer();
+        cx.update(|cx| {
+            play_from(
+                audio,
+                false,
+                "audio/wav".into(),
+                Some(dir.clone()),
+                rx_a,
+                cx,
+            );
+            play_from(
+                video,
+                true,
+                "video/webm".into(),
+                Some(dir.clone()),
+                rx_v,
+                cx,
+            );
+            forget_owner(7, cx);
+        });
+        tx_a.send(Ok(opened(wav(), "a.wav", "audio/wav"))).ok();
+        tx_v.send(Ok(opened(
+            vec![0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0],
+            "v.webm",
+            "video/webm",
+        )))
+        .ok();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let u = ui(cx);
+            assert!(
+                u.players.is_empty(),
+                "no player is live: the audio never started"
+            );
+            assert!(u.media_owners.is_empty());
+        });
+        let left = media::open_dir(&dir);
+        let files = std::fs::read_dir(&left).map_or(0, |d| d.count());
+        assert_eq!(files, 0, "no video file is left for the system player");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Coordinator item 1: an older open's completion never lands on a newer open of the same entry (each open has its
+    /// own generation, not the client's tag).
+    #[gpui::test]
+    fn an_older_open_never_lands_on_a_newer_one(cx: &mut gpui::TestAppContext) {
+        let (old_tx, old_rx) = answer();
+        cx.update(|cx| ensure_image_from(image_key(), old_rx, cx));
+        // Released and opened again by the same client number (as a new open would): the new open waits.
+        cx.update(|cx| forget_owner(7, cx));
+        let (new_tx, new_rx) = answer();
+        cx.update(|cx| ensure_image_from(image_key(), new_rx, cx));
+        old_tx
+            .send(Ok(opened(b"not a picture".to_vec(), "x", "image/png")))
+            .ok();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                matches!(ui(cx).images.get(&image_key()), Some(Slot::Loading)),
+                "the old open's failure did not land on the new one"
+            );
+        });
+        new_tx.send(Ok(opened(png(), "a.png", "image/png"))).ok();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(matches!(
+                ui(cx).images.get(&image_key()),
+                Some(Slot::Ready(_))
+            ))
+        });
+    }
+
+    /// Coordinator item 2: two saves of one card while the first opens each write the path their own dialog chose.
+    #[gpui::test]
+    fn two_saves_of_one_card_each_write_their_path(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("dilla-t28-saves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tx1, rx1) = answer();
+        let (tx2, rx2) = answer();
+        cx.update(|cx| {
+            save_from(card_key(), rx1, dir.clone(), cx);
+            save_from(card_key(), rx2, dir.clone(), cx);
+        });
+        tx1.send(Ok(opened(b"one".to_vec(), "a.txt", "text/plain")))
+            .ok();
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(|_| Some(dir.join("first.txt")));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                matches!(ui(cx).cards.get(&card_key()), Some(CardStatus::Loading)),
+                "the second save is still in flight"
+            );
+        });
+        tx2.send(Ok(opened(b"two".to_vec(), "a.txt", "text/plain")))
+            .ok();
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path(), "the second save asks too");
+        cx.simulate_new_path_selection(|_| Some(dir.join("second.txt")));
+        cx.run_until_parked();
+        assert_eq!(std::fs::read(dir.join("first.txt")).unwrap(), b"one");
+        assert_eq!(std::fs::read(dir.join("second.txt")).unwrap(), b"two");
+        cx.update(|cx| {
+            let u = ui(cx);
+            assert!(u.cards.is_empty() && u.saves.is_empty(), "both saves done");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Fix round 1: a video left for the system player is wiped when the instance opens and when the app quits, not

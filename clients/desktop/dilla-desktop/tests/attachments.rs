@@ -196,7 +196,7 @@ mod behaviour {
         let d = tray.take_all().unwrap();
         alice
             .attachments()
-            .send(channel, "the shanty".into(), d)
+            .send(channel, "the shanty".into(), d, None)
             .await
             .unwrap()
             .unwrap();
@@ -246,5 +246,159 @@ mod behaviour {
         assert_eq!(std::fs::read(&path).unwrap(), webm);
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("webm"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+mod two_accounts {
+    //! Task 28 items 9 and 10 (reviews M2, M4): two instance windows, two accounts of one server, against a real dillad.
+    //! What a window's composer and cards hold is its own client's: the trays and their previews are keyed by client and
+    //! channel, and each window's target is its own client.
+
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use dilla_client::Client;
+    use dilla_client::features::attachments::NewFile;
+    use dilla_client::state::{ChannelId, CommunityId};
+    use dilla_client::testing::host::{
+        Host, clear_session, community, sign_up, start, start_host, wait_for,
+    };
+    use dilla_desktop::screens::attachments::ui::{self, Target};
+    use gpui::{Context, IntoElement, Render, TestAppContext, Window, div};
+
+    const WAIT: Duration = Duration::from_secs(60);
+
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// Alice and bob in one community, both clients running, and the general channel both see.
+    struct World {
+        _rt: tokio::runtime::Runtime,
+        _host: Host,
+        alice: Rc<Client>,
+        bob: Rc<Client>,
+        general: ChannelId,
+    }
+
+    fn world(tag: &'static str) -> World {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (host, alice, bob, general) = rt.block_on(async {
+            let host = tokio::task::spawn_blocking(move || start_host(tag, "127.0.0.1:0", None))
+                .await
+                .unwrap();
+            let invite = host.invites.last().unwrap().clone();
+            let a = sign_up(&host, &invite, "alice", "alice", tag).await;
+            let b = sign_up(&host, &invite, "bob", "bob", tag).await;
+            let (host, a, b, c) = tokio::task::spawn_blocking(move || {
+                let c = community(&host, &a, "gpui", &[&b]);
+                clear_session(&a);
+                clear_session(&b);
+                (host, a, b, c)
+            })
+            .await
+            .unwrap();
+            let (alice, bob) = (start(&a).await, start(&b).await);
+            let mut general = None;
+            for client in [&alice, &bob] {
+                general = wait_for(client, WAIT, "the channel list", |s| {
+                    s.channel_named(CommunityId(c), "general").is_some()
+                })
+                .await
+                .channel_named(CommunityId(c), "general")
+                .map(|ch| ch.id);
+            }
+            (host, alice, bob, general.unwrap())
+        });
+        World {
+            _rt: rt,
+            _host: host,
+            alice: Rc::new(alice),
+            bob: Rc::new(bob),
+            general,
+        }
+    }
+
+    fn file(name: &str) -> NewFile {
+        NewFile::from_bytes(name, "application/octet-stream", vec![7u8; 100])
+    }
+
+    /// Review M2: alice's file attached in her window never shows in bob's tray of the same channel, and a release of
+    /// bob lets go of his tray only.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn two_accounts_in_one_channel_keep_their_own_trays(cx: &mut TestAppContext) {
+        let w = world("t28-trays");
+        let channel = w.general;
+        cx.update(|cx| {
+            ui::attach(
+                Target {
+                    client: Some(w.alice.clone()),
+                    channel: Some(channel),
+                    window: None,
+                },
+                vec![file("alice.bin")],
+                vec![None],
+                cx,
+            );
+            let alices = ui::tray_of(&w.alice, channel, cx);
+            let bobs = ui::tray_of(&w.bob, channel, cx);
+            assert_eq!(alices.entries().len(), 1, "alice's file is in her tray");
+            assert!(bobs.entries().is_empty(), "bob's tray is his own");
+            ui::release(&w.bob, cx);
+            assert_eq!(
+                ui::tray_of(&w.alice, channel, cx).entries().len(),
+                1,
+                "a release of bob keeps alice's tray"
+            );
+        });
+        drop(w);
+    }
+
+    /// Review M4 (the security half of each window's target): with two clients in two windows on the same channel, a
+    /// paste or a drop in each window goes through that window's own client.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn each_window_attaches_through_its_own_client(cx: &mut TestAppContext) {
+        let w = world("t28-targets");
+        let channel = w.general;
+        let a = cx.add_window(|_, _| Blank);
+        let b = cx.add_window(|_, _| Blank);
+        a.update(cx, |_, win, cx| {
+            ui::track(win, Some(w.alice.clone()), Some(channel), cx)
+        })
+        .unwrap();
+        b.update(cx, |_, win, cx| {
+            ui::track(win, Some(w.bob.clone()), Some(channel), cx)
+        })
+        .unwrap();
+        let in_a = a.update(cx, |_, win, cx| ui::target(win, cx)).unwrap();
+        let in_b = b.update(cx, |_, win, cx| ui::target(win, cx)).unwrap();
+        assert!(
+            in_a.client
+                .as_ref()
+                .is_some_and(|c| Rc::ptr_eq(c, &w.alice)),
+            "A's paste goes through alice's client"
+        );
+        assert!(
+            in_b.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, &w.bob)),
+            "B's paste goes through bob's client"
+        );
+        assert_eq!((in_a.channel, in_b.channel), (Some(channel), Some(channel)));
+        // A drop in B lands in bob's tray only.
+        cx.update(|cx| {
+            ui::attach(in_b, vec![file("bob.bin")], vec![None], cx);
+            assert_eq!(ui::tray_of(&w.bob, channel, cx).entries().len(), 1);
+            assert!(ui::tray_of(&w.alice, channel, cx).entries().is_empty());
+        });
+        drop(w);
     }
 }

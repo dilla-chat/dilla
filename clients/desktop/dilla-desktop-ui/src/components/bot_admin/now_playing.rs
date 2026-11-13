@@ -16,7 +16,7 @@ use gpui::{
 };
 
 use crate::components::avatar::{Avatar, AvatarShape, AvatarSize};
-use crate::components::toast::show_toast;
+use crate::components::toast::show_toast_in;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
@@ -251,7 +251,11 @@ impl NowPlaying {
                         run(window, cx);
                     }
                 } else if !blocked.is_empty() {
-                    show_toast(blocked.clone(), cx);
+                    show_toast_in(
+                        Some(window.window_handle().window_id()),
+                        blocked.clone(),
+                        cx,
+                    );
                 }
             })
             .into_any_element()
@@ -569,7 +573,11 @@ impl NowPlaying {
                     f(window, cx);
                 }
             } else if !blocked.is_empty() {
-                show_toast(blocked.clone(), cx);
+                show_toast_in(
+                    Some(window.window_handle().window_id()),
+                    blocked.clone(),
+                    cx,
+                );
             }
             cx.stop_propagation();
         });

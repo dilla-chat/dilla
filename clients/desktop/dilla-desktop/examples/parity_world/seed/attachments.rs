@@ -65,7 +65,7 @@ pub(super) async fn send(client: &Client, channel: ChannelId, m: &MessageSpec) {
     let descriptors = tray.take_all().expect("every file is ready");
     client
         .attachments()
-        .send(channel, m.body.clone(), descriptors)
+        .send(channel, m.body.clone(), descriptors, None)
         .await
         .unwrap()
         .expect("queued");

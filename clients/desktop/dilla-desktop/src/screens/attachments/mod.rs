@@ -148,6 +148,8 @@ pub fn attachment_cards(
     }
     let channel = ctx.channel?;
     let live = ctx.client.is_some();
+    // Review M2: what this window's client opened, never another account's of the same channel.
+    let owner = ctx.client.as_deref().map_or(0, ui::owner_of);
     let seq = item.seq;
     let images: Vec<(u32, String, u64)> = item
         .attachments
@@ -168,6 +170,7 @@ pub fn attachment_cards(
         let too_large = a.size > ATTACHMENT_CAP;
         let kind = attachment_kind(&a.mime);
         let key = seq.map(|seq| CardKey {
+            client: owner,
             channel,
             seq,
             index: a.index,
@@ -195,12 +198,14 @@ pub fn attachment_cards(
                 let full = key
                     .filter(|_| gif && a.size <= GIF_AUTOPLAY_MAX && live)
                     .map(|k| ImageKey {
+                        client: owner,
                         channel,
                         seq: k.seq,
                         index: k.index,
                         thumb: false,
                     });
                 let thumb_key = key.map(|k| ImageKey {
+                    client: owner,
                     channel,
                     seq: k.seq,
                     index: k.index,
@@ -360,7 +365,11 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
                 TrayPhase::Failed => tf("shell.tray.failed", &[("code", &item.reason)]),
                 p => t(&format!("shell.tray.{}", p.as_str())).to_owned(),
             };
-            let preview = match ui::ui(cx).tray_previews.get(&(channel, item.id.clone())) {
+            let owner = client.as_deref().map_or(0, ui::owner_of);
+            let preview = match ui::ui(cx)
+                .tray_previews
+                .get(&(owner, channel, item.id.clone()))
+            {
                 Some(TrayPreview::Image(i)) => Preview::Image(i.clone()),
                 Some(TrayPreview::Gif) => Preview::Gif,
                 None => Preview::None,
@@ -598,6 +607,7 @@ fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
     let (index, name, size) = l.images.get(at)?.clone();
     let focus = l.close_focus.clone();
     let key = ImageKey {
+        client: ui::owner_of(&client),
         channel,
         seq,
         index,
@@ -609,6 +619,7 @@ fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
         _ => None,
     };
     let card = CardKey {
+        client: ui::owner_of(&client),
         channel,
         seq,
         index,
@@ -739,14 +750,15 @@ pub fn dm_gif_privacy(ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Opti
                 on,
             )
             .fit(dilla_desktop_ui::components::toggle::Fit::Row)
-            .on_change(move |v, _, cx| {
+            .on_change(move |v, window, cx| {
                 // DmGifPrivacySetting.tsx: enabling here is "on", which still asks with the server named on next use.
                 if toggle_client
                     .gifs()
                     .set_dm_consent(v.then_some("on"))
                     .is_err()
                 {
-                    dilla_desktop_ui::components::toast::show_toast(
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        Some(window.window_handle().window_id()),
                         t("workspace.preference.error"),
                         cx,
                     );

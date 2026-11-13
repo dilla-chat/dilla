@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 
 use gpui::{
     AnyElement, Bounds, FontStyle, FontWeight, Hsla, IntoElement, ParentElement, Pixels,
-    SharedString, Styled, TextAlign, TextRun, canvas, div, point, px, transparent_black,
+    SharedString, Styled, TextAlign, TextRun, div, point, px, transparent_black,
 };
 
 use crate::tokens::font;
@@ -87,9 +87,11 @@ fn hooks() -> Option<&'static Hooks> {
     HOOKS.get()
 }
 
-/// Chromium's layout unit: 1/64 px, values floored onto it.
+/// Chromium's layout unit: 1/64 px, values truncated onto it toward zero (`LayoutUnit(float)`), the vendored GPUI's
+/// `layout_length` rule: a whole unit off only by f32 noise stays whole, a negative value is not pushed a unit further out.
 pub fn layout_unit(v: f32) -> f32 {
-    (v * 64.0).floor() / 64.0
+    let units = gpui::whole_layout_units(v).unwrap_or_else(|| (f64::from(v) * 64.0).trunc());
+    (units / 64.0) as f32
 }
 
 /// A CSS `line-height` ratio at a font size, in Chromium's layout units (13px at 1.55 is 20.140625).
@@ -239,33 +241,127 @@ impl Line {
     }
 }
 
-/// Whether a text `natural` wide fits the box it was laid out in, given the box's painted width `painted`. Chromium decides
-/// text overflow in layout units, before any edge is painted; GPUI's canvas sees the snapped box. At a whole scale each edge
-/// snaps to a whole logical px independently (`gpui::snap_layout_edge`): the origin rounds up by at most 0.5 and the far
-/// edge down by less than 0.5, so the painted box is less than 1px narrower than the laid-out one. At a fractional scale
-/// edges snap to device px: at most one device px.
-pub fn fits_laid_out(natural: f32, painted: f32, scale: f32) -> bool {
+/// Whether a text `natural` wide fits the box it was laid out in, `laid_out` wide (before its edges snap:
+/// `Window::laid_out_size`). Chromium decides text overflow in layout units, before any edge is painted: at a whole scale
+/// both widths lie on the 1/64 px layout unit (the text's ceiled onto it, the box's floored), so they are compared there
+/// exactly, by whole units (f32 noise below a unit never decides). At a fractional scale GPUI lays lengths out in whole
+/// device px, so the box may be up to one device px off the web's: that much slack.
+pub fn fits_laid_out(natural: f32, laid_out: f32, scale: f32) -> bool {
     if scale.fract() == 0.0 {
-        natural < painted + 1.0
+        (natural * 64.0).round() <= (laid_out * 64.0).round()
     } else {
-        natural <= painted + 1.0 / scale
+        natural <= laid_out + 1.0 / scale
     }
 }
 
-/// The text to paint in `width`: all of it, or (with an ellipsis) as many characters as fit before "…".
-/// `width` is the painted box at `scale`: a text that fits its laid-out (unsnapped) box is whole ([`fits_laid_out`]).
-fn fitted(line: &Line, width: f32, scale: f32) -> SharedString {
+/// The text to paint in its box: all of it, or (with an ellipsis) as many characters as fit before "…". `laid_out` is
+/// the box's laid-out width at `scale` (before its edges snap), which Chromium decides overflow against
+/// ([`fits_laid_out`]).
+fn fitted(line: &Line, laid_out: f32, scale: f32) -> SharedString {
     let Some(natural) = line.natural_width() else {
         return line.text.clone();
     };
-    if !line.ellipsis || fits_laid_out(natural, width, scale) {
+    if !line.ellipsis || fits_laid_out(natural, laid_out, scale) {
         return line.text.clone();
     }
+    let width = laid_out;
     let advance = line.size * MONO_ADVANCE + line.spacing;
     let keep = ((width - advance) / advance).floor().max(0.0) as usize;
     let mut cut: String = line.text.chars().take(keep).collect();
     cut.push('…');
     cut.into()
+}
+
+/// The glyph painter's element: a canvas over the line's box (absolute, its full size) whose prepaint also gets the box's
+/// laid-out width, before the edges snap (`Window::laid_out_size`): the width Chromium decides an ellipsis against.
+struct LinePaint<T> {
+    prepaint: Option<LinePrepaint<T>>,
+    paint: Option<LinePainting<T>>,
+}
+
+/// [`LinePaint`]'s prepaint: the laid-out width in, the shaped glyphs out.
+type LinePrepaint<T> = Box<dyn FnOnce(f32, &mut gpui::Window) -> T>;
+/// [`LinePaint`]'s paint over the snapped bounds.
+type LinePainting<T> = Box<dyn FnOnce(Bounds<Pixels>, T, &mut gpui::Window, &mut gpui::App)>;
+
+impl<T: 'static> LinePaint<T> {
+    fn new(
+        prepaint: impl FnOnce(f32, &mut gpui::Window) -> T + 'static,
+        paint: impl FnOnce(Bounds<Pixels>, T, &mut gpui::Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        Self {
+            prepaint: Some(Box::new(prepaint)),
+            paint: Some(Box::new(paint)),
+        }
+    }
+}
+
+impl<T: 'static> IntoElement for LinePaint<T> {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<T: 'static> gpui::Element for LinePaint<T> {
+    type RequestLayoutState = gpui::LayoutId;
+    type PrepaintState = Option<T>;
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, gpui::LayoutId) {
+        let mut style = gpui::Style {
+            position: gpui::Position::Absolute,
+            ..gpui::Style::default()
+        };
+        style.inset.top = px(0.0).into();
+        style.inset.left = px(0.0).into();
+        style.size.width = gpui::relative(1.0).into();
+        style.size.height = gpui::relative(1.0).into();
+        let id = window.request_layout(style, [], cx);
+        (id, id)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        layout: &mut gpui::LayoutId,
+        window: &mut gpui::Window,
+        _cx: &mut gpui::App,
+    ) -> Option<T> {
+        let laid_out = f32::from(window.laid_out_size(*layout).width);
+        self.prepaint.take().map(|f| f(laid_out, window))
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _layout: &mut gpui::LayoutId,
+        prepaint: &mut Option<T>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        if let (Some(state), Some(f)) = (prepaint.take(), self.paint.take()) {
+            f(bounds, state, window, cx);
+        }
+    }
 }
 
 impl Line {
@@ -277,9 +373,9 @@ impl Line {
         let ascent = a * size;
         let advance = size * MONO_ADVANCE + spacing;
         let this = self.clone();
-        canvas(
-            move |bounds: Bounds<Pixels>, window, _cx| {
-                let text = fitted(&this, f32::from(bounds.size.width), window.scale_factor());
+        LinePaint::new(
+            move |laid_out: f32, window: &mut gpui::Window| {
+                let text = fitted(&this, laid_out, window.scale_factor());
                 // Letter-spaced text is shaped one character at a time; anything else in one run.
                 let pieces: Vec<(SharedString, TextRun)> = if this.spacing == 0.0 {
                     vec![(text.clone(), this.run(text.len()))]
@@ -322,10 +418,6 @@ impl Line {
                 }
             },
         )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
     }
 
     fn boxed(self, delta: (f32, f32)) -> gpui::Div {
@@ -444,13 +536,35 @@ mod tests {
     #[test]
     fn a_line_within_the_snap_slack_keeps_its_text() {
         let general = line("general", px(13.0), 20.0, gpui::black()).ellipsis();
-        assert_eq!(fitted(&general, 54.0, 2.0).as_ref(), "general");
+        // The decision is on the laid-out width (54.609375), whatever the box paints (54).
         assert_eq!(fitted(&general, 54.609375, 2.0).as_ref(), "general");
         let cut = fitted(&general, 50.0, 2.0);
         assert!(cut.ends_with('…'), "{cut}");
-        // A fractional scale keeps device-pixel snapping: one device pixel of slack.
+        // A fractional scale keeps device-pixel lengths: one device pixel of slack.
         assert_eq!(fitted(&general, 54.0, 1.5).as_ref(), "general");
         assert!(fitted(&general, 53.5, 1.5).ends_with('…'));
+    }
+
+    /// Task 28 (T6c re-review, I2's tolerance): a text that overflows its laid-out box by less than a pixel shows "…", as
+    /// the web's does; the fit is decided in layout units, exactly. f32 noise under a layout unit does not decide.
+    #[test]
+    fn a_line_overflowing_by_under_a_pixel_is_cut_as_chromium_cuts_it() {
+        let general = line("general", px(13.0), 20.0, gpui::black()).ellipsis();
+        for laid_out in [54.0, 54.09375, 54.59375] {
+            let cut = fitted(&general, laid_out, 2.0);
+            assert!(cut.ends_with('…'), "{laid_out}: {cut}");
+        }
+        assert!(fits_laid_out(54.609375, 54.609375, 2.0));
+        assert!(
+            fits_laid_out(54.609375 + 1e-5, 54.609375 - 1e-5, 2.0),
+            "f32 noise"
+        );
+        assert!(
+            !fits_laid_out(54.625, 54.609375, 2.0),
+            "one layout unit over"
+        );
+        assert!(fits_laid_out(54.609375, 54.609375, 1.0));
+        assert!(!fits_laid_out(54.609375, 54.59375, 1.0));
     }
 
     #[test]
