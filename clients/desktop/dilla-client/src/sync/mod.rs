@@ -1072,6 +1072,13 @@ impl Engine {
         source: Source,
     ) -> BoxFut<Result<(), SyncError>> {
         Box::pin(async move {
+            // controller.ts `onGroupChanged`: a new epoch may have put another device at a leaf already read (a blank
+            // leaf a Remove left, taken by the user's next device while this device still caches the list it read for
+            // the old one). The pass keys a leaf by (group, index, user, cached version, reason), which that device's
+            // leaf repeats exactly, so the group's leaves are forgotten here and the refresh below reads them again.
+            if r.epoch_changed {
+                self.trust.lock().await.forget_group(&g);
+            }
             if self.is_community_group(g).await {
                 self.recover_removals(g).await?;
             }
