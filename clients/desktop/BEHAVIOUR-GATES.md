@@ -35,8 +35,8 @@ Totals: 233 e2e tests; 141 with a Rust test, 42 n/a (browser/phone only), 21 nex
 | `e2e/web/bot-channels.spec.ts` | mark a channel, enable welcome, a new member is welcomed there | dilla-desktop::src/screens/bot_admin/bot_page::a_first_enable_offers_polls_and_reminders_on_and_an_installation_keeps_its_mask; dilla-client::src/features/bot_admin::welcome_settings_are_app_operations_and_the_save_sends_its_revision_first |
 | `e2e/web/bot-channels.spec.ts` | a webhook POST appears in the channel | dilla-desktop::src/screens/timeline::a_webhook_post_of_the_pinned_bot_reads_via_webhook; dilla-client::tests/bot_admin::webhook_lifecycle_keeps_no_address |
 | `e2e/web/bot-commands.spec.ts` | picker shows Bot commands with no network after sync | dilla-desktop::src/screens/commands/picker::bot_commands_are_greyed_with_the_reason_and_stay_listed |
-| `e2e/web/bot-commands.spec.ts` | /remind round trip | TODO: dilla-client::tests/bot::remind_round_trip_through_sealed_commands |
-| `e2e/web/bot-commands.spec.ts` | Enter to first answer is within RTT + 100 ms at p95 | TODO: dilla-client::tests/bot::enter_to_first_answer_is_within_rtt_plus_100ms_at_p95 |
+| `e2e/web/bot-commands.spec.ts` | /remind round trip | dilla-client::tests/bot::remind_round_trip_through_sealed_commands |
+| `e2e/web/bot-commands.spec.ts` | Enter to first answer is within RTT + 100 ms at p95 | dilla-client::tests/bot::enter_to_first_answer_is_within_rtt_plus_100ms_at_p95 |
 | `e2e/web/bot-runtime.spec.ts` | the Firefox web guard exempts only its browser-chrome favicon refusal | n/a (browser/phone only): the Firefox browser-chrome console guard of the web e2e |
 | `e2e/web/bot-runtime.spec.ts` | a bot enabled through server settings reaches ready through the native runtime | dilla-client::tests/bot_admin::a_bot_enabled_in_server_settings_reaches_ready |
 | `e2e/web/bot-runtime.spec.ts` | literal music command text never executes through the native runtime | TODO: dilla-client::tests/bot::literal_music_command_text_never_executes |

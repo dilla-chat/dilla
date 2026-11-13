@@ -4,14 +4,20 @@
 //! Go toolchain. The pure logic (the slash parser, private results, reminder times, poll payloads) is unit-tested in
 //! `src/features/{bot,utilities}/`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use dilla_client::Client;
+use dilla_client::features::bot::run::{Text, Texts, Zone};
 use dilla_client::features::bot::{RunOutcome, not_a_command};
-use dilla_client::state::bot::{Conversation, PRIVATE_RESULT_TTL_MS, ResultProvider, ResultStatus};
+use dilla_client::state::bot::{
+    Conversation, PRIVATE_RESULT_TTL_MS, PrivateResult, ReminderStatus, ResultProvider,
+    ResultStatus,
+};
 use dilla_client::state::{AppState, ChannelId, CommunityId};
+use dilla_client::testing::host::bot::{cap, enable_bot};
 use dilla_client::testing::host::{
-    Host, Person, clear_session, community, sign_up, start, start_host, wait_for,
+    Host, Person, clear_session, community, sign_up, start, start_bot_host, start_host, wait_for,
 };
 
 async fn two_people(tag: &str) -> (Host, Person, Person, [u8; 16]) {
@@ -210,4 +216,222 @@ async fn a_bot_command_with_no_verified_key_is_refused_before_anything_is_sent()
         matches!(&err, OpError::Refused { code, .. } if code == "E_BOT_OFFLINE"),
         "{err:?}"
     );
+}
+
+// ---- Task 28: against dilla's real Bot (`testing::host::bot`) ----
+
+/// [`two_people`] on a host that runs the Bot.
+async fn two_people_with_bot(tag: &str) -> (Host, Person, Person, [u8; 16]) {
+    let host = tokio::task::spawn_blocking({
+        let tag = tag.to_owned();
+        move || start_bot_host(&tag, "127.0.0.1:0")
+    })
+    .await
+    .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let a = sign_up(&host, &invite, "ada", "ada", tag).await;
+    let b = sign_up(&host, &invite, "bjorn", "bjorn", tag).await;
+    tokio::task::spawn_blocking(move || {
+        let c = community(&host, &a, "midgard", &[&b]);
+        clear_session(&a);
+        clear_session(&b);
+        (host, a, b, c)
+    })
+    .await
+    .unwrap()
+}
+
+/// The result rows' copy: a test reads the Bot's own answers, so the client's texts are their debug names.
+fn texts() -> Texts {
+    Arc::new(|t: &Text| format!("{t:?}"))
+}
+
+fn utc() -> Zone {
+    Zone {
+        name: "UTC".into(),
+        offset_at: Arc::new(|_| 0),
+    }
+}
+
+/// Types `draft` in `here` and sends it as the picker does: a Bot command runs sealed; answers its private row's id.
+fn run_bot(client: &Client, here: Conversation, community: CommunityId, draft: &str) -> u64 {
+    match client.bot().run(here, Some(community), draft) {
+        RunOutcome::Bot { definition, args } => client.bot().run_command(
+            here,
+            community,
+            Some(here.channel),
+            definition,
+            args,
+            &utc(),
+            texts(),
+        ),
+        other => panic!("{draft} is a Bot command here, not {other:?}"),
+    }
+}
+
+/// Waits for the private row `row` in `here` to finish (not pending), and answers it.
+async fn settled(client: &Client, here: Conversation, row: u64, within: Duration) -> PrivateResult {
+    let s = wait_for(client, within, "the Bot's answer", |s| {
+        s.bot
+            .results(&here)
+            .iter()
+            .any(|r| r.id == row && r.status != ResultStatus::Pending)
+    })
+    .await;
+    s.bot
+        .results(&here)
+        .iter()
+        .find(|r| r.id == row)
+        .unwrap()
+        .clone()
+}
+
+/// e2e/web/bot-commands.spec.ts "/remind round trip": with the Reminders capability on, `/remind in 1 minute <text>` is
+/// one sealed command whose answer ("Saved…") opens on this device in a private row; the host's clock runs with the wall
+/// clock, so a minute later the Bot lists the reminder as due (the inbox's Due tab).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn remind_round_trip_through_sealed_commands() {
+    let (_host, pa, _pb, c) = two_people_with_bot("t28-remind").await;
+    let a = start(&pa).await;
+    let channel = general(&a, c).await;
+    a.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("a opens general");
+    let community = CommunityId(c);
+    enable_bot(&a, c, cap::REMINDERS).await;
+    let here = Conversation {
+        channel,
+        thread: None,
+    };
+    let text = format!("sealed reminder {}", std::process::id());
+    let row = run_bot(
+        &a,
+        here,
+        community,
+        &format!("/remind when:1m text:\"{text}\""),
+    );
+    let answer = settled(&a, here, row, Duration::from_secs(90)).await;
+    assert_eq!(
+        (answer.status, answer.provider),
+        (ResultStatus::Success, ResultProvider::Bot),
+        "{answer:?}"
+    );
+    assert!(answer.text.contains("Saved"), "{answer:?}");
+    // Nothing of the command reached the channel.
+    assert!(bodies(&a.state().borrow(), channel).is_empty());
+
+    let upcoming = a.utilities().refresh_reminders(community).await.unwrap();
+    let mine = upcoming
+        .iter()
+        .find(|r| r.text == text)
+        .expect("the reminder is listed");
+    assert_eq!(mine.state, ReminderStatus::Scheduled);
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let all = a.utilities().refresh_reminders(community).await.unwrap();
+        if all
+            .iter()
+            .any(|r| r.text == text && r.state == ReminderStatus::Due)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reminder never fell due: {all:?}"
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    a.stop();
+}
+
+/// G2: Enter to the first answer, at p95, within the connection's RTT plus this (bot-commands.spec.ts).
+const G2_HEADROOM_MS: f64 = 100.0;
+const G2_RUNS: usize = 20;
+
+/// The p95 of `samples` as the web specs take it: the sorted sample at `ceil(n * 0.95) - 1`.
+fn p95(samples: &mut [f64]) -> f64 {
+    samples.sort_by(f64::total_cmp);
+    samples[(samples.len() as f64 * 0.95).ceil() as usize - 1]
+}
+
+/// e2e/web/bot-commands.spec.ts "Enter to first answer is within RTT + 100 ms at p95": twenty `/remind` runs, each timed
+/// from the send (the picker's Enter calls `run_command`) to the moment its private row first shows the Bot's answer (no
+/// longer the pending copy). The RTT is this connection's socket round trip: the client keeps no heartbeat ping (the web's
+/// `pingMs`), so it is the median of ten socket reads of the installation on the same connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn enter_to_first_answer_is_within_rtt_plus_100ms_at_p95() {
+    let (_host, pa, _pb, c) = two_people_with_bot("t28-g2").await;
+    let a = start(&pa).await;
+    let channel = general(&a, c).await;
+    a.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("a opens general");
+    let community = CommunityId(c);
+    enable_bot(&a, c, cap::REMINDERS).await;
+    let here = Conversation {
+        channel,
+        thread: None,
+    };
+    // A warm-up run: the first sealed command sets up what later ones reuse, as the spec's first list opening does.
+    let row = run_bot(&a, here, community, "/remind when:10m text:warm");
+    settled(&a, here, row, Duration::from_secs(90)).await;
+
+    let mut rtts = Vec::new();
+    for _ in 0..10 {
+        let t = std::time::Instant::now();
+        a.bot_admin()
+            .refresh_installation(community)
+            .await
+            .unwrap()
+            .unwrap();
+        rtts.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    rtts.sort_by(f64::total_cmp);
+    let rtt = rtts[rtts.len() / 2];
+
+    let mut samples = Vec::new();
+    for run in 0..G2_RUNS {
+        let mut rx = a.state();
+        rx.borrow_and_update();
+        let start = std::time::Instant::now();
+        let row = run_bot(
+            &a,
+            here,
+            community,
+            &format!("/remind when:10m text:\"G2 probe {run}\""),
+        );
+        let pending = format!("{:?}", Text::Pending("remind".into()));
+        let first = loop {
+            let answered =
+                rx.borrow_and_update().bot.results(&here).iter().any(|r| {
+                    r.id == row && (r.status != ResultStatus::Pending || r.text != pending)
+                });
+            if answered {
+                break start.elapsed();
+            }
+            tokio::time::timeout(Duration::from_secs(90), rx.changed())
+                .await
+                .expect("an answer within 90 s")
+                .unwrap();
+        };
+        samples.push(first.as_secs_f64() * 1000.0);
+        let r = settled(&a, here, row, Duration::from_secs(90)).await;
+        assert_eq!(r.status, ResultStatus::Success, "{r:?}");
+    }
+    let shown: Vec<String> = samples.iter().map(|s| format!("{s:.0}")).collect();
+    let p = p95(&mut samples);
+    eprintln!(
+        "G2 rtt {rtt:.1} ms, p95 {p:.1} ms, samples {}",
+        shown.join(" ")
+    );
+    assert!(
+        p <= rtt + G2_HEADROOM_MS,
+        "G2: p95 {p:.1} ms over rtt {rtt:.1} ms + {G2_HEADROOM_MS} ms; samples {}",
+        shown.join(" ")
+    );
+    a.stop();
 }
