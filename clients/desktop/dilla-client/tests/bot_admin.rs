@@ -138,3 +138,43 @@ async fn a_blank_webhook_name_is_refused_locally() {
     assert!(refused.is_err());
     client.stop();
 }
+
+/// Integration 3, final review I1 (controller.ts `markBotChannel`: the mark, then `botCatalog.refresh`): a mark or an
+/// unmark that went through re-reads the community's catalog, so the Bot channels this device holds follow it at once
+/// (op 54 carries no mark, and nothing else would read them again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs target/dilla-testhost and the WASI core"]
+async fn a_mark_re_reads_the_bot_channels() {
+    let (_host, alice, c) = owner("botadmin-mark").await;
+    let client = start(&alice).await;
+    let community_id = CommunityId(c);
+    let state = wait_for(&client, Duration::from_secs(30), "the channel list", |s| {
+        s.channel_named(community_id, "general").is_some()
+    })
+    .await;
+    let general: ChannelId = state.channel_named(community_id, "general").unwrap().id;
+    let listed = |s: &dilla_client::state::AppState| {
+        s.bot
+            .catalogs
+            .get(&community_id)
+            .and_then(|c| c.bot_channels.as_ref())
+            .is_some_and(|ids| ids.contains(&general))
+    };
+    recv(client.bot_admin().mark_bot_channel(community_id, general)).await;
+    wait_for(
+        &client,
+        Duration::from_secs(10),
+        "general among the Bot channels",
+        |s| listed(s),
+    )
+    .await;
+    recv(client.bot_admin().unmark_bot_channel(community_id, general)).await;
+    wait_for(
+        &client,
+        Duration::from_secs(10),
+        "general no longer a Bot channel",
+        |s| !listed(s),
+    )
+    .await;
+    client.stop();
+}

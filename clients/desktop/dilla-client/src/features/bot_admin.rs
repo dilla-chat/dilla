@@ -600,7 +600,8 @@ impl BotAdmin {
         })
     }
 
-    /// Marks a text channel as a Bot channel: the instance proposes the Bot into its group.
+    /// Marks a text channel as a Bot channel: the instance proposes the Bot into its group. Once it went through, the
+    /// community's catalog and Bot channels are read again (controller.ts `markBotChannel`: op 54 carries no mark).
     pub fn mark_bot_channel(
         &self,
         community: CommunityId,
@@ -615,11 +616,13 @@ impl BotAdmin {
                 true,
             )
             .await
-            .map(|_| ())
-            .map_err(sync_err)
+            .map_err(sync_err)?;
+            re_read_bot_channels(&inner, community).await;
+            Ok(())
         })
     }
 
+    /// The mark's undo, re-reading the Bot channels as [`BotAdmin::mark_bot_channel`] does.
     pub fn unmark_bot_channel(
         &self,
         community: CommunityId,
@@ -634,8 +637,9 @@ impl BotAdmin {
                 true,
             )
             .await
-            .map(|_| ())
-            .map_err(sync_err)
+            .map_err(sync_err)?;
+            re_read_bot_channels(&inner, community).await;
+            Ok(())
         })
     }
 
@@ -1102,6 +1106,14 @@ impl BotAdmin {
             })
         })
     }
+}
+
+/// After a mark or an unmark: the community's catalog and Bot channels again (the sealed path's read publishes them,
+/// and Task 21's catalog verdict with them). A failed read keeps what is held; the next op 63 reads again.
+async fn re_read_bot_channels(inner: &Arc<Inner>, community: CommunityId) {
+    let _ = crate::features::bot::Bot::of(inner)
+        .sync_catalog(community)
+        .await;
 }
 
 /// A cursor is 1 to 256 bytes as lower-case hex pairs.
