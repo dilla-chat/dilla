@@ -255,3 +255,119 @@ async fn voice_roster_follows_join_and_leave() {
     })
     .await;
 }
+
+/// e2e/voice/share.spec.ts (the media half): a screen share and a camera, published under the call's keys, reach the
+/// other device verified (its decoded frames are the test pattern), the roster shows the device's `screen` and `video`
+/// bits, and both stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn share_and_camera_reach_peer_verified_and_stop() {
+    use dilla_client::state::voice::LocalShare;
+    let w = world("voice-share").await;
+    let a = client(&w.alice).await;
+    let b = client(&w.bob).await;
+    let a_media = join_with_media(&w.host, &a, w.voice, 440).await;
+    let b_media = join_with_media(&w.host, &b, w.voice, 660).await;
+    let b_epoch = until(&b, "bob is in", |s| s.voice.call.phase == CallPhase::In)
+        .await
+        .voice
+        .call
+        .epoch
+        .unwrap();
+    until(&a, "alice reaches bob's epoch", |s| {
+        s.voice.call.epoch.is_some_and(|e| e >= b_epoch)
+    })
+    .await;
+    let link = a.voice().media().borrow().clone().unwrap();
+    let now = link.epochs.borrow().clone().unwrap();
+    a.voice()
+        .set_share(LocalShare {
+            camera: true,
+            screen: true,
+            screen_audio: false,
+        })
+        .await
+        .unwrap()
+        .expect("the instance gives alice a sharing slot");
+    let ad = w.alice.device_id;
+    let a_hex = hex(&ad);
+    let (a_media, b_media) = tokio::task::spawn_blocking(move || {
+        let (mut a_media, mut b_media) = (a_media, b_media);
+        a_media.epoch(&now);
+        for kind in ["screen", "camera"] {
+            a_media.send(&format!("share {kind}"));
+            let r = a_media.next("share", Duration::from_secs(20));
+            assert!(r["error"].is_null(), "{r}");
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            b_media.send("videos");
+            let v = b_media.next("videos", Duration::from_secs(5));
+            let ok = |kind: &str| {
+                let s = &v["videos"][format!("{a_hex}:{kind}")];
+                s["frames"].as_u64().is_some_and(|n| n >= 5) && s["bars"] == true
+            };
+            if ok("Screen") && ok("Camera") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "bob never saw alice's shares: {v}"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        (a_media, b_media)
+    })
+    .await
+    .unwrap();
+    until(&b, "bob's roster shows alice sharing", |s| {
+        in_call(s, w.voice, ad, flags::SCREEN | flags::VIDEO)
+    })
+    .await;
+    // Both stop: the streams leave bob's view and the bits leave the roster.
+    let a_hex = hex(&ad);
+    let (a_media, b_media) = tokio::task::spawn_blocking(move || {
+        let (mut a_media, mut b_media) = (a_media, b_media);
+        for kind in ["screen", "camera"] {
+            a_media.send(&format!("unshare {kind}"));
+            a_media.next("unshare", Duration::from_secs(10));
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            b_media.send("videos");
+            let v = b_media.next("videos", Duration::from_secs(5));
+            if !v["videos"]
+                .as_object()
+                .is_some_and(|m| m.keys().any(|k| k.starts_with(&a_hex)))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "alice's streams never stopped for bob: {v}"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        (a_media, b_media)
+    })
+    .await
+    .unwrap();
+    a.voice()
+        .set_share(LocalShare::default())
+        .await
+        .unwrap()
+        .expect("the slot is freed");
+    until(&b, "the bits leave bob's roster", |s| {
+        s.voice
+            .participants(w.voice)
+            .iter()
+            .any(|p| p.device_id == DeviceId(ad) && !p.screen() && !p.video())
+    })
+    .await;
+    tokio::task::spawn_blocking(move || {
+        a_media.quit();
+        b_media.quit();
+    })
+    .await
+    .unwrap();
+}

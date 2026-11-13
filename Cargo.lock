@@ -2170,6 +2170,7 @@ dependencies = [
  "gpui-pre-platform",
  "hmac 0.13.0",
  "image",
+ "log",
  "reqwest 0.13.5",
  "rodio",
  "serde",

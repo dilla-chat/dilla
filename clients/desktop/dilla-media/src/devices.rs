@@ -220,39 +220,6 @@ pub(crate) fn lost_kind(kind: cpal::ErrorKind, message: &str) -> bool {
     }
 }
 
-#[cfg(test)]
-mod lost_tests {
-    use super::lost_kind;
-    use cpal::ErrorKind as K;
-
-    #[test]
-    fn an_unplug_of_any_kind_is_a_loss_and_a_glitch_is_not() {
-        for k in [
-            K::DeviceNotAvailable,
-            K::StreamInvalidated,
-            K::HostUnavailable,
-            K::PermissionDenied,
-        ] {
-            assert!(lost_kind(k, ""), "{k:?}");
-        }
-        assert!(lost_kind(
-            K::BackendError,
-            "snd_pcm_recover: No such device (19)"
-        ));
-        assert!(lost_kind(K::Other, "the device was disconnected"));
-        for k in [
-            K::Xrun,
-            K::DeviceBusy,
-            K::DeviceChanged,
-            K::ResourceExhausted,
-            K::RealtimeDenied,
-        ] {
-            assert!(!lost_kind(k, "No such device"), "{k:?}");
-        }
-        assert!(!lost_kind(K::BackendError, "underrun occurred"));
-    }
-}
-
 /// A streaming linear resampler (mono). Voice-grade; the common case (48 kHz devices) bypasses it.
 struct Linear {
     step: f64,
@@ -506,5 +473,38 @@ impl AudioHost for CpalHost {
             _stream: stream,
             latency_ms: latency,
         }))
+    }
+}
+
+#[cfg(test)]
+mod lost_tests {
+    use super::lost_kind;
+    use cpal::ErrorKind as K;
+
+    #[test]
+    fn an_unplug_of_any_kind_is_a_loss_and_a_glitch_is_not() {
+        for k in [
+            K::DeviceNotAvailable,
+            K::StreamInvalidated,
+            K::HostUnavailable,
+            K::PermissionDenied,
+        ] {
+            assert!(lost_kind(k, ""), "{k:?}");
+        }
+        assert!(lost_kind(
+            K::BackendError,
+            "snd_pcm_recover: No such device (19)"
+        ));
+        assert!(lost_kind(K::Other, "the device was disconnected"));
+        for k in [
+            K::Xrun,
+            K::DeviceBusy,
+            K::DeviceChanged,
+            K::ResourceExhausted,
+            K::RealtimeDenied,
+        ] {
+            assert!(!lost_kind(k, "No such device"), "{k:?}");
+        }
+        assert!(!lost_kind(K::BackendError, "underrun occurred"));
     }
 }

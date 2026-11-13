@@ -270,10 +270,11 @@ fn id16(v: &Value) -> Option<[u8; 16]> {
     }
 }
 
+/// One live call of a community (L-HTTP-101): its channel, its id and who is in it.
+pub type CommunityCall = (ChannelId, [u8; 16], Vec<crate::calls::CallParticipant>);
+
 /// routes.ts `getCommunityCalls`: `[[channel_id, call_id, [[user, device, flags], ...]], ...]`.
-pub fn decode_community_calls(
-    body: &[u8],
-) -> Result<Vec<(ChannelId, [u8; 16], Vec<crate::calls::CallParticipant>)>, String> {
+pub fn decode_community_calls(body: &[u8]) -> Result<Vec<CommunityCall>, String> {
     let v = crate::gateway::frames::Value::decode(body).map_err(|e| format!("{e:?}"))?;
     let calls = rows(&v).ok_or("calls")?;
     if calls.len() > COMMUNITY_CALLS_MAX {

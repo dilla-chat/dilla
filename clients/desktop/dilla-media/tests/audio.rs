@@ -707,7 +707,7 @@ fn deafen_plays_silence_and_queues_nothing() {
         "nothing queued meanwhile"
     );
     sink.push("a", &[5000; 480]);
-    assert!(host.pull(480).iter().any(|s| *s == 5000));
+    assert!(host.pull(480).contains(&5000));
 }
 
 #[test]
