@@ -13,6 +13,8 @@ use gpui::{
 struct Probe {
     seen: Rc<Cell<Option<(f32, f32)>>>,
     style: gpui::StyleRefinement,
+    /// Asks for the laid-out size in paint, where it may not be asked (review L m6).
+    in_paint: bool,
 }
 
 impl IntoElement for Probe {
@@ -64,6 +66,9 @@ impl Element for Probe {
         window: &mut Window,
         _: &mut App,
     ) {
+        if self.in_paint {
+            return;
+        }
         let laid_out = f32::from(window.laid_out_size(*layout).width);
         self.seen
             .set(Some((laid_out, f32::from(bounds.size.width))));
@@ -73,17 +78,23 @@ impl Element for Probe {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut LayoutId,
+        bounds: Bounds<Pixels>,
+        layout: &mut LayoutId,
         _: &mut (),
-        _: &mut Window,
+        window: &mut Window,
         _: &mut App,
     ) {
+        if self.in_paint {
+            let laid_out = f32::from(window.laid_out_size(*layout).width);
+            self.seen
+                .set(Some((laid_out, f32::from(bounds.size.width))));
+        }
     }
 }
 
 struct Host {
     seen: Rc<Cell<Option<(f32, f32)>>>,
+    in_paint: bool,
 }
 
 impl Render for Host {
@@ -91,6 +102,7 @@ impl Render for Host {
         let probe = Probe {
             seen: self.seen.clone(),
             style: gpui::StyleRefinement::default(),
+            in_paint: self.in_paint,
         }
         .absolute()
         .left(px(100.5))
@@ -108,12 +120,30 @@ impl Render for Host {
 fn laid_out_size_is_the_unsnapped_box(cx: &mut TestAppContext) {
     let seen = Rc::new(Cell::new(None));
     let host_seen = seen.clone();
-    let (_, vcx) = cx.add_window_view(move |_, _| Host { seen: host_seen });
+    let (_, vcx) = cx.add_window_view(move |_, _| Host {
+        seen: host_seen,
+        in_paint: false,
+    });
     vcx.update(|window, _| window.refresh());
     vcx.run_until_parked();
     let (laid_out, painted) = seen.get().expect("the probe drew");
     assert_eq!(laid_out, 54.609375);
     assert_eq!(painted, 54.0);
+}
+
+/// Review L m6: `laid_out_size` is a prepaint read, as its sibling `layout_bounds` is: asked in paint, a debug build
+/// says so.
+#[cfg(debug_assertions)]
+#[gpui::test]
+#[should_panic(expected = "can only be called during request_layout, or prepaint")]
+fn laid_out_size_is_asked_in_prepaint_only(cx: &mut TestAppContext) {
+    let seen = Rc::new(Cell::new(None));
+    let (_, vcx) = cx.add_window_view(move |_, _| Host {
+        seen,
+        in_paint: true,
+    });
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
 }
 
 /// A clickable box laid out at x 100.5, y 10.5, 54.609375 x 20 (it paints 101..155 x 11..31 at scale 2).
