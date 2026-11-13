@@ -210,7 +210,11 @@ impl Composer {
                 self.active = 0;
                 // Task 20's `/` list reads the draft the composer reports.
                 let draft = input.read(cx).value().to_string();
-                crate::screens::commands::draft_changed(&draft, cx);
+                crate::screens::commands::draft_changed(
+                    window.window_handle().window_id(),
+                    &draft,
+                    cx,
+                );
                 let empty = draft.trim().is_empty();
                 if let (Some(client), Some(channel)) = (&self.slots.client, self.loaded) {
                     // Someone writing signals typing (at most every 3 s); an emptied field stops it.
@@ -356,7 +360,12 @@ impl Composer {
         let raw = if files {
             raw
         } else {
-            match crate::screens::commands::on_send(&self.slots, &raw, cx) {
+            match crate::screens::commands::on_send(
+                &self.slots,
+                &raw,
+                window.window_handle().window_id(),
+                cx,
+            ) {
                 crate::screens::commands::SendDecision::Post(text) => text,
                 crate::screens::commands::SendDecision::Handled => {
                     self.clear_sent(window, cx);

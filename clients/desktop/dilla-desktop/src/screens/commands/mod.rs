@@ -19,7 +19,7 @@ use dilla_client::state::bot::{
     Conversation, PollView, PrivateResult, ResultProvider, ResultStatus,
 };
 use dilla_client::state::{AppState, TimelineItem};
-use gpui::{AnyElement, App, ElementId, Global, IntoElement, ParentElement, Styled, Window, div};
+use gpui::{AnyElement, App, ElementId, IntoElement, ParentElement, Styled, Window, div};
 
 use dilla_desktop_ui::components::commands::bot_result::{self, Author, BotResult, Status};
 use dilla_desktop_ui::components::commands::list::{CommandList, ListItem, ListLabels};
@@ -58,8 +58,9 @@ pub const ROW_IDS: [&str; 25] = [
     "command-row-24",
 ];
 
-/// The picker's state for the composer that has focus: the draft it reported, the highlighted row, the draft the list
-/// was closed on (Escape keeps the draft and hides the list until the draft changes), and what the last frame showed.
+/// The picker's state for one window's composer (final review M4: per window, so a draft in one window never opens or
+/// closes another's list): the draft it reported, the highlighted row, the draft the list was closed on (Escape keeps
+/// the draft and hides the list until the draft changes), and what the last frame showed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PickerState {
     pub draft: String,
@@ -71,12 +72,22 @@ pub struct PickerState {
     pub picked: Option<String>,
 }
 
-impl Global for PickerState {}
+/// `window`'s picker state (empty until its composer reports a draft).
+pub fn picker_state(window: gpui::WindowId, cx: &App) -> PickerState {
+    crate::per_window::get::<PickerState>(window, cx)
+        .cloned()
+        .unwrap_or_default()
+}
 
-/// The composer reports its draft on every change. A new draft moves the highlight back to the first row and opens a
-/// list that Escape closed.
-pub fn draft_changed(draft: &str, cx: &mut App) {
-    let state = cx.default_global::<PickerState>();
+/// `window`'s picker state, to change.
+pub fn picker_state_mut(window: gpui::WindowId, cx: &mut App) -> &mut PickerState {
+    crate::per_window::get_mut::<PickerState>(window, cx)
+}
+
+/// The composer of `window` reports its draft on every change. A new draft moves the highlight back to the first row
+/// and opens a list that Escape closed.
+pub fn draft_changed(window: gpui::WindowId, draft: &str, cx: &mut App) {
+    let state = picker_state_mut(window, cx);
     if state.draft != draft {
         state.draft = draft.to_owned();
         state.selected = 0;
@@ -202,16 +213,17 @@ fn list_items(rows: &[picker::Row]) -> Vec<ListItem> {
 }
 
 /// The command picker over the composer (`slots::composer_popup`).
-pub fn picker(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let state = cx.try_global::<PickerState>()?.clone();
+pub fn picker(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let wid = window.window_handle().window_id();
+    let state = crate::per_window::get::<PickerState>(wid, cx)?.clone();
     let (zone, _) = zone_of(ctx.clock);
     let rows = picker::list(&ctx.state, ctx.community, &state.draft, &zone)
         .filter(|_| state.closed_for.as_deref() != Some(state.draft.as_str()));
     let shown = rows
         .as_ref()
         .map(|r| r.iter().map(|r| r.id.clone()).collect::<Vec<_>>());
-    if cx.global::<PickerState>().rows != shown {
-        cx.global_mut::<PickerState>().rows = shown;
+    if picker_state(wid, cx).rows != shown {
+        picker_state_mut(wid, cx).rows = shown;
     }
     let rows = rows?;
     let active = (!rows.is_empty()).then(|| state.selected.min(rows.len() - 1));
@@ -227,15 +239,15 @@ pub fn picker(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEle
     )
     .active(active)
     .row_ids(|i| ElementId::Name(ROW_IDS.get(i).copied().unwrap_or("command-row").into()))
-    .on_active(|i, window, cx| {
-        let s = cx.default_global::<PickerState>();
+    .on_active(move |i, window, cx| {
+        let s = picker_state_mut(wid, cx);
         if s.selected != i {
             s.selected = i;
             window.refresh();
         }
     })
-    .on_pick(|i, window, cx| {
-        keys::pick(i, cx);
+    .on_pick(move |i, window, cx| {
+        keys::pick(wid, i, cx);
         window.refresh();
     });
     // CommandPicker.css: 16px in from the composer's sides, 6px above it.
@@ -264,7 +276,7 @@ pub enum SendDecision {
 
 /// Decides what sending `draft` in the conversation of `ctx` does, and runs a private answer. A private answer is
 /// added to this device's in-memory results only (`dilla_client::features::bot`): nothing is posted or stored.
-pub fn on_send(ctx: &SlotCx, draft: &str, cx: &mut App) -> SendDecision {
+pub fn on_send(ctx: &SlotCx, draft: &str, window: gpui::WindowId, cx: &mut App) -> SendDecision {
     let Some(channel) = ctx.channel else {
         return SendDecision::Post(draft.to_owned());
     };
@@ -306,7 +318,7 @@ pub fn on_send(ctx: &SlotCx, draft: &str, cx: &mut App) -> SendDecision {
         (None, Plan::Bot { .. }) => SendDecision::Handled,
     };
     if decision != SendDecision::Keep {
-        draft_changed("", cx);
+        draft_changed(window, "", cx);
     }
     decision
 }
@@ -496,6 +508,33 @@ mod tests {
             poll_meta(&poll(vec![2, 1], false, true, 604_800)),
             "Open for 7 days · pick any · 4+ voters"
         );
+    }
+
+    /// Integration 3, final review M4: each window's composer has its own `/` list: a draft typed in window A opens
+    /// nothing in window B, a send in B leaves A's list as it was, and B's keys never move A's highlight.
+    #[gpui::test]
+    fn each_window_has_its_own_command_list(cx: &mut gpui::TestAppContext) {
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            draft_changed(a, "/r", cx);
+            picker_state_mut(a, cx).rows = Some(vec!["remind".into(), "roll".into()]);
+            assert_eq!(
+                picker_state(b, cx).draft,
+                "",
+                "B's composer reported nothing"
+            );
+            draft_changed(b, "", cx);
+            assert_eq!(picker_state(a, cx).draft, "/r", "B's send leaves A's draft");
+            assert!(!keys::apply(b, picker::Key::Down, cx), "B has no list open");
+            assert_eq!(picker_state(a, cx).selected, 0);
+            assert!(keys::apply(a, picker::Key::Down, cx));
+            assert_eq!(picker_state(a, cx).selected, 1);
+        });
     }
 
     #[test]

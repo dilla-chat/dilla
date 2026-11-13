@@ -33,7 +33,7 @@ pub fn bind(cx: &mut App) {
             ("escape", false) => Key::Escape,
             _ => return,
         };
-        if apply(key, cx) {
+        if apply(window.window_handle().window_id(), key, cx) {
             cx.stop_propagation();
             window.refresh();
         }
@@ -42,8 +42,8 @@ pub fn bind(cx: &mut App) {
 }
 
 /// Applies `key` to the open list; `false` when the list is closed or the key is not the list's.
-pub fn apply(key: Key, cx: &mut App) -> bool {
-    let Some(state) = cx.try_global::<PickerState>() else {
+pub fn apply(window: gpui::WindowId, key: Key, cx: &mut App) -> bool {
+    let Some(state) = crate::per_window::get::<PickerState>(window, cx) else {
         return false;
     };
     let Some(rows) = state.rows.as_ref() else {
@@ -52,15 +52,15 @@ pub fn apply(key: Key, cx: &mut App) -> bool {
     match picker::key(rows.len(), state.selected, key) {
         Effect::Pass => false,
         Effect::Select(i) => {
-            cx.global_mut::<PickerState>().selected = i;
+            super::picker_state_mut(window, cx).selected = i;
             true
         }
         Effect::Pick(i) => {
-            pick(i, cx);
+            pick(window, i, cx);
             true
         }
         Effect::Close { .. } => {
-            let s = cx.global_mut::<PickerState>();
+            let s = super::picker_state_mut(window, cx);
             s.closed_for = Some(s.draft.clone());
             s.rows = None;
             true
@@ -69,8 +69,8 @@ pub fn apply(key: Key, cx: &mut App) -> bool {
 }
 
 /// Picks row `i` of the open list: it becomes the command the chips are for, and the list closes.
-pub fn pick(i: usize, cx: &mut App) {
-    let s = cx.default_global::<PickerState>();
+pub fn pick(window: gpui::WindowId, i: usize, cx: &mut App) {
+    let s = super::picker_state_mut(window, cx);
     let Some(id) = s.rows.as_ref().and_then(|r| r.get(i)).cloned() else {
         return;
     };
