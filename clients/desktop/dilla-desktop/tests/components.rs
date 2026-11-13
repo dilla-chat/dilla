@@ -470,7 +470,7 @@ fn the_nav_column_scrolls_to_the_current_item_once(cx: &mut TestAppContext) {
     );
 
     // Wheel the column back to its top: it stays there, frame after frame.
-    cx.simulate_event(gpui::ScrollWheelEvent {
+    cx.simulate_event(gpui::ScrollEvent {
         position: gpui::point(px(100.0), px(200.0)),
         delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(5000.0))),
         ..Default::default()
@@ -512,7 +512,7 @@ fn a_dialog_taller_than_the_window_scrolls_to_its_footer(cx: &mut TestAppContext
     cx.simulate_resize(gpui::size(px(1280.0), px(600.0)));
     cx.run_until_parked();
     let height = f32::from(cx.update(|window, _| window.viewport_size().height));
-    cx.simulate_event(gpui::ScrollWheelEvent {
+    cx.simulate_event(gpui::ScrollEvent {
         position: gpui::point(px(640.0), px(300.0)),
         delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-5000.0))),
         ..Default::default()
