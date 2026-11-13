@@ -2,7 +2,7 @@
 //! `conversation/Pins.tsx` and the delete `Dialog` of `Conversation.tsx`). They are drawn over the whole window, so the
 //! shell hosts them with the other overlays (`slots::overlays` calls [`overlays`]).
 
-use dilla_client::state::{AppState, ChannelId, Member};
+use dilla_client::state::{AppState, ChannelId, Member, MessageId};
 use gpui::{AnyElement, App, AppContext as _, IntoElement, ParentElement, Styled, Window, div};
 
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
@@ -163,23 +163,10 @@ fn pins_dialog(
                 })
         };
         let jump = {
-            let ui = ui.clone();
-            let key = state.timelines.get(&channel).and_then(|tl| {
-                tl.items
-                    .iter()
-                    .find(|i| i.msg_id == Some(pin.msg_id))
-                    .map(|i| i.key.clone())
-            });
+            let msg = pin.msg_id;
             Button::new(("pins-jump", n), t("shell.pins.jump"))
                 .variant(ButtonVariant::Default)
-                .on_click(move |_, _, cx| {
-                    ui.update(cx, |ui, cx| {
-                        ui.close_pins(cx);
-                        if let Some(key) = key.clone() {
-                            ui.jump_to(key, cx);
-                        }
-                    });
-                })
+                .on_click(move |_, window, cx| jump_from_pins(channel, msg, window, cx))
         };
         let item = div()
             .flex()
@@ -231,6 +218,41 @@ fn pins_dialog(
     .body(list)
     .on_close(move |_, cx| close.update(cx, |ui, cx| ui.close_pins(cx)))
     .into_any_element()
+}
+
+/// The pins dialog's Jump on the pin of `msg` in `channel`: the dialog closes and the log scrolls to the message and
+/// flashes it; the pin of a thread's reply (no row of the channel) opens that thread instead (Shell.tsx `threadOfJump`).
+pub fn jump_from_pins(channel: ChannelId, msg: MessageId, window: &mut Window, cx: &mut App) {
+    let Some(ui) = handle(window, cx) else {
+        return;
+    };
+    let Some(ctx) = ui.read(cx).ctx.clone() else {
+        return;
+    };
+    let root = ctx
+        .state
+        .messages
+        .pins
+        .get(&channel)
+        .and_then(|pins| pins.iter().find(|p| p.msg_id == msg))
+        .and_then(|p| p.thread_root);
+    if let Some(root) = root {
+        ui.update(cx, |ui, cx| ui.close_pins(cx));
+        crate::screens::threads::open_thread(channel, root, &ctx, cx);
+        return;
+    }
+    let key = ctx.state.timelines.get(&channel).and_then(|tl| {
+        tl.items
+            .iter()
+            .find(|i| i.msg_id == Some(msg))
+            .map(|i| i.key.clone())
+    });
+    ui.update(cx, |ui, cx| {
+        ui.close_pins(cx);
+        if let Some(key) = key {
+            ui.jump_to(key, cx);
+        }
+    });
 }
 
 /// A pin row's top rule: every row but the first has a 1px hairline above it.

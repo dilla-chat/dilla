@@ -534,7 +534,16 @@ impl ShellView {
         match target {
             Navigate::Channel { community, channel } => open(self, community, channel, cx),
             Navigate::Message(hit) => match hit.community {
-                Some(community) => open(self, community, hit.channel, cx),
+                Some(community) => {
+                    if !open(self, community, hit.channel, cx) {
+                        return false;
+                    }
+                    // A reply is no row of the channel: its hit opens its thread (Shell.tsx, threads.spec.ts test 4).
+                    if let Some(root) = hit.thread_root {
+                        crate::screens::threads::open_thread(hit.channel, root, &self.slot_cx(), cx);
+                    }
+                    true
+                }
                 None => false,
             },
             _ => false,
