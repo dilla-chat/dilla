@@ -94,9 +94,10 @@ pub fn probe(_id: &'static str) -> gpui::AnyElement {
     gpui::IntoElement::into_any_element(gpui::div())
 }
 
-/// This area's entries in the message toolbar and context menu (`slots::message_actions`).
-pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
-    actions::message_actions(item)
+/// This area's entries in the message toolbar and context menu (`slots::message_actions`), for a reader with the
+/// channel's permission `bits` (`None`: not resolved yet).
+pub fn message_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<MessageAction> {
+    actions::message_actions(item, bits)
 }
 
 /// The delete confirmation and the pins dialog, over the whole window. `slots::overlays` adds them to the shell's other

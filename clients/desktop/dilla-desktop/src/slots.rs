@@ -157,7 +157,10 @@ pub fn stack(parts: impl IntoIterator<Item = Extra>) -> (AnyElement, f32) {
 /// The message toolbar's and context menu's entries: the message's own (9), then reply and thread (11), then react
 /// (10).
 pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> {
-    let mut out = messages::message_actions(item);
+    let bits = ctx
+        .channel
+        .and_then(|c| dilla_client::features::roles::viewer_channel_bits(&ctx.state, c));
+    let mut out = messages::message_actions(item, bits);
     out.extend(threads::message_actions(item, ctx));
     out.extend(reactions::message_actions(item));
     out
