@@ -24,8 +24,6 @@ use dilla_client::testing::host::{
 };
 use zeroize::Zeroizing;
 
-const IGNORE: &str = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)";
-
 async fn account(tag: &str) -> (Host, Person) {
     let host = tokio::task::spawn_blocking({
         let tag = tag.to_owned();
@@ -109,7 +107,6 @@ async fn refused<T: std::fmt::Debug>(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn profile_saves_changed_fields_and_another_device_reads_them() {
-    let _ = IGNORE;
     let (host, mut alice) = account("us-profile").await;
     let a = start(&alice).await;
     ok(a.profile().load()).await;

@@ -9,7 +9,6 @@ use gpui::{AnyElement, App, IntoElement, ParentElement, Styled, Window, div};
 use dilla_desktop_ui::components::key_hint::KeyHint;
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
-use dilla_desktop_ui::metrics::Density;
 
 use super::keys::{SHORTCUTS, Shortcut};
 use crate::strings::t;
@@ -86,7 +85,6 @@ pub fn view(_window: &mut Window, _cx: &mut App) -> AnyElement {
                         .child(KeyHint::new(("keyboard-keys", i), &keys)),
                 )
             });
-    let _ = Density::Regular;
     div()
         .flex()
         .flex_col()

@@ -95,7 +95,8 @@ impl Client {
     }
 }
 
-/// `GET /v1/accounts/me`: `[user_id, username, display, kind, flags, presence, status_msg, bio]` (the last three optional).
+/// `GET /v1/accounts/me`: `[user_id, username, display, kind, flags, _, presence, status_msg, bio]`: five elements at least,
+/// the status message (index 7) and the bio (index 8) optional (`getAccountMe` in routes.ts).
 pub(crate) fn decode_me(raw: &[u8]) -> Result<MyProfile, ApiError> {
     let fail = |e: value::DecodeError| ApiError::local(0, "E_DECODE", e.0);
     let v = value::decode(raw).map_err(fail)?;
@@ -118,11 +119,15 @@ impl Profile {
     pub fn load(&self) -> oneshot::Receiver<Result<(), ClientError>> {
         let inner = self.inner.clone();
         self.inner.spawn(async move {
+            let saves = inner.snapshot().profile.saves;
             let raw = inner.api().get_account_me().await.map_err(refusal)?;
             let me = decode_me(&raw).map_err(refusal)?;
             inner.publish(move |s| {
                 // A profile saved while this read was in flight is newer than what the read saw: keep the saved text.
-                s.profile.me.get_or_insert(me);
+                // Otherwise the read replaces the whole profile (a partial one included).
+                if s.profile.saves == saves || s.profile.me.is_none() {
+                    s.profile.me = Some(me);
+                }
             });
             Ok(())
         })
@@ -310,6 +315,26 @@ mod tests {
         assert!(matches!(a[0], crate::gateway::frames::Value::Null));
         assert_eq!(a[1].as_text(), Some("away"));
         assert!(matches!(a[2], crate::gateway::frames::Value::Null));
+    }
+
+    #[test]
+    fn the_account_read_takes_status_and_bio_from_a_nine_element_row() {
+        let mut e = dilla_core::cbor::Encoder::new();
+        e.array(9)
+            .bytes(&[7; 16])
+            .text("ada")
+            .text("Ada")
+            .uint(0)
+            .uint(0)
+            .uint(0)
+            .uint(1)
+            .text("away")
+            .text("bio\nline");
+        let me = decode_me(&e.into_vec()).unwrap();
+        assert_eq!(
+            (me.display.as_str(), me.status_msg.as_str(), me.bio.as_str()),
+            ("Ada", "away", "bio\nline")
+        );
     }
 
     #[test]

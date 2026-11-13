@@ -103,6 +103,9 @@ pub struct ProfileDraft {
     pub display_error: bool,
     /// The fields of the last save that landed, so a save that waited for it does not send the same text twice.
     last_written: Option<Fields>,
+    /// The fields of the save in flight and what the stored profile is once it lands (snapshotted when it starts, so text
+    /// typed while it runs is still a change afterwards).
+    inflight: Option<(Fields, Fields)>,
 }
 
 fn edited(typed: &str, baseline: &str, next: &str, problem: Option<ProfileTextProblem>) -> bool {
@@ -240,20 +243,28 @@ impl ProfileDraft {
             self.display_error = true;
             return None;
         }
+        self.inflight = Some((self.fields.clone(), self.written()));
         self.pending = true;
         self.failed = None;
         Some(e.changed)
     }
 
-    pub fn save_landed(&mut self, written: Fields) {
+    /// The save in flight landed: what it sent is the baseline and the last text written, whatever was typed meanwhile.
+    /// `true` when the form is still a valid change, so the autosave timer must be armed again (a timer that fired while this
+    /// save ran found it pending and was dropped).
+    pub fn save_landed(&mut self) -> bool {
         self.pending = false;
-        self.last_written = Some(self.fields.clone());
-        self.sent = Some(written);
+        if let Some((sent, written)) = self.inflight.take() {
+            self.last_written = Some(sent);
+            self.sent = Some(written);
+        }
         self.done = true;
+        self.autosaves()
     }
 
     pub fn save_failed(&mut self, code: &str) {
         self.pending = false;
+        self.inflight = None;
         self.failed = Some(Failure::of_code(code));
     }
 
@@ -351,11 +362,57 @@ mod tests {
         assert!(d.pending);
         // One save at a time.
         assert!(d.begin_save().is_none());
-        let written = d.written();
-        d.save_landed(written);
+        d.save_landed();
         assert!(d.done && !d.pending);
         assert!(!d.evaluate().dirty, "the sent text is the baseline now");
         assert!(d.begin_save().is_none(), "the same text is not sent twice");
+    }
+
+    /// A "b" typed while "a" is in flight is a change after "a" lands, and the timer is armed again.
+    #[test]
+    fn text_typed_while_a_save_runs_is_saved_after_it() {
+        let mut d = draft();
+        let with = |d: &ProfileDraft, bio: &str| Fields {
+            bio: bio.into(),
+            ..d.fields.clone()
+        };
+        let a = with(&d, "a");
+        d.edit(a);
+        assert!(d.begin_save().is_some());
+        let ab = with(&d, "ab");
+        d.edit(ab);
+        assert!(d.save_landed(), "still dirty: the timer is armed again");
+        assert_eq!(d.baseline().bio, "a", "what was sent is the baseline");
+        let patch = d.begin_save().expect("the b is sent");
+        assert_eq!(patch.bio.as_deref(), Some("ab"));
+    }
+
+    /// The autosave timer fires while a save is pending: nothing starts, and landing says another save is due.
+    #[test]
+    fn a_timer_that_fires_during_a_save_is_not_lost() {
+        let mut d = draft();
+        let a = Fields {
+            bio: "a".into(),
+            ..d.fields.clone()
+        };
+        d.edit(a);
+        assert!(d.begin_save().is_some());
+        let ab = Fields {
+            bio: "ab".into(),
+            ..d.fields.clone()
+        };
+        d.edit(ab);
+        assert!(d.begin_save().is_none(), "the timer found a save pending");
+        assert!(d.save_landed());
+        // A landing with nothing left to send arms nothing.
+        let mut clean = draft();
+        let x = Fields {
+            bio: "x".into(),
+            ..clean.fields.clone()
+        };
+        clean.edit(x);
+        assert!(clean.begin_save().is_some());
+        assert!(!clean.save_landed());
     }
 
     #[test]

@@ -155,3 +155,36 @@ fn keyboard_user_settings_every_shortcut_is_a_keystroke() {
         assert!(!k.key.is_empty(), "{}", s.keystroke);
     }
 }
+
+/// The shortcuts whose owning area has not registered its binding yet (search 23, voice 8 and 17, jump 9, DM call 13), by
+/// action. The test fails when one of them appears in the keymap or when a listed one that is not here goes missing, so the
+/// Keyboard table cannot drift from the real registrations unnoticed. Task 28 empties this list.
+const EXPECTED_MISSING: [&str; 6] = [
+    "signalSettings.keyboard.search",
+    "signalSettings.keyboard.mute",
+    "signalSettings.keyboard.deafen",
+    "signalSettings.keyboard.jump",
+    "signalSettings.keyboard.searchSlash",
+    "keyboard.dmCallAction",
+];
+
+#[gpui::test]
+fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    for s in SHORTCUTS {
+        let input = [gpui::Keystroke::parse(s.keystroke).unwrap()];
+        let names: Vec<String> = cx.update(|cx| {
+            cx.all_bindings_for_input(&input)
+                .iter()
+                .map(|b| b.action().name().to_owned())
+                .collect()
+        });
+        let registered = names.iter().any(|n| !n.starts_with("input::"));
+        let expected_missing = EXPECTED_MISSING.contains(&s.action);
+        assert_eq!(
+            registered, !expected_missing,
+            "{} ({}): registered = {registered} {names:?}, but the expected-missing list says {expected_missing}",
+            s.action, s.keystroke
+        );
+    }
+}

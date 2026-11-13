@@ -38,7 +38,7 @@ const NAME_GAP: f32 = 8.0;
 const BAND_LIGHT: f32 = 0.32;
 const BAND_DARK: f32 = 0.18;
 const BAND_ANGLE: f32 = 135.0;
-/// The card's border radius (10px = `--r-xl`).
+/// `.dw-profile-form__saved`: the status line sits 4px under the form.
 const NOTE_PAD: f32 = 4.0;
 
 /// The band's colour at a lightness, from the avatar palette entry of the shown name.
@@ -53,7 +53,7 @@ fn band_stop(name: &str, lightness: f32) -> Hsla {
 }
 
 impl UserSettings {
-    pub(super) fn profile_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn profile_view(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         let username = self.ctx.state.account.username.clone();
         let (e, preview, failed, pending, done, display_error, dirty) = {
             let d = self.draft.borrow();
@@ -202,7 +202,6 @@ impl UserSettings {
                 t(key),
             )));
         }
-        let _ = cx;
         col.child(
             div()
                 .flex()

@@ -475,6 +475,12 @@ impl Inner {
         }
     }
 
+    /// Whether this device is still listed once the served list is adopted.
+    async fn own_listing(&self) -> Result<bool, ClientError> {
+        let (user, me) = self.own_ids()?;
+        self.refresh_own_list(&user, &me).await
+    }
+
     async fn core_drop(&self) {
         let _ = try_core(self.engine().core(), |c| c.device_list_drop()).await;
     }
@@ -486,6 +492,11 @@ impl Inner {
         }
         ClientError::Sync("E_LIST_RACE".into())
     }
+}
+
+/// A 409 on the self-revoking PUT is a success when the list adopted afterwards no longer names this device.
+fn revoked_by_race(listing: &Result<bool, ClientError>) -> bool {
+    matches!(listing, Ok(false))
 }
 
 /// The key as the dialog collected it, without its separators; `None` unless it has [`RECOVERY_KEY_LENGTH`] characters.
@@ -621,6 +632,13 @@ impl Devices {
                 .await
             {
                 if e.status == 409 {
+                    // The engine ran beside these requests and its own publish may have won: when the list now served
+                    // no longer names this device, the sign-out is done.
+                    if revoked_by_race(&inner.own_listing().await) {
+                        inner.engine().stop();
+                        inner.publish(|s| s.profile.signed_out = true);
+                        return Ok(());
+                    }
                     return Err(inner.list_race().await);
                 }
                 inner.core_drop().await;
@@ -783,6 +801,16 @@ mod tests {
         // Separators are not characters of the key.
         let spaced = "ABCDEFGHIJKLM ".repeat(4);
         assert!(checked_key(Zeroizing::new(spaced)).is_ok());
+    }
+
+    #[test]
+    fn a_409_after_which_this_device_is_unlisted_is_a_finished_sign_out() {
+        assert!(revoked_by_race(&Ok(false)));
+        assert!(!revoked_by_race(&Ok(true)), "still listed: a real race");
+        assert!(
+            !revoked_by_race(&Err(ClientError::Stopped)),
+            "unknown is not done"
+        );
     }
 
     #[test]

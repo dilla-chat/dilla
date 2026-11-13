@@ -186,6 +186,8 @@ fn trim_white_space(cps: &[u32]) -> &[u32] {
     &cps[from..to]
 }
 
+/// NFC from `icu_normalizer`'s compiled data. Its Unicode version is the crate's, not pinned to the tables' 17.0.0: the two
+/// differ only for a character composed in a newer version.
 fn nfc(s: &str) -> String {
     icu_normalizer::ComposingNormalizer::new_nfc()
         .normalize(s)

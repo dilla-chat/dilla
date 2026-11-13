@@ -30,7 +30,7 @@ use dilla_desktop_ui::tokens::{color, text};
 
 use super::device_row::DeviceRow;
 use super::devices::{
-    KeyEntry, NAME_MAX, RowAction, action_of, can_rename, meta_of, ordered, own_tag, rename_label,
+    KeyEntry, RowAction, action_of, can_rename, meta_of, ordered, own_tag, rename_label,
     rename_start, short_id, title_of,
 };
 use super::draft::{Fields, ProfileDraft, SAVE_AFTER_MS};
@@ -259,23 +259,28 @@ impl UserSettings {
             return;
         }
         self.draft.borrow_mut().edit(fields);
-        // A valid change is saved after the last keystroke.
+        self.schedule_autosave(cx);
+        cx.notify();
+    }
+
+    /// A valid change is saved [`SAVE_AFTER_MS`] after the last keystroke.
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
         self.autosave += 1;
         let generation = self.autosave;
-        if self.draft.borrow().autosaves() {
-            cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(SAVE_AFTER_MS))
-                    .await;
-                let _ = this.update(cx, |this, cx| {
-                    if this.autosave == generation {
-                        this.start_save(cx);
-                    }
-                });
-            })
-            .detach();
+        if !self.draft.borrow().autosaves() {
+            return;
         }
-        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(SAVE_AFTER_MS))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.autosave == generation {
+                    this.start_save(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn save_now(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -285,7 +290,6 @@ impl UserSettings {
 
     /// Sends the form as it is now; `true` when there was nothing left to send.
     pub(super) fn start_save(&mut self, cx: &mut Context<Self>) -> bool {
-        let written = self.draft.borrow().written();
         let Some(patch) = self.draft.borrow_mut().begin_save() else {
             cx.notify();
             return !self.draft.borrow().evaluate().dirty;
@@ -300,7 +304,11 @@ impl UserSettings {
             let r = rx.await;
             let _ = this.update(cx, |this, cx| {
                 match r {
-                    Ok(Ok(())) => this.draft.borrow_mut().save_landed(written),
+                    Ok(Ok(())) => {
+                        if this.draft.borrow_mut().save_landed() {
+                            this.schedule_autosave(cx);
+                        }
+                    }
                     Ok(Err(e)) => this.draft.borrow_mut().save_failed(&code_of(&e)),
                     Err(_) => this.draft.borrow_mut().save_failed("E_NETWORK"),
                 }
@@ -629,7 +637,6 @@ impl UserSettings {
         if let Some(error) = &self.rename_error {
             field = field.error(error.clone());
         }
-        let _ = NAME_MAX;
         let save = {
             let this = this.clone();
             Button::new(
@@ -763,7 +770,6 @@ impl Render for UserSettings {
                 .update(cx, |s, cx| s.set_value(f.status_msg, window, cx));
             self.bio.update(cx, |s, cx| s.set_value(f.bio, window, cx));
         }
-        let density = self.density();
         let body = match self.which {
             UserSection::Profile => self.profile_view(cx),
             UserSection::Devices => self.devices_view(cx),
@@ -775,7 +781,6 @@ impl Render for UserSettings {
         } else {
             Vec::new()
         };
-        let _ = density;
         div()
             .flex()
             .flex_col()

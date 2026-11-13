@@ -168,9 +168,8 @@ pub struct KeyEntry {
 
 impl KeyEntry {
     pub fn count(typed: &str) -> usize {
-        typed
+        dilla_client::signin::normalise_recovery_key(typed)
             .chars()
-            .filter(|c| !c.is_whitespace() && *c != '-')
             .count()
     }
 
