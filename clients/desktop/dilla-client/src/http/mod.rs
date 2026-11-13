@@ -58,6 +58,9 @@ pub struct ReqwestHttp {
     clock: std::sync::Arc<ServerClock>,
 }
 
+/// The most the instance's clock is believed to be off this device's.
+const MAX_OFFSET_S: i64 = 86_400;
+
 /// The offset of the instance's clock from this device's, from the `Date` header of each HTTP answer (whole seconds).
 #[derive(Debug, Default)]
 pub struct ServerClock {
@@ -80,7 +83,10 @@ impl ServerClock {
 
     /// Records an answer's `Date` header.
     pub fn observe(&self, date: &str) {
-        if let Some(at) = parse_http_date(date) {
+        // A date more than a day off this device's clock is no clock reading (a proxy's cache, a broken header).
+        if let Some(at) = parse_http_date(date)
+            && (at - local_now_s()).abs() <= MAX_OFFSET_S
+        {
             self.offset
                 .store(at - local_now_s(), std::sync::atomic::Ordering::Relaxed);
         }
@@ -388,6 +394,38 @@ mod clock_tests {
         let clock = ServerClock::new();
         let local = clock.now_s();
         clock.observe("Sun, 06 Nov 1994 08:49:37 GMT");
-        assert!(clock.now_s() < local, "the instance's clock wins once seen");
+        assert!(clock.now_s() >= local, "a date decades off is ignored");
+        let an_hour_ahead = local_now_s() + 3600;
+        let date = chrono_free_date(an_hour_ahead);
+        clock.observe(&date);
+        let ahead = clock.now_s();
+        assert!(
+            (3599..=3601).contains(&(ahead as i64 - local_now_s())),
+            "an hour ahead is taken: {date}"
+        );
+    }
+
+    fn chrono_free_date(t: i64) -> String {
+        let days = t.div_euclid(86_400);
+        let rem = t.rem_euclid(86_400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        let months = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        format!(
+            "Mon, {d:02} {} {y} {:02}:{:02}:{:02} GMT",
+            months[(m - 1) as usize],
+            rem / 3600,
+            rem % 3600 / 60,
+            rem % 60
+        )
     }
 }

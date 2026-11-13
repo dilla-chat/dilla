@@ -444,6 +444,8 @@ impl Client {
     }
 
     fn shutdown(&mut self) {
+        // Task 20: the Bot area's reply secrets and held runs go with the client.
+        crate::features::bot::stopped(&self.inner);
         self.inner.engine.stop();
         self.inner.link.disconnect();
         self.inner.link.socket.close();
@@ -829,6 +831,8 @@ impl Publisher {
 
     /// The device is revoked: final for this client (a later ready never says otherwise, see [`phase_on_ready`]).
     fn sign_out(&mut self) {
+        // Task 20: a revoked device forgets every Bot reply secret and held run (TS `enterRevoked`).
+        crate::features::bot::revoked(&self.engine);
         self.link.disconnect();
         self.state.connection.status = ConnectionStatus::Offline;
         self.state.account.phase = AccountPhase::Revoked;
