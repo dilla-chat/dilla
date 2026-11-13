@@ -24,13 +24,21 @@ pub fn now_playing(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 }
 
 /// The Bot and Music pages' manager (BotSection.tsx `access.loaded && access.manageCommunity`): Task 14's resolver's
-/// Manage server in the page's community (the owner holds it), nobody before the access read lands.
+/// Manage server in the page's community (the owner holds it), nobody before the access read lands. The same route's
+/// read lands in two slices (Task 14's `roles.access`, and `server_admin.access`, which the server settings host loads,
+/// both rank.ts `accessOf`): either one counts.
 pub fn is_manager(ctx: &SlotCx) -> bool {
     let Some(community) = ctx.community else {
         return false;
     };
-    let access = ctx.state.roles.access_of(community);
-    access.loaded && access.manage_community
+    let roles = ctx.state.roles.access_of(community);
+    let hosted = ctx
+        .state
+        .server_admin
+        .access
+        .get(&community)
+        .is_some_and(|a| a.loaded && a.manage_community);
+    (roles.loaded && roles.manage_community) || hosted
 }
 
 /// Draws one of this area's settings sections (`slots::settings_sections` points here).
@@ -108,5 +116,17 @@ mod tests {
             ..CommunityAccess::default()
         };
         assert!(!is_manager(&ctx(Some(member))), "a member without it");
+        // The server settings host reads the same route through Task 15's copy of `accessOf`: its read counts too.
+        let mut s = AppState::default();
+        s.server_admin.access.insert(
+            community,
+            dilla_client::features::server_admin::access_of(1 << 16, 1, false),
+        );
+        let hosted = SlotCx {
+            state: Arc::new(s),
+            community: Some(community),
+            ..SlotCx::default()
+        };
+        assert!(is_manager(&hosted), "Manage server, read by the host");
     }
 }
