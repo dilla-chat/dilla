@@ -149,7 +149,7 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
             .iter()
             .map(|r| PermRole {
                 id: r.id,
-                position: r.position,
+                position: u64::from(r.position),
                 allow: r.allow,
                 deny: r.deny,
             })

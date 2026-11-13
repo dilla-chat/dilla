@@ -270,7 +270,7 @@ pub mod perm {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct PermRole {
         pub id: RoleId,
-        pub position: u32,
+        pub position: u64,
         pub allow: u32,
         pub deny: u32,
     }
@@ -641,7 +641,7 @@ pub fn held_bits(
         .iter()
         .map(|r| perm::PermRole {
             id: r.id,
-            position: r.position,
+            position: u64::from(r.position),
             allow: r.allow,
             deny: r.deny,
         })
@@ -1444,7 +1444,7 @@ pub fn viewer_channel_bits(state: &crate::state::AppState, channel: ChannelId) -
         .iter()
         .map(|r| perm::PermRole {
             id: r.id,
-            position: r.position,
+            position: u64::from(r.position),
             allow: r.allow,
             deny: r.deny,
         })

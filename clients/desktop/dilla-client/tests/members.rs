@@ -147,7 +147,7 @@ fn the_resolver_answers_every_case_of_the_vector_file() {
             .iter()
             .map(|r| PermRole {
                 id: unhex(r["id"].as_str().unwrap()),
-                position: r["position"].as_u64().unwrap() as u32,
+                position: r["position"].as_u64().unwrap(),
                 allow: r["allow"].as_u64().unwrap() as u32,
                 deny: r["deny"].as_u64().unwrap() as u32,
             })
@@ -1138,7 +1138,7 @@ mod live {
                 .iter()
                 .map(|r| PermRole {
                     id: r.id,
-                    position: r.position,
+                    position: u64::from(r.position),
                     allow: r.allow,
                     deny: r.deny,
                 })

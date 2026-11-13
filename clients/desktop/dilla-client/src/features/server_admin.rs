@@ -632,7 +632,7 @@ pub mod resolve {
             .iter()
             .map(|r| PermRole {
                 id: r.id,
-                position: u32::try_from(r.position).unwrap_or(u32::MAX),
+                position: r.position,
                 allow: r.allow,
                 deny: r.deny,
             })
@@ -1706,6 +1706,41 @@ fn forget(inner: &Inner, community: CommunityId) {
 mod tests {
     use super::*;
     use crate::state::ChannelGroupState;
+
+    /// Review M9: a role position above u32 (the wire allows u53) keeps its rank: the higher of two such roles applies
+    /// last, so its allow wins over the lower one's deny (no fall back to ordering by id).
+    #[test]
+    fn positions_above_u32_keep_their_order() {
+        let (everyone, low, high) = ([1; 16], [0xf0; 16], [0x0f; 16]);
+        let roles = [
+            resolve::Role {
+                id: everyone,
+                position: 0,
+                allow: perm::VIEW_CHANNEL,
+                deny: 0,
+            },
+            resolve::Role {
+                id: low,
+                position: (1 << 33) + 1,
+                allow: 0,
+                deny: perm::SEND_MESSAGES,
+            },
+            resolve::Role {
+                id: high,
+                position: (1 << 33) + 2,
+                allow: perm::SEND_MESSAGES,
+                deny: 0,
+            },
+        ];
+        let held = [low, high];
+        let input = resolve::Input {
+            owner: [9; 16],
+            everyone,
+            roles: &roles,
+            held: &held,
+        };
+        assert_ne!(resolve::community(&input, [7; 16]) & perm::SEND_MESSAGES, 0);
+    }
 
     fn ch(id: u8, kind: u8, parent: Option<u8>, position: u32) -> Channel {
         Channel {

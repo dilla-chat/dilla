@@ -1532,9 +1532,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Integration-1 follow-up 6 (the web's M-01 guard): Ctrl+K opens the palette over the shell, but not over the
-    /// channel menu (or another modal overlay) nor while focus is in a dialog or the settings frame (the ui crate's
-    /// overlay key context); a non-modal surface (the ring banner) never blocks it.
     /// Integration 3, step 1: Ctrl+, in the shell asks the app for the user settings host (`OpenSettings`).
     #[gpui::test]
     fn ctrl_comma_asks_for_the_settings_host(cx: &mut gpui::TestAppContext) {
@@ -1566,6 +1563,9 @@ mod tests {
         assert_eq!(*asked.borrow(), vec![Route::Settings(None)]);
     }
 
+    /// Integration-1 follow-up 6 (the web's M-01 guard): Ctrl+K opens the palette over the shell, but not over the
+    /// channel menu (or another modal overlay) nor while focus is in a dialog or the settings frame (the ui crate's
+    /// overlay key context); a non-modal surface (the ring banner) never blocks it.
     #[gpui::test]
     fn ctrl_k_is_refused_only_under_a_modal(cx: &mut gpui::TestAppContext) {
         cx.update(crate::install);
