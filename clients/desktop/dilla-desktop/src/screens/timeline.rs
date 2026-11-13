@@ -482,7 +482,15 @@ struct RowCx<'a> {
     width: f32,
 }
 
-/// One row's elements, in coordinates relative to the row box at `base` (whole pixel); `top` is the row's CSS top.
+/// Where Chromium paints a box edge laid out at `v` css px: the whole px, half up (the vendored GPUI snaps box edges the
+/// same way at a whole scale factor; core/vendor/README.md, "gpui-pre 0.3.12"). The log places its rows and bodies on
+/// these edges; text lines keep the CSS fraction.
+fn snap_px(v: f32) -> f32 {
+    (v + 0.5).floor()
+}
+
+/// One row's elements, in coordinates relative to the row box at `base` ([`snap_px`] of `top`); `top` is the row's CSS
+/// top.
 #[allow(clippy::too_many_arguments)]
 fn draw_row(
     cx_row: &RowCx<'_>,
@@ -496,11 +504,11 @@ fn draw_row(
 ) -> AnyElement {
     let item = shown.item;
     let local = top - base;
-    // The body's box sits on a whole pixel; its lines keep the CSS position's fraction.
+    // The body's box sits on a whole pixel ([`snap_px`]); its lines keep the CSS position's fraction.
     let shift = before_shift(shown.before_height);
     let frac = {
         let at = local + shift + body_offset(shown.grouped);
-        at - at.floor()
+        at - snap_px(at)
     };
     let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
     let height = row_height(
@@ -599,9 +607,9 @@ fn draw_row(
         div()
             .absolute()
             .left(px(CONTENT_X))
-            .top(px(body_top.floor()))
+            .top(px(snap_px(body_top)))
             .w(px(content_w))
-            .h(px(laid.height.ceil()))
+            .h(px(snap_px(body_top + laid.height) - snap_px(body_top)))
             .child(div().relative().size_full().children(laid.elements))
             .into_any_element(),
     );
@@ -622,7 +630,7 @@ fn draw_row(
         .left(len(0.))
         .top(px(base))
         .w(px(cx_row.width))
-        .h(px(height.ceil()))
+        .h(px(snap_px(top + height) - base))
         .group(group.clone());
     row = if flash {
         row.bg(color::ACCENT_FLASH)
@@ -841,7 +849,7 @@ pub fn render(
         if viewport > 0.0 && !editing && (bottom < from || top > to) {
             continue;
         }
-        let base = top.floor();
+        let base = snap_px(top);
         let el = draw_row(&row_cx, s, top, base, &ui, ctx, window, cx);
         placer.out.push(el);
     }
