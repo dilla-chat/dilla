@@ -1466,6 +1466,45 @@ impl Engine {
         });
     }
 
+    /// engine.ts `rejoined`: the account is in `community` again (a kick, a lifted ban or a leave, then a join) with
+    /// no reconnect. A resync is tried once per ready, and one refused while the account was out would stand as
+    /// not-member until the next ready, so each of the community's text groups may resync again from here: one that
+    /// last reported not-member, or still in state 3, resyncs at once on its lane; a loss no read has met yet resyncs
+    /// when one does.
+    pub fn rejoined(self: &Arc<Self>, community: Gid) {
+        if self.stopped() {
+            return;
+        }
+        let this = Arc::clone(self);
+        self.spawn_watched(async move {
+            for row in this.groups().await {
+                if row.kind != 0 || row.community_id != Some(community) {
+                    continue;
+                }
+                let g = row.group_id;
+                this.st().resync_tried.remove(&g);
+                if !this.lost(g).await {
+                    continue;
+                }
+                let t = Arc::clone(&this);
+                this.lane_coalesce(&key(&g), "resync", async move {
+                    if t.lost(g).await && t.clone().resync_group(g, true).await {
+                        t.st().heal_blocked.remove(&g);
+                    }
+                });
+            }
+        });
+    }
+
+    /// [`Self::rejoined`]'s lost group: waiting for a resync, or active but last reported not-member.
+    async fn lost(&self, g: Gid) -> bool {
+        match self.state_of(g).await {
+            Some(3) => true,
+            Some(2) => self.st().lost_reported.contains(&g),
+            _ => false,
+        }
+    }
+
     /// engine.ts `resync`.
     fn resync(self: Arc<Self>, g: Gid) -> BoxFut<bool> {
         Box::pin(async move {
@@ -1500,7 +1539,12 @@ impl Engine {
             policy_version: self.instance.policy_version,
         };
         match self.clone().external_join(eg, &mut 0).await {
-            Ok(()) => true,
+            Ok(()) => {
+                // The rejoin ends the resync (controller.ts `onGroupChanged`: a state-2 apply ends `resyncing`; here the
+                // publisher hears it as a member report, as the hooks carry no apply result).
+                self.report_membership(g, Membership::Member);
+                true
+            }
             Err(e) => {
                 // A refusal before the join leaves an active row in state 2; it is never discarded.
                 if self.state_of(g).await == Some(1) {

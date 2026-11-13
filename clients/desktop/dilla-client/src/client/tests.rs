@@ -202,6 +202,7 @@ fn offline_publisher() -> (
         focus: None,
         not_member: HashSet::new(),
         resyncing: HashSet::new(),
+        listed: None,
         renew: RenewGate::default(),
         upkeep,
         inner: Arc::default(),

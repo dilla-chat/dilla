@@ -416,6 +416,7 @@ impl Client {
             focus: None,
             not_member: HashSet::new(),
             resyncing: HashSet::new(),
+            listed: None,
             renew: RenewGate::default(),
             upkeep,
             inner: area_inner,
@@ -914,6 +915,9 @@ struct Publisher {
     focus: Option<ChannelId>,
     not_member: HashSet<GroupId>,
     resyncing: HashSet<GroupId>,
+    /// The communities the last structure load listed (`None` before the first): one listed again after a load left
+    /// it out (a kick, a lifted ban or a leave, then a join) is the engine's [`Engine::rejoined`].
+    listed: Option<HashSet<CommunityId>>,
     /// The renewals of refused sessions (one per ready, one at a time).
     renew: RenewGate,
     /// The account's upkeep, started on every ready.
@@ -1386,6 +1390,15 @@ impl Publisher {
                 })
             })
             .collect();
+        let now: HashSet<CommunityId> = loaded.communities.iter().map(|c| c.id).collect();
+        if let Some(before) = self.listed.replace(now.clone()) {
+            // controller.ts `joinPath`: a server joined again resyncs what was refused while the account was out. This
+            // client learns of the join from the list (it may have been made elsewhere), so a server the previous load
+            // left out is one joined again.
+            for c in now.difference(&before) {
+                self.engine.rejoined(c.0);
+            }
+        }
         self.state.communities = loaded.communities;
         self.state.channels = loaded.channels;
         self.state.members = loaded.members;
