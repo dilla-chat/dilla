@@ -268,6 +268,11 @@ impl Api {
         &self.socket
     }
 
+    /// Unix seconds by the instance's clock, as its HTTP answers' `Date` headers said (Task 20: `sent_at`).
+    pub fn server_now_s(&self) -> u64 {
+        self.http.server_now_s()
+    }
+
     // ---- the transports ----
 
     /// One socket route: `R`'s table row names its path, method, accepted statuses and body bound.

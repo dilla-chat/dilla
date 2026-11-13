@@ -149,6 +149,10 @@ impl SyncHooks for Hooks {
     }
     fn trust_changed(&self) {}
     fn connection(&self, event: ConnectionEvent) {
+        // Task 20: the Bot area's connect hooks (catalog sync and Bot user lookup on ready, secrets dropped on a refusal).
+        if let Some(inner) = self.inner.get().and_then(Weak::upgrade) {
+            crate::features::bot::on_connection(&inner, &event);
+        }
         let _ = self.tx.send(Update::Connection(event));
     }
     fn community_changed(&self, _community: [u8; 16]) {
@@ -623,6 +627,8 @@ impl Client {
     /// may still hold the client). The runtime goes when the last handle drops ([`Client::stop`] or the drop).
     pub fn halt(&self) {
         self.inner.upkeep.stop();
+        // Task 20: a halted client's Bot reply secrets and held runs go now, not when its last holder lets go.
+        crate::features::bot::stopped(&self.inner);
         self.inner.engine.stop();
         self.inner.link.disconnect();
         self.inner.link.socket.close();
@@ -630,6 +636,8 @@ impl Client {
 
     fn shutdown(&mut self) {
         self.inner.upkeep.stop();
+        // Task 20: the Bot area's reply secrets and held runs go with the client.
+        crate::features::bot::stopped(&self.inner);
         self.inner.engine.stop();
         self.inner.link.disconnect();
         self.inner.link.socket.close();
@@ -1272,6 +1280,8 @@ impl Publisher {
             .await;
         });
         self.upkeep.stop();
+        // Task 20: a revoked device forgets every Bot reply secret and held run (TS `enterRevoked`).
+        crate::features::bot::revoked(&self.engine);
         self.link.disconnect();
         self.state.connection.status = ConnectionStatus::Offline;
         self.state.account.phase = AccountPhase::Revoked;
