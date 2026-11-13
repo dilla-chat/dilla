@@ -113,6 +113,7 @@ export const EXTRA_JOBS = {
     script: [
       'node --test scripts/gen-gpui-tokens.test.mjs',
       'node --test scripts/gen-gpui-strings.test.mjs',
+      'node --test scripts/behaviour-gates.test.mjs',
       // The test host and WASI core dilla-client's real-server tests start (desktop-gpui.yml's "Build the test host" step).
       'cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked',
       'go build -o target/dilla-testhost ./cmd/dilla-testhost',

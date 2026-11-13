@@ -2278,6 +2278,8 @@ export const GPUI_PINNED_STEPS = {
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
   // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
   strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
+  // Every e2e test title has a row in clients/desktop/BEHAVIOUR-GATES.md (scripts/behaviour-gates.test.mjs, Task 28).
+  behaviourGates: '- run: node --test scripts/behaviour-gates.test.mjs',
   // dilla-client's route-table test runs tests/support/dump-routes.mjs, which imports the typescript package.
   npm: ['- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7', '  with:', '    node-version-file: .nvmrc', '    cache: npm', "# dilla-client's route-table test runs scripts that import the typescript package.", '- run: npm ci'].join('\n'),
   build: [
