@@ -57,6 +57,7 @@ impl Render for Host {
             community: None,
             channel: None,
             clock: Clock::Local,
+            workspace: None,
         };
         div()
             .id("host")

@@ -48,6 +48,8 @@ pub enum FixtureScreen {
     ShellHome { community: CommunityId },
     /// The welcome and sign-in screen of a device with no account.
     SignIn,
+    /// The user settings host, on this section (`/settings/<section>`).
+    Settings { section: crate::router::UserSection },
 }
 
 /// A loaded fixture: the state to draw, the route it opens and the clock it is drawn at.
@@ -171,6 +173,9 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             community: *community,
         }),
         (Route::Welcome { .. }, Phase::SignedOut) => Ok(FixtureScreen::SignIn),
+        (Route::Settings(Some(section)), Phase::Ready) => {
+            Ok(FixtureScreen::Settings { section: *section })
+        }
         (route, phase) => Err(format!(
             "the app cannot draw route `{}` in phase {phase:?} yet",
             route.path()

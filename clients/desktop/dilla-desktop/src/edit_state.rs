@@ -91,9 +91,12 @@ impl<T> Workspace<T> {
         Self::default()
     }
 
-    /// The open section registers its operations; the flags follow with [`Workspace::publish`].
+    /// The open section registers its operations; the flags follow with [`Workspace::publish`]. Idempotent: a hook that
+    /// calls it every frame keeps the section (and draft) already attached; [`Workspace::detach`] makes room for the next.
     pub fn attach(&mut self, section: Box<dyn Section>) {
-        self.section = Some(section);
+        if self.section.is_none() {
+            self.section = Some(section);
+        }
     }
 
     pub fn publish(&mut self, flags: Flags) {

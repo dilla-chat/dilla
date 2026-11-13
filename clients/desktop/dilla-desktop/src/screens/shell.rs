@@ -364,6 +364,7 @@ impl ShellView {
             community: self.community,
             channel: self.channel,
             clock: self.clock,
+            workspace: None,
         }
     }
 

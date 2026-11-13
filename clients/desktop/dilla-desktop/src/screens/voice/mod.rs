@@ -209,6 +209,7 @@ fn stage_ctx(ui: &VoiceUi, channel: &Channel) -> crate::slots::SlotCx {
         community: Some(channel.community_id),
         channel: Some(channel.id),
         clock: crate::screens::shell::Clock::Local,
+        workspace: None,
     }
 }
 

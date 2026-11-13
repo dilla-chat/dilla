@@ -33,6 +33,9 @@ use crate::screens::create::Navigate;
 use crate::screens::onboarding::{DoneView, OpenDilla, SignedUp, SignupView, WantsSignIn};
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{CreateInstead, SignInView, SignedIn};
+use crate::router::{Route, UserSection};
+use crate::screens::settings_host::{self, Dest, SettingsEvent, UserSettingsHost};
+use crate::slots::SlotCx;
 use crate::tracked;
 
 /// Where the app keeps its instances and their keys, or the fixture it draws instead.
@@ -126,6 +129,15 @@ enum Screen {
     Shell(Entity<ShellView>),
     /// Task 26: the account owes a second factor.
     Factor(Entity<crate::screens::factor::forced::ForcedFactorView>),
+    /// The user settings over the screen they were opened from, which comes back on close.
+    /// `behind` is authoritative for where Close goes: the host's own `from` is not used (it is `None`), and the
+    /// route it emits on close is only the signal to take `behind` back. The host's subscription lives here, so it
+    /// goes with the screen.
+    Settings {
+        host: Entity<UserSettingsHost>,
+        behind: Box<Screen>,
+        _subscription: Subscription,
+    },
 }
 
 impl Screen {
@@ -135,6 +147,8 @@ impl Screen {
             Screen::Starting | Screen::Fatal(..) => WindowMode::Starting,
             Screen::SignIn(_) | Screen::Signup(_) | Screen::Factor(_) => WindowMode::Authentication,
             Screen::Shell(_) | Screen::Done(_) => WindowMode::Workspace,
+            // Settings keeps the shape of the screen it was opened over.
+            Screen::Settings { behind, .. } => behind.mode(),
         }
     }
 }
@@ -213,6 +227,17 @@ impl AppView {
                     this.screen = Screen::Shell(shell);
                 }
                 crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
+                crate::fixture::FixtureScreen::Settings { section } => {
+                    let ctx = SlotCx {
+                        state: Arc::new(fixture.state),
+                        clock: Clock::Fixed {
+                            now: fixture.now,
+                            utc: true,
+                        },
+                        ..SlotCx::default()
+                    };
+                    this.show_settings(Some(section), ctx, window, cx);
+                }
             }
             return this;
         }
@@ -316,6 +341,63 @@ impl AppView {
                 }),
             ];
         self.screen = Screen::Done(view);
+        cx.notify();
+    }
+
+    /// The live route `Route::Settings(section)`: the user settings host over the current screen, or, when settings
+    /// already shows, a switch of its section (Task 1b). Any other route is the shell's (Task 8, who owns history).
+    pub fn open_route(&mut self, route: &Route, window: &mut Window, cx: &mut Context<Self>) {
+        let Route::Settings(section) = route else {
+            return;
+        };
+        if let Screen::Settings { host, .. } = &self.screen {
+            let section = section.unwrap_or(UserSection::Profile);
+            host.update(cx, |host, cx| host.request(Dest::Section(section), cx));
+            return;
+        }
+        self.show_settings(*section, SlotCx::default(), window, cx);
+    }
+
+    /// The route the app shows while settings is open (the host's section, live, so a section switch is reflected);
+    /// `None` otherwise: the shell's route is Task 8's.
+    pub fn settings_route(&self, cx: &gpui::App) -> Option<Route> {
+        match &self.screen {
+            Screen::Settings { host, .. } => Some(Route::Settings(Some(host.read(cx).section()))),
+            _ => None,
+        }
+    }
+
+    fn show_settings(
+        &mut self,
+        section: Option<UserSection>,
+        ctx: SlotCx,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let host = settings_host::open(section, None, ctx, cx);
+        // A section switch is the host's own; any other route it emits is Close, which takes `behind` back.
+        let subscription = cx.subscribe_in(
+            &host,
+            window,
+            |this, _, SettingsEvent::Navigate(route), _, cx| {
+                if matches!(route, Route::Settings(_)) {
+                    cx.notify();
+                    return;
+                }
+                if let Screen::Settings { behind, .. } =
+                    std::mem::replace(&mut this.screen, Screen::Starting)
+                {
+                    this.screen = *behind;
+                }
+                cx.notify();
+            },
+        );
+        let behind = std::mem::replace(&mut self.screen, Screen::Starting);
+        self.screen = Screen::Settings {
+            host,
+            behind: Box::new(behind),
+            _subscription: subscription,
+        };
         cx.notify();
     }
 
@@ -853,6 +935,7 @@ impl Render for AppView {
             Screen::Done(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
             Screen::Factor(view) => view.clone().into_any_element(),
+            Screen::Settings { host, .. } => host.clone().into_any_element(),
         };
         // A window that draws its own frame is resized from strips at its rim.
         let size = window.viewport_size();

@@ -23,6 +23,7 @@ pub mod reactions;
 pub mod ring;
 pub mod search;
 pub mod server_settings;
+pub mod settings_host;
 pub mod threads;
 pub mod user_settings;
 pub mod voice;

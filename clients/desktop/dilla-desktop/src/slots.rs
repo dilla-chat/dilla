@@ -16,6 +16,7 @@ use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Wi
 use dilla_desktop_ui::IconName;
 
 use crate::router::{Route, ServerSection, UserSection};
+use crate::screens::settings_host::SettingsWorkspace;
 use crate::screens::shell::Clock;
 use crate::screens::{
     attachments, bot_admin, commands, diagnostics, dms, factor, members, messages, notify,
@@ -31,6 +32,9 @@ pub struct SlotCx {
     pub community: Option<CommunityId>,
     pub channel: Option<ChannelId>,
     pub clock: Clock,
+    /// The dirty-draft guard of the settings host that draws a settings section; `None` elsewhere. A section's hook
+    /// attaches and publishes through it (the host fills it per render).
+    pub workspace: Option<SettingsWorkspace>,
 }
 
 impl Default for SlotCx {
@@ -41,6 +45,7 @@ impl Default for SlotCx {
             community: None,
             channel: None,
             clock: Clock::Local,
+            workspace: None,
         }
     }
 }

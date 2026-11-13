@@ -199,6 +199,7 @@ impl Host {
                 now: 1_794_481_738,
                 utc: true,
             },
+            workspace: None,
         };
         Self {
             env: SearchEnv {
