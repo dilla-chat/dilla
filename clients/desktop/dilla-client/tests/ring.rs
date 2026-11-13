@@ -1297,6 +1297,63 @@ async fn a_voice_join_goes_through_the_ring_gate() {
     );
 }
 
+/// Integration 3 (gpui2/fix-flakes, d3146979a): a refused join's call is idle before its block is published. In the
+/// order the snapshots were published, the call goes back to idle no later than the first snapshot with the block, and
+/// no snapshot shows the block beside a call still joining.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost, the wasi core and dilla-testkit"]
+async fn a_refused_join_is_idle_before_its_block() {
+    let p = pair("t18-refused-order", 0x180c).await;
+    p.peer.call("sync", json!({})).await;
+    p.peer.call("rotate_umk", json!({})).await;
+    p.peer
+        .call("send", json!({ "body": "after rotation" }))
+        .await;
+    real::trust_is(&p.client, p.peer_user(), true).await;
+    p.peer
+        .call(
+            "call_join",
+            json!({ "actor": "peer", "channel": p.voice().hex() }),
+        )
+        .await;
+    let mut snapshots = p.client.snapshots();
+    let refused = p
+        .client
+        .voice()
+        .join(p.voice())
+        .await
+        .expect("client")
+        .expect_err("the voice join is refused at the gate");
+    assert!(
+        matches!(&refused, dilla_client::ClientError::Sync(code) if code == "E_UMK_CHANGED"),
+        "{refused:?}"
+    );
+    wait_for(&p.client, WAIT, "the block", |s| s.ring.blocked.is_some()).await;
+    let mut seen = Vec::new();
+    while let Ok(s) = snapshots.try_recv() {
+        seen.push((
+            s.voice.call.phase,
+            s.voice.call.channel,
+            s.ring.blocked.is_some(),
+        ));
+    }
+    let first_block = seen
+        .iter()
+        .position(|(_, _, blocked)| *blocked)
+        .expect("a snapshot with the block");
+    let (phase, channel, _) = seen[first_block];
+    assert_eq!(
+        (phase, channel),
+        (dilla_client::calls::CallPhase::Idle, None),
+        "the call is idle in the first snapshot with the block: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .all(|(phase, _, blocked)| !*blocked || *phase == dilla_client::calls::CallPhase::Idle),
+        "no snapshot shows the block beside a call still joining: {seen:?}"
+    );
+}
+
 /// Review I3: `Voice::join_gated` follows the join the ring area's gate let through (an answered ring): this device is
 /// in the DM's call as its own, and the peer's call group lists it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
