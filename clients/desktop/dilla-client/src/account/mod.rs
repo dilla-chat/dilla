@@ -274,6 +274,20 @@ impl Upkeep {
     }
 }
 
+/// controller.ts `topUpKeyPackages` for a device's first batch, before its first ready (`keyPackagesOwed`): the
+/// instance's own count is read first, so only a directory below the refill threshold is topped up. Answers how many
+/// were published; a refusal is the caller's to leave to the ready's refill.
+pub(crate) async fn top_up_key_packages(core: &CoreHandle, api: &Api) -> Result<u32, String> {
+    let limits = keypackages::get_limits(api).await.map_err(|e| e.code)?;
+    let Some(known) = keypackages::get_count(api).await.map_err(|e| e.code)? else {
+        // An older instance without the count route: the ready's count decides instead.
+        return Ok(0);
+    };
+    keypackages::refill(core, api, known, limits)
+        .await
+        .map_err(|e| e.code)
+}
+
 /// The screens plan's entry point (Task 2), run on every ready: publishes key packages up to the instance's target
 /// when `remaining` (the ready's count; after a reconnect the server's own count is read first) is below its refill
 /// threshold.

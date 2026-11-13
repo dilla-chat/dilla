@@ -737,6 +737,10 @@ impl Engine {
         }
         let this = Arc::clone(self);
         self.lane_spawn("w", async move {
+            // controller.ts `onReady`: the leaves already read are read again on a new connection; what the passes
+            // concluded about users (unlisted, history pending, an own leaf under another key) stays until a pass
+            // concludes otherwise. Cleared here, in the job whose last step is the refresh.
+            this.trust.lock().await.forget_read_leaves();
             let groups = this.groups().await;
             {
                 let mut st = this.st();
@@ -1072,6 +1076,13 @@ impl Engine {
         source: Source,
     ) -> BoxFut<Result<(), SyncError>> {
         Box::pin(async move {
+            // controller.ts `onGroupChanged`: a new epoch may have put another device at a leaf already read (a blank
+            // leaf a Remove left, taken by the user's next device while this device still caches the list it read for
+            // the old one). The pass keys a leaf by (group, index, user, cached version, reason), which that device's
+            // leaf repeats exactly, so the group's leaves are forgotten here and the refresh below reads them again.
+            if r.epoch_changed {
+                self.trust.lock().await.forget_group(&g);
+            }
             if self.is_community_group(g).await {
                 self.recover_removals(g).await?;
             }
@@ -2502,11 +2513,6 @@ impl Engine {
     pub async fn refresh_group_trust(&self, g: Gid) {
         self.trust.lock().await.forget_group(&g);
         self.refresh_trust().await;
-    }
-
-    /// Forgets which leaves were fetched, so the next refresh reads them all again (a new ready).
-    pub async fn reset_trust_memory(&self) {
-        *self.trust.lock().await = trust::TrustMemory::default();
     }
 }
 

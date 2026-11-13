@@ -18,7 +18,7 @@ use dilla_client::features::browser_auth::{BrowserAuth, BrowserAuthError, Cancel
 use dilla_client::features::factors::{InstanceDoc, is_backup_code, normalise_backup_code};
 use dilla_client::instances::Instances;
 use dilla_client::seams::{InstanceConfig, Keychain};
-use dilla_client::signin::{Owed, SignIn, SignInError, normalise_recovery_key};
+use dilla_client::signin::{Enrolled, Owed, SignIn, SignInError, normalise_recovery_key};
 use gpui::{
     AnyElement, AppContext as _, ClickEvent, Context, Entity, EventEmitter, InteractiveElement,
     IntoElement, ParentElement, Render, Styled, Subscription, Window, div,
@@ -817,10 +817,19 @@ impl SignInView {
                 None => rt.block_on(f.add_device(&key)),
             },
             |this, result, window, cx| match result {
-                Ok(()) => {
+                Ok(Enrolled::Ready) => {
                     this.key.update(cx, |s, cx| s.set_value("", window, cx));
                     this.signed_in = this.flow.as_ref().map(|f| f.config().clone());
                     this.go(Shown::Done, window, cx);
+                }
+                // controller.ts `enrolWithKey`: the core wrote the enrolment and a later step failed. Nothing is left
+                // for this screen to retry; the client's start finishes it (or refuses it, closed), as the web goes on
+                // to `enterReady`.
+                Ok(Enrolled::FinishAtStart(_)) => {
+                    this.key.update(cx, |s, cx| s.set_value("", window, cx));
+                    if let Some(cfg) = this.flow.as_ref().map(|f| f.config().clone()) {
+                        cx.emit(SignedIn(cfg));
+                    }
                 }
                 Err(e) => this.apply(&e, Command::Key, window, cx),
             },

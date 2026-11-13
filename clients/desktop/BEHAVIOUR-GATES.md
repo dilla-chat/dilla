@@ -9,7 +9,7 @@ Every test title in `e2e/web`, `e2e/voice`, `e2e/media` and `packages/desktop/te
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of those directories and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 8 TODO only (10 TODO tests proposed in all).
+Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 8 TODO only (9 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -68,7 +68,7 @@ Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 nex
 | `e2e/web/guard-window.spec.ts` | the same line 5 s after it is counted, and so is one with no navigation seen | n/a (browser/phone only): the browser console abort-line guard of the web e2e |
 | `e2e/web/guard-window.spec.ts` | the same line on chromium or firefox is counted | n/a (browser/phone only): the browser console abort-line guard of the web e2e |
 | `e2e/web/guard-window.spec.ts` | a slightly different line inside the window is counted | n/a (browser/phone only): the browser console abort-line guard of the web e2e |
-| `e2e/web/installed-upgrade-account.spec.ts` | installed upgrade preserves the actual device keystore, encrypted history, draft guard and recovery enrollment | dilla-desktop::tests/integration::restart_keeps_keystore_history_draft_guard_recovery; dilla-client::tests/store::first_open_creates_key_and_reopens; TODO: dilla-desktop::tests/integration::recovery_enrols_a_new_device_the_peer_reads; next plan (native): the installer, its update and the draft guard that holds an update back are the updater's and the quit guards' (Updater and Native integrations) |
+| `e2e/web/installed-upgrade-account.spec.ts` | installed upgrade preserves the actual device keystore, encrypted history, draft guard and recovery enrollment | dilla-desktop::tests/integration::restart_keeps_keystore_history_draft_guard_recovery; dilla-client::tests/store::first_open_creates_key_and_reopens; dilla-desktop::tests/integration::recovery_enrols_a_new_device_the_peer_reads; dilla-client::tests/send_after_new_device::a_device_enrolled_after_a_self_revocation_is_read_and_sent_to; next plan (native): the installer, its update and the draft guard that holds an update back are the updater's and the quit guards' (Updater and Native integrations) |
 | `e2e/web/invite-landing.spec.ts` | the invite page names the community, keeps its limits and is shot in both schemes | n/a (browser/phone only): the invite landing page the instance serves to a browser |
 | `e2e/web/keyboard.spec.ts` | the messaging flow runs on the keyboard alone, in the fixed focus order | dilla-desktop::tests/messages::keyboard_messages_focus_order; dilla-desktop::tests/shell::keyboard_shell_focus_order |
 | `e2e/web/layout.spec.ts` | the layout grammar holds at desktop, tablet, phone, narrow and keyboard-height viewports | dilla-desktop::tests/shell::layout_grammar_holds_at_1280_and_1440 |

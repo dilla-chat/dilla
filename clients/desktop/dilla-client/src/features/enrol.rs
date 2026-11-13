@@ -78,7 +78,10 @@ impl Enrol {
     /// enrol.ts `register`, `fetch` and `complete` with the typed key: refused as [`SignInError::KeyLength`] (wrong
     /// length) or [`SignInError::WrongKey`] (not a key) before any registration; a well-formed key that does not open
     /// the account's backup is [`SignInError::WrongKey`] after it. On success the store holds a ready identity.
-    pub async fn add_device(&mut self, typed_key: &str) -> Result<(), SignInError> {
+    pub async fn add_device(
+        &mut self,
+        typed_key: &str,
+    ) -> Result<crate::signin::Enrolled, SignInError> {
         let key: Zeroizing<String> = normalise_recovery_key(typed_key);
         let check = check_key(&key);
         if check.count != RECOVERY_KEY_LEN {

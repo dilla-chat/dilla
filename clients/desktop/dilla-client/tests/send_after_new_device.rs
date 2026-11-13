@@ -293,3 +293,124 @@ async fn a_post_with_a_file_right_after_a_new_device_joined_is_delivered() {
         .await;
     }
 }
+
+/// e2e/web/installed-upgrade-account.spec.ts, its recovery half, with a native peer: bob's only device signs itself out
+/// with the recovery key (the instance proposes the Remove of its leaf, alice commits it), then a new device enrols by
+/// password, code and key and joins at the blank leaf the old device left. Alice's cached list of bob is still the one
+/// that named the old device, so her pass of the group's leaves is keyed exactly as the old device's was: the epoch
+/// change must make her read that leaf again (controller.ts `onGroupChanged`), or she holds the new device's messages
+/// as `E_DEVICE_UNLISTED` for good and her own sends to the channel stay blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_device_enrolled_after_a_self_revocation_is_read_and_sent_to() {
+    let tag = "selfrevoke";
+    let (host, pa, mut pb, c) = two_people(tag).await;
+    let a = start(&pa).await;
+    let b = start(&pb).await;
+    let channel = general(&a, c).await;
+    general(&b, c).await;
+    a.open_channel(channel).await.unwrap().expect("a opens");
+    b.open_channel(channel).await.unwrap().expect("b joins");
+    b.send_text(channel, "from the first device".into())
+        .await
+        .unwrap()
+        .expect("queued");
+    wait_for(
+        &a,
+        Duration::from_secs(20),
+        "alice reads bob's first device",
+        |s| shows(s, channel, pb.user_id, "from the first device"),
+    )
+    .await;
+
+    // Bob's only device signs itself out with the recovery key.
+    let key = zeroize::Zeroizing::new(pb.recovery_key.clone());
+    b.devices()
+        .sign_out_and_remove(key)
+        .await
+        .expect("the client answers")
+        .expect("the sign-out succeeds");
+    wait_for(&b, Duration::from_secs(10), "the sign-out", |s| {
+        s.profile.signed_out
+    })
+    .await;
+    b.stop();
+
+    // A new device enrols with password, code and key, joins the channel and sends.
+    let (b2, _kc) = second_device(&host, &mut pb, tag).await;
+    general(&b2, c).await;
+    b2.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("bob's new device joins");
+    b2.send_text(channel, "from the new device".into())
+        .await
+        .unwrap()
+        .expect("queued");
+    wait_for(
+        &a,
+        Duration::from_secs(30),
+        "alice reads bob's new device",
+        |s| shows(s, channel, pb.user_id, "from the new device"),
+    )
+    .await;
+
+    // Alice's own send is not blocked, and the new device reads it.
+    a.send_text(channel, "to the new device".into())
+        .await
+        .unwrap()
+        .expect("alice's send is queued, not blocked");
+    wait_for(
+        &b2,
+        Duration::from_secs(30),
+        "the new device reads alice",
+        |s| shows(s, channel, pa.user_id, "to the new device"),
+    )
+    .await;
+}
+
+/// Whether the store holds its own device list as published (the identity's sixth element).
+fn list_published(p: &Person) -> bool {
+    let core = dilla_client::store::open_store(&p.cfg, p.kc.as_ref()).expect("the store opens");
+    dilla_client::sync::api::Identity::decode(&core.identity().unwrap())
+        .expect("an identity")
+        .list_published
+}
+
+/// signup.ts `publishDeviceList`'s 409 branch at the start: the device's list PUT landed but its answer was lost, so the
+/// store still holds the list as unpublished. The start publishes it again; the instance answers 409 for the version it
+/// already holds, and the start reads the served list, has the core verify and adopt it, finds this device listed and
+/// goes on, never refusing the device as a list race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_start_after_a_lost_list_answer_adopts_the_served_list() {
+    let host = tokio::task::spawn_blocking(|| start_host("lostlist", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let p = dilla_client::testing::host::sign_up_answer_lost(
+        &host, &invite, "alice", "alice", "lostlist",
+    )
+    .await;
+    let p = tokio::task::spawn_blocking(move || {
+        clear_session(&p);
+        p
+    })
+    .await
+    .unwrap();
+    assert!(
+        !list_published(&p),
+        "the lost answer left the list unpublished"
+    );
+    let client = start(&p).await;
+    wait_for(&client, Duration::from_secs(30), "online", |s| {
+        s.connection.status == dilla_client::state::ConnectionStatus::Online
+    })
+    .await;
+    tokio::task::spawn_blocking(move || client.stop())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(list_published(&p), "the adopted list is the published one");
+    drop(host);
+}

@@ -35,7 +35,7 @@ use crate::state::{
     MessageId, TIMELINE_PAGE, UserId,
 };
 use crate::store::{StoreError, open_store};
-use crate::sync::api::{Api, CoreHandle, Identity, SessionError, try_core};
+use crate::sync::api::{Api, CoreHandle, Identity, SessionError, try_core, with_core};
 use crate::sync::removals::FeedFailure;
 use crate::sync::requests::SocketRequests;
 use crate::sync::{ConnectionEvent, Engine, ExpectedGroup, GroupRow, Membership, SyncHooks};
@@ -355,12 +355,25 @@ impl Client {
                         .get_instance()
                         .await
                         .map_err(|e| ClientError::Network(e.to_string()))?;
+                    // controller.ts `enterReady` (b) and (c), (d): the instance's signer key against the pin, then a
+                    // list this device has not published yet (a sign-in whose publish failed after the core wrote the
+                    // enrolment), then an enrolled session in place of the pending one it may still hold.
+                    check_instance_signer_pin(&core, &instance).await?;
+                    if !identity.list_published {
+                        publish_own_list(&api, &core, &user_id, &device_id).await?;
+                    }
                     // controller.ts `enterReady`'s factor gate: an account that owes a second factor stops at
                     // factor setup, with no gateway (the instance refuses it until a factor is added).
                     let owed = factors_owed(&api).await.map_err(|e| match e.status {
                         0 => ClientError::Network(e.detail),
                         _ => ClientError::Sync(e.code),
                     })?;
+                    // controller.ts `keyPackagesOwed`: a device's first batch goes up before it is ready (before any
+                    // join), past the factor gate (an owed factor refuses it). The instance's own count decides, so a
+                    // device that already has its batch publishes nothing; a refusal is left to the ready's refill.
+                    if !owed {
+                        let _ = crate::account::top_up_key_packages(&core, &api).await;
+                    }
                     Ok::<_, ClientError>((instance, owed))
                 })
             })
@@ -902,6 +915,94 @@ async fn guarded<T>(
     }
 }
 
+/// controller.ts `checkInstanceSignerPin`: the instance's external-sender key, read over the device's authenticated
+/// session, must be the one this device pinned at enrolment (the core writes only a missing pin, as for a store
+/// enrolled before the check existed, and refuses a changed one or another instance). A refusal fails the start closed.
+pub(crate) async fn check_instance_signer_pin(
+    core: &CoreHandle,
+    instance: &crate::sync::api::InstanceInfo,
+) -> Result<(), ClientError> {
+    let (id, key) = (instance.instance_id, instance.external_sender_pub);
+    with_core(core, move |c| c.instance_signer_key_pin(&id, &key))
+        .await
+        .map_err(|e| ClientError::Sync(e.code.to_string()))
+}
+
+/// signup.ts `publishDeviceList`'s 409 branch, before any adoption: what the served list's version says about this
+/// device's unpublished candidate.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ListConflict {
+    /// No list is served, or an older one than the candidate: the 409 stands (a list race).
+    Race,
+    /// The instance serves the candidate's version or a newer one (a PUT whose answer was lost, or a later list): the
+    /// served list is adopted through the core's verified update, and decides whether this device is listed.
+    Adopt,
+}
+
+pub(crate) fn list_conflict(served_version: Option<u64>, candidate_version: u64) -> ListConflict {
+    match served_version {
+        Some(v) if v >= candidate_version => ListConflict::Adopt,
+        _ => ListConflict::Race,
+    }
+}
+
+/// The version of a signed device-list body (`[version, ...]`).
+fn list_body_version(body: &[u8]) -> Option<u64> {
+    let v = crate::sync::value::decode(body).ok()?;
+    crate::sync::value::uint(&crate::sync::value::arr(&v, 4).ok()?[0]).ok()
+}
+
+/// signup.ts `publishDeviceList` for a store whose own list is not published yet, then session.ts `establish` for the
+/// enrolled session the list makes possible. A 409 whose served list is at least the candidate's version is adopted
+/// (verified by the core, a page at a time) and answers `E_DEVICE_UNLISTED` when it leaves this device out; an older
+/// or missing one is a list race. A 401 is a revoked row.
+async fn publish_own_list(
+    api: &Api,
+    core: &CoreHandle,
+    user: &[u8; 16],
+    device: &[u8; 16],
+) -> Result<(), ClientError> {
+    let body = with_core(core, |c| c.device_list_body())
+        .await
+        .map_err(|e| ClientError::Sync(e.code.to_string()))?;
+    let candidate = list_body_version(&body).ok_or_else(|| ClientError::Sync("E_DECODE".into()))?;
+    match api.put_device_list(user, body).await {
+        Ok(()) => {}
+        Err(e) if e.status == 409 => {
+            let served = api
+                .get_device_list(user)
+                .await
+                .map_err(crate::features::profile::refusal)?;
+            if list_conflict(served.map(|s| s.version), candidate) == ListConflict::Race {
+                return Err(ClientError::Sync("E_LIST_RACE".into()));
+            }
+            if !crate::features::devices::adopt_served_list(api, core, user, device).await? {
+                return Err(ClientError::Sync("E_DEVICE_UNLISTED".into()));
+            }
+        }
+        Err(e) if e.status == 401 => return Err(ClientError::Revoked),
+        Err(e) if e.status == 0 => return Err(ClientError::Network(e.detail)),
+        Err(e) => return Err(ClientError::Sync(e.code)),
+    }
+    let published = with_core(core, |c| c.identity())
+        .await
+        .ok()
+        .and_then(|raw| Identity::decode(&raw))
+        .is_some_and(|i| i.list_published);
+    if !published {
+        with_core(core, |c| c.device_list_published())
+            .await
+            .map_err(|e| ClientError::Sync(e.code.to_string()))?;
+    }
+    api.establish().await.map_err(|e| match e {
+        SessionError::NoIdentity => ClientError::NoIdentity,
+        SessionError::Revoked | SessionError::Scope => ClientError::Revoked,
+        SessionError::Api(a) if a.status == 0 => ClientError::Network(a.detail),
+        SessionError::Api(a) => ClientError::Sync(a.code),
+        SessionError::Core(c) => ClientError::Sync(c),
+    })
+}
+
 /// routes.ts `getFactors`' `owed` (`GET /v1/auth/factors`, element 0): whether the account owes a second factor.
 async fn factors_owed(api: &Api) -> Result<bool, crate::sync::api::ApiError> {
     use crate::http::routes::{self as r, NoBody, Raw};
@@ -1318,8 +1419,6 @@ impl Publisher {
                 self.state.connection.wire_version = Some(info.wire);
                 self.state.connection.readies += 1;
                 self.state.account.phase = phase_on_ready(self.state.account.phase);
-                let engine = self.engine.clone();
-                tokio::spawn(async move { engine.reset_trust_memory().await });
                 self.after_ready(&info);
                 self.removals_due = true;
                 true

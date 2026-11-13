@@ -647,8 +647,15 @@ async fn after_a_reset_a_fresh_device_takes_the_password_then_the_setup() {
         "no code is asked for: the key is the next step"
     );
     flow.add_device(&ada.recovery_key).await.unwrap();
-    let client = tokio::task::spawn_blocking(move || {
-        dilla_client::Client::start(cfg, kc).expect("the new device starts")
+    drop(flow);
+    // The only step the sign-in leaves for later: the state backup the instance refused (E_FACTOR_REQUIRED).
+    assert!(
+        !state_uploaded(&cfg, &kc),
+        "the refused state backup is not marked uploaded"
+    );
+    let client = tokio::task::spawn_blocking({
+        let (cfg, kc) = (cfg.clone(), kc.clone());
+        move || dilla_client::Client::start(cfg, kc).expect("the new device starts")
     })
     .await
     .unwrap();
@@ -662,5 +669,25 @@ async fn after_a_reset_a_fresh_device_takes_the_password_then_the_setup() {
     set_up_again(&host, &client).await;
     send_in_general(&client, community, "from the new device").await;
     world::stop(client).await;
+    // The first ready past the set-up uploaded it (ensure_backups).
+    assert!(
+        state_uploaded(&cfg, &kc),
+        "the ready uploaded the state backup"
+    );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Whether the store's sealed state object is marked uploaded (`sealed_objects`' third element). Opens the store, so
+/// the device's client must be stopped.
+fn state_uploaded(cfg: &dilla_client::seams::InstanceConfig, kc: &Arc<MemoryKeychain>) -> bool {
+    let core = dilla_client::store::open_store(cfg, kc.as_ref()).expect("the store opens");
+    let raw = core.sealed_objects().expect("sealed objects");
+    dilla_core::cbor::decode_strict(&raw, |d| {
+        d.array(3)?;
+        d.skip()?;
+        d.skip()?;
+        d.uint()
+    })
+    .expect("sealed objects shape")
+        == 1
 }

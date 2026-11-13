@@ -1243,10 +1243,12 @@ fn restart_keeps_keystore_history_draft_guard_recovery(cx: &mut TestAppContext) 
 /// itself out with the recovery key (the app wipes it and shows the sign-in); password, code and key then enrol a new
 /// device on the same install, which sends, and the peer reads it from that new device.
 ///
-/// Known product bug (Task 28 report): the peer holds the new device's message as `E_DEVICE_UNLISTED` and blocks Ada
-/// (the old device's leaf stays in the group's tree after its self-revocation). CI skips it until the E2EE lane decides.
+/// The new device takes the blank leaf the old one left, and the peer still caches the list it read for the old one:
+/// the peer reads that leaf again because the epoch change forgets the group's leaves already read (the engine's
+/// `apply_hook`, as controller.ts `onGroupChanged`); dilla-client's
+/// `send_after_new_device::a_device_enrolled_after_a_self_revocation_is_read_and_sent_to` holds the same.
 #[gpui::test]
-#[ignore = "product bug: after a sign-out and a recovery sign-in the peer holds the new device as unlisted (see the Task 28 report)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 fn recovery_enrols_a_new_device_the_peer_reads(cx: &mut TestAppContext) {
     use dilla_client::seams::Keychain as _;
     use dilla_client::state::DeviceId;

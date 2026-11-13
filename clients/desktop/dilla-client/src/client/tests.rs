@@ -593,3 +593,75 @@ fn a_non_active_group_stays_gated_until_a_read() {
     gate.cleared(&g);
     assert!(gate.readable(&g));
 }
+
+/// controller.ts `checkInstanceSignerPin` at the start (a sign-in no longer swallows a pin failure, and the start checks
+/// the pin again as `enterReady` does): the key the instance serves now must be the one pinned at enrolment, for the
+/// instance the identity names; a changed key or another instance fails the start closed, and the pin is not replaced.
+#[tokio::test]
+async fn the_start_fails_closed_on_another_instance_signer_key() {
+    // Two valid Ed25519 points: the core tests' instance key and the curve's base point.
+    const PINNED: [u8; 32] = [
+        0xdb, 0x99, 0x5f, 0xe2, 0x51, 0x69, 0xd1, 0x41, 0xca, 0xb9, 0xbb, 0xba, 0x92, 0xba, 0xa0,
+        0x1f, 0x9f, 0x2e, 0x1e, 0xce, 0x7d, 0xf4, 0xcb, 0x2a, 0xc0, 0x51, 0x90, 0xf3, 0x7f, 0xcc,
+        0x1f, 0x9d,
+    ];
+    let mut other = [0x66u8; 32];
+    other[0] = 0x58;
+    let instance_id = [3u8; 16];
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut core =
+        dilla_core::client::ClientCore::open(Arc::new(Mutex::new(conn))).expect("an empty store");
+    core.signup_begin(&instance_id).expect("signup begin");
+    core.signup_complete(&[4u8; 16], "ada", 1_800_000_000, &PINNED)
+        .expect("signup complete pins the key");
+    let core: CoreHandle = Arc::new(Mutex::new(core));
+    let info = |instance_id, external_sender_pub| crate::sync::api::InstanceInfo {
+        instance_id,
+        policy_version: 1,
+        external_sender_pub,
+    };
+
+    check_instance_signer_pin(&core, &info(instance_id, PINNED))
+        .await
+        .expect("the pinned key starts");
+    for (what, served) in [
+        ("a changed key", info(instance_id, other)),
+        ("another instance", info([5u8; 16], PINNED)),
+    ] {
+        match check_instance_signer_pin(&core, &served).await {
+            Err(ClientError::Sync(code)) => assert_eq!(code, "E_CORE_STATE", "{what}"),
+            r => panic!("{what} must fail the start closed, got {r:?}"),
+        }
+    }
+    // The refusals replaced nothing: the pinned key still starts, the other one still does not.
+    check_instance_signer_pin(&core, &info(instance_id, PINNED))
+        .await
+        .expect("the pin is unchanged");
+    assert!(
+        check_instance_signer_pin(&core, &info(instance_id, other))
+            .await
+            .is_err()
+    );
+}
+
+/// signup.ts `publishDeviceList`'s 409 branch: a served list at the candidate's version (a PUT whose answer was lost) or
+/// newer is adopted; none, or an older one, is the list race the 409 says.
+#[test]
+fn a_409_adopts_a_served_list_at_or_past_the_candidate() {
+    assert_eq!(
+        list_conflict(Some(3), 3),
+        ListConflict::Adopt,
+        "the lost answer"
+    );
+    assert_eq!(
+        list_conflict(Some(4), 3),
+        ListConflict::Adopt,
+        "a later list"
+    );
+    assert_eq!(
+        list_conflict(Some(2), 3),
+        ListConflict::Race,
+        "an older list"
+    );
+    assert_eq!(list_conflict(None, 3), ListConflict::Race, "no list served");
+}
