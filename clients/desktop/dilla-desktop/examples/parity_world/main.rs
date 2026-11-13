@@ -127,6 +127,7 @@ async fn main() {
         }
         made
     };
+    seed::before_sign_in(&f, &people).await;
     // A headless client for the viewer (who must hold every group the browser reads, and reads the channel list) and for
     // everyone who posts: an empty world has only the viewer's.
     let plan = f.seed_plan();
