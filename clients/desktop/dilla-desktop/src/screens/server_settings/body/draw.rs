@@ -51,6 +51,9 @@ fn track_id(id: String) -> &'static str {
     })
 }
 
+/// The GIF key's row as the column measures it: its label and its buttons' labels.
+type GifKeyRow<'a> = Option<(&'a str, &'a [&'a str])>;
+
 /// A handler of the settings' own entity, for the components that take a plain closure.
 fn act(
     cx: &Context<Body>,
@@ -1041,7 +1044,7 @@ impl Body {
         let gifs = self.state.server_admin.gifs.get(&self.community).copied();
         let mut out: Vec<AnyElement> =
             vec![section_header(t("workspace.gifs"), None).into_any_element()];
-        let (set_row, form): (Option<(&str, &[&str])>, Option<Vec<&str>>) = match gifs {
+        let (set_row, form): (GifKeyRow<'_>, Option<Vec<&str>>) = match gifs {
             Some(g) if g.on && !self.gif_editing => (
                 Some((
                     t("gif.settings.maskedLabel"),
