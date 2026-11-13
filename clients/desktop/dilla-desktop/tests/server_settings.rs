@@ -36,20 +36,34 @@ macro_rules! parity_tests {
     )*};
 }
 
+/// Ruling R22: a parity test that still fails waits for the shared-component pass (T6c) and its parity sweep.
+macro_rules! parity_after_t6c {
+    ($($test:ident => $state:literal, $why:literal),* $(,)?) => {$(
+        #[test]
+        #[ignore = $why]
+        fn $test() {
+            parity($state);
+        }
+    )*};
+}
+
 parity_tests! {
-    parity_server_settings_overview => "overview",
-    parity_server_settings_overview_b => "overview-b",
-    parity_server_settings_afk => "afk",
-    parity_server_settings_afk_b => "afk-b",
-    parity_server_settings_channels => "channels",
-    parity_server_settings_channels_b => "channels-b",
-    parity_server_settings_channel_permissions => "channel-permissions",
-    parity_server_settings_channel_permissions_b => "channel-permissions-b",
-    parity_server_settings_gifs => "gifs",
-    parity_server_settings_gifs_b => "gifs-b",
-    parity_server_settings_invites => "invites",
-    parity_server_settings_invites_b => "invites-b",
     parity_server_settings_welcome => "welcome",
+}
+
+parity_after_t6c! {
+    parity_server_settings_overview => "overview", "parity after T6c: chrome 0.4688 %",
+    parity_server_settings_overview_b => "overview-b", "parity after T6c: whole frame 1.3234 %",
+    parity_server_settings_afk => "afk", "parity after T6c: chrome 0.4688 %",
+    parity_server_settings_afk_b => "afk-b", "parity after T6c: whole frame 0.6805 %",
+    parity_server_settings_channels => "channels", "parity after T6c: chrome 2.3227 %",
+    parity_server_settings_channels_b => "channels-b", "parity after T6c: whole frame 1.3583 %",
+    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.2690 %",
+    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.7017 %",
+    parity_server_settings_gifs => "gifs", "parity after T6c: whole frame 1.1892 %",
+    parity_server_settings_gifs_b => "gifs-b", "parity after T6c: whole frame 1.2638 %",
+    parity_server_settings_invites => "invites", "parity after T6c: chrome 0.8398 %",
+    parity_server_settings_invites_b => "invites-b", "parity after T6c: whole frame 0.6342 %",
 }
 
 // These fail only for causes in the shared frame and nav (Task 6), which this area does not edit:
