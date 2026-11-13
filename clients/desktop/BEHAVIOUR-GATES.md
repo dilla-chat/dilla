@@ -9,7 +9,7 @@ Every test title in `e2e/web`, `e2e/voice`, `e2e/media` and `packages/desktop/te
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of those directories and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 153 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 15 TODO only (17 TODO tests proposed in all).
+Totals: 233 e2e tests; 153 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 15 TODO only (16 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -110,7 +110,7 @@ Totals: 233 e2e tests; 153 with a Rust test, 42 n/a (browser/phone only), 23 nex
 | `e2e/web/search-settings.spec.ts` | switching channel with an unsent draft shows no error banner | dilla-desktop::src/screens/messages/composing::a_draft_belongs_to_one_channel_under_the_drafts_prefix |
 | `e2e/web/search-settings.spec.ts` | desktop, phone and reflow keep controls accessible in Signal | next plan (native): axe and CSP checks of the browser DOM, so native screen readers (AccessKit) come after the switch |
 | `e2e/web/search-settings.spec.ts` | settings rows align their controls, and the sign-out button holds its text | dilla-desktop::tests/voice_settings::parity_voice_settings_section; dilla-desktop::tests/components::every_component_renders_in_every_state |
-| `e2e/web/second-factor.spec.ts` | second factor: sign-up step 5, a code and a backup code on new browsers, a wrong code, Settings → Sign-in | dilla-client::tests/factors::step_up_backup_codes_remove_and_password; dilla-desktop::tests/factors::password_then_factor_then_recovery_key_backup_code_waits; TODO: dilla-desktop::tests/factors::signup_factor_code_backup_code_wrong_code_settings |
+| `e2e/web/second-factor.spec.ts` | second factor: sign-up step 5, a code and a backup code on new browsers, a wrong code, Settings → Sign-in | dilla-client::tests/factors::step_up_backup_codes_remove_and_password; dilla-desktop::tests/factors::password_then_factor_then_recovery_key_backup_code_waits; dilla-desktop::tests/factors::signup_factor_code_backup_code_wrong_code_settings; dilla-desktop::tests/factors::signup_factor_step_takes_typed_digits_and_says_a_wrong_code |
 | `e2e/web/second-tab.spec.ts` | a second tab waits while the first holds the device and takes over when it closes | dilla-desktop::tests/instances::an_open_instance_is_held_until_released; dilla-desktop::tests/instances::a_released_hold_lasts_until_the_client_stopped |
 | `e2e/web/sidebar-actions.spec.ts` | the owner adds a channel with the "+"; a member makes a link under server settings → Invites; a phone has a gear and a search icon, no menu | dilla-client::tests/onboarding::owner_adds_channel_with_plus; dilla-client::tests/server_settings::member_makes_invite_link_under_invites |
 | `e2e/web/signin-order.spec.ts` | sign-in order: the password, then the factor, then the recovery key; a backup code waits for the key | dilla-desktop::tests/factors::password_then_factor_then_recovery_key_backup_code_waits |

@@ -315,7 +315,13 @@ impl AppView {
             this.after_signup = std::mem::take(&mut this.launch.after_signup);
             // Task 26: the factor area follows the client into the workspace window.
             crate::screens::factor::register_window_client(&client, window, cx);
-            this.show_shell(client, window, cx);
+            // A client that still owes its factor shows the factor step first, as `started` does: for a new account
+            // that is the sign-up's step 4 (`after_signup` is kept for it, and the shell after it finishes the join).
+            if client.state().borrow().account.phase == AccountPhase::FactorSetup {
+                this.show_factor(client, window, cx);
+            } else {
+                this.show_shell(client, window, cx);
+            }
             return this;
         }
         let existing = this

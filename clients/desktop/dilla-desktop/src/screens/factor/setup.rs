@@ -893,14 +893,19 @@ impl FactorSetupView {
                         if matches!(self.origin, Origin::Signup { .. }) {
                             body.push(para(t("factor.totp.codeHint")));
                         }
+                        let focus = gpui::Focusable::focus_handle(self.code.read(cx), cx);
                         body.push(
-                            tracked_box("factor-totp-code", self.code.clone()).into_any_element(),
+                            crate::tracked_focus("factor-totp-code", &focus, self.code.clone())
+                                .into_any_element(),
                         );
                         if !matches!(self.origin, Origin::Signup { .. }) {
                             body.push(para(t("factor.totp.codeHint")));
                         }
                         if let Some(e) = self.code_error {
-                            body.push(error_line(t(e)));
+                            body.push(
+                                tracked_box("factor-code-error", error_line(t(e)))
+                                    .into_any_element(),
+                            );
                         }
                     }
                 }

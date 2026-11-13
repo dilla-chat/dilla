@@ -2310,7 +2310,7 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-client --test notify --locked -- --ignored --skip dm_from_tab_reaches_peer_reply_badges_until_read --skip dm_opened_by_peer_appears_badges_notifies_live',
     '    cargo build -p dilla-testkit --bin dilla-testkit --locked',
     '    cargo test -p dilla-client --test dms --locked -- --ignored',
-    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_ --skip signup_factor_code_backup_code_wrong_code_settings',
+    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
     '    cargo test -p dilla-client --test voice --locked -- --ignored',
     '    cargo test -p dilla-client --test ring --locked -- --ignored --skip blocked_dm',
     '    cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings',
