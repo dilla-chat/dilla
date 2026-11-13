@@ -100,8 +100,6 @@ pub struct MembersUi {
     pub role: Option<[u8; 16]>,
     /// What this view asked the client to read already (a section reads once per community).
     asked: HashSet<(&'static str, CommunityId)>,
-    /// The Moderation log's pages (sealed Bot reads through Task 21's `BotAdmin::moderation_page`).
-    log: modlog::Log,
     /// The DeleteRole confirmation: the role and its name, and the request in flight.
     role_delete: Option<(CommunityId, RoleId, String)>,
     role_delete_busy: bool,
@@ -131,6 +129,8 @@ fn ui(cx: &mut App) -> &mut MembersUi {
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the slot context it was handed and the
 /// card, menu and dialog drawn for it go.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
+    // The moderation log's decrypted pages this client read go with it, in every window (final review I4).
+    modlog::release_reader(Rc::as_ptr(client) as usize, cx);
     if !cx.has_global::<MembersUi>() {
         return;
     }
@@ -1519,17 +1519,23 @@ fn bans_section(
 }
 
 /// Reads one page of the log (ModerationLog.tsx `load`): a sealed Bot read through Task 21's
-/// `BotAdmin::moderation_page`; its answer lands in [`modlog::Log`] unless a later load or another community came first.
-fn load_log(source: modlog::Source, after: Option<String>, cx: &mut App) {
-    let Some(ctx) = ui(cx).ctx.clone() else {
-        return;
-    };
+/// `BotAdmin::moderation_page`, on the client of the section that asked (`ctx`, its own window's: final review I4); its
+/// answer lands in that window's [`modlog::Log`] unless a later load or another community came first.
+fn load_log(
+    window: gpui::WindowId,
+    ctx: &SlotCx,
+    source: modlog::Source,
+    after: Option<String>,
+    cx: &mut App,
+) {
     let (Some(client), Some(community)) = (ctx.client.clone(), ctx.community) else {
         return;
     };
-    let log = &mut ui(cx).log;
-    log.show(community);
-    let Some((generation, after)) = log.begin(source, after) else {
+    modlog::set_reader(window, Rc::as_ptr(&client) as usize, cx);
+    let Some((generation, after)) = modlog::with_log(window, cx, |log| {
+        log.show(community);
+        log.begin(source, after)
+    }) else {
         return;
     };
     let rx = client
@@ -1541,7 +1547,7 @@ fn load_log(source: modlog::Source, after: Option<String>, cx: &mut App) {
             .await
             .unwrap_or_else(|_| Err(dilla_client::ClientError::Sync("E_DROPPED".into())));
         cx.update(|cx| {
-            ui(cx).log.land(generation, answer);
+            modlog::with_log(window, cx, |log| log.land(generation, answer));
             cx.refresh_windows();
         });
     })
@@ -1556,10 +1562,16 @@ fn log_date(seconds: &str) -> String {
     }
 }
 
-fn moderation_log_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyElement {
+fn moderation_log_section(
+    ctx: &SlotCx,
+    community: CommunityId,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let wid = window.window_handle().window_id();
     let access = ctx.state.roles.access_of(community);
-    ui(cx).log.show(community);
-    let log = ui(cx).log.clone();
+    modlog::with_log(wid, cx, |log| log.show(community));
+    let log = modlog::log_of(wid, cx);
     let sending = log.phase == modlog::Phase::Sending;
     let label = |source: modlog::Source, idle: &'static str| {
         if sending && log.source == source {
@@ -1587,7 +1599,10 @@ fn moderation_log_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) ->
                         ),
                     )
                     .disabled(sending)
-                    .on_click(|_, _w, cx| load_log(modlog::Source::Automatic, None, cx)),
+                    .on_click({
+                        let ctx = ctx.clone();
+                        move |_, _w, cx| load_log(wid, &ctx, modlog::Source::Automatic, None, cx)
+                    }),
                 )
                 .child(
                     Button::new(
@@ -1595,7 +1610,10 @@ fn moderation_log_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) ->
                         label(modlog::Source::Manual, "admin.bot.moderationLog.load"),
                     )
                     .disabled(sending)
-                    .on_click(|_, _w, cx| load_log(modlog::Source::Manual, None, cx)),
+                    .on_click({
+                        let ctx = ctx.clone();
+                        move |_, _w, cx| load_log(wid, &ctx, modlog::Source::Manual, None, cx)
+                    }),
                 ),
         );
     if access.loaded && !access.view_audit_log && log.phase == modlog::Phase::Idle {
@@ -1632,9 +1650,12 @@ fn moderation_log_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) ->
     if let Some(cursor) = log.more() {
         let cursor = cursor.to_owned();
         root = root.child(
-            Button::new("modlog-more", t("admin.bot.moderationLog.more")).on_click(
-                move |_, _w, cx| load_log(modlog::Source::Manual, Some(cursor.clone()), cx),
-            ),
+            Button::new("modlog-more", t("admin.bot.moderationLog.more")).on_click({
+                let ctx = ctx.clone();
+                move |_, _w, cx| {
+                    load_log(wid, &ctx, modlog::Source::Manual, Some(cursor.clone()), cx)
+                }
+            }),
         );
     }
     if log.phase == modlog::Phase::Ready && log.automatic_more {
@@ -1666,7 +1687,7 @@ pub fn settings_section(
         SectionId::Server(ServerSection::SelfRoles) => self_roles_section(ctx, community, cx),
         SectionId::Server(ServerSection::Bans) => bans_section(ctx, community, window, cx),
         SectionId::Server(ServerSection::ModerationLog) => {
-            moderation_log_section(ctx, community, cx)
+            moderation_log_section(ctx, community, window, cx)
         }
         _ => div().into_any_element(),
     }

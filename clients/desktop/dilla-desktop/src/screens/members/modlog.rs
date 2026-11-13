@@ -144,6 +144,36 @@ impl Log {
     }
 }
 
+/// One window's log, and the client (by the address of its `Rc<Client>`) whose sealed reads filled it (final review I4:
+/// per window, and emptied when that client is released).
+#[derive(Default)]
+struct WindowLog {
+    log: Log,
+    reader: usize,
+}
+
+/// A copy of `window`'s log, as the section draws it.
+pub fn log_of(window: gpui::WindowId, cx: &gpui::App) -> Log {
+    crate::per_window::get::<WindowLog>(window, cx)
+        .map(|w| w.log.clone())
+        .unwrap_or_default()
+}
+
+/// Changes `window`'s log.
+pub fn with_log<R>(window: gpui::WindowId, cx: &mut gpui::App, f: impl FnOnce(&mut Log) -> R) -> R {
+    f(&mut crate::per_window::get_mut::<WindowLog>(window, cx).log)
+}
+
+/// The client whose reads fill `window`'s log now.
+pub fn set_reader(window: gpui::WindowId, reader: usize, cx: &mut gpui::App) {
+    crate::per_window::get_mut::<WindowLog>(window, cx).reader = reader;
+}
+
+/// The client `reader` is released (Forget, sign-out): every log it filled goes, decrypted excerpts and all.
+pub fn release_reader(reader: usize, cx: &mut gpui::App) {
+    crate::per_window::retain::<WindowLog>(cx, |_, w| w.reader != reader);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +198,45 @@ mod tests {
             cases: keys.iter().map(|k| case(k)).collect(),
             next_cursor: next.map(str::to_owned),
         }
+    }
+
+    /// Integration 3, final review I4: each window keeps its own log, and a release of the client that read it empties
+    /// it (decrypted excerpts never outlive Forget or a sign-out); another window's log, of another client, stays.
+    #[gpui::test]
+    fn each_window_keeps_its_own_log_and_release_empties_it(cx: &mut gpui::TestAppContext) {
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            for (w, community, key, client) in [(a, 7u8, "a", 1usize), (b, 8, "b", 2)] {
+                with_log(w, cx, |log| {
+                    log.show(CommunityId([community; 16]));
+                    let (g, _) = log.begin(Source::Manual, None).unwrap();
+                    log.land(g, Ok(page(0, &[key], None)));
+                });
+                set_reader(w, client, cx);
+            }
+            assert_eq!(log_of(a, cx).cases[0].key, "a");
+            assert_eq!(
+                log_of(b, cx).cases[0].key,
+                "b",
+                "two windows never share a log"
+            );
+            release_reader(1, cx);
+            let gone = log_of(a, cx);
+            assert!(
+                gone.cases.is_empty() && gone.phase == Phase::Idle,
+                "released: empty"
+            );
+            assert_eq!(
+                log_of(b, cx).cases[0].key,
+                "b",
+                "the other client's log stays"
+            );
+        });
     }
 
     /// ModerationLog.tsx: one load at a time; manual pages append (deduplicated, capped at 100) and offer "Load more"
