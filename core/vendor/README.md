@@ -239,4 +239,10 @@ in Chromium. A fractional scale keeps upstream's device-px lengths.
 The edge rule is `util::snap_layout_edge`, re-exported with the two length rules as `gpui::{snap_layout_edge, layout_length, measured_length}` so the client can
 pin them: the tests `box_edges_snap_as_chromium_paints_them` and `lengths_lay_out_on_chromiums_layout_unit` in `clients/desktop/dilla-desktop-ui/src/metrics.rs`.
 
+`Window::laid_out_size` (with `TaffyLayoutEngine::laid_out_size`, Task 28) answers a box's laid-out size before its edges
+snap. Chromium decides `text-overflow: ellipsis` against that width, in layout units; the snapped box can be up to 1px
+narrower, so a decision on it kept whole a text that overflowed by under a pixel (the web shows "…"). The client's text
+painter (`dilla-desktop-ui/src/text.rs`, `LinePaint`) reads it; the test `laid_out_size_is_the_unsnapped_box` in
+`clients/desktop/dilla-desktop/tests/vendored_patches.rs` pins it.
+
 Keep this patch while the Linux parity references are Chromium frames.
