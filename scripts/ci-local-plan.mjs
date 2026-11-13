@@ -130,7 +130,7 @@ export const EXTRA_JOBS = {
       'cargo test -p dilla-client --test notify --locked -- --ignored --skip dm_from_tab_reaches_peer_reply_badges_until_read --skip dm_opened_by_peer_appears_badges_notifies_live',
       'cargo build -p dilla-testkit --bin dilla-testkit --locked',
       'cargo test -p dilla-client --test dms --locked -- --ignored',
-      'cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test shell --test threads --locked -- --ignored --skip parity_ --skip keyboard_diagnostics_focus_order',
+      'cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test shell --test threads --test voice --locked -- --ignored --skip parity_ --skip keyboard_diagnostics_focus_order',
       'cargo test -p dilla-client --test voice --locked -- --ignored',
       'cargo test -p dilla-client --test ring --locked -- --ignored --skip blocked_dm',
       'cargo test -p dilla-desktop --test slice --locked -- --ignored',

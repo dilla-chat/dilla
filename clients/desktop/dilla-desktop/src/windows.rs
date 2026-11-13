@@ -434,6 +434,14 @@ pub fn release_all(cx: &mut App) {
     }
 }
 
+/// What the areas keep per window, let go the moment `id` closes (the close hook's fan-out): its voice area leaves the
+/// window's call at once (media cut, Idle published, the Remove sent) and drops its media session; its threads area
+/// drops the pane and the view it held.
+pub fn on_closed(cx: &mut App, id: WindowId) {
+    crate::screens::voice::window_closed(id, cx);
+    crate::screens::threads::window_closed(id, cx);
+}
+
 fn install_close_hook(cx: &mut App, launch: Launch, allow_loopback: bool) {
     let registry = Registry::of(cx);
     if registry.closing_hook {
@@ -441,6 +449,7 @@ fn install_close_hook(cx: &mut App, launch: Launch, allow_loopback: bool) {
     }
     registry.closing_hook = true;
     cx.on_window_closed(move |cx, id| {
+        on_closed(cx, id);
         let closed = note_closed(cx, id);
         if cx.windows().is_empty() {
             // The last window of a manager closes the app; the last window of an instance falls back to the manager

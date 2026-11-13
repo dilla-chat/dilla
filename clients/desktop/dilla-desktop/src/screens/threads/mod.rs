@@ -154,6 +154,13 @@ fn original_gone(ctx: &SlotCx, target: &ReplyTarget) -> bool {
         .is_some_and(|i| !readable(i))
 }
 
+/// Lets go of `window`'s part as it closes (`windows::on_closed`): its pane and the view (with its client) it held.
+pub fn window_closed(window: WindowId, cx: &mut App) {
+    if cx.has_global::<Ui>() {
+        ui(cx).windows.remove(&window);
+    }
+}
+
 /// The [`SlotCx`] `window`'s shell last drew.
 fn current(window: WindowId, cx: &mut App) -> Option<SlotCx> {
     ui(cx).windows.get(&window)?.ctx.clone()

@@ -114,8 +114,8 @@ pub struct VoiceUi {
     repainting: bool,
 }
 
-/// Every instance window's voice area, by window. A window that closes is let go at the next sync (its call left, its
-/// media session and client dropped).
+/// Every instance window's voice area, by window. A window that closes is let go at once (`windows::on_closed`: its
+/// call left, its media session and client dropped).
 #[derive(Default)]
 pub struct VoiceAreas {
     windows: HashMap<WindowId, VoiceUi>,
@@ -171,8 +171,37 @@ fn call_window(cx: &App) -> Option<WindowId> {
         .or_else(|| cx.active_window().map(|w| w.window_id()))
 }
 
-/// Lets go of the voice areas of windows that are gone: a call still on there is left (its media session goes with
-/// the area), and its client is no longer held.
+/// Whether `ui`'s client is joining or in a call, by the client's own current state (not the window's last synced
+/// one, which may not show a join that just started).
+fn in_a_call(ui: &VoiceUi) -> bool {
+    ui.client
+        .as_ref()
+        .map_or(ui.state.voice.call.phase != CallPhase::Idle, |c| {
+            c.state().borrow().voice.call.phase != CallPhase::Idle
+        })
+}
+
+/// Lets go of `window`'s voice area as it closes (`windows::on_closed`): a call still on there is left at once (the
+/// media link is cut, Idle published, the Remove sent), its media session is dropped with the area, and its client is
+/// no longer held.
+pub fn window_closed(window: WindowId, cx: &mut App) {
+    let Some(ui) = cx
+        .try_global::<VoiceAreas>()
+        .is_some()
+        .then(|| cx.global_mut::<VoiceAreas>().windows.remove(&window))
+        .flatten()
+    else {
+        return;
+    };
+    if in_a_call(&ui)
+        && let Some(client) = &ui.client
+    {
+        drop(client.voice().leave());
+    }
+    drop(ui);
+}
+
+/// Lets go of the voice areas of windows that are gone and were not let go by the close hook.
 fn prune(keep: WindowId, cx: &mut App) {
     let live: std::collections::HashSet<WindowId> =
         cx.windows().iter().map(|w| w.window_id()).collect();
@@ -186,12 +215,7 @@ fn prune(keep: WindowId, cx: &mut App) {
         .copied()
         .collect();
     for w in gone {
-        if let Some(ui) = cx.global_mut::<VoiceAreas>().windows.remove(&w)
-            && ui.state.voice.call.phase != CallPhase::Idle
-            && let Some(client) = &ui.client
-        {
-            drop(client.voice().leave());
-        }
+        window_closed(w, cx);
     }
 }
 
