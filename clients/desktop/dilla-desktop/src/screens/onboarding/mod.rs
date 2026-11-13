@@ -15,7 +15,7 @@ pub mod done;
 pub mod keys;
 pub mod signup;
 
-pub use done::{DoneView, OpenDilla};
+pub use done::{DoneView, OpenDilla, SignupCodes};
 pub use signup::{SignedUp, SignupView, WantsSignIn};
 
 /// Opens the add-server dialog ("join a server" or "new server") in the active window: the rail's "+" (Task 8) calls

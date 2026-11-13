@@ -10,6 +10,7 @@
 use std::rc::Rc;
 
 use dilla_client::Client;
+use dilla_client::features::factors::BackupCodes;
 use gpui::{
     AppContext as _, ClickEvent, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
     Styled, Subscription, Window, div,
@@ -38,6 +39,8 @@ pub struct ForcedFactorView {
     /// Forgetting is under way (the sign-out and the wipe).
     forgetting: bool,
     forget_error: Option<String>,
+    /// The sign-up origin's backup codes, from the set-up's Done until the app takes them for its done step.
+    codes: Option<BackupCodes>,
     _subscription: Subscription,
 }
 
@@ -63,7 +66,11 @@ impl ForcedFactorView {
             cx.new(|cx| FactorSetupView::new(client.clone(), server, origin, username, window, cx));
         let subscription =
             cx.subscribe_in(&setup, window, |this, setup, e: &SetupEvent, window, cx| {
-                if let SetupEvent::Done { .. } = e {
+                if let SetupEvent::Done { codes, .. } = e {
+                    // A retried finish after a refusal hands over no new codes: the first ones stay.
+                    if let Some(given) = codes.take().filter(|c| !c.0.is_empty()) {
+                        this.codes = Some(given);
+                    }
                     this.finish(setup.clone(), window, cx);
                 }
             });
@@ -73,8 +80,15 @@ impl ForcedFactorView {
             confirm: false,
             forgetting: false,
             forget_error: None,
+            codes: None,
             _subscription: subscription,
         }
+    }
+
+    /// The sign-up's backup codes, once (the app hands them to the done step). `None` for any other origin, or when the
+    /// account already held unused codes.
+    pub fn take_codes(&mut self) -> Option<BackupCodes> {
+        self.codes.take()
     }
 
     /// The app's Forget did not go through (the sign-out was refused, or the store could not go): said in the dialog,

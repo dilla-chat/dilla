@@ -89,11 +89,12 @@ pub enum Lost {
 /// What the view tells its host.
 pub enum SetupEvent {
     /// The factor is in place; the host finishes (the forced and sign-in hosts read the factors and go on). `codes` are
-    /// handed over only to the sign-up origin.
+    /// handed over only to the sign-up origin, for its done step: the host takes them out of the cell (an event is
+    /// read by reference), so they are held in one place only.
     Done {
         added: Added,
         name: Option<String>,
-        codes: Option<BackupCodes>,
+        codes: std::cell::Cell<Option<BackupCodes>>,
     },
     /// Settings: the host asks for a new step-up.
     StepUpLost(Lost),
@@ -695,7 +696,7 @@ impl FactorSetupView {
         cx.emit(SetupEvent::Done {
             added: self.added,
             name,
-            codes,
+            codes: std::cell::Cell::new(codes),
         });
     }
 

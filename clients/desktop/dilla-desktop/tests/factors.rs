@@ -838,11 +838,42 @@ fn signup_factor_code_backup_code_wrong_code_settings(cx: &mut gpui::TestAppCont
         vcx.update(|window, cx| setup.read(cx).code_focused(window, cx)),
         "the code field has the keyboard"
     );
-    // The right code adds the app; the done step shows the backup codes.
+    // The right code adds the app; the done step (step 6) shows the backup codes: collapsed under their count until
+    // Show, then ten, and Open dilla waits for their tick.
     type_digits(vcx, &right);
     pump_until(vcx, "the done step", |vcx| {
         app.read_with(vcx, |a, _| a.screen_name() == "done")
     });
+    let done = app.read_with(vcx, |a, _| a.done()).expect("the done step");
+    assert_eq!(done.read_with(vcx, |d, _| d.code_count()), 10);
+    assert!(
+        done.read_with(vcx, |d, _| d.shown_codes()).is_none(),
+        "collapsed until Show"
+    );
+    done.update(vcx, |d, cx| d.press_show(cx));
+    let codes = done
+        .read_with(vcx, |d, _| d.shown_codes())
+        .expect("the codes on show");
+    assert_eq!(codes.len(), 10);
+    done.update(vcx, |d, cx| d.press_open(cx));
+    pump(vcx);
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.screen_name()),
+        "done",
+        "Open dilla waits for the codes' tick"
+    );
+    done.update(vcx, |d, cx| {
+        d.press_saved(cx);
+        d.press_open(cx);
+    });
+    pump_until(vcx, "the shell", |vcx| {
+        app.read_with(vcx, |a, _| a.screen_name() == "shell")
+    });
+    assert_eq!(
+        done.read_with(vcx, |d, _| d.code_count()),
+        0,
+        "the codes go with the step"
+    );
     let factors = rt
         .block_on(client.factors().refresh())
         .unwrap()
@@ -865,19 +896,6 @@ fn signup_factor_code_backup_code_wrong_code_settings(cx: &mut gpui::TestAppCont
         .block_on(client.factors().remove(token, FactorKind::Totp))
         .unwrap_err();
     assert_eq!(e.status, 409, "{e:?}");
-    // The done step does not show the sign-up's backup codes yet (Task 28 report: a product gap), so the codes for the
-    // devices below are a new set, made behind a step-up as Settings → Sign-in makes them.
-    let token = rt
-        .block_on(client.factors().step_up(
-            StepUpMethod::Password,
-            Zeroizing::new(world::PASSWORD.to_owned()),
-        ))
-        .expect("the password steps up");
-    let codes = rt
-        .block_on(client.factors().regenerate_backup_codes(token))
-        .expect("new codes")
-        .0;
-    assert_eq!(codes.len(), 10);
 
     // A new device: the login, a backup code instead of the app's, then the key: nine codes left.
     let new_device = |tag: &str| {
