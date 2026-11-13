@@ -743,7 +743,7 @@ impl Voice {
                         // controller.ts `rekey`: a changed identity (E_UMK_CHANGED) pauses this device, which stays in the
                         // call; any other trust block (unlisted, revoked, credential, tier, binding) blocks the call and
                         // the device leaves, the block recorded for the stage's notice (Task 18, RV-3).
-                        if code != "E_UMK_CHANGED" && crate::calls::join::is_trust_block(&code) {
+                        if refused_epoch(&code) == RefusedEpoch::Leave {
                             let participants: Vec<UserId> = this
                                 .inner
                                 .snapshot()
@@ -984,6 +984,26 @@ fn code_of(e: &crate::seams::HttpError) -> String {
     }
 }
 
+/// What a call does when the gate refuses its group's newest epoch mid-call (controller.ts `rekey`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusedEpoch {
+    /// The media keys are dropped and the call stays, its error shown, until an epoch passes again (ruling R24): a
+    /// changed identity (`E_UMK_CHANGED`) and any refusal that is not a trust block.
+    Pause,
+    /// A trust block other than a changed identity (unlisted, revoked, credential, tier, binding): the block is recorded
+    /// for the stage's notice (`BlockWhen::Left`) and this device leaves.
+    Leave,
+}
+
+/// controller.ts `rekey`'s choice for a refused epoch's `code`.
+pub fn refused_epoch(code: &str) -> RefusedEpoch {
+    if code != "E_UMK_CHANGED" && crate::calls::join::is_trust_block(code) {
+        RefusedEpoch::Leave
+    } else {
+        RefusedEpoch::Pause
+    }
+}
+
 /// Whether an epoch the gate passed goes to the media: a newer one, or (ruling R24) the same one again after a refusal
 /// suspended it (the person re-trusted with no commit between), which resumes the call.
 pub fn hands_on(epoch: u64, last: u64, suspended: bool) -> bool {
@@ -1080,6 +1100,25 @@ mod tests {
             ])]),
         ])]);
         assert!(decode_community_calls(&bad.encode()).is_err());
+    }
+
+    /// Review I3 (controller.ts `rekey`): a changed identity pauses the call and the device stays; every other trust block
+    /// (core-port.ts `TRUST_BLOCKS`, E_BINDING included) leaves it; any other refusal keeps R24's suspend and resume.
+    #[test]
+    fn a_refused_epoch_pauses_on_a_changed_identity_and_leaves_on_any_other_trust_block() {
+        assert_eq!(refused_epoch("E_UMK_CHANGED"), RefusedEpoch::Pause);
+        for code in [
+            "E_CREDENTIAL",
+            "E_DEVICE_UNLISTED",
+            "E_DEVICE_REVOKED",
+            "E_TIER_MISMATCH",
+            "E_BINDING",
+        ] {
+            assert_eq!(refused_epoch(code), RefusedEpoch::Leave, "{code}");
+        }
+        for code in ["E_NETWORK", "E_EPOCH_STALE", "E_CORE_DECODE", ""] {
+            assert_eq!(refused_epoch(code), RefusedEpoch::Pause, "{code}");
+        }
     }
 
     /// Ruling R24: a refusal, then the same epoch passing again, resumes; an older one never does.

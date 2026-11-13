@@ -1252,3 +1252,79 @@ async fn blocked_contact_refuses_join_before_any_call_write() {
         "the room never saw this device: {room}"
     );
 }
+
+/// Review I3: `Voice::join` goes through the ring area's gate. A contact whose identity changed is in the call group: the
+/// voice join is refused before anything is posted (the same answer as the gate's own), and the block is published.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost, the wasi core and dilla-testkit"]
+async fn a_voice_join_goes_through_the_ring_gate() {
+    let p = pair("t18-voice-gate", 0x1809).await;
+    p.peer.call("sync", json!({})).await;
+    p.peer.call("rotate_umk", json!({})).await;
+    p.peer
+        .call("send", json!({ "body": "after rotation" }))
+        .await;
+    real::trust_is(&p.client, p.peer_user(), true).await;
+    p.peer
+        .call(
+            "call_join",
+            json!({ "actor": "peer", "channel": p.voice().hex() }),
+        )
+        .await;
+    let refused = p
+        .client
+        .voice()
+        .join(p.voice())
+        .await
+        .expect("client")
+        .expect_err("the voice join is refused at the gate");
+    assert!(
+        matches!(&refused, dilla_client::ClientError::Sync(code) if code == "E_UMK_CHANGED"),
+        "{refused:?}"
+    );
+    let s = wait_for(&p.client, WAIT, "the block", |s| s.ring.blocked.is_some()).await;
+    let block = s.ring.blocked.clone().unwrap();
+    assert_eq!(block.when, dilla_client::state::ring::BlockWhen::BeforeJoin);
+    assert_eq!(
+        s.voice.call.phase,
+        dilla_client::calls::CallPhase::Idle,
+        "no call"
+    );
+    let devices = p.peer.call_devices(p.voice()).await;
+    assert!(
+        !devices.contains(&hex(&p.me.device_id)),
+        "the call group never saw this device: {devices:?}"
+    );
+}
+
+/// Review I3: `Voice::join_gated` follows the join the ring area's gate let through (an answered ring): this device is
+/// in the DM's call as its own, and the peer's call group lists it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost, the wasi core and dilla-testkit"]
+async fn join_gated_follows_the_handed_join() {
+    let p = pair("t18-join-gated", 0x180a).await;
+    let dm = open_dm(&p.peer, p.me()).await;
+    peer_calls(&p.peer, dm).await;
+    wait_for(&p.client, WAIT, "the ring", |s| ringing(s, dm)).await;
+    let gated = p
+        .client
+        .ring()
+        .join(dm, None, String::new())
+        .await
+        .unwrap()
+        .expect("client")
+        .expect("a DM with a readable group is not blocked");
+    p.client
+        .voice()
+        .join_gated(dm, None, gated)
+        .await
+        .expect("client")
+        .expect("the handed join is followed");
+    let s = wait_for(&p.client, WAIT, "in the DM's call", |s| {
+        s.voice.call.phase == dilla_client::calls::CallPhase::In && s.voice.call.channel == Some(dm)
+    })
+    .await;
+    assert!(s.voice.call.call_id.is_some());
+    let devices = p.peer.call_devices(dm).await;
+    assert!(devices.contains(&hex(&p.me.device_id)), "{devices:?}");
+}
