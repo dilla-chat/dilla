@@ -15,8 +15,10 @@ use dilla_client::features::server_admin::{
     AFK_DEFAULT_TIMEOUT, AdminError, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, Direction,
     NameProblem, Parent, Reply, TOPIC_MAX_BYTES, Tri, gif_key_valid, name_problem, nfc,
 };
+use dilla_client::state::roles::RoleId;
 use dilla_client::state::server_admin::{GifRating, InviteId};
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, UserId};
+use dilla_client::sync::api::ApiError;
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
     SharedString, Styled, Subscription, Window, div,
@@ -98,6 +100,60 @@ impl OverviewDraft {
     }
 }
 
+/// What the Join roles page read (BotSection.tsx `getBotJoinRole`): the role the Bot gives on join and the installation
+/// it is set on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinRoleSetting {
+    pub role: Option<RoleId>,
+    pub installation: [u8; 16],
+}
+
+/// The Join roles page's draft (BotSection.tsx `joinRole`, `joinRoleValue`, `joinRoleLoadedFor`, `joinRoleError`): the
+/// picked role against the saved one, saved by the frame's footer as the web's managed bot form is.
+#[derive(Clone, Debug, Default)]
+pub struct JoinRoleDraft {
+    /// `None` until the read lands; `Some(None)`: the community has no Bot installation.
+    pub loaded: Option<Option<JoinRoleSetting>>,
+    /// The select's value (`None`: "No role").
+    pub value: Option<RoleId>,
+    pub busy: bool,
+    /// The read's or the save's refusal, worded (`errorMessage`).
+    pub error: Option<String>,
+    /// Set by the workspace's `save`; [`Body::flush_save`] sends it.
+    pub save_requested: bool,
+}
+
+impl JoinRoleDraft {
+    /// The read setting, once it is there.
+    pub fn setting(&self) -> Option<JoinRoleSetting> {
+        self.loaded.flatten()
+    }
+
+    /// `joinRoleDirty`: the select differs from the saved role.
+    pub fn dirty(&self) -> bool {
+        self.setting().is_some_and(|s| s.role != self.value)
+    }
+
+    /// Throws the pick away (`reset`: the saved role again).
+    pub fn reset(&mut self) {
+        if let Some(s) = self.setting() {
+            self.value = s.role;
+        }
+        self.error = None;
+    }
+}
+
+/// BotSection.tsx `errorMessage`.
+pub fn bot_error(e: &ApiError) -> String {
+    if e.code == "E_FORBIDDEN" || e.status == 403 {
+        t("admin.bot.error.forbidden").to_owned()
+    } else if e.status == 409 || e.code == "E_CONFLICT" {
+        t("admin.bot.error.conflict").to_owned()
+    } else {
+        tf("admin.bot.error.other", &[("code", &e.code)])
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Dialogue {
     None,
@@ -123,6 +179,8 @@ pub struct Body {
     clock: Clock,
     section: ServerSection,
     pub overview: Rc<RefCell<OverviewDraft>>,
+    /// The Join roles page's draft.
+    pub join_role: Rc<RefCell<JoinRoleDraft>>,
     name: Entity<InputState>,
     // The dialogs: one at a time, with their one action's state.
     dialogue: Dialogue,
@@ -239,6 +297,11 @@ impl Body {
             ));
         }
         let host = String::new();
+        // A fixture has no client: its Join roles page draws as an instance with no Bot installation answers it.
+        let join_role = Rc::new(RefCell::new(JoinRoleDraft {
+            loaded: client.is_none().then_some(None),
+            ..JoinRoleDraft::default()
+        }));
         let mut this = Self {
             community,
             state,
@@ -246,6 +309,7 @@ impl Body {
             clock,
             section: ServerSection::Overview,
             overview,
+            join_role,
             name,
             dialogue: Dialogue::None,
             dialogue_busy: false,
@@ -426,8 +490,111 @@ impl Body {
                 let reply = admin.load_access(community);
                 self.run(reply, window, cx, |_, _, _, cx| cx.notify());
             }
+            ServerSection::JoinRoles => self.load_join_role(window, cx),
             _ => {}
         }
+    }
+
+    /// BotSection.tsx's two reads for Join roles: the installation (`getBotInstallation`, which the page's readiness and its
+    /// Bot setup button follow) and the join role (`getBotJoinRole`), with the roles the select offers.
+    fn load_join_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let community = self.community;
+        {
+            let mut d = self.join_role.borrow_mut();
+            d.loaded = None;
+            d.error = None;
+        }
+        drop(client.bot_admin().refresh_installation(community));
+        let read = client.roles().run(move |r| async move {
+            let _ = r.load_access(community).await;
+            r.bot_join_role(community).await
+        });
+        let draft = self.join_role.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = read.await;
+            let _ = this.update_in(cx, |_, _, cx| {
+                let mut d = draft.borrow_mut();
+                match result {
+                    Ok(found) => {
+                        let setting = found
+                            .map(|(role, installation)| JoinRoleSetting { role, installation });
+                        d.value = setting.and_then(|s| s.role);
+                        d.loaded = Some(setting);
+                    }
+                    Err(e) => {
+                        d.error = Some(bot_error(&e));
+                        d.loaded = Some(None);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Sends the Join roles page's save (the footer's Save; BotSection.tsx `saveJoinRole`): the picked role on the read
+    /// installation, "No role" as the zero id. The installation must still be the one the page read.
+    fn flush_join_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (role, installation) = {
+            let mut d = self.join_role.borrow_mut();
+            if !d.save_requested {
+                return;
+            }
+            d.save_requested = false;
+            let Some(setting) = d.setting() else {
+                return;
+            };
+            if d.busy || !d.dirty() || !self.join_role_ready(&setting) {
+                return;
+            }
+            d.busy = true;
+            d.error = None;
+            (d.value, setting.installation)
+        };
+        cx.notify();
+        let Some(client) = self.client.clone() else {
+            self.join_role.borrow_mut().busy = false;
+            return;
+        };
+        let community = self.community;
+        let save = client.roles().run(move |r| async move {
+            r.configure_bot_join_role(community, role, installation)
+                .await
+        });
+        let draft = self.join_role.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = save.await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                let mut d = draft.borrow_mut();
+                d.busy = false;
+                match result {
+                    Ok(ack) if ack == installation => {
+                        d.loaded = Some(Some(JoinRoleSetting { role, installation }));
+                        drop(d);
+                        this.say(t("admin.bot.joinRole.saved").to_owned(), cx);
+                    }
+                    // `bot installation changed`: worded as any other failure.
+                    Ok(_) => {
+                        d.error = Some(tf("admin.bot.error.other", &[("code", "E_CONFLICT")]));
+                    }
+                    Err(e) => d.error = Some(bot_error(&e)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `joinRoleReady`: the installation the page read is the one the join role was read on.
+    fn join_role_ready(&self, setting: &JoinRoleSetting) -> bool {
+        self.state
+            .bot_admin
+            .installation
+            .get(&self.community)
+            .is_some_and(|i| i.id == setting.installation)
     }
 
     /// Opens a dialog that asks for the server's name typed again (hand over, delete).
@@ -447,6 +614,7 @@ impl Body {
     /// Sends the Overview's save (the footer's Save): the name first, then the timeout; a partial save retries only what
     /// failed (OverviewSection.tsx `save`).
     pub fn flush_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_join_role(window, cx);
         let (rename, timeout) = {
             let mut d = self.overview.borrow_mut();
             if !d.save_requested {
@@ -1324,5 +1492,64 @@ impl Render for Body {
             column = column.child(part);
         }
         column.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal(status: u16, code: &str) -> ApiError {
+        ApiError {
+            status,
+            code: code.into(),
+            detail: String::new(),
+            retry_after_ms: None,
+            extra: Vec::new(),
+        }
+    }
+
+    /// BotSection.tsx `joinRoleDirty` and `reset`: dirty only once the setting is read and the pick differs from it;
+    /// reset puts the saved role back. No installation is never dirty.
+    #[test]
+    fn the_join_role_draft_is_dirty_only_against_a_read_setting() {
+        let crew = [7; 16];
+        let mut d = JoinRoleDraft {
+            value: Some(crew),
+            ..JoinRoleDraft::default()
+        };
+        assert!(!d.dirty(), "nothing read yet");
+        d.loaded = Some(None);
+        assert!(!d.dirty(), "no installation");
+        d.loaded = Some(Some(JoinRoleSetting {
+            role: None,
+            installation: [1; 16],
+        }));
+        assert!(d.dirty());
+        d.error = Some("x".into());
+        d.reset();
+        assert_eq!((d.value, d.error.as_deref()), (None, None));
+        assert!(!d.dirty());
+    }
+
+    /// BotSection.tsx `errorMessage`.
+    #[test]
+    fn a_bot_refusal_is_worded_as_the_web_words_it() {
+        assert_eq!(
+            bot_error(&refusal(403, "E_X")),
+            t("admin.bot.error.forbidden")
+        );
+        assert_eq!(
+            bot_error(&refusal(0, "E_FORBIDDEN")),
+            t("admin.bot.error.forbidden")
+        );
+        assert_eq!(
+            bot_error(&refusal(409, "E_X")),
+            t("admin.bot.error.conflict")
+        );
+        assert_eq!(
+            bot_error(&refusal(500, "E_BOOM")),
+            tf("admin.bot.error.other", &[("code", "E_BOOM")])
+        );
     }
 }

@@ -1,0 +1,28 @@
+{
+  "digest": "0bc3969eeccb4dc4256d4fc5c4d34c42413f21c1e280fc15953d0f621d8684bb",
+  "shift": 131668,
+  "hand_migrated": false,
+  "ids": {
+    "channel:midgard/afk": "fb2e07872623f08591c12bbce252b0c8",
+    "channel:midgard/general": "f7738017c0ad05820cb85c6795e43162",
+    "channel:northern/afk": "6901206fc85ac100244ebd792fd31a27",
+    "channel:northern/desktop": "d37d89a291601dade7635f4a8fcccca6",
+    "channel:northern/general": "4246f74a63ace0832d17d631f64bf842",
+    "channel:northern/projects": "37410c34909ae7322f6768551d89281b",
+    "channel:northern/release": "b68a54996b2627619b22ca46847587b1",
+    "channel:northern/standup": "48a081466e8444cd942e1c6ca73a4ea1",
+    "person:ada": "129b4fc3dd5563820b5e7cac5fed3d91",
+    "person:bjorn": "fe3d93c735f6508e7178cbdc15fe3fa2",
+    "person:glenn": "00fa566c8f1507910e3f591fa81bb4e8",
+    "person:ines": "edba28821210627ac7b708b59adaf57b",
+    "person:kari": "12ade415c1a713751aa4cad64ed7953b",
+    "person:liv": "8e074d9c5ea414fcd2813d2574371c79",
+    "person:mira": "26144faa6e2641854862f21f7da9de13",
+    "person:ole": "7f48229c10c0b3ac50a6de1fd387e7da",
+    "person:sven": "830e1f640f7feb75d5e22620ce2c25bd",
+    "person:tove": "f424f7ebeab3a18e6c9ed296654fd317",
+    "person:ulf": "ab38290371732a51cc8255b9fd0def14",
+    "server:midgard": "e56eae209264f83155cfbea328fbb35b",
+    "server:northern": "fe2aaaf4c6a6e72bccf9e5ce526b4342"
+  }
+}

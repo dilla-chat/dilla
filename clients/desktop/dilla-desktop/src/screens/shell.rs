@@ -1465,10 +1465,19 @@ impl Render for ShellView {
         });
 
         let weak = shell.clone();
+        // The bell's reminders popover (20): its badge, and the popover itself while open.
+        let wid = window.window_handle().window_id();
+        let reminders = crate::screens::commands::reminders::popover(&ctx, window, cx);
+        let (reminders_due, reminders_open) =
+            crate::screens::commands::reminders::bell_state(wid, &state, cx);
+        let bell_focus = crate::screens::commands::reminders::bell_focus(wid, cx);
         let titlebar = titlebar::render(
             &titlebar::TitlebarModel {
                 controls: self.controls,
                 search_hint: SEARCH_HINT,
+                reminders_due,
+                reminders_open,
+                bell_focus: Some(bell_focus),
             },
             &titlebar::TitlebarHandlers {
                 on_settings: Rc::new(move |_, cx| {
@@ -1478,7 +1487,14 @@ impl Render for ShellView {
                 on_search: Rc::new(|window, cx| {
                     search::request_open_in(window.window_handle().window_id(), cx)
                 }),
+                on_reminders: Rc::new(|window, cx| {
+                    crate::screens::commands::reminders::toggle(
+                        window.window_handle().window_id(),
+                        cx,
+                    )
+                }),
             },
+            reminders,
         );
 
         div()

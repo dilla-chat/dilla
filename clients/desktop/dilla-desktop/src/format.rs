@@ -131,6 +131,24 @@ pub fn reminder_in(ts: u64, now: u64, zone: Zone, locale: &str) -> String {
     }
 }
 
+/// When a reminder is due, as the reminders popover writes it (UtilityCommandProvider.tsx `reminderWhen`): `Today,
+/// 20:00`, `Tomorrow, 08:30`, else `Fri 30 Oct, 20:00` (en-GB's short weekday, day and month). `at` is the due time in
+/// the reader's zone, `days` the calendar days from today to it.
+pub fn reminder_when(at: DateTime<FixedOffset>, days: i64) -> String {
+    const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let hhmm = fmt_time(&at);
+    match days {
+        0 => tf("reminder.today", &[("time", &hhmm)]),
+        1 => tf("reminder.tomorrow", &[("time", &hhmm)]),
+        _ => format!(
+            "{} {} {}, {hhmm}",
+            WEEKDAYS[at.weekday().num_days_from_monday() as usize],
+            at.day(),
+            EN[at.month0() as usize]
+        ),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Order {
     /// `Oct 3, 2026`.
@@ -330,6 +348,24 @@ mod tests {
         assert_eq!(
             relative_in(utc(2026, 10, 3, 8, 0), now, UTC, "sv-SE"),
             "3 okt. 2026, 08:00"
+        );
+    }
+
+    /// UtilityCommandProvider.tsx `reminderWhen`: today and tomorrow by name, else en-GB's "Fri 30 Oct".
+    #[test]
+    fn the_popover_names_today_tomorrow_else_the_weekday_and_date() {
+        let at = |ts: u64| at(ts, UTC);
+        assert_eq!(
+            reminder_when(at(utc(2026, 10, 30, 20, 0)), 0),
+            "Today, 20:00"
+        );
+        assert_eq!(
+            reminder_when(at(utc(2026, 10, 31, 8, 30)), 1),
+            "Tomorrow, 08:30"
+        );
+        assert_eq!(
+            reminder_when(at(utc(2026, 10, 30, 20, 0)), 3),
+            "Fri 30 Oct, 20:00"
         );
     }
 
