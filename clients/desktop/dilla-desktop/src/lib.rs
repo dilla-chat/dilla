@@ -215,6 +215,26 @@ mod tests {
     /// Integration 3, step 5: the Bot page's step-up (Task 21's `bot_page::StepUp`) is the factor area's dialog (Task
     /// 26's `ask_step_up`), installed with the app, so a Bot capability save asks for a fresh factor instead of saying
     /// the step-up is missing.
+    /// Integration 3, re-review listed item (the toast component, `dilla_desktop_ui::components::toast`): a toast shown
+    /// for window A draws in A only; one shown with no window to name (no active window) draws in every window.
+    #[gpui::test]
+    fn a_toast_shows_in_its_own_window(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop_ui::components::toast::{current_in, show_toast_in};
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            show_toast_in(Some(a), "saved", cx);
+            assert_eq!(current_in(a, cx).as_deref(), Some("saved"));
+            assert_eq!(current_in(b, cx), None, "B shows none");
+            show_toast_in(None, "everywhere", cx);
+            assert_eq!(current_in(b, cx).as_deref(), Some("everywhere"));
+        });
+    }
+
     #[gpui::test]
     fn install_gives_the_bot_page_the_factor_step_up(cx: &mut gpui::TestAppContext) {
         cx.update(super::install);

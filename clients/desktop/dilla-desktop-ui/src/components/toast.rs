@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui::{
     App, ElementId, Global, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    SharedString, Styled, Window, WindowId, div, px,
 };
 
 use crate::icon::Icon;
@@ -20,8 +20,9 @@ pub const TOAST_MS: u64 = 2400;
 
 #[derive(Default)]
 struct Toasts {
-    /// The text showing, and its sequence number (a timer only ends the toast it was started for).
-    current: Option<(SharedString, u64)>,
+    /// The text showing, its sequence number (a timer only ends the toast it was started for) and the window it was
+    /// shown for (`None`: every window).
+    current: Option<(SharedString, u64, Option<WindowId>)>,
     n: u64,
 }
 
@@ -30,11 +31,28 @@ impl Global for Toasts {}
 /// The text of the toast showing now, if any.
 pub fn current(cx: &App) -> Option<SharedString> {
     cx.try_global::<Toasts>()
-        .and_then(|t| t.current.as_ref().map(|(text, _)| text.clone()))
+        .and_then(|t| t.current.as_ref().map(|(text, _, _)| text.clone()))
 }
 
-/// Shows `text` as the toast, replacing one already showing, and ends it after [`TOAST_MS`].
+/// The text of the toast `window` shows now: one shown for it, or for every window.
+pub fn current_in(window: WindowId, cx: &App) -> Option<SharedString> {
+    cx.try_global::<Toasts>().and_then(|t| {
+        t.current
+            .as_ref()
+            .filter(|(_, _, w)| w.is_none_or(|w| w == window))
+            .map(|(text, _, _)| text.clone())
+    })
+}
+
+/// Shows `text` as the toast of the window that has the keyboard (every window when none has it), replacing one
+/// already showing, and ends it after [`TOAST_MS`].
 pub fn show_toast(text: impl Into<SharedString>, cx: &mut App) {
+    let window = cx.active_window().map(|w| w.window_id());
+    show_toast_in(window, text, cx);
+}
+
+/// Shows `text` as the toast of `window` (`None`: every window).
+pub fn show_toast_in(window: Option<WindowId>, text: impl Into<SharedString>, cx: &mut App) {
     let text = text.into();
     if !cx.has_global::<Toasts>() {
         cx.set_global(Toasts::default());
@@ -42,7 +60,7 @@ pub fn show_toast(text: impl Into<SharedString>, cx: &mut App) {
     let n = {
         let toasts = cx.global_mut::<Toasts>();
         toasts.n += 1;
-        toasts.current = Some((text, toasts.n));
+        toasts.current = Some((text, toasts.n, window));
         toasts.n
     };
     cx.refresh_windows();
@@ -52,7 +70,7 @@ pub fn show_toast(text: impl Into<SharedString>, cx: &mut App) {
             .await;
         cx.update(|cx| {
             let toasts = cx.global_mut::<Toasts>();
-            if toasts.current.as_ref().is_some_and(|(_, k)| *k == n) {
+            if toasts.current.as_ref().is_some_and(|(_, k, _)| *k == n) {
                 toasts.current = None;
                 cx.refresh_windows();
             }
@@ -74,7 +92,7 @@ impl ToastHost {
 }
 
 impl RenderOnce for ToastHost {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let region = div()
             .id(self.id.clone())
             .absolute()
@@ -85,7 +103,7 @@ impl RenderOnce for ToastHost {
             .flex_col()
             .items_center()
             .gap(px(6.0));
-        match current(cx) {
+        match current_in(window.window_handle().window_id(), cx) {
             None => region,
             Some(message) => region.child(
                 div()
