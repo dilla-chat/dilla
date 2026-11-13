@@ -54,6 +54,73 @@ pub struct ReqwestHttp {
     base: String,
     auth: AuthToken,
     client: reqwest::Client,
+    /// The instance's clock as its last `Date` header said (Task 20: a sealed Bot command's `sent_at`).
+    clock: std::sync::Arc<ServerClock>,
+}
+
+/// The offset of the instance's clock from this device's, from the `Date` header of each HTTP answer (whole seconds).
+#[derive(Debug, Default)]
+pub struct ServerClock {
+    /// Instance seconds minus local seconds; `i64::MIN` while no answer carried a date.
+    offset: std::sync::atomic::AtomicI64,
+}
+
+fn local_now_s() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+impl ServerClock {
+    fn new() -> Self {
+        Self {
+            offset: std::sync::atomic::AtomicI64::new(i64::MIN),
+        }
+    }
+
+    /// Records an answer's `Date` header.
+    pub fn observe(&self, date: &str) {
+        if let Some(at) = parse_http_date(date) {
+            self.offset
+                .store(at - local_now_s(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Unix seconds by the instance's clock, else this device's (no answer seen yet).
+    pub fn now_s(&self) -> u64 {
+        let offset = self.offset.load(std::sync::atomic::Ordering::Relaxed);
+        let offset = if offset == i64::MIN { 0 } else { offset };
+        u64::try_from(local_now_s().saturating_add(offset)).unwrap_or(0)
+    }
+}
+
+/// An RFC 9110 IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) as unix seconds.
+pub fn parse_http_date(text: &str) -> Option<i64> {
+    let p: Vec<&str> = text.split_whitespace().collect();
+    if p.len() != 6 || p[5] != "GMT" {
+        return None;
+    }
+    let day: i64 = p[1].parse().ok()?;
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|m| *m == p[2])? as i64
+        + 1;
+    let year: i64 = p[3].parse().ok()?;
+    let hms: Vec<i64> = p[4]
+        .split(':')
+        .map(|x| x.parse().ok())
+        .collect::<Option<_>>()?;
+    if hms.len() != 3 || !(1..=31).contains(&day) || hms[0] > 23 || hms[1] > 59 || hms[2] > 60 {
+        return None;
+    }
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + hms[0] * 3600 + hms[1] * 60 + hms[2])
 }
 
 fn transport(e: reqwest::Error) -> HttpError {
@@ -62,6 +129,11 @@ fn transport(e: reqwest::Error) -> HttpError {
 }
 
 impl ReqwestHttp {
+    /// Unix seconds by the instance's clock (its last `Date` header), else this device's.
+    pub fn server_now_s(&self) -> u64 {
+        self.clock.now_s()
+    }
+
     /// A transport for the instance at `base`. It fails only when the TLS backend cannot start.
     pub fn new(base: Url, auth: AuthToken) -> Result<Self, HttpError> {
         let client = reqwest::Client::builder()
@@ -73,6 +145,7 @@ impl ReqwestHttp {
             base: base.as_str().trim_end_matches('/').to_owned(),
             auth,
             client,
+            clock: std::sync::Arc::new(ServerClock::new()),
         })
     }
 }
@@ -273,6 +346,13 @@ impl Http for ReqwestHttp {
         }
 
         let response = request.send().await.map_err(transport)?;
+        if let Some(date) = response
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|d| d.to_str().ok())
+        {
+            self.clock.observe(date);
+        }
         let status = response.status().as_u16();
         if !entry.accepts(status) {
             // The refusal's body is never read: the status is the whole error.
@@ -287,5 +367,27 @@ impl Http for ReqwestHttp {
         value
             .deserialized()
             .map_err(|e| HttpError::Decode(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn an_imf_fixdate_is_read_as_unix_seconds() {
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(
+            parse_http_date("Fri, 13 Nov 2026 01:19:41 GMT"),
+            Some(1_794_532_781)
+        );
+        assert_eq!(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT"), None);
+        let clock = ServerClock::new();
+        let local = clock.now_s();
+        clock.observe("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert!(clock.now_s() < local, "the instance's clock wins once seen");
     }
 }

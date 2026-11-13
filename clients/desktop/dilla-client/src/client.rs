@@ -126,6 +126,10 @@ impl SyncHooks for Hooks {
     }
     fn trust_changed(&self) {}
     fn connection(&self, event: ConnectionEvent) {
+        // Task 20: the Bot area's connect hooks (catalog sync and Bot user lookup on ready, secrets dropped on a refusal).
+        if let Some(inner) = self.inner.get().and_then(Weak::upgrade) {
+            crate::features::bot::on_connection(&inner, &event);
+        }
         let _ = self.tx.send(Update::Connection(event));
     }
     fn community_changed(&self, _community: [u8; 16]) {
