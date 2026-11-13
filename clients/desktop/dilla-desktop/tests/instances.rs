@@ -596,8 +596,7 @@ fn a_stale_row_neither_opens_nor_erases_a_reused_id(cx: &mut TestAppContext) {
         .window
         .update(cx, |view, _, cx| view.ask_remove(0, cx))
         .unwrap();
-    // (the row of stale2 is the one it loaded, before the swap above: newer.example took the id after it loaded)
-    let _ = &stale2;
+    // (stale2's row is the one it loaded, before the swap above: newer.example took the id after it loaded)
     let keys = kc.accounts().len();
     stale2
         .window
@@ -628,7 +627,7 @@ fn removal_waits_for_the_client_to_stop(cx: &mut TestAppContext) {
     app.window
         .update(cx, |view, window, cx| view.confirm(window, cx))
         .unwrap();
-    cx.run_until_parked();
+    settle(cx, 10);
     assert!(
         app.polls.get() >= 4,
         "it asked again until the client had stopped"
@@ -648,10 +647,23 @@ fn removal_waits_for_the_client_to_stop(cx: &mut TestAppContext) {
     app.window
         .update(cx, |view, window, cx| view.confirm(window, cx))
         .unwrap();
-    cx.run_until_parked();
-    assert_eq!(app.error(cx).as_deref(), Some(copy::ERROR_IN_USE));
+    // The wait is on the clock, not a burst of turns: nothing has given up before the time is up.
+    settle(cx, 100);
+    assert_eq!(app.error(cx), None, "still waiting after 10 s");
+    settle(cx, 210);
+    assert_eq!(app.error(cx).as_deref(), Some(copy::ERROR_REMOVING));
     assert_eq!(app.entries(cx), ["two.example"]);
     assert!(two.data_dir.exists());
+}
+
+/// Lets `steps` polls of 100 ms pass on the test executor, running everything that is ready after each.
+fn settle(cx: &mut TestAppContext, steps: u32) {
+    cx.run_until_parked();
+    for _ in 0..steps {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+    }
 }
 
 /// A keychain that refuses to delete refuses the removal before any window is closed.
@@ -785,4 +797,108 @@ fn the_window_receives_the_invite_and_one_start_runs(cx: &mut TestAppContext) {
         windows::Starting::Busy
     ));
     cx.update(windows::release_all);
+}
+
+/// A window closed while its client was still starting does not leave the instance "starting": the next window runs
+/// its own start.
+#[gpui::test]
+fn a_window_closed_mid_start_lets_the_next_one_start(cx: &mut TestAppContext) {
+    use dilla_desktop::{Launch, windows};
+    let root = root();
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances
+        .add(url::Url::parse("https://one.example/").unwrap())
+        .unwrap();
+    let launch = Launch::live(Some(root.clone()), Arc::new(MemoryKeychain::new()));
+    cx.update(dilla_desktop::install);
+    cx.update(|cx| windows::open_instance(cx, &launch, cfg.clone(), None, false))
+        .unwrap();
+    assert!(cx.update(|cx| windows::is_starting(cx, cfg.id)));
+
+    cx.windows()[0]
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    // The start itself (a thread) still runs to its end, but nothing keeps "starting" once it has: no stuck state.
+    cx.executor().allow_parking();
+    let began = std::time::Instant::now();
+    while cx.update(|cx| windows::is_starting(cx, cfg.id)) {
+        cx.run_until_parked();
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(60),
+            "starting ended with the start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    cx.update(|cx| windows::open_instance(cx, &launch, cfg.clone(), None, false))
+        .unwrap();
+    assert!(
+        cx.update(|cx| windows::is_starting(cx, cfg.id)),
+        "the reopened window started its own client"
+    );
+    cx.update(windows::release_all);
+}
+
+/// Removing an instance whose client is still starting completes: nothing is left held afterwards.
+#[gpui::test]
+fn removal_during_a_start_completes_and_frees_the_hold(cx: &mut TestAppContext) {
+    use dilla_desktop::{Launch, windows};
+    let root = root();
+    let kc = Arc::new(MemoryKeychain::new());
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances
+        .add(url::Url::parse("https://one.example/").unwrap())
+        .unwrap();
+    let launch = Launch::live(Some(root.clone()), kc.clone());
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let (r, k) = (root.clone(), kc.clone());
+    let manager = cx.add_window(move |window, cx| {
+        let host = Host {
+            release: Rc::new(windows::release_instance_in),
+            held_here: Rc::new(|id, cx| windows::held_here(cx, id)),
+            stopped: Rc::new(|id, cx| windows::stopped(cx, id)),
+        };
+        ManagerView::new(Manager::load(&r, k, false), host, window, cx)
+    });
+    cx.update(|cx| windows::open_instance(cx, &launch, cfg.clone(), None, false))
+        .unwrap();
+    assert!(cx.update(|cx| windows::is_starting(cx, cfg.id)));
+
+    manager
+        .update(cx, |view, _, cx| view.ask_remove(0, cx))
+        .unwrap();
+    manager
+        .update(cx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        settle(cx, 1);
+        if manager
+            .read_with(cx, |v, _| v.entries().is_empty())
+            .unwrap()
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "removal finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        manager
+            .read_with(cx, |v, _| v.error().map(str::to_owned))
+            .unwrap(),
+        None
+    );
+    assert!(
+        !cx.update(|cx| windows::held_here(cx, cfg.id)),
+        "no hold is left behind"
+    );
+    // Free for anyone else: another window or process can hold it (it is no longer listed, but the lock is).
+    Instances::load(&root)
+        .unwrap()
+        .hold(cfg.id)
+        .expect("the hold was released");
 }

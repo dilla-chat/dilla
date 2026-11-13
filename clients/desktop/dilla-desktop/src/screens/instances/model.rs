@@ -40,6 +40,8 @@ pub enum Refusal {
     Store(StoreError),
     /// The list changed under the window (an instance removed and its id reused): nothing was done.
     Changed,
+    /// A removal gave up waiting for the instance's client to stop; its key is already erased.
+    Removing,
 }
 
 impl Refusal {
@@ -51,6 +53,7 @@ impl Refusal {
             Self::Keychain => copy::ERROR_KEYCHAIN.into(),
             Self::Store(_) => copy::ERROR_STORE.into(),
             Self::Changed => copy::ERROR_CHANGED.into(),
+            Self::Removing => copy::ERROR_REMOVING.into(),
         }
     }
 }

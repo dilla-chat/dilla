@@ -39,6 +39,7 @@ pub const ERROR_IN_USE: &str = "This instance is open in a window. Close it firs
 pub const ERROR_KEYCHAIN: &str =
     "The system keychain would not delete this instance's key, so nothing was removed. Try again.";
 pub const ERROR_STORE: &str = "Could not read your instances. Restart Dilla to try again.";
+pub const ERROR_REMOVING: &str = "This instance is still shutting down, so its removal is not finished. Remove it again in a moment.";
 pub const ERROR_CHANGED: &str =
     "Your instances changed in another window. Check the list and try again.";
 pub const ERROR_WRONG_INSTANCE: &str =

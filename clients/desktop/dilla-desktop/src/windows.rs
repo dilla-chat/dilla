@@ -56,8 +56,9 @@ struct Live {
     window: Option<WindowHandle<AppView>>,
     client: Option<Rc<Client>>,
     /// Set while a window's `Client::start` runs; a window opened meanwhile waits for it instead of starting a second
-    /// client. The token is dropped when that start ends or is abandoned.
-    starting: Option<Rc<()>>,
+    /// client. Only a `Weak`: the token is owned by the window's start task, so it dies when the start ends or the
+    /// window closes mid-start (this never keeps a start alive by itself).
+    starting: Option<Weak<()>>,
 }
 
 /// A released instance whose client has not stopped yet: its hold stays until `alive` is gone, so a removal or another
@@ -153,11 +154,11 @@ pub fn mark_starting(cx: &mut App, id: InstanceId) -> Starting {
     let Some(live) = Registry::of(cx).live.get_mut(&id.0) else {
         return Starting::Go(None);
     };
-    if live.starting.is_some() {
+    if live.starting.as_ref().is_some_and(|w| w.strong_count() > 0) {
         return Starting::Busy;
     }
     let token = Rc::new(());
-    live.starting = Some(token.clone());
+    live.starting = Some(Rc::downgrade(&token));
     Starting::Go(Some(token))
 }
 
@@ -165,7 +166,7 @@ pub fn mark_starting(cx: &mut App, id: InstanceId) -> Starting {
 pub fn is_starting(cx: &App, id: InstanceId) -> bool {
     cx.try_global::<Registry>()
         .and_then(|r| r.live.get(&id.0))
-        .is_some_and(|l| l.starting.is_some())
+        .is_some_and(|l| l.starting.as_ref().is_some_and(|w| w.strong_count() > 0))
 }
 
 /// Ends a failed start for `id`.
@@ -197,7 +198,25 @@ pub fn retire_hold(cx: &mut App, id: InstanceId, guard: InstanceGuard, alive: We
         _guard: guard,
         alive,
     });
+    // Let go of the hold as soon as the client has stopped, whether or not a removal is waiting for it.
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(RETIRE_POLL).await;
+            let pending = cx.update(|cx| {
+                let registry = Registry::of(cx);
+                registry.retired.retain(|t| t.alive.upgrade().is_some());
+                registry.retired.iter().any(|t| t.id == id)
+            });
+            if !pending {
+                break;
+            }
+        }
+    })
+    .detach();
 }
+
+/// How often a released instance's hold is checked for release.
+const RETIRE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Called when a window has closed and none is left: opens the manager when a client still runs (so the app does not
 /// vanish with work in the background and nothing to bring it back), else quits. Wire it from `main`'s
@@ -243,7 +262,7 @@ pub fn open_manager(
         .open_window(manager_options(bounds), move |window, cx| {
             window.set_window_title(copy::WINDOW_TITLE);
             let host = crate::screens::instances::view::Host {
-                release: Rc::new(|id, cx| release_instance(cx, id)),
+                release: Rc::new(release_instance_in),
                 held_here: Rc::new(|id, cx| held_here(cx, id)),
                 stopped: Rc::new(|id, cx| stopped(cx, id)),
             };
@@ -369,15 +388,12 @@ pub fn release_instance(cx: &mut App, id: InstanceId) {
         client,
         starting,
     } = live;
-    let alive: Weak<dyn Any> = match (&client, &starting) {
+    let alive: Weak<dyn Any> = match (&client, starting) {
         (Some(c), _) => {
             let any: Rc<dyn Any> = c.clone();
             Rc::downgrade(&any)
         }
-        (None, Some(token)) => {
-            let any: Rc<dyn Any> = token.clone();
-            Rc::downgrade(&any)
-        }
+        (None, Some(token)) => token,
         (None, None) => Weak::<()>::new(),
     };
     retire_hold(cx, id, guard, alive);
@@ -388,7 +404,11 @@ pub fn release_instance(cx: &mut App, id: InstanceId) {
     }
     // The client stops when the last reference goes: the registry's (here), then the shell view's with its window.
     drop(client);
-    drop(starting);
+}
+
+/// [`release_instance`] with the argument order of the manager's host closures.
+pub fn release_instance_in(id: InstanceId, cx: &mut App) {
+    release_instance(cx, id);
 }
 
 /// Forgets every window and client, for a clean quit.

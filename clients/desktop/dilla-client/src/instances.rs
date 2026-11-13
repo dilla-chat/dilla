@@ -643,10 +643,19 @@ fn exists(path: &Path) -> Result<bool, StoreError> {
     }
 }
 
+/// Deletes `dir`. A store whose last user (a runtime task of a client that just stopped) has not closed it yet makes
+/// Windows refuse with a sharing violation, so a failure is tried again for about two seconds before it is reported.
 fn remove_dir_if_present(dir: &Path) -> Result<(), StoreError> {
-    match fs::remove_dir_all(dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
+    let mut last = None;
+    for attempt in 0..20 {
+        match fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        if attempt < 19 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
+    Err(last.map_or(StoreError::Database, StoreError::from))
 }

@@ -55,8 +55,9 @@ pub struct Host {
     pub stopped: InstanceStopped,
 }
 
-/// How many times a removal looks again for a released client to stop, before it gives up with "in use".
-const STOP_ATTEMPTS: u32 = 200;
+/// How often a removal asks whether the released client has stopped, and how many times (about 30 s in all).
+pub const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+pub const STOP_ATTEMPTS: u32 = 300;
 
 enum Confirm {
     /// The instance and the server the person saw in the list: an id reused for another server is not removed.
@@ -232,6 +233,9 @@ impl ManagerView {
     /// same instance (id and server) is still listed after it: an id removed and reused for another server meanwhile
     /// opens nothing.
     pub fn open_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let Ok(model) = self.model.as_mut() else {
             return;
         };
@@ -322,7 +326,7 @@ impl ManagerView {
         match result {
             Ok(Some(_)) => {
                 (self.host.release)(id, cx);
-                self.await_stop(id, server, 0, window, cx);
+                self.await_stop(id, server, window, cx);
             }
             // Gone already: nothing to erase.
             Ok(None) => self.removed(Ok(()), window, cx),
@@ -330,42 +334,62 @@ impl ManagerView {
         }
     }
 
-    /// Waits (a few turns of the event loop) until the released client has stopped, then deletes the data.
+    /// Waits until the released client has stopped, asking every [`STOP_POLL`] on the executor (a client that is
+    /// still starting or shutting down takes real time), then deletes the data. After [`STOP_ATTEMPTS`] asks it gives
+    /// up with "removal still in progress": the key is already erased, so removing it again finishes the job.
     fn await_stop(
         &mut self,
         id: InstanceId,
         server: url::Url,
-        attempt: u32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if (self.host.stopped)(id, cx) {
-            let Ok(model) = self.model.as_ref() else {
-                return;
-            };
-            let root = model.root().to_path_buf();
-            let task = cx.background_spawn(async move {
-                Instances::load(&root)
-                    .map_err(InstanceError::from)
-                    .and_then(|mut list| list.remove_verified(id, &server, true))
-            });
-            cx.spawn_in(window, async move |this, cx| {
-                let result = task.await.map(|_| ()).map_err(Refusal::from);
-                this.update_in(cx, |this, window, cx| this.removed(result, window, cx))
-                    .ok();
+        cx.spawn_in(window, async move |this, cx| {
+            for _ in 0..STOP_ATTEMPTS {
+                match this.update_in(cx, |this, _, cx| (this.host.stopped)(id, cx)) {
+                    Ok(true) => {
+                        this.update_in(cx, |this, window, cx| {
+                            this.delete_data(id, server, window, cx);
+                        })
+                        .ok();
+                        return;
+                    }
+                    Ok(false) => {}
+                    Err(_) => return,
+                }
+                cx.background_executor().timer(STOP_POLL).await;
+            }
+            this.update_in(cx, |this, window, cx| {
+                this.removed(Err(Refusal::Removing), window, cx);
             })
-            .detach();
-        } else if attempt < STOP_ATTEMPTS {
-            let this = cx.entity().downgrade();
-            window.defer(cx, move |window, cx| {
-                this.update(cx, |this, cx| {
-                    this.await_stop(id, server, attempt + 1, window, cx);
-                })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The last step: the data dir and the entry go, off the UI thread.
+    fn delete_data(
+        &mut self,
+        id: InstanceId,
+        server: url::Url,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(model) = self.model.as_ref() else {
+            return;
+        };
+        let root = model.root().to_path_buf();
+        let task = cx.background_spawn(async move {
+            Instances::load(&root)
+                .map_err(InstanceError::from)
+                .and_then(|mut list| list.remove_verified(id, &server, true))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.map(|_| ()).map_err(Refusal::from);
+            this.update_in(cx, |this, window, cx| this.removed(result, window, cx))
                 .ok();
-            });
-        } else {
-            self.removed(Err(Refusal::InUse), window, cx);
-        }
+        })
+        .detach();
     }
 
     fn removed(
@@ -457,17 +481,10 @@ impl Render for ManagerView {
             "instances-url",
             TextField::new("instances-url-field", copy::ADDRESS_LABEL, &self.url),
         ));
-        let connect = Button::new(
-            "instances-connect",
-            if self.busy {
-                copy::CONNECT_BUSY
-            } else {
-                copy::CONNECT
-            },
-        )
-        .disabled(self.busy)
-        .variant(ButtonVariant::Accent)
-        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.connect_url(window, cx)));
+        let connect = Button::new("instances-connect", copy::CONNECT)
+            .disabled(self.busy)
+            .variant(ButtonVariant::Accent)
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.connect_url(window, cx)));
         let invite_field = div().flex_1().min_w_0().child(tracked_box(
             "instances-invite",
             TextField::new("instances-invite-field", copy::INVITE_LABEL, &self.invite)
@@ -630,7 +647,15 @@ impl Render for ManagerView {
                     .id("instances-error")
                     .min_h(rem * 1.6)
                     .mt_2()
-                    .when_some(self.error.clone(), |d, e| {
+                    .when(self.busy, |d| {
+                        d.child(line(
+                            copy::REMOVE_BUSY,
+                            text::MD,
+                            line_height(text::MD, 1.6),
+                            color::FG_2,
+                        ))
+                    })
+                    .when_some(self.error.clone().filter(|_| !self.busy), |d, e| {
                         d.child(line(e, text::MD, line_height(text::MD, 1.6), color::DANGER))
                     }),
             )
