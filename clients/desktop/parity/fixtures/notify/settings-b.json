@@ -1,0 +1,71 @@
+{
+  "name": "notify/settings-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/settings/notifications",
+  "clock": 1794481800,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "sven",
+        "display": "Sven"
+      }
+    ],
+    "servers": [
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "sven"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "northern-general-1",
+        "channel": "northern/general",
+        "sender": "mira",
+        "ts": 1794481740,
+        "body": "hello"
+      },
+      {
+        "key": "northern-general-2",
+        "channel": "northern/general",
+        "sender": "mira",
+        "ts": 1794481741,
+        "body": "hi"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "css=#notify-everyone-switch",
+      "gpui": "notify-everyone-switch"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}
