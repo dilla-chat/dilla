@@ -3,6 +3,10 @@
 //! Ports: the reaction parts of packages/web/src/screens/conversation/MessageItem.tsx and
 //! packages/client-core/src/worker/controller.ts (`react`, `fold`).
 //!
+//! Who reacted (`AppState::reactions`) is filled only by a parity fixture's world: the core's timeline rows carry a count and
+//! a `mine` flag per emoji and no reactor list, and the web client has none either (its `ReactionTooltip` is not wired), so
+//! the live client shows the faces it knows and none for the rest of the count.
+//!
 //! A reaction is a fold queued as an outbox row of type 3 (add) or 4 (remove) aimed at the message, its body the emoji
 //! (controller.ts `react`: "the worker does not de-duplicate reactions; the core folds them per user"). The timeline
 //! changes only when the core folds the row, so the chip's count and its `mine` flag move once the instance stored it

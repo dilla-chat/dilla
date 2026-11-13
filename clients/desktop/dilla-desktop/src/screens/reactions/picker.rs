@@ -118,10 +118,7 @@ pub fn open(
             Part::Search => {
                 crate::tracked_focus("emoji-grid-search", handle, element).into_any_element()
             }
-            Part::Cell(i) => {
-                crate::tracked_focus(super::leak_id(format!("emoji-cell-{i}")), handle, element)
-                    .into_any_element()
-            }
+            Part::Cell(i) => super::tag(format!("emoji-cell-{i}"), handle, element),
         }));
     });
     if composer {

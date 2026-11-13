@@ -183,6 +183,21 @@ receiver's transformer by identity rather than by a track id the SFU chose.
 
 Remove this copy when upstream makes the handle public or the webrtc-sys hook is upstreamed.
 
+## gpui-pre-wgpu 0.3.12
+
+Upstream: <https://crates.io/crates/gpui-pre-wgpu> (Zed's GPUI, wgpu renderer and cosmic-text system). Apache-2.0. The
+copy is the published crate minus `.cargo-ok` and `Cargo.lock`.
+
+One change (Task 10, ruling R20, 2026-11-13), marked `DILLA PATCH`: in `src/cosmic_text_system.rs`, `load_family`'s
+`allowed_bad_font_names` gains `"NotoColorEmoji"`. `load_family` skips every face whose cmap has no `'m'` (the editor measures
+with its width), and Noto Color Emoji has none, so `font_family("Noto Color Emoji")` loaded nothing and cosmic-text's unix
+fallback list reached the monochrome Noto Sans Symbols faces before the colour emoji face: a reaction chip drew a flat heart
+where the web draws the colour one. Test: `noto_color_emoji_family_loads_a_face` in
+`clients/desktop/dilla-desktop/tests/reactions.rs` (the chip of a heart shows red pixels; skipped where the font is not
+installed).
+
+Keep this patch until upstream lets a colour emoji face load as a named family.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs

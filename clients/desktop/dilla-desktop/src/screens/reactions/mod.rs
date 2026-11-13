@@ -17,9 +17,7 @@ pub mod emoji;
 pub mod keys;
 pub mod picker;
 
-use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::Mutex;
 
 use dilla_client::Area;
 use dilla_client::state::{AppState, CommunityId, Member, TimelineItem, TimelineItemState, UserId};
@@ -58,18 +56,41 @@ const GRID_PRIORITY: usize = 6;
 const POP_LEFT: f32 = 16.0;
 const POP_BOTTOM: f32 = 6.0;
 
-/// An automation id that lives as long as the app: the interface keys elements by `&'static str`, and a message's chips
-/// are as many as its reactions.
-pub(super) fn leak_id(id: String) -> &'static str {
+/// Gives `element` the automation id `id` and the focus handle's probe. The interface keys elements by `&'static str`
+/// (`crate::tracked_focus`), so an automation build interns each distinct id once (a message's chips are as many as its
+/// reactions); a shipping build has no interface and keeps the id as an ordinary element id, leaking nothing.
+#[cfg(feature = "automation")]
+pub(super) fn tag(id: String, handle: &gpui::FocusHandle, element: impl IntoElement) -> AnyElement {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
     static IDS: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
     let mut guard = IDS.lock().expect("id registry");
     let set = guard.get_or_insert_with(HashSet::new);
-    if let Some(known) = set.get(id.as_str()) {
-        return known;
-    }
-    let leaked: &'static str = Box::leak(id.into_boxed_str());
-    set.insert(leaked);
-    leaked
+    let interned: &'static str = match set.get(id.as_str()) {
+        Some(known) => known,
+        None => {
+            let leaked: &'static str = Box::leak(id.into_boxed_str());
+            set.insert(leaked);
+            leaked
+        }
+    };
+    drop(guard);
+    tracked_focus(interned, handle, element).into_any_element()
+}
+
+/// See the automation build's [`tag`].
+#[cfg(not(feature = "automation"))]
+pub(super) fn tag(
+    id: String,
+    _handle: &gpui::FocusHandle,
+    element: impl IntoElement,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(id))
+        .relative()
+        .flex_none()
+        .child(element)
+        .into_any_element()
 }
 
 /// The width of `display` at the chip's emoji size, as the text system shapes it (the emoji comes from the system's
@@ -97,10 +118,28 @@ fn emoji_width(window: &Window, display: &str) -> f32 {
     f32::from(shaped.width)
 }
 
-/// How wide the message column is: the window less the rail and the sidebar (what the timeline's log is) less the row's
-/// gutter columns and right padding.
-fn column_width(window: &Window) -> f32 {
-    f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR) - CONTENT_X - ROW_RIGHT
+/// The width the shell gives the message log, once the shell says so ([`set_log_width`]).
+struct LogWidth(f32);
+impl gpui::Global for LogWidth {}
+
+/// The shell tells this area how wide its message log is, so the chips wrap where the log's rows do whichever aside (the
+/// thread or members pane) is open. Until it does, the log is the window less the rail and the sidebar.
+pub fn set_log_width(cx: &mut App, width: f32) {
+    cx.set_global(LogWidth(width));
+}
+
+/// How wide the message column is: the log less the row's gutter columns and right padding.
+fn column_width(window: &Window, cx: &App) -> f32 {
+    let log = cx.try_global::<LogWidth>().map_or_else(
+        || f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR),
+        |w| w.0,
+    );
+    column_of(log)
+}
+
+/// The message column of a log `log` wide (MessageRow.css: 94px of gutters, 16px right).
+fn column_of(log: f32) -> f32 {
+    log - CONTENT_X - ROW_RIGHT
 }
 
 fn display_name(members: &[Member], user: UserId) -> Option<&str> {
@@ -172,7 +211,7 @@ pub fn reaction_bar(
         .collect();
 
     // The height: the chips and the add button wrapped in the column, as `flex-wrap` does, under the row's 1px grid gap.
-    let width = column_width(window);
+    let width = column_width(window, cx);
     let mut widths: Vec<f32> = chips
         .iter()
         .map(|c| chip_width(emoji_width(window, &c.display), c.count))
@@ -232,8 +271,7 @@ pub fn reaction_bar(
         .decorate(Rc::new(move |slot, handle, element| match slot {
             Slot::Chip(i) => {
                 let tip = tooltips.borrow_mut().get_mut(i).and_then(Option::take);
-                let tracked =
-                    tracked_focus(leak_id(format!("reaction-{id_key}-{i}")), handle, element);
+                let tracked = tag(format!("reaction-{id_key}-{i}"), handle, element);
                 let wrapper = div().id(SharedString::from(format!("reaction-tip-{id_key}-{i}")));
                 match tip {
                     Some(tip) => wrapper
@@ -244,8 +282,7 @@ pub fn reaction_bar(
                     None => wrapper.child(tracked).into_any_element(),
                 }
             }
-            Slot::Add => tracked_focus(leak_id(format!("reaction-{id_key}-add")), handle, element)
-                .into_any_element(),
+            Slot::Add => tag(format!("reaction-{id_key}-add"), handle, element),
         }));
         column = column.child(div().pt(px(MAIN_GAP)).child(bar));
     }
@@ -262,7 +299,8 @@ pub fn reaction_bar(
 
 /// The toolbar's and the context menu's `react`: it opens the message's grid.
 pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
-    if item.state != TimelineItemState::Ok || item.msg_id.is_none() {
+    // MessageItem.tsx L134: only a stored message (a seq) takes a reaction, not an outbox row.
+    if item.state != TimelineItemState::Ok || item.msg_id.is_none() || item.seq.is_none() {
         return Vec::new();
     }
     let key = item.key.clone();
@@ -397,21 +435,36 @@ mod tests {
     }
 
     #[test]
+    fn the_column_follows_the_logs_width() {
+        // 1280 less rail and sidebar is 980; an open 340px thread pane leaves 640.
+        assert_eq!(column_of(980.0), 980.0 - 94.0 - 16.0);
+        assert_eq!(column_of(980.0 - 340.0), 640.0 - 94.0 - 16.0);
+    }
+
+    #[gpui::test]
+    fn the_shells_log_width_wins_over_the_window(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let from_window = column_width(window, cx);
+            set_log_width(cx, 500.0);
+            assert_eq!(column_width(window, cx), column_of(500.0));
+            assert_ne!(from_window, column_of(500.0));
+        });
+    }
+
+    #[test]
     fn react_is_offered_on_a_stored_readable_message_only() {
         assert_eq!(message_actions(&item(&[])).len(), 1);
         assert_eq!(message_actions(&item(&[]))[0].id, "react");
         let mut pending = item(&[]);
         pending.msg_id = None;
         assert!(message_actions(&pending).is_empty());
+        // An outbox row has its message id but no seq yet: no `react` until the instance stored it.
+        let mut queued = item(&[]);
+        queued.seq = None;
+        assert!(message_actions(&queued).is_empty());
         let mut deleted = item(&[]);
         deleted.state = TimelineItemState::Deleted;
         assert!(message_actions(&deleted).is_empty());
-    }
-
-    #[test]
-    fn ids_are_interned() {
-        let a = leak_id("reaction-s1-0".to_owned());
-        let b = leak_id("reaction-s1-0".to_owned());
-        assert!(std::ptr::eq(a, b));
     }
 }

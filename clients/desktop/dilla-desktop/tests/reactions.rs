@@ -513,3 +513,59 @@ fn app_chip_click_toggles_the_reaction() {
     bob_client.stop();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// R20: GPUI skips a font family whose faces lack 'm' (an editor measures with it), and Noto Color Emoji has none, so a
+/// `font_family("Noto Color Emoji")` loaded nothing and the shaper fell back to the monochrome Symbols faces (a flat white
+/// heart). The vendored `gpui-pre-wgpu` (core/vendor/README.md) lets the face load: the ❤️ chip of the `bar` fixture shows
+/// red pixels. Skipped where the font is not installed.
+#[test]
+fn noto_color_emoji_family_loads_a_face() {
+    let installed = std::process::Command::new("fc-list")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("Noto Color Emoji"));
+    if !installed {
+        eprintln!("Noto Color Emoji is not installed: skipped");
+        return;
+    }
+    let mut app = Driver::launch_fixture(&fixture("bar"), None, &[]);
+    app.wait_for("reaction-m3-0", Duration::from_secs(60));
+    app.wait_idle();
+    let chip = app.element("reaction-m3-0").expect("the ❤️ chip");
+    let shot = app.screenshot();
+    // The frame is at scale 2; the chip's left 22 logical px hold the emoji.
+    let (x0, y0) = ((chip.x * 2.0) as u32, (chip.y * 2.0) as u32);
+    let mut red = 0;
+    for y in y0..y0 + (chip.height * 2.0) as u32 {
+        for x in x0..x0 + 44 {
+            let p = shot.get_pixel(x, y);
+            if p[0] > 190 && p[1] < 90 && p[2] < 110 {
+                red += 1;
+            }
+        }
+    }
+    assert!(red > 20, "the ❤️ is drawn in colour: {red} red pixels");
+}
+
+/// The message grid (opened from a bar's add button, Conversation.tsx `closeEmoji(true)`): Escape closes it and the focus
+/// returns to the opener.
+#[test]
+fn keyboard_reactions_message_grid_escape_restores_focus() {
+    let mut app = Driver::launch_fixture(&fixture("bar"), None, &[]);
+    app.wait_for("reaction-m2-add", Duration::from_secs(60));
+    app.click("reaction-m2-add");
+    app.wait_idle();
+    app.wait_for("emoji-cell-0", Duration::from_secs(60));
+    app.wait_idle();
+    assert_eq!(app.focused().as_deref(), Some("emoji-cell-0"));
+    app.press("escape");
+    app.wait_idle();
+    assert!(
+        app.element("emoji-cell-0").is_none(),
+        "Escape closes the grid"
+    );
+    assert_eq!(
+        app.focused().as_deref(),
+        Some("reaction-m2-add"),
+        "the focus returns to the add button that opened it"
+    );
+}
