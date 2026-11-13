@@ -191,6 +191,8 @@ pub struct AppView {
     root_focus: gpui::FocusHandle,
     /// The window going inactive lets push to talk go at once (review B).
     _activation: Subscription,
+    /// The focused control went away (a drawn frame no longer has it): push to talk lets go (review B, re-review B2).
+    _focus_lost: Subscription,
     _subscriptions: Vec<Subscription>,
     /// Task 26: why the last Forget did not finish, for the forced screen the client comes back to.
     forget_note: Option<String>,
@@ -208,6 +210,15 @@ impl AppView {
             shell: None,
             shell_sub: None,
             root_focus: cx.focus_handle(),
+            _focus_lost: cx.on_focus_lost(window, |this: &mut Self, window, cx| {
+                let root = this.root_focus.clone();
+                crate::screens::voice::focus_lost(
+                    crate::screens::voice::wid(window),
+                    &root,
+                    window,
+                    cx,
+                );
+            }),
             _activation: cx.observe_window_activation(window, |_, window, cx| {
                 if !window.is_window_active() {
                     crate::screens::voice::window_deactivated(
@@ -1265,13 +1276,8 @@ impl Render for AppView {
         // The window's outermost element carries push to talk's keys: it is on every key's dispatch path (it takes the
         // focus itself when nothing holds it).
         // The focus outside the root (none, or a stale one on a control that went away) lets push to talk go and, while
-        // the call is on, comes back to the root (review B); checked again on the next frame, once a control that went
-        // away is gone from the drawn tree.
+        // the call is on, comes back to the root (review B; a stale focus is judged on the next frame, re-review B2).
         crate::screens::voice::guard_focus(w, &self.root_focus, window, cx);
-        let root_focus = self.root_focus.clone();
-        window.on_next_frame(move |window, cx| {
-            crate::screens::voice::guard_focus(w, &root_focus, window, cx);
-        });
         crate::screens::voice::ptt_keys(
             w,
             div()

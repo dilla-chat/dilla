@@ -949,18 +949,28 @@ pub fn ptt_sending(window: WindowId, cx: &App) -> bool {
     })
 }
 
-/// Review B: GPUI keeps a focus on an element no longer drawn, and a key then reaches none of the root's handlers (a
-/// key-up would be lost and the mic stay open). When the focus is not inside `root` (the window's outermost element),
-/// push to talk lets go at once, and while the call is on the root takes the focus, so the next key reaches it. Called
-/// on every render of the window's root, and again on the frame after it (when a control that went away is gone).
-pub fn guard_focus(w: WindowId, root: &FocusHandle, window: &mut Window, cx: &mut App) {
-    if root.contains_focused(window, cx) {
-        return;
-    }
+/// Push to talk lets go, and while the call is on the root takes the focus (so the next key reaches the root's
+/// handlers).
+fn take_back(w: WindowId, root: &FocusHandle, window: &mut Window, cx: &mut App) {
     release_ptt(w, cx);
     if call_live(w, cx) {
         window.focus(root, cx);
     }
+}
+
+/// Review B, at render: nothing holds the focus (a key would reach none of the root's handlers): see [`take_back`].
+/// Re-review B2: a focus outside the drawn tree is never judged here, since a control mounted and focused in this very
+/// update is not drawn yet; [`focus_lost`] covers a control that went away.
+pub fn guard_focus(w: WindowId, root: &FocusHandle, window: &mut Window, cx: &mut App) {
+    if window.focused(cx).is_none() {
+        take_back(w, root, window, cx);
+    }
+}
+
+/// Review B, after a frame is drawn: the focused control went away (GPUI's focus-lost, which the window's root
+/// subscribes to with `on_focus_lost`): a key-up would be lost and the mic stay open; see [`take_back`].
+pub fn focus_lost(w: WindowId, root: &FocusHandle, window: &mut Window, cx: &mut App) {
+    take_back(w, root, window, cx);
 }
 
 /// Review B: the window stopped being the active one (it lost the focus, or was hidden): push to talk lets go at once.

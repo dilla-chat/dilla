@@ -402,6 +402,23 @@ struct GoneHost {
     root: FocusHandle,
     control: FocusHandle,
     show: bool,
+    _lost: Option<gpui::Subscription>,
+}
+
+impl GoneHost {
+    /// As the app's root: its focus guard at render and its focus-lost subscription.
+    fn new(show: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let lost = cx.on_focus_lost(window, |this: &mut Self, window, cx| {
+            let root = this.root.clone();
+            voice::focus_lost(voice::wid(window), &root, window, cx);
+        });
+        Self {
+            root: cx.focus_handle(),
+            control: cx.focus_handle(),
+            show,
+            _lost: Some(lost),
+        }
+    }
 }
 
 impl Render for GoneHost {
@@ -422,11 +439,7 @@ impl Render for GoneHost {
 #[gpui::test]
 fn a_focused_control_going_away_mid_hold_closes_the_mic(cx: &mut TestAppContext) {
     cx.update(dilla_desktop::install);
-    let (host, vcx) = cx.add_window_view(|_, cx| GoneHost {
-        root: cx.focus_handle(),
-        control: cx.focus_handle(),
-        show: true,
-    });
+    let (host, vcx) = cx.add_window_view(|window, cx| GoneHost::new(true, window, cx));
     let w = vcx.update(|window, _| voice::wid(window));
     vcx.update(|_, cx| {
         voice::sync(w, state(2), None, cx);
@@ -487,6 +500,38 @@ fn the_window_deactivating_closes_the_mic(cx: &mut TestAppContext) {
     vcx.deactivate_window();
     // At once, from the observer: no frame is drawn in between.
     assert!(!vcx.update(|_, cx| voice::ptt_sending(w, cx)), "released");
+}
+
+/// Re-review B2: in a call, a control mounted and focused in the same update (a dialog's field, the settings host, a
+/// recreated composer) keeps the focus: the guard never takes it back before that control was drawn.
+#[gpui::test]
+fn a_new_control_focused_in_a_call_keeps_the_focus(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let (host, vcx) = cx.add_window_view(|window, cx| GoneHost::new(false, window, cx));
+    let w = vcx.update(|window, _| voice::wid(window));
+    vcx.update(|_, cx| {
+        voice::sync(w, state(2), None, cx);
+        voice::set_ptt_key(w, Some(("insert".into(), 200)), cx);
+    });
+    vcx.update(|window, _| window.activate_window());
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    // The control mounts and takes the focus in one update, before any frame drew it.
+    let control = host.read_with(vcx, |h, _| h.control.clone());
+    host.update_in(vcx, |h, window, cx| {
+        h.show = true;
+        control.focus(window, cx);
+        cx.notify();
+    });
+    for _ in 0..3 {
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+    }
+    vcx.run_until_parked();
+    assert!(
+        vcx.update(|window, _| control.is_focused(window)),
+        "the new control keeps the focus"
+    );
 }
 
 #[path = "../../dilla-client/tests/support/call_world.rs"]
