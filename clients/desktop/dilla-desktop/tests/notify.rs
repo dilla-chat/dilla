@@ -53,7 +53,6 @@ fn parity_notify_settings_b() {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.3142 % (half-px snap: Chromium paints box edges at whole css px, half up; the viewer is online in this reference, idle in the GPUI mapping)"]
 fn parity_notify_unread_badge() {
     parity("unread-badge");
 }
@@ -66,7 +65,6 @@ fn parity_notify_unread_badge_b() {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2485 % (half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_notify_dm_badge() {
     parity("dm-badge");
 }

@@ -172,23 +172,19 @@ mod driven {
 
     parity! {
         parity_messages_conversation_actions => "conversation-actions",
-            ignore "parity after T6c: chrome 0.3094 % (the hover toolbar lacks react, reply and thread: T10 and T11 fill slots::message_actions; half-px snap: Chromium paints box edges at whole css px, half up)";
-        parity_messages_conversation_actions_b => "conversation-actions-b",
-            ignore "parity after T6c: chrome 0.2528 % (half-px snap: Chromium paints box edges at whole css px, half up)";
-        parity_messages_edit => "edit",
-            ignore "parity after T6c: chrome 0.5841 % (half-px snap: Chromium paints box edges at whole css px, half up: the timeline floors its fractional row tops, the field and its foot sit 1 css px high)";
+            ignore "parity after T6c: colour 0.3114 % (the toolbar matches; the residual is the row hover fill and the toolbar shadow edge, not yet traced)";
+        parity_messages_conversation_actions_b => "conversation-actions-b";
+        parity_messages_edit => "edit";
         parity_messages_edit_b => "edit-b",
-            ignore "parity after T6c: 0.5528 % over 0.5 % (half-px snap: Chromium paints box edges at whole css px, half up, as edit)";
-        parity_messages_mention => "mention",
-            ignore "parity after T6c: chrome 0.2450 % (the send button is 1 css px wider: the ↵ glyph advance; half-px snap: Chromium paints box edges at whole css px, half up)";
+            ignore "parity after T6c: chrome 0.6138 % (gpui-component's textarea wraps the long line about 54px short of the field, so its third row is cut)";
+        parity_messages_mention => "mention";
         parity_messages_mention_b => "mention-b",
-            ignore "parity after T6c: chrome 0.3710 % (as mention)";
+            ignore "parity after T6c: chrome 0.2637 % (the mention list and the composer under it, 1 css px; not yet traced)";
         parity_messages_code_block => "code-block",
-            ignore "parity after T6c: 0.6577 % over 0.5 % (code card and inline spans: sub-pixel text positions)";
+            ignore "parity after T6c: 0.5732 % over 0.5 % (code card and inline spans: sub-pixel text positions)";
         parity_messages_code_block_b => "code-block-b",
-            ignore "parity after T6c: 0.9297 % over 0.5 % (as code-block; json and sh cards)";
-        parity_messages_slow_mode => "slow-mode",
-            ignore "parity after T6c: chrome 0.2141 % (half-px snap: Chromium paints box edges at whole css px, half up)";
+            ignore "parity after T6c: 0.8593 % over 0.5 % (as code-block; json and sh cards)";
+        parity_messages_slow_mode => "slow-mode";
         parity_messages_slow_mode_b => "slow-mode-b";
     }
 

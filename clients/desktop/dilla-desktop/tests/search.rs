@@ -52,7 +52,6 @@ fn parity(name: &str) {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2375 % (half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_search_palette() {
     parity("palette");
 }
@@ -65,7 +64,6 @@ fn parity_search_palette_b() {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2178 % (half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_search_results() {
     parity("results");
 }
@@ -78,7 +76,6 @@ fn parity_search_results_b() {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2459 % (half-px snap: Chromium paints box edges at whole css px, half up)"]
 fn parity_search_scope_settings() {
     parity("scope-settings");
 }

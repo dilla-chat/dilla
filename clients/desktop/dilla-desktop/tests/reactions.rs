@@ -44,35 +44,34 @@ fn parity(name: &str) {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: 0.9955 % over 0.5 % (reaction chips: rows and chip boxes 1-2 px off)"]
+#[ignore = "parity after T6c: chrome 0.2174 % (the row with reactions sits 1 css px low against the web; not yet traced)"]
 fn parity_reactions_bar() {
     parity("bar");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: 1.0183 % over 0.5 % (as bar)"]
 fn parity_reactions_bar_b() {
     parity("bar-b");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: 0.5632 % over 0.5 % (reaction chips wrap to another row split)"]
+#[ignore = "parity after T6c: chrome 0.4414 % (the chip rows: as bar)"]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: 0.6203 % over 0.5 % (as many-wrapping)"]
+#[ignore = "parity after T6c: chrome 0.2547 % (as many-wrapping)"]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.5055 % (the picker grid; half-px snap: Chromium paints box edges at whole css px, half up)"]
+#[ignore = "parity after T6c: chrome 0.2792 % (the picker grid cells, 1 css px)"]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }
