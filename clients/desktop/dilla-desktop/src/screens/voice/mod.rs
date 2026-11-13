@@ -38,6 +38,54 @@ use crate::{tracked, tracked_box};
 
 use session::MediaSession;
 
+/// The area's sizes, logical px, named after the packages/ui CSS they come from (R21: no literal `px(..)` in screens).
+mod m {
+    /// VoiceChannelRow.css `__people`: indented 30px under the row, 8px off the right.
+    pub const PEOPLE_INDENT: f32 = 30.0;
+    pub const PEOPLE_END: f32 = 8.0;
+    /// A person's row gap.
+    pub const PERSON_GAP: f32 = 8.0;
+    /// The speaking ring: 2px of the sidebar between the avatar and the 1.5px `--ok` ring.
+    pub const RING_GAP: f32 = 2.0;
+    pub const RING: f32 = 1.5;
+    /// The camera, muted and deafened glyphs of a row and a tile caption.
+    pub const GLYPH: f32 = 12.0;
+    /// The LIVE tag's side padding.
+    pub const LIVE_PAD_X: f32 = 4.0;
+    /// VoiceDock.css: 8px from the sidebar's sides and the user panel, 10px in, 8px between its rows and parts, 2px
+    /// between its buttons.
+    pub const DOCK_INSET: f32 = 8.0;
+    pub const DOCK_PAD: f32 = 10.0;
+    pub const DOCK_GAP: f32 = 8.0;
+    pub const DOCK_CONTROLS_GAP: f32 = 2.0;
+    /// CallStage.css: 14px round the stage's title and body, 10px between tiles, the grid's 2px inset (the speaking
+    /// edge), the focus layout's 188px film-strip tiles.
+    pub const STAGE_PAD: f32 = 14.0;
+    pub const TILE_GAP: f32 = 10.0;
+    pub const GRID_PAD: f32 = 2.0;
+    pub const FILM_TILE_W: f32 = 188.0;
+    /// CallTile.css: the caption and the stats tag 8px from the corners, 6px in and 6px between parts; the edge 1px,
+    /// 2px while speaking or selected.
+    pub const CAPTION_INSET: f32 = 8.0;
+    pub const CAPTION_GAP: f32 = 6.0;
+    pub const CAPTION_PAD_X: f32 = 6.0;
+    pub const TILE_EDGE: f32 = 1.0;
+    pub const TILE_EDGE_STRONG: f32 = 2.0;
+    /// The media notice: 12x10 in, a 12px gap, the 14px warning glyph.
+    pub const NOTICE_PAD_X: f32 = 12.0;
+    pub const NOTICE_PAD_Y: f32 = 10.0;
+    pub const NOTICE_GAP: f32 = 12.0;
+    pub const NOTICE_GLYPH: f32 = 14.0;
+    /// CallControls.css: the 64px bar, 6px between buttons.
+    pub const CONTROLS_H: f32 = 64.0;
+    pub const CONTROLS_GAP: f32 = 6.0;
+    /// The stream-quality menu: 320px wide, 72px over the stage's foot (the bar and its gap), 12px in, 8px gaps.
+    pub const MENU_BOTTOM: f32 = 72.0;
+    pub const MENU_W: f32 = 320.0;
+    pub const MENU_PAD: f32 = 12.0;
+    pub const MENU_GAP: f32 = 8.0;
+}
+
 /// What the voice hooks draw from: the newest state, the running client and its call's media, and the stage's own
 /// view state (which tile is focused, which is selected).
 #[derive(Default)]
@@ -333,8 +381,8 @@ pub fn channel_people(channel: &Channel, _window: &mut Window, cx: &mut App) -> 
         div()
             .flex()
             .flex_col()
-            .pl(px(30.0))
-            .pr(px(8.0))
+            .pl(px(m::PEOPLE_INDENT))
+            .pr(px(m::PEOPLE_END))
             .children(rows)
             .into_any_element(),
     )
@@ -355,24 +403,24 @@ fn person_row(p: &Person) -> Div {
     let ring = div()
         .flex_none()
         .rounded(radius::AVATAR)
-        .border(px(2.0))
+        .border(px(m::RING_GAP))
         .border_color(if p.speaking {
             color::BG_2
         } else {
             gpui::transparent_black()
         })
-        .m(px(-2.0))
+        .m(px(-m::RING_GAP))
         .child(avatar);
     let ring = div()
         .flex_none()
         .rounded(radius::AVATAR)
-        .border(px(1.5))
+        .border(px(m::RING))
         .border_color(if p.speaking {
             color::OK
         } else {
             gpui::transparent_black()
         })
-        .m(px(-1.5))
+        .m(px(-m::RING))
         .child(ring);
     let glyph = if p.deafened {
         Some(IconName::HeadphoneOff)
@@ -384,7 +432,7 @@ fn person_row(p: &Person) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(px(m::PERSON_GAP))
         .h(layout::ROW_H_SUB)
         .min_w_0()
         .child(ring)
@@ -396,18 +444,18 @@ fn person_row(p: &Person) -> Div {
         )))
         .child(div().flex_1())
         .when_some(p.video.then_some(()), |d, ()| {
-            d.child(Icon::new(IconName::Video).size(px(12.0)).color(color::FG_2))
+            d.child(Icon::new(IconName::Video).size(px(m::GLYPH)).color(color::FG_2))
         })
         .when_some(p.screen.then_some(()), |d, ()| d.child(live_tag()))
         .when_some(glyph, |d, g| {
-            d.child(Icon::new(g).size(px(12.0)).color(color::DANGER))
+            d.child(Icon::new(g).size(px(m::GLYPH)).color(color::DANGER))
         })
 }
 
 fn live_tag() -> Div {
     div()
         .flex_none()
-        .px(px(4.0))
+        .px(px(m::LIVE_PAD_X))
         .rounded(radius::TAG)
         .bg(color::DANGER)
         .child(line("LIVE", text::MICRO, 14.0, color::DANGER_INK).weight(font::WEIGHT_LABEL))
@@ -437,7 +485,7 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(2.0))
+        .gap(px(m::DOCK_CONTROLS_GAP))
         .child(tracked_box(
             "voice-dock-camera",
             IconButton::new(
@@ -484,10 +532,10 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let card = div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
-        .mx(px(8.0))
-        .mb(px(8.0))
-        .p(px(10.0))
+        .gap(px(m::DOCK_GAP))
+        .mx(px(m::DOCK_INSET))
+        .mb(px(m::DOCK_INSET))
+        .p(px(m::DOCK_PAD))
         .min_w_0()
         .bg(color::OK_SOFT)
         .border_1()
@@ -497,7 +545,7 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(m::DOCK_GAP))
                 .min_w_0()
                 .child(status)
                 .child(controls),
@@ -633,7 +681,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             .min_h_0()
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(px(m::TILE_GAP))
             .child(
                 div().flex_1().min_h_0().flex().justify_center().child(
                     div()
@@ -647,11 +695,11 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 div()
                     .flex()
                     .justify_center()
-                    .gap(px(10.0))
+                    .gap(px(m::TILE_GAP))
                     .children(views.into_iter().map(|v| {
                         div()
                             .flex_none()
-                            .w(px(188.0))
+                            .w(px(m::FILM_TILE_W))
                             .aspect_ratio(16.0 / 9.0)
                             .child(v)
                     })),
@@ -667,8 +715,8 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             .content_center()
             .items_center()
             .justify_center()
-            .gap(px(10.0))
-            .p(px(2.0))
+            .gap(px(m::TILE_GAP))
+            .p(px(m::GRID_PAD))
             .children(tile_views.into_iter().map(|v| {
                 div()
                     .flex_none()
@@ -682,7 +730,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let title = div()
         .flex_none()
         .h(layout::BAR)
-        .px(px(14.0))
+        .px(px(m::STAGE_PAD))
         .flex()
         .items_center()
         .border_b_1()
@@ -706,7 +754,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .p(px(14.0))
+                .p(px(m::STAGE_PAD))
                 .child(body),
         )
         .child(controls(&state, joined, channel.id))
@@ -864,26 +912,26 @@ fn tile(
     };
     let caption = div()
         .absolute()
-        .left(px(8.0))
-        .bottom(px(8.0))
+        .left(px(m::CAPTION_INSET))
+        .bottom(px(m::CAPTION_INSET))
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .px(px(6.0))
+        .gap(px(m::CAPTION_GAP))
+        .px(px(m::CAPTION_PAD_X))
         .rounded(radius::MD)
         .bg(color::BG_2)
         .child(line(name, text::XS, 14.0, color::FG).weight(font::WEIGHT_LABEL))
         .when(deafened, |d| {
             d.child(
                 Icon::new(IconName::HeadphoneOff)
-                    .size(px(12.0))
+                    .size(px(m::GLYPH))
                     .color(color::DANGER),
             )
         })
         .when(muted && !deafened, |d| {
             d.child(
                 Icon::new(IconName::MicOff)
-                    .size(px(12.0))
+                    .size(px(m::GLYPH))
                     .color(color::DANGER),
             )
         });
@@ -903,9 +951,9 @@ fn tile(
         .rounded(radius::XL)
         .bg(color::STAGE_TILE)
         .border(if speaking || selected {
-            px(2.0)
+            px(m::TILE_EDGE_STRONG)
         } else {
-            px(1.0)
+            px(m::TILE_EDGE)
         })
         .border_color(if speaking {
             color::OK
@@ -932,9 +980,9 @@ fn tile(
             d.child(
                 div()
                     .absolute()
-                    .top(px(8.0))
-                    .right(px(8.0))
-                    .px(px(6.0))
+                    .top(px(m::CAPTION_INSET))
+                    .right(px(m::CAPTION_INSET))
+                    .px(px(m::CAPTION_PAD_X))
                     .rounded(radius::MD)
                     .bg(color::BG_2)
                     .child(line(stat, text::MICRO, 14.0, color::FG_2)),
@@ -957,20 +1005,20 @@ fn notice(state: &AppState) -> AnyElement {
     };
     div()
         .id("voice-notice")
-        .mx(px(14.0))
-        .mt(px(14.0))
-        .px(px(12.0))
-        .py(px(10.0))
+        .mx(px(m::STAGE_PAD))
+        .mt(px(m::STAGE_PAD))
+        .px(px(m::NOTICE_PAD_X))
+        .py(px(m::NOTICE_PAD_Y))
         .flex()
         .items_center()
-        .gap(px(12.0))
+        .gap(px(m::NOTICE_GAP))
         .bg(color::SURFACE_2)
         .border_1()
         .border_color(color::LINE_STRONG)
         .rounded(radius::MD)
         .child(
             Icon::new(IconName::TriangleAlert)
-                .size(px(14.0))
+                .size(px(m::NOTICE_GLYPH))
                 .color(color::WARN),
         )
         .child(
@@ -999,11 +1047,11 @@ fn notice(state: &AppState) -> AnyElement {
 fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
     let bar = div()
         .flex_none()
-        .h(px(64.0))
+        .h(px(m::CONTROLS_H))
         .flex()
         .items_center()
         .justify_center()
-        .gap(px(6.0))
+        .gap(px(m::CONTROLS_GAP))
         .border_t_1()
         .border_color(color::HAIRLINE);
     if !joined {
@@ -1165,12 +1213,12 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
     let panel = div()
         .id("voice-share-menu")
         .absolute()
-        .bottom(px(72.0))
-        .w(px(320.0))
-        .p(px(12.0))
+        .bottom(px(m::MENU_BOTTOM))
+        .w(px(m::MENU_W))
+        .p(px(m::MENU_PAD))
         .flex()
         .flex_col()
-        .gap(px(8.0))
+        .gap(px(m::MENU_GAP))
         .bg(color::SURFACE_2)
         .border_1()
         .border_color(color::LINE_STRONG)
