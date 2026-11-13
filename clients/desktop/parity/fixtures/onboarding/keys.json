@@ -1,0 +1,60 @@
+{
+  "name": "onboarding/keys",
+  "window": [
+    1280,
+    800
+  ],
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      }
+    ],
+    "servers": [],
+    "messages": []
+  },
+  "viewer": "ada",
+  "route": "/welcome",
+  "phase": "signed_out",
+  "clock": 1794481738,
+  "steps": [
+    {
+      "do": "type",
+      "web": "#onboarding-invite",
+      "gpui": "-",
+      "text": "{invite}"
+    },
+    {
+      "do": "click",
+      "web": ".d-onboarding-frame__card button[type=\"submit\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "type",
+      "web": "#onboarding-username",
+      "gpui": "-",
+      "text": "newbie"
+    },
+    {
+      "do": "type",
+      "web": "#onboarding-password",
+      "gpui": "-",
+      "text": "correct horse battery staple"
+    },
+    {
+      "do": "click",
+      "web": ".d-onboarding-frame__card button[type=\"submit\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

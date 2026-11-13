@@ -1,0 +1,54 @@
+{
+  "name": "sign-in/factor",
+  "window": [
+    1280,
+    800
+  ],
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      }
+    ],
+    "servers": [],
+    "messages": []
+  },
+  "viewer": "ada",
+  "route": "/welcome",
+  "phase": "signed_out",
+  "clock": 1794481738,
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=button[name=\"Already have an account? Sign in\"s]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "type",
+      "web": "input[autocomplete^=\"username\"]",
+      "gpui": "-",
+      "text": "ada"
+    },
+    {
+      "do": "type",
+      "web": "input[autocomplete=\"current-password\"]",
+      "gpui": "-",
+      "text": "correct horse battery staple"
+    },
+    {
+      "do": "click",
+      "web": "role=button[name=\"Continue\"s]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

@@ -8,8 +8,9 @@
 //! links under it), [`OnboardingField`] (a text field 40px tall, as the frame sets `.d-text-field__input`) and
 //! [`ReadyPanel`] (the done step's panel).
 //!
-//! The brand glow (`radial-gradient(900px 420px at 50% -10%, --brand-glow, transparent 70%)`) is not drawn: GPUI has no
-//! radial gradient. The parity mask's chrome gate reports it.
+//! The brand glow (`radial-gradient(900px 420px at 50% -10%, --brand-glow, transparent 70%)`) is drawn by
+//! [`brand_glow`]: GPUI has no radial gradient, so the ramp is painted in cells small enough that a cell's step of it is
+//! under half a colour level.
 
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, Entity, Focusable, InteractiveElement, IntoElement,
@@ -39,7 +40,7 @@ const FOOTER_GAP: f32 = 12.0;
 /// The primary action's height (`2.5rem`) and the onboarding field's.
 pub const ACTION_H: f32 = 40.0;
 /// `--card-shadow`: `0 30px 80px rgba(0,0,0,0.55)`.
-fn shadow_card() -> Vec<gpui::BoxShadow> {
+pub fn shadow_card() -> Vec<gpui::BoxShadow> {
     crate::metrics::css_shadow(gpui::hsla(0.0, 0.0, 0.0, 0.55), 30.0, 80.0)
 }
 
@@ -309,10 +310,68 @@ pub fn centred_scroll(
                 .items_center()
                 .justify_center()
                 .p(px(pad))
+                .child(brand_glow())
                 .child(brand)
                 .child(card),
         )
         .into_any_element()
+}
+
+/// The glow's ellipse (`900px 420px`), its centre (`at 50% -10%` of the page) and where it ends (`transparent 70%`).
+const GLOW_RX: f32 = 900.0;
+const GLOW_RY: f32 = 420.0;
+const GLOW_AT_Y: f32 = -0.10;
+const GLOW_END: f32 = 0.70;
+/// The cell the ramp is painted in: over the ramp's 630px the glow's 0.28 alpha of its blue (153) changes by under
+/// 0.3 of a level across 4px.
+const GLOW_CELL: f32 = 4.0;
+
+/// OnboardingFrame.css's page background `radial-gradient(900px 420px at 50% -10%, var(--brand-glow), transparent 70%)`
+/// over `--bg`: drawn over the parent's box (absolutely placed), under the brand and the card.
+pub fn brand_glow() -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| {},
+        |bounds, (), window, _| paint_brand_glow(bounds, window),
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// The CSS ramp: `--brand-glow` at the centre to transparent at 70% of the ellipse, linear in the ellipse's distance (in
+/// premultiplied colour, as browsers interpolate, so the colour stays the glow's and only its alpha falls). Each cell
+/// takes the ramp's value at its centre; cells past the ramp's end are not painted.
+fn paint_brand_glow(bounds: gpui::Bounds<gpui::Pixels>, window: &mut Window) {
+    let glow = color::BRAND_GLOW;
+    let (x0, y0) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let (centre_x, centre_y) = (x0 + w / 2.0, y0 + h * GLOW_AT_Y);
+    // The ramp ends on the ellipse of radii 70% of 900 by 420: only cells in its box can be lit.
+    let (rx, ry) = (GLOW_RX * GLOW_END, GLOW_RY * GLOW_END);
+    let rows = ((centre_y + ry - y0).min(h) / GLOW_CELL).ceil().max(0.0) as usize;
+    let first_col = ((centre_x - rx - x0).max(0.0) / GLOW_CELL).floor() as usize;
+    let last_col = ((centre_x + rx - x0).min(w) / GLOW_CELL).ceil() as usize;
+    for row in 0..rows {
+        let top = y0 + row as f32 * GLOW_CELL;
+        let dy = (top + GLOW_CELL / 2.0 - centre_y) / GLOW_RY;
+        for col in first_col..last_col {
+            let left = x0 + col as f32 * GLOW_CELL;
+            let dx = (left + GLOW_CELL / 2.0 - centre_x) / GLOW_RX;
+            let t = (dx * dx + dy * dy).sqrt();
+            if t >= GLOW_END {
+                continue;
+            }
+            let a = glow.a * (1.0 - t / GLOW_END);
+            window.paint_quad(gpui::fill(
+                gpui::Bounds::new(
+                    gpui::point(px(left), px(top)),
+                    gpui::size(px(GLOW_CELL), px(GLOW_CELL)),
+                ),
+                gpui::Hsla { a, ..glow },
+            ));
+        }
+    }
 }
 
 pub(crate) type Click = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -553,7 +612,14 @@ impl RenderOnce for OnboardingField {
             .text_size(text::INPUT)
             .font_family(font::MONO)
             .text_color(color::FG)
-            .child(Input::new(&self.input).appearance(false));
+            // As `TextField`: 13px (`--text-input`) with the frame's own 12px sides, never the editor's 14px and padding.
+            .child(
+                Input::new(&self.input)
+                    .appearance(false)
+                    .text_size(text::INPUT)
+                    .px_0()
+                    .py_0(),
+            );
         div()
             .id(self.id)
             .flex()

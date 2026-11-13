@@ -407,6 +407,13 @@ impl ShellView {
         }
     }
 
+    /// Home (the `@` tile, the DM list) is shown: a DM route, or an account in no server on any route but a channel's
+    /// (Shell.tsx `homeSelected`: `noServer && base.name !== 'channel'`; flow 07, the sidebar stands on the DMs tab).
+    fn home_shown(&self) -> bool {
+        self.dm_view
+            || (self.state.communities.is_empty() && !matches!(self.route(), Route::Channel { .. }))
+    }
+
     /// The route the shell shows (the head of its history).
     pub fn route(&self) -> &Route {
         self.history.current()
@@ -1035,7 +1042,7 @@ impl Render for ShellView {
             &rail::RailModel {
                 state: &state,
                 selected: self.community,
-                home_selected: matches!(self.route(), Route::Dms | Route::Dm(_)),
+                home_selected: self.home_shown(),
                 muted: &muted,
             },
             &rail::RailHandlers {
@@ -1128,7 +1135,7 @@ impl Render for ShellView {
             }),
             cx,
         );
-        let list = if self.dm_view {
+        let list = if self.home_shown() {
             // Home: the DM list in place of a server's channels (13).
             dms::home::sidebar(&ctx, self.channel, online, window, cx)
         } else {
@@ -1241,7 +1248,7 @@ impl Render for ShellView {
                 .into_any_element()
             }
             // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
-            None if !self.dm_view && state.communities.is_empty() => {
+            None if state.communities.is_empty() => {
                 crate::screens::create::empty_view(&ctx, window, cx)
             }
             None => div().size_full().bg(color::BG).into_any_element(),
@@ -1340,8 +1347,12 @@ impl Render for ShellView {
             .flex()
             .flex_col()
             .children(ring.map(|r| div().flex_none().child(r)));
+        // An account in no server with no conversation open: the main column is the empty view alone (Shell.tsx `main =
+        // noServerState`: no channel header, no composer).
+        let no_server = takeover.is_none() && channel.is_none() && state.communities.is_empty();
         let main = match takeover {
             Some(stage) => main.child(div().flex_1().min_h_0().flex().flex_col().child(stage)),
+            None if no_server => main.child(div().flex_1().min_h_0().relative().child(log)),
             None => main
                 .child(header::render(
                     &header::HeaderModel {

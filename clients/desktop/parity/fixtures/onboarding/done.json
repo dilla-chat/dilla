@@ -1,0 +1,98 @@
+{
+  "name": "onboarding/done",
+  "window": [
+    1280,
+    800
+  ],
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      }
+    ],
+    "servers": [],
+    "messages": []
+  },
+  "viewer": "ada",
+  "route": "/welcome",
+  "phase": "signed_out",
+  "clock": 1794481738,
+  "steps": [
+    {
+      "do": "type",
+      "web": "#onboarding-invite",
+      "gpui": "-",
+      "text": "{invite}"
+    },
+    {
+      "do": "click",
+      "web": ".d-onboarding-frame__card button[type=\"submit\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "type",
+      "web": "#onboarding-username",
+      "gpui": "-",
+      "text": "newbie"
+    },
+    {
+      "do": "type",
+      "web": "#onboarding-password",
+      "gpui": "-",
+      "text": "correct horse battery staple"
+    },
+    {
+      "do": "click",
+      "web": ".d-onboarding-frame__card button[type=\"submit\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "click",
+      "web": "role=checkbox[name=\"I saved my recovery key somewhere safe\"s]",
+      "gpui": "-"
+    },
+    {
+      "do": "click",
+      "web": ".d-onboarding-frame__card button[type=\"submit\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "click",
+      "web": "role=radio[name=/Authenticator app/]",
+      "gpui": "-"
+    },
+    {
+      "do": "click",
+      "web": "role=button[name=\"Continue\"s]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "type",
+      "web": "role=textbox[name=\"Code from the app\"s]",
+      "gpui": "-",
+      "text": "{totp:role=textbox[name=\"Setup key\"s]}"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

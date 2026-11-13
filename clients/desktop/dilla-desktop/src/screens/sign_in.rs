@@ -27,11 +27,11 @@ use gpui_component::input::{InputEvent, InputState};
 use zeroize::Zeroizing;
 
 use dilla_desktop_ui::components::banner::BannerTone;
-use dilla_desktop_ui::components::text_field::TextField;
+use dilla_desktop_ui::components::text_field::{Frame, TextField};
 
 use crate::screens::factor::code::{CodeEvent, CodeField};
 use crate::screens::factor::frame::{
-    Action, AuthFrame, error_line, link, links_row, nav_row, note, para,
+    Action, AuthFrame, FIELD_H, error_line, link, links_row, nav_row, note, para,
 };
 use crate::screens::{FocusNext, FocusPrevious};
 use crate::strings::{t, tf};
@@ -330,6 +330,33 @@ impl SignInView {
             None => this.server.update(cx, |s, cx| s.focus(window, cx)),
         }
         this
+    }
+
+    /// Automation (parity fixtures, `fixture::pre_account`): the sign-in on a known instance (an instance window's, as a
+    /// browser is on its instance: no server field), with `username` typed and the instance's `answer` to the login fed
+    /// through the handlers a live answer takes (`after_owed`, `apply`). The automation build has no network.
+    #[cfg(feature = "automation")]
+    pub fn fixture_answer(
+        &mut self,
+        pin: InstanceConfig,
+        instance: InstanceDoc,
+        username: Option<&str>,
+        answer: Option<Result<Owed, SignInError>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pin = Some(pin);
+        self.instance = Some(instance);
+        if let Some(name) = username {
+            self.username
+                .update(cx, |s, cx| s.set_value(name.to_owned(), window, cx));
+        }
+        match answer {
+            Some(Ok(owes)) => self.after_owed(owes, window, cx),
+            Some(Err(e)) => self.apply(&e, Command::Login, window, cx),
+            None => self.focus(Field::Username, window, cx),
+        }
+        cx.notify();
     }
 
     /// The system browser a passkey or the identity provider opens (tests give their own).
@@ -879,10 +906,29 @@ impl SignInView {
         input: &Entity<InputState>,
         field: Field,
     ) -> AnyElement {
-        let mut f = TextField::new(id, label.to_owned(), input);
+        let mut f = TextField::new(id, label.to_owned(), input).frame(Frame {
+            height: FIELD_H,
+            pad_y: 0.0,
+            line: 0.0,
+        });
         if let Some(e) = self.errors.get(&field) {
             f = f.error(e.clone());
         }
+        let f = div().relative().child(f);
+        // Automation: `<field>-error` is there while the field shows its refusal.
+        #[cfg(feature = "automation")]
+        let f = if self.errors.contains_key(&field) {
+            f.child(crate::automation::bounds_probe(match field {
+                Field::Server => "signin-server-error",
+                Field::Username => "signin-username-error",
+                Field::Password => "signin-password-error",
+                Field::Code => "signin-code-error",
+                Field::Backup => "signin-backup-error",
+                Field::Key => "signin-key-error",
+            }))
+        } else {
+            f
+        };
         tracked_box(
             id,
             div()
@@ -1011,11 +1057,15 @@ impl Render for SignInView {
                         busy.is_none(),
                         cx,
                     ))
-                    .below(link(
-                        "signin-create",
-                        t("signin.login.createInstead"),
-                        false,
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.create_instead(cx)),
+                    // SignIn.tsx: the frame's nav row, nothing at the left and the link at the right.
+                    .below(nav_row(
+                        div().into_any_element(),
+                        Some(link(
+                            "signin-create",
+                            t("signin.login.createInstead"),
+                            false,
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.create_instead(cx)),
+                        )),
                     ))
             }
             Shown::Totp => {
@@ -1033,7 +1083,7 @@ impl Render for SignInView {
                     .child(para(t("signin.totp.body")))
                     .child(tracked_box("signin-code", self.code.clone()));
                 if let Some(e) = self.errors.get(&Field::Code) {
-                    frame = frame.child(error_line(e.clone()));
+                    frame = frame.child(tracked_box("signin-code-error", error_line(e.clone())));
                 }
                 let mut links = Vec::new();
                 if passkeys && self.flow.as_ref().is_some_and(SignIn::holds_passkey) {

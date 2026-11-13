@@ -682,11 +682,12 @@ fn accent(id: &'static str, label: impl Into<SharedString>, busy: bool) -> Butto
 }
 
 /// A paragraph of a dialog's body, at the dialog's text.
+/// A paragraph of a dialog's body: `.d-dialog__body`'s `--text-ui`.
 fn body_text(text_: &str, width: f32) -> impl IntoElement {
     div().flex().flex_col().children(paragraph(
         text_,
-        text::BASE,
-        line_height(text::BASE, 1.5),
+        text::UI,
+        line_height(text::UI, 1.5),
         color::FG_2,
         width,
     ))
@@ -761,7 +762,13 @@ impl Render for CreateFlows {
                         .flex()
                         .flex_col()
                         .gap(forms::SERVER_GAP)
-                        .child(body_text(t("create.server.body"), body_w))
+                        // `.d-create-server__body { max-width: 52ch }`.
+                        .child(body_text(
+                            t("create.server.body"),
+                            body_w.min(
+                                52.0 * f32::from(text::UI) * dilla_desktop_ui::text::MONO_ADVANCE,
+                            ),
+                        ))
                         .child(tracked_focus(
                             "create-server-name",
                             &field_focus,
