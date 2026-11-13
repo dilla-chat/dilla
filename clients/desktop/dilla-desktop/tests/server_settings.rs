@@ -156,7 +156,7 @@ fn keyboard_server_settings_tab_reaches_leave_and_shift_tab_leaves_it() {
     assert_ne!(driver.focused().as_deref(), Some("server-settings-leave"));
 }
 
-/// Integration 3, step 2: the server menu's chevron opens Task 15's `ServerSettingsView` over the shell (THE server
+/// Integration 3, step 2: the server menu's chevron, then its Server settings, opens Task 15's `ServerSettingsView` over the shell (THE server
 /// settings host), one at a time, and Close brings the shell back.
 #[cfg(feature = "automation")]
 #[gpui::test]
@@ -174,6 +174,12 @@ fn the_server_menu_opens_the_server_settings_over_the_shell(cx: &mut gpui::TestA
         .debug_bounds("server-settings-open")
         .expect("the server menu's chevron");
     vcx.simulate_click(open.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    // M7: the chevron opens the server's menu; its first item opens the settings.
+    let settings = vcx
+        .debug_bounds("menu-item-settings")
+        .expect("the server menu's Server settings");
+    vcx.simulate_click(settings.center(), gpui::Modifiers::none());
     vcx.run_until_parked();
     assert_eq!(
         app.read_with(vcx, |a, _| a.screen_name()),
@@ -193,4 +199,80 @@ fn the_server_menu_opens_the_server_settings_over_the_shell(cx: &mut gpui::TestA
     vcx.run_until_parked();
     assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "shell");
     assert!(app.read_with(vcx, |a, _| a.server_settings()).is_none());
+}
+
+/// M7 (Shell.tsx `serverMenu`): the channel list head's ⌄ is the server's menu (ActionMenu, labelled `admin.open`; its
+/// trigger is a tab stop, `tests/components.rs`): Server settings, Mute server and the four notify modes. Escape closes it
+/// and leaves focus on the ⌄, from which Down opens it again; Enter on Mute server toggles it and keeps the menu open;
+/// Enter on Server settings opens the server's settings.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_server_menu_is_keyboard_reachable_and_lists_the_web_items(cx: &mut gpui::TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures/shell/channel-view.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let items = [
+        "menu-item-settings",
+        "menu-item-mute",
+        "menu-item-mode:default",
+        "menu-item-mode:all",
+        "menu-item-mode:mentions",
+        "menu-item-mode:nothing",
+    ];
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_none(),
+        "closed at first"
+    );
+    let chevron = vcx
+        .debug_bounds("server-settings-open")
+        .expect("the server menu's chevron");
+    vcx.simulate_click(chevron.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    for id in items {
+        assert!(vcx.debug_bounds(id).is_some(), "{id} is in the menu");
+    }
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_none(),
+        "Escape closes it"
+    );
+    // Focus went back to the ⌄: Down opens the menu on its first item, Down again is Mute server; Enter toggles it and the
+    // menu stays open.
+    vcx.simulate_keystrokes("down");
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_some(),
+        "Down opens it from the ⌄"
+    );
+    vcx.simulate_keystrokes("down");
+    vcx.run_until_parked();
+    activate(vcx);
+    assert!(
+        vcx.debug_bounds("menu-item-mute").is_some(),
+        "the mute check keeps the menu open"
+    );
+    vcx.simulate_keystrokes("home");
+    vcx.run_until_parked();
+    activate(vcx);
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.screen_name()),
+        "server-settings"
+    );
+}
+
+/// Enter as a person presses it: a click on the focused control fires on the key's release (gpui's keyboard click), which
+/// `simulate_keystrokes` does not send.
+#[cfg(feature = "automation")]
+fn activate(vcx: &mut gpui::VisualTestContext) {
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").expect("a keystroke"),
+    });
+    vcx.run_until_parked();
 }

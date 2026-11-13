@@ -165,6 +165,8 @@ pub struct ShellView {
     /// The aside that is open beside the main column.
     aside: Option<AsideKind>,
     menu: Option<ChannelMenu>,
+    /// The channel list head's server menu (the ⌄) is open.
+    server_menu_open: bool,
     /// Something is drawn over the shell (the channel menu, a dialog or another overlay of `slots::overlays`), as of the
     /// last frame: Ctrl+K does not open the search palette over it (the web's guard; Task 23).
     overlay_open: bool,
@@ -230,6 +232,7 @@ impl ShellView {
             drag: None,
             aside: None,
             menu: None,
+            server_menu_open: false,
             overlay_open: false,
             dm_view: false,
             mic_off: false,
@@ -778,6 +781,60 @@ impl ShellView {
         cx.notify();
     }
 
+    // ---- the channel list head's server menu ----------------------------------------------------------------------
+
+    fn set_server_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.server_menu_open = open;
+        cx.notify();
+    }
+
+    /// Mute server and the server's notify mode (Shell.tsx `serverMenu`): the account settings Settings → Notifications
+    /// writes (Task 22's `set_community_muted` and `set_community_mode`; `default` deletes the stored mode).
+    fn choose_server_item(&mut self, community: CommunityId, item: &str, cx: &mut Context<Self>) {
+        let mode_key = notify::key_community_mode(community);
+        let mute_key = notify::key_community_mute(community);
+        if item == channel_list::SERVER_MUTE {
+            let on = self
+                .prefs
+                .as_ref()
+                .and_then(|p| notify::SettingsSource::get(p, &mute_key))
+                .is_none_or(|v| v != "1");
+            if let Some(client) = &self.client {
+                warn(
+                    "the muted servers",
+                    client.notify().set_community_muted(community, on),
+                );
+            } else if let Some(prefs) = &self.prefs {
+                // A shell without a client (tests): the same key in the same preferences.
+                warn(
+                    "the muted servers",
+                    if on {
+                        prefs.set(&mute_key, &"1".to_owned())
+                    } else {
+                        prefs.remove(&mute_key)
+                    },
+                );
+            }
+        } else if let Some(value) = item.strip_prefix(channel_list::SERVER_MODE) {
+            let mode = notify::NotifyMode::parse(value);
+            if let Some(client) = &self.client {
+                warn(
+                    "the server's notify mode",
+                    client.notify().set_community_mode(community, mode),
+                );
+            } else if let Some(prefs) = &self.prefs {
+                warn(
+                    "the server's notify mode",
+                    match mode {
+                        Some(m) => prefs.set(&mode_key, &m.as_str().to_owned()),
+                        None => prefs.remove(&mode_key),
+                    },
+                );
+            }
+        }
+        cx.notify();
+    }
+
     fn toggle_category(&mut self, category: ChannelId, cx: &mut Context<Self>) {
         let on = !self.collapsed.contains(&category.hex());
         if on {
@@ -987,11 +1044,28 @@ impl Render for ShellView {
                 on_menu: Rc::new(move |id, at, _, cx| {
                     let _ = w4.update(cx, |shell, cx| shell.open_menu(id, at, cx));
                 }),
+                on_server_menu_open: {
+                    let w6 = shell.clone();
+                    Rc::new(move |open, _, cx| {
+                        let _ = w6.update(cx, |shell, cx| shell.set_server_menu_open(open, cx));
+                    })
+                },
+                on_server_menu_pick: {
+                    let w7 = shell.clone();
+                    Rc::new(move |item, _, cx| {
+                        if let Some(community) = community {
+                            let _ = w7.update(cx, |shell, cx| {
+                                shell.choose_server_item(community, item, cx)
+                            });
+                        }
+                    })
+                },
                 on_server_settings: {
                     let w5 = shell.clone();
                     Rc::new(move |_, cx| {
                         if let Some(community) = community {
                             let _ = w5.update(cx, |shell, cx| {
+                                shell.server_menu_open = false;
                                 shell.navigate(
                                     Route::ServerSettings {
                                         community,
@@ -1041,6 +1115,7 @@ impl Render for ShellView {
                     can_add_in_category: owner && has_categories,
                     collapsed: &self.collapsed,
                     settings,
+                    server_menu_open: self.server_menu_open,
                 },
                 &handlers,
                 window,
