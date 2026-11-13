@@ -172,14 +172,13 @@ mod driven {
 
     parity! {
         parity_messages_conversation_actions => "conversation-actions",
-            ignore "parity after T6c: colour 0.3114 % (the toolbar matches; the hovered row\'s fill edge, not resolved)";
+            ignore "parity after T6c: colour 0.3113 % (the toolbar matches; the hovered row\'s fill edge, 1px: re-measured at the T6c merge)";
         parity_messages_conversation_actions_b => "conversation-actions-b";
         parity_messages_edit => "edit";
-        parity_messages_edit_b => "edit-b",
-            ignore "parity after T6c: chrome 0.5007 % (the field wraps as the web now; the typed text sits 1 css px high at the row\'s fractional top, and textarea text is outside the R13 mask)";
+        parity_messages_edit_b => "edit-b";
         parity_messages_mention => "mention";
         parity_messages_mention_b => "mention-b",
-            ignore "parity after T6c: chrome 0.2637 % (the mention list and the composer under it, 1 css px; not yet traced)";
+            ignore "parity after T6c: chrome 0.2596 % (the mention list over the composer, 1 css px: re-measured at the T6c merge)";
         parity_messages_code_block => "code-block";
         parity_messages_code_block_b => "code-block-b";
         parity_messages_slow_mode => "slow-mode";
