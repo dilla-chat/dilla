@@ -519,11 +519,19 @@ impl AppView {
                     let shell = shell.clone();
                     this.focus_shell(&shell, window, cx);
                 }
+                // A server section chosen in the nav opens that server's settings over the shell.
+                if matches!(route, Route::ServerSettings { .. }) {
+                    this.open_route(route, window, cx);
+                }
                 cx.notify();
             },
         );
         let focus = gpui::Focusable::focus_handle(host.read(cx), cx);
         let behind = std::mem::replace(&mut self.screen, Screen::Starting);
+        if let Screen::Shell(shell) = &behind {
+            let over = shell.read(cx).community();
+            host.update(cx, |h, _| h.set_opened_over(over));
+        }
         self.screen = Screen::Settings {
             host,
             behind: Box::new(behind),
