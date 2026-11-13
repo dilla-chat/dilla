@@ -444,8 +444,9 @@ mod tests {
         );
     }
 
-    /// Review fix (round 3): every status-0 code the client raises (`ApiError::local(0, ...)` anywhere in `src/`) is
-    /// sorted, so a new transport code cannot fall to terminal by default; each sorted code classifies as listed.
+    /// Review fix (round 3): every status-0 code the client raises with a literal (`ApiError::local(0, "E_..")`,
+    /// `Self::local(0, "E_..")`, or an `ApiError { status: 0, code: "E_..".. }` literal, anywhere in `src/`) is sorted,
+    /// so a new transport code cannot fall to terminal by default; each sorted code classifies as listed.
     #[test]
     fn local_codes_are_all_sorted() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -466,17 +467,42 @@ mod tests {
         let mut found = std::collections::BTreeSet::new();
         for f in files {
             let text = std::fs::read_to_string(&f).unwrap();
-            for (i, _) in text.match_indices("ApiError::local(") {
-                let rest = text[i + "ApiError::local(".len()..].trim_start();
-                let Some(rest) = rest.strip_prefix('0') else {
+            for call in ["ApiError::local(", "Self::local("] {
+                for (i, _) in text.match_indices(call) {
+                    let rest = text[i + call.len()..].trim_start();
+                    let Some(rest) = rest.strip_prefix('0') else {
+                        continue;
+                    };
+                    let rest = rest.trim_start().trim_start_matches(',').trim_start();
+                    if let Some(code) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) {
+                        found.insert(code.to_owned());
+                    }
+                }
+            }
+            // `ApiError { status: 0, code: "E_..".into(), .. }`: a literal with status 0 and a literal code.
+            for (i, _) in text.match_indices("ApiError {") {
+                let body = &text[i..text[i..].find('}').map_or(text.len(), |j| i + j)];
+                let compact: String = body.split_whitespace().collect();
+                if !compact.contains("status:0,") {
                     continue;
-                };
-                let rest = rest.trim_start().trim_start_matches(',').trim_start();
-                if let Some(code) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) {
+                }
+                if let Some(code) = compact
+                    .split("code:\"")
+                    .nth(1)
+                    .and_then(|r| r.split('"').next())
+                {
                     found.insert(code.to_owned());
                 }
             }
         }
+        // Only real codes (`E_` and upper case): the doc comments' `"E_.."` placeholders are not.
+        found.retain(|c| {
+            c.len() > 2
+                && c.starts_with("E_")
+                && c[2..]
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        });
         assert!(found.contains("E_NETWORK"), "the scan found {found:?}");
         let unsorted: Vec<_> = found
             .iter()

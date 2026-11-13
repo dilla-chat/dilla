@@ -348,6 +348,7 @@ async fn a_resyncing_group_stays_hidden_until_its_feed_is_read() {
             .unwrap();
         assert_eq!(n, 1);
     }
+    let started = std::time::Instant::now();
     let (_b, mut snapshots) = start_observed(&bob).await;
     let mut seen = 0;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
@@ -367,4 +368,10 @@ async fn a_resyncing_group_stays_hidden_until_its_feed_is_read() {
         }
     }
     assert!(seen >= 2, "{seen} snapshots");
+    // The group's activation reads its feed at once: no wait for the publisher's first backoff tick (5 s).
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "shown {:?} after the start",
+        started.elapsed()
+    );
 }

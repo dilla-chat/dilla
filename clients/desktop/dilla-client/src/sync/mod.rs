@@ -1448,7 +1448,22 @@ impl Engine {
             }
             self.request_catch_up(g);
             self.request_drain(g);
+            // A community group gated while it was not active (registering, joining, waiting for a resync) is read now,
+            // not at the publisher's next backoff tick.
+            self.request_removal_read(g);
         })
+    }
+
+    /// Reads `g`'s removal feed on its lane now (coalesced). A read that succeeds releases its timeline
+    /// ([`SyncHooks::removals_read`]); one that fails leaves the group to the publisher's retry.
+    pub fn request_removal_read(self: &Arc<Self>, g: Gid) {
+        if self.stopped() {
+            return;
+        }
+        let this = Arc::clone(self);
+        self.lane_coalesce(&key(&g), "removal-read", async move {
+            let _ = this.feed_read(g).await;
+        });
     }
 
     /// engine.ts `resync`.
