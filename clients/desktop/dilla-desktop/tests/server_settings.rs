@@ -171,3 +171,34 @@ fn keyboard_server_settings_tab_reaches_leave_and_shift_tab_leaves_it() {
     driver.wait_idle();
     assert_ne!(driver.focused().as_deref(), Some("server-settings-leave"));
 }
+
+/// Integration 3, step 2: the server menu's chevron opens Task 15's `ServerSettingsView` over the shell (THE server
+/// settings host), one at a time, and Close brings the shell back.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_server_menu_opens_the_server_settings_over_the_shell(cx: &mut gpui::TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures/shell/channel-view.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "shell");
+    let open = vcx
+        .debug_bounds("server-settings-open")
+        .expect("the server menu's chevron");
+    vcx.simulate_click(open.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.screen_name()),
+        "server-settings"
+    );
+    let (view, over) = app.read_with(vcx, |a, _| a.server_settings()).unwrap();
+    assert!(over, "over the shell, which comes back");
+    view.update(vcx, |v, cx| v.request_close(cx));
+    vcx.run_until_parked();
+    assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "shell");
+    assert!(app.read_with(vcx, |a, _| a.server_settings()).is_none());
+}

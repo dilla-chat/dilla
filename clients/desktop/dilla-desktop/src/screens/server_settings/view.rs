@@ -171,6 +171,11 @@ impl ServerSettingsView {
         model::active_of(self.requested, &access)
     }
 
+    /// Close, as the frame's close button and Escape ask it (an unsaved draft asks first).
+    pub fn request_close(&mut self, cx: &mut Context<Self>) {
+        self.leave(Leave::Close, cx);
+    }
+
     /// A request to leave the open section: nothing to lose goes at once, an unsaved draft asks first.
     fn leave(&mut self, to: Leave, cx: &mut Context<Self>) {
         match self.workspace.request(to) {

@@ -86,6 +86,8 @@ pub type OnSelect = Rc<dyn Fn(ChannelId, &mut Window, &mut App)>;
 pub type OnToggle = Rc<dyn Fn(ChannelId, &mut Window, &mut App)>;
 /// A "+": a new channel, in the category when one is given.
 pub type OnAdd = Rc<dyn Fn(Option<ChannelId>, &mut Window, &mut App)>;
+/// The head's chevron was pressed.
+pub type OnServerSettings = Rc<dyn Fn(&mut Window, &mut App)>;
 /// A row's context menu was asked for, at this point.
 pub type OnMenu = Rc<dyn Fn(ChannelId, Point<Pixels>, &mut Window, &mut App)>;
 
@@ -96,6 +98,8 @@ pub struct ListHandlers {
     pub on_toggle: OnToggle,
     pub on_add: OnAdd,
     pub on_menu: OnMenu,
+    /// The head's chevron: the server's settings (Shell.tsx's server menu `settings`; Task 15's host).
+    pub on_server_settings: OnServerSettings,
 }
 
 /// Whether `c` is the server's AFK channel (the built-in voice channel; the slice's state does not mark it).
@@ -499,6 +503,7 @@ pub fn render(
         .and_then(|id| state.communities.iter().find(|c| c.id == id));
     let title = community.map_or_else(String::new, |c| c.name.clone());
     let on_add = handlers.on_add.clone();
+    let on_server_settings = handlers.on_server_settings.clone();
     let title_for_tip = title.clone();
     let head = div()
         .flex_none()
@@ -535,11 +540,22 @@ pub fn render(
                         .color(color::FG_2),
                 ))
         }))
-        .child(centred(
-            Pixels::from(css::MENU_HIT),
-            Icon::new(IconName::ChevronDown)
-                .size(Pixels::from(css::GLYPH))
-                .color(color::FG_2),
+        .child(crate::tracked_box(
+            "server-settings-open",
+            div()
+                .id("channel-list-server-menu")
+                .cursor_pointer()
+                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+                    crate::strings::t("admin.title"),
+                    &[],
+                ))
+                .on_click(move |_: &ClickEvent, window, cx| on_server_settings(window, cx))
+                .child(centred(
+                    Pixels::from(css::MENU_HIT),
+                    Icon::new(IconName::ChevronDown)
+                        .size(Pixels::from(css::GLYPH))
+                        .color(color::FG_2),
+                )),
         ));
     let meta = |s: String| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
     let stats = div()

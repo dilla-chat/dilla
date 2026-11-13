@@ -138,8 +138,13 @@ enum Screen {
         behind: Box<Screen>,
         _subscription: Subscription,
     },
-    /// A server's settings (Task 15's `ServerSettingsView`, the server settings host).
-    ServerSettings(Entity<crate::screens::server_settings::ServerSettingsView>),
+    /// A server's settings (Task 15's `ServerSettingsView`, the server settings host), over the screen they were opened
+    /// from (none for a fixture), which comes back on close.
+    ServerSettings {
+        view: Entity<crate::screens::server_settings::ServerSettingsView>,
+        behind: Option<Box<Screen>>,
+        _subscription: Option<Subscription>,
+    },
 }
 
 impl Screen {
@@ -148,7 +153,9 @@ impl Screen {
         match self {
             Screen::Starting | Screen::Fatal(..) => WindowMode::Starting,
             Screen::SignIn(_) | Screen::Signup(_) | Screen::Factor(_) => WindowMode::Authentication,
-            Screen::Shell(_) | Screen::Done(_) | Screen::ServerSettings(_) => WindowMode::Workspace,
+            Screen::Shell(_) | Screen::Done(_) | Screen::ServerSettings { .. } => {
+                WindowMode::Workspace
+            }
             // Settings keeps the shape of the screen it was opened over.
             Screen::Settings { behind, .. } => behind.mode(),
         }
@@ -212,6 +219,7 @@ impl AppView {
                             cx,
                         )
                     });
+                    this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
@@ -228,6 +236,7 @@ impl AppView {
                     let shell = cx.new(|cx| {
                         ShellView::new(Arc::new(fixture.state), None, channel, clock, window, cx)
                     });
+                    this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
@@ -259,7 +268,11 @@ impl AppView {
                             cx,
                         )
                     });
-                    this.screen = Screen::ServerSettings(view);
+                    this.screen = Screen::ServerSettings {
+                        view,
+                        behind: None,
+                        _subscription: None,
+                    };
                 }
             }
             return this;
@@ -370,6 +383,9 @@ impl AppView {
     /// The live route `Route::Settings(section)`: the user settings host over the current screen, or, when settings
     /// already shows, a switch of its section (Task 1b). Any other route is the shell's (Task 8, who owns history).
     pub fn open_route(&mut self, route: &Route, window: &mut Window, cx: &mut Context<Self>) {
+        if let Route::ServerSettings { community, section } = route {
+            return self.show_server_settings(*community, *section, window, cx);
+        }
         let Route::Settings(section) = route else {
             return;
         };
@@ -385,6 +401,70 @@ impl AppView {
             .map(|s| s.read(cx).slot_cx())
             .unwrap_or_default();
         self.show_settings(*section, ctx, window, cx);
+    }
+
+    /// Integration 3 (Task 15): a server's settings over the shell, in Task 15's `ServerSettingsView` (THE server
+    /// settings host: its own sections, Task 14's and Task 21's through the slots), with the shell's state and client.
+    /// Close takes the shell back; a person's own section in its nav opens the user settings host over the shell.
+    fn show_server_settings(
+        &mut self,
+        community: dilla_client::state::CommunityId,
+        section: Option<crate::router::ServerSection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::screens::server_settings::{ServerSettingsView, SettingsEvent as ServerEvent};
+        let Some(shell) = self.shell.clone() else {
+            return;
+        };
+        // One settings screen at a time: over the shell, never over another settings screen.
+        if !matches!(self.screen, Screen::Shell(_)) {
+            return;
+        }
+        let ctx = shell.read(cx).slot_cx();
+        let view = cx.new(|cx| {
+            ServerSettingsView::new(
+                community,
+                ctx.state.clone(),
+                ctx.client.clone(),
+                ctx.clock,
+                section,
+                window,
+                cx,
+            )
+        });
+        let subscription =
+            cx.subscribe_in(&view, window, |this, _, e: &ServerEvent, window, cx| {
+                match e {
+                    ServerEvent::Announce(message) => {
+                        dilla_desktop_ui::components::toast::show_toast(message.clone(), cx);
+                        return;
+                    }
+                    ServerEvent::Close | ServerEvent::OpenUser(_) => {}
+                }
+                if let Screen::ServerSettings {
+                    behind: Some(behind),
+                    ..
+                } = std::mem::replace(&mut this.screen, Screen::Starting)
+                {
+                    this.screen = *behind;
+                }
+                if let Screen::Shell(shell) = &this.screen {
+                    let shell = shell.clone();
+                    this.focus_shell(&shell, window, cx);
+                }
+                if let ServerEvent::OpenUser(section) = e {
+                    this.open_route(&Route::Settings(Some(*section)), window, cx);
+                }
+                cx.notify();
+            });
+        let behind = std::mem::replace(&mut self.screen, Screen::Starting);
+        self.screen = Screen::ServerSettings {
+            view,
+            behind: Some(Box::new(behind)),
+            _subscription: Some(subscription),
+        };
+        cx.notify();
     }
 
     /// The route the app shows while settings is open (the host's section, live, so a section switch is reflected);
@@ -778,7 +858,21 @@ impl AppView {
             Screen::Shell(_) => "shell",
             Screen::Factor(_) => "factor",
             Screen::Settings { .. } => "settings",
-            Screen::ServerSettings(_) => "server-settings",
+            Screen::ServerSettings { .. } => "server-settings",
+        }
+    }
+
+    /// Automation: the open server settings and whether they sit over a screen that comes back on close.
+    #[cfg(feature = "automation")]
+    pub fn server_settings(
+        &self,
+    ) -> Option<(
+        Entity<crate::screens::server_settings::ServerSettingsView>,
+        bool,
+    )> {
+        match &self.screen {
+            Screen::ServerSettings { view, behind, .. } => Some((view.clone(), behind.is_some())),
+            _ => None,
         }
     }
 
@@ -849,6 +943,10 @@ impl AppView {
                         let next = next.clone();
                         host.update(cx, |h, cx| h.set_state(next, cx));
                     }
+                    if let Screen::ServerSettings { view, .. } = &this.screen {
+                        let next = next.clone();
+                        view.update(cx, |v, cx| v.set_state(next, cx));
+                    }
                 });
                 if weak
                     .update(cx, |shell, cx| shell.set_state(next, cx))
@@ -874,14 +972,7 @@ impl AppView {
             }),
             cx,
         );
-        self.shell = Some(shell.clone());
-        // The title bar's gear, Ctrl+, and the DM banners' Privacy and Devices open the user settings host over the
-        // shell (Task 1b).
-        self.shell_sub = Some(cx.subscribe_in(
-            &shell,
-            window,
-            |this, _, OpenSettings(route), window, cx| this.open_route(route, window, cx),
-        ));
+        self.attach_shell(&shell, window, cx);
         self.focus_shell(&shell, window, cx);
         self.screen = Screen::Shell(shell);
         self.fit_window(window, cx);
@@ -930,6 +1021,22 @@ impl AppView {
             .detach();
         }
         cx.notify();
+    }
+
+    /// The window's shell: kept, and its routes to the settings followed (the title bar's gear, Ctrl+, the DM banners'
+    /// Privacy and Devices, the server menu: the user settings host of Task 1b, the server settings of Task 15).
+    fn attach_shell(
+        &mut self,
+        shell: &Entity<ShellView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.shell = Some(shell.clone());
+        self.shell_sub = Some(cx.subscribe_in(
+            shell,
+            window,
+            |this, _, OpenSettings(route), window, cx| this.open_route(route, window, cx),
+        ));
     }
 
     /// The keyboard works from the first frame: the shell's root holds the focus, so Tab and the shell's keys reach it.
@@ -1019,7 +1126,7 @@ impl Render for AppView {
             Screen::Shell(view) => view.clone().into_any_element(),
             Screen::Factor(view) => view.clone().into_any_element(),
             Screen::Settings { host, .. } => host.clone().into_any_element(),
-            Screen::ServerSettings(view) => view.clone().into_any_element(),
+            Screen::ServerSettings { view, .. } => view.clone().into_any_element(),
         };
         // A window that draws its own frame is resized from strips at its rim.
         let size = window.viewport_size();

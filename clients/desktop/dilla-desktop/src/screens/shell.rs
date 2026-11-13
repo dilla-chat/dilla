@@ -418,7 +418,9 @@ impl ShellView {
             }
             Route::Root => self.settle_selection(cx),
             // The user settings are the app's settings host over this shell (Task 1b): the app opens it.
-            Route::Settings(_) => cx.emit(OpenSettings(route.clone())),
+            Route::Settings(_) | Route::ServerSettings { .. } => {
+                cx.emit(OpenSettings(route.clone()))
+            }
             _ => {}
         }
         cx.notify();
@@ -963,6 +965,22 @@ impl Render for ShellView {
                 on_menu: Rc::new(move |id, at, _, cx| {
                     let _ = w4.update(cx, |shell, cx| shell.open_menu(id, at, cx));
                 }),
+                on_server_settings: {
+                    let w5 = shell.clone();
+                    Rc::new(move |_, cx| {
+                        if let Some(community) = community {
+                            let _ = w5.update(cx, |shell, cx| {
+                                shell.navigate(
+                                    Route::ServerSettings {
+                                        community,
+                                        section: None,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                    })
+                },
             }
         };
         // The DM area asks the shell to go somewhere through this (13).

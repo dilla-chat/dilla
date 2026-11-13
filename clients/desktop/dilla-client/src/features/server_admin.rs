@@ -601,9 +601,13 @@ pub fn overwrite_valid(kind: u8, allow: u32, deny: u32) -> bool {
 
 // ---- permission resolution and a channel's own permissions (admin/perm.ts, ChannelPermissions.tsx) ----
 
-/// internal/api/perm.go as `admin/perm.ts` ports it, checked against `protocol/vectors/permissions.json`.
+/// internal/api/perm.go as `admin/perm.ts` ports it, checked against `protocol/vectors/permissions.json`. Integration 3
+/// (Task 15's merge item): one resolver; these delegate to Task 14's `roles::perm`, taking this area's shapes.
 pub mod resolve {
-    use super::{Overwrite, perm};
+    use super::Overwrite;
+    use crate::features::roles::perm::{
+        PermInput, PermOverwrite, PermRole, channel_bits_from, resolve_community, resolve_user,
+    };
 
     /// `PermRole`.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -622,67 +626,56 @@ pub mod resolve {
         pub held: &'a [[u8; 16]],
     }
 
-    /// Deny first, then allow: an allow on the same bit wins (perm.go `&^= deny`, `|= allow`).
-    fn apply(bits: u32, allow: u32, deny: u32) -> u32 {
-        ((bits & !(deny & perm::ALL)) | (allow & perm::ALL)) & perm::ALL
-    }
-
-    fn finish(bits: u32) -> u32 {
-        if bits & perm::ADMINISTRATOR != 0 {
-            perm::ALL
-        } else if bits & perm::VIEW_CHANNEL == 0 {
-            0
-        } else {
-            bits
-        }
-    }
-
-    /// `@everyone` and the held roles, by position then id.
-    fn held_roles<'a>(input: &'a Input<'a>) -> Vec<&'a Role> {
-        let mut roles: Vec<&Role> = input
+    fn roles(input: &Input<'_>) -> Vec<PermRole> {
+        input
             .roles
             .iter()
-            .filter(|r| r.id == input.everyone || input.held.contains(&r.id))
-            .collect();
-        roles.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
-        roles
+            .map(|r| PermRole {
+                id: r.id,
+                position: u32::try_from(r.position).unwrap_or(u32::MAX),
+                allow: r.allow,
+                deny: r.deny,
+            })
+            .collect()
     }
 
     /// perm.go Resolve: the owner short-circuit, `@everyone`, then each held role in ascending position.
     pub fn community(input: &Input<'_>, user: [u8; 16]) -> u32 {
-        if user == input.owner {
-            return perm::ALL;
-        }
-        let bits = held_roles(input)
-            .iter()
-            .fold(0, |bits, r| apply(bits, r.allow, r.deny));
-        finish(bits)
+        let roles = roles(input);
+        resolve_community(
+            &PermInput {
+                owner: input.owner,
+                everyone_id: input.everyone,
+                roles: &roles,
+                held: input.held,
+            },
+            user,
+        )
     }
 
     /// perm.go ResolveChannel: the overwrites of the held roles in ascending role position, then the user's own, then the
     /// community-scoped bits restored from the base. `overwrites` are the channel's own.
     pub fn channel(input: &Input<'_>, overwrites: &[Overwrite], user: [u8; 16]) -> u32 {
-        let base = community(input, user);
-        if base == perm::ALL || base == 0 {
-            return base;
-        }
-        let mut bits = base;
-        for role in held_roles(input) {
-            for o in overwrites
-                .iter()
-                .filter(|o| o.kind == 0 && o.target == role.id)
-            {
-                bits = apply(bits, o.allow, o.deny);
-            }
-        }
-        for o in overwrites
+        let roles = roles(input);
+        let resolved = resolve_user(
+            &PermInput {
+                owner: input.owner,
+                everyone_id: input.everyone,
+                roles: &roles,
+                held: input.held,
+            },
+            user,
+        );
+        let overwrites: Vec<PermOverwrite> = overwrites
             .iter()
-            .filter(|o| o.kind == 1 && o.target == user)
-        {
-            bits = apply(bits, o.allow, o.deny);
-        }
-        bits = (bits & !perm::COMMUNITY_BITS) | (base & perm::COMMUNITY_BITS);
-        finish(bits)
+            .map(|o| PermOverwrite {
+                kind: o.kind,
+                target_id: o.target,
+                allow: o.allow,
+                deny: o.deny,
+            })
+            .collect();
+        channel_bits_from(&resolved, &overwrites)
     }
 }
 
