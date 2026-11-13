@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dilla_client::features::browser_auth::{BrowserAuth, BrowserAuthError, CeremonyKind};
+use dilla_client::features::browser_auth::{BrowserAuth, BrowserAuthError, Cancel, CeremonyKind};
 use dilla_client::features::factors::{InstanceDoc, is_backup_code, normalise_backup_code};
 use dilla_client::instances::Instances;
 use dilla_client::seams::{InstanceConfig, Keychain};
@@ -106,6 +106,8 @@ pub struct SignInView {
     flow: Option<SignIn>,
     instance: Option<InstanceDoc>,
     signed_in: Option<InstanceConfig>,
+    /// The system-browser ceremony under way: Cancel, Back, Escape and the view going away end it.
+    ceremony: Option<Cancel>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -309,6 +311,7 @@ impl SignInView {
             flow: None,
             instance: None,
             signed_in: None,
+            ceremony: None,
             _subscriptions: subscriptions,
         };
         match pin {
@@ -659,17 +662,22 @@ impl SignInView {
                 return;
             }
         };
-        let (Some(server), browser) = (Some(flow.config().server.clone()), self.browser.clone())
-        else {
-            return;
-        };
+        let (server, browser) = (flow.config().server.clone(), self.browser.clone());
+        let cancel = Cancel::new();
+        self.ceremony = Some(cancel.clone());
         self.run(
             flow,
             Command::Passkey,
             move |f, rt| {
+                let doc = rt.block_on(f.instance_doc()).ok();
                 let ceremony = rt.block_on(f.passkey_begin())?;
                 let result = rt
-                    .block_on(browser.run(&server, CeremonyKind::Get, &ceremony.options))
+                    .block_on(browser.run_cancellable(
+                        &server,
+                        CeremonyKind::Get,
+                        &ceremony.options,
+                        &cancel,
+                    ))
                     .map_err(SignInError::Browser)?;
                 let response =
                     result
@@ -678,10 +686,21 @@ impl SignInView {
                             "browser completion",
                         )))?;
                 rt.block_on(f.passkey_finish(ceremony.id, &response))
+                    .map(|owes| (owes, doc))
             },
-            |this, result, window, cx| match result {
-                Ok(owes) => this.after_owed(owes, window, cx),
-                Err(e) => this.apply(&e, Command::Passkey, window, cx),
+            |this, result, window, cx| {
+                this.ceremony = None;
+                match result {
+                    Ok((owes, doc)) => {
+                        if doc.is_some() {
+                            this.instance = doc;
+                        }
+                        this.after_owed(owes, window, cx)
+                    }
+                    // The person ended it: nothing to say.
+                    Err(SignInError::Browser(BrowserAuthError::Cancelled)) => {}
+                    Err(e) => this.apply(&e, Command::Passkey, window, cx),
+                }
             },
             window,
             cx,
@@ -698,12 +717,15 @@ impl SignInView {
             return;
         };
         let (server, browser) = (flow.config().server.clone(), self.browser.clone());
+        let cancel = Cancel::new();
+        self.ceremony = Some(cancel.clone());
         self.run(
             flow,
             Command::Oidc,
             move |f, rt| {
+                let doc = rt.block_on(f.instance_doc()).ok();
                 let result = rt
-                    .block_on(browser.run(&server, CeremonyKind::Oidc, ""))
+                    .block_on(browser.run_cancellable(&server, CeremonyKind::Oidc, "", &cancel))
                     .map_err(SignInError::Browser)?;
                 let assertion =
                     result
@@ -711,11 +733,20 @@ impl SignInView {
                         .ok_or(SignInError::Browser(BrowserAuthError::Invalid(
                             "browser completion",
                         )))?;
-                Ok(f.oidc(assertion, result.needs))
+                Ok((f.oidc(assertion, result.needs), doc))
             },
-            |this, result, window, cx| match result {
-                Ok(owes) => this.after_owed(owes, window, cx),
-                Err(e) => this.apply(&e, Command::Oidc, window, cx),
+            |this, result, window, cx| {
+                this.ceremony = None;
+                match result {
+                    Ok((owes, doc)) => {
+                        if doc.is_some() {
+                            this.instance = doc;
+                        }
+                        this.after_owed(owes, window, cx)
+                    }
+                    Err(SignInError::Browser(BrowserAuthError::Cancelled)) => {}
+                    Err(e) => this.apply(&e, Command::Oidc, window, cx),
+                }
             },
             window,
             cx,
@@ -788,8 +819,19 @@ impl SignInView {
         );
     }
 
+    /// Ends a system-browser ceremony under way; true when there was one (its step answers Cancelled and stays).
+    fn cancel_ceremony(&mut self) -> bool {
+        match self.ceremony.take() {
+            Some(c) => {
+                c.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.cancel_ceremony() || self.busy.is_some() {
             return;
         }
         self.banner = None;
@@ -799,7 +841,7 @@ impl SignInView {
     }
 
     fn create_instead(&mut self, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.cancel_ceremony() || self.busy.is_some() {
             return;
         }
         if let Some(flow) = self.flow.as_mut() {
@@ -1167,10 +1209,25 @@ impl Render for SignInView {
         };
         div()
             .id("signin")
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                // Escape ends a ceremony waiting on the system browser.
+                if e.keystroke.key == "escape" && this.cancel_ceremony() {
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .size_full()
             .child(frame.render())
+    }
+}
+
+impl Drop for SignInView {
+    /// A ceremony left waiting on the system browser ends with the screen.
+    fn drop(&mut self) {
+        if let Some(c) = self.ceremony.take() {
+            c.cancel();
+        }
     }
 }
 

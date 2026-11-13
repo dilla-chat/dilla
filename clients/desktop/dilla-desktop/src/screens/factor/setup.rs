@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use dilla_client::Client;
-use dilla_client::features::browser_auth::{BrowserAuth, BrowserAuthError, CeremonyKind};
+use dilla_client::features::browser_auth::{BrowserAuth, BrowserAuthError, Cancel, CeremonyKind};
 use dilla_client::features::factors::{
     BackupCodes, FactorError, Factors, InstanceDoc, StepUpToken, TotpKey, is_six_digits,
     passkey_name_fits,
@@ -135,6 +135,10 @@ pub struct FactorSetupView {
     generation: u64,
     completed: bool,
     token_spent: bool,
+    /// The setup key as drawn, made once when the key arrives (GPUI keeps its own copy while it is shown).
+    secret_text: Option<SharedString>,
+    /// The passkey ceremony waiting on the system browser: Back, Close and the view going away end it.
+    ceremony: Option<Cancel>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -264,6 +268,8 @@ impl FactorSetupView {
             generation: 0,
             completed: false,
             token_spent: false,
+            secret_text: None,
+            ceremony: None,
             _subscriptions: subscriptions,
         };
         this.load(window, cx);
@@ -347,7 +353,9 @@ impl FactorSetupView {
     }
 
     fn show_choice(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_ceremony();
         self.key = None;
+        self.secret_text = None;
         self.code_error = None;
         self.name_error = None;
         self.code.update(cx, |c, cx| c.clear(cx));
@@ -395,6 +403,7 @@ impl FactorSetupView {
                 this.busy = false;
                 match answer {
                     Ok(key) => {
+                        this.secret_text = Some(SharedString::from(key.secret.as_str().to_owned()));
                         this.key = Some(key);
                         this.code.update(cx, |c, cx| c.focus(window, cx));
                     }
@@ -527,6 +536,8 @@ impl FactorSetupView {
         let factors = self.factors.clone();
         let browser = self.browser.clone();
         let server = self.server.clone();
+        let cancel = Cancel::new();
+        self.ceremony = Some(cancel.clone());
         let begin = factors.passkey_begin(self.stepup());
         let instance = self.instance.name.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -545,7 +556,12 @@ impl FactorSetupView {
                         .build()
                         .map_err(|e| BrowserAuthError::Network(e.to_string()))
                         .and_then(|rt| {
-                            rt.block_on(browser.run(&server, CeremonyKind::Create, &options))
+                            rt.block_on(browser.run_cancellable(
+                                &server,
+                                CeremonyKind::Create,
+                                &options,
+                                &cancel,
+                            ))
                         });
                     let _ = tx.send(result);
                 });
@@ -669,6 +685,12 @@ impl FactorSetupView {
         }
     }
 
+    fn cancel_ceremony(&mut self) {
+        if let Some(c) = self.ceremony.take() {
+            c.cancel();
+        }
+    }
+
     fn copy(&self, text_: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text_));
     }
@@ -782,15 +804,15 @@ impl FactorSetupView {
                     }
                     Some(key) => {
                         body.push(para(t("factor.totp.body")));
-                        let secret = SharedString::from(key.secret.to_string());
-                        let copy_secret = key.secret.to_string();
+                        let secret = self.secret_text.clone().unwrap_or_default();
+                        let copy_secret = Zeroizing::new(key.secret.as_str().to_owned());
                         body.push(
                             div()
                                 .flex()
                                 .gap(px(KEY_GAP))
                                 .items_start()
                                 .child(
-                                    QrCode::new("factor-totp-qr", key.uri.to_string())
+                                    QrCode::new("factor-totp-qr", key.uri.as_str())
                                         .size(px(QR_SIDE)),
                                 )
                                 .child(
@@ -821,7 +843,7 @@ impl FactorSetupView {
                                             )
                                             .on_click(
                                                 cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                                    this.copy(copy_secret.clone(), cx);
+                                                    this.copy(copy_secret.as_str().to_owned(), cx);
                                                 }),
                                             ),
                                         )),
@@ -950,7 +972,10 @@ impl Render for FactorSetupView {
                         .children(body),
                 )
                 .on_close(move |_, cx| {
-                    let _ = this.update(cx, |_, cx| cx.emit(SetupEvent::Close));
+                    let _ = this.update(cx, |this, cx| {
+                        this.cancel_ceremony();
+                        cx.emit(SetupEvent::Close)
+                    });
                 });
             if let Some(footer) = footer {
                 dialog = dialog.footer(footer);
@@ -1023,4 +1048,11 @@ fn check_row(id: &'static str, label: &'static str, checked: bool) -> gpui::Stat
                 ),
         )
         .child(line(label, text::SM, line_height(text::SM, 1.5), color::FG))
+}
+
+impl Drop for FactorSetupView {
+    /// A ceremony left waiting on the system browser ends with the view.
+    fn drop(&mut self) {
+        self.cancel_ceremony();
+    }
 }

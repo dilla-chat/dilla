@@ -353,3 +353,82 @@ async fn browser_ceremony_against_dillad() {
     assert_eq!(e, BrowserAuthError::Unavailable);
     assert_eq!(visit.0.lock().unwrap().len(), 1);
 }
+
+/// controller.ts `forgetBrowser`, the server half: with the gateway down, the device's sessions are ended
+/// (`DELETE /v1/devices/{id}/sessions`), so the session it held is refused afterwards; the client then halts through a
+/// shared handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn forget_signs_the_device_out_on_the_instance() {
+    use dilla_client::http::routes::{self as r, NoBody};
+    use dilla_client::http::{AuthToken, ReqwestHttp};
+    use dilla_client::seams::{Http, HttpError};
+    let host = tokio::task::spawn_blocking(|| h::start_host("t26-forget", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let ada = h::sign_up(&host, &invite, "ada", "Ada", "t26-forget").await;
+    // The client keeps the sign-up session, so the test holds the same token.
+    let client = std::rc::Rc::new(h::start(&ada).await);
+    h::wait_for(&client, Duration::from_secs(30), "ready and online", online).await;
+    let held = ReqwestHttp::new(
+        url::Url::parse(&host.public).unwrap(),
+        AuthToken::new(ada.token.as_str()),
+    )
+    .unwrap();
+    held.call::<r::GetFactors>(&[], NoBody)
+        .await
+        .expect("the session works before");
+    client.disconnect();
+    client.factors().sign_out_device().await.unwrap();
+    let after = held.call::<r::GetFactors>(&[], NoBody).await.unwrap_err();
+    assert!(
+        matches!(after, HttpError::Status { status: 401, .. }),
+        "{after:?}"
+    );
+    client.halt();
+    let client = std::rc::Rc::try_unwrap(client).ok().unwrap();
+    world::stop(client).await;
+}
+
+/// signInBack: a wrong key keeps the registration only for the same ceremony; Back resets it, so another account's
+/// sign-in on the same device starts clean and works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn back_after_a_wrong_key_lets_another_account_sign_in() {
+    let host = tokio::task::spawn_blocking(|| h::start_host("t26-back", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = h::sign_up(&host, &invite, "ada", "Ada", "t26-back").await;
+    let mut bea = h::sign_up(&host, &invite, "bea", "Bea", "t26-back").await;
+    let root = h::repo_root().join(format!("target/t26-back-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let cfg = Instances::load(&root)
+        .unwrap()
+        .add(url::Url::parse(&host.public).unwrap())
+        .unwrap();
+    let kc = Arc::new(MemoryKeychain::new());
+    let mut flow = SignIn::new(cfg.clone(), kc.clone()).unwrap();
+    assert_eq!(flow.login("ada", h::PASSWORD).await.unwrap(), Owed::Code);
+    flow.code(&ada.next_code(&host)).await.unwrap();
+    // Bea's key is a well-formed key, but not Ada's: registered, then refused.
+    assert_eq!(
+        flow.add_device(&bea.recovery_key).await.unwrap_err(),
+        SignInError::WrongKey
+    );
+    flow.back();
+    assert_eq!(flow.login("bea", h::PASSWORD).await.unwrap(), Owed::Code);
+    flow.code(&bea.next_code(&host)).await.unwrap();
+    flow.add_device(&bea.recovery_key).await.unwrap();
+    let client = tokio::task::spawn_blocking(move || {
+        dilla_client::Client::start(cfg, kc).expect("bea's device starts")
+    })
+    .await
+    .unwrap();
+    let s = h::wait_for(&client, Duration::from_secs(30), "bea online", online).await;
+    assert_eq!(s.account.username, "bea");
+    world::stop(client).await;
+    let _ = ada;
+    let _ = std::fs::remove_dir_all(&root);
+}

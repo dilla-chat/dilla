@@ -578,6 +578,15 @@ impl Client {
         self.shutdown();
     }
 
+    /// Task 26 (Forget this device): stops the upkeep, the engine and the gateway now, through a shared handle (views
+    /// may still hold the client). The runtime goes when the last handle drops ([`Client::stop`] or the drop).
+    pub fn halt(&self) {
+        self.inner.upkeep.stop();
+        self.inner.engine.stop();
+        self.inner.link.disconnect();
+        self.inner.link.socket.close();
+    }
+
     fn shutdown(&mut self) {
         self.inner.upkeep.stop();
         self.inner.engine.stop();

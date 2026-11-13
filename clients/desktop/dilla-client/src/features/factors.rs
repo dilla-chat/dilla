@@ -569,7 +569,7 @@ impl Factors {
                     opt_text(e, stepup.as_ref().map(|t| t.0.as_str()));
                 });
                 let call = async {
-                    let Raw(raw) = http::<r::TotpEnroll>(inner.api(), Raw(req.to_vec())).await?;
+                    let Raw(raw) = http::<r::TotpEnroll>(inner.api(), r::Secret(req)).await?;
                     let raw = Zeroizing::new(raw);
                     Ok(decode_strict(&raw, |d| {
                         let len = d.array_len()?;
@@ -601,7 +601,7 @@ impl Factors {
         self.run(move |inner| {
             Box::pin(async move {
                 let call = async {
-                    let Raw(raw) = http::<r::TotpConfirm>(inner.api(), Raw(req.to_vec())).await?;
+                    let Raw(raw) = http::<r::TotpConfirm>(inner.api(), r::Secret(req)).await?;
                     decode_codes_only(&Zeroizing::new(raw))
                 };
                 let codes = guarded(&inner, call).await?;
@@ -624,7 +624,7 @@ impl Factors {
                 });
                 let call = async {
                     let Raw(raw) =
-                        http::<r::PasskeyRegisterBegin>(inner.api(), Raw(req.to_vec())).await?;
+                        http::<r::PasskeyRegisterBegin>(inner.api(), r::Secret(req)).await?;
                     decode_ceremony(&raw)
                 };
                 guarded(&inner, call).await
@@ -831,6 +831,65 @@ impl Factors {
                 .await?;
                 reread(&inner).await;
                 Ok(())
+            })
+        })
+    }
+}
+
+impl Factors {
+    /// controller.ts `forgetBrowser`, the server half: a candidate list this device signed and did not publish is
+    /// published (best effort: a failure leaves it to the next recovering device), then every session of this device is
+    /// ended (`DELETE /v1/devices/{id}/sessions`; a 401 means they are gone already). The caller takes the gateway down
+    /// first ([`Client::disconnect`]) and, once this answers, halts the client and forgets the store
+    /// ([`forget_device`]). Any other refusal is answered and nothing is forgotten.
+    ///
+    /// L-TS-56 step 9 leaves a running call first: the forced-factor screen that offers this has no gateway (the
+    /// instance refuses it while a factor is owed), so no call can be running there; another caller (Task 17's voice)
+    /// leaves its call before calling this.
+    pub fn sign_out_device(&self) -> FactorReply<()> {
+        self.run(|inner| {
+            Box::pin(async move {
+                let core = inner.engine().core().clone();
+                let identity = crate::sync::api::try_core(&core, |c| c.identity())
+                    .await
+                    .map_err(|_| FactorError::new(0, "E_CORE_POISONED"))?
+                    .ok()
+                    .and_then(|raw| crate::sync::api::Identity::decode(&raw))
+                    .ok_or_else(|| FactorError::new(0, "E_CORE_NO_IDENTITY"))?;
+                if identity.phase == 2
+                    && !identity.list_published
+                    && let Some(user) = identity.user_id
+                {
+                    let body = crate::sync::api::try_core(&core, |c| c.device_list_body())
+                        .await
+                        .ok()
+                        .and_then(Result::ok);
+                    if let Some(body) = body {
+                        let user = crate::state::hex(&user);
+                        let put = inner
+                            .api()
+                            .http_call::<r::PutDeviceList>(&[&user], Raw(body), false)
+                            .await;
+                        if put.is_ok() {
+                            let _ =
+                                crate::sync::api::try_core(&core, |c| c.device_list_published())
+                                    .await;
+                        }
+                    }
+                }
+                let Some(device) = identity.device_id else {
+                    return Ok(());
+                };
+                let device = crate::state::hex(&device);
+                match inner
+                    .api()
+                    .http_call::<r::DeleteSessions>(&[&device], NoBody, true)
+                    .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.status == 401 => Ok(()),
+                    Err(e) => Err(FactorError::of_api(&e)),
+                }
             })
         })
     }

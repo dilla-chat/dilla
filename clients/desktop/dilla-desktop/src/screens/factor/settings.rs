@@ -82,7 +82,8 @@ pub struct SignInSection {
     new: Entity<InputState>,
     again: Entity<InputState>,
     password_error: Option<String>,
-    _subscriptions: Vec<Subscription>,
+    /// The open modal's subscription (the step-up dialog or the add dialog): one at a time, replaced.
+    modal_sub: Option<Subscription>,
 }
 
 impl SignInSection {
@@ -113,7 +114,7 @@ impl SignInSection {
             status: None,
             codes: Zeroizing::new(Vec::new()),
             password_error: None,
-            _subscriptions: Vec::new(),
+            modal_sub: None,
         };
         this.refresh(window, cx);
         this
@@ -172,7 +173,7 @@ impl SignInSection {
                 cx,
             )
         });
-        self._subscriptions.push(cx.subscribe_in(
+        self.modal_sub = Some(cx.subscribe_in(
             &dialog,
             window,
             |this, _, e: &StepUpEvent, window, cx| match e {
@@ -188,7 +189,13 @@ impl SignInSection {
         let Some(purpose) = self.purpose.clone() else {
             return;
         };
-        self.token = Some(token.clone());
+        // Only a change this section makes itself keeps the token; an add hands it to its dialog.
+        if matches!(
+            purpose,
+            Purpose::Remove { .. } | Purpose::Codes | Purpose::FirstPassword
+        ) {
+            self.token = Some(token.clone());
+        }
         match purpose {
             Purpose::Totp | Purpose::Passkey => {
                 let start = if matches!(purpose, Purpose::Totp) {
@@ -212,7 +219,7 @@ impl SignInSection {
                         cx,
                     )
                 });
-                self._subscriptions.push(cx.subscribe_in(
+                self.modal_sub = Some(cx.subscribe_in(
                     &view,
                     window,
                     |this, _, e: &SetupEvent, window, cx| match e {

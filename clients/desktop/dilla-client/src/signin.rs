@@ -232,6 +232,9 @@ pub struct SignIn {
     used_passkey: bool,
     /// When the held assertion was issued.
     held_at: Option<std::time::Instant>,
+    /// The held assertion is a first-factor login's (password or OIDC, still owing a factor): a passkey finish carries
+    /// it (enrol.ts `boundFirstFactor`).
+    bound_first_factor: bool,
 }
 
 /// What the instance's document says about signing in (`GET /v1/instance`).
@@ -301,6 +304,7 @@ impl SignIn {
             holds_passkey: false,
             used_passkey: false,
             held_at: None,
+            bound_first_factor: false,
         })
     }
 
@@ -335,9 +339,25 @@ impl SignIn {
     }
 
     /// enrol.ts `signInBack`: the held assertion is dropped, so nothing half-signed-in survives; the login asks again.
+    ///
+    /// An enrolment this ceremony registered (a wrong key kept it, phase 3) is reset and its pending session dropped, as
+    /// the web's signInBack and signInCancel do: the next login (possibly another account) starts clean.
     pub fn back(&mut self) {
         self.assertion = None;
+        self.held_at = None;
+        self.bound_first_factor = false;
         self.used_passkey = false;
+        if self.core.is_some() {
+            let _ = self.with_core(|c| {
+                let id = c.identity()?;
+                if crate::sync::api::Identity::decode(&id).is_some_and(|i| i.phase == 3) {
+                    c.enrol_reset()?;
+                    c.session_clear()?;
+                }
+                Ok(())
+            });
+        }
+        self.auth.clear();
     }
 
     /// `POST /v1/auth/passkey/login/begin` `[]`: a discoverable ceremony for the system browser.
@@ -360,11 +380,15 @@ impl SignIn {
         ceremony: [u8; 16],
         response: &str,
     ) -> Result<Owed, SignInError> {
-        let bound = match self.assertion.take() {
-            Some(Assertion {
-                value,
-                owes: Owed::Code | Owed::Passkey,
-            }) => Some(value),
+        // enrol.ts `passkey`: only a first-factor login's assertion (a password or OIDC login still owing a factor) is
+        // bound, so the instance refuses a passkey of another account; the held assertion is not spent, and a refused
+        // finish (unknown passkey, another account's, a dropped connection) leaves it as it was.
+        let bound = match &self.assertion {
+            Some(Assertion { value, owes })
+                if self.bound_first_factor && *owes != Owed::Nothing =>
+            {
+                Some(value.clone())
+            }
             _ => None,
         };
         let mut parts = vec![Part::Bytes(&ceremony), Part::Text(response)];
@@ -377,20 +401,7 @@ impl SignIn {
             Err(e) => {
                 return Err(match refused(&e) {
                     Some((_, "E_PASSKEY_UNKNOWN")) => SignInError::PasskeyUnknown,
-                    Some((_, "E_PASSKEY_OTHER_ACCOUNT")) => {
-                        // The instance refused it and issued nothing: the password login's assertion stands.
-                        if let Some(value) = bound {
-                            self.assertion = Some(Assertion {
-                                value,
-                                owes: if self.holds_passkey {
-                                    Owed::Passkey
-                                } else {
-                                    Owed::Code
-                                },
-                            });
-                        }
-                        SignInError::PasskeyOtherAccount
-                    }
+                    Some((_, "E_PASSKEY_OTHER_ACCOUNT")) => SignInError::PasskeyOtherAccount,
                     _ => http_error(&e),
                 });
             }
@@ -417,6 +428,7 @@ impl SignIn {
             _ => Owed::Passkey,
         };
         self.hold(assertion, owes);
+        self.bound_first_factor = owes != Owed::Nothing;
         self.username.clear();
         owes
     }
@@ -424,6 +436,7 @@ impl SignIn {
     fn hold(&mut self, value: Zeroizing<String>, owes: Owed) {
         self.assertion = Some(Assertion { value, owes });
         self.held_at = Some(std::time::Instant::now());
+        self.bound_first_factor = false;
     }
 
     /// The held assertion ran out (enrol.ts `ASSERTION_EXPIRED_MS`, five minutes on the instance).
@@ -445,6 +458,8 @@ impl SignIn {
         if key.chars().count() != 52 {
             return Err(SignInError::KeyLength);
         }
+        // The key's form is checked before the backup code is spent (controller.ts `checkKey`).
+        dilla_core::client::recovery_key_check(&key).map_err(|_| SignInError::WrongKey)?;
         let code = crate::features::factors::normalise_backup_code(backup_code);
         if !crate::features::factors::is_backup_code(&code) {
             return Err(SignInError::BackupFailed);
@@ -523,6 +538,7 @@ impl SignIn {
         };
         self.holds_passkey = answer.passkey;
         self.hold(answer.assertion, owes);
+        self.bound_first_factor = owes != Owed::Nothing;
         username.clone_into(&mut self.username);
         Ok(owes)
     }
@@ -559,6 +575,8 @@ impl SignIn {
         if key.chars().count() != 52 {
             return Err(SignInError::KeyLength);
         }
+        // REGISTRATION-DEVICES-02: the key's form is checked before anything is registered or spent.
+        dilla_core::client::recovery_key_check(&key).map_err(|_| SignInError::WrongKey)?;
         // A wrong key keeps the registration (enrol.ts phase signin-key after it): the retry goes straight on to the
         // fetch with the same enrolment and session.
         let user_id = match self.registered()? {
@@ -883,5 +901,102 @@ mod tests {
         let mut e = dilla_core::cbor::Encoder::new();
         e.array(2).bytes(b"id-16-bytes-long").bytes(&[0; 32]);
         assert_eq!(decode_device_id(&e.into_vec()), Some(*b"id-16-bytes-long"));
+    }
+
+    /// A scripted instance: each request gets the next (status, CBOR body); `None` closes the connection unanswered.
+    async fn script(replies: Vec<Option<(u16, Vec<u8>)>>) -> url::Url {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            for reply in replies {
+                let Ok((mut s, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 65536];
+                let mut got = Vec::new();
+                loop {
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&got).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if got.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let Some((status, body)) = reply else {
+                    drop(s);
+                    continue;
+                };
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/cbor\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                s.write_all(head.as_bytes()).await.unwrap();
+                s.write_all(&body).await.unwrap();
+                s.shutdown().await.ok();
+            }
+        });
+        url::Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap()
+    }
+
+    fn cbor(f: impl FnOnce(&mut dilla_core::cbor::Encoder)) -> Vec<u8> {
+        let mut e = dilla_core::cbor::Encoder::new();
+        f(&mut e);
+        e.into_vec()
+    }
+
+    /// enrol.ts `passkey`: a refused finish (an unknown passkey, a dropped connection) leaves the password login's
+    /// assertion held with what it owes, so the code step still works.
+    #[tokio::test]
+    async fn a_refused_passkey_keeps_the_password_login() {
+        let refusal = cbor(|e| {
+            e.array(3).text("E_PASSKEY_UNKNOWN").text("").null();
+        });
+        let server = script(vec![
+            Some((
+                200,
+                cbor(|e| {
+                    e.array(2).text("login-assertion").uint(1);
+                }),
+            )),
+            Some((401, refusal)),
+            None,
+            Some((
+                200,
+                cbor(|e| {
+                    e.array(1).text("settled-assertion");
+                }),
+            )),
+        ])
+        .await;
+        let cfg = InstanceConfig {
+            id: crate::seams::InstanceId(0),
+            server,
+            data_dir: std::env::temp_dir().join(format!("t26-signin-{}", std::process::id())),
+        };
+        let mut flow = SignIn::new(cfg, Arc::new(crate::keychain::MemoryKeychain::new())).unwrap();
+        assert_eq!(flow.login("ada", "pw").await.unwrap(), Owed::Code);
+        assert_eq!(
+            flow.passkey_finish([1; 16], "{}").await.unwrap_err(),
+            SignInError::PasskeyUnknown
+        );
+        assert_eq!(flow.owes(), Some(Owed::Code));
+        assert!(flow.passkey_finish([1; 16], "{}").await.is_err());
+        assert_eq!(flow.owes(), Some(Owed::Code));
+        flow.code("123456").await.unwrap();
+        assert_eq!(flow.owes(), Some(Owed::Nothing));
     }
 }

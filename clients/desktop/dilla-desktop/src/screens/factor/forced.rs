@@ -35,6 +35,9 @@ pub struct ForcedFactorView {
     client: Rc<Client>,
     setup: Entity<FactorSetupView>,
     confirm: bool,
+    /// Forgetting is under way (the sign-out and the wipe).
+    forgetting: bool,
+    forget_error: Option<String>,
     _subscription: Subscription,
 }
 
@@ -62,8 +65,18 @@ impl ForcedFactorView {
             client,
             setup,
             confirm: false,
+            forgetting: false,
+            forget_error: None,
             _subscription: subscription,
         }
+    }
+
+    /// The app's Forget did not go through (the sign-out was refused, or the store could not go): said in the dialog,
+    /// and the device stays as it was.
+    pub fn forget_refused(&mut self, code: &str, cx: &mut Context<Self>) {
+        self.forgetting = false;
+        self.forget_error = Some(crate::strings::tf("factor.error.other", &[("code", code)]));
+        cx.notify();
     }
 
     fn finish(
@@ -123,8 +136,17 @@ impl Render for ForcedFactorView {
                     t("signin.cancel"),
                 )
                 .open(self.confirm)
+                .busy(self.forgetting)
+                .error(self.forget_error.clone().map(Into::into))
                 .on_confirm(move |_, cx| {
-                    let _ = this.update(cx, |_, cx| cx.emit(ForcedEvent::Forget));
+                    let _ = this.update(cx, |this, cx| {
+                        if !this.forgetting {
+                            this.forgetting = true;
+                            this.forget_error = None;
+                            cx.emit(ForcedEvent::Forget);
+                            cx.notify();
+                        }
+                    });
                 })
                 .on_close(move |_, cx| {
                     let _ = close.update(cx, |this, cx| {

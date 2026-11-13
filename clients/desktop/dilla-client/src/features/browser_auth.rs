@@ -91,6 +91,53 @@ pub enum BrowserAuthError {
     /// The browser could not be opened.
     #[error("the browser could not be opened: {0}")]
     Opener(String),
+    /// The person cancelled (Cancel, Back, Escape, or the screen went away): nothing more is sent.
+    #[error("the browser sign-in was cancelled")]
+    Cancelled,
+}
+
+/// Ends a running ceremony ([`BrowserAuth::run_cancellable`]): every clone shares it; once cancelled, no further request
+/// is sent and the ceremony answers [`BrowserAuthError::Cancelled`].
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(Arc<(std::sync::atomic::AtomicBool, tokio::sync::Notify)>);
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.0.store(true, std::sync::atomic::Ordering::Release);
+        self.0.1.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            let notified = self.0.1.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Runs `f` unless (or until) cancelled.
+    async fn guard<T>(
+        &self,
+        f: impl std::future::Future<Output = Result<T, BrowserAuthError>>,
+    ) -> Result<T, BrowserAuthError> {
+        if self.is_cancelled() {
+            return Err(BrowserAuthError::Cancelled);
+        }
+        tokio::select! {
+            () = self.cancelled() => Err(BrowserAuthError::Cancelled),
+            r = f => r,
+        }
+    }
 }
 
 /// Opens the system browser on a URL (`open::that_detached` in the app, a test browser in tests).
@@ -137,6 +184,15 @@ impl Default for BrowserAuth {
 /// loopback host when `allow_loopback`; the path ends in `/`.
 pub fn canonical_instance(server: &Url, allow_loopback: bool) -> Result<Url, BrowserAuthError> {
     let bad = BrowserAuthError::Invalid;
+    // policy.ts: an encoded slash, backslash, NUL or dot could steer the fixed `desktop-auth/` navigation elsewhere.
+    // (Task 25 ports the same function: one copy at merge.)
+    let lower = server.as_str().to_ascii_lowercase();
+    if ["%2f", "%5c", "%00", "%2e"]
+        .iter()
+        .any(|p| lower.contains(p))
+    {
+        return Err(bad("instance URL"));
+    }
     if !server.username().is_empty()
         || server.password().is_some()
         || server.query().is_some()
@@ -228,6 +284,19 @@ impl BrowserAuth {
         kind: CeremonyKind,
         options: &str,
     ) -> Result<CeremonyResult, BrowserAuthError> {
+        self.run_cancellable(instance, kind, options, &Cancel::new())
+            .await
+    }
+
+    /// [`BrowserAuth::run`] that `cancel` ends: each request and each wait between polls races it, so after a cancel
+    /// nothing more is sent.
+    pub async fn run_cancellable(
+        &self,
+        instance: &Url,
+        kind: CeremonyKind,
+        options: &str,
+        cancel: &Cancel,
+    ) -> Result<CeremonyResult, BrowserAuthError> {
         if options.len() > OPTIONS_MAX_BYTES || (kind == CeremonyKind::Oidc && !options.is_empty())
         {
             return Err(BrowserAuthError::Invalid("options"));
@@ -248,8 +317,8 @@ impl BrowserAuth {
             "challenge": challenge,
         })
         .to_string();
-        let created = match self
-            .post(&client, &base, "request", request, true, deadline)
+        let created = match cancel
+            .guard(self.post(&client, &base, "request", request, true, deadline))
             .await?
         {
             Posted::Json(v) => v,
@@ -263,6 +332,9 @@ impl BrowserAuth {
         let navigation = base
             .join(&id)
             .map_err(|_| BrowserAuthError::Invalid("browser request ID"))?;
+        if cancel.is_cancelled() {
+            return Err(BrowserAuthError::Cancelled);
+        }
         self.opener
             .open(navigation.as_str())
             .map_err(BrowserAuthError::Opener)?;
@@ -273,8 +345,8 @@ impl BrowserAuth {
             }
             let body =
                 Zeroizing::new(serde_json::json!({ "verifier": verifier.as_str() }).to_string());
-            match self
-                .post(&client, &base, &consume, body.to_string(), false, deadline)
+            match cancel
+                .guard(self.post(&client, &base, &consume, body.to_string(), false, deadline))
                 .await?
             {
                 Posted::Accepted => {}
@@ -283,7 +355,12 @@ impl BrowserAuth {
             let wait = self
                 .poll
                 .min(deadline.saturating_duration_since(Instant::now()));
-            tokio::time::sleep(wait).await;
+            cancel
+                .guard(async {
+                    tokio::time::sleep(wait).await;
+                    Ok(())
+                })
+                .await?;
         }
     }
 
@@ -426,6 +503,16 @@ mod tests {
         assert!(canonical_instance(&u("https://a:b@chat.test/"), false).is_err());
         assert!(canonical_instance(&u("https://chat.test/?x=1"), false).is_err());
         assert!(canonical_instance(&u("https://chat.test/assets/"), false).is_err());
+        for bad in [
+            "https://chat.test/a%2Fb/",
+            "https://chat.test/%5c/",
+            "https://chat.test/%00/",
+            "https://chat.test/a%2Eb/",
+        ] {
+            assert!(canonical_instance(&u(bad), false).is_err(), "{bad}");
+        }
+        // An encoded dot segment (`%2E%2e`) is resolved by the URL parser itself before this check: it never survives.
+        assert_eq!(u("https://chat.test/%2E%2e/").path(), "/");
     }
 
     #[test]
@@ -620,6 +707,48 @@ mod tests {
             auth.run(&base, CeremonyKind::Get, "{}").await.unwrap_err(),
             BrowserAuthError::Invalid(_)
         ));
+    }
+
+    /// A cancelled ceremony sends nothing more and answers Cancelled (no response reaches a finish).
+    #[tokio::test]
+    async fn a_cancelled_ceremony_sends_nothing_more() {
+        let id = "A".repeat(43);
+        let mut script = vec![(201, format!(r#"{{"id":"{id}"}}"#))];
+        script.extend((0..200).map(|_| (202, String::new())));
+        let (base, seen) = server(script).await;
+        let auth = BrowserAuth::new(Arc::new(Recorder(Mutex::new(Vec::new()))), true)
+            .with_timing(Duration::from_secs(30), Duration::from_millis(50));
+        let cancel = Cancel::new();
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stop.cancel();
+        });
+        let started = std::time::Instant::now();
+        assert_eq!(
+            auth.run_cancellable(&base, CeremonyKind::Get, "{}", &cancel)
+                .await
+                .unwrap_err(),
+            BrowserAuthError::Cancelled
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let after = seen.lock().unwrap().len();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            after,
+            "no request after the cancel"
+        );
+        // Cancelled before it starts: nothing is sent at all.
+        let (base, seen) = server(vec![(201, format!(r#"{{"id":"{id}"}}"#))]).await;
+        assert_eq!(
+            auth.run_cancellable(&base, CeremonyKind::Get, "{}", &cancel)
+                .await
+                .unwrap_err(),
+            BrowserAuthError::Cancelled
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

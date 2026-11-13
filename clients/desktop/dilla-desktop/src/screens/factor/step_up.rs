@@ -6,7 +6,7 @@
 //! Each press is an attempt; Cancel, Escape or a newer press ends it, and a token that arrives for an ended attempt is
 //! dropped, so closing the dialog grants nothing.
 
-use dilla_client::features::browser_auth::{BrowserAuth, BrowserAuthError, CeremonyKind};
+use dilla_client::features::browser_auth::{BrowserAuth, BrowserAuthError, Cancel, CeremonyKind};
 use dilla_client::features::factors::{
     FactorError, Factors, StepUpMethod, StepUpToken, is_backup_code, is_six_digits,
     normalise_backup_code,
@@ -60,6 +60,8 @@ pub struct StepUpDialog {
     busy: bool,
     error: Option<String>,
     attempt: u64,
+    /// The passkey ceremony waiting on the system browser: Cancel, Escape and the dialog going away end it.
+    ceremony: Option<Cancel>,
     _subscription: Subscription,
 }
 
@@ -106,6 +108,7 @@ impl StepUpDialog {
             busy: false,
             error: None,
             attempt: 0,
+            ceremony: None,
             _subscription: subscription,
         }
     }
@@ -189,6 +192,10 @@ impl StepUpDialog {
             self.browser.clone(),
             self.server.clone(),
         );
+        let cancel = Cancel::new();
+        if let Some(old) = self.ceremony.replace(cancel.clone()) {
+            old.cancel();
+        }
         cx.spawn_in(window, async move |this, cx| {
             enum Ended {
                 Instance(FactorError),
@@ -207,7 +214,12 @@ impl StepUpDialog {
                         .build()
                         .map_err(|e| BrowserAuthError::Network(e.to_string()))
                         .and_then(|rt| {
-                            rt.block_on(browser.run(&server, CeremonyKind::Get, &options))
+                            rt.block_on(browser.run_cancellable(
+                                &server,
+                                CeremonyKind::Get,
+                                &options,
+                                &cancel,
+                            ))
                         });
                     let _ = tx.send(result);
                 });
@@ -253,8 +265,11 @@ impl StepUpDialog {
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
-        // A token for this attempt is dropped from now on.
+        // A token for this attempt is dropped from now on, and a ceremony under way ends.
         self.attempt += 1;
+        if let Some(c) = self.ceremony.take() {
+            c.cancel();
+        }
         self.busy = false;
         cx.emit(StepUpEvent::Close);
     }
@@ -324,5 +339,13 @@ impl Render for StepUpDialog {
         .on_close(move |_, cx| {
             let _ = close.update(cx, |this, cx| this.close(cx));
         })
+    }
+}
+
+impl Drop for StepUpDialog {
+    fn drop(&mut self) {
+        if let Some(c) = self.ceremony.take() {
+            c.cancel();
+        }
     }
 }

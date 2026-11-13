@@ -26,7 +26,7 @@ use crate::slots::{SectionId, SlotCx};
 /// The instance address of each running client (the app registers it when it starts the client): the system-browser
 /// ceremony opens that instance's page. Keyed by the client's allocation, removed when the client is dropped from it.
 #[derive(Default)]
-struct Instances(HashMap<usize, url::Url>);
+struct Instances(HashMap<usize, dilla_client::seams::InstanceConfig>);
 
 impl Global for Instances {}
 
@@ -35,10 +35,12 @@ fn key(client: &Rc<Client>) -> usize {
 }
 
 /// The app's hook: `client` serves `server` (call when the client starts; the controller hook in `app.rs`).
-pub fn register_instance(client: &Rc<Client>, server: url::Url, cx: &mut App) {
-    cx.default_global::<Instances>()
-        .0
-        .insert(key(client), server);
+pub fn register_instance(
+    client: &Rc<Client>,
+    cfg: dilla_client::seams::InstanceConfig,
+    cx: &mut App,
+) {
+    cx.default_global::<Instances>().0.insert(key(client), cfg);
 }
 
 /// The app's hook: the client stopped.
@@ -48,9 +50,44 @@ pub fn forget_instance(client: &Rc<Client>, cx: &mut App) {
     }
 }
 
-fn server_of(client: &Rc<Client>, cx: &App) -> Option<url::Url> {
+/// The instance `client` was registered with ([`register_instance`]).
+pub fn instance_of(client: &Rc<Client>, cx: &App) -> Option<dilla_client::seams::InstanceConfig> {
     cx.try_global::<Instances>()
         .and_then(|i| i.0.get(&key(client)).cloned())
+}
+
+/// Task 26 (ForgetBrowser), the whole of it: the gateway goes down, the device signs out on the instance
+/// ([`dilla_client::features::factors::Factors::sign_out_device`]), the client halts through the shared handle (so no
+/// view's clone can keep it running), then this device forgets the instance. Answers why it did not, never silently:
+/// a refused sign-out leaves everything in place and reconnects.
+pub async fn forget_device(
+    client: Rc<Client>,
+    cfg: dilla_client::seams::InstanceConfig,
+    root: Option<std::path::PathBuf>,
+    keychain: std::sync::Arc<dyn dilla_client::seams::Keychain>,
+) -> Result<(), String> {
+    client.disconnect();
+    if let Err(e) = client.factors().sign_out_device().await {
+        client.reconnect();
+        return Err(e.code);
+    }
+    client.halt();
+    let root = root.ok_or_else(|| "E_STORE".to_owned())?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("dilla-forget".into())
+        .spawn(move || {
+            let result =
+                dilla_client::features::factors::forget_device(&root, &cfg, keychain.as_ref());
+            let _ = tx.send(result.map_err(|_| "E_FORGET".to_owned()));
+        })
+        .map_err(|_| "E_THREAD".to_owned())?;
+    rx.await.unwrap_or_else(|_| Err("E_FORGET".to_owned()))
+}
+
+fn server_of(client: &Rc<Client>, cx: &App) -> Option<url::Url> {
+    cx.try_global::<Instances>()
+        .and_then(|i| i.0.get(&key(client)).map(|c| c.server.clone()))
 }
 
 /// Draws one of this area's settings sections (`slots::settings_sections` points here): Settings → Sign-in.
