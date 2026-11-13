@@ -377,6 +377,20 @@ pub(crate) fn stopped(inner: &Arc<Inner>) {
     });
 }
 
+/// The voice channel whose player op 63 asks to read again: a call scope (kind 2, its id the voice channel) of the call
+/// this device is in, where the dock shows the player (music.tsx reads only a shown player).
+fn music_hint(
+    state: &AppState,
+    frame: &frames::BotStateChangedFrame,
+) -> Option<crate::state::ChannelId> {
+    let call = &state.voice.call;
+    let channel = call.channel?;
+    (frame.scope_kind == 2
+        && call.phase == crate::calls::CallPhase::In
+        && channel.0 == frame.scope_id)
+        .then_some(channel)
+}
+
 impl AreaFrames for Bot {
     fn on_frame(inner: &Arc<Inner>, f: &Frame) {
         let sealed = sealed_for(inner);
@@ -395,14 +409,21 @@ impl AreaFrames for Bot {
                 }
             }
             Op::BOT_STATE_CHANGED => {
+                let Ok(frame) = frames::bot_state_changed_of(f) else {
+                    return;
+                };
                 // A community's Bot changed state (scope kind 0): read its catalog and status again.
-                if let Ok(frame) = frames::bot_state_changed_of(f)
-                    && frame.scope_kind == 0
-                {
+                if frame.scope_kind == 0 {
                     drop(inner.spawn(async move {
                         let _ = sealed.refresh(CommunityId(frame.scope_id)).await;
                         Ok(())
                     }));
+                }
+                // The player of this device's call changed (Task 21's `Music::refresh`, integration 3 step 5).
+                if let Some(channel) = music_hint(&inner.snapshot(), &frame) {
+                    let transport = crate::features::bot_admin::default_transport(inner);
+                    let admin = crate::features::bot_admin::BotAdmin::new(inner.clone(), transport);
+                    drop(crate::features::music::Music::new(admin).refresh(channel));
                 }
             }
             _ => {}
@@ -415,6 +436,26 @@ mod tests {
     use super::*;
     use crate::gateway::frames::Value;
     use crate::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+
+    /// Integration 3, step 5: op 63's call scope (kind 2, its id the voice channel) reads the player again while this
+    /// device is in that call (the dock shows it, music.tsx's `watchBotHint`); another call, another kind or no call
+    /// reads nothing.
+    #[test]
+    fn a_call_scope_hint_reads_the_player_of_this_devices_call() {
+        let lounge = crate::state::ChannelId([8; 16]);
+        let hint = |kind: u8, id: [u8; 16]| frames::BotStateChangedFrame {
+            scope_kind: kind,
+            scope_id: id,
+            revision: 4,
+        };
+        let mut s = AppState::default();
+        assert_eq!(music_hint(&s, &hint(2, lounge.0)), None, "no call");
+        s.voice.call.phase = crate::calls::CallPhase::In;
+        s.voice.call.channel = Some(lounge);
+        assert_eq!(music_hint(&s, &hint(2, lounge.0)), Some(lounge));
+        assert_eq!(music_hint(&s, &hint(2, [9; 16])), None, "another call");
+        assert_eq!(music_hint(&s, &hint(1, lounge.0)), None, "a channel scope");
+    }
 
     fn state_with_catalog() -> (AppState, CommunityId) {
         let c = CommunityId([7; 16]);

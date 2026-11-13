@@ -29,6 +29,7 @@ pub fn release_client(client: &Rc<Client>, cx: &mut App) {
         }
     }
     screens::voice::release(client, cx);
+    screens::bot_admin::player::release(client, cx);
     screens::attachments::ui::release(client, cx);
     screens::dms::picker::release(client, cx);
     screens::dms::compare::release(client, cx);

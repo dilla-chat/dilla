@@ -52,6 +52,125 @@ pub fn provide(feed: Option<MusicFeed>, cx: &mut App) {
     }
 }
 
+/// The feed of this device's call (integration 3, step 5): `Some` while it is in a call (phase In) whose participants
+/// include the community's pinned Bot user; the room is the call's channel name, the Bot its catalog name.
+pub fn feed_of(
+    state: &Arc<AppState>,
+    client: Option<Rc<Client>>,
+    now_ms: u64,
+) -> Option<MusicFeed> {
+    let call = &state.voice.call;
+    if call.phase != dilla_client::calls::CallPhase::In {
+        return None;
+    }
+    let channel = call.channel?;
+    let room = state.channel(channel)?;
+    let community = room.community_id;
+    let catalog = state.bot.catalogs.get(&community)?;
+    let bot_user = catalog.bot_user?;
+    let bot_in = state
+        .voice
+        .calls
+        .get(&channel)
+        .is_some_and(|c| c.participants.iter().any(|p| p.user_id == bot_user));
+    bot_in.then(|| MusicFeed {
+        state: state.clone(),
+        client,
+        community,
+        channel,
+        room: room.name.clone(),
+        bot: catalog.bot_name.clone(),
+        now_ms,
+    })
+}
+
+/// When the player is read again for the playing track's end: a second after it should end (music.tsx), `None` while
+/// paused, without a track or without a length.
+pub fn refresh_after_ms(snapshot: &MusicSnapshot, now_ms: u64) -> Option<u64> {
+    let track = snapshot.track.as_ref()?;
+    if snapshot.paused || track.duration_ms == 0 {
+        return None;
+    }
+    Some(
+        track
+            .duration_ms
+            .saturating_sub(playhead_ms(snapshot, now_ms))
+            + 1_000,
+    )
+}
+
+/// The track end's read, scheduled for one player's snapshot revision.
+#[derive(Default)]
+struct TrackEnd {
+    key: Option<(ChannelId, u64)>,
+    _timer: Option<gpui::Task<()>>,
+}
+
+impl Global for TrackEnd {}
+
+fn device_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The shell's state loop (integration 3, step 5): provides the dock's feed for `state` ([`feed_of`]), reads the
+/// player when this device's call with the Bot starts (op 63 reads it again on the client), and again a second after its
+/// track should end. The track-end timer holds the client weakly: a release never waits for it.
+pub fn follow(state: &Arc<AppState>, client: &Rc<Client>, cx: &mut App) {
+    let feed = feed_of(state, Some(client.clone()), device_now_ms());
+    let before = cx.try_global::<MusicFeed>().map(|f| f.channel);
+    let Some(channel) = feed.as_ref().map(|f| f.channel) else {
+        if before.is_some() {
+            provide(None, cx);
+        }
+        if cx.has_global::<TrackEnd>() {
+            cx.remove_global::<TrackEnd>();
+        }
+        return;
+    };
+    provide(feed, cx);
+    if before != Some(channel) {
+        drop(client.music().refresh(channel));
+    }
+    let snapshot = match state.bot_admin.music.get(&channel) {
+        Some(MusicState::Available(s)) => Some(s),
+        _ => None,
+    };
+    let key = snapshot.map(|s| (channel, s.revision));
+    if cx.default_global::<TrackEnd>().key == key {
+        return;
+    }
+    let timer = snapshot
+        .and_then(|s| refresh_after_ms(s, device_now_ms()))
+        .map(|ms| {
+            let weak = Rc::downgrade(client);
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(ms))
+                    .await;
+                if let Some(client) = weak.upgrade() {
+                    drop(client.music().refresh(channel));
+                }
+            })
+        });
+    *cx.global_mut::<TrackEnd>() = TrackEnd { key, _timer: timer };
+}
+
+/// The release path (integration 3, step 0 item 1): the dock's feed lets go of `client`, and its track-end read goes.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    let held = cx
+        .try_global::<MusicFeed>()
+        .and_then(|f| f.client.as_ref())
+        .is_some_and(|c| Rc::ptr_eq(c, client));
+    if held {
+        provide(None, cx);
+        if cx.has_global::<TrackEnd>() {
+            cx.remove_global::<TrackEnd>();
+        }
+    }
+}
+
 /// `NowPlaying`'s props for one player, as `musicView` makes them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerView {
@@ -321,6 +440,109 @@ mod tests {
         } else {
             String::new()
         }
+    }
+
+    /// A community with a voice channel "Lounge" whose call holds this device and, with `bot_in`, the pinned Bot "Glenn".
+    fn in_call(bot_in: bool, phase: dilla_client::calls::CallPhase) -> (AppState, ChannelId) {
+        use dilla_client::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+        use dilla_client::state::voice::{VoiceCall, VoiceParticipant};
+        let (community, channel, bot) = (CommunityId([7; 16]), ChannelId([8; 16]), UserId([9; 16]));
+        let mut s = AppState::default();
+        s.channels.push(dilla_client::state::channels::Channel {
+            id: channel,
+            community_id: community,
+            kind: 1,
+            mode: 0,
+            name: "Lounge".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: Default::default(),
+        });
+        s.bot.catalogs.insert(
+            community,
+            BotCatalogView {
+                revision: 1,
+                commands: Vec::new(),
+                status: BotStatus {
+                    state: BotStatusState::Ready,
+                    since: None,
+                },
+                bot_channels: None,
+                bot_user: Some(bot),
+                bot_name: "Glenn".into(),
+                fingerprint: None,
+            },
+        );
+        let me = VoiceParticipant {
+            user_id: UserId([1; 16]),
+            device_id: dilla_client::state::DeviceId([1; 16]),
+            flags: 0,
+            own: true,
+        };
+        let mut participants = vec![me];
+        if bot_in {
+            participants.push(VoiceParticipant {
+                user_id: bot,
+                device_id: dilla_client::state::DeviceId([9; 16]),
+                flags: 0,
+                own: false,
+            });
+        }
+        s.voice.calls.insert(
+            channel,
+            VoiceCall {
+                call_id: [3; 16],
+                participants,
+            },
+        );
+        s.voice.call.phase = phase;
+        s.voice.call.channel = Some(channel);
+        s.voice.call.community = Some(community);
+        (s, channel)
+    }
+
+    /// Integration 3, step 5: the shell provides the dock's feed exactly while this device is in a call with the
+    /// community's pinned Bot in it: the call's channel, its name and the Bot's name.
+    #[test]
+    fn the_feed_follows_a_call_with_the_bot_in_it() {
+        use dilla_client::calls::CallPhase;
+        let (s, channel) = in_call(true, CallPhase::In);
+        let feed = feed_of(&Arc::new(s), None, 5).expect("in a call with the Bot");
+        assert_eq!(feed.channel, channel);
+        assert_eq!(feed.community, CommunityId([7; 16]));
+        assert_eq!((feed.room.as_str(), feed.bot.as_str()), ("Lounge", "Glenn"));
+        assert_eq!(feed.now_ms, 5);
+        let (s, _) = in_call(false, CallPhase::In);
+        assert!(
+            feed_of(&Arc::new(s), None, 5).is_none(),
+            "the Bot is not in the call"
+        );
+        let (s, _) = in_call(true, CallPhase::Joining);
+        assert!(
+            feed_of(&Arc::new(s), None, 5).is_none(),
+            "not in the call yet"
+        );
+        let (mut s, _) = in_call(true, CallPhase::In);
+        s.bot.catalogs.clear();
+        assert!(feed_of(&Arc::new(s), None, 5).is_none(), "no pinned Bot");
+    }
+
+    /// Integration 3, step 5: the player is read again a second after the playing track should end (music.tsx), never
+    /// while paused or without a track.
+    #[test]
+    fn the_player_is_read_again_a_second_after_the_track_ends() {
+        let s = snapshot();
+        // At 10 s the playhead is 37 s + 1 s; the track is 214 s long.
+        assert_eq!(refresh_after_ms(&s, 10_000), Some(214_000 - 38_000 + 1_000));
+        let mut paused = snapshot();
+        paused.paused = true;
+        assert_eq!(refresh_after_ms(&paused, 10_000), None);
+        let mut none = snapshot();
+        none.track = None;
+        assert_eq!(refresh_after_ms(&none, 10_000), None);
     }
 
     #[test]

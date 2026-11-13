@@ -1125,6 +1125,10 @@ impl AppView {
                 }
                 // The settings host over the shell draws its sections with the same state (Task 1b).
                 let _ = this.update(cx, |this, cx| {
+                    // Task 21's dock player: fed while this device is in a call with the Bot in it.
+                    if let Some(client) = factor_client.upgrade() {
+                        crate::screens::bot_admin::player::follow(&next, &client, cx);
+                    }
                     if let Screen::Settings { host, .. } = &this.screen {
                         let next = next.clone();
                         host.update(cx, |h, cx| h.set_state(next, cx));
