@@ -9,11 +9,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::client::{Client, Inner};
 use crate::gateway::frames::Value;
-use crate::http::fill_path;
 use crate::http::routes as r;
 use crate::seams::Route;
 use crate::state::roles::{CommunityAccess, OverwriteSummary, RoleId, RoleSummary, SelfRole};
@@ -624,6 +622,158 @@ pub fn update_problem(patch: &RolePatch) -> Option<String> {
     (*patch == RolePatch::default()).then(|| "nothing to change".into())
 }
 
+// ---- the editors' gates (RolesSection.tsx, SelfRolesSection.tsx, MemberRolesFlow.tsx) ----
+
+/// RolesSection.tsx `heldBits`: the bits `me` holds community-wide; everything for the owner and administrators, else
+/// the resolver's answer.
+pub fn held_bits(
+    owner: bool,
+    owner_id: [u8; 16],
+    everyone: RoleId,
+    roles: &[RoleSummary],
+    held: &[RoleId],
+    me: [u8; 16],
+) -> u32 {
+    if owner {
+        return perm::PERM_ALL;
+    }
+    let perm_roles: Vec<perm::PermRole> = roles
+        .iter()
+        .map(|r| perm::PermRole {
+            id: r.id,
+            position: r.position,
+            allow: r.allow,
+            deny: r.deny,
+        })
+        .collect();
+    let bits = perm::resolve_community(
+        &perm::PermInput {
+            owner: owner_id,
+            everyone_id: everyone,
+            roles: &perm_roles,
+            held,
+        },
+        me,
+    );
+    if bits & perm::ADMINISTRATOR != 0 {
+        perm::PERM_ALL
+    } else {
+        bits
+    }
+}
+
+/// Why a permission toggle of the role editor is disabled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermLock {
+    /// The role is at or above my rank, or I may not manage roles (`serverSettings.roles.locked`).
+    Locked,
+    /// I do not hold the bit myself (`roles.editor.notHeld`).
+    NotHeld,
+}
+
+/// RolesSection.tsx: a permission row's lock, `None` when it may be toggled.
+pub fn permission_lock(role_editable: bool, mine: u32, bit: u32) -> Option<PermLock> {
+    if !role_editable {
+        Some(PermLock::Locked)
+    } else if mine & bit == 0 {
+        Some(PermLock::NotHeld)
+    } else {
+        None
+    }
+}
+
+/// SelfRolesSection.tsx `SELF_ROLE_BITS`: what a self-assignable role may carry.
+pub const SELF_ROLE_BITS: u32 = perm::VIEW_CHANNEL
+    | perm::SEND_MESSAGES
+    | perm::ATTACH_FILES
+    | perm::ADD_REACTIONS
+    | perm::READ_HISTORY
+    | perm::CONNECT
+    | perm::SPEAK
+    | perm::VIDEO
+    | perm::SCREEN_SHARE;
+
+/// SelfRolesSection.tsx `candidates`: never @everyone, nothing beyond [`SELF_ROLE_BITS`] allowed or denied, and below
+/// my rank unless I own the server; in the given order.
+pub fn self_role_candidates<'a>(
+    roles: &'a [RoleSummary],
+    access: &CommunityAccess,
+) -> Vec<&'a RoleSummary> {
+    roles
+        .iter()
+        .filter(|r| {
+            r.position > 0
+                && r.allow & !SELF_ROLE_BITS == 0
+                && r.deny & !SELF_ROLE_BITS == 0
+                && (access.owner || r.position < access.top)
+        })
+        .collect()
+}
+
+/// MemberRolesFlow.tsx `assignable`: the roles highest first (then by id), without @everyone.
+pub fn assignable(roles: &[RoleSummary], everyone: Option<RoleId>) -> Vec<RoleSummary> {
+    let mut list: Vec<RoleSummary> = roles
+        .iter()
+        .filter(|r| Some(r.id) != everyone && r.position != 0)
+        .cloned()
+        .collect();
+    list.sort_by(|a, b| b.position.cmp(&a.position).then(a.id.cmp(&b.id)));
+    list
+}
+
+/// Why a role of the assign dialog cannot be ticked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssignLock {
+    /// At or above my highest role (`roles.assign.locked`).
+    Rank,
+    /// It carries a bit I do not hold (`roles.editor.notHeld`).
+    NotHeld,
+}
+
+/// MemberRolesFlow.tsx `rankLocked` then `lacking`.
+pub fn assign_lock(role: &RoleSummary, access: &CommunityAccess, mine: u32) -> Option<AssignLock> {
+    if !access.owner && role.position >= access.top {
+        Some(AssignLock::Rank)
+    } else if role.allow & !mine & perm::PERM_ALL != 0 {
+        Some(AssignLock::NotHeld)
+    } else {
+        None
+    }
+}
+
+/// How the assign dialog says a refused grant or revoke.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssignRefusal {
+    /// `roles.assign.error.twoFactor`.
+    TwoFactor,
+    /// `roles.assign.error.forbidden`.
+    Forbidden,
+    /// `roles.error.gone`.
+    RoleGone,
+    /// `roles.assign.error.gone`.
+    MemberGone,
+    /// `roles.assign.error.other {code}`.
+    Other(String),
+}
+
+/// MemberRolesFlow.tsx: the target's missing factor by its own code (before the generic 403), then a 403, then a 404
+/// (the role gone when the list no longer has it, else the member), else the code.
+pub fn assign_refusal(e: &ApiError, role_still_listed: bool) -> AssignRefusal {
+    if e.code == "E_TARGET_NO_FACTOR" {
+        AssignRefusal::TwoFactor
+    } else if e.code == "E_FORBIDDEN" || e.status == 403 {
+        AssignRefusal::Forbidden
+    } else if e.status == 404 {
+        if role_still_listed {
+            AssignRefusal::MemberGone
+        } else {
+            AssignRefusal::RoleGone
+        }
+    } else {
+        AssignRefusal::Other(e.code.clone())
+    }
+}
+
 /// One step of a role up or down the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -727,58 +877,33 @@ pub fn request_id() -> [u8; 16] {
     random16()
 }
 
-/// One socket route of the table, as `Api::socket_call` sends it: the path filled from `args`, an idempotency key on
-/// every mutation (`idem`, else a random one), and a 429 waited out (at most five attempts). The answer's body, or the
-/// refusal with the instance's own E_ code.
+/// One socket route through the client's own [`crate::sync::api::Api::socket_call`], so its refusal hook sees every
+/// refusal (E_FACTOR_REQUIRED sends the account to factor setup) and a 429 is waited out. The answer's body.
 pub(crate) async fn call<R: Route>(
     inner: &Inner,
     args: &[&str],
     body: Option<Vec<u8>>,
     idem: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, ApiError> {
-    let entry = r::lookup(&R::METHOD, R::PATH)
-        .ok_or_else(|| refusal("E_ROUTE", "the route is not in the table"))?;
-    let route =
-        fill_path(entry.path, args).map_err(|e| refusal("E_ROUTE_INPUT", &e.to_string()))?;
-    let method: &'static str = match R::METHOD {
-        http::Method::GET => "GET",
-        http::Method::POST => "POST",
-        http::Method::PUT => "PUT",
-        http::Method::PATCH => "PATCH",
-        http::Method::DELETE => "DELETE",
-        _ => return Err(refusal("E_ROUTE", "unsupported method")),
-    };
-    let idem = (method != "GET").then(|| idem.unwrap_or_else(|| random16().to_vec()));
-    let body = body.unwrap_or_default();
-    let socket = inner.socket_requests();
-    let mut attempt = 1;
-    loop {
-        let answer = socket
-            .request(method, route.clone(), body.clone(), idem.clone())
-            .await?;
-        if entry.accepts(answer.status) {
-            if let Some(cap) = entry.max_body
-                && answer.body.len() as u64 > cap
-            {
-                return Err(ApiError::local(
-                    answer.status,
-                    "E_BODY_TOO_LARGE",
-                    "the response body is too large",
-                ));
-            }
-            return Ok(answer.body);
-        }
-        let error = ApiError::from_body(answer.status, &answer.body);
-        if error.status == 429 && attempt < 5 {
-            let wait = error.retry_after_ms.unwrap_or(1000);
-            if wait <= 60_000 {
-                attempt += 1;
-                tokio::time::sleep(Duration::from_millis(wait)).await;
-                continue;
-            }
-        }
-        return Err(error);
-    }
+    inner
+        .api()
+        .socket_call::<R>(args, body, idem, true)
+        .await
+        .map(|a| a.body)
+}
+
+/// [`call`] without waiting out a 429 (routes.ts `retry429: false`: the self-role writes).
+pub(crate) async fn call_once<R: Route>(
+    inner: &Inner,
+    args: &[&str],
+    body: Option<Vec<u8>>,
+    idem: Option<Vec<u8>>,
+) -> Result<Vec<u8>, ApiError> {
+    inner
+        .api()
+        .socket_call::<R>(args, body, idem, false)
+        .await
+        .map(|a| a.body)
 }
 
 /// routes.ts `roleRow`: `[id, name, color, position, allow, deny, hoist, mentionable]`.
@@ -1192,7 +1317,7 @@ impl Roles {
         let raw = self
             .guarded(
                 community,
-                call::<r::ConfigureSelfRoles>(
+                call_once::<r::ConfigureSelfRoles>(
                     &self.inner,
                     &[&c],
                     Some(body),
@@ -1231,7 +1356,7 @@ impl Roles {
         ])
         .encode();
         let (c, id) = (community.hex(), hex(&role));
-        call::<r::SelectSelfRole>(&self.inner, &[&c, &id], Some(body), Some(request.to_vec()))
+        call_once::<r::SelectSelfRole>(&self.inner, &[&c, &id], Some(body), Some(request.to_vec()))
             .await?;
         let _ = self.load_self_roles(community).await;
         let _ = crate::features::members::reload_members(&self.inner, community).await;
@@ -1295,4 +1420,80 @@ pub fn members_of(members: &[crate::state::Member]) -> Vec<([u8; 16], Vec<RoleId
         out.entry(m.user_id.0).or_insert_with(|| m.role_ids.clone());
     }
     out.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use crate::gateway::frames::{self, Frame, Op, Value};
+    use crate::http::routes as r;
+    use crate::seams::GatewayError;
+    use crate::sync::api::Api;
+    use crate::sync::requests::{RequestSink, SocketRequests};
+
+    /// A socket that refuses every request with `code` (403).
+    struct Refusing {
+        socket: Arc<SocketRequests>,
+        code: &'static str,
+    }
+
+    impl RequestSink for Refusing {
+        fn send_now(&self, frame: Vec<u8>) -> Result<(), GatewayError> {
+            let f = frames::decode(&frame).expect("a request frame");
+            let id = f.payload[0].as_uint().expect("an id");
+            let body = Value::Array(vec![
+                Value::Text(self.code.into()),
+                Value::Text(String::new()),
+                Value::Null,
+            ])
+            .encode();
+            let reply = frames::encode(&Frame {
+                op: Op::RESPONSE,
+                n: 0,
+                group_id: None,
+                payload: vec![Value::Uint(id), Value::Uint(403), Value::Bytes(body)],
+            })
+            .expect("a response frame");
+            let socket = self.socket.clone();
+            tokio::spawn(async move { socket.on_response(&reply) });
+            Ok(())
+        }
+    }
+
+    /// Fix round 1 (5): the members commands go through `Api::socket_call`, so its refusal hook sees their refusals: a
+    /// factor-required answer sends the account to factor setup (client.rs installs the hook).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_members_refusal_reaches_the_refusal_hook() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let core = Arc::new(Mutex::new(
+            dilla_core::client::ClientCore::open(Arc::new(Mutex::new(conn))).unwrap(),
+        ));
+        let auth = crate::auth::AuthToken::new("token");
+        let http = crate::http::ReqwestHttp::new(
+            url::Url::parse("http://127.0.0.1:9").unwrap(),
+            auth.clone(),
+        )
+        .unwrap();
+        let socket = SocketRequests::new();
+        socket.attach_sink(Some(Arc::new(Refusing {
+            socket: socket.clone(),
+            code: "E_FACTOR_REQUIRED",
+        })));
+        socket.on_ready("one".into());
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hook = {
+            let seen = seen.clone();
+            Arc::new(move |code: &str| seen.lock().unwrap().push(code.to_owned()))
+        };
+        let api = Api::new(http, socket, auth, core, hook);
+        let c = "11".repeat(16);
+        let u = "22".repeat(16);
+        let e = api
+            .socket_call::<r::KickMember>(&[&c, &u], None, None, true)
+            .await
+            .unwrap_err();
+        assert_eq!((e.status, e.code.as_str()), (403, "E_FACTOR_REQUIRED"));
+        assert_eq!(*seen.lock().unwrap(), ["E_FACTOR_REQUIRED"]);
+    }
 }
