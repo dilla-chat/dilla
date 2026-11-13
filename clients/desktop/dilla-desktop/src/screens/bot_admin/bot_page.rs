@@ -21,7 +21,7 @@ use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
 use dilla_desktop_ui::components::dialog::{Dialog, InitialFocus};
 use dilla_desktop_ui::components::select::Select;
-use dilla_desktop_ui::components::settings::frame::{group_heading, section_header};
+use dilla_desktop_ui::components::settings::frame::{group_heading, section_header_full};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toggle::Toggle;
@@ -600,7 +600,8 @@ impl Render for BotPage {
         let mut page = div()
             .flex()
             .flex_col()
-            .child(section_header(
+            // BotSection.tsx: `data-measure="full"`, the intro takes the column's width.
+            .child(section_header_full(
                 t("admin.bot.title"),
                 Some(&tf(
                     "serverSettings.bot.body",

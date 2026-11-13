@@ -40,7 +40,7 @@ parity! {
     parity_threads_reply_chip => "reply-chip",
     parity_threads_reply_chip_b => "reply-chip-b",
     parity_threads_pane_open => "pane-open",
-    parity_threads_pane_open_b => "pane-open-b", "parity after T6c: 0.5231 % over 0.5 % (the thread pane's contents at the pane edge: re-measured at the T6c merge)",
+    parity_threads_pane_open_b => "pane-open-b",
     parity_threads_count => "count",
     parity_threads_count_b => "count-b",
 }

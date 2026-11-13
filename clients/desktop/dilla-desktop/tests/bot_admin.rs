@@ -228,25 +228,25 @@ fn parity(name: &str) {
 }
 
 #[test]
-#[ignore = "parity after T6c: 0.5% 2.85% (section-header wrap, toggle, row hint)"]
+#[ignore = "parity after T6c: chrome 0.4615 % (a row hint in a `data-measure=full` section wraps at 60ch in GPUI where the web lifts the cap (the row has no text-column width to wrap at); the rows under it follow)"]
 fn parity_bot_admin_health_channels() {
     parity("bot-admin/health-channels.json");
 }
 
 #[test]
-#[ignore = "parity after T6c: 0.5% 2.85% (section-header wrap, toggle, row hint)"]
+#[ignore = "parity after T6c: chrome 0.5002 % (as health-channels)"]
 fn parity_bot_admin_health_channels_b() {
     parity("bot-admin/health-channels-b.json");
 }
 
 #[test]
-#[ignore = "parity after T6c: 0.5% 1.01% (row hint wrap, segmented, button)"]
+#[ignore = "parity after T6c: whole frame 0.9312 % (a row hint in a `data-measure=full` section wraps at 60ch in GPUI where the web lifts the cap (the row has no text-column width to wrap at): YouTube's hint takes two lines; the rows start 2 css px higher under Open Bot settings)"]
 fn parity_bot_admin_music() {
     parity("bot-admin/music.json");
 }
 
 #[test]
-#[ignore = "parity after T6c: 0.5% 1.31% (row hint wrap, segmented, button)"]
+#[ignore = "parity after T6c: whole frame 0.7361 % (as music)"]
 fn parity_bot_admin_music_b() {
     parity("bot-admin/music-b.json");
 }

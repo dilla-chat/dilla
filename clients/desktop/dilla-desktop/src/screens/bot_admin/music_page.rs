@@ -14,7 +14,7 @@ use dilla_client::{Client, ClientError};
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::Button;
 use dilla_desktop_ui::components::segmented::Segmented;
-use dilla_desktop_ui::components::settings::frame::section_header;
+use dilla_desktop_ui::components::settings::frame::section_header_full;
 use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, SettingsRow};
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, Render,
@@ -331,7 +331,8 @@ impl Render for MusicPage {
             .map(|(i, b)| b(GroupPosition::of(i, n)))
             .collect();
 
-        let mut page = div().flex().flex_col().child(section_header(
+        // BotSection.tsx: `data-measure="full"`, the intro takes the column's width.
+        let mut page = div().flex().flex_col().child(section_header_full(
             t("serverSettings.music.title"),
             Some(&tf("serverSettings.music.body", &[("bot", &bot)])),
         ));

@@ -94,14 +94,14 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_user_settings_profile => "profile", "parity after T6c: whole frame 0.6915 % (the settings host's layout)";
+    parity_user_settings_profile => "profile", "parity after T6c: chrome 0.8596 % (the profile rows end 2 css px short of the web's and the offset grows down the page)";
     parity_user_settings_profile_b => "profile-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)";
-    parity_user_settings_profile_short_wide => "profile-short-wide", "parity after T6c: whole frame 0.6555 % (the settings host's layout)";
+    parity_user_settings_profile_short_wide => "profile-short-wide", "parity after T6c: chrome 1.0161 % (as profile)";
     parity_user_settings_profile_short_wide_b => "profile-short-wide-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)";
-    parity_user_settings_devices => "devices", "parity after T6c: whole frame 0.5385 % (device row text and times)";
-    parity_user_settings_devices_b => "devices-b", "parity after T6c: chrome 0.7149 % (device rows)";
-    parity_user_settings_devices_sign_out => "devices-sign-out", "parity after T6c: whole frame 1.6979 % (the key dialog)";
-    parity_user_settings_devices_sign_out_b => "devices-sign-out-b", "parity after T6c: whole frame 1.3327 % (the key dialog)";
+    parity_user_settings_devices => "devices", "parity after T6c: chrome 0.4962 % (device rows: their text lines and edges 1-3 css px off)";
+    parity_user_settings_devices_b => "devices-b", "parity after T6c: chrome 0.3922 % (as devices)";
+    parity_user_settings_devices_sign_out => "devices-sign-out", "parity after T6c: whole frame 1.3868 % (the key dialog now sits where the web's does; its fields and the rows under it differ)";
+    parity_user_settings_devices_sign_out_b => "devices-sign-out-b", "parity after T6c: whole frame 1.0958 % (as devices-sign-out)";
     parity_user_settings_appearance => "appearance";
     parity_user_settings_appearance_b => "appearance-b";
     parity_user_settings_keyboard => "keyboard";
