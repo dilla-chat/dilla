@@ -718,8 +718,13 @@ pub fn after_change(now: Option<(u32, u32)>, bit: u32, value: Tri) -> (u32, u32)
 }
 
 /// A read of `community`'s overwrites into the one overwrites slice (`state.roles.overwrites`, re-review N4): every
-/// channel's entries, replacing what was held.
+/// channel's entries, replacing what was held; nothing while the community is gone from the state.
 fn put_overwrites(s: &mut crate::state::AppState, community: CommunityId, rows: &[Overwrite]) {
+    // A read that lands after the server was left or deleted (`forget`) does not bring its entry back (as
+    // roles.rs `load_access`).
+    if !s.communities.iter().any(|c| c.id == community) {
+        return;
+    }
     let mut by: std::collections::HashMap<ChannelId, Vec<crate::state::roles::OverwriteSummary>> =
         std::collections::HashMap::new();
     for o in rows {
@@ -733,6 +738,33 @@ fn put_overwrites(s: &mut crate::state::AppState, community: CommunityId, rows: 
             });
     }
     s.roles.overwrites.insert(community, by);
+}
+
+/// A written overwrite into the one overwrites slice: `[allow, deny]` for `(kind, target)` on `channel`, both 0 removing
+/// it. Only into a community whose overwrites were read.
+fn put_overwrite(
+    s: &mut crate::state::AppState,
+    community: CommunityId,
+    channel: ChannelId,
+    kind: u8,
+    target: [u8; 16],
+    allow: u32,
+    deny: u32,
+) {
+    // `get_mut`: a write on a community whose overwrites were never read must not mark them read (re-review N4).
+    let Some(by) = s.roles.overwrites.get_mut(&community) else {
+        return;
+    };
+    let rows = by.entry(channel).or_default();
+    rows.retain(|o| !(o.kind == kind && o.target_id == target));
+    if allow != 0 || deny != 0 {
+        rows.push(crate::state::roles::OverwriteSummary {
+            kind,
+            target_id: target,
+            allow,
+            deny,
+        });
+    }
 }
 
 /// ChannelPermissions.tsx `save`'s masks for one entry: the entry as the one overwrites slice holds it now, with `bit`
@@ -1443,24 +1475,7 @@ impl ServerAdmin {
                     .encode();
                 request::<r::PutOverwrite>(&inner, &args, Some(body), &[]).await?;
             }
-            inner.publish(move |s| {
-                let rows = s
-                    .roles
-                    .overwrites
-                    .entry(community)
-                    .or_default()
-                    .entry(channel)
-                    .or_default();
-                rows.retain(|o| !(o.kind == kind && o.target_id == target));
-                if allow != 0 || deny != 0 {
-                    rows.push(crate::state::roles::OverwriteSummary {
-                        kind,
-                        target_id: target,
-                        allow,
-                        deny,
-                    });
-                }
-            });
+            inner.publish(move |s| put_overwrite(s, community, channel, kind, target, allow, deny));
             Ok(())
         })
     }
@@ -1714,6 +1729,10 @@ async fn read_access_with(
     };
     let published = overwrites.clone();
     inner.publish(move |s| {
+        // Landed after the server was left or deleted (`forget`): nothing of it comes back (as roles.rs `load_access`).
+        if !s.communities.iter().any(|c| c.id == community) {
+            return;
+        }
         s.roles.access.insert(community, one);
         s.server_admin.roles.insert(community, roles);
         if let Some(rows) = published {
@@ -1745,6 +1764,65 @@ fn forget(inner: &Inner, community: CommunityId) {
 mod tests {
     use super::*;
     use crate::state::ChannelGroupState;
+
+    /// Re-review N4 residual: a written overwrite on a community whose overwrites were never read does not mark them
+    /// read (an edit would otherwise replace masks it never saw); once read, it lands.
+    #[test]
+    fn a_written_overwrite_never_marks_unread_overwrites_read() {
+        let community = CommunityId([7; 16]);
+        let channel = ChannelId([8; 16]);
+        let mut s = crate::state::AppState::default();
+        put_overwrite(
+            &mut s,
+            community,
+            channel,
+            0,
+            [9; 16],
+            0,
+            perm::SEND_MESSAGES,
+        );
+        assert!(!s.roles.overwrites.contains_key(&community));
+        assert!(!crate::state::server_admin::access_in(&s, community).overwrites_loaded);
+        s.roles.overwrites.entry(community).or_default();
+        put_overwrite(
+            &mut s,
+            community,
+            channel,
+            0,
+            [9; 16],
+            0,
+            perm::SEND_MESSAGES,
+        );
+        assert_eq!(s.roles.overwrites[&community][&channel].len(), 1);
+    }
+
+    /// Re-review N4 residual: an overwrites read that lands after the server was forgotten does not bring it back.
+    #[test]
+    fn an_overwrites_read_after_forget_is_dropped() {
+        let community = CommunityId([7; 16]);
+        let channel = ChannelId([8; 16]);
+        let rows = [Overwrite {
+            channel,
+            kind: 0,
+            target: [9; 16],
+            allow: 0,
+            deny: perm::VIEW_CHANNEL,
+        }];
+        let mut s = crate::state::AppState::default();
+        put_overwrites(&mut s, community, &rows);
+        assert!(
+            !s.roles.overwrites.contains_key(&community),
+            "a community not in the state gets no entry"
+        );
+        s.communities.push(crate::state::Community {
+            id: community,
+            name: "S".into(),
+            owner: UserId([1; 16]),
+            policy_version: 1,
+        });
+        put_overwrites(&mut s, community, &rows);
+        assert_eq!(s.roles.overwrites[&community][&channel].len(), 1);
+    }
 
     /// Integration 3, re-review N4: one overwrites slice. The member list's access read can land before any overwrites
     /// are read: an edit then refuses (`chperm.error.unread`, as ChannelPermissions.tsx does) instead of replacing the
