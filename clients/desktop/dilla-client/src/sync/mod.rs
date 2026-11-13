@@ -2108,6 +2108,20 @@ impl Engine {
             Value::Null,
         ])
         .encode();
+        self.send_with_trust_retry(g, zeroize::Zeroizing::new(request))
+            .await
+    }
+
+    /// controller.ts `sendWithTrustRetry` for an encoded send request (`[type, reply_to, body, [attachments],
+    /// thread_id]`, the core's `send_prepare`): every send goes through it (posts, replies, thread replies, posts with
+    /// files, folds). A leaf verdict reads the group's leaves again and queues once more, once; the core alone decides
+    /// the second answer. A changed key (`E_UMK_CHANGED`) and every other refusal are answered at once. The request is
+    /// held zeroized (a post with files carries their keys), its copy for the retry too.
+    pub async fn send_with_trust_retry(
+        self: &Arc<Self>,
+        g: Gid,
+        request: zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Gid, SyncError> {
         match self.send_prepared(g, request.clone()).await {
             Err(SyncError::Core(e)) if LEAF_VERDICTS.contains(&e.code) => {
                 self.refresh_group_trust(g).await;
@@ -2118,7 +2132,11 @@ impl Engine {
     }
 
     /// send.ts `sendRequest`'s queueing: the core's refusal is answered at once and nothing else runs.
-    async fn send_prepared(self: &Arc<Self>, g: Gid, request: Vec<u8>) -> Result<Gid, SyncError> {
+    async fn send_prepared(
+        self: &Arc<Self>,
+        g: Gid,
+        request: zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Gid, SyncError> {
         if self.stopped() {
             return Err(SyncError::Stopped);
         }
