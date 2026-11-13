@@ -40,8 +40,8 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_shell_conversation => "shell/conversation",
-    parity_shell_conversation_b => "shell/conversation-b",
+    parity_shell_conversation => "shell/conversation"; "parity after T6c: 0.5234 % pixels (members pane open by default since Task 14; the reference closed it: re-shoot)",
+    parity_shell_conversation_b => "shell/conversation-b"; "parity after T6c: 1.1482 % pixels (members pane open by default since Task 14; the reference closed it: re-shoot)",
     parity_shell_categories => "shell/categories"; "parity after T6c: chrome 0.2319 % (voice row 29.5 px)",
     parity_shell_categories_b => "shell/categories-b"; "parity after T6c: chrome 0.2504 % (voice row 29.5 px)",
     parity_shell_panes_resized => "shell/panes-resized"; "parity after T6c: chrome 0.2533 % (voice row 29.5 px)",
@@ -99,6 +99,13 @@ fn sidebar_splitter_drags_takes_keys_and_persists() {
 fn aside_splitter_only_with_aside() {
     let mut app = launch("shell/categories");
     app.wait_idle();
+    // The member list opens by default at this width (Task 14, as the web's): its column has a splitter.
+    assert!(
+        app.element("splitter-aside").is_some(),
+        "the open member list's column has a splitter"
+    );
+    app.click("header-members");
+    app.wait_idle();
     assert!(app.element("splitter-sidebar").is_some());
     assert!(
         app.element("splitter-aside").is_none(),
@@ -115,6 +122,9 @@ fn layout_grammar_holds_at_1280_and_1440() {
         ("shell/conversation-b", 1440.0, 900.0),
     ] {
         let mut app = launch(name);
+        app.wait_idle();
+        // The member list opens by default (Task 14); the grammar is measured without an aside, as the references are.
+        app.click("header-members");
         app.wait_idle();
         let rail = rect(&mut app, "shell-rail");
         let sidebar = rect(&mut app, "shell-sidebar");

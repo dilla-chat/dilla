@@ -614,13 +614,16 @@ impl ShellView {
     /// The header's Threads and Members buttons: open the aside, or close it when it is the one open. The areas that draw
     /// the panes (11, 14) keep their own state and are told.
     fn toggle_aside(&mut self, kind: AsideKind, cx: &mut Context<Self>) {
-        self.aside = if self.aside == Some(kind) {
-            None
-        } else {
-            Some(kind)
-        };
         match kind {
-            AsideKind::Threads => crate::screens::threads::toggle_pane(cx),
+            AsideKind::Threads => {
+                self.aside = if self.aside == Some(kind) {
+                    None
+                } else {
+                    Some(kind)
+                };
+                crate::screens::threads::toggle_pane(cx);
+            }
+            // The member list's open state is the members area's (Task 14: open by default, as the web's).
             AsideKind::Members => crate::screens::members::toggle_pane(cx),
         }
         cx.notify();
@@ -1045,7 +1048,11 @@ impl Render for ShellView {
                 &header::HeaderModel {
                     channel,
                     members,
-                    aside: self.aside,
+                    // Members is pressed while the members area's pane is open (Task 14's `is_open`).
+                    aside: self.aside.or_else(|| {
+                        (aside.is_some() && crate::screens::members::is_open(cx))
+                            .then_some(AsideKind::Members)
+                    }),
                 },
                 &on_toggle,
             ))
