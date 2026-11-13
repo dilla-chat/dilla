@@ -144,7 +144,9 @@ impl SocketRequests {
     }
 
     /// One request; `idem` is required for every method but GET. The body is a zeroizing buffer, and every copy the queue
-    /// makes of it is one too; the frame built from it is handed to the websocket library, which this crate cannot wipe.
+    /// makes of it is one too. The encoded frame is a plain buffer: it is written into a buffer sized for it (no growth), then
+    /// moved into the gateway's writer channel, where it lives in this crate until `write_loop` hands it to the websocket
+    /// library, which takes ownership of its bytes; it cannot be wiped there.
     pub async fn request(
         self: &Arc<Self>,
         method: &'static str,

@@ -475,8 +475,9 @@ impl BotAdmin {
 
     /// [`Self::call`] with a body that is zeroized on drop (a step-up token is in it) and the idempotency key of the
     /// request (a mutation without one gets a random key). Every copy of the body is a `Zeroizing` buffer (the caller's, each
-    /// attempt's, the transport queue's), wiped when it drops. Not wiped, and outside this crate's reach: the encoded frame,
-    /// which the websocket library owns once it is queued.
+    /// attempt's, the transport queue's), wiped when it drops. Not wiped: the encoded frame, a plain buffer sized for it
+    /// (no growth) that lives in the gateway's writer channel until `write_loop` hands it to the websocket library, which
+    /// takes ownership of its bytes.
     async fn call_with<R: Route>(
         inner: &Arc<Inner>,
         args: &[&str],
@@ -1144,13 +1145,15 @@ fn webhook_address(
     url_at: usize,
     has_id: bool,
 ) -> Result<WebhookAddress, ClientError> {
-    let Value::Array(items) =
-        Value::decode(body).map_err(|_| decode_err(v::DecodeError("not CBOR")))?
-    else {
+    // Whatever text the decoded tree holds is wiped when it drops, on every path out of here, a value that is not the
+    // expected array included.
+    let mut items = WipeValues(vec![
+        Value::decode(body).map_err(|_| decode_err(v::DecodeError("not CBOR")))?,
+    ]);
+    let Some(Value::Array(inner)) = items.0.pop() else {
         return Err(decode_err(v::DecodeError("not an array")));
     };
-    // Whatever text the decoded tree holds is wiped when it drops, on every path out of here.
-    let mut items = WipeValues(items);
+    let mut items = WipeValues(inner);
     if items.0.len() != len {
         return Err(decode_err(v::DecodeError("an array of the wrong length")));
     }
@@ -1159,7 +1162,11 @@ fn webhook_address(
     } else {
         [0; 16]
     };
-    let Value::Text(url) = std::mem::replace(&mut items.0[url_at], Value::Null) else {
+    let moved = std::mem::replace(&mut items.0[url_at], Value::Null);
+    let Value::Text(url) = moved else {
+        // Not the text we want: wipe what was moved out before it drops.
+        let mut other = [moved];
+        wipe_values(&mut other);
         return Err(decode_err(v::DecodeError("not a text string")));
     };
     Ok(WebhookAddress {
@@ -1464,7 +1471,8 @@ mod tests {
         let wrong_len =
             Value::Array(vec![Value::Text(secret.into()), Value::Text("x".into())]).encode();
         let not_text = Value::Array(vec![Value::Bytes(vec![7; 16]), Value::Uint(1)]).encode();
-        for body in [wrong_len, not_text, vec![0xff]] {
+        let not_array = Value::Text(secret.into()).encode();
+        for body in [wrong_len, not_text, not_array, vec![0xff]] {
             let e = webhook_address(&body, 1, 0, false).expect_err("refused");
             assert!(!format!("{e:?}").contains("SECRETSECRET"), "{e:?}");
         }
