@@ -295,9 +295,12 @@ impl Render for PaneView {
                 "thread-composer",
                 &focus,
                 div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
+                    // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which wins.
                     Textarea::new(&self.input)
                         .appearance(false)
                         .disabled(blocked)
+                        .text_size(text::INPUT)
+                        .line_height(px(FIELD_LINE))
                         .h(px(rows as f32 * FIELD_LINE)),
                 ),
             ))
