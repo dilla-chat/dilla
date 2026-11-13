@@ -57,8 +57,12 @@ struct KeyPackages {
     status: KeyPackageStatus,
 }
 
+/// Told the key package status after each attempt (Task 24's diagnostics: `Diagnostics::set_key_packages`).
+pub(crate) type KeyPackageObserver = Arc<dyn Fn(&KeyPackageStatus) + Send + Sync>;
+
 /// One client's account upkeep. Held by the client (`Inner`) and its publisher.
 pub(crate) struct Upkeep {
+    kp_observer: Mutex<Option<KeyPackageObserver>>,
     core: CoreHandle,
     api: Arc<Api>,
     runtime: tokio::runtime::Handle,
@@ -98,6 +102,7 @@ impl Upkeep {
         device: [u8; 16],
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
+            kp_observer: Mutex::default(),
             user,
             device,
             backups_status: Mutex::default(),
@@ -113,6 +118,11 @@ impl Upkeep {
             #[cfg(test)]
             panic_next: AtomicBool::new(false),
         })
+    }
+
+    /// Who is told the key package status after each attempt.
+    pub(crate) fn set_key_package_observer(&self, observer: Option<KeyPackageObserver>) {
+        *lock(&self.kp_observer) = observer;
     }
 
     /// The session ended (revoked, failed, stopped): no retry runs again.
@@ -219,6 +229,13 @@ impl Upkeep {
                     });
                     kp.retry = Some(handle.abort_handle());
                 }
+            }
+            // Outside the lock: the observer publishes.
+            let status = kp.status.clone();
+            drop(kp);
+            let observer = lock(&me.kp_observer).clone();
+            if let Some(observer) = observer {
+                observer(&status);
             }
         });
     }

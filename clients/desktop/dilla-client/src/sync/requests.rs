@@ -47,9 +47,15 @@ pub struct Answer {
     pub body: Vec<u8>,
 }
 
+/// Told the route pattern (`GET /v1/x/{id}`) and the round trip in ms of each request the instance answered (Task 24's
+/// diagnostics: `Diagnostics::record_route`).
+pub type RouteObserver = Arc<dyn Fn(&str, f64) + Send + Sync>;
+
 struct Pending {
     seq: u64,
     method: &'static str,
+    /// The route table's pattern (`GET /v1/x/{id}`), for the round-trip record; `None` for a request made by path only.
+    pattern: Option<String>,
     route: String,
     body: Vec<u8>,
     idem: Option<Vec<u8>>,
@@ -101,6 +107,7 @@ struct Inner {
     incarnation: Option<String>,
     stopped_with: Option<ApiError>,
     closed: bool,
+    observer: Option<RouteObserver>,
 }
 
 /// Where request frames are written: the gateway's socket ([`WsGateway::send_now`]), or a test's script.
@@ -154,6 +161,11 @@ impl SocketRequests {
         inner.up = false;
     }
 
+    /// Who is told each answered request's pattern and round trip ([`RouteObserver`]).
+    pub fn set_observer(&self, observer: Option<RouteObserver>) {
+        lock(&self.inner).observer = observer;
+    }
+
     /// Whether a request can be written now.
     pub fn up(&self) -> bool {
         let inner = lock(&self.inner);
@@ -164,6 +176,19 @@ impl SocketRequests {
     pub async fn request(
         self: &Arc<Self>,
         method: &'static str,
+        route: String,
+        body: Vec<u8>,
+        idem: Option<Vec<u8>>,
+    ) -> Result<Answer, ApiError> {
+        self.request_route(method, None, route, body, idem).await
+    }
+
+    /// [`SocketRequests::request`] for a route of the route table: `pattern` (`GET /v1/x/{id}`) is what the round trip is
+    /// recorded under.
+    pub async fn request_route(
+        self: &Arc<Self>,
+        method: &'static str,
+        pattern: Option<String>,
         route: String,
         body: Vec<u8>,
         idem: Option<Vec<u8>>,
@@ -200,6 +225,7 @@ impl SocketRequests {
             inner.queue.push(Pending {
                 seq,
                 method,
+                pattern,
                 route,
                 body,
                 idem,
@@ -268,6 +294,7 @@ impl SocketRequests {
         let Ok(r) = frames::decode_response(bytes) else {
             return;
         };
+        let mut timing = None;
         {
             let mut inner = lock(&self.inner);
             // An answer for a socket since replaced, a timed-out attempt, or a duplicate.
@@ -307,11 +334,21 @@ impl SocketRequests {
                     );
                     inner.waiting.insert(seq, p);
                 }
-                _ => p.settle(Ok(Answer {
-                    status: r.status,
-                    body: r.body,
-                })),
+                _ => {
+                    if let (Some(observer), Some(pattern)) = (&inner.observer, p.pattern.take()) {
+                        let ms = p.first_written_at.elapsed().as_secs_f64() * 1000.0;
+                        timing = Some((observer.clone(), pattern, ms));
+                    }
+                    p.settle(Ok(Answer {
+                        status: r.status,
+                        body: r.body,
+                    }));
+                }
             }
+        }
+        // Outside the lock: the observer publishes.
+        if let Some((observer, pattern, ms)) = timing {
+            observer(&pattern, ms);
         }
         self.pump();
     }

@@ -22,13 +22,13 @@ use gpui::{
     div,
 };
 
-use dilla_desktop_ui::tokens::{color, text};
+use dilla_desktop_ui::tokens::color;
 
+use crate::screens::boot;
 use crate::screens::shell::window::{SavedBounds, WindowMode, window_shape};
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{SignInView, SignedIn};
 use crate::tracked;
-use dilla_desktop_ui::text::line;
 
 /// Where the app keeps its instances and their keys, or the fixture it draws instead.
 #[derive(Clone)]
@@ -97,6 +97,8 @@ impl Launch {
 /// What the window shows. // ROUTE: a screen of another area is a variant here.
 enum Screen {
     Starting,
+    /// `Client::start` failed with something sign-in cannot answer: the fatal splash, with a retry (Task 24).
+    Fatal(ClientError, InstanceConfig),
     SignIn(Entity<SignInView>),
     Shell(Entity<ShellView>),
 }
@@ -105,7 +107,7 @@ impl Screen {
     /// The window shape the screen needs.
     fn mode(&self) -> WindowMode {
         match self {
-            Screen::Starting => WindowMode::Starting,
+            Screen::Starting | Screen::Fatal(..) => WindowMode::Starting,
             Screen::SignIn(_) => WindowMode::Authentication,
             Screen::Shell(_) => WindowMode::Workspace,
         }
@@ -214,6 +216,7 @@ impl AppView {
         self.screen = Screen::Starting;
         self.fit_window(window, cx);
         cx.notify();
+        let retry = cfg.clone();
         let keychain = self.launch.keychain.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
@@ -226,13 +229,16 @@ impl AppView {
             let result = rx
                 .await
                 .unwrap_or_else(|_| Err(ClientError::Runtime("the start thread ended".into())));
-            let _ = this.update_in(cx, |this, window, cx| this.started(result, window, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.started(retry, result, window, cx);
+            });
         })
         .detach();
     }
 
     fn started(
         &mut self,
+        cfg: InstanceConfig,
         result: Result<Client, ClientError>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -240,8 +246,22 @@ impl AppView {
         let client = match result {
             Ok(client) => Rc::new(client),
             Err(ClientError::NoIdentity) => return self.show_sign_in(None, window, cx),
-            Err(e) => return self.show_sign_in(Some(e.to_string()), window, cx),
+            // A device the instance no longer knows is the sign-in's to answer (the web's `enterRevoked`); any other failed
+            // start is a splash with its stable code (Task 24: `boot::classify`).
+            Err(e) if boot::classify(&e) == boot::StartFailure::SignIn => {
+                return self.show_sign_in(None, window, cx);
+            }
+            Err(e) => {
+                self.screen = Screen::Fatal(e, cfg);
+                self.fit_window(window, cx);
+                cx.notify();
+                return;
+            }
         };
+        // The Diagnostics section's instance fact and the connecting line's node: the server's host.
+        if let Some(host) = cfg.server.host_str() {
+            client.diagnostics().set_instance_name(host);
+        }
         if self.launch.shipping && self.screen.mode().is_compact() {
             return self.open_workspace(client, window, cx);
         }
@@ -351,16 +371,24 @@ impl AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.screen {
-            Screen::Starting => div()
-                .size_full()
-                .bg(color::BG)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(line("Opening dilla…", text::SM, 18.75, color::FG_3))
-                .into_any_element(),
+            Screen::Starting => boot::loading(),
+            Screen::Fatal(error, cfg) => {
+                let (this, cfg) = (cx.entity().downgrade(), cfg.clone());
+                let (retry, sign_in) = (this.clone(), this.clone());
+                boot::fatal(
+                    error,
+                    move |window, cx| {
+                        let _ =
+                            retry.update(cx, |this, cx| this.start_client(cfg.clone(), window, cx));
+                    },
+                    // "Switch instance": back to the sign-in screen, which lists the instances.
+                    move |window, cx| {
+                        let _ = sign_in.update(cx, |this, cx| this.show_sign_in(None, window, cx));
+                    },
+                )
+            }
             Screen::SignIn(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
         };

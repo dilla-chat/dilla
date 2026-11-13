@@ -43,6 +43,47 @@ impl Client {
     }
 }
 
+impl Diagnostics {
+    /// The handle for the client's own hooks (the Api's refusal hook, the socket's route timings).
+    pub(crate) fn of(inner: Arc<Inner>) -> Self {
+        Self { inner }
+    }
+}
+
+/// The stable code a failed command is recorded under: the client's own code where it has one, else a fixed one per kind.
+/// Never the error's text.
+pub(crate) fn client_error_code(error: &crate::ClientError) -> &str {
+    use crate::ClientError as E;
+    match error {
+        E::Store(_) => "E_STORE",
+        E::NoIdentity => "E_NO_IDENTITY",
+        E::Revoked => "E_REVOKED",
+        E::FactorRequired => "E_FACTOR_REQUIRED",
+        E::Network(_) => "E_NETWORK",
+        E::Sync(code) => stable_code(code),
+        E::UnknownChannel => "E_UNKNOWN_CHANNEL",
+        E::Stopped => "E_STOPPED",
+        E::Runtime(_) => "E_RUNTIME",
+    }
+}
+
+/// The state change [`Diagnostics::record_error`] publishes: one more error, the last [`ERROR_LIMIT`] kept.
+pub(crate) fn error_update(
+    code: &str,
+) -> impl FnOnce(&mut crate::state::AppState) + Send + 'static {
+    let entry = ErrorEntry {
+        code: stable_code(code).to_owned(),
+        at_ms: now_ms(),
+    };
+    move |s| {
+        let errors = &mut s.diagnostics.errors;
+        errors.push(entry);
+        if errors.len() > ERROR_LIMIT {
+            errors.remove(0);
+        }
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -99,17 +140,7 @@ fn is_pattern(pattern: &str) -> bool {
 impl Diagnostics {
     /// Records one error code (controller.ts `recordError`): the last [`ERROR_LIMIT`] are kept.
     pub fn record_error(&self, code: &str) {
-        let entry = ErrorEntry {
-            code: stable_code(code).to_owned(),
-            at_ms: now_ms(),
-        };
-        self.inner.publish(move |s| {
-            let errors = &mut s.diagnostics.errors;
-            errors.push(entry);
-            if errors.len() > ERROR_LIMIT {
-                errors.remove(0);
-            }
-        });
+        self.inner.publish(error_update(code));
     }
 
     /// Records the round trip of one socket request, by route pattern (`GET /v1/x/{id}`). It publishes only when the

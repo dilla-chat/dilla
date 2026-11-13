@@ -312,12 +312,17 @@ impl Client {
         let socket = SocketRequests::new();
         let (updates, updates_rx) = mpsc::unbounded_channel();
         let refusals = updates.clone();
+        // Every refused Api call is recorded in the diagnostics (Task 24: controller.ts `recordError`).
+        let refused_errors = updates.clone();
         let api = Arc::new(Api::new(
             http,
             socket.clone(),
             auth.clone(),
             core.clone(),
             Arc::new(move |code: &str| {
+                let _ = refused_errors.send(Update::Apply(Box::new(
+                    crate::features::diagnostics::error_update(code),
+                )));
                 if code == "E_FACTOR_REQUIRED" {
                     let _ = refusals.send(Update::FactorRequired);
                 }
@@ -403,6 +408,29 @@ impl Client {
             taps: taps.clone(),
         });
         let _ = area_inner.set(Arc::downgrade(&inner));
+        // The key package status after each refill attempt (Task 24's Diagnostics section).
+        let kp_inner = Arc::downgrade(&inner);
+        inner.upkeep.set_key_package_observer(Some(Arc::new(
+            move |status: &crate::account::KeyPackageStatus| {
+                if let Some(inner) = kp_inner.upgrade() {
+                    crate::features::diagnostics::Diagnostics::of(inner).set_key_packages(
+                        crate::state::diagnostics::KeyPackageStatus {
+                            count: status.count,
+                            last_attempt_ms: status.last_attempt.map(|s| s.saturating_mul(1000)),
+                            last_error: status.last_error.clone(),
+                        },
+                    );
+                }
+            },
+        )));
+        // Each answered socket request's round trip, by route pattern (Task 24's slowest routes).
+        let timed = Arc::downgrade(&inner);
+        link.socket
+            .set_observer(Some(Arc::new(move |pattern: &str, ms: f64| {
+                if let Some(inner) = timed.upgrade() {
+                    crate::features::diagnostics::Diagnostics::of(inner).record_route(pattern, ms);
+                }
+            })));
         let publisher = Publisher {
             state: initial,
             tx: state_tx,
@@ -768,6 +796,14 @@ async fn guarded<T>(
 ) -> Result<T, ClientError> {
     use futures_util::FutureExt;
     match std::panic::AssertUnwindSafe(f).catch_unwind().await {
+        Ok(Err(e)) => {
+            // A failed command is recorded in the diagnostics by its stable code (Task 24).
+            let code = crate::features::diagnostics::client_error_code(&e);
+            let _ = updates.send(Update::Apply(Box::new(
+                crate::features::diagnostics::error_update(code),
+            )));
+            Err(e)
+        }
         Ok(answer) => answer,
         Err(_) => {
             let _ = updates.send(Update::Panicked);
