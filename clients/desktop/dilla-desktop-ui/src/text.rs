@@ -183,11 +183,15 @@ impl Line {
         self
     }
 
-    /// The width the web gives the text: the mono advance per character (plus the tracking) when the embedded face
-    /// covers every character, else `None` (measured by the text system, which falls back for the rest).
+    /// The width the web gives the text: the mono advance per character (plus the tracking), ceiled onto Chromium's
+    /// layout unit as its text widths are (`LayoutUnit::FromFloatCeil`: one "3" at 11px is 6.609375), when the embedded
+    /// face covers every character, else `None` (measured by the text system, which falls back for the rest).
     fn natural_width(&self) -> Option<f32> {
-        (self.face == Face::Mono && self.text.chars().all(mono_covers))
-            .then(|| self.text.chars().count() as f32 * (self.size * MONO_ADVANCE + self.spacing))
+        (self.face == Face::Mono && self.text.chars().all(mono_covers)).then(|| {
+            let w = self.text.chars().count() as f32 * (self.size * MONO_ADVANCE + self.spacing);
+            // The epsilon keeps a whole width whole against f32 noise (0.6 is not exact).
+            (w * 64.0 - 1e-3).ceil() / 64.0
+        })
     }
 
     fn run(&self, len: usize) -> TextRun {
