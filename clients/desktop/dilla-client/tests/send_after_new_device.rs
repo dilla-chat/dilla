@@ -414,3 +414,53 @@ async fn a_start_after_a_lost_list_answer_adopts_the_served_list() {
     assert!(list_published(&p), "the adopted list is the published one");
     drop(host);
 }
+
+/// Whether the store at `cfg` holds its own device list as published.
+fn published_at(cfg: &dilla_client::seams::InstanceConfig, kc: &MemoryKeychain) -> bool {
+    let core = dilla_client::store::open_store(cfg, kc).expect("the store opens");
+    dilla_client::sync::api::Identity::decode(&core.identity().unwrap())
+        .expect("an identity")
+        .list_published
+}
+
+/// Wave 2 H (recovery re-review): the recovery path's own lost answer. A new device signs in with password, code and
+/// recovery key; its list PUT lands but the answer is lost, so the key step leaves the start to finish
+/// (`Enrolled::FinishAtStart`). The start publishes again, the instance answers 409 for the version it holds, and the
+/// start has the core verify and adopt the served list, finds this device on it and goes online.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_recovery_start_after_a_lost_list_answer_adopts_the_served_list() {
+    let tag = "reclost";
+    let (host, _pa, mut pb, _c) = two_people(tag).await;
+    let (cfg, kc, root) = dilla_client::testing::host::second_device_faulted(
+        &host,
+        &mut pb,
+        tag,
+        dilla_client::signin::ListPutFault::AnswerLost,
+    )
+    .await;
+    assert!(
+        !published_at(&cfg, &kc),
+        "the lost answer left the list unpublished"
+    );
+    let client = tokio::task::spawn_blocking({
+        let (cfg, kc) = (cfg.clone(), kc.clone());
+        move || Client::start(cfg, kc)
+    })
+    .await
+    .unwrap()
+    .expect("the start adopts the served list and goes on");
+    wait_for(&client, Duration::from_secs(30), "online", |s| {
+        s.connection.status == dilla_client::state::ConnectionStatus::Online
+    })
+    .await;
+    tokio::task::spawn_blocking(move || client.stop())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        published_at(&cfg, &kc),
+        "the adopted list is the published one"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
