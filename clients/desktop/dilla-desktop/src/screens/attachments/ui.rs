@@ -294,9 +294,7 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
 
 /// `client` opened `key`.
 fn owns(client: &Client, key: MediaKey, cx: &mut App) {
-    ui(cx)
-        .media_owners
-        .insert(key, std::ptr::from_ref(client) as usize);
+    ui(cx).media_owners.insert(key, owner_of(client));
 }
 
 /// Drops the images, cards and players the client `owner` (by the address of its `Client`) opened.
@@ -322,6 +320,65 @@ pub fn forget_owner(owner: usize, cx: &mut App) {
             }
         }
     }
+}
+
+/// The address `owns` records for `client`.
+fn owner_of(client: &Client) -> usize {
+    std::ptr::from_ref(client) as usize
+}
+
+/// Whether the open of `key` that `owner` started may still land: its `media_owners` tag is still `owner`'s and the
+/// entry still waits for it. A release ([`forget_owner`]) while the open was in flight drops both, and the completion then
+/// keeps nothing (re-review N3: a late completion never brings plaintext or a player back without an owner).
+fn still_waiting(owner: usize, key: MediaKey, cx: &mut App) -> bool {
+    let u = ui(cx);
+    u.media_owners.get(&key) == Some(&owner)
+        && match key {
+            MediaKey::Image(k) => matches!(u.images.get(&k), Some(Slot::Loading)),
+            MediaKey::Card(k) => matches!(u.cards.get(&k), Some(CardStatus::Loading)),
+            MediaKey::Player(k) => matches!(u.players.get(&k), Some(Player::Loading)),
+        }
+}
+
+/// An image's open landed: `slot` is kept only while [`still_waiting`]; otherwise it is dropped. Answers whether it was
+/// kept.
+fn land_image(owner: usize, key: ImageKey, slot: Slot, cx: &mut App) -> bool {
+    if !still_waiting(owner, MediaKey::Image(key), cx) {
+        return false;
+    }
+    ui(cx).images.insert(key, slot);
+    true
+}
+
+/// A card's save finished: its failure (`Some`) is shown, or the card is done (`None`), only while [`still_waiting`].
+/// Answers whether it landed.
+fn land_card(owner: usize, key: CardKey, status: Option<CardStatus>, cx: &mut App) -> bool {
+    if !still_waiting(owner, MediaKey::Card(key), cx) {
+        return false;
+    }
+    match status {
+        Some(s) => ui(cx).cards.insert(key, s),
+        None => ui(cx).cards.remove(&key),
+    };
+    true
+}
+
+/// A player's open landed: `start` (which starts the device's playback, or opens the system player) runs only while
+/// [`still_waiting`], so a released client's audio never starts; its player, if any, is kept. Answers whether it ran.
+fn land_player(
+    owner: usize,
+    key: CardKey,
+    start: impl FnOnce(&mut App) -> Option<Player>,
+    cx: &mut App,
+) -> bool {
+    if !still_waiting(owner, MediaKey::Player(key), cx) {
+        return false;
+    }
+    match start(cx) {
+        Some(p) => ui(cx).players.insert(key, p),
+        None => ui(cx).players.remove(&key),
+    };
+    true
 }
 
 /// The tray of `channel`, made on first use.
@@ -478,17 +535,21 @@ pub fn ensure_image(client: &Client, key: ImageKey, cx: &mut App) {
     }
     ui(cx).images.insert(key, Slot::Loading);
     owns(client, MediaKey::Image(key), cx);
+    let owner = owner_of(client);
     let rx = client
         .attachments()
         .open(key.channel, key.seq, key.index, key.thumb);
     cx.spawn(async move |cx| {
+        // The decrypted bytes are `Zeroizing`: they are wiped when `opened` drops, here.
         let slot = match rx.await {
             Ok(Ok(opened)) => picture(&opened.bytes).map_or(Slot::Failed, Slot::Ready),
             _ => Slot::Failed,
         };
         cx.update(|cx| {
-            ui(cx).images.insert(key, slot);
-            cx.refresh_windows();
+            // Released meanwhile: the decoded picture is dropped, never cached without an owner.
+            if land_image(owner, key, slot, cx) {
+                cx.refresh_windows();
+            }
         });
     })
     .detach();
@@ -503,23 +564,34 @@ pub fn save(client: &Client, key: CardKey, cx: &mut App) {
     let rx = client
         .attachments()
         .open(key.channel, key.seq, key.index, false);
+    let owner = owner_of(client);
     let home = dirs_home();
     cx.spawn(async move |cx| {
         let opened = match rx.await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 cx.update(|cx| {
-                    ui(cx).cards.insert(key, CardStatus::Failed(e.to_string()));
-                    cx.refresh_windows();
+                    if land_card(owner, key, Some(CardStatus::Failed(e.to_string())), cx) {
+                        cx.refresh_windows();
+                    }
                 });
                 return;
             }
             Err(_) => return,
         };
+        // Released meanwhile: the plaintext (`Zeroizing`) is wiped as it drops; no save dialog asks for it.
+        if !cx.update(|cx| still_waiting(owner, MediaKey::Card(key), cx)) {
+            return;
+        }
         let shown = safe_name(&opened.name, t("shell.attachment.unnamed"));
         let path_rx = cx.update(|cx| cx.prompt_for_new_path(&home, Some(&shown)));
-        let result = match path_rx.await {
-            Ok(Ok(Some(path))) => {
+        let path = match path_rx.await {
+            Ok(Ok(Some(path))) => Some(path),
+            _ => None,
+        };
+        // Released while the dialog asked: nothing is written.
+        let result = match path {
+            Some(path) if cx.update(|cx| still_waiting(owner, MediaKey::Card(key), cx)) => {
                 dilla_client::features::attachments::Attachments::save(&path, &opened.bytes)
                     .map_err(|_| "E_SAVE".to_owned())
             }
@@ -527,11 +599,10 @@ pub fn save(client: &Client, key: CardKey, cx: &mut App) {
         };
         drop(opened);
         cx.update(|cx| {
-            match result {
-                Ok(()) => ui(cx).cards.remove(&key),
-                Err(code) => ui(cx).cards.insert(key, CardStatus::Failed(code)),
-            };
-            cx.refresh_windows();
+            let status = result.err().map(CardStatus::Failed);
+            if land_card(owner, key, status, cx) {
+                cx.refresh_windows();
+            }
         });
     })
     .detach();
@@ -557,6 +628,7 @@ pub fn play(client: &Client, key: CardKey, video: bool, mime: String, cx: &mut A
     ui(cx).players.insert(key, Player::Loading);
     owns(client, MediaKey::Player(key), cx);
     cx.refresh_windows();
+    let owner = owner_of(client);
     let rx = client
         .attachments()
         .open(key.channel, key.seq, key.index, false);
@@ -565,12 +637,17 @@ pub fn play(client: &Client, key: CardKey, video: bool, mime: String, cx: &mut A
             Ok(Ok(o)) => o,
             _ => {
                 cx.update(|cx| {
-                    ui(cx).players.insert(key, Player::Error);
-                    cx.refresh_windows();
+                    if land_player(owner, key, |_| Some(Player::Error), cx) {
+                        cx.refresh_windows();
+                    }
                 });
                 return;
             }
         };
+        // Released meanwhile: the plaintext (`Zeroizing`) is wiped as it drops; nothing is written or decoded.
+        if !cx.update(|cx| still_waiting(owner, MediaKey::Player(key), cx)) {
+            return;
+        }
         // The file write or the decoder's probe runs off the UI thread; only the device's player starts on it.
         let prepared = cx
             .background_executor()
@@ -584,27 +661,42 @@ pub fn play(client: &Client, key: CardKey, video: bool, mime: String, cx: &mut A
                 }
             })
             .await;
-        cx.update(|cx| {
-            let state = match prepared {
-                Err(Some(Ok(path))) => {
-                    cx.open_with_system(&path);
-                    None
-                }
-                Err(_) => Some(Player::Error),
-                Ok(decoder) => match decoder
-                    .map(|d| Box::new(d) as Box<dyn MediaDecoder>)
-                    .and_then(Playback::start)
-                {
-                    Ok(p) => Some(Player::Ready(p)),
+        let landed = cx.update(|cx| {
+            // A released client's video, written while it was prepared, goes again unopened; its audio never starts (the
+            // decoder drops with its `Zeroizing` buffer).
+            let written = match &prepared {
+                Err(Some(Ok(path))) => Some(path.clone()),
+                _ => None,
+            };
+            let landed = land_player(
+                owner,
+                key,
+                move |cx| match prepared {
+                    Err(Some(Ok(path))) => {
+                        cx.open_with_system(&path);
+                        None
+                    }
                     Err(_) => Some(Player::Error),
+                    Ok(decoder) => match decoder
+                        .map(|d| Box::new(d) as Box<dyn MediaDecoder>)
+                        .and_then(Playback::start)
+                    {
+                        Ok(p) => Some(Player::Ready(p)),
+                        Err(_) => Some(Player::Error),
+                    },
                 },
-            };
-            match state {
-                Some(s) => ui(cx).players.insert(key, s),
-                None => ui(cx).players.remove(&key),
-            };
-            cx.refresh_windows();
+                cx,
+            );
+            if landed {
+                cx.refresh_windows();
+            } else if let Some(path) = written {
+                let _ = std::fs::remove_file(path);
+            }
+            landed
         });
+        if !landed {
+            return;
+        }
         // Redraw the position while it plays.
         loop {
             cx.background_executor().timer(Duration::from_millis(250)).await;
@@ -950,6 +1042,88 @@ mod tests {
             let u = ui(cx);
             assert!(!u.images.contains_key(&key(mine)) && u.images.contains_key(&key(theirs)));
             assert_eq!(u.cards.len(), 1);
+        });
+    }
+
+    /// Re-review N3 (late completion): an open in flight when its client is released lands nothing. The decoded picture
+    /// is not cached, the card's state does not come back, and a player's start (the device's playback) never runs.
+    #[gpui::test]
+    fn an_open_that_lands_after_the_release_keeps_nothing(cx: &mut gpui::TestAppContext) {
+        let channel = ChannelId([3; 16]);
+        let image = ImageKey {
+            channel,
+            seq: 1,
+            index: 0,
+            thumb: false,
+        };
+        let card = CardKey {
+            channel,
+            seq: 1,
+            index: 0,
+        };
+        cx.update(|cx| {
+            // The opens start (as `ensure_image`, `save` and `play` mark them) for client 1 ...
+            let u = ui(cx);
+            u.images.insert(image, Slot::Loading);
+            u.cards.insert(card, CardStatus::Loading);
+            u.players.insert(card, Player::Loading);
+            u.media_owners.insert(MediaKey::Image(image), 1);
+            u.media_owners.insert(MediaKey::Card(card), 1);
+            u.media_owners.insert(MediaKey::Player(card), 1);
+            // ... the client is released ...
+            forget_owner(1, cx);
+            // ... then the decrypts land.
+            land_image(1, image, Slot::Failed, cx);
+            land_card(1, card, Some(CardStatus::Failed("E".into())), cx);
+            let mut started = false;
+            land_player(
+                1,
+                card,
+                |_| {
+                    started = true;
+                    Some(Player::Error)
+                },
+                cx,
+            );
+            assert!(!started, "no player starts for a released client");
+            let u = ui(cx);
+            assert!(u.images.is_empty(), "no picture cached without an owner");
+            assert!(u.cards.is_empty());
+            assert!(u.players.is_empty(), "no player is live");
+            assert!(u.media_owners.is_empty());
+        });
+    }
+
+    /// The same completions land while the open still waits for them, and only for the client that started it.
+    #[gpui::test]
+    fn an_open_that_lands_before_the_release_is_kept(cx: &mut gpui::TestAppContext) {
+        let channel = ChannelId([4; 16]);
+        let image = ImageKey {
+            channel,
+            seq: 1,
+            index: 0,
+            thumb: false,
+        };
+        let card = CardKey {
+            channel,
+            seq: 1,
+            index: 0,
+        };
+        cx.update(|cx| {
+            let u = ui(cx);
+            u.images.insert(image, Slot::Loading);
+            u.players.insert(card, Player::Loading);
+            u.media_owners.insert(MediaKey::Image(image), 1);
+            u.media_owners.insert(MediaKey::Player(card), 1);
+            assert!(
+                !land_image(2, image, Slot::Failed, cx),
+                "another client's open never lands here"
+            );
+            assert!(land_image(1, image, Slot::Failed, cx));
+            assert!(land_player(1, card, |_| Some(Player::Error), cx));
+            let u = ui(cx);
+            assert!(matches!(u.images.get(&image), Some(Slot::Failed)));
+            assert!(matches!(u.players.get(&card), Some(Player::Error)));
         });
     }
 
