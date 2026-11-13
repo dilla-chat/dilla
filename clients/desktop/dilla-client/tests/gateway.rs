@@ -500,7 +500,7 @@ async fn oversized_frame_refused() {
         id: 1,
         method: "POST".into(),
         route: "/v1/communities".into(),
-        body: vec![0x80; 200],
+        body: vec![0x80; 200].into(),
         idem: None,
     })
     .unwrap();
@@ -511,7 +511,7 @@ async fn oversized_frame_refused() {
         id: 2,
         method: "POST".into(),
         route: "/v1/x".into(),
-        body: vec![0; frames::MAX_REQUEST_BODY + 1],
+        body: vec![0; frames::MAX_REQUEST_BODY + 1].into(),
         idem: None,
     });
     assert!(matches!(body_over, Err(FrameError::Limit)));

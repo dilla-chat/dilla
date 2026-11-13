@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
+use zeroize::Zeroizing;
 
 use crate::gateway::WsGateway;
 use crate::gateway::frames::{self, MAX_REQUEST_BODY, RequestFrame};
@@ -57,7 +58,8 @@ struct Pending {
     /// The route table's pattern (`GET /v1/x/{id}`), for the round-trip record; `None` for a request made by path only.
     pattern: Option<String>,
     route: String,
-    body: Vec<u8>,
+    /// Zeroized when the request settles (a step-up token travels in one).
+    body: Zeroizing<Vec<u8>>,
     idem: Option<Vec<u8>>,
     tx: Option<oneshot::Sender<Result<Answer, ApiError>>>,
     unavailable: u32,
@@ -172,12 +174,15 @@ impl SocketRequests {
         !inner.closed && inner.up
     }
 
-    /// One request; `idem` is required for every method but GET.
+    /// One request; `idem` is required for every method but GET. The body is a zeroizing buffer, and every copy the queue
+    /// makes of it is one too. The encoded frame is a plain buffer: it is written into a buffer sized for it (no growth), then
+    /// moved into the gateway's writer channel, where it lives in this crate until `write_loop` hands it to the websocket
+    /// library, which takes ownership of its bytes; it cannot be wiped there.
     pub async fn request(
         self: &Arc<Self>,
         method: &'static str,
         route: String,
-        body: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
         idem: Option<Vec<u8>>,
     ) -> Result<Answer, ApiError> {
         self.request_route(method, None, route, body, idem).await
@@ -190,7 +195,7 @@ impl SocketRequests {
         method: &'static str,
         pattern: Option<String>,
         route: String,
-        body: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
         idem: Option<Vec<u8>>,
     ) -> Result<Answer, ApiError> {
         if method != "GET" && idem.as_ref().is_none_or(Vec::is_empty) {
@@ -682,7 +687,12 @@ impl<H: Http> SocketHttp<H> {
         for attempt in 1..=SOCKET_HTTP_ATTEMPTS {
             let answer = self
                 .socket
-                .request(method, route.clone(), body.to_vec(), idem.clone())
+                .request(
+                    method,
+                    route.clone(),
+                    Zeroizing::new(body.to_vec()),
+                    idem.clone(),
+                )
                 .await
                 .map_err(|e| HttpError::Unanswered {
                     code: e.code,

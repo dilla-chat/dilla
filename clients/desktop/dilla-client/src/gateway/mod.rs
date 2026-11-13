@@ -1217,7 +1217,7 @@ mod tests {
             id: 1,
             method: "POST".into(),
             route: "/v1/groups/00000000000000000000000000000000/message".into(),
-            body: vec![0; body],
+            body: vec![0; body].into(),
             idem: Some(vec![1; 16]),
         })
         .unwrap()

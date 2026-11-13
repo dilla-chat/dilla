@@ -303,7 +303,9 @@ impl Api {
                 }
             }
         };
-        let body = body.unwrap_or_default();
+        // One zeroizing path end to end (a body may carry a step-up token): the caller's buffer moves in, and every retry's
+        // copy is a zeroizing one too.
+        let body = Zeroizing::new(body.unwrap_or_default());
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
             let answer = self
                 .socket

@@ -164,7 +164,7 @@ impl Dms {
                 Value::Array(vec![Value::Array(vec![Value::Bytes(user.0.to_vec())])]).encode();
             let answer = inner
                 .socket_requests()
-                .request("POST", "/v1/dms".to_owned(), body, Some(idem()))
+                .request("POST", "/v1/dms".to_owned(), body.into(), Some(idem()))
                 .await
                 .map_err(net)?;
             if answer.status != 200 && answer.status != 201 {
@@ -243,7 +243,7 @@ async fn open_group(inner: &Arc<Inner>, channel: ChannelId) -> Result<[u8; 16], 
 pub(crate) async fn reload(inner: &Arc<Inner>) -> Result<(), ClientError> {
     let answer = inner
         .socket_requests()
-        .request("GET", "/v1/dms".to_owned(), Vec::new(), None)
+        .request("GET", "/v1/dms".to_owned(), Vec::new().into(), None)
         .await
         .map_err(net)?;
     if answer.status != 200 {

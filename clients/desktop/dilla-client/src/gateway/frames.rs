@@ -246,6 +246,26 @@ fn grouped(op: u8) -> bool {
     op == 12 || (16..=21).contains(&op)
 }
 
+/// An upper bound of an item's encoding: a head is at most 9 bytes, then the payload.
+fn item_bound(v: &Value) -> usize {
+    match v {
+        Value::Uint(_) => 9,
+        Value::Null => 1,
+        Value::Bytes(b) => 9 + b.len(),
+        Value::Text(t) => 9 + t.len(),
+        Value::Array(items) => 9 + items.iter().map(item_bound).sum::<usize>(),
+    }
+}
+
+/// An upper bound of [`encode`]'s output for `frame`: the envelope array, op, `n`, the group id and the payload.
+fn encoded_bound(frame: &Frame) -> usize {
+    1 + 9
+        + 9
+        + frame.group_id.as_ref().map_or(1, |g| 9 + g.len())
+        + 9
+        + frame.payload.iter().map(item_bound).sum::<usize>()
+}
+
 /// frames.ts `encodeFrame`: an `n` past the safe integers or a payload nested past 8 is refused.
 pub fn encode(frame: &Frame) -> Result<Vec<u8>, FrameError> {
     if frame.n > MAX_SAFE_INTEGER {
@@ -254,7 +274,9 @@ pub fn encode(frame: &Frame) -> Result<Vec<u8>, FrameError> {
     if !frame.payload.iter().all(|v| v.depth_fits(2)) {
         return Err(FrameError::Cbor(CborError::TooDeep(MAX_NESTING)));
     }
-    let mut e = Encoder::new();
+    // Sized for the whole frame up front: a request body may carry a step-up token, and a buffer that grows would free
+    // its old block, token included, without wiping it.
+    let mut e = Encoder::with_capacity(encoded_bound(frame));
     e.array(4).uint(u64::from(frame.op)).uint(frame.n);
     match &frame.group_id {
         Some(g) => e.bytes(g),
@@ -481,7 +503,8 @@ pub struct RequestFrame {
     pub id: u64,
     pub method: String,
     pub route: String,
-    pub body: Vec<u8>,
+    /// Zeroizing: a request body may carry a step-up token.
+    pub body: zeroize::Zeroizing<Vec<u8>>,
     pub idem: Option<Vec<u8>>,
 }
 
@@ -505,18 +528,32 @@ pub fn encode_request(r: &RequestFrame) -> Result<Vec<u8>, FrameError> {
         Value::Uint(r.id),
         Value::Text(r.method.clone()),
         Value::Text(r.route.clone()),
-        Value::Bytes(r.body.clone()),
+        Value::Bytes(r.body.to_vec()),
         r.idem.clone().map_or(Value::Null, Value::Bytes),
     ];
     if !valid_request_payload(&payload) {
-        return Err(FrameError::Shape);
+        return Err(wipe_body(payload, FrameError::Shape));
     }
-    encode(&Frame {
+    let mut frame = Frame {
         op: Op::REQUEST,
         n: 0,
         group_id: None,
         payload,
-    })
+    };
+    let encoded = encode(&frame);
+    // The body copy made for the encoder is wiped now; the encoded frame is the caller's.
+    if let Some(Value::Bytes(b)) = frame.payload.get_mut(3) {
+        zeroize::Zeroize::zeroize(b);
+    }
+    encoded
+}
+
+/// Wipes the body copy of a request payload that is not going to be encoded, and answers `error`.
+fn wipe_body(mut payload: Vec<Value>, error: FrameError) -> FrameError {
+    if let Some(Value::Bytes(b)) = payload.get_mut(3) {
+        zeroize::Zeroize::zeroize(b);
+    }
+    error
 }
 
 /// op 60 `[id, status, body]`, checked as `decode` checks it; any other frame, or an id past the safe integers, is
@@ -915,7 +952,7 @@ mod tests {
             id: 7,
             method: "POST".into(),
             route: "/v1/communities".into(),
-            body: vec![0x80],
+            body: vec![0x80].into(),
             idem: Some(vec![1; 16]),
         })
         .unwrap();
@@ -925,9 +962,12 @@ mod tests {
             id: 1,
             method: String::new(),
             route: "/v1/x".into(),
-            body: vec![],
+            body: vec![].into(),
             idem: None,
         };
+        // The body is a wiping buffer: this does not compile for a plain `Vec<u8>`.
+        fn wipes_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        wipes_on_drop(&empty_method.body);
         assert_eq!(encode_request(&empty_method), Err(FrameError::Shape));
         let long_idem = RequestFrame {
             idem: Some(vec![0; 65]),
@@ -935,6 +975,34 @@ mod tests {
             ..empty_method
         };
         assert_eq!(encode_request(&long_idem), Err(FrameError::Shape));
+    }
+
+    /// A request frame is written into a buffer sized for it, so nothing grows (and frees an unwiped block) on the way:
+    /// the capacity equals the bound and covers the frame, for the largest body and for a small one.
+    #[test]
+    fn a_request_frame_is_encoded_without_reallocating() {
+        for size in [0, 1, 300, MAX_REQUEST_BODY] {
+            let frame = Frame {
+                op: Op::REQUEST,
+                n: 0,
+                group_id: None,
+                payload: vec![
+                    Value::Uint(7),
+                    Value::Text("PUT".into()),
+                    Value::Text("/v1/communities/00000000000000000000000000000000/bot?v=2".into()),
+                    Value::Bytes(vec![0x5a; size]),
+                    Value::Bytes(vec![1; 16]),
+                ],
+            };
+            let bound = encoded_bound(&frame);
+            let bytes = encode(&frame).unwrap();
+            assert!(bytes.len() <= bound, "{size}: {} > {bound}", bytes.len());
+            assert_eq!(
+                bytes.capacity(),
+                bound,
+                "{size}: the buffer was never reallocated"
+            );
+        }
     }
 
     #[test]

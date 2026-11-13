@@ -997,7 +997,12 @@ async fn request<R: Route>(
     let idem = (method != "GET").then(random_idem);
     let answer = inner
         .socket_requests()
-        .request(method, route, body.unwrap_or_default(), idem)
+        .request(
+            method,
+            route,
+            zeroize::Zeroizing::new(body.unwrap_or_default()),
+            idem,
+        )
         .await?;
     let accepted = if ok.is_empty() {
         (200..300).contains(&answer.status)

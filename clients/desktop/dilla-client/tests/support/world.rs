@@ -586,7 +586,7 @@ impl Socket {
         });
         let answer = tokio::time::timeout(
             Duration::from_secs(30),
-            self.requests.request(method, path, body, idem),
+            self.requests.request(method, path, body.into(), idem),
         )
         .await
         .expect("the socket request answered")
