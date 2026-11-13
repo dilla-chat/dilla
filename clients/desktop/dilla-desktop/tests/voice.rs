@@ -625,6 +625,47 @@ async fn until_within(
     }
 }
 
+/// Waits until `pred` holds for `client`'s own state while running the UI's executor (a join's handover runs there,
+/// polling the other windows' leaves on a timer): the test clock moves as fast as the real one, so the handover's bound
+/// is the real time the clients take. Between the UI's turns every state change is looked at (a phase can be brief).
+fn pump(
+    cx: &mut TestAppContext,
+    rt: &tokio::runtime::Runtime,
+    client: &dilla_client::Client,
+    what: &str,
+    pred: impl Fn(&AppState) -> bool,
+) {
+    let deadline = std::time::Instant::now() + CALL_WAIT;
+    let mut rx = client.state();
+    let mut moved = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        let seen = rt.block_on(async {
+            let turn = std::time::Instant::now() + std::time::Duration::from_millis(30);
+            loop {
+                if pred(&rx.borrow_and_update().clone()) {
+                    return true;
+                }
+                let left = turn.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                let _ = tokio::time::timeout(left, rx.changed()).await;
+            }
+        });
+        if seen {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: never; voice {:?}",
+            client.state().borrow().voice
+        );
+        cx.executor().advance_clock(moved.elapsed());
+        moved = std::time::Instant::now();
+    }
+}
+
 fn phase_of(client: &dilla_client::Client) -> CallPhase {
     client.state().borrow().voice.call.phase
 }
@@ -656,6 +697,8 @@ fn closing_the_window_leaves_its_call(cx: &mut TestAppContext) {
     let a = window_for(cx, &w.alice);
     let wa = a.window_id();
     cx.update(|cx| voice::join(w.voice, wa, cx));
+    // No other call: the handover starts the join in its first turn.
+    cx.run_until_parked();
     w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
         s.voice.call.phase == CallPhase::In
     }));
@@ -691,6 +734,8 @@ fn a_join_in_another_window_leaves_this_window_s_call(cx: &mut TestAppContext) {
     let b = window_for(cx, &w.bob);
     let (wa, wb) = (a.window_id(), b.window_id());
     cx.update(|cx| voice::join(w.voice, wa, cx));
+    // No other call: the handover starts the join in its first turn.
+    cx.run_until_parked();
     w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
         s.voice.call.phase == CallPhase::In
     }));
@@ -704,8 +749,167 @@ fn a_join_in_another_window_leaves_this_window_s_call(cx: &mut TestAppContext) {
     w.rt.block_on(until(&w.alice, "alice's call is left", |s| {
         s.voice.call.phase == CallPhase::Idle
     }));
-    w.rt.block_on(until(&w.bob, "bob is in the call", |s| {
+    pump(cx, &w.rt, &w.bob, "bob is in the call", |s| {
         s.voice.call.phase == CallPhase::In
-    }));
+    });
     assert_eq!(phase_of(&w.alice), CallPhase::Idle);
+}
+
+// ---- the handover: another window's leave, then this window's join (Task 28 items 1 and 2) ------------------------
+
+type Answer = tokio::sync::oneshot::Sender<Result<(), dilla_client::ClientError>>;
+type Answered = tokio::sync::oneshot::Receiver<Result<(), dilla_client::ClientError>>;
+
+fn answer_pair() -> (Answer, Answered) {
+    tokio::sync::oneshot::channel()
+}
+
+/// A window with a voice area, as its shell syncs it.
+fn handover_window(cx: &mut TestAppContext) -> (gpui::WindowHandle<Host>, WindowId) {
+    cx.update(dilla_desktop::install);
+    let w = cx.add_window(|_, _| Host);
+    let id = w.window_id();
+    cx.update(|cx| voice::sync(id, state(1), None, cx));
+    (w, id)
+}
+
+/// What the handover did: started the join, undid it.
+#[derive(Default)]
+struct Did {
+    started: std::cell::Cell<bool>,
+    undone: std::cell::Cell<bool>,
+}
+
+fn start_and_undo(
+    did: &Rc<Did>,
+    join: Answered,
+) -> (impl FnOnce() -> Answered + 'static, impl FnOnce() + 'static) {
+    let (a, b) = (did.clone(), did.clone());
+    (
+        move || {
+            a.started.set(true);
+            join
+        },
+        move || b.undone.set(true),
+    )
+}
+
+fn toast_in(cx: &mut TestAppContext, id: WindowId) -> Option<String> {
+    cx.update(|cx| dilla_desktop_ui::components::toast::current_in(id, cx))
+        .map(|t| t.to_string())
+}
+
+/// Task 28 item 1: another window's leave that never answers holds the join for a bounded time only; then the join is
+/// dropped and the window says it could not join.
+#[gpui::test]
+fn a_leave_that_never_answers_ends_the_handover_with_an_error(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (_leave_tx, leave_rx) = answer_pair();
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, vec![leave_rx], start, undo, cx));
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(voice::HANDOVER_WAIT - std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(!did.started.get(), "the join waits for the leave");
+    assert_eq!(toast_in(cx, id), None);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(
+        !did.started.get(),
+        "no join after a leave that never answered"
+    );
+    assert_eq!(
+        toast_in(cx, id).as_deref(),
+        Some(dilla_desktop::strings::t("voice.failed")),
+        "the window says the join failed"
+    );
+}
+
+/// Task 28 item 1: the leave answering starts the join; a join that errors is not silent.
+#[gpui::test]
+fn a_join_error_after_the_handover_is_shown(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (leave_tx, leave_rx) = answer_pair();
+    let (join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, vec![leave_rx], start, undo, cx));
+    cx.run_until_parked();
+    assert!(!did.started.get());
+    leave_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.started.get(), "the join starts once the leave answered");
+    join_tx
+        .send(Err(dilla_client::ClientError::UnknownChannel))
+        .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert_eq!(
+        toast_in(cx, id).as_deref(),
+        Some(dilla_desktop::strings::t("voice.failed"))
+    );
+    assert!(!did.undone.get());
+}
+
+/// Task 28 item 2: a window that closes while another window's leave is pending starts no join.
+#[gpui::test]
+fn a_window_closed_before_the_handover_starts_no_join(cx: &mut TestAppContext) {
+    let (w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (leave_tx, leave_rx) = answer_pair();
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, vec![leave_rx], start, undo, cx));
+    cx.run_until_parked();
+    w.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.update(|cx| voice::window_closed(id, cx));
+    leave_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(!did.started.get(), "no join for a closed window");
+}
+
+/// Task 28 item 2: a join that lands after its window closed is left at once (else the client stays in a call with no
+/// voice area, the mic closed).
+#[gpui::test]
+fn a_join_that_lands_after_its_window_closed_is_left(cx: &mut TestAppContext) {
+    let (w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, Vec::new(), start, undo, cx));
+    cx.run_until_parked();
+    assert!(did.started.get(), "no other call: the join starts at once");
+    w.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.update(|cx| voice::window_closed(id, cx));
+    join_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.undone.get(), "the late join is left");
+}
+
+/// Task 28 item 2: a join that lands while its window is open stays.
+#[gpui::test]
+fn a_join_that_lands_in_an_open_window_stays(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, Vec::new(), start, undo, cx));
+    join_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.started.get());
+    assert!(!did.undone.get());
+    assert_eq!(toast_in(cx, id), None);
 }

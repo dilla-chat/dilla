@@ -1287,10 +1287,12 @@ impl Render for ShellView {
                     let Some(client) = crate::screens::voice::client_of(w, cx) else {
                         return;
                     };
-                    let voice = client.voice();
-                    crate::screens::voice::after_leaving_other_calls(w, cx, move || {
-                        drop(voice.join_dm(id))
-                    });
+                    crate::screens::voice::after_leaving_other_calls(
+                        w,
+                        client.voice(),
+                        move |voice| voice.join_dm(id),
+                        cx,
+                    );
                 });
                 (label, on_call)
             })

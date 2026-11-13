@@ -644,43 +644,121 @@ pub fn other_calls(window: WindowId, cx: &App) -> Vec<Rc<Client>> {
 /// Leaves the call of every other instance window (one call per device, as the web has one per tab): what a join or an
 /// answered ring in `window` does first.
 pub fn leave_other_calls(window: WindowId, cx: &mut App) {
-    after_leaving_other_calls(window, cx, || {});
+    for c in other_calls(window, cx) {
+        drop(c.voice().leave());
+    }
 }
 
-/// Leaves the call of every other instance window, then runs `then` once each leave has answered. A join started while
-/// another instance's leave is still committing races it in the call group (`E_COMMIT_INVALID`), so the join waits.
-/// The leaves answer on their clients' runtimes; the wait runs on a thread of its own, never on the UI's.
+/// How long a join waits for another instance window's leave to answer (Task 28 item 1). Past it the join is dropped
+/// and the window says it could not join: a leave that never answers must not hold the join forever.
+pub const HANDOVER_WAIT: Duration = Duration::from_secs(10);
+
+/// How often the handover looks at the pending leaves.
+const HANDOVER_POLL: Duration = Duration::from_millis(50);
+
+/// An answer of the client's voice area (a leave, a join).
+pub type VoiceAnswer = tokio::sync::oneshot::Receiver<Result<(), dilla_client::ClientError>>;
+
+/// Leaves the call of every other instance window, then joins through `voice` once each leave has answered. A join
+/// started while another instance's leave is still committing races it in the call group (`E_COMMIT_INVALID`), so the
+/// join waits, for [`HANDOVER_WAIT`] at most. `start` starts the join (`Voice::join`, `Voice::join_dm`).
 pub fn after_leaving_other_calls(
     window: WindowId,
+    voice: dilla_client::features::voice::Voice,
+    start: impl FnOnce(&dilla_client::features::voice::Voice) -> VoiceAnswer + 'static,
     cx: &mut App,
-    then: impl FnOnce() + Send + 'static,
 ) {
     let leaves: Vec<_> = other_calls(window, cx)
         .into_iter()
         .map(|c| c.voice().leave())
         .collect();
-    if leaves.is_empty() {
-        then();
-        return;
-    }
-    let waited = std::thread::Builder::new()
-        .name("dilla-voice-handover".into())
-        .spawn(move || {
-            for leave in leaves {
-                let _ = leave.blocking_recv();
+    let undo = voice.clone();
+    handover(
+        window,
+        leaves,
+        move || start(&voice),
+        move || drop(undo.leave()),
+        cx,
+    );
+}
+
+/// The handover of [`after_leaving_other_calls`]: waits for `leaves` (each answers on its client's runtime; the wait
+/// polls them on the UI's executor, never blocking it) for [`HANDOVER_WAIT`] at most, then runs `start`. A leave that
+/// does not answer in time, or a join that answers with an error, shows `voice.failed` in `window`.
+///
+/// Task 28 item 2: the join belongs to `window`'s voice area. A window that closed while the leaves were pending starts
+/// no join; a join that lands after its window closed is left again (`undo`), else the client would stay in a call no
+/// voice area shows, its microphone closed.
+pub fn handover(
+    window: WindowId,
+    mut leaves: Vec<VoiceAnswer>,
+    start: impl FnOnce() -> VoiceAnswer + 'static,
+    undo: impl FnOnce() + 'static,
+    cx: &mut App,
+) {
+    cx.spawn(async move |cx| {
+        let mut waited = Duration::ZERO;
+        loop {
+            leaves.retain_mut(|l| {
+                matches!(
+                    l.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                )
+            });
+            if leaves.is_empty() {
+                break;
             }
-            then();
+            if waited >= HANDOVER_WAIT {
+                log::warn!(
+                    "voice: another instance's call did not answer its leave; the join is dropped"
+                );
+                cx.update(|cx| join_failed(window, cx));
+                return;
+            }
+            cx.background_executor().timer(HANDOVER_POLL).await;
+            waited += HANDOVER_POLL;
+        }
+        if !cx.update(|cx| area_open(window, cx)) {
+            return;
+        }
+        // The join answers on the client's runtime; it is polled on the same timer (a wake from another thread is no
+        // wake of the UI's executor).
+        let mut join = start();
+        let joined = loop {
+            match join.try_recv() {
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    cx.background_executor().timer(HANDOVER_POLL).await;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break false,
+                Ok(r) => break r.is_ok(),
+            }
+        };
+        cx.update(|cx| {
+            if !area_open(window, cx) {
+                undo();
+            } else if !joined {
+                join_failed(window, cx);
+            }
         });
-    if let Err(e) = waited {
-        log::warn!("voice: the join after leaving another instance's call did not start: {e}");
-    }
+    })
+    .detach();
+}
+
+/// Whether `window` is open and its voice area is live (`window_closed` has not let it go).
+fn area_open(window: WindowId, cx: &App) -> bool {
+    ui_of(window, cx).is_some() && cx.windows().iter().any(|w| w.window_id() == window)
+}
+
+/// A join that did not happen: `window` says so (VoiceView.tsx's `voice.failed`).
+fn join_failed(window: WindowId, cx: &mut App) {
+    dilla_desktop_ui::components::toast::show_toast_in(Some(window), t("voice.failed"), cx);
 }
 
 /// Joins `channel`'s call through `window`'s own client (the voice row's join, the stage's join), once a call another
 /// instance window is in has been left.
 pub fn join(channel: ChannelId, window: WindowId, cx: &mut App) {
     let Some(v) = voice(window, cx) else { return };
-    after_leaving_other_calls(window, cx, move || drop(v.join(channel)));
+    after_leaving_other_calls(window, v, move |v| v.join(channel), cx);
 }
 
 /// Leaves `window`'s call; the focus goes back to the call's voice row (leave-reload.spec.ts).
