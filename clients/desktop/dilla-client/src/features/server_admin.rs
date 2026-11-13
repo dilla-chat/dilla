@@ -717,6 +717,44 @@ pub fn after_change(now: Option<(u32, u32)>, bit: u32, value: Tri) -> (u32, u32)
     )
 }
 
+/// A read of `community`'s overwrites into the one overwrites slice (`state.roles.overwrites`, re-review N4): every
+/// channel's entries, replacing what was held.
+fn put_overwrites(s: &mut crate::state::AppState, community: CommunityId, rows: &[Overwrite]) {
+    let mut by: std::collections::HashMap<ChannelId, Vec<crate::state::roles::OverwriteSummary>> =
+        std::collections::HashMap::new();
+    for o in rows {
+        by.entry(o.channel)
+            .or_default()
+            .push(crate::state::roles::OverwriteSummary {
+                kind: o.kind,
+                target_id: o.target,
+                allow: o.allow,
+                deny: o.deny,
+            });
+    }
+    s.roles.overwrites.insert(community, by);
+}
+
+/// ChannelPermissions.tsx `save`'s masks for one entry: the entry as the one overwrites slice holds it now, with `bit`
+/// set to `value`. Refused (`chperm.error.unread`) while the overwrites are not read: an unknown entry is never
+/// replaced (re-review N4), so a deny it holds can never be dropped by an edit of another bit.
+pub fn change_of(
+    state: &crate::state::AppState,
+    community: CommunityId,
+    channel: ChannelId,
+    entry: (u8, [u8; 16]),
+    bit: u32,
+    value: Tri,
+) -> Result<(u32, u32), &'static str> {
+    let rows =
+        crate::state::server_admin::overwrites_in(state, community).ok_or("chperm.error.unread")?;
+    let now = rows
+        .iter()
+        .find(|o| o.channel == channel && o.kind == entry.0 && o.target == entry.1)
+        .map(|o| (o.allow, o.deny));
+    Ok(after_change(now, bit, value))
+}
+
 /// 32 lower-case hex digits of an id.
 pub fn hex_id(id: &[u8; 16]) -> String {
     crate::state::hex(id)
@@ -1369,9 +1407,7 @@ impl ServerAdmin {
             let raw =
                 request::<r::ListOverwrites>(&inner, &[&id_hex(community)], None, &[200]).await?;
             let rows = decode_overwrites(&raw)?;
-            inner.publish(move |s| {
-                s.server_admin.overwrites.insert(community, rows);
-            });
+            inner.publish(move |s| put_overwrites(s, community, &rows));
             Ok(())
         })
     }
@@ -1408,13 +1444,18 @@ impl ServerAdmin {
                 request::<r::PutOverwrite>(&inner, &args, Some(body), &[]).await?;
             }
             inner.publish(move |s| {
-                let rows = s.server_admin.overwrites.entry(community).or_default();
-                rows.retain(|o| !(o.channel == channel && o.kind == kind && o.target == target));
+                let rows = s
+                    .roles
+                    .overwrites
+                    .entry(community)
+                    .or_default()
+                    .entry(channel)
+                    .or_default();
+                rows.retain(|o| !(o.kind == kind && o.target_id == target));
                 if allow != 0 || deny != 0 {
-                    rows.push(Overwrite {
-                        channel,
+                    rows.push(crate::state::roles::OverwriteSummary {
                         kind,
-                        target,
+                        target_id: target,
                         allow,
                         deny,
                     });
@@ -1444,10 +1485,13 @@ impl ServerAdmin {
             )
             .await?;
             inner.publish(move |s| {
-                if let Some(rows) = s.server_admin.overwrites.get_mut(&community) {
-                    rows.retain(|o| {
-                        !(o.channel == channel && o.kind == kind && o.target == target)
-                    });
+                if let Some(rows) = s
+                    .roles
+                    .overwrites
+                    .get_mut(&community)
+                    .and_then(|by| by.get_mut(&channel))
+                {
+                    rows.retain(|o| !(o.kind == kind && o.target_id == target));
                 }
             });
             Ok(())
@@ -1664,14 +1708,16 @@ async fn read_access_with(
     // The one resolver (rank.ts `accessOf`) into the one slice: the members area and the Bot pages read this read too.
     let mut one = crate::features::roles::rank::access_of(uint(&a[0])?, top as u32, owner);
     one.everyone_id = roles.iter().find(|r| r.position == 0).map(|r| r.id);
-    one.overwrites_loaded = overwrites.is_some();
-    let access = Access::from(&one);
+    let access = Access {
+        overwrites_loaded: overwrites.is_some(),
+        ..Access::from(&one)
+    };
     let published = overwrites.clone();
     inner.publish(move |s| {
         s.roles.access.insert(community, one);
         s.server_admin.roles.insert(community, roles);
         if let Some(rows) = published {
-            s.server_admin.overwrites.insert(community, rows);
+            put_overwrites(s, community, &rows);
         }
     });
     Ok((access, overwrites))
@@ -1684,13 +1730,13 @@ fn forget(inner: &Inner, community: CommunityId) {
         s.channels.retain(|c| c.community_id != community);
         s.members.remove(&community);
         s.roles.access.remove(&community);
+        s.roles.overwrites.remove(&community);
         let a = &mut s.server_admin;
         a.roles.remove(&community);
         a.afk.remove(&community);
         a.afk_load_failed.remove(&community);
         a.invites.remove(&community);
         a.gifs.remove(&community);
-        a.overwrites.remove(&community);
         a.welcome.remove(&community);
     });
 }
@@ -1699,6 +1745,61 @@ fn forget(inner: &Inner, community: CommunityId) {
 mod tests {
     use super::*;
     use crate::state::ChannelGroupState;
+
+    /// Integration 3, re-review N4: one overwrites slice. The member list's access read can land before any overwrites
+    /// are read: an edit then refuses (`chperm.error.unread`, as ChannelPermissions.tsx does) instead of replacing the
+    /// entry's unknown masks. Once the overwrites are read (by either read: one slice), an edit keeps what it does not
+    /// change, so @everyone's View deny stays when Send is changed.
+    #[test]
+    fn a_permission_edit_waits_for_the_overwrites_and_keeps_what_it_does_not_change() {
+        let community = CommunityId([7; 16]);
+        let channel = ChannelId([8; 16]);
+        let everyone = [9; 16];
+        let mut s = crate::state::AppState::default();
+        // The member list's read landed: the access, with @everyone's id, but no overwrites.
+        let mut access =
+            crate::features::roles::rank::access_of(u64::from(perm::MANAGE_ROLES), 5, false);
+        access.everyone_id = Some(everyone);
+        s.roles.access.insert(community, access);
+        assert!(!crate::state::server_admin::access_in(&s, community).overwrites_loaded);
+        assert_eq!(
+            change_of(
+                &s,
+                community,
+                channel,
+                (0, everyone),
+                perm::SEND_MESSAGES,
+                Tri::Deny
+            ),
+            Err("chperm.error.unread"),
+            "unread: the edit refuses"
+        );
+        // The overwrites are read: @everyone may not view the channel.
+        s.roles.overwrites.entry(community).or_default().insert(
+            channel,
+            vec![crate::state::roles::OverwriteSummary {
+                kind: 0,
+                target_id: everyone,
+                allow: 0,
+                deny: perm::VIEW_CHANNEL,
+            }],
+        );
+        assert!(crate::state::server_admin::access_in(&s, community).overwrites_loaded);
+        let rows = crate::state::server_admin::overwrites_in(&s, community).expect("read");
+        assert!(is_private(&rows, channel, everyone));
+        assert_eq!(
+            change_of(
+                &s,
+                community,
+                channel,
+                (0, everyone),
+                perm::SEND_MESSAGES,
+                Tri::Deny
+            ),
+            Ok((0, perm::VIEW_CHANNEL | perm::SEND_MESSAGES)),
+            "the View deny stays"
+        );
+    }
 
     /// Review M9: a role position above u32 (the wire allows u53) keeps its rank: the higher of two such roles applies
     /// last, so its allow wins over the lower one's deny (no fall back to ordering by id).

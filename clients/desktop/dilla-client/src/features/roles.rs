@@ -435,7 +435,6 @@ pub mod rank {
             manage_roles: has(perm::MANAGE_ROLES),
             loaded: true,
             everyone_id: None,
-            overwrites_loaded: false,
         }
     }
 
@@ -1394,7 +1393,6 @@ pub(crate) async fn load_access(
     let owner = me.is_some_and(|me| entry.owner == me);
     let mut access = rank::access_of(bits, top as u32, owner);
     access.everyone_id = rows.iter().find(|r| r.position == 0).map(|r| r.id);
-    access.overwrites_loaded = overwrites.is_some();
     let answer = (rows.clone(), access.clone());
     inner.publish(move |s| {
         if !s.communities.iter().any(|c| c.id == community) {
@@ -1437,7 +1435,7 @@ pub fn viewer_channel_bits(state: &crate::state::AppState, channel: ChannelId) -
     let access = state.roles.access.get(&community)?;
     let everyone_id = access
         .everyone_id
-        .filter(|_| access.loaded && access.overwrites_loaded)?;
+        .filter(|_| access.loaded && state.roles.overwrites.contains_key(&community))?;
     let roles: Vec<perm::PermRole> = state
         .roles
         .roles
@@ -1625,10 +1623,11 @@ mod tests {
             CommunityAccess {
                 loaded: true,
                 everyone_id: Some(everyone),
-                overwrites_loaded: true,
                 ..CommunityAccess::default()
             },
         );
+        // The overwrites were read (none set): the one slice holds the community.
+        s.roles.overwrites.entry(community).or_default();
         let open = viewer_channel_bits(&s, channel).expect("read");
         assert_ne!(open & u64::from(perm::SEND_MESSAGES), 0);
         s.roles.overwrites.entry(community).or_default().insert(

@@ -59,8 +59,6 @@ pub struct CommunityAccess {
     pub loaded: bool,
     /// The @everyone role's id; `None` until the roles are read.
     pub everyone_id: Option<RoleId>,
-    /// The overwrites read landed with the last access read.
-    pub overwrites_loaded: bool,
 }
 
 /// types.ts `OverwriteSummary`: one channel overwrite (kind 0 a role, 1 a member).

@@ -45,15 +45,39 @@ impl From<&super::roles::CommunityAccess> for Access {
             view_audit_log: a.view_audit_log,
             administrator: a.administrator,
             everyone: a.everyone_id,
-            overwrites_loaded: a.overwrites_loaded,
+            overwrites_loaded: false,
         }
     }
 }
 
 /// What this account may do in `community`, as the server settings read it: the one access slice
-/// (`state.roles.access`), not loaded until a read landed.
+/// (`state.roles.access`), not loaded until a read landed. Its overwrites are read when the one overwrites slice
+/// (`state.roles.overwrites`) holds the community (re-review N4: the flag follows the slice, never another read).
 pub fn access_in(state: &super::AppState, community: CommunityId) -> Access {
-    Access::from(&state.roles.access_of(community))
+    Access {
+        overwrites_loaded: state.roles.overwrites.contains_key(&community),
+        ..Access::from(&state.roles.access_of(community))
+    }
+}
+
+/// The overwrites of `community`'s channels, from the one overwrites slice (`state.roles.overwrites`, which both the
+/// members area's read and the server settings' read fill); `None` while none was read.
+pub fn overwrites_in(state: &super::AppState, community: CommunityId) -> Option<Vec<Overwrite>> {
+    let by = state.roles.overwrites.get(&community)?;
+    let mut rows: Vec<Overwrite> = by
+        .iter()
+        .flat_map(|(channel, list)| {
+            list.iter().map(move |o| Overwrite {
+                channel: *channel,
+                kind: o.kind,
+                target: o.target_id,
+                allow: o.allow,
+                deny: o.deny,
+            })
+        })
+        .collect();
+    rows.sort_by_key(|o| (o.channel, o.kind, o.target));
+    Some(rows)
 }
 
 /// One role as the channel permissions list it (`RoleRow`, narrowed to what the settings read).
@@ -176,7 +200,6 @@ pub struct ServerAdminState {
     pub afk_load_failed: HashMap<CommunityId, bool>,
     pub invites: HashMap<CommunityId, Vec<Invite>>,
     pub gifs: HashMap<CommunityId, GifSettings>,
-    pub overwrites: HashMap<CommunityId, Vec<Overwrite>>,
     pub welcome: HashMap<CommunityId, Option<WelcomeSettings>>,
     /// The instance's host as invite links show it (`host:port`), once known: from a link made, or the fixture.
     pub host: String,

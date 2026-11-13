@@ -324,6 +324,9 @@ impl Body {
         let groups = model::grouped(&all);
         let categories: Vec<&Channel> = groups.iter().filter_map(|g| g.category).collect();
         let access = self.access();
+        // Re-review N4: the one overwrites slice; `None` while unread (then no channel is called private).
+        let overwrites =
+            dilla_client::state::server_admin::overwrites_in(&self.state, self.community);
         let mut out: Vec<AnyElement> =
             vec![section_header(t("admin.channels.title"), None).into_any_element()];
         out.push(
@@ -381,14 +384,11 @@ impl Body {
             for (i, c) in group.channels.iter().enumerate() {
                 let (up, down) = model::move_slots(group, afk, c);
                 let fixed = model::fixed(c, afk);
-                let private = access.overwrites_loaded
-                    && access.everyone.is_some_and(|e| {
-                        self.state
-                            .server_admin
-                            .overwrites
-                            .get(&self.community)
-                            .is_some_and(|rows| is_private(rows, c.id, e))
-                    });
+                let private = access.everyone.is_some_and(|e| {
+                    overwrites
+                        .as_ref()
+                        .is_some_and(|rows| is_private(rows, c.id, e))
+                });
                 let mut row = div()
                     .flex()
                     .items_center()
@@ -680,13 +680,9 @@ impl Body {
                 .child(alert(t("chperm.error.unread")))
                 .into_any_element();
         };
-        let all_rows = self
-            .state
-            .server_admin
-            .overwrites
-            .get(&self.community)
-            .cloned()
-            .unwrap_or_default();
+        let all_rows =
+            dilla_client::state::server_admin::overwrites_in(&self.state, self.community)
+                .unwrap_or_default();
         let mine: Vec<_> = all_rows
             .iter()
             .filter(|o| o.channel == c.id)

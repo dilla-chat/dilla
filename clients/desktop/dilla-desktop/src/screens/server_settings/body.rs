@@ -13,8 +13,7 @@ use std::sync::Arc;
 use dilla_client::Client;
 use dilla_client::features::server_admin::{
     AFK_DEFAULT_TIMEOUT, AdminError, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, Direction,
-    NameProblem, Parent, Reply, TOPIC_MAX_BYTES, Tri, after_change, gif_key_valid, name_problem,
-    nfc,
+    NameProblem, Parent, Reply, TOPIC_MAX_BYTES, Tri, gif_key_valid, name_problem, nfc,
 };
 use dilla_client::state::server_admin::{GifRating, InviteId};
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, UserId};
@@ -1000,17 +999,22 @@ impl Body {
         if self.perm_busy {
             return;
         }
-        let now = self
-            .state
-            .server_admin
-            .overwrites
-            .get(&self.community)
-            .and_then(|rows| {
-                rows.iter()
-                    .find(|o| o.channel == channel && o.kind == entry.0 && o.target == entry.1)
-            })
-            .map(|o| (o.allow, o.deny));
-        let (allow, deny) = after_change(now, bit, value);
+        // Re-review N4: an entry whose overwrites are not read is never replaced (the web's `chperm.error.unread`).
+        let (allow, deny) = match dilla_client::features::server_admin::change_of(
+            &self.state,
+            self.community,
+            channel,
+            entry,
+            bit,
+            value,
+        ) {
+            Ok(masks) => masks,
+            Err(key) => {
+                self.perm_error = Some(t(key).into());
+                cx.notify();
+                return;
+            }
+        };
         self.perm_busy = true;
         self.perm_error = None;
         let name = self

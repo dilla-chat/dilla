@@ -592,7 +592,6 @@ fn access(over: impl FnOnce(&mut CommunityAccess)) -> CommunityAccess {
         kick_members: true,
         ban_members: true,
         loaded: true,
-        overwrites_loaded: true,
         everyone_id: Some(hid(0xab)),
         ..CommunityAccess::default()
     };

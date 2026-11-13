@@ -17,11 +17,13 @@ pub(super) fn apply(_world: &WorldSpec, _viewer: &str, state: &mut AppState) {
         let owner = Some(community.owner) == account;
         // The one access slice (final review I2): the roles facet's resolved access when it mapped this server, else
         // the owner's or a plain member's.
-        state.roles.access.entry(community.id).or_insert_with(|| {
-            let mut access = dilla_client::features::roles::rank::access_of(0, 0, owner);
-            access.overwrites_loaded = true;
-            access
-        });
+        state
+            .roles
+            .access
+            .entry(community.id)
+            .or_insert_with(|| dilla_client::features::roles::rank::access_of(0, 0, owner));
+        // The overwrites are read (the fixture sets none): the one overwrites slice holds the server (re-review N4).
+        state.roles.overwrites.entry(community.id).or_default();
         let channel = state
             .channels
             .iter()

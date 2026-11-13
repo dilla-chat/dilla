@@ -172,7 +172,6 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
         };
         let mut access = rank::access_of(u64::from(bits), top, owner);
         access.everyone_id = Some(everyone);
-        access.overwrites_loaded = true;
         state.roles.roles.insert(community, rows);
         state.roles.access.insert(community, access);
         state.roles.overwrites.insert(community, HashMap::new());

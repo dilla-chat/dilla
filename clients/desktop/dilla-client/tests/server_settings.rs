@@ -298,10 +298,7 @@ async fn private_channels_client_gain_lose_toggle_lockout() {
     let everyone = access.everyone.expect("@everyone");
     let visible = |s: &AppState| {
         dilla_client::features::server_admin::is_private(
-            s.server_admin
-                .overwrites
-                .get(&c)
-                .map_or(&[][..], |v| v.as_slice()),
+            &dilla_client::state::server_admin::overwrites_in(s, c).unwrap_or_default(),
             general,
             everyone,
         )
