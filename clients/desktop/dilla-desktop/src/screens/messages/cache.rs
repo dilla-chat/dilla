@@ -50,6 +50,12 @@ impl<V> Lru<V> {
         self.used
     }
 
+    /// Forgets everything held (a release: the keys and values are decrypted message text).
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.used = 0;
+    }
+
     pub fn get(&mut self, key: &str) -> Option<Arc<V>> {
         self.tick += 1;
         let tick = self.tick;
@@ -136,6 +142,23 @@ impl<V> Shared<V> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .used_chars()
+    }
+
+    /// Whether `key` is held (without touching its age).
+    pub fn contains(&self, key: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .map
+            .contains_key(key)
+    }
+
+    /// Forgets everything held.
+    pub fn clear(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 }
 

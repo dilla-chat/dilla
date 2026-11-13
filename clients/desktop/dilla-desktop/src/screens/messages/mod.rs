@@ -25,6 +25,15 @@ use gpui::{AnyElement, App, Window};
 
 pub use ui::open_pins;
 
+/// Forgets the parse, height and code memos (final review sweep). They are content-keyed and shared by every window,
+/// so they hold no client; but their keys and values are decrypted message text, which a release (Forget, sign-out)
+/// must not leave behind in the process. They fill again as the log draws.
+pub fn forget_memos() {
+    markdown::forget_cached();
+    body::forget_cached();
+    highlight::forget_cached();
+}
+
 /// Where gpui-component's textarea draws its first glyph inside its own box: 10px right of and 8px below the box's
 /// corner. A field that CSS pads by its own amount moves the textarea back by this much, so the text lands where the
 /// CSS puts it (the placeholder, drawn by the field, already does).

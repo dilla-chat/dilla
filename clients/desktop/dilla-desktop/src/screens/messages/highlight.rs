@@ -467,11 +467,19 @@ pub fn highlight_line(line: &str, rules: &[(Rule, TokenKind)]) -> Vec<Token> {
 
 /// [`highlight`] remembered by (language, code): a code card is tokenized once, however often the log is drawn.
 pub fn highlight_cached(lang: Option<&str>, code: &str) -> Arc<Vec<Vec<Token>>> {
-    static TOKENS: OnceLock<Shared<Vec<Vec<Token>>>> = OnceLock::new();
     let key = format!("{}\u{0}{code}", lang.unwrap_or(""));
-    TOKENS
-        .get_or_init(|| Shared::new(Lru::web()))
-        .memo(&key, || highlight(lang, code))
+    tokens().memo(&key, || highlight(lang, code))
+}
+
+static TOKENS: OnceLock<Shared<Vec<Vec<Token>>>> = OnceLock::new();
+
+fn tokens() -> &'static Shared<Vec<Vec<Token>>> {
+    TOKENS.get_or_init(|| Shared::new(Lru::web()))
+}
+
+/// Forgets every remembered code card (its keys are decrypted code; `super::forget_memos`).
+pub fn forget_cached() {
+    tokens().clear();
 }
 
 /// Every line of `code`, tokenized for `lang`.

@@ -642,6 +642,11 @@ fn trees() -> &'static Shared<Parsed> {
     TREES.get_or_init(|| Shared::new(Lru::web()))
 }
 
+/// Forgets every remembered parse (keyed by the decrypted body text; `super::forget_memos`).
+pub fn forget_cached() {
+    trees().clear();
+}
+
 /// [`parse`] remembered by the body text (least recently used goes first, within the web's limits), so a re-draw of an
 /// unchanged message, or of a hostile one, does not parse again (markdown.ts `parseTree`).
 pub fn parse_cached(body: &str) -> Arc<Parsed> {
@@ -713,6 +718,19 @@ fn resolve_tree(tree: &[Tree], resolve: &dyn Fn(&str) -> Pill, links: bool) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review sweep: a release forgets the parse memo (its keys are decrypted bodies), the heights and the code
+    /// cards with it; a parse after it fills it again.
+    #[test]
+    fn a_release_forgets_the_decrypted_bodies_the_memos_hold() {
+        let secret = "a secret only this account read 7f3a";
+        parse_cached(secret);
+        assert!(trees().contains(secret));
+        crate::screens::messages::forget_memos();
+        assert!(!trees().contains(secret), "the body is not left behind");
+        parse_cached(secret);
+        assert!(trees().contains(secret), "a parse after it fills it again");
+    }
 
     const ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 

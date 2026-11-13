@@ -601,6 +601,11 @@ fn heights() -> &'static Shared<f32> {
     HEIGHTS.get_or_init(|| Shared::new(Lru::new(2000, 2_000_000, 40_000)))
 }
 
+/// Forgets every remembered height (its keys hold the parts' text; `super::forget_memos`).
+pub fn forget_cached() {
+    heights().clear();
+}
+
 /// [`layout`]'s height, remembered by (parts, width): a draw of a body already laid out in this width costs one lookup.
 pub fn height_cached(parts: &[Body], width: f32) -> f32 {
     let key = format!("{:x}|{parts:?}", width.to_bits());

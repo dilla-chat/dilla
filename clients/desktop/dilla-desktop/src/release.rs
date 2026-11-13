@@ -34,6 +34,7 @@ pub fn release_client(client: &Rc<Client>, cx: &mut App) {
     screens::dms::picker::release(client, cx);
     screens::dms::compare::release(client, cx);
     screens::messages::ui::release(client, cx);
+    screens::messages::forget_memos();
     screens::members::release(client, cx);
     screens::create::release(client, cx);
     screens::ring::release(client, cx);
