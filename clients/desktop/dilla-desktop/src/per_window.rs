@@ -7,29 +7,40 @@ use std::collections::HashMap;
 
 use gpui::{App, Global, WindowId};
 
-/// One area's values, by window.
-pub struct PerWindow<T>(HashMap<WindowId, T>);
+/// One area's values, by window. `scratch` is what a late write for a closed window gets: a throwaway value, reset on
+/// every such write, so a closed window never gets an entry back (re-review minor).
+pub struct PerWindow<T>(HashMap<WindowId, T>, Option<T>);
 
 impl<T: 'static> Global for PerWindow<T> {}
 
 impl<T> Default for PerWindow<T> {
     fn default() -> Self {
-        Self(HashMap::new())
+        Self(HashMap::new(), None)
     }
 }
 
 /// Drops one kept type's value of a closed window.
 type Prune = fn(WindowId, &mut App);
 
-/// How to drop every kept type's value of a closed window.
+/// How to drop every kept type's value of a closed window, and the windows that closed.
 #[derive(Default)]
-struct Pruners(Vec<(std::any::TypeId, Prune)>);
+struct Pruners(
+    Vec<(std::any::TypeId, Prune)>,
+    std::collections::HashSet<WindowId>,
+);
+
+fn closed(window: WindowId, cx: &App) -> bool {
+    cx.try_global::<Pruners>()
+        .is_some_and(|p| p.1.contains(&window))
+}
 
 impl Global for Pruners {}
 
 fn prune<T: 'static>(window: WindowId, cx: &mut App) {
     if cx.has_global::<PerWindow<T>>() {
-        cx.global_mut::<PerWindow<T>>().0.remove(&window);
+        let pw = cx.global_mut::<PerWindow<T>>();
+        pw.0.remove(&window);
+        pw.1 = None;
     }
 }
 
@@ -47,6 +58,11 @@ fn map<T: 'static>(cx: &mut App) -> &mut HashMap<WindowId, T> {
 
 /// The window's value, made with `Default` on first use.
 pub fn get_mut<T: Default + 'static>(window: WindowId, cx: &mut App) -> &mut T {
+    if closed(window, cx) {
+        map::<T>(cx);
+        let pw = cx.global_mut::<PerWindow<T>>();
+        return pw.1.insert(T::default());
+    }
     map::<T>(cx).entry(window).or_default()
 }
 
@@ -59,7 +75,9 @@ pub fn get<T: 'static>(window: WindowId, cx: &App) -> Option<&T> {
 pub fn set<T: 'static>(window: WindowId, value: Option<T>, cx: &mut App) {
     match value {
         Some(v) => {
-            map::<T>(cx).insert(window, v);
+            if !closed(window, cx) {
+                map::<T>(cx).insert(window, v);
+            }
         }
         None => {
             if cx.has_global::<PerWindow<T>>() {
@@ -87,6 +105,7 @@ pub fn retain<T: 'static>(cx: &mut App, mut keep: impl FnMut(WindowId, &mut T) -
 
 /// `window` closed: every kept type lets go of its value.
 pub fn window_closed(window: WindowId, cx: &mut App) {
+    cx.default_global::<Pruners>().1.insert(window);
     let pruners: Vec<Prune> = cx
         .try_global::<Pruners>()
         .map(|p| p.0.iter().map(|(_, f)| *f).collect())
@@ -120,6 +139,10 @@ mod tests {
             window_closed(a, cx);
             assert_eq!(get::<Count>(a, cx), None);
             assert_eq!(get::<Count>(b, cx), Some(&Count(2)));
+            // Re-review minor: a late write for a closed window (an answer landing after the close) makes no entry.
+            get_mut::<Count>(a, cx).0 = 9;
+            set(a, Some(Count(9)), cx);
+            assert_eq!(get::<Count>(a, cx), None, "a closed window keeps nothing");
         });
     }
 }
