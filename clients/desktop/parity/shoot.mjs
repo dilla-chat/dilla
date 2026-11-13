@@ -165,6 +165,14 @@ async function visit(page, server, channel) {
   await page.getByPlaceholder(`Message #${channel}`).waitFor();
 }
 
+/** A chord of the fixture grammar as Playwright's key: `ctrl-shift-m` -> `Control+Shift+m`; `secondary` is Control off
+ * macOS; a function key `f1`..`f12` is Playwright's `F1`..`F12`; a bare letter or digit stays as written (lower case:
+ * `shift` is its own modifier). */
+export function playwrightChord(chord) {
+  const names = { ctrl: 'Control', alt: 'Alt', shift: 'Shift', fn: 'Fn', secondary: 'Control', enter: 'Enter', tab: 'Tab', escape: 'Escape', backspace: 'Backspace', delete: 'Delete', space: 'Space', up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', minus: 'Minus', comma: 'Comma', period: 'Period', slash: 'Slash', semicolon: 'Semicolon', quote: 'Quote', backslash: 'Backslash', equals: 'Equal', backtick: 'Backquote', insert: 'Insert' };
+  return chord.split('-').map((p) => names[p] ?? (/^f([1-9]|1[0-2])$/.test(p) ? p.toUpperCase() : p)).join('+');
+}
+
 /** One step of the fixture, on the web side. */
 async function replayStep(page, step) {
   const pick = (sel) => {
@@ -188,11 +196,7 @@ async function replayStep(page, step) {
       return;
     }
     case 'key': {
-      // `ctrl-shift-m` -> Playwright's `Control+Shift+M`; `secondary` is Control off macOS.
-      const names = { ctrl: 'Control', alt: 'Alt', shift: 'Shift', fn: 'Fn', secondary: 'Control', enter: 'Enter', tab: 'Tab', escape: 'Escape', backspace: 'Backspace', delete: 'Delete', space: 'Space', up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', minus: 'Minus', comma: 'Comma', period: 'Period', slash: 'Slash', semicolon: 'Semicolon', quote: 'Quote', backslash: 'Backslash', equals: 'Equal', backtick: 'Backquote', insert: 'Insert' };
-      // A bare letter or digit stays as written (lower case: `shift` is its own modifier).
-      const parts = step.chord.split('-').map((p) => names[p] ?? p);
-      await page.keyboard.press(parts.join('+'));
+      await page.keyboard.press(playwrightChord(step.chord));
       return;
     }
     case 'settle':
