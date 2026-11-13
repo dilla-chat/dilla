@@ -1,6 +1,12 @@
 //! Area **instances** (Task 27): the "Dilla - your instances" manager window.
 //!
-//! Stub from Task 1 (area scaffold): every file under `screens/instances/` is Task 27's. The hooks below are where
-//! `crate::slots` draws this area inside another area's view; Task 27 fills them and keeps their signatures.
+//! The manager runs before any `Client` exists, so the area has no state slice: [`model::Manager`] works on the
+//! instance list (`dilla_client::instances`) and the keychain, [`view::ManagerView`] draws it, and
+//! `crate::windows` opens the manager and one window per instance.
 
+pub mod copy;
 pub mod keys;
+pub mod model;
+pub mod view;
+
+pub use view::{ManagerEvent, ManagerView};
