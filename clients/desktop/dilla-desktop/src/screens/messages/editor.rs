@@ -47,8 +47,13 @@ pub fn counter_visible(remaining: i64) -> bool {
 
 /// The rows of the text being edited in a field `width` px wide (the textarea grows with its soft-wrapped lines,
 /// `field-sizing: content`): each hard line takes as many rows as the mono pre-wrap breaks it into.
+/// The width the field gives its text: less the padding and the 1px edge on each side.
+fn text_width(width: f32) -> f32 {
+    width - 2.0 * PAD_X - 2.0
+}
+
 pub fn lines_of(value: &str, width: f32) -> usize {
-    let inner = width - 2.0 * PAD_X - 2.0;
+    let inner = text_width(width);
     let columns = dilla_desktop_ui::text::columns(text::INPUT, inner);
     dilla_desktop_ui::text::wrap_mono(value, columns)
         .len()
@@ -103,7 +108,11 @@ pub fn editor(
                 .appearance(false)
                 .text_size(text::INPUT)
                 .line_height(px(LINE))
-                .h(px(field_height(lines) - 2.0 * PAD_Y - 2.0)),
+                .w(px(text_width(width) + super::TEXTAREA_WRAP_EXTRA))
+                // Its own 8px above and below the lines take room in its box too, or the last line is cut.
+                .h(px(
+                    field_height(lines) - 2.0 * PAD_Y - 2.0 + 2.0 * super::TEXTAREA_PAD_Y
+                )),
         ));
     let mut foot = div()
         .flex()

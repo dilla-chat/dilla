@@ -30,6 +30,10 @@ pub use ui::open_pins;
 /// CSS puts it (the placeholder, drawn by the field, already does).
 pub const TEXTAREA_PAD_X: f32 = 10.0;
 pub const TEXTAREA_PAD_Y: f32 = 8.0;
+/// How much wider than the text it wraps the textarea's box is: its own padding on both sides and the `RIGHT_MARGIN`
+/// (10px) gpui-base keeps at the end of each wrapped line (`input/base/element.rs`: wrap width = the text box less 10px).
+/// A field that knows its text width gives the textarea that width plus this, so it wraps where the CSS field does.
+pub const TEXTAREA_WRAP_EXTRA: f32 = 2.0 * TEXTAREA_PAD_X + 10.0;
 
 /// `child` (a textarea) shifted back by the component's own padding.
 pub fn textarea_origin(child: impl gpui::IntoElement) -> gpui::Div {
