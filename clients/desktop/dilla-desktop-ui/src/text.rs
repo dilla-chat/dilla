@@ -275,9 +275,14 @@ fn fitted(line: &Line, laid_out: f32, scale: f32) -> SharedString {
 /// The glyph painter's element: a canvas over the line's box (absolute, its full size) whose prepaint also gets the box's
 /// laid-out width, before the edges snap (`Window::laid_out_size`): the width Chromium decides an ellipsis against.
 struct LinePaint<T> {
-    prepaint: Option<Box<dyn FnOnce(f32, &mut gpui::Window) -> T>>,
-    paint: Option<Box<dyn FnOnce(Bounds<Pixels>, T, &mut gpui::Window, &mut gpui::App)>>,
+    prepaint: Option<LinePrepaint<T>>,
+    paint: Option<LinePainting<T>>,
 }
+
+/// [`LinePaint`]'s prepaint: the laid-out width in, the shaped glyphs out.
+type LinePrepaint<T> = Box<dyn FnOnce(f32, &mut gpui::Window) -> T>;
+/// [`LinePaint`]'s paint over the snapped bounds.
+type LinePainting<T> = Box<dyn FnOnce(Bounds<Pixels>, T, &mut gpui::Window, &mut gpui::App)>;
 
 impl<T: 'static> LinePaint<T> {
     fn new(

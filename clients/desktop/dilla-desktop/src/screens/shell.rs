@@ -1569,6 +1569,21 @@ fn palette_refused(overlay_open: bool, contexts: &[gpui::KeyContext]) -> bool {
             .any(|c| c.contains(OVERLAY_CONTEXT) || c.contains(MENU_CONTEXT))
 }
 
+/// Starts the call of the DM `id` from `window` (its header button, Ctrl+Shift+Enter): one call per device, so a call
+/// another instance window is in is left first, and the DM's call is joined through the ring gate.
+fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
+    let w = crate::screens::voice::wid(window);
+    let Some(client) = crate::screens::voice::client_of(w, cx) else {
+        return;
+    };
+    crate::screens::voice::after_leaving_other_calls(
+        w,
+        client.voice(),
+        move |voice| voice.join_dm(id),
+        cx,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1983,19 +1998,4 @@ mod tests {
         );
         shell.read_with(vcx, |s, _| assert_eq!(s.route(), &Route::Settings(None)));
     }
-}
-
-/// Starts the call of the DM `id` from `window` (its header button, Ctrl+Shift+Enter): one call per device, so a call
-/// another instance window is in is left first, and the DM's call is joined through the ring gate.
-fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
-    let w = crate::screens::voice::wid(window);
-    let Some(client) = crate::screens::voice::client_of(w, cx) else {
-        return;
-    };
-    crate::screens::voice::after_leaving_other_calls(
-        w,
-        client.voice(),
-        move |voice| voice.join_dm(id),
-        cx,
-    );
 }
