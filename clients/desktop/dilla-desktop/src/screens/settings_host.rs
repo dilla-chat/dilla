@@ -97,9 +97,19 @@ pub struct UserSettingsHost {
     from: Route,
     ctx: SlotCx,
     workspace: SettingsWorkspace,
+    /// The host's root: it holds the focus when it opens, so Tab and the frame's keys reach it.
+    focus: gpui::FocusHandle,
+    /// The guard the last render handed its section in `SlotCx::workspace` (always this host's own).
+    handed: Option<SettingsWorkspace>,
 }
 
 impl EventEmitter<SettingsEvent> for UserSettingsHost {}
+
+impl gpui::Focusable for UserSettingsHost {
+    fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
+        self.focus.clone()
+    }
+}
 
 impl UserSettingsHost {
     /// `section` is `None` for `/settings`, which opens Profile (Settings.tsx `activeSection`).
@@ -107,7 +117,7 @@ impl UserSettingsHost {
         section: Option<UserSection>,
         from: Option<Route>,
         ctx: SlotCx,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
         let workspace: SettingsWorkspace = Rc::new(RefCell::new(Workspace::new()));
         Self {
@@ -115,6 +125,8 @@ impl UserSettingsHost {
             from: from.unwrap_or(Route::Root),
             ctx,
             workspace,
+            focus: cx.focus_handle(),
+            handed: None,
         }
     }
 
@@ -122,8 +134,23 @@ impl UserSettingsHost {
         self.section
     }
 
+    /// The client's newest state, for the sections (the app hands each one in while the host shows).
+    pub fn set_state(
+        &mut self,
+        state: std::sync::Arc<dilla_client::state::AppState>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ctx.state = state;
+        cx.notify();
+    }
+
     pub fn workspace(&self) -> SettingsWorkspace {
         self.workspace.clone()
+    }
+
+    /// The guard the last render put in its section's `SlotCx::workspace` (`None` before the first frame).
+    pub fn handed_workspace(&self) -> Option<SettingsWorkspace> {
+        self.handed.clone()
     }
 
     /// Leaves the open section for `dest` unless the guard holds it behind the prompt.
@@ -152,7 +179,8 @@ impl UserSettingsHost {
         cx.notify();
     }
 
-    fn discard(&mut self, cx: &mut Context<Self>) {
+    /// Discard changes (the prompt's confirm): the draft resets and the oldest waiting way out goes through.
+    pub fn discard(&mut self, cx: &mut Context<Self>) {
         let waiting = self.workspace.borrow_mut().discard();
         // The oldest request wins, as in the web's `confirmation`.
         if let Some(dest) = waiting.into_iter().next() {
@@ -180,6 +208,7 @@ impl Render for UserSettingsHost {
             workspace: Some(self.workspace.clone()),
             ..self.ctx.clone()
         };
+        self.handed = ctx.workspace.clone();
         let body = slots::settings_sections()
             .into_iter()
             .find(|s| s.id == SectionId::User(section))
@@ -251,7 +280,11 @@ impl Render for UserSettingsHost {
         .on_confirm(move |_, cx| discard.update(cx, |h, cx| h.discard(cx)));
         div()
             .id("user-settings-host")
+            .track_focus(&self.focus)
             .size_full()
+            // Tab and Shift+Tab walk the settings as they walk the shell (`crate::screens::bind_keys`).
+            .on_action(|_: &crate::screens::FocusNext, window, cx| window.focus_next(cx))
+            .on_action(|_: &crate::screens::FocusPrevious, window, cx| window.focus_prev(cx))
             .child(frame)
             .child(dialog)
     }

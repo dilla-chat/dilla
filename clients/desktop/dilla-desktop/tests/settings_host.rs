@@ -310,6 +310,95 @@ fn clicking_close_closes(cx: &mut TestAppContext) {
     assert_eq!(*routes.borrow(), vec![Route::Activity]);
 }
 
+/// Integration 3, step 1: the host's render hands its own guard to the section it draws (`SlotCx::workspace`), never
+/// a shared or a missing one.
+#[gpui::test]
+fn render_hands_the_section_this_hosts_guard(cx: &mut TestAppContext) {
+    let (host, vcx, _) = host(cx, Some(UserSection::Diagnostics), None);
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let (handed, own) = host.read_with(vcx, |h, _| (h.handed_workspace(), h.workspace()));
+    let handed = handed.expect("the render filled SlotCx.workspace");
+    assert!(Rc::ptr_eq(&handed, &own));
+}
+
+/// The app (integration 3, step 1): one settings host per window, whatever opens it again; Close takes back the screen
+/// it was opened over; a Settings-to-Settings route switches the section through the dirty guard.
+#[cfg(feature = "automation")]
+mod app {
+    use super::*;
+    use dilla_desktop::app::{AppView, Launch};
+
+    fn app(cx: &mut TestAppContext) -> (Entity<AppView>, &mut VisualTestContext) {
+        cx.update(dilla_desktop::install);
+        let (app, vcx) = cx.add_window_view(|window, cx| AppView::new(Launch::empty(), window, cx));
+        vcx.run_until_parked();
+        (app, vcx)
+    }
+
+    fn open(app: &Entity<AppView>, vcx: &mut VisualTestContext, section: Option<UserSection>) {
+        app.update_in(vcx, |a, window, cx| {
+            a.open_route(&Route::Settings(section), window, cx)
+        });
+        vcx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn settings_hosts_never_stack(cx: &mut TestAppContext) {
+        let (app, vcx) = app(cx);
+        open(&app, vcx, None);
+        let first = app.read_with(vcx, |a, _| a.settings_host()).unwrap().0;
+        open(&app, vcx, Some(UserSection::Devices));
+        open(&app, vcx, None);
+        let (now, depth) = app.read_with(vcx, |a, _| a.settings_host()).unwrap();
+        assert_eq!(depth, 1, "one host");
+        assert_eq!(now.entity_id(), first.entity_id(), "the same host");
+    }
+
+    #[gpui::test]
+    fn close_brings_back_the_screen_behind(cx: &mut TestAppContext) {
+        let (app, vcx) = app(cx);
+        let before = app.read_with(vcx, |a, _| a.screen_name());
+        assert_ne!(before, "settings");
+        open(&app, vcx, Some(UserSection::Keyboard));
+        assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "settings");
+        let host = app.read_with(vcx, |a, _| a.settings_host()).unwrap().0;
+        host.update(vcx, |h, cx| h.request(Dest::Close, cx));
+        vcx.run_until_parked();
+        assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), before);
+        assert!(app.read_with(vcx, |a, _| a.settings_host()).is_none());
+    }
+
+    #[gpui::test]
+    fn a_settings_route_over_settings_goes_through_the_guard(cx: &mut TestAppContext) {
+        let (app, vcx) = app(cx);
+        open(&app, vcx, Some(UserSection::Profile));
+        let host = app.read_with(vcx, |a, _| a.settings_host()).unwrap().0;
+        let ws = host.read_with(vcx, |h, _| h.workspace());
+        let resets = Rc::new(RefCell::new(0));
+        hook(
+            &SlotCx {
+                workspace: Some(ws.clone()),
+                ..SlotCx::default()
+            },
+            &resets,
+        );
+        // A dirty draft: the route waits behind the prompt, the section stays.
+        open(&app, vcx, Some(UserSection::Devices));
+        assert_eq!(section(&host, vcx), UserSection::Profile);
+        assert!(ws.borrow().prompt().is_some(), "Keep editing / Discard");
+        assert_eq!(
+            app.read_with(vcx, |a, cx| a.settings_route(cx)),
+            Some(Route::Settings(Some(UserSection::Profile)))
+        );
+        // Discard: the waiting route goes through.
+        host.update(vcx, |h, cx| h.discard(cx));
+        vcx.run_until_parked();
+        assert_eq!(section(&host, vcx), UserSection::Devices);
+        assert_eq!(*resets.borrow(), 1, "the draft was reset by Discard");
+    }
+}
+
 /// The frame's panel is at most 1280px wide and centred in the window.
 fn panel_left(vcx: &mut VisualTestContext) -> gpui::Pixels {
     let width = vcx.update(|w, _| w.viewport_size().width);

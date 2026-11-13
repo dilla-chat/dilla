@@ -130,6 +130,13 @@ struct ChannelMenu {
     at: Point<Pixels>,
 }
 
+/// The shell went to `/settings/<section>` (the title bar's gear, Ctrl+,, a DM banner's Privacy or Devices): the app
+/// opens the user settings host over the shell (Task 1b's `AppView::open_route`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenSettings(pub Route);
+
+impl gpui::EventEmitter<OpenSettings> for ShellView {}
+
 /// The shell: the signed-in client's state and what the person has selected.
 pub struct ShellView {
     state: Arc<AppState>,
@@ -356,8 +363,8 @@ impl ShellView {
         });
     }
 
-    /// What the slots this shell hosts draw with.
-    fn slot_cx(&self) -> SlotCx {
+    /// What the slots draw this shell's view with (the settings host opened over it takes it too).
+    pub fn slot_cx(&self) -> SlotCx {
         SlotCx {
             state: self.state.clone(),
             client: self.client.clone(),
@@ -410,6 +417,8 @@ impl ShellView {
                 }
             }
             Route::Root => self.settle_selection(cx),
+            // The user settings are the app's settings host over this shell (Task 1b): the app opens it.
+            Route::Settings(_) => cx.emit(OpenSettings(route.clone())),
             _ => {}
         }
         cx.notify();
@@ -1309,6 +1318,9 @@ impl Render for ShellView {
             .on_action(cx.listener(|this, _: &keys::HistoryForward, _, cx| {
                 this.forward(cx);
             }))
+            .on_action(cx.listener(|this, _: &keys::OpenSettings, _, cx| {
+                this.navigate(Route::Settings(None), cx);
+            }))
             .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
                 if let Some(drag) = this.drag
                     && e.dragging()
@@ -1492,6 +1504,37 @@ mod tests {
     /// Integration-1 follow-up 6 (the web's M-01 guard): Ctrl+K opens the palette over the shell, but not over the
     /// channel menu (or another modal overlay) nor while focus is in a dialog or the settings frame (the ui crate's
     /// overlay key context); a non-modal surface (the ring banner) never blocks it.
+    /// Integration 3, step 1: Ctrl+, in the shell asks the app for the user settings host (`OpenSettings`).
+    #[gpui::test]
+    fn ctrl_comma_asks_for_the_settings_host(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let state = world();
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = asked.clone();
+        vcx.update(|_, cx| {
+            cx.subscribe(&shell, move |_, e: &OpenSettings, _| {
+                log.borrow_mut().push(e.0.clone())
+            })
+            .detach();
+        });
+        let focus = shell.update(vcx, |s, _| s.focus.clone());
+        vcx.update(|window, cx| focus.focus(window, cx));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("ctrl-,");
+        vcx.run_until_parked();
+        assert_eq!(*asked.borrow(), vec![Route::Settings(None)]);
+    }
+
     #[gpui::test]
     fn ctrl_k_is_refused_only_under_a_modal(cx: &mut gpui::TestAppContext) {
         cx.update(crate::install);

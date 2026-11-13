@@ -29,12 +29,12 @@ use crate::screens::shell::window::{SavedBounds, WindowMode, window_shape};
 use dilla_client::features::signup::SignupResult;
 use dilla_client::state::AccountPhase;
 
+use crate::router::{Route, UserSection};
 use crate::screens::create::Navigate;
 use crate::screens::onboarding::{DoneView, OpenDilla, SignedUp, SignupView, WantsSignIn};
-use crate::screens::shell::{Clock, ShellView};
-use crate::screens::sign_in::{CreateInstead, SignInView, SignedIn};
-use crate::router::{Route, UserSection};
 use crate::screens::settings_host::{self, Dest, SettingsEvent, UserSettingsHost};
+use crate::screens::shell::{Clock, OpenSettings, ShellView};
+use crate::screens::sign_in::{CreateInstead, SignInView, SignedIn};
 use crate::slots::SlotCx;
 use crate::tracked;
 
@@ -166,6 +166,8 @@ pub struct AppView {
     /// the done step shows (Task 25).
     after_signup: bool,
     shell: Option<Entity<ShellView>>,
+    /// The shell's way to the user settings (`ShellView`'s `OpenSettings`): the host opens over it.
+    shell_sub: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     /// Task 26: why the last Forget did not finish, for the forced screen the client comes back to.
     forget_note: Option<String>,
@@ -181,6 +183,7 @@ impl AppView {
             bounds_sub: None,
             after_signup: false,
             shell: None,
+            shell_sub: None,
             _subscriptions: Vec::new(),
             forget_note: None,
         };
@@ -355,7 +358,13 @@ impl AppView {
             host.update(cx, |host, cx| host.request(Dest::Section(section), cx));
             return;
         }
-        self.show_settings(*section, SlotCx::default(), window, cx);
+        // Over the shell, the host's sections draw with the shell's view (its state and client; Task 1b's merge item).
+        let ctx = self
+            .shell
+            .as_ref()
+            .map(|s| s.read(cx).slot_cx())
+            .unwrap_or_default();
+        self.show_settings(*section, ctx, window, cx);
     }
 
     /// The route the app shows while settings is open (the host's section, live, so a section switch is reflected);
@@ -379,7 +388,7 @@ impl AppView {
         let subscription = cx.subscribe_in(
             &host,
             window,
-            |this, _, SettingsEvent::Navigate(route), _, cx| {
+            |this, _, SettingsEvent::Navigate(route), window, cx| {
                 if matches!(route, Route::Settings(_)) {
                     cx.notify();
                     return;
@@ -389,15 +398,23 @@ impl AppView {
                 {
                     this.screen = *behind;
                 }
+                // The shell the settings were opened over takes the keyboard back.
+                if let Screen::Shell(shell) = &this.screen {
+                    let shell = shell.clone();
+                    this.focus_shell(&shell, window, cx);
+                }
                 cx.notify();
             },
         );
+        let focus = gpui::Focusable::focus_handle(host.read(cx), cx);
         let behind = std::mem::replace(&mut self.screen, Screen::Starting);
         self.screen = Screen::Settings {
             host,
             behind: Box::new(behind),
             _subscription: subscription,
         };
+        // The host holds the keyboard from its first frame (Tab walks its nav and its section).
+        window.focus(&focus, cx);
         cx.notify();
     }
 
@@ -729,12 +746,43 @@ impl AppView {
         matches!(self.screen, Screen::SignIn(_))
     }
 
+    /// Automation: what the window shows, by name (`settings` while the host is open, whatever is behind it).
+    #[cfg(feature = "automation")]
+    pub fn screen_name(&self) -> &'static str {
+        match &self.screen {
+            Screen::Starting => "starting",
+            Screen::Fatal(..) => "fatal",
+            Screen::SignIn(_) => "sign-in",
+            Screen::Signup(_) => "signup",
+            Screen::Done(_) => "done",
+            Screen::Shell(_) => "shell",
+            Screen::Factor(_) => "factor",
+            Screen::Settings { .. } => "settings",
+        }
+    }
+
+    /// Automation: the open settings host, and how many settings hosts are stacked (one at most).
+    #[cfg(feature = "automation")]
+    pub fn settings_host(&self) -> Option<(Entity<UserSettingsHost>, usize)> {
+        let Screen::Settings { host, behind, .. } = &self.screen else {
+            return None;
+        };
+        let mut depth = 1;
+        let mut under: &Screen = behind;
+        while let Screen::Settings { behind, .. } = under {
+            depth += 1;
+            under = behind;
+        }
+        Some((host.clone(), depth))
+    }
+
     /// Integration 3, step 0 item 1: the window and the app let go of `client` (Forget, sign-out), so the caller's
     /// handle is the last and its store can close: the shell this window kept (a shell shown earlier still held it
     /// behind the forced screen), the screen, the subscriptions, the instance registry's hold (Task 27) and every
     /// app-wide holder ([`crate::release::release_client`]).
     fn release(&mut self, client: &Rc<Client>, cx: &mut Context<Self>) {
         self.shell = None;
+        self.shell_sub = None;
         self._subscriptions.clear();
         self.screen = Screen::Starting;
         // An instance window's registry holds the client too (Task 27): it lets go, so the store can close.
@@ -774,6 +822,13 @@ impl AppView {
                     }
                     break;
                 }
+                // The settings host over the shell draws its sections with the same state (Task 1b).
+                let _ = this.update(cx, |this, cx| {
+                    if let Screen::Settings { host, .. } = &this.screen {
+                        let next = next.clone();
+                        host.update(cx, |h, cx| h.set_state(next, cx));
+                    }
+                });
                 if weak
                     .update(cx, |shell, cx| shell.set_state(next, cx))
                     .is_err()
@@ -799,6 +854,13 @@ impl AppView {
             cx,
         );
         self.shell = Some(shell.clone());
+        // The title bar's gear, Ctrl+, and the DM banners' Privacy and Devices open the user settings host over the
+        // shell (Task 1b).
+        self.shell_sub = Some(cx.subscribe_in(
+            &shell,
+            window,
+            |this, _, OpenSettings(route), window, cx| this.open_route(route, window, cx),
+        ));
         self.focus_shell(&shell, window, cx);
         self.screen = Screen::Shell(shell);
         self.fit_window(window, cx);

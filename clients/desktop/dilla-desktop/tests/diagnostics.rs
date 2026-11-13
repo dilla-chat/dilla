@@ -3,9 +3,9 @@
 //! - Behaviour tests run a real dillad (`target/dilla-testhost` and the WASI core, see `tests/support`), with the client
 //!   behind a counting TCP proxy that reads the request line of every HTTP request and counts the WebSocket upgrades.
 //!   They are `#[ignore]`d so a plain `cargo test` needs no Go toolchain.
-//! - Parity and keyboard tests drive the automation build on a screen fixture. They need the settings host and the
-//!   fixture screen arm of the report (`task-24-report.md`, "Changes for the controller"), so they are `#[ignore]`d with
-//!   that reason until the controller applies it at merge.
+//! - Parity and keyboard tests drive the automation build on a screen fixture, drawn in the settings host (Task 1b,
+//!   merged in integration 3 with its `Settings` fixture arm). The keyboard test runs; the parity tests wait for their
+//!   web references (`diagnostics/section*.shot.json` are not shot yet), ignored under the R22 prefix.
 
 mod support;
 
@@ -33,17 +33,17 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(format!("{name}.json"))
 }
 
-const NEEDS_HOST: &str = "needs the settings host and the `Settings` fixture arm of the Task 24 report (applied at merge)";
+const NEEDS_HOST: &str = "the diagnostics/section fixture loads in the settings host";
 
 #[test]
-#[ignore = "needs the settings host and the `Settings` fixture arm of the Task 24 report (applied at merge)"]
+#[ignore = "parity after T6c: diagnostics/section n/a (no web reference: section.shot.json not shot yet; the host draws it)"]
 fn parity_diagnostics_section() {
     assert_screen(&fixture_path("diagnostics/section"))
         .unwrap_or_else(|e| panic!("diagnostics/section differs from its web reference: {e}"));
 }
 
 #[test]
-#[ignore = "needs the settings host and the `Settings` fixture arm of the Task 24 report (applied at merge)"]
+#[ignore = "parity after T6c: diagnostics/section-b n/a (no web reference: section-b.shot.json not shot yet; the host draws it)"]
 fn parity_diagnostics_section_b() {
     assert_screen(&fixture_path("diagnostics/section-b"))
         .unwrap_or_else(|e| panic!("diagnostics/section-b differs from its web reference: {e}"));
@@ -54,7 +54,6 @@ fn parity_diagnostics_section_b() {
 /// Tab through the section: the only stop is Copy codes (the facts are rows, not controls), and Enter on it is a press.
 /// The area has no shortcut of its own (settings/Keyboard.tsx lists none for Diagnostics).
 #[test]
-#[ignore = "needs the settings host and the `Settings` fixture arm of the Task 24 report (applied at merge)"]
 fn keyboard_diagnostics_focus_order() {
     let path = fixture_path("diagnostics/section");
     let loaded = dilla_parity::fixture::load(&path, dilla_parity::Os::current())

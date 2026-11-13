@@ -18,7 +18,7 @@ use dilla_desktop_ui::tokens::{color, font, radius, text};
 
 use crate::slots::SlotCx;
 use crate::strings::{t, tf};
-use crate::{format, tracked_box};
+use crate::{format, tracked_box, tracked_focus};
 
 /// The error codes shown: the last 20 (Diagnostics.tsx `slice(-20)`).
 const SHOWN_ERRORS: usize = 20;
@@ -239,7 +239,14 @@ fn errors_list(errors: &[ErrorEntry]) -> AnyElement {
 }
 
 /// The section's content, for the settings host to put in the frame's body.
-pub fn render(ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> AnyElement {
+pub fn render(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
+    // Copy codes keeps its focus handle across frames, so Tab reaches it and the automation build can name it.
+    let copy_focus = window
+        .use_keyed_state("diag-copy-focus", cx, |_, cx| {
+            cx.focus_handle().tab_stop(true)
+        })
+        .read(cx)
+        .clone();
     let state = &ctx.state;
     let fact_rows = facts(state);
     let n = fact_rows.len() + 1;
@@ -284,11 +291,15 @@ pub fn render(ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> AnyElement {
     });
     section = section.child(tracked_box(
         "diag-copy",
-        SettingsRow::new("diag-copy-row", t("diagnostics.copy")).child(
-            Button::new("diag-copy-button", t("diagnostics.copy")).on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-            }),
-        ),
+        SettingsRow::new("diag-copy-row", t("diagnostics.copy")).child(tracked_focus(
+            "diag-copy-button",
+            &copy_focus,
+            Button::new("diag-copy-button-b", t("diagnostics.copy"))
+                .focus_handle(&copy_focus)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                }),
+        )),
     ));
     section.into_any_element()
 }
