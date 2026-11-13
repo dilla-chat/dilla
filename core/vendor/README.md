@@ -256,3 +256,14 @@ painter (`dilla-desktop-ui/src/text.rs`, `LinePaint`) reads it; the test `laid_o
 `clients/desktop/dilla-desktop/tests/vendored_patches.rs` pins it.
 
 Keep this patch while the Linux parity references are Chromium frames.
+
+A second change (Task 28 wave 2, 2026-11-14), marked `DILLA PATCH` in `src/elements/div.rs`: a focused element with a
+click listener arms its keyboard click (Enter or Space key-down, fired on the matching key-up) from a recorder that
+`paint_keyboard_listeners` registers after the element's own key-down listeners (`Interactivity::pending_activation_recorder`);
+upstream registers it before them, in `paint_mouse_listeners`. A key-down the element handles itself (it stops propagation
+or prevents the default) therefore no longer also clicks it on key-up, as a browser runs a button's activation behaviour
+only for a keydown whose default was not prevented. Upstream, Enter on a member row opened its card on key-down and the
+key-up click closed it again; every row, chip and menu item that handles Enter itself did the same. Tests:
+`a_key_down_the_element_handles_does_not_also_click` and `enter_on_a_member_row_leaves_its_card_open` in
+`clients/desktop/dilla-desktop/tests/vendored_patches.rs`. Keep it until upstream checks the key-down's handling before
+arming the click.

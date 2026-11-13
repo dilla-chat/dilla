@@ -205,3 +205,147 @@ fn the_dashed_border_follows_blink_s_pattern() {
     assert_eq!(pattern(1.0), (3.0, 2.0));
     assert_eq!(pattern(4.0), (8.0, 4.0), "a thick border keeps upstream's");
 }
+
+/// Two focusable boxes with clicks: `own` also handles Enter and Space on key-down itself (stopping propagation, as the
+/// member row, the rail and the channel rows do); `plain` has only its click.
+struct Activation {
+    own_clicks: Rc<Cell<u32>>,
+    own_keys: Rc<Cell<u32>>,
+    plain_clicks: Rc<Cell<u32>>,
+    own: gpui::FocusHandle,
+    plain: gpui::FocusHandle,
+}
+
+impl Render for Activation {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui::InteractiveElement as _;
+        use gpui::StatefulInteractiveElement as _;
+        let (own_clicks, own_keys, plain_clicks) = (
+            self.own_clicks.clone(),
+            self.own_keys.clone(),
+            self.plain_clicks.clone(),
+        );
+        div()
+            .size_full()
+            .child(
+                div()
+                    .id("own")
+                    .size(px(20.0))
+                    .track_focus(&self.own)
+                    .on_click(move |_, _, _| own_clicks.set(own_clicks.get() + 1))
+                    .on_key_down(move |e: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(e.keystroke.key.as_str(), "enter" | "space") {
+                            own_keys.set(own_keys.get() + 1);
+                            cx.stop_propagation();
+                        }
+                    }),
+            )
+            .child(
+                div()
+                    .id("plain")
+                    .size(px(20.0))
+                    .track_focus(&self.plain)
+                    .on_click(move |_, _, _| plain_clicks.set(plain_clicks.get() + 1)),
+            )
+    }
+}
+
+fn press_and_release(vcx: &mut gpui::VisualTestContext, key: &'static str) {
+    let keystroke = gpui::Keystroke::parse(key).unwrap_or_else(|_| panic!("{key} is a key"));
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+    vcx.run_until_parked();
+}
+
+/// Task 28 wave 2 (T28 parity review I4): an element that handles Enter or Space on key-down itself (stopping
+/// propagation) is not also clicked by the key-up, so a toggle (the member row's card) does not open and close again; an
+/// element with only a click is still clicked once by Enter and by Space, as a browser's activation behaviour runs only
+/// for a keydown whose default was not prevented.
+#[gpui::test]
+fn a_key_down_the_element_handles_does_not_also_click(cx: &mut TestAppContext) {
+    let own_clicks = Rc::new(Cell::new(0));
+    let own_keys = Rc::new(Cell::new(0));
+    let plain_clicks = Rc::new(Cell::new(0));
+    let (oc, ok, pc) = (own_clicks.clone(), own_keys.clone(), plain_clicks.clone());
+    let (view, vcx) = cx.add_window_view(move |_, cx| Activation {
+        own_clicks: oc,
+        own_keys: ok,
+        plain_clicks: pc,
+        own: cx.focus_handle(),
+        plain: cx.focus_handle(),
+    });
+    vcx.update(|window, cx| {
+        let own = view.read(cx).own.clone();
+        window.focus(&own, cx);
+    });
+    vcx.run_until_parked();
+    for key in ["enter", "space"] {
+        press_and_release(vcx, key);
+    }
+    assert_eq!(own_keys.get(), 2, "the element's own key-down ran");
+    assert_eq!(own_clicks.get(), 0, "and the key-up did not click it too");
+    vcx.update(|window, cx| {
+        let plain = view.read(cx).plain.clone();
+        window.focus(&plain, cx);
+    });
+    vcx.run_until_parked();
+    press_and_release(vcx, "enter");
+    assert_eq!(plain_clicks.get(), 1, "Enter clicks a plain element once");
+    press_and_release(vcx, "space");
+    assert_eq!(plain_clicks.get(), 2, "and so does Space");
+}
+
+/// The member list (I4): Enter on a focused member row opens its card and leaves it open (the row toggles the card, so
+/// a second activation from the key-up closed it again).
+struct Members {
+    card: Rc<Cell<bool>>,
+}
+
+impl Render for Members {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use dilla_desktop_ui::components::Presence;
+        use dilla_desktop_ui::components::members::{GroupKind, ListGroup, ListMember, MemberList};
+        let card = self.card.clone();
+        div().size_full().child(
+            MemberList::new(
+                "members",
+                vec![ListGroup {
+                    id: "online".into(),
+                    kind: GroupKind::Online,
+                    title: "online".into(),
+                    color: None,
+                    members: vec![ListMember {
+                        id: "ada".into(),
+                        name: "ada".into(),
+                        is_owner: false,
+                        is_bot: false,
+                        status: "".into(),
+                        color: None,
+                        presence: Presence::Online,
+                    }],
+                }],
+            )
+            .on_open(move |_, _, _| card.set(!card.get())),
+        )
+    }
+}
+
+#[gpui::test]
+fn enter_on_a_member_row_leaves_its_card_open(cx: &mut TestAppContext) {
+    let card = Rc::new(Cell::new(false));
+    let c = card.clone();
+    let (_, vcx) = cx.add_window_view(move |_, _| Members { card: c });
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    // The list is one tab stop: its first row.
+    vcx.update(|window, cx| window.focus_next(cx));
+    vcx.run_until_parked();
+    press_and_release(vcx, "enter");
+    assert!(card.get(), "the card is open after Enter");
+    press_and_release(vcx, "enter");
+    assert!(!card.get(), "a second Enter closes it");
+}

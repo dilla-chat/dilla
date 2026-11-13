@@ -921,6 +921,9 @@ pub fn render(
     // `margin-top: auto` puts a shorter log's content at the viewport's bottom in layout units: its rows end on the
     // bottom padding exactly, not on the rounded scroll height.
     let lift = (viewport - content).max(0.0);
+    // The scrolled box: the viewport exactly for a shorter log (no sub-pixel scroll range from `content`'s rounding),
+    // else the rounded content (T28 parity review m1).
+    let inner = if lift > 0.0 { viewport } else { height };
     let mut placer = Placer { out: Vec::new() };
     let mut y = lift + LOG_TOP;
     y += placer.welcome(y, title, body_lines);
@@ -939,7 +942,7 @@ pub fn render(
         .and_then(|key| shown.iter().position(|s| s.item.key == key));
     if let Some(at) = jumped {
         let target = (tops[at] - 48.0).max(0.0);
-        let max = (height + lift - viewport).max(0.0);
+        let max = (inner - viewport).max(0.0);
         scroll.set_offset(gpui::point(len(0.), px(-target.min(max))));
         // The log leaves the end. Its host (the shell) is drawing this log right now, so it hears of it once the frame is
         // done: an update of it from here would be a re-entrant update (a panic).
@@ -1033,13 +1036,7 @@ pub fn render(
             let pager = scroll.clone();
             move |_: &PageDown, _, _| page(&pager, 1.0)
         })
-        .child(
-            div()
-                .relative()
-                .w_full()
-                .h(px(height + lift))
-                .children(placer.out),
-        )
+        .child(div().relative().w_full().h(px(inner)).children(placer.out))
 }
 
 gpui::actions!(message_log, [PageUp, PageDown]);
