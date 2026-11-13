@@ -948,6 +948,8 @@ impl Render for ShellView {
         let sidebar = sidebar.child(crate::automation::bounds_probe("shell-sidebar"));
 
         // The log wraps its bodies to its own width: the window less the rail, the sidebar and a column aside.
+        // The members aside reads the slot context the shell holds (its hook takes none of its own; Task 14).
+        crate::screens::members::sync(&ctx, cx);
         let aside = slots::aside(self.route(), window, cx);
         let aside_width = if aside.is_some() && column {
             panes.aside
