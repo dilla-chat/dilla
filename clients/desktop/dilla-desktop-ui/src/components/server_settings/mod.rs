@@ -71,16 +71,36 @@ pub mod layout {
         px(-(crate::text::line_height(crate::tokens::text::XS, 1.5) + LABEL_GAP_PX))
     }
 
-    /// The width of a bare text input: twenty columns (an input's default `size`) of the field's mono type, plus the
-    /// frame's side padding and edge.
+    /// The web font's average and widest glyph, per em (the fontsource `JetBrains Mono Variable` the web loads: OS/2
+    /// `xAvgCharWidth` 602, head bbox `xMax - xMin` 1170 + 1735 per 1000 units). The embedded instance has a narrower bbox
+    /// (its ligature glyphs cut), so these are the web's.
+    const WEB_MONO_AVG: f32 = 0.602;
+    const WEB_MONO_BBOX: f32 = 2.905;
+
+    /// The width of a bare text input: Chromium's intrinsic width of `<input size=20>`, twenty average characters (each
+    /// rounded to a whole pixel, as `SimpleFontData` keeps them) plus the widest glyph's excess over one, then the frame's
+    /// side padding and edge (`LayoutTextControlSingleLine::PreferredContentLogicalWidth`).
     pub fn text_input_width() -> Pixels {
         let columns = 20.0;
         let type_size: f32 = crate::tokens::text::INPUT.into();
-        px(columns * type_size * crate::text::MONO_ADVANCE + 2.0 * (FIELD_PAD_X + FIELD_EDGE))
+        let avg = (WEB_MONO_AVG * type_size).round();
+        let widest = (WEB_MONO_BBOX * type_size).round();
+        px(columns * avg + (widest - avg) + 2.0 * (FIELD_PAD_X + FIELD_EDGE))
     }
 
     /// The height of a manage-list row of a group position's minimum settings-row height.
     pub fn list_row_height(min_height: f32) -> Pixels {
         px(min_height - ROW_TRIM)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::layout;
+
+    #[test]
+    fn a_bare_input_is_chromiums_size_twenty() {
+        // 20 x 8 + (38 - 8) + 2 x 13 at 13px: the web's 216px Server name field.
+        assert_eq!(f32::from(layout::text_input_width()), 216.0);
     }
 }

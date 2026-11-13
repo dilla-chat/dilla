@@ -137,7 +137,15 @@ impl RenderOnce for TextField {
             .when_some(frame_h, |d, h| d.h(h))
             .hover(move |s| s.border_color(edge(invalid, focused, true)));
         frame = match &self.control {
-            Control::Single(input) => frame.child(Input::new(input).appearance(false)),
+            // `.d-text-field__input` is 13px (`--text-input`) with the frame's own 12px sides: the editor's own size
+            // (gpui-component's 14px `text_sm`) and its inner padding would set the text larger and further in.
+            Control::Single(input) => frame.child(
+                Input::new(input)
+                    .appearance(false)
+                    .text_size(text::INPUT)
+                    .px_0()
+                    .py_0(),
+            ),
             Control::Multi(input) => frame
                 .min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
                 .child(Textarea::new(input).appearance(false)),
