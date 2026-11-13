@@ -94,6 +94,10 @@ pub fn install(cx: &mut App) {
     dilla_desktop_ui::theme::install(cx);
     gpui_component::init(cx);
     keys::bind_all(cx);
+    // Task 21's Bot page asks for a fresh second factor through Task 26's step-up dialog (drawn by the overlays slot).
+    cx.set_global(screens::bot_admin::bot_page::StepUp(std::rc::Rc::new(
+        screens::factor::ask_step_up,
+    )));
 }
 
 /// Opens the main window on the OS data dir and keychain: the start window (400x280), which takes the authentication and
@@ -201,5 +205,17 @@ pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
         app_id: Some(APP_ID.to_owned()),
         window_min_size: Some(size(px(WORKSPACE_MIN.0), px(WORKSPACE_MIN.1))),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Integration 3, step 5: the Bot page's step-up (Task 21's `bot_page::StepUp`) is the factor area's dialog (Task
+    /// 26's `ask_step_up`), installed with the app, so a Bot capability save asks for a fresh factor instead of saying
+    /// the step-up is missing.
+    #[gpui::test]
+    fn install_gives_the_bot_page_the_factor_step_up(cx: &mut gpui::TestAppContext) {
+        cx.update(super::install);
+        assert!(cx.update(|cx| cx.has_global::<crate::screens::bot_admin::bot_page::StepUp>()));
     }
 }
