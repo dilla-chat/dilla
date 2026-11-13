@@ -198,6 +198,11 @@ installed).
 
 Keep this patch until upstream lets a colour emoji face load as a named family.
 
+A second change (Task 6c, 2026-11-13), marked `DILLA PATCH`: in `src/shaders.wgsl`, a dashed border thinner than 3 device
+px dashes 3 widths on and 2 off (Blink's `StrokeData` ratios for thin strokes) instead of upstream's 2 on and 1 off, so the
+rail's 1px dashed "+" circle has the web's dash count (about 23 at scale 2, upstream drew about 39). Thicker borders keep
+upstream's pattern.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs

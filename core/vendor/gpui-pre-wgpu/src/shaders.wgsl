@@ -703,8 +703,12 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
             // overlapping when dash size is smaller than the border width.
             //
             // Dash pattern: (2 * border width) dash, (1 * border width) gap
-            let dash_length_per_width = 2.0;
-            let dash_gap_per_width = 1.0;
+            // DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): a thin border (under 3 device px: the web's
+            // 1px at scale 2) dashes as Chromium's (Blink StrokeData: 3 * width dash, 2 * width gap).
+            let thin = max(max(quad.border_widths.top, quad.border_widths.bottom),
+                           max(quad.border_widths.left, quad.border_widths.right)) < 3.0;
+            let dash_length_per_width = select(2.0, 3.0, thin);
+            let dash_gap_per_width = select(1.0, 2.0, thin);
             let dash_period_per_width = dash_length_per_width + dash_gap_per_width;
 
             // Since the dash size is determined by border width, the density of
