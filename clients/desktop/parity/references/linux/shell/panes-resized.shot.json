@@ -1,18 +1,18 @@
 {
   "digest": "fd8010bf4a2f0a07612924eed47ec48e6b69e6198dae7827c532a72f5fca955a",
-  "shift": 79475,
+  "shift": 88712,
   "hand_migrated": false,
   "ids": {
-    "channel:midgard/afk": "031fca9ff3e80991459751342c5c94bf",
-    "channel:midgard/boats": "d8a61c6983663bc22aadb2250ce1a52f",
-    "channel:midgard/general": "1335ecd8e4f3806678a09d1da7ff1e44",
-    "channel:midgard/harbour": "6fe94dd167f3db2db65277eef9116bd7",
-    "channel:midgard/loot": "8c82ae291436e258d209f8f0bdbd42f8",
-    "channel:midgard/lounge": "5113ee88435353bb74697b5609ffa828",
-    "channel:midgard/raids": "787b54b116a749597852eb9939352ff5",
-    "person:ada": "c0e06b28dfda8e4f3a6ccd7790930928",
-    "person:bjorn": "1589c93dce55efb96bf1420b299002ef",
-    "person:mira": "d3e7d56b2717b9bef29383dad15cf5a7",
-    "server:midgard": "92d9e48d2b3300780f7be2a0e2c59127"
+    "channel:midgard/afk": "fcd78efd8e614bf275675c38ca34d2bf",
+    "channel:midgard/boats": "aff1df3dc251555ed798942a6f02ea56",
+    "channel:midgard/general": "8a950754c51b7bce0fada37869fbab0f",
+    "channel:midgard/harbour": "ae2ff1bce27a61c332c09f8fc8990f92",
+    "channel:midgard/loot": "8ee4e8518ec2b2c8c77ce2b8dd0eab32",
+    "channel:midgard/lounge": "5db25921211c5ef330ae1e4b0c5d478b",
+    "channel:midgard/raids": "a8bf19a33b952e405a256c8552f7dfcd",
+    "person:ada": "6318c84c81615b9415d9e9114fa97f59",
+    "person:bjorn": "0c5e865a28c51d794e24b96f7f51b9b6",
+    "person:mira": "8a49f3bcec9040f4e7e370bdacbd454a",
+    "server:midgard": "16e74d4bbcab7b8a684a9ff7f733bdc2"
   }
 }
