@@ -67,18 +67,23 @@ pub(super) fn colour_of(spec: Option<&str>) -> u32 {
 
 /// Maps the facet into `state`.
 ///
-/// The ids come from the state the shell's mapping built (the effective ids, a shot's included): the communities in the
-/// order of the viewer's servers, people by username, and a role by a member holding it (the members' role ids are in
-/// the spec's role order). A role nobody holds keeps its derived id.
+/// The ids come from the state the shell's mapping built (the effective ids, a shot's included): each of the viewer's
+/// servers is its community of the same name (the state's order is not the spec's: a shot's ids sort it), people by
+/// username, and a role by a member holding it (the members' role ids are in the spec's role order). A role nobody holds
+/// keeps its derived id.
 pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
     let derived = world.ids();
     let everyone_of = |server: &str| derive_id("role", &format!("{server}/@everyone"));
-    let servers = world
+    let pairs: Vec<_> = world
         .servers
         .iter()
-        .filter(|s| s.members.iter().any(|m| m == viewer));
-    let communities: Vec<CommunityId> = state.communities.iter().map(|c| c.id).collect();
-    for (server, community) in servers.zip(communities) {
+        .filter(|s| s.members.iter().any(|m| m == viewer))
+        .filter_map(|s| {
+            let community: CommunityId = state.communities.iter().find(|c| c.name == s.name)?.id;
+            Some((s, community))
+        })
+        .collect();
+    for (server, community) in pairs {
         let members = state.members.get(&community).cloned().unwrap_or_default();
         let user_of = |person: &str| {
             let username = world

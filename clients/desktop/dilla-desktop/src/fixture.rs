@@ -422,6 +422,28 @@ mod tests {
         Fixture::load(&path, None).unwrap()
     }
 
+    /// Merge of T6c into integration-3: with a shot's ids the state's servers are in another order than the spec's; the
+    /// roles facet still gives each server its own access (Ada owns Midgard, not Asgard), so the settings nav lists
+    /// Asgard's sections as a plain member's.
+    #[test]
+    fn the_roles_facet_pairs_servers_by_name_under_a_shots_ids() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity");
+        let f = Fixture::load(
+            &base.join("fixtures/user-settings/appearance-b.json"),
+            Some(&base.join("references/linux/user-settings/appearance-b.shot.json")),
+        )
+        .unwrap();
+        for c in &f.state.communities {
+            let access = f.state.roles.access_of(c.id);
+            assert_eq!(
+                access.owner,
+                c.name == "Midgard Crew",
+                "{}: the viewer owns only Midgard",
+                c.name
+            );
+        }
+    }
+
     #[test]
     fn the_committed_channel_view_loads() {
         let f = committed("shell/channel-view.json");
