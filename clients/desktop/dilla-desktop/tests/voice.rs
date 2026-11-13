@@ -1077,6 +1077,33 @@ fn control_shift_m_and_d_show_muted_and_deafened_to_the_peer(cx: &mut TestAppCon
     );
 }
 
+/// Review L m1: one call per device, the newest join wins. A handover still waiting for another window's leave is dropped
+/// when a newer join starts (in any window): else both would join once the leave answered.
+#[gpui::test]
+fn a_newer_join_drops_an_older_waiting_handover(cx: &mut TestAppContext) {
+    let (_a, a) = handover_window(cx);
+    let b = cx.add_window(|_, _| Host).window_id();
+    cx.update(|cx| voice::sync(b, state(2), None, cx));
+    let (older, newer) = (Rc::new(Did::default()), Rc::new(Did::default()));
+    let (leave_tx, leave_rx) = answer_pair();
+    let (_join_a_tx, join_a_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&older, join_a_rx);
+    cx.update(|cx| voice::handover(a, vec![leave_rx], start, undo, cx));
+    cx.run_until_parked();
+    // B's join finds no live call (the other window's leave already published Idle) and starts at once.
+    let (_join_b_tx, join_b_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&newer, join_b_rx);
+    cx.update(|cx| voice::handover(b, Vec::new(), start, undo, cx));
+    cx.run_until_parked();
+    assert!(newer.started.get());
+    leave_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(!older.started.get(), "the older handover starts no join");
+    assert_eq!(toast_in(cx, a), None, "a dropped handover says nothing");
+}
+
 /// The toast a join that answers `answer` leaves in its window, after the handover.
 fn toast_after_join(
     cx: &mut TestAppContext,

@@ -127,6 +127,9 @@ pub struct VoiceAreas {
     windows: HashMap<WindowId, VoiceUi>,
     /// The repaint loops running now, one per live call ([`repaint_on_video`]).
     loops: usize,
+    /// The newest join's [`handover`] (review L m1): one call per device, so an older handover still waiting starts no
+    /// join of its own.
+    handovers: u64,
 }
 
 impl Global for VoiceAreas {}
@@ -697,6 +700,12 @@ pub fn handover(
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
+    let ticket = {
+        let areas = cx.default_global::<VoiceAreas>();
+        areas.handovers += 1;
+        areas.handovers
+    };
+    let newest = move |cx: &App| cx.try_global::<VoiceAreas>().map(|a| a.handovers) == Some(ticket);
     cx.spawn(async move |cx| {
         let mut waited = Duration::ZERO;
         loop {
@@ -709,6 +718,9 @@ pub fn handover(
             if leaves.is_empty() {
                 break;
             }
+            if !cx.update(|cx| newest(cx)) {
+                return;
+            }
             if waited >= HANDOVER_WAIT {
                 log::warn!(
                     "voice: another instance's call did not answer its leave; the join is dropped"
@@ -719,7 +731,8 @@ pub fn handover(
             cx.background_executor().timer(HANDOVER_POLL).await;
             waited += HANDOVER_POLL;
         }
-        if !cx.update(|cx| area_open(window, cx)) {
+        // A newer join started meanwhile (in this window or another): it is the device's one call (review L m1).
+        if !cx.update(|cx| area_open(window, cx) && newest(cx)) {
             return;
         }
         // The join answers on the client's runtime; it is polled on the same timer (a wake from another thread is no
