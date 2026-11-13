@@ -629,9 +629,12 @@ impl Render for Composer {
                 &self.input.read(cx).focus_handle(cx),
                 div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
                     crate::screens::messages::textarea_origin(
+                        // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which wins.
                         Textarea::new(&self.input)
                             .appearance(false)
                             .disabled(blocked.is_some())
+                            .text_size(text::INPUT)
+                            .line_height(px(FIELD_LINE))
                             .h(px(rows as f32 * FIELD_LINE)),
                     ),
                 ),

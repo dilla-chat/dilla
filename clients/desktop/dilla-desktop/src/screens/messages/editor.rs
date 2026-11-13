@@ -4,7 +4,8 @@
 //! Cancel and Save. Enter saves, Shift+Enter breaks the line, Escape cancels.
 
 use gpui::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement, Styled, Window, div, px,
+    AnyElement, App, Focusable as _, InteractiveElement as _, IntoElement, ParentElement, Styled,
+    Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{Enter, Textarea, TextareaState};
 
@@ -25,6 +26,8 @@ const MAX_FIELD: f32 = 160.0;
 /// A foot button's height (`Button`'s Md size).
 const FOOT: f32 = 32.0;
 const GAP: f32 = 4.0;
+/// The focused field's `--accent-soft` ring: `box-shadow: 0 0 0 3px`.
+const FOCUS_RING: f32 = 3.0;
 
 /// The field's height for `lines` lines of text: the content box (clamped) plus padding and the 1px edge.
 pub fn field_height(lines: usize) -> f32 {
@@ -58,7 +61,7 @@ pub fn editor(
     used: usize,
     ui: &gpui::Entity<MessageUi>,
     width: f32,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let value = input.read(cx).value();
@@ -66,6 +69,8 @@ pub fn editor(
     let used = used as i64;
     let remaining = EDIT_MAX as i64 - used;
     let refused = value.trim().is_empty() || remaining < 0;
+    // `--hairline-2`; focused, the accent edge and a 3px `--accent-soft` ring (`.d-message-editor__input:focus`).
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
     let field = div()
         .w_full()
         .h(px(field_height(lines)))
@@ -73,15 +78,31 @@ pub fn editor(
         .py(px(PAD_Y))
         .bg(color::SURFACE)
         .border_1()
-        .border_color(color::ACCENT)
+        .border_color(if focused {
+            color::ACCENT
+        } else {
+            color::HAIRLINE_2
+        })
+        .when(focused, |d| {
+            d.shadow(vec![gpui::BoxShadow {
+                color: color::ACCENT_SOFT,
+                offset: gpui::point(px(0.), px(0.)),
+                blur_radius: px(0.),
+                spread_radius: px(FOCUS_RING),
+                inset: false,
+            }])
+        })
         .rounded(radius::LG)
         .text_size(text::INPUT)
         .line_height(px(LINE))
         .font_family(font::MONO)
         .text_color(color::FG)
         .child(super::textarea_origin(
+            // The textarea's own size sets 14px text; the field's 13px on 20px lines are set on it, which wins.
             Textarea::new(input)
                 .appearance(false)
+                .text_size(text::INPUT)
+                .line_height(px(LINE))
                 .h(px(field_height(lines) - 2.0 * PAD_Y - 2.0)),
         ));
     let mut foot = div()
