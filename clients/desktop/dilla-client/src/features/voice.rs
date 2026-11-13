@@ -968,7 +968,8 @@ impl Voice {
         if r.last_stats.is_some_and(|t| t.elapsed() < STATS_EVERY) {
             return false;
         }
-        let sent = stats_frame(call, &report).is_ok_and(|b| self.inner.engine().send_gateway_frame(b));
+        let sent =
+            stats_frame(call, &report).is_ok_and(|b| self.inner.engine().send_gateway_frame(b));
         if sent {
             r.last_stats = Some(std::time::Instant::now());
         }

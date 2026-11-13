@@ -188,6 +188,41 @@ fn passkey_refusal(e: &FactorError, instance: &str) -> String {
     tf("factor.error.other", &[("code", &e.code)])
 }
 
+/// Tests (feature `test-hooks`): the set-up driven as a person does, step by step.
+#[cfg(feature = "test-hooks")]
+impl FactorSetupView {
+    /// The step's primary button (Continue, Verify, Done).
+    pub fn press_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.primary(window, cx);
+    }
+
+    /// The step on show, by name (`Choose`, `Totp`, `Passkey`, `Codes`, `Done`).
+    pub fn step_name(&self) -> String {
+        format!("{:?}", self.step)
+    }
+
+    /// The authenticator app's secret the step shows (a person's app reads it from the QR code).
+    pub fn shown_secret(&self) -> Option<String> {
+        self.secret_text.as_ref().map(ToString::to_string)
+    }
+
+    /// The code field's error, by its copy key (`factor.error.code`: the instance refused the code).
+    pub fn code_problem(&self) -> Option<&'static str> {
+        self.code_error
+    }
+
+    /// Whether the code field has the keyboard.
+    pub fn code_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        gpui::Focusable::focus_handle(self.code.read(cx), cx).is_focused(window)
+    }
+
+    /// The codes step's "I have saved these codes".
+    pub fn tick_saved(&mut self, cx: &mut Context<Self>) {
+        self.ack = true;
+        cx.notify();
+    }
+}
+
 impl FactorSetupView {
     pub fn new(
         client: Rc<Client>,

@@ -709,3 +709,95 @@ fn a_join_in_another_window_leaves_this_window_s_call(cx: &mut TestAppContext) {
     }));
     assert_eq!(phase_of(&w.alice), CallPhase::Idle);
 }
+
+/// Alice's device's flags in the voice channel's roster as `client` holds it (0 when she is not listed).
+fn flags_of(client: &dilla_client::Client, voice: ChannelId, device: [u8; 16]) -> u8 {
+    client
+        .state()
+        .borrow()
+        .voice
+        .participants(voice)
+        .iter()
+        .find(|p| p.device_id == DeviceId(device))
+        .map_or(0, |p| p.flags)
+}
+
+/// e2e/voice/controls.spec.ts, "Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; push to talk
+/// sends only while held" (the shortcut half; push to talk is held by the tests above): in a call with bob, alice's
+/// window takes Ctrl+Shift+M and bob's roster shows her muted; again, unmuted. Ctrl+Shift+D deafens her as bob sees it,
+/// and again undeafens.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn control_shift_m_and_d_show_muted_and_deafened_to_the_peer(cx: &mut TestAppContext) {
+    let w = call_world("t28-mute-keys");
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    w.rt.block_on(w.bob.voice().join(w.voice))
+        .unwrap()
+        .expect("bob joins");
+    let alice_device = w.alice.state().borrow().account.device_id.unwrap().0;
+    w.rt.block_on(until(&w.bob, "bob lists alice in the call", |s| {
+        s.voice
+            .participants(w.voice)
+            .iter()
+            .any(|p| p.device_id == DeviceId(alice_device))
+    }));
+    // Each press reads the window's view of the call, as the shell keeps it in sync with the client.
+    let sync = |cx: &mut TestAppContext| {
+        let state = w.alice.state().borrow().clone();
+        cx.update(|cx| voice::sync(wa, state, Some(&w.alice), cx));
+        cx.run_until_parked();
+    };
+    let press_and_see = |cx: &mut TestAppContext, key: &str, bit: u8, on: bool, what: &str| {
+        sync(cx);
+        cx.simulate_keystrokes(a.into(), key);
+        cx.run_until_parked();
+        w.rt.block_on(until(&w.bob, what, |_| {
+            (flags_of(&w.bob, w.voice, alice_device) & bit != 0) == on
+        }));
+        // The client's own state follows too, so the next press reads it.
+        w.rt.block_on(until(&w.alice, what, |s| {
+            s.voice
+                .participants(w.voice)
+                .iter()
+                .any(|p| p.own && (p.flags & bit != 0) == on)
+        }));
+    };
+    assert_eq!(
+        flags_of(&w.bob, w.voice, alice_device) & flags::SELF_MUTE,
+        0
+    );
+    press_and_see(
+        cx,
+        "ctrl-shift-m",
+        flags::SELF_MUTE,
+        true,
+        "bob sees alice muted",
+    );
+    press_and_see(
+        cx,
+        "ctrl-shift-m",
+        flags::SELF_MUTE,
+        false,
+        "bob sees alice unmuted",
+    );
+    press_and_see(
+        cx,
+        "ctrl-shift-d",
+        flags::SELF_DEAF,
+        true,
+        "bob sees alice deafened",
+    );
+    press_and_see(
+        cx,
+        "ctrl-shift-d",
+        flags::SELF_DEAF,
+        false,
+        "bob sees alice undeafened",
+    );
+}

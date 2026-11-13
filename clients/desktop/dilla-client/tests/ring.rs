@@ -1433,3 +1433,114 @@ async fn answering_a_ring_in_a_call_leaves_the_call_first() {
     let joined = p.peer.call_devices(dm).await;
     assert!(joined.contains(&hex(&p.me.device_id)), "{joined:?}");
 }
+
+/// Whether `user` is listed away in `community`'s AFK snapshot.
+fn listed_away(s: &dilla_client::state::AppState, community: CommunityId, user: UserId) -> bool {
+    s.ring
+        .afk
+        .get(&community)
+        .is_some_and(|a| a.away.iter().any(|x| x.user == user))
+}
+
+/// e2e/web/afk.spec.ts, "8. Q2 (revised, AW2 final): his last connection closing keeps Björn away through the 30 s grace,
+/// then takes him off the roster; back, nothing joins". Björn is away (he chose AFK); his only device stops. Ada still
+/// lists him away while the close lands and 20 s into the grace (the host's clock); once the 30 s grace ends with no
+/// connection the roster drops him. His device starts again: no call, and nobody listed away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+async fn the_last_connection_closing_keeps_a_member_away_through_the_grace_then_drops_him() {
+    let tag = "t28-afk-grace";
+    let host = tokio::task::spawn_blocking(move || world::start_host(tag))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let ada = world::sign_up(&host, &invite, "ada", tag).await;
+    let bjorn = world::sign_up(&host, &invite, "bjorn", tag).await;
+    let (host, ada, bjorn, community) = tokio::task::spawn_blocking(move || {
+        let (c, _) = world::voice_community(&host, &ada, &[&bjorn]);
+        world::clear_session(&ada);
+        world::clear_session(&bjorn);
+        (host, ada, bjorn, CommunityId(c))
+    })
+    .await
+    .unwrap();
+    let him = UserId(bjorn.user_id);
+    let a = world::start(&ada).await;
+    world::connected(&a).await;
+    let b = world::start(&bjorn).await;
+    world::connected(&b).await;
+    b.ring()
+        .go_afk(community)
+        .await
+        .unwrap()
+        .expect("Björn goes AFK");
+    a.ring()
+        .load_afk(community)
+        .await
+        .unwrap()
+        .expect("Ada reads the AFK roster");
+    wait_for(&a, WAIT, "Björn listed away", |s| {
+        listed_away(s, community, him)
+    })
+    .await;
+
+    // His last connection closes: inside the grace he stays listed while the close lands, and 20 s into it.
+    tokio::task::spawn_blocking(move || b.stop()).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        listed_away(&a.state().borrow(), community, him),
+        "still away inside the 30 s grace"
+    );
+    let h = tokio::task::spawn_blocking(move || {
+        advance_clock(&host, 20);
+        host
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        listed_away(&a.state().borrow(), community, him),
+        "still away 20 s into the grace"
+    );
+    // The grace ends with no connection: the roster drops him.
+    let host = tokio::task::spawn_blocking(move || {
+        advance_clock(&h, 11);
+        h
+    })
+    .await
+    .unwrap();
+    wait_for(&a, WAIT, "the roster without Björn", |s| {
+        s.ring
+            .afk
+            .get(&community)
+            .is_some_and(|x| x.away.is_empty())
+    })
+    .await;
+
+    // Back: his device starts again, joins no call and lists nobody away.
+    let b = world::start(&bjorn).await;
+    world::connected(&b).await;
+    b.ring()
+        .load_afk(community)
+        .await
+        .unwrap()
+        .expect("Björn reads the AFK roster");
+    let s = wait_for(&b, WAIT, "Björn's AFK roster", |s| {
+        s.ring.afk.contains_key(&community)
+    })
+    .await;
+    assert!(
+        s.ring.afk[&community].away.is_empty(),
+        "nobody away: {:?}",
+        s.ring.afk[&community]
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let s = b.state().borrow().clone();
+    assert_eq!(
+        s.voice.call.phase,
+        dilla_client::calls::CallPhase::Idle,
+        "nothing joins"
+    );
+    assert!(!s.ring.afk[&community].pending, "no cut pending");
+    drop(host);
+}
