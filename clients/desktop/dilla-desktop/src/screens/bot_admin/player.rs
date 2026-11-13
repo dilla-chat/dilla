@@ -16,17 +16,18 @@ use dilla_desktop_ui::components::bot_admin::now_playing::{
     NowPlaying, NowPlayingLabels, NowPlayingVariant, PlayerTrack, QueueRow, up_next,
 };
 use dilla_desktop_ui::components::toast::show_toast;
-use gpui::{AnyElement, App, Global, IntoElement, SharedString, Window};
+use gpui::{AnyElement, App, IntoElement, SharedString, Window};
 
 use crate::strings::{t, tf};
 
-/// What the dock needs to draw the player, which the shell (Task 8) and the voice area (Task 17) provide with
-/// [`provide`] whenever this device is in a voice call with the Bot in it: the call's voice channel, its name, the Bot's
-/// name, the clock the playhead runs on and the running client the controls call.
+/// What the dock needs to draw the player, which the shell's state loop keeps for its window ([`follow`]) whenever this
+/// device is in a voice call with the Bot in it: the call's voice channel, its name, the Bot's name, the clock the
+/// playhead runs on and the running client the controls call. The client is held weakly: a feed never keeps a released
+/// client alive (final review M3).
 #[derive(Clone)]
 pub struct MusicFeed {
     pub state: Arc<AppState>,
-    pub client: Option<Rc<Client>>,
+    pub client: Option<std::rc::Weak<Client>>,
     pub community: CommunityId,
     /// The voice channel of this device's call.
     pub channel: ChannelId,
@@ -38,25 +39,23 @@ pub struct MusicFeed {
     pub now_ms: u64,
 }
 
-impl Global for MusicFeed {}
+/// One window's player (final review C1: per window, as the voice area's state is): its feed and its track-end read.
+#[derive(Default)]
+struct WindowMusic {
+    feed: Option<MusicFeed>,
+    track_end: TrackEnd,
+}
 
-/// Hands the dock the call it draws, or takes it away (`None`: no call, or the Bot is not in it).
-pub fn provide(feed: Option<MusicFeed>, cx: &mut App) {
-    match feed {
-        Some(feed) => cx.set_global(feed),
-        None => {
-            if cx.has_global::<MusicFeed>() {
-                cx.remove_global::<MusicFeed>();
-            }
-        }
-    }
+/// The feed `window`'s dock draws, if it has one.
+pub fn feed(window: gpui::WindowId, cx: &App) -> Option<MusicFeed> {
+    crate::per_window::get::<WindowMusic>(window, cx).and_then(|m| m.feed.clone())
 }
 
 /// The feed of this device's call (integration 3, step 5): `Some` while it is in a call (phase In) whose participants
 /// include the community's pinned Bot user; the room is the call's channel name, the Bot its catalog name.
 pub fn feed_of(
     state: &Arc<AppState>,
-    client: Option<Rc<Client>>,
+    client: Option<std::rc::Weak<Client>>,
     now_ms: u64,
 ) -> Option<MusicFeed> {
     let call = &state.voice.call;
@@ -106,45 +105,68 @@ struct TrackEnd {
     _timer: Option<gpui::Task<()>>,
 }
 
-impl Global for TrackEnd {}
-
 fn device_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The shell's state loop (integration 3, step 5): provides the dock's feed for `state` ([`feed_of`]), reads the
-/// player when this device's call with the Bot starts (op 63 reads it again on the client), and again a second after its
-/// track should end. The track-end timer holds the client weakly: a release never waits for it.
-pub fn follow(state: &Arc<AppState>, client: &Rc<Client>, cx: &mut App) {
-    let feed = feed_of(state, Some(client.clone()), device_now_ms());
-    let before = cx.try_global::<MusicFeed>().map(|f| f.channel);
-    let Some(channel) = feed.as_ref().map(|f| f.channel) else {
-        if before.is_some() {
-            provide(None, cx);
+/// The shell's state loop (integration 3, step 5), for its own window: keeps the dock's feed for `state` ([`feed_of`]),
+/// reads the player when this window's call with the Bot starts (op 63 reads it again on the client), and again a second
+/// after its track should end. Another window's loop never touches this window's feed (final review C1). Everything here
+/// holds the client weakly: a release never waits for it.
+pub fn follow(window: gpui::WindowId, state: &Arc<AppState>, client: &Rc<Client>, cx: &mut App) {
+    let weak = Rc::downgrade(client);
+    let mut read = |channel: ChannelId, _: &mut App| {
+        if let Some(client) = weak.upgrade() {
+            drop(client.music().refresh(channel));
         }
-        if cx.has_global::<TrackEnd>() {
-            cx.remove_global::<TrackEnd>();
-        }
+    };
+    follow_in(
+        window,
+        state,
+        Some(Rc::downgrade(client)),
+        device_now_ms(),
+        &mut read,
+        cx,
+    );
+}
+
+/// [`follow`] with the read it sends (`read`) and the clock it reads, so a test can count the reads.
+fn follow_in(
+    window: gpui::WindowId,
+    state: &Arc<AppState>,
+    client: Option<std::rc::Weak<Client>>,
+    now_ms: u64,
+    read: &mut dyn FnMut(ChannelId, &mut App),
+    cx: &mut App,
+) {
+    let next = feed_of(state, client.clone(), now_ms);
+    let before = feed(window, cx).map(|f| f.channel);
+    let Some(channel) = next.as_ref().map(|f| f.channel) else {
+        crate::per_window::set::<WindowMusic>(window, None, cx);
         return;
     };
-    provide(feed, cx);
+    crate::per_window::get_mut::<WindowMusic>(window, cx).feed = next;
     if before != Some(channel) {
-        drop(client.music().refresh(channel));
+        read(channel, cx);
     }
     let snapshot = match state.bot_admin.music.get(&channel) {
         Some(MusicState::Available(s)) => Some(s),
         _ => None,
     };
     let key = snapshot.map(|s| (channel, s.revision));
-    if cx.default_global::<TrackEnd>().key == key {
+    if crate::per_window::get_mut::<WindowMusic>(window, cx)
+        .track_end
+        .key
+        == key
+    {
         return;
     }
     let timer = snapshot
-        .and_then(|s| refresh_after_ms(s, device_now_ms()))
-        .map(|ms| {
-            let weak = Rc::downgrade(client);
+        .and_then(|s| refresh_after_ms(s, now_ms))
+        .and_then(|ms| client.clone().map(|weak| (ms, weak)))
+        .map(|(ms, weak)| {
             cx.spawn(async move |cx| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(ms))
@@ -154,21 +176,18 @@ pub fn follow(state: &Arc<AppState>, client: &Rc<Client>, cx: &mut App) {
                 }
             })
         });
-    *cx.global_mut::<TrackEnd>() = TrackEnd { key, _timer: timer };
+    crate::per_window::get_mut::<WindowMusic>(window, cx).track_end =
+        TrackEnd { key, _timer: timer };
 }
 
-/// The release path (integration 3, step 0 item 1): the dock's feed lets go of `client`, and its track-end read goes.
+/// The release path (integration 3, step 0 item 1): every window's feed of `client` goes, with its track-end read.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
-    let held = cx
-        .try_global::<MusicFeed>()
-        .and_then(|f| f.client.as_ref())
-        .is_some_and(|c| Rc::ptr_eq(c, client));
-    if held {
-        provide(None, cx);
-        if cx.has_global::<TrackEnd>() {
-            cx.remove_global::<TrackEnd>();
-        }
-    }
+    crate::per_window::retain::<WindowMusic>(cx, |_, m| {
+        !m.feed
+            .as_ref()
+            .and_then(|f| f.client.as_ref())
+            .is_some_and(|c| std::ptr::eq(c.as_ptr(), Rc::as_ptr(client)))
+    });
 }
 
 /// `NowPlaying`'s props for one player, as `musicView` makes them.
@@ -303,7 +322,9 @@ fn control(
 ) -> impl Fn(&mut Window, &mut App) + 'static {
     let (client, channel) = (feed.client.clone(), feed.channel);
     move |window: &mut Window, cx: &mut App| {
-        let Some(client) = client.clone() else { return };
+        let Some(client) = client.as_ref().and_then(std::rc::Weak::upgrade) else {
+            return;
+        };
         let rx = run(&client.music(), channel, paused_now);
         window
             .spawn(cx, async move |cx| {
@@ -365,8 +386,8 @@ fn element(
 
 /// The compact row in the shell's dock (`slots::dock`, after the voice dock): `None` without a call, without the Bot in it
 /// or while its music state is unavailable.
-pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let feed = cx.try_global::<MusicFeed>()?.clone();
+pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let feed = feed(window.window_handle().window_id(), cx)?;
     element(
         &feed,
         NowPlayingVariant::Compact,
@@ -378,7 +399,7 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 
 /// The card variant of the same player (the message Glenn posts where `/play` ran).
 pub fn card(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let feed = cx.try_global::<MusicFeed>()?.clone();
+    let feed = feed(window.window_handle().window_id(), cx)?;
     let open = window.use_keyed_state("now-playing-card-queue", cx, |_, _| false);
     let shown = *open.read(cx);
     let handle = open.clone();
@@ -528,6 +549,53 @@ mod tests {
         let (mut s, _) = in_call(true, CallPhase::In);
         s.bot.catalogs.clear();
         assert!(feed_of(&Arc::new(s), None, 5).is_none(), "no pinned Bot");
+    }
+
+    /// Integration 3, final review C1: each window keeps its own feed and track-end read. Window B's publishes (no call,
+    /// or a call of its own) never touch window A's feed, so A's dock keeps its room and its controls the client of A's
+    /// feed, and A's player is read once when its call starts, however often B publishes.
+    #[gpui::test]
+    fn each_window_keeps_its_own_music_feed(cx: &mut gpui::TestAppContext) {
+        use dilla_client::calls::CallPhase;
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let (in_a, a_channel) = in_call(true, CallPhase::In);
+        let in_a = Arc::new(in_a);
+        let idle_b = Arc::new(AppState::default());
+        let (mut in_b, _) = in_call(true, CallPhase::In);
+        let b_channel = ChannelId([5; 16]);
+        let lounge = in_b.voice.calls.remove(&ChannelId([8; 16])).unwrap();
+        in_b.voice.calls.insert(b_channel, lounge);
+        in_b.channels[0].id = b_channel;
+        in_b.channels[0].name = "Den".into();
+        in_b.voice.call.channel = Some(b_channel);
+        let in_b = Arc::new(in_b);
+        let reads = std::cell::RefCell::new(Vec::new());
+        cx.update(|cx| {
+            let mut read = |ch: ChannelId, _: &mut App| reads.borrow_mut().push(ch);
+            follow_in(a, &in_a, None, 1, &mut read, cx);
+            for _ in 0..5 {
+                follow_in(b, &idle_b, None, 1, &mut read, cx);
+                follow_in(a, &in_a, None, 1, &mut read, cx);
+            }
+            let fa = feed(a, cx).expect("A's feed");
+            assert_eq!((fa.channel, fa.room.as_str()), (a_channel, "Lounge"));
+            assert!(feed(b, cx).is_none(), "B has no call");
+            follow_in(b, &in_b, None, 1, &mut read, cx);
+            let fa = feed(a, cx).expect("A's feed");
+            let fb = feed(b, cx).expect("B's feed");
+            assert_eq!((fa.channel, fa.room.as_str()), (a_channel, "Lounge"));
+            assert_eq!((fb.channel, fb.room.as_str()), (b_channel, "Den"));
+        });
+        assert_eq!(
+            *reads.borrow(),
+            vec![a_channel, b_channel],
+            "one read per call start"
+        );
     }
 
     /// Integration 3, step 5: the player is read again a second after the playing track should end (music.tsx), never

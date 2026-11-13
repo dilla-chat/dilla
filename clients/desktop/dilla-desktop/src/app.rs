@@ -1125,10 +1125,6 @@ impl AppView {
                 }
                 // The settings host over the shell draws its sections with the same state (Task 1b).
                 let _ = this.update(cx, |this, cx| {
-                    // Task 21's dock player: fed while this device is in a call with the Bot in it.
-                    if let Some(client) = factor_client.upgrade() {
-                        crate::screens::bot_admin::player::follow(&next, &client, cx);
-                    }
                     if let Screen::Settings { host, .. } = &this.screen {
                         let next = next.clone();
                         host.update(cx, |h, cx| h.set_state(next, cx));
@@ -1139,10 +1135,19 @@ impl AppView {
                     }
                 });
                 if weak
-                    .update(cx, |shell, cx| shell.set_state(next, cx))
+                    .update(cx, |shell, cx| shell.set_state(next.clone(), cx))
                     .is_err()
                 {
                     break;
+                }
+                // Task 21's dock player, for this window: fed while this device is in a call with the Bot in it. Only
+                // while the shell still holds the client (final review M3: never after a release).
+                if let Some(client) = factor_client.upgrade() {
+                    let wid = cx.window_handle().window_id();
+                    cx.update(|_, cx| {
+                        crate::screens::bot_admin::player::follow(wid, &next, &client, cx)
+                    })
+                    .ok();
                 }
             }
         })
