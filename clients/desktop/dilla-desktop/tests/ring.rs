@@ -672,3 +672,31 @@ fn a_held_dm_block_hides_the_call_button_and_says_why(cx: &mut TestAppContext) {
     assert!(vcx.debug_bounds("header-dm-call").is_none());
     assert!(vcx.debug_bounds("voice-blocked").is_some());
 }
+
+/// Ring.tsx `onAnswer` (Shell.tsx: "opens the DM and joins its call"): answering a ring opens its DM.
+#[gpui::test]
+fn answering_a_ring_opens_its_dm(cx: &mut TestAppContext) {
+    let (shell, vcx) = shell_on(
+        server(),
+        dilla_desktop::router::Route::Channel {
+            community: SERVER,
+            channel: Some(GENERAL),
+        },
+        cx,
+    );
+    vcx.update(|window, _| window.activate_window());
+    vcx.run_until_parked();
+    // The ring arrives while the window is focused: it takes the focus, and Enter answers it.
+    let mut s = server();
+    s.ring.rings.push(ring(DM, "Bob", false));
+    shell.update(vcx, |shell, cx| shell.set_state(Arc::new(s), cx));
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert_eq!(
+        shell.read_with(vcx, |s, _| s.route().clone()),
+        dilla_desktop::router::Route::Dm(DM)
+    );
+}

@@ -175,12 +175,14 @@ fn find<'a>(state: &'a AppState, key: &SharedString) -> Option<&'a IncomingRing>
     state.ring.rings.iter().find(|r| ring_key(r) == *key)
 }
 
-/// Answer: the ring's DM call, joined through the ring area's gate; the voice area takes the join.
+/// Answer (Ring.tsx `onAnswer`): the ring's DM opens, and its call is joined through the ring area's gate; the voice
+/// area takes the join.
 fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) {
-    let Some(client) = env.ctx.client.clone() else {
+    let Some(ring) = find(&env.ctx.state, key) else {
         return;
     };
-    let Some(ring) = find(&env.ctx.state, key) else {
+    crate::screens::dms::navigate(crate::screens::dms::Nav::Dm(ring.channel), window, cx);
+    let Some(client) = env.ctx.client.clone() else {
         return;
     };
     let joining = client.ring().join(ring.channel, None, String::new());
