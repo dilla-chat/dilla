@@ -119,7 +119,7 @@ Totals: 233 e2e tests; 141 with a Rust test, 42 n/a (browser/phone only), 21 nex
 | `e2e/web/slash-commands.spec.ts` | polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator | dilla-desktop::tests/bot::poll_card_draws_under_the_bots_post; dilla-client::src/features/utilities/polls::selection_rules |
 | `e2e/web/slash-commands.spec.ts` | moderation requires confirmation and applies to a distinct joined member | TODO: dilla-desktop::tests/bot::a_moderation_command_asks_for_confirmation_then_applies_to_a_joined_member |
 | `e2e/web/slash-commands.spec.ts` | reminders sync across devices and remain due after Bot restart and reload | dilla-client::tests/bot::reminders_sync_across_devices_and_stay_due_after_a_bot_restart |
-| `e2e/web/slash-commands.spec.ts` | a reminder set from the picker chips appears under Upcoming | TODO: dilla-desktop::tests/bot::a_reminder_set_from_the_chips_appears_under_upcoming |
+| `e2e/web/slash-commands.spec.ts` | a reminder set from the picker chips appears under Upcoming | dilla-desktop::tests/bot::a_reminder_set_from_the_chips_appears_under_upcoming |
 | `e2e/web/slowmode-announce.spec.ts` | slow mode and an announcement channel from an empty instance: the wait, the queue, the read-only notice, a refused post and a lying class | dilla-desktop::tests/messages::slow_mode_wait_queue_and_announcement_read_only |
 | `e2e/web/socket-only.spec.ts` | no app request uses HTTP while the socket is up | dilla-desktop::tests/diagnostics::no_app_http_while_socket_up |
 | `e2e/web/socket-only.spec.ts` | joining and leaving voice goes over the socket | dilla-client::tests/calls::call_signalling_uses_socket_when_up |
