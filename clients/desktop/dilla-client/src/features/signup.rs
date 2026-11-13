@@ -1129,15 +1129,22 @@ impl Onboarding {
 
     /// Whether a sign-up's join is kept in the store, waiting for the account's factor ([`Onboarding::finish_signup`]).
     /// The app asks at every start of a client that is not ready yet, so a restart at the factor step still joins.
+    ///
+    /// The store is read on the client's own runtime, as every other call here: the app awaits this on its UI executor,
+    /// which has no Tokio reactor for the core's blocking call.
     pub async fn has_pending_join(&self) -> bool {
-        let core = self.inner.engine().core().clone();
-        crate::sync::api::try_core(&core, |c| c.settings())
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .as_deref()
-            .and_then(stored_pending_join)
-            .is_some()
+        let inner = self.inner.clone();
+        let rx = self.run(async move {
+            let core = inner.engine().core().clone();
+            Ok(crate::sync::api::try_core(&core, |c| c.settings())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .as_deref()
+                .and_then(stored_pending_join)
+                .is_some())
+        });
+        flatten(rx.await).unwrap_or(false)
     }
 
     /// The worker's `createCommunity`: `POST /v1/communities [name, policy "{}"... ]`. The name is checked first
