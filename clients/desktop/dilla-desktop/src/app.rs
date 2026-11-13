@@ -584,14 +584,20 @@ impl AppView {
     }
 
     fn start_client(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
-        // A wipe that waits for an older client of this instance deletes nothing once it starts again (re-review C).
-        crate::windows::note_start(cx, cfg.id);
         // An instance window runs its own instance only: a sign-in that ended on another one (the sign-in view takes
         // any server address) is refused here, so this window never starts, or holds, a different instance (Task 27).
         if self.launch.instance.is_some_and(|pinned| pinned != cfg.id) {
             let wrong = crate::screens::instances::copy::ERROR_WRONG_INSTANCE;
             return self.show_sign_in(Some(wrong.into()), window, cx);
         }
+        // Re-review round 2, C: a Sign out's wipe of this instance still waits for its old client (whose store is
+        // open): no start of it, the auto-start of a reopened window included. The sign-in says why, until the wipe
+        // ends.
+        if crate::windows::wipe_pending(cx, cfg.id) {
+            return self.wait_for_wipe(cfg.id, window, cx);
+        }
+        // A wipe that waits for an older client of this instance deletes nothing once it starts again (re-review C).
+        crate::windows::note_start(cx, cfg.id);
         self.instance = Some(cfg.id);
         // A window opened again on an instance whose client kept running shows that client (windows.rs).
         if let Some(client) = crate::windows::running_client(cx, cfg.id) {
@@ -813,6 +819,11 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
+        // Re-review round 2, C: a Sign out's wipe is pending from now until it ends: a start of the instance (a sign-in,
+        // or a reopened window's auto-start) is refused meanwhile. The pending flag, the start count and the decision
+        // to delete live on the App, never on this window: the wipe ends, and the flag clears, though the window
+        // closed while it waited.
+        let generation = (how == Wipe::SignedOut).then(|| crate::windows::wipe_begin(cx, cfg.id));
         cx.spawn_in(window, async move |this, cx| {
             // A call this device is in is left first (Task 17; review M3: a Sign out too): its media and its
             // self-Remove go before the session and the store do. After a Sign out the engine may already be stopped:
@@ -826,10 +837,14 @@ impl AppView {
             }
             // Every view that held the client goes first; then the last handle stops it and the wipe waits for the
             // store to close.
-            let _ = this.update(cx, |this, cx| {
+            let released = this.update(cx, |this, cx| {
                 this.release(&client, cx);
                 cx.notify();
             });
+            // The window went meanwhile (its views with it): every other holder still lets go.
+            if released.is_err() {
+                gpui::AsyncApp::update(cx, |cx| crate::release::release_client(&client, cx));
+            }
             let mut client = client;
             let mut frames = 0;
             let owned = loop {
@@ -846,11 +861,27 @@ impl AppView {
                 }
             };
             let store = || crate::strings::tf("factor.error.other", &[("code", "E_FORGET_STORE")]);
+            let id = cfg.id;
+            // The pending wipe's end, and whether it may still delete: on the App, whether or not the window lives.
+            let may_delete = |cx: &gpui::AsyncWindowContext, generation: u64| {
+                gpui::AsyncApp::update(cx, |cx| crate::windows::wipe_may_delete(cx, id, generation))
+            };
+            let wipe_end = |cx: &gpui::AsyncWindowContext| {
+                gpui::AsyncApp::update(cx, |cx| crate::windows::wipe_end(cx, id))
+            };
             match owned {
                 Ok(owned) => {
-                    let result =
+                    // Defence in depth: a client of the instance that started meanwhile keeps its store.
+                    let result = if generation.is_none_or(|g| may_delete(cx, g)) {
                         crate::screens::factor::close_and_wipe(owned, cfg.clone(), root, keychain)
-                            .await;
+                            .await
+                    } else {
+                        drop(owned);
+                        Err(store())
+                    };
+                    if generation.is_some() {
+                        wipe_end(cx);
+                    }
                     let _ = this.update_in(cx, |this, window, cx| match result {
                         Ok(()) => this.show_sign_in(None, window, cx),
                         // Never a halted client: it starts again on the forced screen, which says why and can retry
@@ -869,15 +900,12 @@ impl AppView {
                 // the sign-in's note goes. The halted client sends nothing meanwhile.
                 Err(shared) if how == Wipe::SignedOut => {
                     shared.halt();
-                    // Re-review C: until this wipe ends, a sign-in for the instance is refused (its old store is
-                    // still open), and a start of it after now means this wipe deletes nothing.
-                    let generation = this
-                        .update_in(cx, |this, window, cx| {
-                            let generation = crate::windows::wipe_begin(cx, cfg.id);
-                            this.show_sign_in(Some(store()), window, cx);
-                            generation
-                        })
-                        .unwrap_or(0);
+                    // Re-review C: until this wipe ends (its flag was set when it began), a start of the instance is
+                    // refused (its old store is still open), and a start of it after the wipe began means it deletes
+                    // nothing. The window may close meanwhile: the wipe goes on without it.
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.show_sign_in(Some(store()), window, cx);
+                    });
                     let mut client = shared;
                     let owned = loop {
                         match Rc::try_unwrap(client) {
@@ -892,20 +920,15 @@ impl AppView {
                     };
                     // Defence in depth: a client of the instance runs, starts or started since this wipe began (a new
                     // session on the same data dir): the old client just goes, nothing is deleted.
-                    let may_delete = this
-                        .update(cx, |_, cx| {
-                            crate::windows::wipe_may_delete(cx, cfg.id, generation)
-                        })
-                        .unwrap_or(false);
-                    let result = if may_delete {
+                    let result = if generation.is_some_and(|g| may_delete(cx, g)) {
                         crate::screens::factor::close_and_wipe(owned, cfg.clone(), root, keychain)
                             .await
                     } else {
                         drop(owned);
                         Err(store())
                     };
+                    wipe_end(cx);
                     let _ = this.update_in(cx, |this, window, cx| {
-                        crate::windows::wipe_end(cx, cfg.id);
                         if result.is_ok() && this.shows_sign_in_screen() {
                             this.show_sign_in(None, window, cx);
                         }
@@ -950,6 +973,15 @@ impl AppView {
     #[cfg(feature = "test-hooks")]
     pub fn shows_sign_in(&self) -> bool {
         matches!(self.screen, Screen::SignIn(_))
+    }
+
+    /// Automation: the sign-in's banner (an error or a note), while the window shows the sign-in.
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_in_banner(&self, cx: &gpui::App) -> Option<String> {
+        match &self.screen {
+            Screen::SignIn(view) => view.read(cx).banner_text().map(str::to_owned),
+            _ => None,
+        }
     }
 
     /// Automation: what the window shows, by name (`settings` while the host is open, whatever is behind it).
@@ -1019,6 +1051,33 @@ impl AppView {
             return self.show_sign_in(None, window, cx);
         };
         self.wipe(client, cfg, Wipe::SignedOut, window, cx);
+    }
+
+    /// The start of instance `id` was refused while a Sign out's wipe of it is pending: the sign-in says why, and its
+    /// note goes once the wipe ended (from whichever window it ran in, or none).
+    fn wait_for_wipe(&mut self, id: InstanceId, window: &mut Window, cx: &mut Context<Self>) {
+        let store = crate::strings::tf("factor.error.other", &[("code", "E_FORGET_STORE")]);
+        self.show_sign_in(Some(store), window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                let Ok(pending) = this.update(cx, |_, cx| crate::windows::wipe_pending(cx, id))
+                else {
+                    return;
+                };
+                if !pending {
+                    break;
+                }
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.shows_sign_in_screen() {
+                    this.show_sign_in(None, window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn shows_sign_in_screen(&self) -> bool {

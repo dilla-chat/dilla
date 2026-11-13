@@ -369,3 +369,157 @@ fn signing_out_this_device_wipes_its_store_after_the_shell(cx: &mut gpui::TestAp
     assert!(listed.get(cfg.id).is_none(), "the instance is forgotten");
     assert!(ada.kc.get(&account).unwrap().is_none(), "its key is gone");
 }
+
+/// Re-review round 2, C: a Sign out whose old client a leftover holder keeps waits for it; the window closes and the
+/// instance opens again from the manager. The reopened window does not start the instance on the old store (its
+/// auto-start is refused, saying why), and nothing of the store goes while the old client lives. Once the holder lets
+/// go, the wipe completes although its window is gone, the pending flag clears (the reopened sign-in drops its note),
+/// and a sign-in on the instance works.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_pending_wipe_survives_its_window_and_refuses_the_reopened_start(
+    cx: &mut gpui::TestAppContext,
+) {
+    use std::rc::Rc;
+    cx.executor().allow_parking();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("rr2-wipe-reopen", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(
+        &host,
+        &invite,
+        "ada",
+        "Ada",
+        "rr2-wipe-reopen",
+    ));
+    world::community(&host, &ada, "Reopen", &[]);
+    world::clear_session(&ada);
+    let client = rt.block_on(world::start(&ada));
+    rt.block_on(world::wait_for(&client, WAIT, "ada online", |s| {
+        s.connection.status == dilla_client::state::ConnectionStatus::Online
+            && !s.channels.is_empty()
+    }));
+    let probe = client.store_probe();
+    let cfg = ada.cfg.clone();
+    let root = cfg
+        .data_dir
+        .parent()
+        .and_then(|d| d.parent())
+        .unwrap()
+        .to_path_buf();
+    let devices = client.devices();
+    let client = Rc::new(client);
+    // The leftover holder: a handle no release reaches.
+    let leftover = client.clone();
+    cx.update(dilla_desktop::install);
+    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
+    let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
+    launch.shipping = false;
+    launch.instance = Some(cfg.id);
+    let reopen = launch.clone();
+    launch.resume = false;
+    launch.handoff = Some(client);
+    let (app, vcx) =
+        cx.add_window_view(move |window, cx| dilla_desktop::app::AppView::new(launch, window, cx));
+    for _ in 0..5 {
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "shell");
+    let mut answer = devices.sign_out_and_remove(Zeroizing::new(ada.recovery_key.clone()));
+    drop(devices);
+    let id = cfg.id;
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let pending = vcx.update(|_, cx| dilla_desktop::windows::wipe_pending(cx, id));
+        if pending && app.read_with(vcx, |a, _| a.shows_sign_in()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wipe waits for the leftover holder (answer: {:?})",
+            answer.try_recv()
+        );
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The window closes; the instance opens again from the manager (its auto-start).
+    vcx.update(|window, _| window.remove_window());
+    vcx.run_until_parked();
+    cx.update(|cx| {
+        dilla_desktop::windows::open_instance(cx, &reopen, cfg.clone(), None, true)
+            .expect("the instance opens again")
+    });
+    let again = cx
+        .update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|w| w.downcast::<dilla_desktop::app::AppView>())
+                .next_back()
+        })
+        .expect("the reopened window");
+    let store_note =
+        dilla_desktop::strings::tf("factor.error.other", &[("code", "E_FORGET_STORE")]);
+    for _ in 0..10 {
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (screen, banner) = again
+        .update(cx, |a, _, cx| (a.screen_name(), a.sign_in_banner(cx)))
+        .unwrap();
+    assert_eq!(
+        screen, "sign-in",
+        "the reopened window's auto-start is refused"
+    );
+    assert_eq!(banner.as_deref(), Some(store_note.as_str()), "it says why");
+    assert!(
+        cfg.data_dir.exists() && !probe.is_closed(),
+        "the old store is untouched while its client lives"
+    );
+    assert!(cx.update(|cx| dilla_desktop::windows::wipe_pending(cx, id)));
+    // The holder lets go: the wipe completes although its window is gone.
+    drop(leftover);
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let pending = cx.update(|cx| dilla_desktop::windows::wipe_pending(cx, id));
+        let banner = again.update(cx, |a, _, cx| a.sign_in_banner(cx)).unwrap();
+        if probe.is_closed() && !cfg.data_dir.exists() && !pending && banner.is_none() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wipe completes (closed: {}, dir left: {}, pending: {pending}, banner: {banner:?})",
+            probe.is_closed(),
+            cfg.data_dir.exists()
+        );
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // A sign-in on the instance works again: a new device of the account, on a fresh store.
+    let kc = std::sync::Arc::new(dilla_client::keychain::MemoryKeychain::new());
+    let new_cfg = dilla_client::instances::Instances::load(&root)
+        .unwrap()
+        .add(cfg.server.clone())
+        .unwrap();
+    let mut flow = dilla_client::signin::SignIn::new(new_cfg.clone(), kc.clone()).unwrap();
+    rt.block_on(async {
+        flow.login(&ada.username, world::PASSWORD)
+            .await
+            .expect("the password");
+        flow.code(&ada.next_code(&host)).await.expect("the code");
+        flow.add_device(&ada.recovery_key)
+            .await
+            .expect("the recovery key");
+    });
+    drop(flow);
+    let signed_in = dilla_client::Client::start(new_cfg, kc).expect("the new session starts");
+    drop(signed_in);
+}

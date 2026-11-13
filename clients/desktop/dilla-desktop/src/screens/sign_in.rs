@@ -1241,6 +1241,14 @@ impl Drop for SignInView {
     }
 }
 
+impl SignInView {
+    /// Automation: the banner the sign-in shows (an error or a note), if any.
+    #[cfg(feature = "test-hooks")]
+    pub fn banner_text(&self) -> Option<&str> {
+        self.banner.as_ref().map(|(_, text)| text.as_str())
+    }
+}
+
 /// Re-review C: a Sign out's wipe of instance `id` is still pending (its old store is open, and the wipe would delete a
 /// new session's store): the sign-in for it waits, saying so (`E_FORGET_STORE`).
 fn wipe_not_pending(cx: &gpui::App, id: dilla_client::seams::InstanceId) -> Result<(), String> {
