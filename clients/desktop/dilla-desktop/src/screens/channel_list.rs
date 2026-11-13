@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use dilla_client::features::notify::{self, SettingsSource};
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId};
 use gpui::{
     App, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
@@ -72,8 +73,9 @@ pub struct ListModel<'a> {
     pub can_add_in_category: bool,
     /// The categories this device folded (hex ids, `layout.collapsedCategories`).
     pub collapsed: &'a HashSet<String>,
-    /// The channels this device muted (hex ids, `layout.mutedChannels`).
-    pub muted: &'a HashSet<String>,
+    /// The notify settings (Task 22): a muted channel or server (`notify.mute.*`, the account setting the web keeps) hides
+    /// a row's unread count, its mentions still show (`notify::row_counts`).
+    pub settings: &'a dyn SettingsSource,
 }
 
 /// What a click on a channel row does.
@@ -276,6 +278,10 @@ fn row(
     let row = Row::new(row_id(&c.name), c.name.clone(), kind_of(c))
         .active(active)
         .unread(badge.0)
+        .unread_label(tf(
+            "layout.row.new",
+            &[("n", &dilla_desktop_ui::components::badge::capped(badge.0))],
+        ))
         .mentions(badge.1)
         .muted(muted)
         .on_click(move |_: &ClickEvent, window, cx| on_click(id, window, cx));
@@ -555,21 +561,18 @@ pub fn render(
                 model.can_add_in_category,
                 handlers,
             ),
-            Item::Channel(ch) => {
-                let badge = state.unread.get(&ch.id).copied().unwrap_or_default();
-                row(
-                    ch,
-                    i,
-                    &roves,
-                    stop,
-                    model.selected == Some(ch.id),
-                    (badge.unread, badge.mentions),
-                    model.muted.contains(&ch.id.hex()),
-                    handlers,
-                    window,
-                    cx,
-                )
-            }
+            Item::Channel(ch) => row(
+                ch,
+                i,
+                &roves,
+                stop,
+                model.selected == Some(ch.id),
+                notify::row_counts(state, model.settings, ch.id),
+                notify::is_muted(model.settings, ch.id, Some(ch.community_id)),
+                handlers,
+                window,
+                cx,
+            ),
         })
         .collect();
     div()

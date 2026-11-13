@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use chrono::{Datelike, FixedOffset, TimeZone};
 use dilla_client::Client;
+use dilla_client::features::notify;
 use dilla_client::prefs::{LayoutPrefs, Prefs};
 use dilla_client::state::{AppState, ChannelId, CommunityId, ConnectionStatus};
 use gpui::{
@@ -146,9 +147,9 @@ pub struct ShellView {
     prefs: Option<Prefs>,
     /// The pane widths the person chose (`layout.*`), shown clamped to the window.
     widths: LayoutPrefs,
-    /// Hex ids of the folded categories and of the muted channels (`layout.*`).
+    /// Hex ids of the folded categories (`layout.*`). Muted channels are the notify area's account setting
+    /// (`notify.mute.channel.<id>`, Task 22), read from `prefs` on every draw.
     collapsed: HashSet<String>,
-    muted: HashSet<String>,
     drag: Option<Drag>,
     /// The aside that is open beside the main column.
     aside: Option<AsideKind>,
@@ -183,13 +184,10 @@ impl ShellView {
             this.send(text.clone(), cx);
         });
         let prefs = client.as_ref().map(|c| c.prefs());
-        let (widths, collapsed, muted) = match &prefs {
+        let (widths, collapsed) = match &prefs {
             Some(p) => (
                 LayoutPrefs::read(p),
                 LayoutPrefs::ids(p, LayoutPrefs::COLLAPSED)
-                    .into_iter()
-                    .collect(),
-                LayoutPrefs::ids(p, LayoutPrefs::MUTED)
                     .into_iter()
                     .collect(),
             ),
@@ -209,7 +207,6 @@ impl ShellView {
             prefs,
             widths,
             collapsed,
-            muted,
             drag: None,
             aside: None,
             menu: None,
@@ -238,9 +235,6 @@ impl ShellView {
     pub fn with_prefs(mut self, prefs: Prefs) -> Self {
         self.widths = LayoutPrefs::read(&prefs);
         self.collapsed = LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED)
-            .into_iter()
-            .collect();
-        self.muted = LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED)
             .into_iter()
             .collect();
         self.prefs = Some(prefs);
@@ -557,8 +551,15 @@ impl ShellView {
         cx.notify();
     }
 
+    /// The notify settings the rows and the menu read (Task 22): the instance's preferences, or none for a fixture.
+    fn channel_muted(&self, channel: ChannelId) -> bool {
+        self.prefs
+            .as_ref()
+            .is_some_and(|p| notify::is_muted(p, channel, None))
+    }
+
     fn menu_items(&self, channel: ChannelId) -> Vec<MenuItem> {
-        let muted = self.muted.contains(&channel.hex());
+        let muted = self.channel_muted(channel);
         vec![
             MenuItem::new("read", MARK_READ),
             MenuItem::new("mute", t("notify.mute")).check(muted),
@@ -578,16 +579,23 @@ impl ShellView {
                 }
             }
             "mute" => {
-                let on = !self.muted.contains(&channel.hex());
-                if on {
-                    self.muted.insert(channel.hex());
-                } else {
-                    self.muted.remove(&channel.hex());
-                }
-                if let Some(prefs) = &self.prefs {
+                // The account setting the web's channel menu writes (Task 22's `set_channel_muted`), not a layout key.
+                let on = !self.channel_muted(channel);
+                if let Some(client) = &self.client {
                     warn(
                         "the muted channels",
-                        LayoutPrefs::set_id(prefs, LayoutPrefs::MUTED, &channel.hex(), on),
+                        client.notify().set_channel_muted(channel, on),
+                    );
+                } else if let Some(prefs) = &self.prefs {
+                    // A shell without a client (tests): the same key in the same preferences.
+                    let key = notify::key_channel_mute(channel);
+                    warn(
+                        "the muted channels",
+                        if on {
+                            prefs.set(&key, &"1".to_owned())
+                        } else {
+                            prefs.remove(&key)
+                        },
                     );
                 }
             }
@@ -696,12 +704,24 @@ impl Render for ShellView {
         let on_home = Rc::new(move |_: &mut Window, cx: &mut gpui::App| {
             let _ = weak.update(cx, |shell, cx| shell.navigate(Route::Dms, cx));
         });
+        let no_settings = std::collections::HashMap::<String, String>::new();
+        let settings: &dyn notify::SettingsSource = match &self.prefs {
+            Some(p) => p,
+            None => &no_settings,
+        };
+        // The rail's sums hide the unread of muted channels and servers (Task 22's `is_muted`).
+        let muted: HashSet<String> = state
+            .channels
+            .iter()
+            .filter(|c| notify::is_muted(settings, c.id, Some(c.community_id)))
+            .map(|c| c.id.hex())
+            .collect();
         let rail_view = rail::render(
             &rail::RailModel {
                 state: &state,
                 selected: self.community,
                 home_selected: matches!(self.route(), Route::Dms | Route::Dm(_)),
-                muted: &self.muted,
+                muted: &muted,
             },
             &rail::RailHandlers {
                 on_pick,
@@ -756,7 +776,7 @@ impl Render for ShellView {
                 can_add: owner && !has_categories,
                 can_add_in_category: owner && has_categories,
                 collapsed: &self.collapsed,
-                muted: &self.muted,
+                settings,
             },
             &handlers,
             window,
@@ -1188,23 +1208,22 @@ mod tests {
         shell.update(vcx, |s, cx| {
             s.toggle_category(ChannelId([4; 16]), cx);
             s.choose(ChannelId([3; 16]), "mute", cx);
-            assert!(s.muted.contains(&ChannelId([3; 16]).hex()));
+            assert!(s.channel_muted(ChannelId([3; 16])));
         });
         let prefs = Prefs::instance(&dir);
         assert_eq!(
             LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED),
             [ChannelId([4; 16]).hex()]
         );
-        assert_eq!(
-            LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED),
-            [ChannelId([3; 16]).hex()]
-        );
+        // The mute is the notify area's account setting (Task 22), not a layout key.
+        assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED).is_empty());
+        assert!(notify::is_muted(&prefs, ChannelId([3; 16]), None));
         shell.update(vcx, |s, cx| {
             s.choose(ChannelId([3; 16]), "mute", cx);
             s.toggle_category(ChannelId([4; 16]), cx);
         });
         let prefs = Prefs::instance(&dir);
-        assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED).is_empty());
+        assert!(!notify::is_muted(&prefs, ChannelId([3; 16]), None));
         assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

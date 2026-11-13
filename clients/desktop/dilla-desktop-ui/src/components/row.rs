@@ -49,6 +49,9 @@ pub struct Row {
     kind: RowKind,
     active: bool,
     unread: u32,
+    /// The unread pill's text (ChannelRow.tsx `layout.row.new`, "{n} new"); the ui crate has no strings, so the caller
+    /// passes it in. Without it the pill shows the bare count.
+    unread_label: Option<SharedString>,
     mentions: u32,
     muted: bool,
     private: bool,
@@ -64,6 +67,7 @@ impl Row {
             kind,
             active: false,
             unread: 0,
+            unread_label: None,
             mentions: 0,
             muted: false,
             private: false,
@@ -85,6 +89,12 @@ impl Row {
 
     pub fn unread(mut self, unread: u32) -> Self {
         self.unread = unread;
+        self
+    }
+
+    /// The unread pill's text ("{n} new"), drawn when the row shows its unread count.
+    pub fn unread_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.unread_label = Some(label.into());
         self
     }
 
@@ -215,7 +225,11 @@ impl RenderOnce for Row {
                     .in_row(),
             )
         } else if unread > 0 {
-            slot.child(Badge::new((id, "badge"), BadgeKind::Unread, unread).in_row())
+            let badge = Badge::new((id, "badge"), BadgeKind::Unread, unread).in_row();
+            slot.child(match self.unread_label {
+                Some(label) => badge.text(label),
+                None => badge,
+            })
         } else {
             slot
         });
