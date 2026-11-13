@@ -62,8 +62,8 @@ parity_tests! {
 parity_after_t6c! {
     parity_server_settings_channels => "channels", "parity after T6c: chrome 0.2229 % (the rows' icon glyphs are drawn one device pixel off the web's)",
     parity_server_settings_channels_b => "channels-b", "parity after T6c: whole frame 0.6982 % (the parity world makes the channels without the fixture's positions, so the reference lists them by channel id: qa, dev, design; Archive before Voice; needs the seed to set positions and a re-shoot)",
-    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.2690 %",
-    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.7017 %",
+    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.4395 % (the permissions now load; left: the GPUI editor has no Bot channel switch (dilla-client keeps no Bot channels), and the web's dialog sits 14px from the top, centred in the window, GPUI's at 12vh in the pane)",
+    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.8456 % (as channel-permissions)",
 }
 
 parity_tests! {

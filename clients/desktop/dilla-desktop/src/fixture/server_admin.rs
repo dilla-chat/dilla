@@ -7,7 +7,7 @@
 
 use dilla_client::features::server_admin::{AFK_BUILTIN_POSITION, AFK_DEFAULT_TIMEOUT, access_of};
 use dilla_client::state::AppState;
-use dilla_client::state::server_admin::AfkSettings;
+use dilla_client::state::server_admin::{AdminRole, AfkSettings};
 use dilla_client::testing::spec::WorldSpec;
 
 /// Maps the facet into `state`.
@@ -17,8 +17,36 @@ pub(super) fn apply(_world: &WorldSpec, _viewer: &str, state: &mut AppState) {
     for community in communities {
         let owner = Some(community.owner) == account;
         let mut access = access_of(u64::from(super::roles::EVERYONE_DEFAULT), 0, owner);
+        // The roles facet (applied before this one) made the server's roles; a new server's channels have no
+        // overwrites. With both read the channel editor shows its permissions as the web's does, not an unread error.
+        access.everyone = state
+            .roles
+            .access
+            .get(&community.id)
+            .and_then(|a| a.everyone_id);
         access.overwrites_loaded = true;
         state.server_admin.access.insert(community.id, access);
+        let roles = state
+            .roles
+            .roles
+            .get(&community.id)
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| AdminRole {
+                        id: r.id,
+                        name: r.name.clone(),
+                        position: u64::from(r.position),
+                        allow: r.allow,
+                        deny: r.deny,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        state.server_admin.roles.insert(community.id, roles);
+        state
+            .server_admin
+            .overwrites
+            .insert(community.id, Vec::new());
         let channel = state
             .channels
             .iter()
