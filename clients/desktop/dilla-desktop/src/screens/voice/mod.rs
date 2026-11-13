@@ -949,6 +949,11 @@ pub fn ptt_sending(window: WindowId, cx: &App) -> bool {
     })
 }
 
+/// Whether `window`'s call is on (joining or in it).
+pub fn call_live(window: WindowId, cx: &App) -> bool {
+    ui_of(window, cx).is_some_and(in_a_call)
+}
+
 /// Lets go of push to talk in `window` at once (review I1): the screen left the shell, the window lost the focus or
 /// closed, or the call ended. The microphone closes; idempotent.
 pub fn release_ptt(window: WindowId, cx: &mut App) {

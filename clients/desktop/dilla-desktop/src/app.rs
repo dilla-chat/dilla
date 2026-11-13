@@ -1234,7 +1234,8 @@ impl Render for AppView {
         }
         // The window's outermost element carries push to talk's keys: it is on every key's dispatch path (it takes the
         // focus itself when nothing holds it).
-        if window.focused(cx).is_none() {
+        // Only while this window's call is on, where push to talk can matter (a capture rests with no focus otherwise).
+        if window.focused(cx).is_none() && crate::screens::voice::call_live(w, cx) {
             window.focus(&self.root_focus, cx);
         }
         crate::screens::voice::ptt_keys(
