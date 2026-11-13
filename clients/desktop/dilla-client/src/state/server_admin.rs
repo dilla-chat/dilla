@@ -36,6 +36,9 @@ pub struct AdminRole {
     pub id: [u8; 16],
     pub name: String,
     pub position: u64,
+    /// The role's community-wide grant and refusal (26 bits).
+    pub allow: u32,
+    pub deny: u32,
 }
 
 /// The id of an invite.

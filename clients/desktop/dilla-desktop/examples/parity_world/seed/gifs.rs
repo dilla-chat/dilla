@@ -39,7 +39,10 @@ pub(super) async fn seed(f: &ScreenFixture, people: &[(String, Person)]) {
         .id;
     let admin = client.server_admin();
     admin
-        .set_gif_key(community, "fixtureKey1234567")
+        .set_gif_key(
+            community,
+            zeroize::Zeroizing::new("fixtureKey1234567".to_owned()),
+        )
         .wait()
         .await
         .expect("the key is set");

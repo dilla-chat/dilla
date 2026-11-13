@@ -4,8 +4,8 @@ use dilla_client::features::server_admin::{AFK_TIMEOUTS, Direction, SLOW_STEPS, 
 use dilla_client::state::Channel;
 use dilla_client::state::server_admin::GifRating;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window,
-    div, prelude::FluentBuilder as _,
+    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _,
 };
 
 use dilla_desktop_ui::IconName;
@@ -16,6 +16,9 @@ use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::segmented::Segmented;
 use dilla_desktop_ui::components::select::Select;
 use dilla_desktop_ui::components::server_settings::layout;
+use dilla_desktop_ui::components::server_settings::permission_grid::{
+    GridGroup, GridRow, PermissionGrid,
+};
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, SettingsRow};
 use dilla_desktop_ui::components::text_field::TextField;
@@ -312,7 +315,7 @@ impl Body {
 
     pub(super) fn channels_section(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let afk = self.afk_channel();
@@ -325,7 +328,7 @@ impl Body {
         out.push(
             div()
                 .flex()
-                .pb(layout::GROUP_GAP)
+                .pb(layout::SECTION_GAP)
                 .child(
                     Button::new("new-category", t("admin.channels.newCategory")).on_click(
                         act_click(cx, |this, _, cx| {
@@ -349,13 +352,14 @@ impl Body {
             let mut head = div()
                 .flex()
                 .items_center()
-                .gap(layout::ROW_GAP)
+                .gap(layout::INVITE_GAP)
                 .h(layout::HEAD_H)
+                .pr(layout::LIST_PAD_X)
                 .mb(layout::HEAD_GAP)
                 .child(
                     div().flex_1().min_w_0().child(
                         line(head_name, text::SM, line_height(text::SM, 1.5), color::FG)
-                            .weight(font::WEIGHT_LABEL)
+                            .weight(font::WEIGHT_DISPLAY)
                             .ellipsis(),
                     ),
                 );
@@ -387,7 +391,7 @@ impl Body {
                 let mut row = div()
                     .flex()
                     .items_center()
-                    .gap(layout::ROW_GAP)
+                    .gap(layout::INVITE_GAP)
                     .h(layout::LIST_ROW_H)
                     .px(layout::LIST_PAD_X)
                     .border_color(color::HAIRLINE)
@@ -414,7 +418,7 @@ impl Body {
             }
             out.push(block.into_any_element());
         }
-        out.push(self.edit_dialog(cx));
+        out.push(self.edit_dialog(window, cx));
         out.push(self.delete_dialog(cx));
         out.push(self.category_dialog(cx));
         out.push(self.private_dialog(cx));
@@ -503,7 +507,7 @@ impl Body {
             .into_any_element()
     }
 
-    fn edit_dialog(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn edit_dialog(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Dialogue::Edit(channel_id) = self.dialogue else {
             return div().into_any_element();
         };
@@ -610,8 +614,16 @@ impl Body {
         .on_click(act_click(cx, move |this, window, cx| {
             this.save_edit(channel_id, window, cx)
         }));
+        // The panel is anchored under the top and capped; what does not fit scrolls inside (`.d-dialog` max-height).
+        let cap = layout::dialog_body_cap(f32::from(window.viewport_size().height));
+        let body = div()
+            .id("edit-channel-body")
+            .max_h(cap)
+            .overflow_y_scroll()
+            .child(body);
         Dialog::new("edit-channel", title, t("admin.cancel"))
             .kind(DialogKind::Form)
+            .show_default_close(false)
             .body(body)
             .footer(footer_cancel)
             .footer(save)
@@ -619,79 +631,279 @@ impl Body {
             .into_any_element()
     }
 
-    /// ChannelPermissions.tsx, narrowed to what a channel's own settings show: the private switch and who has settings of
-    /// their own here. The tri-state grid of each entry is the roles area's (Task 14) to draw.
+    /// ChannelPermissions.tsx: the private switch, who has settings of their own here (each a disclosure over a tri-state grid
+    /// of the channel's rights, rank-gated), and the Add select. While the overwrites are unknown nothing is called public.
     fn permissions_panel(&self, c: &Channel, cx: &Context<Self>) -> AnyElement {
+        use dilla_client::features::server_admin::{
+            PERM_GROUPS, PermContext, Tri, add_options, channel_grid_bits, my_channel_bits,
+            perm_entries, tri_of,
+        };
         let access = self.access();
         let id = c.id;
-        let rows = self
-            .state
-            .server_admin
-            .overwrites
-            .get(&self.community)
-            .cloned()
-            .unwrap_or_default();
-        let private = access.everyone.is_some_and(|e| is_private(&rows, c.id, e));
-        let mut panel = div().flex().flex_col().gap(layout::ROW_GAP).child(
+        let heading = || {
             line(
                 t("chperm.title"),
                 text::SM,
                 line_height(text::SM, 1.5),
                 color::FG,
             )
+            .weight(font::WEIGHT_LABEL)
+        };
+        let (Some(everyone), true) = (access.everyone, access.overwrites_loaded) else {
+            return div()
+                .flex()
+                .flex_col()
+                .gap(layout::ROW_GAP)
+                .child(heading())
+                .child(alert(t("chperm.error.unread")))
+                .into_any_element();
+        };
+        let all_rows = self
+            .state
+            .server_admin
+            .overwrites
+            .get(&self.community)
+            .cloned()
+            .unwrap_or_default();
+        let mine: Vec<_> = all_rows
+            .iter()
+            .filter(|o| o.channel == c.id)
+            .copied()
+            .collect();
+        let roles = self
+            .state
+            .server_admin
+            .roles
+            .get(&self.community)
+            .cloned()
+            .unwrap_or_default();
+        let members = self
+            .state
+            .members
+            .get(&self.community)
+            .cloned()
+            .unwrap_or_default();
+        let community_owner = self
+            .state
+            .communities
+            .iter()
+            .find(|x| x.id == self.community)
+            .map(|x| x.owner);
+        let me = self.state.account.user_id;
+        let (Some(community_owner), Some(me)) = (community_owner, me) else {
+            return div().child(heading()).into_any_element();
+        };
+        let ctx = PermContext {
+            everyone,
+            owner: access.owner,
+            top: access.top,
+            community_owner,
+            me,
+            roles: &roles,
+            members: &members,
+        };
+        let entries = perm_entries(&mine, &self.perm_added, &ctx);
+        let options = add_options(&entries, &ctx);
+        let my_bits = my_channel_bits(&mine, &ctx);
+        let private = dilla_client::features::server_admin::is_private(&mine, c.id, everyone);
+        let label_of = |name: &str, is_everyone: bool| {
+            if is_everyone {
+                t("chperm.everyone").to_owned()
+            } else {
+                name.to_owned()
+            }
+        };
+
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap(layout::ROW_GAP)
+            .child(heading());
+        panel = panel.child(
+            Toggle::new("channel-private", t("chperm.private"), private)
+                .show_label(true)
+                .hint(t("chperm.privateHint"))
+                .disabled(self.dialogue_busy)
+                .on_change(act_bool(cx, move |this, on, cx| {
+                    this.dialogue = Dialogue::PrivateAsk(id, on);
+                    this.dialogue_error = None;
+                    cx.notify();
+                })),
+        );
+        panel = panel.child(
+            line(
+                t("chperm.who"),
+                text::SM,
+                line_height(text::SM, 1.5),
+                color::FG,
+            )
             .weight(font::WEIGHT_LABEL),
         );
-        if access.overwrites_loaded {
-            panel = panel.child(
-                Toggle::new("channel-private", t("chperm.private"), private)
-                    .hint(t("chperm.privateHint"))
-                    .disabled(self.dialogue_busy)
-                    .on_change(act_bool(cx, move |this, on, cx| {
-                        this.dialogue = Dialogue::PrivateAsk(id, on);
-                        this.dialogue_error = None;
-                        cx.notify();
-                    })),
-            );
-        } else {
-            panel = panel.child(alert(t("chperm.error.unread")));
-        }
-        let entries: Vec<&dilla_client::state::server_admin::Overwrite> =
-            rows.iter().filter(|o| o.channel == c.id).collect();
         if entries.is_empty() {
             panel = panel.child(dim(t("chperm.none")));
-        } else {
-            panel = panel.child(line(
-                t("chperm.who"),
-                text::XS,
-                line_height(text::XS, 1.5),
-                color::FG_3,
-            ));
-            for o in entries {
-                let name = if o.kind == 0 {
-                    if Some(o.target) == access.everyone {
-                        t("chperm.everyone").to_owned()
-                    } else {
-                        self.state
-                            .server_admin
-                            .roles
-                            .get(&self.community)
-                            .and_then(|rs| rs.iter().find(|r| r.id == o.target))
-                            .map_or_else(String::new, |r| r.name.clone())
-                    }
-                } else {
-                    self.state
-                        .members
-                        .get(&self.community)
-                        .and_then(|ms| ms.iter().find(|m| m.user_id.0 == o.target))
-                        .map_or_else(|| t("admin.member.former").to_owned(), shown_name)
-                };
-                panel = panel.child(line(
-                    name,
-                    text::SM,
-                    line_height(text::SM, 1.5),
-                    color::FG_2,
-                ));
+        }
+        for entry in &entries {
+            let key = (entry.kind, entry.target);
+            let shown = self.perm_open == Some(key);
+            let name = label_of(&entry.name, entry.is_everyone);
+            let suffix = format!(
+                "{}-{}",
+                entry.kind,
+                dilla_client::features::server_admin::hex_id(&entry.target)
+            );
+            let mut head = div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(layout::ROW_GAP)
+                .child(
+                    Button::new(
+                        SharedString::from(format!("perm-entry-{suffix}")),
+                        if entry.kind == 1 {
+                            format!("{name} {}", t("chperm.member"))
+                        } else {
+                            name.clone()
+                        },
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .pressed(shown)
+                    .on_click(act_click(cx, move |this, _, cx| {
+                        this.perm_open = if this.perm_open == Some(key) {
+                            None
+                        } else {
+                            Some(key)
+                        };
+                        cx.notify();
+                    })),
+                );
+            if !entry.is_everyone {
+                head = head.child(
+                    Button::new(
+                        SharedString::from(format!("perm-remove-{suffix}")),
+                        t("chperm.remove"),
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(!entry.editable || self.perm_busy)
+                    .on_click(act_click(cx, move |this, window, cx| {
+                        this.perm_remove(id, key, window, cx)
+                    })),
+                );
             }
+            panel = panel.child(head);
+            if shown {
+                let groups: Vec<GridGroup> = PERM_GROUPS
+                    .iter()
+                    .map(|(group, keys)| GridGroup {
+                        title: t(&format!("perm.group.{group}")).into(),
+                        rows: keys
+                            .iter()
+                            .filter(|(_, bit)| channel_grid_bits(*bit))
+                            .map(|(k, bit)| GridRow {
+                                id: SharedString::from((*bit).to_string()),
+                                label: t(&format!("perm.{k}")).into(),
+                                hint: t(&format!("perm.{k}.hint")).into(),
+                                value: tri_of(entry.allow, entry.deny, *bit).wire(),
+                                disabled: !entry.editable || my_bits.is_some_and(|b| b & *bit == 0),
+                            })
+                            .collect(),
+                    })
+                    .filter(|g| !g.rows.is_empty())
+                    .collect();
+                panel = panel.child(
+                    PermissionGrid::new(
+                        SharedString::from(format!("perm-grid-{suffix}")),
+                        groups,
+                        [
+                            t("perm.allow").into(),
+                            t("perm.inherit").into(),
+                            t("perm.deny").into(),
+                        ],
+                    )
+                    .on_change({
+                        let view = cx.entity().downgrade();
+                        move |bit: &str, value: &str, window: &mut Window, app: &mut App| {
+                            let (Ok(bit), Some(value)) =
+                                (bit.parse::<u32>(), Tri::from_wire(value))
+                            else {
+                                return;
+                            };
+                            let _ = view.update(app, |this, cx| {
+                                this.perm_change(id, key, bit, value, window, cx)
+                            });
+                        }
+                    }),
+                );
+            }
+        }
+        if !options.is_empty() {
+            let picked = self
+                .perm_choice
+                .filter(|c| options.iter().any(|o| (o.kind, o.target) == *c))
+                .or_else(|| options.first().map(|o| (o.kind, o.target)));
+            let labels: Vec<(String, String)> = options
+                .iter()
+                .map(|o| {
+                    (
+                        format!(
+                            "{}:{}",
+                            o.kind,
+                            dilla_client::features::server_admin::hex_id(&o.target)
+                        ),
+                        label_of(&o.label, o.is_everyone),
+                    )
+                })
+                .collect();
+            let pairs: Vec<(&str, &str)> = labels
+                .iter()
+                .map(|(v, l)| (v.as_str(), l.as_str()))
+                .collect();
+            let current = picked
+                .map(|(k, t)| format!("{k}:{}", dilla_client::features::server_admin::hex_id(&t)))
+                .unwrap_or_default();
+            panel = panel.child(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap(layout::ROW_GAP)
+                    .child(
+                        Select::new("perm-add", t("chperm.addLabel"), &pairs, current).on_change(
+                            act_value(cx, |this, value, _w, cx| {
+                                let mut parts = value.splitn(2, ':');
+                                if let (Some(kind), Some(hex)) = (parts.next(), parts.next())
+                                    && let (Ok(kind), Some(target)) = (
+                                        kind.parse::<u8>(),
+                                        dilla_client::features::server_admin::unhex_id(hex),
+                                    )
+                                {
+                                    this.perm_choice = Some((kind, target));
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Button::new("perm-add-button", t("chperm.add"))
+                            .variant(ButtonVariant::Ghost)
+                            .on_click(act_click(cx, move |this, _, cx| {
+                                let first = options.first().map(|o| (o.kind, o.target));
+                                if let Some(entry) = this
+                                    .perm_choice
+                                    .filter(|c| options.iter().any(|o| (o.kind, o.target) == *c))
+                                    .or(first)
+                                {
+                                    if !this.perm_added.contains(&entry) {
+                                        this.perm_added.push(entry);
+                                    }
+                                    this.perm_open = Some(entry);
+                                    this.perm_choice = None;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+        if let Some(e) = &self.perm_error {
+            panel = panel.child(alert(e.clone()));
         }
         panel.into_any_element()
     }
@@ -1012,11 +1224,11 @@ impl Body {
             div()
                 .flex()
                 .flex_col()
-                .gap(layout::ROW_GAP)
+                .gap(layout::LABEL_GAP)
                 .child(line(
                     label.to_owned(),
-                    text::SM,
-                    line_height(text::SM, 1.5),
+                    text::XS,
+                    line_height(text::XS, 1.5),
                     color::FG_2,
                 ))
                 .child(control)
@@ -1032,7 +1244,8 @@ impl Body {
             .child(
                 div()
                     .flex()
-                    .gap(layout::HEADING_TOP)
+                    .flex_wrap()
+                    .gap(layout::CHOICE_GAP)
                     .child(choice(
                         t("serverSettings.invites.expires"),
                         Segmented::new("invite-ttl", &ttl_pairs, ttl.to_string())
@@ -1061,7 +1274,7 @@ impl Body {
         }
         if self.made.is_none() {
             panel = panel.child(
-                div().child(
+                div().flex().child(
                     Button::new(
                         "invite-make",
                         if self.making {
@@ -1151,71 +1364,79 @@ impl Body {
         } else {
             invites
         };
-        let n = shown.len();
-        for (i, invite) in shown.into_iter().enumerate() {
-            let host = if self.state.server_admin.host.is_empty() {
-                self.host.clone()
-            } else {
-                self.state.server_admin.host.clone()
-            };
-            let texts = model::invite_texts(&invite, &host, now);
-            let maker = match invite.created_by {
-                None => t("admin.bans.unknownUser").to_owned(),
-                Some(u) => members
-                    .as_ref()
-                    .and_then(|ms| ms.iter().find(|m| m.user_id == u))
-                    .map_or_else(|| t("admin.member.former").to_owned(), shown_name),
-            };
-            let date = if invite.expires == 0 {
-                t("serverSettings.invites.ttl.never").to_owned()
-            } else {
-                model::in_time(invite.expires, now)
-            };
-            let may_revoke = manager || (me.is_some() && invite.created_by == me);
-            let id = invite.id;
-            let mut row = div()
+        // The live links are one rounded card of 48px rows (`.d-invite-panel__list`): the masked code, then uses and
+        // expiry at a fixed width each (the expiry wraps inside it), then Revoke.
+        let host = if self.state.server_admin.host.is_empty() {
+            self.host.clone()
+        } else {
+            self.state.server_admin.host.clone()
+        };
+        if !shown.is_empty() {
+            let mut card = div()
                 .flex()
-                .items_center()
-                .gap(layout::INVITE_GAP)
-                .px(layout::INVITE_PAD_X)
-                .py(layout::FIELD_GAP)
+                .flex_col()
+                .border_1()
                 .border_color(color::HAIRLINE)
-                .border_t_1()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            line(texts.code, text::SM, line_height(text::SM, 1.4), color::FG)
-                                .weight(font::WEIGHT_LABEL),
-                        )
-                        .child(line(
-                            format!("{} · {}", texts.uses, texts.expires),
-                            text::XS,
-                            line_height(text::XS, 1.4),
-                            color::FG_2,
-                        )),
-                );
-            if i + 1 == n {
-                row = row.border_b_1();
-            }
-            if may_revoke {
-                let _ = (&maker, &date);
-                row = row.child(
-                    Button::new(
-                        SharedString::from(format!("revoke-{}", id.hex())),
-                        t("serverSettings.invites.revoke"),
+                .rounded(radius::XL)
+                .overflow_hidden();
+            for (i, invite) in shown.into_iter().enumerate() {
+                let texts = model::invite_texts(&invite, &host, now);
+                let may_revoke = manager || (me.is_some() && invite.created_by == me);
+                let id = invite.id;
+                let meta_width = layout::INVITE_META_W;
+                let mut row = div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(layout::FIELD_GAP)
+                    .min_h(layout::LIST_ROW_H)
+                    .px(layout::INVITE_PAD_X)
+                    .py(layout::ROW_GAP)
+                    .border_color(color::HAIRLINE)
+                    .when(i > 0, |r| r.border_t_1())
+                    .child(
+                        div()
+                            .flex_auto()
+                            .w(layout::INVITE_CODE_BASIS)
+                            .min_w_0()
+                            .child(line(
+                                texts.code,
+                                text::UI,
+                                line_height(text::UI, 1.5),
+                                color::FG,
+                            )),
                     )
-                    .variant(ButtonVariant::Danger)
-                    .disabled(self.busy_invite.is_some())
-                    .on_click(act_click(cx, move |this, window, cx| {
-                        this.revoke_invite(id, window, cx)
-                    })),
-                );
+                    .child(div().w(meta_width).child(line(
+                        texts.uses,
+                        text::XS,
+                        line_height(text::XS, 1.5),
+                        color::FG_2,
+                    )))
+                    .child(div().w(meta_width).flex().flex_col().children(
+                        dilla_desktop_ui::text::paragraph(
+                            &texts.expires,
+                            text::XS,
+                            line_height(text::XS, 1.5),
+                            color::FG_2,
+                            f32::from(meta_width),
+                        ),
+                    ));
+                if may_revoke {
+                    row = row.child(
+                        Button::new(
+                            SharedString::from(format!("revoke-{}", id.hex())),
+                            t("serverSettings.invites.revoke"),
+                        )
+                        .variant(ButtonVariant::Danger)
+                        .disabled(self.busy_invite.is_some())
+                        .on_click(act_click(cx, move |this, window, cx| {
+                            this.revoke_invite(id, window, cx)
+                        })),
+                    );
+                }
+                card = card.child(row);
             }
-            out.push(row.into_any_element());
+            out.push(card.into_any_element());
         }
         out
     }

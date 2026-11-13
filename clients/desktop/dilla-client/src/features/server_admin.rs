@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use unicode_normalization::UnicodeNormalization;
+use zeroize::Zeroizing;
 
 use crate::client::{Client, ClientError, Inner};
 use crate::gateway::frames::Value;
@@ -170,6 +171,8 @@ pub fn decode_roles(raw: &[u8]) -> Result<Vec<AdminRole>, DecodeError> {
                 id: bin16(&a[0])?,
                 name: text(&a[1])?,
                 position: u53(&a[3])?,
+                allow: a.get(4).map_or(Ok(0), bits)?,
+                deny: a.get(5).map_or(Ok(0), bits)?,
             })
         })
         .collect()
@@ -247,6 +250,23 @@ impl From<DecodeError> for AdminError {
     fn from(_: DecodeError) -> Self {
         Self::local("E_DECODE")
     }
+}
+
+/// The request body of `PUT /gifs/key`, `[key]`, written straight into a buffer that wipes itself: a one-element CBOR array
+/// holding the key as a text string (the same bytes as `Value::encode`, which would copy the key through a plain `String`).
+pub fn gif_key_body(key: &str) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(key.len() + 4));
+    out.push(0x81);
+    match key.len() {
+        n @ 0..=23 => out.push(0x60 | n as u8),
+        n @ 24..=255 => out.extend_from_slice(&[0x78, n as u8]),
+        n => {
+            out.push(0x79);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(key.as_bytes());
+    out
 }
 
 /// routes.ts `GIF_KEY`: a Giphy key is 8 to 64 letters and digits.
@@ -522,6 +542,411 @@ pub fn decode_welcome(data: &[u8]) -> Result<Option<WelcomeSettings>, WelcomeErr
     // Keep rendering inputs within the same bounds accepted by the service.
     encode_welcome(&config)?;
     Ok(Some(config))
+}
+
+/// perm.ts `PERM_GROUPS`: the grid's groups (`perm.group.<id>`) and, in order, each right's key (`perm.<key>`) and bit.
+pub const PERM_GROUPS: [(&str, &[(&str, u32)]); 5] = [
+    (
+        "general",
+        &[
+            ("view", perm::VIEW_CHANNEL),
+            ("manageChannels", perm::MANAGE_CHANNELS),
+            ("manageRoles", perm::MANAGE_ROLES),
+            ("manageServer", perm::MANAGE_COMMUNITY),
+            ("invite", perm::CREATE_INVITE),
+            ("auditLog", perm::VIEW_AUDIT_LOG),
+            ("admin", perm::ADMINISTRATOR),
+        ],
+    ),
+    (
+        "members",
+        &[
+            ("kick", perm::KICK_MEMBERS),
+            ("ban", perm::BAN_MEMBERS),
+            ("nicknames", perm::MANAGE_NICKNAMES),
+            ("moderate", perm::MODERATE_MEMBERS),
+        ],
+    ),
+    (
+        "text",
+        &[
+            ("send", perm::SEND_MESSAGES),
+            ("attach", perm::ATTACH_FILES),
+            ("react", perm::ADD_REACTIONS),
+            ("history", perm::READ_HISTORY),
+            ("pin", perm::PIN_MESSAGES),
+            ("everyone", perm::MENTION_EVERYONE),
+            ("manageMessages", perm::MANAGE_MESSAGES),
+            ("slowmode", perm::BYPASS_SLOWMODE),
+        ],
+    ),
+    (
+        "voice",
+        &[
+            ("connect", perm::CONNECT),
+            ("speak", perm::SPEAK),
+            ("video", perm::VIDEO),
+            ("screen", perm::SCREEN_SHARE),
+            ("mute", perm::MUTE_MEMBERS),
+            ("move", perm::MOVE_MEMBERS),
+        ],
+    ),
+    ("music", &[("music", perm::CONTROL_MUSIC)]),
+];
+
+/// routes.ts `putOverwrite`'s validator: a role or a member, 26-bit masks, and no bit on both sides.
+pub fn overwrite_valid(kind: u8, allow: u32, deny: u32) -> bool {
+    kind <= 1 && allow & !perm::ALL == 0 && deny & !perm::ALL == 0 && allow & deny == 0
+}
+
+// ---- permission resolution and a channel's own permissions (admin/perm.ts, ChannelPermissions.tsx) ----
+
+/// internal/api/perm.go as `admin/perm.ts` ports it, checked against `protocol/vectors/permissions.json`.
+pub mod resolve {
+    use super::{Overwrite, perm};
+
+    /// `PermRole`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Role {
+        pub id: [u8; 16],
+        pub position: u64,
+        pub allow: u32,
+        pub deny: u32,
+    }
+
+    /// `PermInput`: who owns the server, which role is `@everyone`, every role, and the roles the user holds.
+    pub struct Input<'a> {
+        pub owner: [u8; 16],
+        pub everyone: [u8; 16],
+        pub roles: &'a [Role],
+        pub held: &'a [[u8; 16]],
+    }
+
+    /// Deny first, then allow: an allow on the same bit wins (perm.go `&^= deny`, `|= allow`).
+    fn apply(bits: u32, allow: u32, deny: u32) -> u32 {
+        ((bits & !(deny & perm::ALL)) | (allow & perm::ALL)) & perm::ALL
+    }
+
+    fn finish(bits: u32) -> u32 {
+        if bits & perm::ADMINISTRATOR != 0 {
+            perm::ALL
+        } else if bits & perm::VIEW_CHANNEL == 0 {
+            0
+        } else {
+            bits
+        }
+    }
+
+    /// `@everyone` and the held roles, by position then id.
+    fn held_roles<'a>(input: &'a Input<'a>) -> Vec<&'a Role> {
+        let mut roles: Vec<&Role> = input
+            .roles
+            .iter()
+            .filter(|r| r.id == input.everyone || input.held.contains(&r.id))
+            .collect();
+        roles.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
+        roles
+    }
+
+    /// perm.go Resolve: the owner short-circuit, `@everyone`, then each held role in ascending position.
+    pub fn community(input: &Input<'_>, user: [u8; 16]) -> u32 {
+        if user == input.owner {
+            return perm::ALL;
+        }
+        let bits = held_roles(input)
+            .iter()
+            .fold(0, |bits, r| apply(bits, r.allow, r.deny));
+        finish(bits)
+    }
+
+    /// perm.go ResolveChannel: the overwrites of the held roles in ascending role position, then the user's own, then the
+    /// community-scoped bits restored from the base. `overwrites` are the channel's own.
+    pub fn channel(input: &Input<'_>, overwrites: &[Overwrite], user: [u8; 16]) -> u32 {
+        let base = community(input, user);
+        if base == perm::ALL || base == 0 {
+            return base;
+        }
+        let mut bits = base;
+        for role in held_roles(input) {
+            for o in overwrites
+                .iter()
+                .filter(|o| o.kind == 0 && o.target == role.id)
+            {
+                bits = apply(bits, o.allow, o.deny);
+            }
+        }
+        for o in overwrites
+            .iter()
+            .filter(|o| o.kind == 1 && o.target == user)
+        {
+            bits = apply(bits, o.allow, o.deny);
+        }
+        bits = (bits & !perm::COMMUNITY_BITS) | (base & perm::COMMUNITY_BITS);
+        finish(bits)
+    }
+}
+
+/// The value of one permission in an entry's grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tri {
+    Allow,
+    Inherit,
+    Deny,
+}
+
+impl Tri {
+    pub const ALL: [Tri; 3] = [Tri::Allow, Tri::Inherit, Tri::Deny];
+
+    pub fn wire(self) -> &'static str {
+        match self {
+            Tri::Allow => "allow",
+            Tri::Inherit => "inherit",
+            Tri::Deny => "deny",
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.wire() == s)
+    }
+}
+
+/// ChannelPermissions.tsx: what `bit` is in an entry (allow wins, then deny, else inherit).
+pub fn tri_of(allow: u32, deny: u32, bit: u32) -> Tri {
+    if allow & bit != 0 {
+        Tri::Allow
+    } else if deny & bit != 0 {
+        Tri::Deny
+    } else {
+        Tri::Inherit
+    }
+}
+
+/// ChannelPermissions.tsx `save`: the entry's `(allow, deny)` after `bit` is set to `value`, from the entry as it is now.
+pub fn after_change(now: Option<(u32, u32)>, bit: u32, value: Tri) -> (u32, u32) {
+    let (allow, deny) = now.unwrap_or((0, 0));
+    (
+        if value == Tri::Allow {
+            allow | bit
+        } else {
+            allow & !bit
+        },
+        if value == Tri::Deny {
+            deny | bit
+        } else {
+            deny & !bit
+        },
+    )
+}
+
+/// 32 lower-case hex digits of an id.
+pub fn hex_id(id: &[u8; 16]) -> String {
+    crate::state::hex(id)
+}
+
+/// The 16 bytes 32 lower-case hex digits spell (a `kind:id` choice of the Add select carries one).
+pub fn unhex_id(s: &str) -> Option<[u8; 16]> {
+    if s.len() != 32 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// `targetId.slice(0, 8)`: what an unknown role or member is called.
+pub fn short_id(id: &[u8; 16]) -> String {
+    crate::state::hex(id)[..8].to_owned()
+}
+
+/// One role or person with settings of its own in a channel (ChannelPermissions.tsx `Entry`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermEntry {
+    /// 0 a role, 1 a member.
+    pub kind: u8,
+    pub target: [u8; 16],
+    /// Empty for `@everyone` (the screen says it in its own words).
+    pub name: String,
+    pub is_everyone: bool,
+    pub allow: u32,
+    pub deny: u32,
+    /// Roles by position, members -1: the sort key.
+    pub rank: i64,
+    /// This account may change it (the owner may; others only below their own rank, never the server's owner).
+    pub editable: bool,
+}
+
+/// What the entries and the add list read of the server.
+pub struct PermContext<'a> {
+    pub everyone: [u8; 16],
+    /// This account owns the server.
+    pub owner: bool,
+    /// Its highest role position.
+    pub top: u64,
+    pub community_owner: UserId,
+    pub me: UserId,
+    pub roles: &'a [AdminRole],
+    pub members: &'a [crate::state::Member],
+}
+
+fn shown_name(m: &crate::state::Member) -> String {
+    if m.display.is_empty() {
+        m.username.clone()
+    } else {
+        m.display.clone()
+    }
+}
+
+fn member_top(m: &crate::state::Member, roles: &[AdminRole]) -> u64 {
+    m.role_ids
+        .iter()
+        .map(|id| roles.iter().find(|r| r.id == *id).map_or(0, |r| r.position))
+        .max()
+        .unwrap_or(0)
+}
+
+/// ChannelPermissions.tsx `rows`: the channel's overwrites and the entries just added (empty), `@everyone` first, then roles
+/// by position (highest first), then members.
+pub fn perm_entries(
+    channel_overwrites: &[Overwrite],
+    added: &[(u8, [u8; 16])],
+    ctx: &PermContext<'_>,
+) -> Vec<PermEntry> {
+    let mut all: Vec<(u8, [u8; 16], u32, u32)> = channel_overwrites
+        .iter()
+        .map(|o| (o.kind, o.target, o.allow, o.deny))
+        .collect();
+    for (kind, target) in added {
+        if !all.iter().any(|(k, t, ..)| k == kind && t == target) {
+            all.push((*kind, *target, 0, 0));
+        }
+    }
+    let mut out: Vec<PermEntry> = all
+        .into_iter()
+        .map(|(kind, target, allow, deny)| {
+            if kind == 0 {
+                let role = ctx.roles.iter().find(|r| r.id == target);
+                let is_everyone = target == ctx.everyone;
+                PermEntry {
+                    kind,
+                    target,
+                    name: if is_everyone {
+                        String::new()
+                    } else {
+                        role.map_or_else(|| short_id(&target), |r| r.name.clone())
+                    },
+                    is_everyone,
+                    allow,
+                    deny,
+                    rank: role.map_or(0, |r| i64::try_from(r.position).unwrap_or(i64::MAX)),
+                    editable: ctx.owner || role.is_some_and(|r| r.position < ctx.top),
+                }
+            } else {
+                let member = ctx.members.iter().find(|m| m.user_id.0 == target);
+                let top = member.map_or(0, |m| member_top(m, ctx.roles));
+                PermEntry {
+                    kind,
+                    target,
+                    name: member.map_or_else(|| short_id(&target), shown_name),
+                    is_everyone: false,
+                    allow,
+                    deny,
+                    rank: -1,
+                    editable: target != ctx.community_owner.0 && (ctx.owner || top < ctx.top),
+                }
+            }
+        })
+        .collect();
+    // Stable: `@everyone` first, then highest rank first.
+    out.sort_by(|a, b| {
+        (b.is_everyone)
+            .cmp(&a.is_everyone)
+            .then(b.rank.cmp(&a.rank))
+    });
+    out
+}
+
+/// One choice of the Add select: a role or a person that has no entry yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddOption {
+    pub kind: u8,
+    pub target: [u8; 16],
+    /// Empty for `@everyone`.
+    pub label: String,
+    pub is_everyone: bool,
+}
+
+/// ChannelPermissions.tsx `options`: roles (ascending position) this account may change, then people it may.
+pub fn add_options(rows: &[PermEntry], ctx: &PermContext<'_>) -> Vec<AddOption> {
+    let taken =
+        |kind: u8, target: &[u8; 16]| rows.iter().any(|r| r.kind == kind && r.target == *target);
+    let mut roles: Vec<&AdminRole> = ctx
+        .roles
+        .iter()
+        .filter(|r| !taken(0, &r.id) && (ctx.owner || r.position < ctx.top))
+        .collect();
+    roles.sort_by_key(|r| r.position);
+    let mut out: Vec<AddOption> = roles
+        .into_iter()
+        .map(|r| AddOption {
+            kind: 0,
+            target: r.id,
+            label: if r.id == ctx.everyone {
+                String::new()
+            } else {
+                r.name.clone()
+            },
+            is_everyone: r.id == ctx.everyone,
+        })
+        .collect();
+    out.extend(
+        ctx.members
+            .iter()
+            .filter(|m| {
+                !taken(1, &m.user_id.0)
+                    && m.user_id != ctx.community_owner
+                    && m.user_id != ctx.me
+                    && (ctx.owner || member_top(m, ctx.roles) < ctx.top)
+            })
+            .map(|m| AddOption {
+                kind: 1,
+                target: m.user_id.0,
+                label: shown_name(m),
+                is_everyone: false,
+            }),
+    );
+    out
+}
+
+/// What `me` holds in the channel (`channelBitsOf`): `None` while it cannot be told (no `@everyone`, not a member).
+pub fn my_channel_bits(channel_overwrites: &[Overwrite], ctx: &PermContext<'_>) -> Option<u32> {
+    if ctx.me == ctx.community_owner {
+        return Some(perm::ALL);
+    }
+    let member = ctx.members.iter().find(|m| m.user_id == ctx.me)?;
+    let roles: Vec<resolve::Role> = ctx
+        .roles
+        .iter()
+        .map(|r| resolve::Role {
+            id: r.id,
+            position: r.position,
+            allow: r.allow,
+            deny: r.deny,
+        })
+        .collect();
+    let input = resolve::Input {
+        owner: ctx.community_owner.0,
+        everyone: ctx.everyone,
+        roles: &roles,
+        held: &member.role_ids,
+    };
+    Some(resolve::channel(&input, channel_overwrites, ctx.me.0))
+}
+
+/// The bits a channel's grid offers: every right a channel overwrite can neither grant nor remove is left out.
+pub fn channel_grid_bits(bit: u32) -> bool {
+    bit & perm::COMMUNITY_BITS == 0
 }
 
 // ---- the commands ----
@@ -967,7 +1392,7 @@ impl ServerAdmin {
         })
     }
 
-    /// PUT /channels/{id}/overwrites/{kind}/{target}: `[allow, deny]`; kind 0 is a role, 1 a member.
+    /// PUT /channels/{id}/overwrites/{kind}/{target}: `[allow, deny]`; kind 0 is a role, 1 a member. Both 0 deletes it.
     pub fn set_overwrite(
         &self,
         community: CommunityId,
@@ -979,30 +1404,37 @@ impl ServerAdmin {
     ) -> Reply<()> {
         let inner = self.inner.clone();
         self.run(async move {
-            if kind > 1 || allow & !perm::ALL != 0 || deny & !perm::ALL != 0 {
+            if !overwrite_valid(kind, allow, deny) {
                 return Err(AdminError::local("E_ROUTE_INPUT"));
             }
-            let body =
-                Value::Array(vec![Value::Uint(allow.into()), Value::Uint(deny.into())]).encode();
             let kind_text = kind.to_string();
             let target_text = crate::state::hex(&target);
-            request::<r::PutOverwrite>(
-                &inner,
-                &[&channel.hex(), &kind_text, &target_text],
-                Some(body),
-                &[],
-            )
-            .await?;
+            let args = [channel.hex(), kind_text, target_text];
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            if allow == 0 && deny == 0 {
+                // Nothing left to say: the overwrite goes (a 404 is a retried delete that already went through).
+                match request::<r::DeleteOverwrite>(&inner, &args, None, &[]).await {
+                    Ok(_) => {}
+                    Err(e) if e.status_is(404) => {}
+                    Err(e) => return Err(e),
+                }
+            } else {
+                let body = Value::Array(vec![Value::Uint(allow.into()), Value::Uint(deny.into())])
+                    .encode();
+                request::<r::PutOverwrite>(&inner, &args, Some(body), &[]).await?;
+            }
             inner.publish(move |s| {
                 let rows = s.server_admin.overwrites.entry(community).or_default();
                 rows.retain(|o| !(o.channel == channel && o.kind == kind && o.target == target));
-                rows.push(Overwrite {
-                    channel,
-                    kind,
-                    target,
-                    allow,
-                    deny,
-                });
+                if allow != 0 || deny != 0 {
+                    rows.push(Overwrite {
+                        channel,
+                        kind,
+                        target,
+                        allow,
+                        deny,
+                    });
+                }
             });
             Ok(())
         })
@@ -1125,15 +1557,21 @@ impl ServerAdmin {
     }
 
     /// PUT /gifs/key: sets or replaces the server's key. The key only ever goes up and is in no error and no state.
-    pub fn set_gif_key(&self, community: CommunityId, key: &str) -> Reply<()> {
+    ///
+    /// The key is a [`Zeroizing`] from the caller on; its request body is built straight into a `Zeroizing<Vec<u8>>`
+    /// ([`gif_key_body`]) and wiped when the request settles, whatever its answer.
+    pub fn set_gif_key(&self, community: CommunityId, key: Zeroizing<String>) -> Reply<()> {
         let inner = self.inner.clone();
-        let key = zeroize::Zeroizing::new(key.to_owned());
         self.run(async move {
             if !gif_key_valid(&key) {
                 return Err(AdminError::local("E_ROUTE_INPUT"));
             }
-            let body = Value::Array(vec![Value::Text(key.to_string())]).encode();
-            request::<r::GifSetKey>(&inner, &[&id_hex(community)], Some(body), &[204]).await?;
+            let body = gif_key_body(&key);
+            let sent =
+                request::<r::GifSetKey>(&inner, &[&id_hex(community)], Some(body.to_vec()), &[204])
+                    .await;
+            drop(body);
+            sent?;
             inner.publish(move |s| {
                 s.server_admin.gifs.entry(community).or_default().on = true;
             });
@@ -1558,6 +1996,17 @@ mod tests {
     }
 
     #[test]
+    fn the_gif_key_body_is_the_cbor_array_of_the_key() {
+        for key in ["abcd1234", "abcdEFGH12345678abcdEFGH", &"k".repeat(64)] {
+            assert_eq!(
+                *gif_key_body(key),
+                Value::Array(vec![Value::Text(key.to_owned())]).encode(),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
     fn the_gif_rating_round_trips_its_wire_text() {
         for r in GifRating::ALL {
             assert_eq!(GifRating::from_wire(r.wire()), Some(r));
@@ -1663,6 +2112,343 @@ mod tests {
         let roles = decode_roles(&raw).unwrap();
         assert_eq!(roles.iter().find(|r| r.position == 0).unwrap().id, [1; 16]);
         assert_eq!(roles[1].name, "mods");
+    }
+
+    // ---- permissions.json and ChannelPermissions.tsx ----
+
+    fn unhex(s: &str) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap();
+        }
+        out
+    }
+
+    /// Every case of protocol/vectors/permissions.json: the community bits and the channel bits, as perm.go resolves them.
+    #[test]
+    fn the_resolver_matches_the_permission_vectors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../protocol/vectors/permissions.json");
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let roles: Vec<resolve::Role> = case["roles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| resolve::Role {
+                    id: unhex(r["id"].as_str().unwrap()),
+                    position: r["position"].as_u64().unwrap(),
+                    allow: u32::try_from(r["allow"].as_u64().unwrap()).unwrap(),
+                    deny: u32::try_from(r["deny"].as_u64().unwrap()).unwrap(),
+                })
+                .collect();
+            let held: Vec<[u8; 16]> = case["held"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| unhex(h.as_str().unwrap()))
+                .collect();
+            let input = resolve::Input {
+                owner: unhex(case["owner"].as_str().unwrap()),
+                everyone: unhex(case["everyone"].as_str().unwrap()),
+                roles: &roles,
+                held: &held,
+            };
+            let overwrites: Vec<Overwrite> = case["overwrites"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| Overwrite {
+                    channel: id(1),
+                    kind: u8::try_from(o["kind"].as_u64().unwrap()).unwrap(),
+                    target: unhex(o["target"].as_str().unwrap()),
+                    allow: u32::try_from(o["allow"].as_u64().unwrap()).unwrap(),
+                    deny: u32::try_from(o["deny"].as_u64().unwrap()).unwrap(),
+                })
+                .collect();
+            let user = unhex(case["user"].as_str().unwrap());
+            assert_eq!(
+                u64::from(resolve::community(&input, user)),
+                case["community"].as_u64().unwrap(),
+                "{name}: community"
+            );
+            assert_eq!(
+                u64::from(resolve::channel(&input, &overwrites, user)),
+                case["channel"].as_u64().unwrap(),
+                "{name}: channel"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grid_groups_cover_the_26_bits_once() {
+        let bits: Vec<u32> = PERM_GROUPS
+            .iter()
+            .flat_map(|(_, k)| k.iter().map(|(_, b)| *b))
+            .collect();
+        assert_eq!(bits.len(), 26);
+        assert_eq!(bits.iter().fold(0, |a, b| a | b), perm::ALL);
+        let mut sorted = bits.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 26);
+    }
+
+    #[test]
+    fn a_grid_change_moves_one_bit_between_allow_deny_and_inherit() {
+        let b = perm::SEND_MESSAGES;
+        let other = perm::SPEAK;
+        // From nothing.
+        assert_eq!(after_change(None, b, Tri::Allow), (b, 0));
+        assert_eq!(after_change(None, b, Tri::Deny), (0, b));
+        assert_eq!(after_change(None, b, Tri::Inherit), (0, 0));
+        // Allow to deny moves the bit across and leaves the others alone.
+        assert_eq!(after_change(Some((b | other, 0)), b, Tri::Deny), (other, b));
+        // Deny to allow, and either to inherit.
+        assert_eq!(
+            after_change(Some((0, b | other)), b, Tri::Allow),
+            (b, other)
+        );
+        assert_eq!(after_change(Some((b, other)), b, Tri::Inherit), (0, other));
+        // A result never holds one bit on both sides.
+        for now in [None, Some((b, 0)), Some((0, b)), Some((b, other))] {
+            for v in Tri::ALL {
+                let (a, d) = after_change(now, b, v);
+                assert_eq!(a & d, 0);
+            }
+        }
+        assert_eq!(tri_of(b, 0, b), Tri::Allow);
+        assert_eq!(tri_of(0, b, b), Tri::Deny);
+        assert_eq!(tri_of(other, other, b), Tri::Inherit);
+    }
+
+    #[test]
+    fn an_overlapping_overwrite_is_refused_before_any_request() {
+        assert!(overwrite_valid(0, perm::SEND_MESSAGES, perm::SPEAK));
+        assert!(!overwrite_valid(
+            0,
+            perm::SEND_MESSAGES | perm::SPEAK,
+            perm::SPEAK
+        ));
+        assert!(!overwrite_valid(2, 0, 0));
+        assert!(!overwrite_valid(1, 1 << 26, 0));
+    }
+
+    fn role(n: u8, name: &str, position: u64, allow: u32) -> AdminRole {
+        AdminRole {
+            id: [n; 16],
+            name: name.into(),
+            position,
+            allow,
+            deny: 0,
+        }
+    }
+
+    fn member(n: u8, display: &str, roles: &[u8]) -> crate::state::Member {
+        crate::state::Member {
+            user_id: UserId([n; 16]),
+            username: format!("user{n}"),
+            display: display.into(),
+            kind: 0,
+            role_ids: roles.iter().map(|r| [*r; 16]).collect(),
+            status_msg: String::new(),
+            bio: String::new(),
+        }
+    }
+
+    #[test]
+    fn entries_sort_everyone_first_then_roles_high_to_low_then_people_and_gate_by_rank() {
+        let roles = [
+            role(7, "@everyone", 0, 0),
+            role(8, "mods", 3, 0),
+            role(9, "admins", 5, 0),
+        ];
+        let members = [
+            member(1, "Ada", &[]),
+            member(2, "", &[8]),
+            member(3, "Cy", &[9]),
+        ];
+        let ctx = PermContext {
+            everyone: [7; 16],
+            owner: false,
+            top: 4,
+            community_owner: UserId([1; 16]),
+            me: UserId([2; 16]),
+            roles: &roles,
+            members: &members,
+        };
+        let rows = [
+            Overwrite {
+                channel: id(1),
+                kind: 1,
+                target: [3; 16],
+                allow: 0,
+                deny: 1,
+            },
+            Overwrite {
+                channel: id(1),
+                kind: 0,
+                target: [9; 16],
+                allow: 1,
+                deny: 0,
+            },
+            Overwrite {
+                channel: id(1),
+                kind: 0,
+                target: [8; 16],
+                allow: 2,
+                deny: 0,
+            },
+            Overwrite {
+                channel: id(1),
+                kind: 0,
+                target: [7; 16],
+                allow: 0,
+                deny: 1,
+            },
+            Overwrite {
+                channel: id(1),
+                kind: 0,
+                target: [0x42; 16],
+                allow: 4,
+                deny: 0,
+            },
+        ];
+        let entries = perm_entries(&rows, &[(1, [2; 16])], &ctx);
+        let order: Vec<(u8, u8)> = entries.iter().map(|e| (e.kind, e.target[0])).collect();
+        // @everyone, admins(5), mods(3), the unknown role (rank 0), then people in list order, then the added one.
+        assert_eq!(order, [(0, 7), (0, 9), (0, 8), (0, 0x42), (1, 3), (1, 2)]);
+        // Rank gates editing: a role at or above `top` (4) is not editable, a lower one is; the server's owner never.
+        let by = |kind: u8, t: u8| {
+            entries
+                .iter()
+                .find(|e| e.kind == kind && e.target[0] == t)
+                .unwrap()
+        };
+        assert!(!by(0, 9).editable);
+        assert!(by(0, 8).editable);
+        assert!(
+            !by(1, 3).editable,
+            "Cy holds a role above this account's rank"
+        );
+        // An unknown role is named by the first eight hex digits of its id.
+        assert_eq!(by(0, 0x42).name, "42424242");
+        assert!(by(0, 7).is_everyone && by(0, 7).name.is_empty());
+        // A person is shown by display name, else the account name.
+        assert_eq!(by(1, 2).name, "user2");
+        // The owner edits everyone but the server's owner.
+        let owner_ctx = PermContext {
+            owner: true,
+            me: UserId([1; 16]),
+            ..ctx
+        };
+        let rows = perm_entries(&rows, &[(1, [1; 16])], &owner_ctx);
+        assert!(
+            rows.iter()
+                .find(|e| e.kind == 0 && e.target[0] == 9)
+                .unwrap()
+                .editable
+        );
+        assert!(
+            !rows
+                .iter()
+                .find(|e| e.kind == 1 && e.target[0] == 1)
+                .unwrap()
+                .editable
+        );
+    }
+
+    #[test]
+    fn the_add_list_offers_untaken_roles_and_people_this_account_may_change() {
+        let roles = [
+            role(7, "@everyone", 0, 0),
+            role(8, "mods", 3, 0),
+            role(9, "admins", 5, 0),
+        ];
+        let members = [
+            member(1, "Ada", &[]),
+            member(2, "Bo", &[8]),
+            member(3, "Cy", &[9]),
+            member(4, "Di", &[]),
+        ];
+        let ctx = PermContext {
+            everyone: [7; 16],
+            owner: false,
+            top: 4,
+            community_owner: UserId([1; 16]),
+            me: UserId([2; 16]),
+            roles: &roles,
+            members: &members,
+        };
+        let taken = [Overwrite {
+            channel: id(1),
+            kind: 0,
+            target: [7; 16],
+            allow: 0,
+            deny: 1,
+        }];
+        let entries = perm_entries(&taken, &[], &ctx);
+        let options = add_options(&entries, &ctx);
+        let picked: Vec<(u8, u8)> = options.iter().map(|o| (o.kind, o.target[0])).collect();
+        // mods (below rank 4), not admins (above), not @everyone (taken); people: Di only (not the owner Ada, not me Bo, not Cy).
+        assert_eq!(picked, [(0, 8), (1, 4)]);
+        let owner_ctx = PermContext {
+            owner: true,
+            me: UserId([1; 16]),
+            ..ctx
+        };
+        let options = add_options(&entries, &owner_ctx);
+        let picked: Vec<(u8, u8)> = options.iter().map(|o| (o.kind, o.target[0])).collect();
+        assert_eq!(picked, [(0, 8), (0, 9), (1, 2), (1, 3), (1, 4)]);
+    }
+
+    #[test]
+    fn what_this_account_holds_in_a_channel_gates_its_grid() {
+        let roles = [role(
+            7,
+            "@everyone",
+            0,
+            perm::VIEW_CHANNEL | perm::SEND_MESSAGES,
+        )];
+        let members = [member(1, "Ada", &[]), member(2, "Bo", &[])];
+        let ctx = PermContext {
+            everyone: [7; 16],
+            owner: false,
+            top: 0,
+            community_owner: UserId([1; 16]),
+            me: UserId([2; 16]),
+            roles: &roles,
+            members: &members,
+        };
+        let mine = my_channel_bits(&[], &ctx).unwrap();
+        assert_eq!(mine, perm::VIEW_CHANNEL | perm::SEND_MESSAGES);
+        // A channel overwrite that denies sending takes it from the grid.
+        let deny = [Overwrite {
+            channel: id(1),
+            kind: 0,
+            target: [7; 16],
+            allow: 0,
+            deny: perm::SEND_MESSAGES,
+        }];
+        assert_eq!(my_channel_bits(&deny, &ctx).unwrap(), perm::VIEW_CHANNEL);
+        // The owner holds everything; an unknown account is unknown.
+        let owner = PermContext {
+            me: UserId([1; 16]),
+            ..ctx
+        };
+        assert_eq!(my_channel_bits(&[], &owner), Some(perm::ALL));
+        let stranger = PermContext {
+            me: UserId([9; 16]),
+            ..owner
+        };
+        assert_eq!(my_channel_bits(&[], &stranger), None);
+        // Community-scoped bits are not on offer in a channel's grid.
+        assert!(!channel_grid_bits(perm::KICK_MEMBERS));
+        assert!(channel_grid_bits(perm::SEND_MESSAGES));
     }
 
     #[test]

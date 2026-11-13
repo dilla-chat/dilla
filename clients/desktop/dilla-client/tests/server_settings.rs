@@ -283,10 +283,11 @@ async fn afk_has_no_delete_permissions_or_reorder() {
     assert_eq!(names(&a.state().borrow(), c), before);
 }
 
-/// e2e/web/private.spec.ts: a private channel is made, gained, lost and toggled, and the owner is never locked out.
+/// e2e/web/private.spec.ts, through the client's own API (the window's toggle and confirm are the settings' fixtures and
+/// Task 28's integration run): a channel is made private, gained, lost and toggled, and nobody is locked out of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
-async fn private_channels_create_gain_lose_toggle_lockout() {
+async fn private_channels_client_gain_lose_toggle_lockout() {
     let (_host, pa, pb, c) = two_people("private").await;
     let a = start(&pa).await;
     let b = start(&pb).await;
@@ -360,6 +361,19 @@ async fn private_channels_create_gain_lose_toggle_lockout() {
     })
     .await;
     assert!(a.state().borrow().channel(general).is_some());
+    // Lockout: a plain member who would lose the channel by making it private is refused before any request.
+    let b_admin = b.server_admin();
+    wait_for(&b, Duration::from_secs(20), "bob to see the channel", |s| {
+        s.channel(general).is_some()
+    })
+    .await;
+    let refused = b_admin
+        .set_channel_private(general, true)
+        .wait()
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "E_WOULD_HIDE", "{refused}");
+    assert!(!visible(&a.state().borrow()), "nothing was written");
     // A refusal the instance reads as invalid names its code.
     let refused = admin
         .set_overwrite(c, general, 1, pb.user_id, 1 << 30, 0)
@@ -390,23 +404,26 @@ async fn member_makes_invite_link_under_invites() {
         .wait()
         .await
         .expect("list");
-    let s = b.state().borrow().clone();
-    let listed = &s.server_admin.invites[&c];
-    assert!(
-        listed
-            .iter()
-            .any(|i| i.id == created.id && i.max_uses == 10 && i.uses == 0)
-    );
+    // The slice is published on the client's loop: wait for it, never read it back at once.
+    wait_for(&b, Duration::from_secs(10), "the link listed", |s| {
+        s.server_admin.invites.get(&c).is_some_and(|rows| {
+            rows.iter()
+                .any(|i| i.id == created.id && i.max_uses == 10 && i.uses == 0)
+        })
+    })
+    .await;
     admin
         .revoke_invite(c, created.id)
         .wait()
         .await
         .expect("revoke");
-    assert!(
-        b.state().borrow().server_admin.invites[&c]
-            .iter()
-            .all(|i| i.id != created.id)
-    );
+    wait_for(&b, Duration::from_secs(10), "the link gone", |s| {
+        s.server_admin
+            .invites
+            .get(&c)
+            .is_some_and(|rows| rows.iter().all(|i| i.id != created.id))
+    })
+    .await;
     // The limits are the instance's: more than 1000 uses is refused before any request.
     assert_eq!(
         admin
@@ -429,11 +446,16 @@ async fn gif_key_is_write_only_and_the_rating_is_kept() {
     let before = admin.load_gifs(c).wait().await.expect("status");
     assert!(!before.on);
     assert_eq!(
-        admin.set_gif_key(c, "short").wait().await.unwrap_err().code,
+        admin
+            .set_gif_key(c, zeroize::Zeroizing::new("short".to_owned()))
+            .wait()
+            .await
+            .unwrap_err()
+            .code,
         "E_ROUTE_INPUT"
     );
     admin
-        .set_gif_key(c, "abcDEF1234567890")
+        .set_gif_key(c, zeroize::Zeroizing::new("abcDEF1234567890".to_owned()))
         .wait()
         .await
         .expect("key");

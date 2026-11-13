@@ -13,7 +13,8 @@ use std::sync::Arc;
 use dilla_client::Client;
 use dilla_client::features::server_admin::{
     AFK_DEFAULT_TIMEOUT, AdminError, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, Direction,
-    NameProblem, Parent, Reply, TOPIC_MAX_BYTES, gif_key_valid, name_problem, nfc,
+    NameProblem, Parent, Reply, TOPIC_MAX_BYTES, Tri, after_change, gif_key_valid, name_problem,
+    nfc,
 };
 use dilla_client::state::server_admin::{GifRating, InviteId};
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, UserId};
@@ -146,6 +147,12 @@ pub struct Body {
     gif_busy: bool,
     /// The Overview's Leave button's focus (the automation id `server-settings-leave`).
     leave_focus: gpui::FocusHandle,
+    // The open channel's own permissions: entries just added (empty until set), the one open, the Add choice.
+    perm_added: Vec<(u8, [u8; 16])>,
+    perm_open: Option<(u8, [u8; 16])>,
+    perm_choice: Option<(u8, [u8; 16])>,
+    perm_busy: bool,
+    perm_error: Option<SharedString>,
     gif_error: Option<SharedString>,
     // Invites.
     ttl: u64,
@@ -255,6 +262,11 @@ impl Body {
             gif_editing: false,
             gif_busy: false,
             leave_focus: cx.focus_handle().tab_stop(true),
+            perm_added: Vec::new(),
+            perm_open: None,
+            perm_choice: None,
+            perm_busy: false,
+            perm_error: None,
             gif_error: None,
             ttl: model::DEFAULT_TTL_S,
             uses: model::DEFAULT_USES,
@@ -540,6 +552,10 @@ impl Body {
     }
 
     fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // One action at a time: a second press while the first is in flight is ignored.
+        if self.dialogue_busy {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -566,6 +582,10 @@ impl Body {
     }
 
     fn delete_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // One action at a time: a second press while the first is in flight is ignored.
+        if self.dialogue_busy {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -604,6 +624,10 @@ impl Body {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One action at a time: a second press while the first is in flight is ignored.
+        if self.dialogue_busy {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -701,6 +725,10 @@ impl Body {
         self.edit_slow = c.slowmode.to_string();
         self.dialogue_error = None;
         self.dialogue_busy = false;
+        self.perm_added.clear();
+        self.perm_open = None;
+        self.perm_choice = None;
+        self.perm_error = None;
         self.dialogue = Dialogue::Edit(channel);
         if let Some(client) = self.client.clone() {
             let reply = client.server_admin().load_access(self.community);
@@ -711,6 +739,10 @@ impl Body {
 
     /// ChannelEditFlow.tsx `submit`: only the fields that changed are sent; nothing changed closes the dialog.
     fn save_edit(&mut self, channel: ChannelId, window: &mut Window, cx: &mut Context<Self>) {
+        // One action at a time: a second press while the first is in flight is ignored.
+        if self.dialogue_busy {
+            return;
+        }
         let Some(c) = self.state.channel(channel).cloned() else {
             return;
         };
@@ -812,6 +844,10 @@ impl Body {
     }
 
     fn delete_channel(&mut self, channel: ChannelId, window: &mut Window, cx: &mut Context<Self>) {
+        // One action at a time: a second press while the first is in flight is ignored.
+        if self.dialogue_busy {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -833,6 +869,10 @@ impl Body {
     }
 
     fn create_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // One action at a time: a second press while the first is in flight is ignored.
+        if self.dialogue_busy {
+            return;
+        }
         let typed = self.category_name.read(cx).value().to_string();
         let value = channel_name(1, &typed);
         if let Some(problem) = name_problem(&value, CHANNEL_NAME_MAX_BYTES) {
@@ -880,6 +920,10 @@ impl Body {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One action at a time: a second press while the first is in flight is ignored.
+        if self.dialogue_busy {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -909,10 +953,107 @@ impl Body {
         cx.notify();
     }
 
+    // ---- a channel's own permissions ----
+
+    /// ChannelPermissions.tsx `save`: one change at a time, each from the entry as it is when its turn comes.
+    fn perm_change(
+        &mut self,
+        channel: ChannelId,
+        entry: (u8, [u8; 16]),
+        bit: u32,
+        value: Tri,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        if self.perm_busy {
+            return;
+        }
+        let now = self
+            .state
+            .server_admin
+            .overwrites
+            .get(&self.community)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|o| o.channel == channel && o.kind == entry.0 && o.target == entry.1)
+            })
+            .map(|o| (o.allow, o.deny));
+        let (allow, deny) = after_change(now, bit, value);
+        self.perm_busy = true;
+        self.perm_error = None;
+        let name = self
+            .state
+            .channel(channel)
+            .map_or_else(String::new, |c| c.name.clone());
+        let reply = client.server_admin().set_overwrite(
+            self.community,
+            channel,
+            entry.0,
+            entry.1,
+            allow,
+            deny,
+        );
+        self.run(reply, window, cx, move |this, result, _, cx| {
+            this.perm_busy = false;
+            match result {
+                Ok(()) => this.say(tf("chperm.saved", &[("name", &name)]), cx),
+                Err(e) => this.perm_error = Some(permission_error(&e).into()),
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// ChannelPermissions.tsx `remove`: both masks 0 deletes the entry.
+    fn perm_remove(
+        &mut self,
+        channel: ChannelId,
+        entry: (u8, [u8; 16]),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        if self.perm_busy {
+            return;
+        }
+        self.perm_busy = true;
+        self.perm_error = None;
+        let name = self
+            .state
+            .channel(channel)
+            .map_or_else(String::new, |c| c.name.clone());
+        let reply =
+            client
+                .server_admin()
+                .set_overwrite(self.community, channel, entry.0, entry.1, 0, 0);
+        self.run(reply, window, cx, move |this, result, _, cx| {
+            this.perm_busy = false;
+            match result {
+                Ok(()) => {
+                    this.perm_added.retain(|a| *a != entry);
+                    if this.perm_open == Some(entry) {
+                        this.perm_open = None;
+                    }
+                    this.say(tf("chperm.saved", &[("name", &name)]), cx);
+                }
+                Err(e) => this.perm_error = Some(permission_error(&e).into()),
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     // ---- GIFs ----
 
     fn save_gif_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let key = self.gif_key.read(cx).value().to_string();
+        // The key lives in a wiping buffer from the field on, and the field is emptied as soon as it is taken: a refusal
+        // leaves nothing typed behind.
+        let key = zeroize::Zeroizing::new(self.gif_key.read(cx).value().to_string());
         if !gif_key_valid(&key) {
             self.gif_error = Some(t("gif.settings.invalid").into());
             cx.notify();
@@ -926,12 +1067,12 @@ impl Body {
         }
         self.gif_busy = true;
         self.gif_error = None;
-        let reply = client.server_admin().set_gif_key(self.community, &key);
-        self.run(reply, window, cx, |this, result, window, cx| {
+        self.gif_key.update(cx, |s, cx| s.set_value("", window, cx));
+        let reply = client.server_admin().set_gif_key(self.community, key);
+        self.run(reply, window, cx, |this, result, _window, cx| {
             this.gif_busy = false;
             match result {
                 Ok(()) => {
-                    this.gif_key.update(cx, |s, cx| s.set_value("", window, cx));
                     this.gif_editing = false;
                     this.say(t("gif.settings.saved").to_owned(), cx);
                 }
