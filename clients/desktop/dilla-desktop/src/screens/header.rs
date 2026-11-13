@@ -6,12 +6,11 @@ use std::rc::Rc;
 
 use dilla_client::state::Channel;
 use gpui::{
-    App, ClickEvent, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    App, ClickEvent, IntoElement, ParentElement, Pixels, SharedString, Styled, Window, div,
 };
 
 use dilla_desktop_ui::components::shell::BarButton;
-use dilla_desktop_ui::components::tooltip::{SHOW_DELAY, tooltip};
+use dilla_desktop_ui::components::tooltip::WithTooltip;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, layout, text};
 use dilla_desktop_ui::{Icon, IconName};
@@ -45,6 +44,13 @@ pub struct HeaderModel<'a> {
     pub call: Option<(&'static str, OnCall)>,
 }
 
+/// Tooltip.tsx's 400 ms. The automation build shows the tooltip at once: its frames settle within a few frames and do not
+/// wait out the delay, and the web shooter frames the screen after it has passed.
+#[cfg(not(feature = "automation"))]
+const TIP_DELAY: std::time::Duration = dilla_desktop_ui::components::tooltip::SHOW_DELAY;
+#[cfg(feature = "automation")]
+const TIP_DELAY: std::time::Duration = std::time::Duration::ZERO;
+
 pub type OnToggle = Rc<dyn Fn(AsideKind, &mut Window, &mut App)>;
 
 /// The DM call button's press.
@@ -64,20 +70,21 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> impl IntoElement
                 .on_click(move |_: &ClickEvent, window, cx| on_call(window, cx)),
         )
     });
-    let members_button = div()
-        .id("header-members-tip")
-        .relative()
-        .tooltip(tooltip(members_tip, &[]))
-        .tooltip_show_delay(SHOW_DELAY)
-        .child(
-            BarButton::new(SharedString::from(members_label), IconName::Users, count)
-                .pressed(model.aside == Some(AsideKind::Members))
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    members(AsideKind::Members, window, cx)
-                }),
-        );
+    // Tooltip.tsx places the tooltip against the button (above, centred, kept inside the window), not at the pointer.
+    let members_button = WithTooltip::new(
+        "header-members-tip",
+        members_tip,
+        &[],
+        BarButton::new(SharedString::from(members_label), IconName::Users, count)
+            .pressed(model.aside == Some(AsideKind::Members))
+            .on_click(move |_: &ClickEvent, window, cx| members(AsideKind::Members, window, cx)),
+    )
+    .delay(TIP_DELAY);
     #[cfg(feature = "automation")]
-    let members_button = members_button.child(crate::automation::bounds_probe("header-members"));
+    let members_button = div()
+        .relative()
+        .child(members_button)
+        .child(crate::automation::bounds_probe("header-members"));
     let bar = div()
         .flex_none()
         .relative()
