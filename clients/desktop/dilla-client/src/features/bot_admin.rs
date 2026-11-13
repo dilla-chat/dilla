@@ -9,8 +9,7 @@
 //!
 //! The sealed Bot commands (status read 94, provider status 24, moderation pages 60 and 64, and the music operations) go
 //! through [`SealedBot`], the seam Task 20's `features::bot` implements (it owns the Bot's command key, catalog and
-//! sealing). [`default_transport`] is the one place the controller wires it at merge; until then every sealed command is
-//! refused with `E_BOT_UNAVAILABLE`, which the UI shows as the Bot being unavailable, and tests supply a fake.
+//! sealing). [`default_transport`] is that transport; tests supply a fake.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -102,22 +101,10 @@ pub trait SealedBot: Send + Sync {
     ) -> Result<SealedAnswer, SendError>;
 }
 
-/// The transport the client uses until Task 20's lands: it refuses every command.
-struct NoBot;
-
-#[async_trait]
-impl SealedBot for NoBot {
-    async fn send(&self, _: CommunityId, _: SealedCommand) -> Result<SealedAnswer, SendError> {
-        Err(SendError::Refused {
-            code: "E_BOT_UNAVAILABLE".to_owned(),
-            status: 0,
-        })
-    }
-}
-
-/// The one place the controller wires Task 20's transport at merge.
-pub(crate) fn default_transport(_inner: &Arc<Inner>) -> Arc<dyn SealedBot> {
-    Arc::new(NoBot)
+/// Task 20's transport: sealed to the community's verified, pinned Bot key (`features::bot::sealed`). With no such key a
+/// command is refused with `E_BOT_OFFLINE`.
+pub(crate) fn default_transport(inner: &Arc<Inner>) -> Arc<dyn SealedBot> {
+    crate::features::bot::Bot::of(inner).transport()
 }
 
 /// An app operation's request, in v1 terms (operations.ts `BotOperationRequest`).
