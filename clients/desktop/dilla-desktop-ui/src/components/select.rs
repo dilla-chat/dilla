@@ -274,8 +274,7 @@ impl RenderOnce for Select {
                 color::FG_2,
             ));
         }
-        // The field paints on the web's pixel when its label leaves it on a fraction (`snap`).
-        root = root.child(crate::snap::snapped(wrap));
+        root = root.child(wrap);
         if let Some(hint) = self.hint {
             root = root.child(line(
                 hint,

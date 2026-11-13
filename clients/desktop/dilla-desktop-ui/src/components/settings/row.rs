@@ -15,7 +15,6 @@ use super::super::action_menu::{ActionMenu, MenuItem, opens_context_menu};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
-use crate::snap::snapped;
 use crate::text::{line, line_height, painted_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
@@ -352,8 +351,7 @@ impl RenderOnce for SettingsRow {
                     .child(Icon::new(icon).size(px(15.0)).color(color::ACCENT)),
             );
         }
-        // The control is centred in the row's line: on a half pixel it paints where the web's does (`snap`).
-        row.child(text_col).child(snapped(control)).children(menus)
+        row.child(text_col).child(control).children(menus)
     }
 }
 

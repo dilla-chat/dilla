@@ -28,17 +28,6 @@ const SEGMENT_H: f32 = 28.0;
 const SEGMENT_GAP: f32 = 2.0;
 const SEGMENT_RADIUS: f32 = 2.0;
 
-/// Each segment's left and right edge in a row `width` wide: `flex: 1` shares of what the gaps leave.
-pub fn segment_edges(width: f32) -> Vec<(f32, f32)> {
-    let w = (width - SEGMENT_GAP * (SEGMENTS - 1) as f32) / SEGMENTS as f32;
-    (0..SEGMENTS)
-        .map(|i| {
-            let x = i as f32 * (w + SEGMENT_GAP);
-            (x, x + w)
-        })
-        .collect()
-}
-
 /// A threshold or level as the prototype writes it: `-48 dB`.
 pub fn format_db(db: f32) -> String {
     format!("{} dB", db.round().clamp(-100.0, 0.0) as i32)
@@ -178,35 +167,16 @@ impl RenderOnce for SensitivityMeter {
         };
 
         let left = gpui::relative((threshold - MIN) as f32 / (MAX - MIN) as f32);
-        // The segments share the width in fractional parts (11.76px at 686px); the web paints each between edges rounded
-        // to whole CSS pixels, so they are painted from those edges, not from GPUI's device-pixel layout.
-        let states = segment_states(self.level_db, threshold as f32, self.testing);
-        let segments = div().h(px(SEGMENT_H)).w_full().child(
-            gpui::canvas(
-                |_, _, _| {},
-                move |bounds, _, window, _| {
-                    let left = f32::from(bounds.left());
-                    let (top, bottom) = (bounds.top(), bounds.bottom());
-                    for (i, (x0, x1)) in segment_edges(f32::from(bounds.size.width))
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let edge = |x: f32| px(crate::snap::css_pixel(left + x));
-                        window.paint_quad(
-                            gpui::fill(
-                                Bounds::from_corners(
-                                    gpui::point(edge(x0), top),
-                                    gpui::point(edge(x1), bottom),
-                                ),
-                                segment_color(states[i]),
-                            )
-                            .corner_radii(px(SEGMENT_RADIUS)),
-                        );
-                    }
-                },
-            )
-            .size_full(),
-        );
+        // `flex: 1` shares of what the gaps leave (11.76px at 686px); the layout snap paints each between whole pixels.
+        let mut segments = div().flex().gap(px(SEGMENT_GAP)).h(px(SEGMENT_H));
+        for state in segment_states(self.level_db, threshold as f32, self.testing) {
+            segments = segments.child(
+                div()
+                    .flex_1()
+                    .rounded(px(SEGMENT_RADIUS))
+                    .bg(segment_color(state)),
+            );
+        }
         let line_el = div()
             .absolute()
             .top_0()
@@ -244,8 +214,7 @@ impl RenderOnce for SensitivityMeter {
             .py(px(6.0))
             .focus_visible(|s| s.shadow(focus_ring()))
             .child(segments)
-            // At a percentage of the row the line lies between pixels: painted on the web's (`snap`).
-            .child(crate::snap::snapped(line_el))
+            .child(line_el)
             .child(value)
             .child(pointer_layer(
                 bounds.clone(),
@@ -345,14 +314,6 @@ mod tests {
         let loud = segment_states(-1.0, -50.0, true);
         assert_eq!(loud[46], Segment::Hot); // -8 dB
         assert_eq!(loud[49], Segment::Hot); // -2 dB is under -1 dB
-    }
-
-    #[test]
-    fn segments_share_the_row() {
-        let edges = segment_edges(686.0);
-        assert_eq!(edges.len(), 50);
-        assert!((edges[0].1 - 11.76).abs() < 1e-3);
-        assert!((edges[49].1 - 686.0).abs() < 1e-3);
     }
 
     #[test]

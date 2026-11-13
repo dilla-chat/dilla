@@ -97,8 +97,10 @@ pub fn field() -> Div {
         .items_stretch()
 }
 
-/// A field's label (11px `--fg-2`). Its 16.5px line puts the select under it on a half pixel, which the web paints on
-/// the next whole one: the label takes the painted height, so the select and the volume row land where the web's do.
+/// A field's label (11px `--fg-2`), taking the height the web paints for its 16.5px line (17). The layout snap places the
+/// field under it from its unrounded top, but the line boxes above it on the page are authored lengths GPUI rounds to a
+/// device pixel before layout (the 17.25px description lines to 17, the 14.25px scale to 14), which leaves the fields
+/// half a pixel above the web's layout; at the painted height they land on the web's pixels (section and section-b).
 pub fn label(text_: impl Into<SharedString>) -> Div {
     div()
         .h(px(painted_height(line_height(text::XS, 1.5))))
@@ -277,7 +279,8 @@ impl RenderOnce for StatusPill {
             Heard::Quiet => (color::WARN, color::WARN_FAINT, color::WARN_LINE),
         };
         // The web paints the pill (its width follows its text) between whole pixels: from its whole-pixel left edge that
-        // is the natural width rounded.
+        // is the natural width rounded. The layout snap cannot give it: the text's width is an authored length GPUI rounds
+        // to a device pixel before layout, half a pixel off the web's fraction.
         let natural = self.text.chars().all(crate::text::mono_covers).then(|| {
             crate::text::painted_height(
                 2.0 * 10.0
@@ -296,13 +299,12 @@ impl RenderOnce for StatusPill {
             .items_center()
             .gap(px(7.0))
             .when_some(natural, |d, w| d.w(px(w)))
-            .relative()
             .h(px(28.0))
             .px(px(10.0))
-            // Its width follows its text (107.6px for Not testing): painted on the web's whole pixels.
             .border_1()
-            .border_color(gpui::transparent_black())
-            .child(crate::snap::painted_box(radius::PILL, bg, Some(edge)))
+            .border_color(edge)
+            .rounded(radius::PILL)
+            .bg(bg)
             .child(div().size(px(6.0)).rounded(radius::PILL).bg(fg))
             .child(line(self.text, text::XS, line_height(text::XS, 1.5), fg))
     }
@@ -361,8 +363,7 @@ pub fn control_row(text_col: impl IntoElement, control: impl IntoElement) -> Div
         .gap_x(px(14.0))
         .gap_y(px(10.0))
         .child(text_col)
-        // Centred beside the text on a half pixel: painted on the web's (`snap`).
-        .child(crate::snap::snapped_y(control))
+        .child(control)
 }
 
 /// The capture prompt: a status region that is always present; empty it takes no room, shown it is a 3px accent bar, 6px 12px

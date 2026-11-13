@@ -165,8 +165,7 @@ impl RenderOnce for TextField {
                 line_height(text::XS, 1.5),
                 color::FG_2,
             ))
-            // Under a label of fractional height (16.5px after a 20.25px line) the frame paints on the web's pixel (`snap`).
-            .child(crate::snap::snapped(frame));
+            .child(frame);
         for note in [self.hint, self.note].into_iter().flatten() {
             root = root.child(line(
                 note,

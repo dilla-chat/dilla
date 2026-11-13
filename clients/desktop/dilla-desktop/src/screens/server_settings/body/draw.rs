@@ -24,7 +24,6 @@ use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, Setting
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toggle::Toggle;
 use dilla_desktop_ui::components::trailing_slot::TrailingSlot;
-use dilla_desktop_ui::snap::{edge_box, snapped};
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
@@ -1240,19 +1239,16 @@ impl Body {
                     line_height(text::XS, 1.5),
                     color::FG_2,
                 ))
-                // Under the 16.5px label the control lies on a half pixel: it paints where the web's does.
-                .child(snapped(control))
+                .child(control)
         };
         let mut panel = div()
             .flex()
             .flex_col()
             .gap(layout::SECTION_GAP)
-            .relative()
             .p(layout::INVITE_PAD_X)
-            // The card's edge is drawn on the web's pixels (it ends on a half pixel); the border keeps its room.
             .border_1()
-            .border_color(gpui::transparent_black())
-            .child(edge_box(radius::XL, color::HAIRLINE))
+            .border_color(color::HAIRLINE)
+            .rounded(radius::XL)
             .child(
                 div()
                     .flex()
@@ -1286,7 +1282,7 @@ impl Body {
         }
         if self.made.is_none() {
             panel = panel.child(
-                div().flex().child(snapped(
+                div().flex().child(
                     Button::new(
                         "invite-make",
                         if self.making {
@@ -1302,7 +1298,7 @@ impl Body {
                     .on_click(act_click(cx, |this, window, cx| {
                         this.make_invite(window, cx)
                     })),
-                )),
+                ),
             );
         }
         if let Some(made) = &self.made {
@@ -1435,7 +1431,7 @@ impl Body {
                         ),
                     ));
                 if may_revoke {
-                    row = row.child(snapped(
+                    row = row.child(
                         Button::new(
                             SharedString::from(format!("revoke-{}", id.hex())),
                             t("serverSettings.invites.revoke"),
@@ -1446,11 +1442,11 @@ impl Body {
                         .on_click(act_click(cx, move |this, window, cx| {
                             this.revoke_invite(id, window, cx)
                         })),
-                    ));
+                    );
                 }
                 card = card.child(row);
             }
-            out.push(snapped(card).into_any_element());
+            out.push(card.into_any_element());
         }
         out
     }

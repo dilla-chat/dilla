@@ -19,7 +19,9 @@ type PickHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
 
 /// The group's width as the web paints it: its options are as wide as their mono labels (fractional pixels) and the web
 /// paints the group between whole CSS pixels; with one edge on a whole pixel (left- or right-aligned) that is the natural
-/// width rounded. `None` when a label falls back to another face (then the layout's own width stands).
+/// width rounded. The layout snap cannot give this: each label's width is an authored length GPUI rounds to a device pixel
+/// before layout (62.1 to 62, 20.7 to 20.5), so the summed group drifts up to a pixel off the web's before any edge is
+/// snapped. `None` when a label falls back to another face (then the layout's own width stands).
 pub fn painted_width(labels: &[&str], tall: bool) -> Option<f32> {
     let pad = if tall { 12.0 } else { 10.0 };
     let advance = f32::from(text::BTN) * crate::text::MONO_ADVANCE;
@@ -114,18 +116,11 @@ impl RenderOnce for Segmented {
             // half a pixel over, which must not wrap); without one they wrap as the web's do.
             .when_some(painted, |g, w| g.w(px(w)).max_w_full())
             .when(painted.is_none(), |g| g.flex_wrap())
-            .relative()
             .p(px(2.0))
-            // Its options are as wide as their labels (fractional pixels): the group and the chosen option are painted
-            // on the web's whole pixels (`snap::painted_box`).
+            .bg(color::SURFACE_2)
             .border_1()
-            .border_color(gpui::transparent_black())
-            .rounded(radius::SEG)
-            .child(crate::snap::painted_box(
-                radius::SEG,
-                color::SURFACE_2,
-                Some(color::CONTROL_EDGE_FIELD),
-            ));
+            .border_color(color::CONTROL_EDGE_FIELD)
+            .rounded(radius::SEG);
         group = group.on_key_down(move |event, window, cx| {
             let Some(from) = group_handles.iter().position(|h| h.is_focused(window)) else {
                 return;
@@ -162,15 +157,8 @@ impl RenderOnce for Segmented {
                 .min_h(px(if self.tall { 28.0 } else { 26.0 }))
                 .px(px(if self.tall { 12.0 } else { 10.0 }))
                 .py(px(if self.tall { 0.0 } else { 4.0 }))
-                .relative()
                 .rounded(radius::SEG - px(2.0))
-                .when(checked, |o| {
-                    o.child(crate::snap::painted_box(
-                        radius::SEG - px(2.0),
-                        color::ACCENT,
-                        None,
-                    ))
-                })
+                .when(checked, |o| o.bg(color::ACCENT))
                 .focus_visible(|s| s.shadow(focus_ring()))
                 .child(line(
                     label.clone(),
