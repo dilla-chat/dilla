@@ -259,6 +259,11 @@ impl ShellView {
             window_id: window.window_handle().window_id(),
             _subscriptions: vec![sent],
         };
+        // The DM area (13) follows the instance from the shell's start (the DM list, the trust slice), whatever the shell
+        // first shows: a person who never opens the DMs still has their list (the Home tile's counts, the ring gate).
+        if let Some(client) = &this.client {
+            client.dms().start();
+        }
         this.settle_selection(cx);
         // The voice area's hooks read this state and client (17).
         crate::screens::voice::sync(this.window_id, this.state.clone(), this.client.as_ref(), cx);

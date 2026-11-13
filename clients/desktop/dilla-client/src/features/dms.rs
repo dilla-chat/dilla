@@ -142,6 +142,12 @@ impl Dms {
         super::trust::start(&self.inner, &self.state);
     }
 
+    /// Feature `testing`: whether the area's watcher runs ([`Dms::start`]).
+    #[cfg(feature = "testing")]
+    pub fn started(&self) -> bool {
+        super::trust::started(&self.inner)
+    }
+
     /// The DM view is showing: the list's poll goes back to its shortest interval.
     pub fn viewing(&self) {
         let area = memory(&self.inner);

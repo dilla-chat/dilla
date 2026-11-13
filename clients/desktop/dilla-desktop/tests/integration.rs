@@ -1379,6 +1379,64 @@ fn recovery_enrols_a_new_device_the_peer_reads(cx: &mut TestAppContext) {
     peer.stop();
 }
 
+/// Wave 2 H (the Bot lane's finding): the DM area starts with the shell, not when the DMs home (or a conversation's trust
+/// banners) first draws. Ada's shell shows no conversation and never the DMs; Björn opens a DM with her and writes; her
+/// client lists that DM with no visit to the DMs.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn the_dm_list_is_read_without_opening_the_dms(cx: &mut TestAppContext) {
+    let w = world("w2h-dm-start", 0);
+    let ada = Rc::new(w.start(&w.ada));
+    let bjorn = w.start(&w.bjorn);
+    let general = w.general(&ada);
+    w.general(&bjorn);
+    cx.executor().allow_parking();
+    cx.update(dilla_desktop::install);
+    assert!(!ada.dms().started(), "nothing started the DM area before the shell");
+    // The shell as it first shows a person with no server yet (a fresh account, its server list still loading): no
+    // conversation is drawn, so nothing but the shell's own start reads the DMs.
+    let mut first = (*ada.state().borrow().clone()).clone();
+    first.communities.clear();
+    first.channels.clear();
+    let state = Arc::new(first);
+    let client = ada.clone();
+    let (_shell, vcx) = cx.add_window_view(move |window, cx| {
+        ShellView::new(
+            state,
+            Some(client),
+            None,
+            dilla_desktop::screens::shell::Clock::Local,
+            window,
+            cx,
+        )
+    });
+    pump(vcx);
+    assert!(ada.dms().started(), "the shell's start started the DM area");
+    let ada_user = dilla_client::state::UserId(w.ada.user_id);
+    w.rt.block_on(async {
+        let dm = bjorn
+            .dms()
+            .open_dm(ada_user)
+            .await
+            .unwrap()
+            .expect("Björn opens the DM");
+        bjorn
+            .dms()
+            .send_text(dm, "hello from the DMs".into())
+            .await
+            .unwrap()
+            .expect("queued");
+    });
+    until(vcx, "Ada's client lists the DM", |_| {
+        ada.state()
+            .borrow()
+            .dms
+            .all()
+            .iter()
+            .any(|d| d.members.iter().any(|m| m.0 == w.bjorn.user_id))
+    });
+}
+
 /// Closes the window (nothing of a client in it).
 fn quit_window(vcx: &mut VisualTestContext) {
     vcx.update(|window, _| window.remove_window());
