@@ -225,14 +225,34 @@ fn feed_epochs(link: &MediaLink) -> (Arc<EpochFeed>, MediaSlot, tokio::task::Joi
     let out = feed.clone();
     let media = slot.clone();
     let task = tokio::spawn(async move {
+        let mut suspended = false;
         loop {
             let e = epochs.borrow_and_update().clone();
             if e.is_none()
                 && let Some(m) = media.get()
             {
                 m.drop_keys();
+                suspended = true;
             }
             if let Some(e) = e {
+                // Ruling R24: the epoch a refusal suspended passes again: the feed has it already, so the call's media
+                // installs it directly and its suspended sender resumes.
+                if suspended
+                    && out.current() == Some(e.epoch)
+                    && let Some(m) = media.get()
+                    && let Err(err) = m.install_epoch(
+                        e.epoch,
+                        &e.base_key,
+                        &e.roster
+                            .iter()
+                            .map(|(l, d, _)| (*l, *d))
+                            .collect::<Vec<_>>(),
+                        e.own_leaf,
+                    )
+                {
+                    log::warn!("voice: the epoch did not resume: {err}");
+                }
+                suspended = false;
                 out.publish(dilla_media::MediaEpoch {
                     epoch: e.epoch,
                     base_key: Zeroizing::new(*e.base_key),

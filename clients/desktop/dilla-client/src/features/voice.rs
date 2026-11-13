@@ -678,7 +678,7 @@ impl Voice {
                     return Ok(());
                 }
                 match this.calls.media_epoch(&live.group_id) {
-                    Ok(m) if m.epoch > last => {
+                    Ok(m) if hands_on(m.epoch, last, epochs.borrow().is_none()) => {
                         last = m.epoch;
                         let m = Arc::new(m);
                         let (epoch, code, roster) = epoch_fields(&m);
@@ -925,6 +925,12 @@ fn code_of(e: &crate::seams::HttpError) -> String {
     }
 }
 
+/// Whether an epoch the gate passed goes to the media: a newer one, or (ruling R24) the same one again after a refusal
+/// suspended it (the person re-trusted with no commit between), which resumes the call.
+pub fn hands_on(epoch: u64, last: u64, suspended: bool) -> bool {
+    epoch > last || (suspended && epoch == last)
+}
+
 fn epoch_fields(m: &MediaEpoch) -> (u64, String, Vec<(UserId, DeviceId, u16)>) {
     (
         m.epoch,
@@ -1015,6 +1021,21 @@ mod tests {
             ])]),
         ])]);
         assert!(decode_community_calls(&bad.encode()).is_err());
+    }
+
+    /// Ruling R24: a refusal, then the same epoch passing again, resumes; an older one never does.
+    #[test]
+    fn the_same_epoch_after_a_refusal_resumes_the_call() {
+        assert!(hands_on(5, 4, false), "a newer epoch");
+        assert!(
+            !hands_on(4, 4, false),
+            "the same epoch while running changes nothing"
+        );
+        assert!(
+            hands_on(4, 4, true),
+            "the same epoch after a refusal resumes"
+        );
+        assert!(!hands_on(3, 4, true), "an older one never");
     }
 
     #[test]

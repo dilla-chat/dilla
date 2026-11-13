@@ -260,7 +260,8 @@ fn dropped_keys_seal_and_open_nothing_until_the_next_epoch() {
     f.media.expect_local("mic-drop", Slot::Microphone);
     let tx = testing::attach(true, false, "mic-drop");
     testing::frame(tx, "audio/opus", OPUS, false);
-    assert_eq!(testing::take_emitted(tx).len(), 1);
+    let first = testing::take_emitted(tx);
+    assert_eq!(first.len(), 1);
     let sealed_before: u64 = f.media.stats().encrypted.values().sum();
     f.media.drop_keys();
     assert_eq!(f.media.sending_epoch(), None);
@@ -284,9 +285,26 @@ fn dropped_keys_seal_and_open_nothing_until_the_next_epoch() {
         .unwrap();
     testing::frame(rx, "audio/opus", &frame, false);
     assert!(testing::take_emitted(rx).is_empty());
-    // The refused epoch coming back is not sealed under again (a new sender would repeat its nonces).
+    // Ruling R24: the refused epoch passing again resumes the suspended sender, its counter continued: the same
+    // plaintext seals to new bytes (no nonce repeat), and the peer opens it.
     f.media.install_epoch(EPOCH, &BASE, &ROSTER, 0).unwrap();
-    assert_eq!(f.media.sending_epoch(), None);
+    assert_eq!(f.media.sending_epoch(), Some(EPOCH));
+    testing::frame(tx, "audio/opus", OPUS, false);
+    let resumed = testing::take_emitted(tx);
+    assert_eq!(resumed.len(), 1);
+    assert!(
+        f.media.stats().encrypted.values().sum::<u64>() > sealed_before,
+        "frames_encrypted rises again"
+    );
+    assert_ne!(resumed[0], first[0], "a new nonce: the counter went on");
+    let mut peer_ring = KeyRing::new();
+    peer_ring.install_epoch(EPOCH, &BASE, &ROSTER, Some(1), 0);
+    for frame in [&first[0], &resumed[0]] {
+        let opened = peer_ring
+            .decrypt(Codec::Opus, frame, Some(&ME), Slot::Microphone, 0)
+            .unwrap();
+        assert_eq!(opened.frame, OPUS);
+    }
     // The next epoch seals again.
     f.media
         .install_epoch(EPOCH + 1, &BASE2, &ROSTER, 0)

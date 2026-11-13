@@ -126,8 +126,11 @@ struct KeyFrameWait {
 
 struct State {
     closed: bool,
-    /// The keys were dropped ([`CallMedia::drop_keys`]): only a newer epoch than `epoch` seals again.
+    /// The keys were dropped ([`CallMedia::drop_keys`]): no fresh sender for `epoch` or older (only the suspended
+    /// one resumes there).
     dropped: bool,
+    /// The sender a drop suspended, its counter kept for the resume.
+    suspended: Option<SframeSender>,
     own_leaf: Option<u16>,
     epoch: u64,
     sender: Option<SframeSender>,
@@ -152,6 +155,7 @@ impl CallMedia {
             state: Mutex::new(State {
                 closed: false,
                 dropped: false,
+                suspended: None,
                 own_leaf: None,
                 epoch: 0,
                 sender: None,
@@ -197,6 +201,15 @@ impl CallMedia {
                 .install_epoch(epoch, base_key, roster, Some(own_leaf), now);
             let current = s.epoch;
             let dropped = s.dropped;
+            // Ruling R24: a suspended sender resumes for its own epoch or a newer one, with its counter kept (a
+            // fresh sender for the same key would repeat nonces).
+            if s.sender.is_none()
+                && epoch >= current
+                && let Some(kept) = s.suspended.take()
+            {
+                s.sender = Some(kept);
+                s.own_leaf = Some(own_leaf);
+            }
             match s.sender.as_mut() {
                 Some(sender) if epoch > current => {
                     sender.rekey(base_key, own_leaf, epoch);
@@ -209,6 +222,7 @@ impl CallMedia {
                 None if dropped && epoch <= current => {}
                 None => {
                     s.dropped = false;
+                    s.suspended = None;
                     s.sender = Some(
                         SframeSender::new(base_key, own_leaf, epoch, epoch)
                             .map_err(|e| MediaError::Keys(e.code().into()))?,
@@ -224,13 +238,16 @@ impl CallMedia {
     }
 
     /// WB security I1 (session.ts `dropKeys`): the core's gate refused the call group's newest epoch (an identity
-    /// change, a stale or unlisted device), so every media key goes: the sender is gone (nothing is sealed under the
-    /// old epoch, so a member the group removed stops hearing this device) and the receive ring is emptied (nothing is
-    /// opened), until the next [`install_epoch`](Self::install_epoch).
+    /// change, a stale or unlisted device), so nothing is sealed (a member the group removed stops hearing this device)
+    /// and the receive ring is emptied (nothing is opened) until [`install_epoch`](Self::install_epoch) installs this
+    /// epoch again (the gate passes it once the person re-trusted: ruling R24, a suspend) or a newer one. The sender
+    /// is kept aside, suspended, so a resume continues its counter: a nonce is never reused.
     pub fn drop_keys(&self) {
         let mut s = self.lock();
-        s.dropped = s.dropped || s.sender.is_some();
-        s.sender = None;
+        s.dropped = s.dropped || s.sender.is_some() || s.suspended.is_some();
+        if let Some(sender) = s.sender.take() {
+            s.suspended = Some(sender);
+        }
         s.own_leaf = None;
         s.ring = KeyRing::new();
     }
