@@ -183,6 +183,12 @@ mod tests {
         // A fractional scale keeps device-px rounding, midpoints toward zero.
         assert_eq!(snap(77.5, 1.5), 77.0);
         assert_eq!(snap(77.6, 1.5), 78.0);
+        // Review m5: the other fractional scales too (Windows 125 % and 175 %).
+        for scale in [1.25, 1.75] {
+            assert_eq!(snap(77.5, scale), 77.0);
+            assert_eq!(snap(77.6, scale), 78.0);
+            assert_eq!(snap(78.0, scale), 78.0);
+        }
     }
 
     /// Before the edges snap, the vendored GPUI lays lengths out on Chromium's layout unit (1/64 css px) at a whole scale
@@ -198,6 +204,11 @@ mod tests {
         // Scale 1.5: whole device px, as upstream (authored rounded half toward zero, measured ceiled).
         assert_eq!(gpui::layout_length(6.6, 1.5), 10.0);
         assert_eq!(gpui::measured_length(6.6, 1.5), 10.0);
+        // Review m5: 1.25 and 1.75 as upstream (8.25 device px: authored 8, measured 9; 11.55: 12 and 12).
+        assert_eq!(gpui::layout_length(6.6, 1.25), 8.0);
+        assert_eq!(gpui::measured_length(6.6, 1.25), 9.0);
+        assert_eq!(gpui::layout_length(6.6, 1.75), 12.0);
+        assert_eq!(gpui::measured_length(6.6, 1.75), 12.0);
     }
 
     const TOKENS_TS: &str = include_str!("../../../../packages/design-tokens/src/tokens.ts");
