@@ -203,6 +203,17 @@ impl Store {
         })
     }
 
+    /// The check held for `community` when it was of `publication`: a re-read or a push of the same key keeps it while it is
+    /// checked again (the web's check is synchronous, so it never shows a key unchecked in between). Never across a
+    /// problem with the Bot user.
+    fn carried(&self, community: CommunityId, publication: Option<&Vec<u8>>) -> Option<Verified> {
+        if self.problems.contains_key(&community) {
+            return None;
+        }
+        let v = self.entries.get(&community)?.verified.as_ref()?;
+        (publication == Some(&v.publication)).then(|| v.clone())
+    }
+
     /// The publication the core accepted, which is the only one anything is sealed to.
     fn publication(&self, community: CommunityId) -> Option<(Vec<u8>, [u8; 16])> {
         if self.problems.contains_key(&community) {
@@ -366,13 +377,14 @@ impl Sealed {
                 },
             };
             let bot_channels = held.and_then(|h| h.bot_channels.clone());
+            let verified = s.carried(community, publication.as_ref());
             s.entries.insert(
                 community,
                 Entry {
                     revision: frame.revision,
                     commands,
                     publication: publication.clone(),
-                    verified: None,
+                    verified,
                     refusal: None,
                     server_status,
                     bot_channels,
@@ -405,13 +417,14 @@ impl Sealed {
             let keep = current
                 .as_ref()
                 .is_some_and(|c| c.revision > decoded.revision);
+            let verified = s.carried(community, decoded.publication.as_ref());
             let mut entry = match (&current, keep) {
                 (Some(c), true) => c.clone(),
                 _ => Entry {
                     revision: decoded.revision,
                     commands: decoded.commands,
                     publication: decoded.publication,
-                    verified: None,
+                    verified,
                     refusal: None,
                     server_status: decoded.status,
                     bot_channels: None,
@@ -482,17 +495,22 @@ impl Sealed {
                 let Some(e) = s.entries.get_mut(&community) else {
                     return;
                 };
-                e.verified = None;
-                e.refusal = None;
+                // A check carried over from the same publication stays until this one answers.
                 let (Some(publication), Some(pinned), false) =
                     (e.publication.clone(), pinned, problem)
                 else {
+                    e.verified = None;
+                    e.refusal = None;
                     return;
                 };
                 (publication, pinned)
             };
             // A publication for another community is refused before the core sees it.
             if publication_community(&publication) != Some(community.0) {
+                if let Some(e) = lock(&self.store).entries.get_mut(&community) {
+                    e.verified = None;
+                    e.refusal = None;
+                }
                 return;
             }
             match self.io.verify(publication.clone(), pinned).await {
@@ -507,11 +525,13 @@ impl Sealed {
                             key_id,
                             fingerprint,
                         });
+                        e.refusal = None;
                     }
                     return;
                 }
                 Err(r) => {
                     if let Some(e) = lock(&self.store).entries.get_mut(&community) {
+                        e.verified = None;
                         e.refusal = Some(r.code.clone());
                     }
                     if SIGNER_REFUSALS.contains(&r.code.as_str()) {
