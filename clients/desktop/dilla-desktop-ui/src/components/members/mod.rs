@@ -843,9 +843,8 @@ pub mod space {
     pub const SWATCH: Pixels = px(22.);
     /// The person menu (PersonContextMenu.css `.d-person-menu`).
     pub const PERSON_MENU_W: Pixels = px(236.);
-    /// The profile card's width and its tallest body (the role chips wrap below it).
+    /// The profile card's width (ProfileCard.css).
     pub const CARD_W: Pixels = px(300.);
-    pub const CARD_MAX_H: Pixels = px(360.);
     /// The card's distance from the window's edges and from the aside (`calc(100vw - 16px)`).
     pub const CARD_EDGE: Pixels = px(8.);
     /// ProfileCard.tsx: the card sits 14px beside the pointer and 24px above it.

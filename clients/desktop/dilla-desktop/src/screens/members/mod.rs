@@ -19,11 +19,14 @@ use dilla_client::features::members::{
     GroupKind as Kind, MenuAction, member_card, member_groups, member_name,
 };
 use dilla_client::features::moderation::{BanLength, ReasonProblem, TimeoutLength, reason_problem};
-use dilla_client::features::roles::perm::ROLE_PERM_GROUPS;
+use dilla_client::features::roles::perm::{PermKey, ROLE_PERM_GROUPS};
 use dilla_client::features::roles::rank;
-use dilla_client::features::roles::{Direction, RolePatch, request_id};
+use dilla_client::features::roles::{
+    AssignLock, AssignRefusal, Direction, PermLock, RolePatch, assign_lock, assign_refusal,
+    assignable, held_bits, permission_lock, request_id, self_role_candidates,
+};
 use dilla_client::state::members::Presence as Wire;
-use dilla_client::state::roles::RoleSummary;
+use dilla_client::state::roles::{RoleId, RoleSummary};
 use dilla_client::state::{AppState, CommunityId, UserId};
 use dilla_client::sync::api::ApiError;
 use gpui::{
@@ -37,7 +40,9 @@ use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, Presence, colour_of};
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
+use dilla_desktop_ui::components::check_list::{CheckList, CheckListItem};
 use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
+use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::members::{
     CardAction, GroupKind, ListGroup, ListMember, MemberList, ProfileCard, role_chip, space,
 };
@@ -96,6 +101,17 @@ pub struct MembersUi {
     asked: HashSet<(&'static str, CommunityId)>,
     /// The Moderation log's answer (its sealed Bot read is Task 20's; until then it says the Bot could not answer).
     log_unavailable: bool,
+    /// The DeleteRole confirmation: the role and its name, and the request in flight.
+    role_delete: Option<(CommunityId, RoleId, String)>,
+    role_delete_busy: bool,
+    role_delete_error: Option<String>,
+    /// MemberRolesFlow: the member whose roles are being given or taken, by id.
+    assign: Option<(CommunityId, UserId)>,
+    assign_name: String,
+    assign_busy: Option<RoleId>,
+    assign_problem: Option<String>,
+    /// What each community's role-bearing slices looked like when its access was last read (see [`sync`]).
+    access_seen: std::collections::HashMap<CommunityId, u64>,
 }
 
 impl Global for MembersUi {}
@@ -112,8 +128,44 @@ fn ui(cx: &mut App) -> &mut MembersUi {
 }
 
 /// The host hands its slot context in before it draws the aside (the aside hook takes none of its own).
+///
+/// The web reads the access again on every community change (op 54: a role, a grant or an overwrite changed). The sync
+/// engine consumes op 54 and reads the member list again; when a community's members, their roles or its owner change
+/// here, its access is read again too.
 pub fn sync(ctx: &SlotCx, cx: &mut App) {
-    ui(cx).ctx = Some(ctx.clone());
+    let signatures: Vec<(CommunityId, u64)> = ctx
+        .state
+        .communities
+        .iter()
+        .map(|c| (c.id, role_signature(&ctx.state, c.id)))
+        .collect();
+    let u = ui(cx);
+    u.ctx = Some(ctx.clone());
+    for (community, sig) in signatures {
+        let before = u.access_seen.insert(community, sig);
+        if before.is_some_and(|b| b != sig) {
+            u.asked.remove(&("people", community));
+        }
+    }
+}
+
+/// A digest of what decides `community`'s access: its owner, and each member's roles.
+fn role_signature(state: &AppState, community: CommunityId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    state
+        .communities
+        .iter()
+        .find(|c| c.id == community)
+        .map(|c| c.owner)
+        .hash(&mut h);
+    if let Some(members) = state.members.get(&community) {
+        for m in members {
+            m.user_id.hash(&mut h);
+            m.role_ids.hash(&mut h);
+        }
+    }
+    h.finish()
 }
 
 /// Whether the aside is open.
@@ -345,6 +397,9 @@ fn list_with_overlays(
     if let Some(dialog) = dialog_overlay(ctx, window, cx) {
         root = root.child(dialog);
     }
+    if let Some(dialog) = assign_dialog(ctx, cx) {
+        root = root.child(dialog);
+    }
     root.into_any_element()
 }
 
@@ -417,7 +472,11 @@ fn choose(community: CommunityId, user: UserId, id: &str, cx: &mut App) {
         "ban" => ModKind::Ban,
         "timeout" => ModKind::Timeout,
         "warn" => ModKind::Warn,
-        // Message, compare and roles hand over to the DM, trust and roles views (Tasks 13 and 28 wire them).
+        "roles" => {
+            open_assign(community, user, member_name(member).to_owned(), cx);
+            return;
+        }
+        // Message and compare hand over to the DM and trust views (Tasks 13 and 28 wire them).
         _ => return,
     };
     let u = ui(cx);
@@ -506,13 +565,18 @@ fn card_overlay(
         x = at.x - space::CARD_W - space::POINTER_GAP;
     }
     let x = x.max(space::CARD_EDGE);
-    let y = (at.y - space::POINTER_RISE)
-        .min(viewport.height - space::CARD_MAX_H - space::CARD_EDGE)
-        .max(space::CARD_EDGE);
+    let y = (at.y - space::POINTER_RISE).max(space::CARD_EDGE);
+    // The bottom clamp uses the card's laid-out height, as the web's `box.height - h - GAP`: anchored snaps it inside
+    // the window, 8px from its edges.
     Some(
-        deferred(anchored().position(point(x, y)).child(view))
-            .with_priority(1)
-            .into_any_element(),
+        deferred(
+            anchored()
+                .position(point(x, y))
+                .snap_to_window_with_margin(space::CARD_EDGE)
+                .child(view),
+        )
+        .with_priority(1)
+        .into_any_element(),
     )
 }
 
@@ -954,10 +1018,9 @@ fn roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyEleme
     let state = ctx.state.clone();
     let access = state.roles.access_of(community);
     let roles = sorted_roles(&state, community);
-    let mine = access.top;
     let can = access.loaded && access.manage_roles;
     // A role at or above my rank is locked (the instance refuses it): the owner ranks above every role.
-    let locked = |r: &RoleSummary| !can || (!access.owner && r.position >= mine);
+    let locked = |r: &RoleSummary| !role_editable(&state, community, r);
     let open = ui(cx).role.filter(|id| roles.iter().any(|r| r.id == *id));
     let list = div()
         .flex()
@@ -971,7 +1034,7 @@ fn roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyEleme
                 gpui::rgb(r.color).into()
             };
             div()
-                .id(SharedString::from(format!("role-{}", r.name)))
+                .id(SharedString::from(format!("role-{}", hex(&r.id))))
                 .h(layout::ROW_H_2)
                 .px(space::S10)
                 .flex()
@@ -1031,7 +1094,11 @@ fn roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyEleme
     }
     root = root.child(list);
     if let Some(role) = open.and_then(|id| roles.iter().find(|r| r.id == id)) {
-        root = root.child(role_editor(ctx, community, role, locked(role), cx));
+        let locks = permission_locks(&state, community, role);
+        root = root.child(role_editor(ctx, community, role, locked(role), locks));
+    }
+    if let Some(dialog) = role_delete_dialog(cx) {
+        root = root.child(dialog);
     }
     root.into_any_element()
 }
@@ -1053,8 +1120,9 @@ fn role_editor(
     community: CommunityId,
     role: &RoleSummary,
     locked: bool,
-    _cx: &mut App,
+    locks: Vec<(PermKey, Option<PermLock>)>,
 ) -> AnyElement {
+    let lock_of = |k: PermKey| locks.iter().find(|(x, _)| *x == k).and_then(|(_, l)| *l);
     let client = ctx.client.clone();
     let id = role.id;
     let patch = move |p: RolePatch, cx: &mut App| {
@@ -1120,13 +1188,22 @@ fn role_editor(
                 .children(keys.iter().map(|k| {
                     let patch = patch.clone();
                     let bit = k.bit();
-                    Toggle::new(
+                    // RolesSection.tsx: a role I may not edit, or a bit I do not hold, cannot be given or taken.
+                    let lock = lock_of(*k);
+                    let toggle = Toggle::new(
                         SharedString::from(format!("perm-{}", k.key())),
                         t(&format!("perm.{}", k.key())),
                         allow & bit != 0,
                     )
-                    .disabled(locked)
-                    .on_change(move |on, _w, cx| {
+                    .disabled(lock.is_some());
+                    let toggle = match lock {
+                        Some(PermLock::NotHeld) => toggle.hint(t("roles.editor.notHeld")),
+                        _ => toggle,
+                    };
+                    toggle.on_change(move |on, _w, cx| {
+                        if lock.is_some() {
+                            return;
+                        }
                         let next = if on { allow | bit } else { allow & !bit };
                         patch(
                             RolePatch {
@@ -1173,7 +1250,8 @@ fn role_editor(
         && role.position != 0
         && let Some(client) = ctx.client.clone()
     {
-        let (c2, c3) = (client.clone(), client.clone());
+        let c2 = client.clone();
+        let name = role.name.clone();
         editor = editor.child(
             div()
                 .flex()
@@ -1203,10 +1281,7 @@ fn role_editor(
                         .variant(ButtonVariant::Danger)
                         .icon(IconName::Trash2)
                         .on_click(move |_, _w, cx| {
-                            ui(cx).role = None;
-                            roles_job(&c3, cx, move |r| {
-                                Box::pin(async move { r.delete_role(community, id).await })
-                            });
+                            request_role_delete(community, id, name.clone(), cx);
                         }),
                 ),
         );
@@ -1247,17 +1322,18 @@ fn self_roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> Any
     };
     let offered: HashSet<[u8; 16]> = list.iter().map(|r| r.id).collect();
     if access.loaded && access.manage_roles {
-        // The policy: which roles below my rank members may pick for themselves.
-        let roles: Vec<RoleSummary> = sorted_roles(&state, community)
+        // The policy: which roles below my rank, carrying nothing beyond SELF_ROLE_BITS, members may pick for themselves.
+        let sorted = sorted_roles(&state, community);
+        let roles: Vec<RoleSummary> = self_role_candidates(&sorted, &access)
             .into_iter()
-            .filter(|r| r.position != 0 && (access.owner || r.position < access.top))
+            .cloned()
             .collect();
         for r in roles {
             let (id, offered_now) = (r.id, offered.clone());
             let client = ctx.client.clone();
             root = root.child(
                 Toggle::new(
-                    SharedString::from(format!("self-role-{}", r.name)),
+                    SharedString::from(format!("self-role-{}", hex(&r.id))),
                     r.name.clone(),
                     offered.contains(&r.id),
                 )
@@ -1282,7 +1358,7 @@ fn self_roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> Any
             let (id, client) = (r.id, ctx.client.clone());
             root = root.child(
                 Toggle::new(
-                    SharedString::from(format!("self-role-{}", r.name)),
+                    SharedString::from(format!("self-role-{}", hex(&r.id))),
                     r.name.clone(),
                     r.self_selected,
                 )
@@ -1397,6 +1473,7 @@ fn bans_section(
                             let u = ui(cx);
                             u.error = None;
                             u.busy = false;
+                            u.reason = None;
                             u.dialog = Some(ModDialog {
                                 kind: ModKind::Unban,
                                 community,
@@ -1518,4 +1595,338 @@ pub fn may_moderate(state: &AppState, community: CommunityId, target: UserId) ->
             access.top,
             rank::top_of(&target_roles, roles),
         )
+}
+
+/// RolesSection.tsx `mine`: the bits I hold in `community` (everything for the owner and administrators).
+pub fn my_bits(state: &AppState, community: CommunityId) -> u32 {
+    let access = state.roles.access_of(community);
+    let (Some(me), Some(server)) = (
+        state.account.user_id,
+        state.communities.iter().find(|c| c.id == community),
+    ) else {
+        return 0;
+    };
+    let held = state
+        .members
+        .get(&community)
+        .and_then(|m| m.iter().find(|m| m.user_id == me))
+        .map(|m| m.role_ids.clone())
+        .unwrap_or_default();
+    held_bits(
+        access.owner,
+        server.owner.0,
+        access.everyone_id.unwrap_or_default(),
+        state.roles.roles_of(community),
+        &held,
+        me.0,
+    )
+}
+
+/// Whether I may edit `role` at all: roles are mine to manage and it sits below my rank (or I own the server).
+fn role_editable(state: &AppState, community: CommunityId, role: &RoleSummary) -> bool {
+    let access = state.roles.access_of(community);
+    access.loaded && access.manage_roles && (access.owner || role.position < access.top)
+}
+
+/// The role editor's permission rows of `role`, in ROLE_PERM_GROUPS order, each with its lock (`None`: may toggle).
+pub fn permission_locks(
+    state: &AppState,
+    community: CommunityId,
+    role: &RoleSummary,
+) -> Vec<(PermKey, Option<PermLock>)> {
+    let editable = role_editable(state, community, role);
+    let mine = my_bits(state, community);
+    ROLE_PERM_GROUPS
+        .iter()
+        .flat_map(|(_, keys)| keys.iter())
+        .map(|k| (*k, permission_lock(editable, mine, k.bit())))
+        .collect()
+}
+
+/// MemberRolesFlow.tsx's list for `user`: each assignable role, whether the member holds it, and its lock; `None` once
+/// the member has left (the dialog closes and says so).
+pub fn assign_items(
+    state: &AppState,
+    community: CommunityId,
+    user: UserId,
+) -> Option<Vec<(RoleSummary, bool, Option<AssignLock>)>> {
+    let target = state
+        .members
+        .get(&community)?
+        .iter()
+        .find(|m| m.user_id == user)?;
+    let access = state.roles.access_of(community);
+    let mine = my_bits(state, community);
+    Some(
+        assignable(state.roles.roles_of(community), access.everyone_id)
+            .into_iter()
+            .map(|r| {
+                let held = target.role_ids.contains(&r.id);
+                let lock = assign_lock(&r, &access, mine);
+                (r, held, lock)
+            })
+            .collect(),
+    )
+}
+
+/// Opens the DeleteRole confirmation for `role` (nothing is sent until it is confirmed).
+pub fn request_role_delete(community: CommunityId, role: RoleId, name: String, cx: &mut App) {
+    let u = ui(cx);
+    u.role_delete = Some((community, role, name));
+    u.role_delete_busy = false;
+    u.role_delete_error = None;
+    cx.refresh_windows();
+}
+
+/// The role whose deletion awaits its confirmation.
+pub fn pending_role_delete(cx: &App) -> Option<(CommunityId, RoleId)> {
+    cx.try_global::<MembersUi>()
+        .and_then(|u| u.role_delete.as_ref().map(|(c, r, _)| (*c, *r)))
+}
+
+/// Closes the DeleteRole confirmation (not while its request is in flight).
+pub fn cancel_role_delete(cx: &mut App) {
+    let u = ui(cx);
+    if !u.role_delete_busy {
+        u.role_delete = None;
+        u.role_delete_error = None;
+        cx.refresh_windows();
+    }
+}
+
+/// Sends the confirmed deletion; the refusal and the end of busy land together.
+fn confirm_role_delete(cx: &mut App) {
+    let u = ui(cx);
+    let Some((community, role, name)) = u.role_delete.clone() else {
+        return;
+    };
+    let Some(client) = u.ctx.as_ref().and_then(|c| c.client.clone()) else {
+        return;
+    };
+    if u.role_delete_busy {
+        return;
+    }
+    u.role_delete_busy = true;
+    u.role_delete_error = None;
+    cx.refresh_windows();
+    let job = client
+        .roles()
+        .run(move |r| async move { r.delete_role(community, role).await });
+    cx.spawn(async move |cx| {
+        let answer = job.await;
+        cx.update(|cx| {
+            let u = ui(cx);
+            if u.role_delete.as_ref().is_none_or(|(_, r, _)| *r != role) {
+                return;
+            }
+            u.role_delete_busy = false;
+            match answer {
+                Ok(()) => {
+                    u.role_delete = None;
+                    if u.role == Some(role) {
+                        u.role = None;
+                    }
+                    show_toast(tf("roles.deleted", &[("name", &name)]), cx);
+                }
+                Err(e) => {
+                    u.role_delete_error = Some(tf(
+                        "roles.error.delete",
+                        &[("name", &name), ("code", &e.code)],
+                    ));
+                }
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+/// The DeleteRole confirmation, while one is open.
+fn role_delete_dialog(cx: &mut App) -> Option<AnyElement> {
+    let u = ui(cx);
+    let (_, _, name) = u.role_delete.clone()?;
+    Some(
+        ConfirmDialog::new(
+            "role-delete-dialog",
+            tf("roles.deleteTitle", &[("name", &name)]),
+            t("roles.deleteBody"),
+            t("roles.deleteConfirm"),
+            t("roles.deleteBusy"),
+            t("roles.editor.cancel"),
+        )
+        .busy(u.role_delete_busy)
+        .error(u.role_delete_error.clone().map(SharedString::from))
+        .on_confirm(|_w, cx| confirm_role_delete(cx))
+        .on_close(|_w, cx| cancel_role_delete(cx))
+        .into_any_element(),
+    )
+}
+
+/// Opens MemberRolesFlow for `user`.
+fn open_assign(community: CommunityId, user: UserId, name: String, cx: &mut App) {
+    let u = ui(cx);
+    u.card = None;
+    u.menu = None;
+    u.assign = Some((community, user));
+    u.assign_name = name;
+    u.assign_busy = None;
+    u.assign_problem = None;
+    cx.refresh_windows();
+}
+
+/// One tick of the assign dialog: a grant or a revoke, one at a time, each said when it lands or is refused.
+fn assign_toggle(role: RoleId, on: bool, cx: &mut App) {
+    let u = ui(cx);
+    let Some((community, user)) = u.assign else {
+        return;
+    };
+    if u.assign_busy.is_some() {
+        return;
+    }
+    let Some(ctx) = u.ctx.clone() else { return };
+    let Some(client) = ctx.client.clone() else {
+        return;
+    };
+    let Some(items) = assign_items(&ctx.state, community, user) else {
+        return;
+    };
+    // The gate the dialog draws is checked again here: a locked role is never sent.
+    let Some((r, _, None)) = items.into_iter().find(|(r, _, _)| r.id == role) else {
+        return;
+    };
+    let u = ui(cx);
+    let name = u.assign_name.clone();
+    u.assign_busy = Some(role);
+    u.assign_problem = None;
+    cx.refresh_windows();
+    let job = client.roles().run(move |h| async move {
+        if on {
+            h.grant_role(community, user, role).await
+        } else {
+            h.revoke_role(community, user, role).await
+        }
+    });
+    cx.spawn(async move |cx| {
+        let answer = job.await;
+        cx.update(|cx| {
+            if ui(cx).assign != Some((community, user)) {
+                return;
+            }
+            ui(cx).assign_busy = None;
+            match answer {
+                Ok(()) => {
+                    let key = if on {
+                        "roles.assign.given"
+                    } else {
+                        "roles.assign.taken"
+                    };
+                    show_toast(tf(key, &[("role", &r.name), ("name", &name)]), cx);
+                }
+                Err(e) => {
+                    let listed = ui(cx).ctx.as_ref().is_some_and(|c| {
+                        c.state
+                            .roles
+                            .roles_of(community)
+                            .iter()
+                            .any(|x| x.id == role)
+                    });
+                    let message = match assign_refusal(&e, listed) {
+                        AssignRefusal::TwoFactor => {
+                            tf("roles.assign.error.twoFactor", &[("name", &name)])
+                        }
+                        AssignRefusal::Forbidden => {
+                            tf("roles.assign.error.forbidden", &[("role", &r.name)])
+                        }
+                        AssignRefusal::RoleGone => t("roles.error.gone").to_owned(),
+                        AssignRefusal::MemberGone => {
+                            tf("roles.assign.error.gone", &[("name", &name)])
+                        }
+                        AssignRefusal::Other(code) => {
+                            tf("roles.assign.error.other", &[("code", &code)])
+                        }
+                    };
+                    ui(cx).assign_problem = Some(message);
+                }
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+fn close_assign(cx: &mut App) {
+    let u = ui(cx);
+    u.assign = None;
+    u.assign_busy = None;
+    u.assign_problem = None;
+    cx.refresh_windows();
+}
+
+/// MemberRolesFlow: a dialog over a check list keyed by role id; it closes, and says so, when the member leaves.
+fn assign_dialog(ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> {
+    let (community, user) = ui(cx).assign?;
+    let name = ui(cx).assign_name.clone();
+    let Some(items) = assign_items(&ctx.state, community, user) else {
+        if ctx.state.members.contains_key(&community) {
+            close_assign(cx);
+            show_toast(tf("roles.assign.error.gone", &[("name", &name)]), cx);
+        }
+        return None;
+    };
+    let u = ui(cx);
+    let busy = u.assign_busy.map(|r| SharedString::from(hex(&r)));
+    let problem = u.assign_problem.clone();
+    let list = items
+        .into_iter()
+        .map(|(r, held, lock)| {
+            let item = CheckListItem::new(hex(&r.id), r.name.clone(), held)
+                .color(r.color)
+                .disabled(lock.is_some());
+            match lock {
+                Some(AssignLock::Rank) => {
+                    item.detail(tf("roles.assign.locked", &[("role", &r.name)]))
+                }
+                Some(AssignLock::NotHeld) => item.detail(t("roles.editor.notHeld")),
+                None => item,
+            }
+        })
+        .collect();
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(space::S10)
+        .child(note(tf("roles.assign.body", &[("name", &name)])))
+        .child(note(t("roles.access")))
+        .child(
+            CheckList::new(
+                "assign-roles",
+                tf("roles.assign.title", &[("name", &name)]),
+                list,
+                t("roles.assign.none"),
+            )
+            .busy(busy)
+            .on_toggle(|id, on, _w, cx| {
+                if let Some(role) = user_of(id) {
+                    assign_toggle(role.0, on, cx);
+                }
+            }),
+        );
+    if let Some(problem) = problem {
+        body = body.child(line(
+            problem,
+            text::UI,
+            line_height(text::UI, 1.5),
+            color::DANGER,
+        ));
+    }
+    Some(
+        Dialog::new(
+            "assign-dialog",
+            tf("roles.assign.title", &[("name", &name)]),
+            t("roles.assign.close"),
+        )
+        .body(body)
+        .on_close(|_w, cx| close_assign(cx))
+        .into_any_element(),
+    )
 }

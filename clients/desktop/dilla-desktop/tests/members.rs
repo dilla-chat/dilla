@@ -97,6 +97,95 @@ fn a_moderator_fixture_ranks_below_the_owner_and_above_only_lower_roles() {
     assert_eq!(f.state.members[&c].len(), 12);
 }
 
+/// Fix round 1 (1): the role editor disables a bit the manager does not hold (RolesSection.tsx `mine`), and every bit of
+/// a role at or above her rank.
+#[test]
+fn a_manager_cannot_toggle_a_bit_they_lack() {
+    use dilla_client::features::roles::PermLock;
+    use dilla_client::features::roles::perm::{self, PermKey};
+    use dilla_desktop::screens::members::{my_bits, permission_locks};
+    let f = load("members/pane-b");
+    let c = f.state.communities[0].id;
+    let mine = my_bits(&f.state, c);
+    assert_ne!(mine, perm::PERM_ALL);
+    assert!(mine & perm::BAN_MEMBERS != 0 && mine & perm::ADMINISTRATOR == 0);
+    let roles = f.state.roles.roles_of(c).to_vec();
+    let low = roles.iter().find(|r| r.name == "role number 01").unwrap();
+    let locks = permission_locks(&f.state, c, low);
+    let lock = |k: PermKey| locks.iter().find(|(key, _)| *key == k).unwrap().1;
+    assert_eq!(lock(PermKey::Ban), None, "a held bit may be toggled");
+    assert_eq!(lock(PermKey::Admin), Some(PermLock::NotHeld));
+    assert_eq!(lock(PermKey::ManageServer), Some(PermLock::NotHeld));
+    let high = roles
+        .iter()
+        .find(|r| r.name == "harbour masters of the northern fleet")
+        .unwrap();
+    assert!(
+        permission_locks(&f.state, c, high)
+            .iter()
+            .all(|(_, l)| *l == Some(PermLock::Locked))
+    );
+    // The owner holds everything.
+    let f = load("members/pane");
+    let c = f.state.communities[0].id;
+    assert_eq!(my_bits(&f.state, c), perm::PERM_ALL);
+}
+
+/// Fix round 1 (4): MemberRolesFlow's list: highest first without @everyone, rank and bit locks, and nothing once the
+/// target has left.
+#[test]
+fn the_assign_dialog_locks_by_rank_and_bits_and_ends_when_the_target_leaves() {
+    use dilla_client::features::roles::AssignLock;
+    use dilla_desktop::screens::members::assign_items;
+    let mut f = load("members/pane-b");
+    let c = f.state.communities[0].id;
+    let gunnar = user(&f, c, "gunnar");
+    let items = assign_items(&f.state, c, gunnar).expect("gunnar is a member");
+    assert_eq!(items.len(), 15);
+    assert!(items.windows(2).all(|w| w[0].0.position >= w[1].0.position));
+    let by = |name: &str| {
+        items
+            .iter()
+            .find(|(r, _, _)| r.name == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        by("harbour masters of the northern fleet").2,
+        Some(AssignLock::Rank)
+    );
+    assert_eq!(
+        by("role number 14").2,
+        Some(AssignLock::Rank),
+        "her own top role"
+    );
+    assert_eq!(by("role number 01").2, None);
+    assert!(by("role number 11").1, "gunnar holds role 11");
+    f.state
+        .members
+        .get_mut(&c)
+        .unwrap()
+        .retain(|m| m.user_id != gunnar);
+    assert!(assign_items(&f.state, c, gunnar).is_none());
+}
+
+/// Fix round 1 (3): deleting a role asks first (RolesSection.tsx DeleteRole): the request opens the confirmation and
+/// sends nothing; cancelling closes it.
+#[gpui::test]
+fn deleting_a_role_goes_through_its_confirmation(cx: &mut gpui::TestAppContext) {
+    use dilla_desktop::screens::members::{
+        cancel_role_delete, pending_role_delete, request_role_delete,
+    };
+    let c = CommunityId([7; 16]);
+    cx.update(|cx| {
+        assert_eq!(pending_role_delete(cx), None);
+        request_role_delete(c, [9; 16], "crew".into(), cx);
+        assert_eq!(pending_role_delete(cx), Some((c, [9; 16])));
+        cancel_role_delete(cx);
+        assert_eq!(pending_role_delete(cx), None);
+    });
+}
+
 #[test]
 fn every_members_fixture_parses_and_the_pane_ones_open_the_channel() {
     for name in [

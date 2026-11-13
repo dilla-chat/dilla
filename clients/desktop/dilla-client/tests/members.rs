@@ -1112,6 +1112,80 @@ mod live {
         let promoted = access_of_in(&ada, c, |a| a.top == 1).await;
         assert!(promoted.kick_members, "{promoted:?}");
 
+        // "Pin by right" (roles.spec.ts), the authority half: pinning by the role's right shows in who may pin in
+        // #general (authority.ts, what the core counts). The pin and the mention themselves are Task 9's commands.
+        let ch = general(&owner, c).await;
+        owner
+            .open_channel(ch)
+            .await
+            .unwrap()
+            .expect("owner registers the group");
+        let pinners = |s: &dilla_client::state::AppState| -> Vec<[u8; 16]> {
+            let chans: Vec<AuthorityChannel> = s
+                .channels
+                .iter()
+                .filter(|x| x.community_id == c)
+                .map(|x| AuthorityChannel {
+                    id: x.id.0,
+                    kind: x.kind,
+                    mode: x.mode,
+                    text_group: x.text_group_id.map(|g| g.0),
+                })
+                .collect();
+            let roles: Vec<PermRole> = s
+                .roles
+                .roles_of(c)
+                .iter()
+                .map(|r| PermRole {
+                    id: r.id,
+                    position: r.position,
+                    allow: r.allow,
+                    deny: r.deny,
+                })
+                .collect();
+            let members = dilla_client::features::roles::members_of(&s.members[&c]);
+            let everyone = s.roles.access_of(c).everyone_id.unwrap_or_default();
+            let owner_id = s.communities.iter().find(|x| x.id == c).unwrap().owner.0;
+            authority_for(
+                owner_id,
+                everyone,
+                &roles,
+                &members,
+                &HashMap::new(),
+                &chans,
+            )
+            .values()
+            .flat_map(|v| v.pinners.clone())
+            .collect()
+        };
+        owner.refresh();
+        let s = until(&owner, "#general's group", |s| {
+            s.channel_named(c, "general")
+                .is_some_and(|x| x.text_group_id.is_some())
+        })
+        .await;
+        assert!(!pinners(&s).contains(&ps[1].user_id), "no pin right yet");
+        owner
+            .roles()
+            .update_role(
+                c,
+                mods,
+                RolePatch {
+                    allow: Some(perm::VIEW_CHANNEL | perm::KICK_MEMBERS | perm::PIN_MESSAGES),
+                    ..RolePatch::default()
+                },
+            )
+            .await
+            .unwrap();
+        let s = until(&owner, "the pin right", |s| {
+            s.roles
+                .roles_of(c)
+                .iter()
+                .any(|r| r.id == mods && r.allow & perm::PIN_MESSAGES != 0)
+        })
+        .await;
+        assert!(pinners(&s).contains(&ps[1].user_id), "pin by right");
+
         owner
             .roles()
             .revoke_role(c, UserId(ps[1].user_id), mods)
