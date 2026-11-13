@@ -166,6 +166,8 @@ pub fn attachment_cards(
     let mut cards = Vec::new();
     for a in &item.attachments {
         let name = safe_name(&a.name, t("shell.attachment.unnamed"));
+        // The save dialog's suggested name (review L m7: it asks before anything is opened).
+        let save_name = name.clone();
         let size = ui::format_size(a.size);
         let too_large = a.size > ATTACHMENT_CAP;
         let kind = attachment_kind(&a.mime);
@@ -300,7 +302,7 @@ pub fn attachment_cards(
                     on_toggle: click(move |_, cx| ui::toggle(k, cx)),
                     on_save: Some(click(move |_, cx| {
                         if let Some(c) = &saver {
-                            ui::save(c, k, cx)
+                            ui::save(c, k, &save_name, cx)
                         }
                     })),
                 });
@@ -316,7 +318,7 @@ pub fn attachment_cards(
                     let client = ctx.client.clone();
                     click(move |_, cx| {
                         if let Some(c) = &client {
-                            ui::save(c, k, cx)
+                            ui::save(c, k, &save_name, cx)
                         }
                     })
                 });
@@ -641,7 +643,10 @@ fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
         .into(),
         image,
         save_label: t("shell.lightbox.save").into(),
-        on_save: click(move |_, cx| ui::save(&client, card, cx)),
+        on_save: click({
+            let name = name.clone();
+            move |_, cx| ui::save(&client, card, &name, cx)
+        }),
         close_label: t("shell.lightbox.close").into(),
         on_close: click(|_, cx| ui::close_lightbox(cx)),
         close_focus: focus,
