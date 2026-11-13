@@ -329,6 +329,7 @@ fn a_join_dropped_while_it_waits_for_its_key_ends_its_media_and_frees_the_router
         mic: Mic::None,
         playout: false,
         key_timeout: Duration::from_secs(secs),
+        ..CallOptions::default()
     };
     let feed = EpochFeed::new();
     rt.block_on(async {

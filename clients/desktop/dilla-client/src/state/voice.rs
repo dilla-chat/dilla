@@ -188,7 +188,12 @@ impl VoiceState {
     }
 
     /// voice.ts `place`: a snapshot of `channel`'s call (`None` or nobody in it: no call).
-    pub fn place(&mut self, channel: ChannelId, call: Option<[u8; 16]>, rows: Vec<VoiceParticipant>) {
+    pub fn place(
+        &mut self,
+        channel: ChannelId,
+        call: Option<[u8; 16]>,
+        rows: Vec<VoiceParticipant>,
+    ) {
         match call {
             Some(call_id) if !rows.is_empty() => {
                 let mut participants: Vec<VoiceParticipant> =
@@ -254,10 +259,16 @@ mod tests {
         assert_eq!(users, vec![1, 2], "sorted by user");
         assert!(v.apply(CH, CH.0, row(1, 1, 3)));
         assert!(v.participants(CH)[0].muted());
-        assert!(!v.apply(CH, CH.0, row(1, 1, 3)), "the same row again changes nothing");
+        assert!(
+            !v.apply(CH, CH.0, row(1, 1, 3)),
+            "the same row again changes nothing"
+        );
         assert!(v.apply(CH, CH.0, row(1, 1, 0)));
         assert!(v.apply(CH, CH.0, row(2, 2, 0)));
-        assert!(!v.calls.contains_key(&CH), "the last one out ends the entry");
+        assert!(
+            !v.calls.contains_key(&CH),
+            "the last one out ends the entry"
+        );
     }
 
     #[test]
@@ -294,7 +305,10 @@ mod tests {
         let mut v = VoiceState::default();
         v.place(CH, Some([9; 16]), vec![row(1, 1, 1)]);
         assert_eq!(v.channel_of([9; 16], |_| false), Some(CH));
-        assert_eq!(v.channel_of([5; 16], |c| c.0 == [5; 16]), Some(ChannelId([5; 16])));
+        assert_eq!(
+            v.channel_of([5; 16], |c| c.0 == [5; 16]),
+            Some(ChannelId([5; 16]))
+        );
         assert_eq!(v.channel_of([6; 16], |_| false), None);
     }
 

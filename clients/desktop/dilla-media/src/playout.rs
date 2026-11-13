@@ -42,7 +42,9 @@ const TICK: Duration = Duration::from_millis(5);
 struct Slot {
     ring: Ring,
     active: AtomicBool,
-    /// The callback empties the ring (a source ended, or the slot was handed to another).
+    /// Set when the source ended; the callback empties the ring and then resets it. A slot is
+    /// handed to a new source only once this is false again, so a new source's first samples are
+    /// never emptied with the old one's (the clear-versus-first-push race).
     clear: AtomicBool,
 }
 
@@ -50,7 +52,15 @@ struct Pool {
     slots: Vec<Slot>,
     /// Source key to slot. Taken by `push` and `remove` only, never by the audio callback; it also
     /// serialises the producers, so each ring has one at a time.
-    keys: Mutex<HashMap<String, usize>>,
+    keys: Mutex<Keys>,
+    deafened: AtomicBool,
+}
+
+#[derive(Default)]
+struct Keys {
+    slots: HashMap<String, usize>,
+    /// The sources refused for want of a slot: each is warned about once, not per frame.
+    refused: std::collections::HashSet<String>,
 }
 
 /// Where decoded remote audio goes. Cheap to clone; every clone feeds the same speaker.
@@ -70,7 +80,8 @@ impl Default for PlayoutSink {
                         clear: AtomicBool::new(false),
                     })
                     .collect(),
-                keys: Mutex::new(HashMap::new()),
+                keys: Mutex::new(Keys::default()),
+                deafened: AtomicBool::new(false),
             }),
         }
     }
@@ -80,32 +91,56 @@ impl PlayoutSink {
     /// Queues 48 kHz mono samples of one remote source (any stable key: device and track).
     pub fn push(&self, source: &str, samples: &[i16]) {
         let mut keys = self.pool.keys.lock().unwrap_or_else(|p| p.into_inner());
-        let index = match keys.get(source) {
+        let index = match keys.slots.get(source) {
             Some(i) => *i,
             None => {
-                let used: Vec<usize> = keys.values().copied().collect();
-                let Some(i) = (0..SLOTS).find(|i| !used.contains(i)) else {
-                    log::warn!("dilla-media: more than {SLOTS} remote sources: one is not played");
+                let free = (0..SLOTS).find(|i| {
+                    !keys.slots.values().any(|u| u == i)
+                        && !self.pool.slots[*i].clear.load(Ordering::Acquire)
+                });
+                let Some(i) = free else {
+                    if keys.refused.insert(source.to_owned()) {
+                        log::warn!(
+                            "dilla-media: more than {SLOTS} remote sources: {source} is not played"
+                        );
+                    }
                     return;
                 };
-                let slot = &self.pool.slots[i];
-                slot.clear.store(true, Ordering::Release);
-                slot.active.store(true, Ordering::Release);
-                keys.insert(source.to_owned(), i);
+                keys.refused.remove(source);
+                self.pool.slots[i].active.store(true, Ordering::Release);
+                keys.slots.insert(source.to_owned(), i);
                 i
             }
         };
         self.pool.slots[index].ring.push(samples);
     }
 
-    /// Forgets a source (its track ended).
+    /// Forgets a source (its track ended): its slot is emptied by the device callback and then
+    /// free again.
     pub fn remove(&self, source: &str) {
         let mut keys = self.pool.keys.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(i) = keys.remove(source) {
+        keys.refused.remove(source);
+        if let Some(i) = keys.slots.remove(source) {
             let slot = &self.pool.slots[i];
             slot.active.store(false, Ordering::Release);
             slot.clear.store(true, Ordering::Release);
         }
+    }
+
+    /// How many sources hold a slot (tests).
+    pub fn sources(&self) -> usize {
+        self.pool
+            .keys
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .slots
+            .len()
+    }
+
+    /// Mutes or unmutes every source (deafen): the callback still drains the rings, so nothing
+    /// queues up meanwhile, but plays silence.
+    pub fn set_deafened(&self, on: bool) {
+        self.pool.deafened.store(on, Ordering::Release);
     }
 
     /// Mixes the next `out.len()` samples of every source, clamped. Real-time safe: no allocation
@@ -115,8 +150,10 @@ impl PlayoutSink {
             let mut acc = [0i32; CHUNK];
             let mut tmp = [0i16; CHUNK];
             for slot in &self.pool.slots {
-                if slot.clear.swap(false, Ordering::AcqRel) {
+                if slot.clear.load(Ordering::Acquire) {
                     slot.ring.skip(usize::MAX);
+                    // Reset only once the ring is empty: the slot is free from here.
+                    slot.clear.store(false, Ordering::Release);
                 }
                 if !slot.active.load(Ordering::Acquire) {
                     continue;
@@ -129,6 +166,9 @@ impl PlayoutSink {
                 for (a, s) in acc.iter_mut().zip(&tmp[..n]) {
                     *a += i32::from(*s);
                 }
+            }
+            if self.pool.deafened.load(Ordering::Acquire) {
+                acc = [0; CHUNK];
             }
             for (o, a) in part.iter_mut().zip(acc) {
                 *o = a.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;

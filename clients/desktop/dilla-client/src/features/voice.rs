@@ -26,7 +26,7 @@ use crate::calls::{CallPhase, CallTarget, Calls, MediaEpoch};
 use crate::client::{Client, ClientError, Inner};
 use crate::gateway::frames::{Frame, Op, Value, voice_state_of};
 use crate::seams::Http;
-use crate::state::voice::{LocalShare, OwnCall, VoiceNotice, VoiceParticipant, VoiceState};
+use crate::state::voice::{LocalShare, OwnCall, VoiceNotice, VoiceParticipant};
 use crate::state::{AppState, ChannelId, CommunityId, DeviceId, UserId};
 use crate::sync::route::AreaFrames;
 
@@ -93,7 +93,6 @@ struct Live {
 /// What the area keeps for one client between calls of its handle.
 struct Runtime {
     reads: Vec<Read>,
-    next_read: u64,
     started: bool,
     /// Bumped by every join and leave: a task of an older one stops.
     generation: u64,
@@ -112,7 +111,6 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             reads: Vec::new(),
-            next_read: 1,
             started: false,
             generation: 0,
             joining: None,
@@ -205,10 +203,9 @@ fn apply_frame(s: &mut AppState, f: &Frame, own: Option<[u8; 16]>) {
     };
     let channels: HashSet<ChannelId> = s.channels.iter().map(|c| c.id).collect();
     let own_channel = s.voice.call.channel;
-    let Some(channel) = s
-        .voice
-        .channel_of(v.call_id, |c| channels.contains(&c) || own_channel == Some(c))
-    else {
+    let Some(channel) = s.voice.channel_of(v.call_id, |c| {
+        channels.contains(&c) || own_channel == Some(c)
+    }) else {
         return;
     };
     s.voice.apply(
@@ -251,7 +248,10 @@ fn send_voice_self(inner: &Arc<Inner>, call: [u8; 16], flags: u8) -> bool {
         op: Op::VOICE_SELF,
         n: 0,
         group_id: None,
-        payload: vec![Value::Bytes(call.to_vec()), Value::Uint(u64::from(flags & 3))],
+        payload: vec![
+            Value::Bytes(call.to_vec()),
+            Value::Uint(u64::from(flags & 3)),
+        ],
     };
     crate::gateway::frames::encode(&frame).is_ok_and(|b| inner.engine().send_gateway_frame(b))
 }
@@ -472,15 +472,34 @@ impl Voice {
         lock(&self.rt()).link.subscribe()
     }
 
-    /// Joins `channel`'s call (a voice channel, or a DM's call: `community` `None`). Leaves the call this device is in
-    /// first. The phase moves in `AppState::voice.call` as the join goes ([`CallPhase`]); the answer comes once it has
-    /// joined or ended without a call (its `E_*` code then also in `call.error`).
+    /// Joins a voice channel's call (a channel of the published list: its community binds the call group). Leaves the
+    /// call this device is in first. The phase moves in `AppState::voice.call` as the join goes ([`CallPhase`]); the
+    /// answer comes once it has joined or ended without a call (its `E_*` code then also in `call.error`).
     pub fn join(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
-        self.inner.spawn(async move { this.join_inner(channel).await })
+        self.inner.spawn(async move {
+            let community = this
+                .inner
+                .snapshot()
+                .channel(channel)
+                .map(|c| c.community_id)
+                .ok_or(ClientError::UnknownChannel)?;
+            this.join_inner(channel, Some(community)).await
+        })
     }
 
-    async fn join_inner(&self, channel: ChannelId) -> Result<(), ClientError> {
+    /// Joins a DM's or group DM's call (no community). Task 18's ring and DM call flows use it.
+    pub fn join_dm(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
+        let this = self.clone();
+        self.inner
+            .spawn(async move { this.join_inner(channel, None).await })
+    }
+
+    async fn join_inner(
+        &self,
+        channel: ChannelId,
+        community: Option<CommunityId>,
+    ) -> Result<(), ClientError> {
         let snap = self.inner.snapshot();
         if snap.voice.call.channel == Some(channel) && snap.voice.in_call() {
             return Ok(());
@@ -488,7 +507,6 @@ impl Voice {
         if snap.voice.in_call() {
             self.leave_inner().await?;
         }
-        let community = snap.channel(channel).map(|c| c.community_id);
         let rt = self.rt();
         let (abort_tx, abort_rx) = oneshot::channel::<()>();
         let generation = {
@@ -521,11 +539,15 @@ impl Voice {
                         continue;
                     }
                     inner.publish(move |s| {
-                        if s.voice.call.channel == Some(channel) && s.voice.call.phase != CallPhase::Idle {
+                        if s.voice.call.channel == Some(channel)
+                            && s.voice.call.phase != CallPhase::Idle
+                        {
                             s.voice.call.phase = p;
                         }
                     });
                 }
+                // The join ended (its phase sender went with it): the outcome branch answers.
+                std::future::pending::<()>().await;
             }
         };
         let outcome = tokio::select! {
@@ -578,16 +600,22 @@ impl Voice {
             ice_servers: joined.started.ice_servers.clone(),
             epochs,
         });
-        {
+        let current = {
             let mut r = lock(&rt);
-            if r.generation != generation {
-                // A leave raced the outcome: the call is left at once.
-                drop(r);
-                let _ = self.calls.leave(live.group_id, live.call_id, joined.started.created).await;
-                return Err(ClientError::Sync("E_CANCELLED".into()));
+            let current = r.generation == generation;
+            if current {
+                r.live = Some(live.clone());
+                r.link.send_replace(Some(link));
             }
-            r.live = Some(live.clone());
-            r.link.send_replace(Some(link));
+            current
+        };
+        if !current {
+            // A leave raced the outcome: the call is left at once.
+            let _ = self
+                .calls
+                .leave(live.group_id, live.call_id, joined.started.created)
+                .await;
+            return Err(ClientError::Sync("E_CANCELLED".into()));
         }
         let (epoch, code, roster) = epoch_fields(&first);
         let call_id = live.call_id;
@@ -697,12 +725,10 @@ impl Voice {
                 .iter()
                 .all(|p| p.device_id == d)
         });
-        let left = self
-            .calls
+        self.calls
             .leave(live.group_id, live.call_id, alone)
             .await
             .map_err(|_| ClientError::Stopped)??;
-        log::debug!("voice: left (ended {}, proposed {})", left.ended, left.proposed);
         Ok(())
     }
 
@@ -941,10 +967,17 @@ mod tests {
             group_id: [2; 16],
             url: "wss://sfu".into(),
             token: Zeroizing::new("secret-token".into()),
-            ice_servers: vec![(vec!["turn:x".into()], "u".into(), Zeroizing::new("cred".into()))],
+            ice_servers: vec![(
+                vec!["turn:x".into()],
+                "u".into(),
+                Zeroizing::new("cred".into()),
+            )],
             epochs,
         };
         let shown = format!("{link:?}");
-        assert!(!shown.contains("secret-token") && !shown.contains("cred"), "{shown}");
+        assert!(
+            !shown.contains("secret-token") && !shown.contains("cred"),
+            "{shown}"
+        );
     }
 }

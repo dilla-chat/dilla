@@ -187,15 +187,70 @@ fn find(host: &cpal::Host, id: &DeviceId) -> Option<cpal::Device> {
 }
 
 /// A failure that means "this device is gone": the device was disconnected, the stream was
-/// invalidated or the host went away. A route change keeps the stream alive, and a transient
-/// xrun, busy or resource error must not move the user's chosen device to the default.
+/// invalidated or the host went away, access was withdrawn (a privacy toggle mid-call), or the
+/// backend reported an unplug it could not classify (ALSA's `ENODEV`, a PipeWire node that went
+/// away). A route change keeps the stream alive, and a transient xrun, busy or resource error must
+/// not move the user's chosen device to the default.
 fn lost(e: &cpal::Error) -> bool {
-    matches!(
-        e.kind(),
+    lost_kind(e.kind(), &e.to_string())
+}
+
+/// [`lost`] by kind and message (tests build no `cpal::Error`).
+pub(crate) fn lost_kind(kind: cpal::ErrorKind, message: &str) -> bool {
+    match kind {
         cpal::ErrorKind::DeviceNotAvailable
-            | cpal::ErrorKind::StreamInvalidated
-            | cpal::ErrorKind::HostUnavailable
-    )
+        | cpal::ErrorKind::StreamInvalidated
+        | cpal::ErrorKind::HostUnavailable
+        | cpal::ErrorKind::PermissionDenied => true,
+        cpal::ErrorKind::BackendError | cpal::ErrorKind::Other => {
+            let m = message.to_ascii_lowercase();
+            [
+                "no such device",
+                "enodev",
+                "disconnected",
+                "device removed",
+                "device not found",
+                "no longer available",
+                "node removed",
+            ]
+            .iter()
+            .any(|w| m.contains(w))
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod lost_tests {
+    use super::lost_kind;
+    use cpal::ErrorKind as K;
+
+    #[test]
+    fn an_unplug_of_any_kind_is_a_loss_and_a_glitch_is_not() {
+        for k in [
+            K::DeviceNotAvailable,
+            K::StreamInvalidated,
+            K::HostUnavailable,
+            K::PermissionDenied,
+        ] {
+            assert!(lost_kind(k, ""), "{k:?}");
+        }
+        assert!(lost_kind(
+            K::BackendError,
+            "snd_pcm_recover: No such device (19)"
+        ));
+        assert!(lost_kind(K::Other, "the device was disconnected"));
+        for k in [
+            K::Xrun,
+            K::DeviceBusy,
+            K::DeviceChanged,
+            K::ResourceExhausted,
+            K::RealtimeDenied,
+        ] {
+            assert!(!lost_kind(k, "No such device"), "{k:?}");
+        }
+        assert!(!lost_kind(K::BackendError, "underrun occurred"));
+    }
 }
 
 /// A streaming linear resampler (mono). Voice-grade; the common case (48 kHz devices) bypasses it.

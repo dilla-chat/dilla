@@ -173,6 +173,7 @@ async fn main() {
             mic,
             playout: false,
             key_timeout: Duration::from_secs(30),
+            ..CallOptions::default()
         },
     )
     .await
