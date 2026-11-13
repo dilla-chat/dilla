@@ -260,7 +260,7 @@ async fn ingest_account_kind(core: &CoreHandle, user: [u8; 16], head: &[u8]) {
 
 /// controller.ts `LEAF_VERDICTS` (sync/errors.ts): the core's own leaf verdicts, the only refusals that say a device is
 /// off its list. A stale read or a limit says nothing about the device.
-const LEAF_VERDICTS: &[&str] = &[
+pub(crate) const LEAF_VERDICTS: &[&str] = &[
     "E_DEVICE_UNLISTED",
     "E_DEVICE_REVOKED",
     "E_CREDENTIAL",
@@ -305,6 +305,13 @@ impl TrustMemory {
         let hex = crate::state::hex(user);
         self.fetched
             .retain(|key| key.split(':').nth(2) != Some(hex.as_str()));
+    }
+
+    /// controller.ts `refreshGroupTrust`'s first half: forgets the leaves of `group` already fetched, so the next pass
+    /// reads them again.
+    pub fn forget_group(&mut self, group: &[u8; 16]) {
+        let prefix = format!("{}:", crate::state::hex(group));
+        self.fetched.retain(|k| !k.starts_with(&prefix));
     }
 }
 
@@ -767,6 +774,26 @@ mod tests {
         assert!(
             !rb.has_changed().unwrap(),
             "one engine's pass does not wake another's watcher"
+        );
+    }
+
+    #[test]
+    fn forgetting_a_group_keeps_the_other_groups_leaves() {
+        let (g, other) = ([1u8; 16], [2u8; 16]);
+        let mut m = TrustMemory::default();
+        for (group, leaf) in [(g, 1), (g, 2), (other, 1)] {
+            m.fetched.insert(format!(
+                "{}:{leaf}:{}:3:unknown",
+                crate::state::hex(&group),
+                crate::state::hex(&[9; 16])
+            ));
+        }
+        m.forget_group(&g);
+        assert_eq!(m.fetched.len(), 1);
+        assert!(
+            m.fetched
+                .iter()
+                .all(|k| k.starts_with(&crate::state::hex(&other)))
         );
     }
 }

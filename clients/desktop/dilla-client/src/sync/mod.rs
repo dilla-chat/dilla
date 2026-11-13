@@ -10,7 +10,8 @@
 //!   every gap, so a device that was away gets exactly what it missed, once, in order.
 //! - **Sends** go through the core's outbox (`send_prepare` → `send_encrypt` → `POST message` → `send_confirm`), one
 //!   at a time per group, with send.ts's answers to a lost response (catch up, then wait for the echo before a resend),
-//!   429 (slow mode), 425 (a commit is due), 422 at a stale epoch (re-frame once), 403 (resync) and 401.
+//!   429 (slow mode), 425 (a commit is due), 422 at a stale epoch (re-frame once), 403 (resync) and 401. A leaf verdict
+//!   (`E_DEVICE_UNLISTED`, ...) at queueing or sealing reads the group's device lists again and tries once more.
 //! - **Membership**: Welcomes (ready, op 20, before every join), external joins of every expected group (join-all) and
 //!   of an opened channel, registration of a channel's first group, resync of a lost group.
 //! - **Commits** of pending proposals on `commit.needed` (op 17) or after the instance's backoff when this device
@@ -74,13 +75,8 @@ pub const JOIN_ALL_RETRY: Duration = Duration::from_millis(60_000);
 /// engine.ts `HELD_MAX`: frames held per group while it registers or joins.
 pub const HELD_MAX: usize = 512;
 
-/// errors.ts `LEAF_VERDICTS`.
-const LEAF_VERDICTS: &[&str] = &[
-    "E_DEVICE_UNLISTED",
-    "E_DEVICE_REVOKED",
-    "E_CREDENTIAL",
-    "E_TIER_MISMATCH",
-];
+/// errors.ts `LEAF_VERDICTS`: one list, the trust refresh's.
+use trust::LEAF_VERDICTS;
 /// errors.ts `FAILED_LEAF`.
 const FAILED_LEAF: &[&str] = &[
     "E_DEVICE_UNLISTED",
@@ -1148,17 +1144,7 @@ impl Engine {
                     && self.st().removal_trust_tried.insert(g) =>
             {
                 *self.trust.lock().await = trust::TrustMemory::default();
-                if trust::refresh_once(
-                    &self.api,
-                    &self.core,
-                    &self.trust,
-                    &self.trust_pass,
-                    now_s(),
-                )
-                .await
-                {
-                    self.hooks.trust_changed();
-                }
+                self.refresh_trust().await;
                 removals::recover_group(&self.core, &self.api, g).await
             }
             other => other,
@@ -2092,15 +2078,21 @@ impl Engine {
 
     // ---- sending (send.ts) ----
 
-    /// send.ts `sendMessage`: queues a text post (type 0) in the group's outbox and asks for a drain. The core's refusal
-    /// is answered at once and nothing else runs.
+    /// send.ts `sendMessage` behind controller.ts `sendWithTrustRetry`: queues a text post (type 0) in the group's
+    /// outbox and asks for a drain.
+    ///
+    /// The core refuses to queue into a group holding a failed leaf. A device that joined before the list naming it was
+    /// ingested fails against the cached list (`E_DEVICE_UNLISTED` and the other leaf verdicts) until a refresh ingests
+    /// the newer one, so the group's leaves are read again and the post is queued once more; the core alone decides the
+    /// second answer, which is the caller's. A changed key (`E_UMK_CHANGED`) is not retried.
     pub async fn send_text(self: &Arc<Self>, g: Gid, text: String) -> Result<Gid, SyncError> {
         self.send_request(g, 0, None, text).await
     }
 
-    /// send.ts `sendRequest` (Task 9: edits, deletes and pins go through it too): queues an envelope of `kind` (0 post,
-    /// 1 edit, 2 delete, 3 and 4 reaction, 5 pin, 6 unpin) aimed at `target` (a fold's message) in the group's outbox
-    /// and asks for a drain. The core's refusal is answered at once and nothing else runs.
+    /// send.ts `sendRequest` behind controller.ts `sendWithTrustRetry` (Task 9: edits, deletes and pins go through it too,
+    /// as the web's `fold`): queues an envelope of `kind` (0 post, 1 edit, 2 delete, 3 and 4 reaction, 5 pin, 6 unpin)
+    /// aimed at `target` (a fold's message) in the group's outbox and asks for a drain. A leaf verdict reads the group's
+    /// leaves again and queues once more (see [`Engine::send_text`]); any other refusal is answered at once.
     pub async fn send_request(
         self: &Arc<Self>,
         g: Gid,
@@ -2108,9 +2100,6 @@ impl Engine {
         target: Option<Gid>,
         body: String,
     ) -> Result<Gid, SyncError> {
-        if self.stopped() {
-            return Err(SyncError::Stopped);
-        }
         let request = Value::Array(vec![
             Value::Uint(u64::from(kind)),
             target.map_or(Value::Null, |t| Value::Bytes(t.to_vec())),
@@ -2119,6 +2108,20 @@ impl Engine {
             Value::Null,
         ])
         .encode();
+        match self.send_prepared(g, request.clone()).await {
+            Err(SyncError::Core(e)) if LEAF_VERDICTS.contains(&e.code) => {
+                self.refresh_group_trust(g).await;
+                self.send_prepared(g, request).await
+            }
+            other => other,
+        }
+    }
+
+    /// send.ts `sendRequest`'s queueing: the core's refusal is answered at once and nothing else runs.
+    async fn send_prepared(self: &Arc<Self>, g: Gid, request: Vec<u8>) -> Result<Gid, SyncError> {
+        if self.stopped() {
+            return Err(SyncError::Stopped);
+        }
         let now = now_s();
         let raw = with_core(&self.core, move |c| c.send_prepare(&g, &request, now)).await?;
         let v = value::decode(&raw)?;
@@ -2271,7 +2274,7 @@ impl Engine {
                 self.st().trust_retried.insert(reframe, true);
                 let this = Arc::clone(&self);
                 self.spawn_watched(async move {
-                    this.refresh_trust().await;
+                    this.refresh_group_trust(g).await;
                     if let Some(p) = this.st().trust_retried.get_mut(&reframe) {
                         *p = false;
                     }
@@ -2461,6 +2464,14 @@ impl Engine {
     /// releases the rows they held.
     pub async fn refresh_trust(&self) {
         trust::refresh(self, now_s()).await;
+    }
+
+    /// controller.ts `refreshGroupTrust`: forgets which leaves of `g` were already fetched and waits for a trust pass
+    /// that reads them again. A pass already running (it may have taken those leaves and not ingested them yet) is
+    /// waited out first, so this never returns before the group's leaves were read after the call.
+    pub async fn refresh_group_trust(&self, g: Gid) {
+        self.trust.lock().await.forget_group(&g);
+        self.refresh_trust().await;
     }
 
     /// Forgets which leaves were fetched, so the next refresh reads them all again (a new ready).

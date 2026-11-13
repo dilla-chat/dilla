@@ -2303,7 +2303,7 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-client --test sync --locked -- --ignored',
     '    cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
     '    cargo test -p dilla-client --test calls --locked -- --ignored',
-    '    cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --locked -- --ignored',
+    '    cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored',
     '    cargo test -p dilla-client --test attachments --test diagnostics --test members --test reactions --test search --locked -- --ignored',
     '    cargo test -p dilla-client --test notify --locked -- --ignored --skip dm_from_tab_reaches_peer_reply_badges_until_read --skip dm_opened_by_peer_appears_badges_notifies_live',
     '    cargo build -p dilla-testkit --bin dilla-testkit --locked',
