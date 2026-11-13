@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 
 use crate::calls::{CallPhase, Calls, MediaEpoch};
 use crate::client::{Client, ClientError, Inner};
-use crate::features::ring::{GatedJoin, Ring};
+use crate::features::ring::{GatedJoin, OnRefused, Ring};
 use crate::gateway::frames::{Frame, Op, Value, voice_state_of};
 use crate::seams::Http;
 use crate::state::voice::{LocalShare, OwnCall, VoiceNotice, VoiceParticipant};
@@ -558,22 +558,40 @@ impl Voice {
                 ..OwnCall::default()
             };
         });
-        let refused = |code: String| {
-            self.inner.publish(move |s| {
-                if s.voice.call.channel == Some(channel) {
-                    s.voice.call = OwnCall {
-                        error: Some(code),
-                        ..OwnCall::default()
-                    };
-                }
-            });
+        let refusal = |inner: Arc<Inner>| -> OnRefused {
+            Box::new(move |code: &str| {
+                let code = code.to_owned();
+                inner.publish(move |s| {
+                    if s.voice.call.channel == Some(channel) {
+                        s.voice.call = OwnCall {
+                            error: Some(code),
+                            ..OwnCall::default()
+                        };
+                    }
+                });
+            })
         };
+        let refused = |code: String| refusal(self.inner.clone())(&code);
         // Every join goes through the ring area's gate (Task 18, decision 4): a DM whose text group is send-blocked is
         // refused before anything reaches the instance (its block published for the stage), and the outcome ends a ring
-        // of the channel. An answered ring hands its join over already gated.
+        // of the channel. An answered ring hands its join over already gated. The gate runs `refusal` before it
+        // publishes a block, so a published block never sits beside this call still joining; the `refused` calls
+        // below are then no-ops (the call already left `channel`), and cover the answers the gate has no hook for.
         let join = match given {
-            Some(join) => join,
-            None => match self.ring().join(channel, community, String::new()).await {
+            Some(mut join) => {
+                join.on_refused(refusal(self.inner.clone()));
+                join
+            }
+            None => match self
+                .ring()
+                .join_then(
+                    channel,
+                    community,
+                    String::new(),
+                    Some(refusal(self.inner.clone())),
+                )
+                .await
+            {
                 Ok(Ok(Ok(join))) => join,
                 Ok(Ok(Err(block))) => {
                     refused(block.code.clone());
