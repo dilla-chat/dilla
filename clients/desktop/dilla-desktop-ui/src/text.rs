@@ -239,13 +239,26 @@ impl Line {
     }
 }
 
+/// Whether a text `natural` wide fits the box it was laid out in, given the box's painted width `painted`. Chromium decides
+/// text overflow in layout units, before any edge is painted; GPUI's canvas sees the snapped box. At a whole scale each edge
+/// snaps to a whole logical px independently (`gpui::snap_layout_edge`): the origin rounds up by at most 0.5 and the far
+/// edge down by less than 0.5, so the painted box is less than 1px narrower than the laid-out one. At a fractional scale
+/// edges snap to device px: at most one device px.
+pub fn fits_laid_out(natural: f32, painted: f32, scale: f32) -> bool {
+    if scale.fract() == 0.0 {
+        natural < painted + 1.0
+    } else {
+        natural <= painted + 1.0 / scale
+    }
+}
+
 /// The text to paint in `width`: all of it, or (with an ellipsis) as many characters as fit before "…".
-/// `width` is the box as laid out (snapped to device pixels at `scale`): a text that fits its unsnapped box is whole.
+/// `width` is the painted box at `scale`: a text that fits its laid-out (unsnapped) box is whole ([`fits_laid_out`]).
 fn fitted(line: &Line, width: f32, scale: f32) -> SharedString {
     let Some(natural) = line.natural_width() else {
         return line.text.clone();
     };
-    if !line.ellipsis || natural <= width + 1.0 / scale {
+    if !line.ellipsis || fits_laid_out(natural, width, scale) {
         return line.text.clone();
     }
     let advance = line.size * MONO_ADVANCE + line.spacing;
@@ -424,6 +437,20 @@ mod tests {
     fn coverage_is_the_embedded_face() {
         assert!(mono_covers('a') && mono_covers('…') && mono_covers('›') && mono_covers('ö'));
         assert!(!mono_covers('↵'));
+    }
+
+    /// Review I2: "general" at 13px is 54.609375 wide. Laid out at x 100.5 in a box of exactly that width, its edges snap
+    /// to 101 and 155 (54 painted): it still fits its laid-out box, so no "…". A box really narrower than the text cuts it.
+    #[test]
+    fn a_line_within_the_snap_slack_keeps_its_text() {
+        let general = line("general", px(13.0), 20.0, gpui::black()).ellipsis();
+        assert_eq!(fitted(&general, 54.0, 2.0).as_ref(), "general");
+        assert_eq!(fitted(&general, 54.609375, 2.0).as_ref(), "general");
+        let cut = fitted(&general, 50.0, 2.0);
+        assert!(cut.ends_with('…'), "{cut}");
+        // A fractional scale keeps device-pixel snapping: one device pixel of slack.
+        assert_eq!(fitted(&general, 54.0, 1.5).as_ref(), "general");
+        assert!(fitted(&general, 53.5, 1.5).ends_with('…'));
     }
 
     #[test]
