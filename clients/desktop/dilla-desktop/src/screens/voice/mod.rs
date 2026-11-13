@@ -656,6 +656,10 @@ pub fn leave_other_calls(window: WindowId, cx: &mut App) {
 /// and the window says it could not join: a leave that never answers must not hold the join forever.
 pub const HANDOVER_WAIT: Duration = Duration::from_secs(10);
 
+/// How long the handover waits for the join's own answer (review L m2). Past it the handover stops looking: the window's
+/// voice area still shows whatever the client's call becomes, and a window that closes leaves it then.
+pub const JOIN_WAIT: Duration = Duration::from_secs(120);
+
 /// How often the handover looks at the pending leaves.
 const HANDOVER_POLL: Duration = Duration::from_millis(50);
 
@@ -735,14 +739,21 @@ pub fn handover(
         if !cx.update(|cx| area_open(window, cx) && newest(cx)) {
             return;
         }
-        // The join answers on the client's runtime; it is polled on the same timer (a wake from another thread is no
-        // wake of the UI's executor).
+        // The join answers on the client's runtime; it is polled on the same timer, for [`JOIN_WAIT`] at most. (The
+        // platform dispatcher would wake an await on the answer from another thread, but the tests' scheduler runs only
+        // what its own clock and turns wake, so the poll keeps both alike.)
         let mut join = start();
+        let mut joining = Duration::ZERO;
         // `None`: joined; else the notice to show (shell-model.ts `joinFailureKey`), if any.
         let failure: Option<Option<&'static str>> = loop {
             match join.try_recv() {
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    if joining >= JOIN_WAIT {
+                        log::warn!("voice: a join did not answer; its window stops waiting for it");
+                        return;
+                    }
                     cx.background_executor().timer(HANDOVER_POLL).await;
+                    joining += HANDOVER_POLL;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     break Some(Some("voice.failed"));

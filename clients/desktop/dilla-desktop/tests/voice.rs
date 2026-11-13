@@ -1104,6 +1104,26 @@ fn a_newer_join_drops_an_older_waiting_handover(cx: &mut TestAppContext) {
     assert_eq!(toast_in(cx, a), None, "a dropped handover says nothing");
 }
 
+/// Review L m2: a join whose answer never comes is not polled for as long as the app runs.
+#[gpui::test]
+fn a_join_that_never_answers_is_not_polled_forever(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, Vec::new(), start, undo, cx));
+    cx.run_until_parked();
+    assert!(did.started.get());
+    cx.executor()
+        .advance_clock(voice::JOIN_WAIT - std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(!join_tx.is_closed(), "still waiting within the bound");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(join_tx.is_closed(), "the poll gave up on the answer");
+}
+
 /// The toast a join that answers `answer` leaves in its window, after the handover.
 fn toast_after_join(
     cx: &mut TestAppContext,
