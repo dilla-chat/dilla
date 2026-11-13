@@ -362,22 +362,50 @@ fn thread_opens_from_search_hit(cx: &mut TestAppContext) {
     for _ in 0..at.unwrap() {
         vcx.simulate_keystrokes("down");
     }
+    // The row Enter chooses (the palette's active result) and the hit behind it.
+    let chosen = vcx
+        .update(|window, cx| dilla_desktop::screens::search::inspect(window, cx))
+        .and_then(|p| p.active)
+        .expect("an active result");
+    let hit = scene
+        .ada
+        .state()
+        .borrow()
+        .search
+        .hits
+        .iter()
+        .find(|h| format!("msg:{}", h.id()) == chosen)
+        .cloned()
+        .unwrap_or_else(|| panic!("the active row {chosen} is a message hit"));
     vcx.simulate_keystrokes("enter");
     assert_plan_thread_open(&scene, &app, vcx);
-    // The hit chosen is the needle reply itself: the pane holds it, by its id.
-    let held = scene
+    // The hit chosen is the needle reply itself: it names the plan's thread, and the reply the opened pane holds (by
+    // its id) is the message at the hit's place (channel and seq).
+    assert_eq!(
+        hit.thread_root,
+        Some(scene.plan),
+        "the hit is a reply in the plan's thread"
+    );
+    let opened = scene
         .ada
         .state()
         .borrow()
         .threads
         .threads
         .get(&scene.plan)
-        .is_some_and(|d| {
+        .and_then(|d| {
             d.replies
                 .iter()
-                .any(|r| r.msg_id == Some(scene.reply) && r.body.contains(&scene.needle))
-        });
-    assert!(held, "the pane holds the hit's reply");
+                .find(|r| r.msg_id == Some(scene.reply))
+                .cloned()
+        })
+        .expect("the pane holds the needle reply");
+    assert!(opened.body.contains(&scene.needle));
+    assert_eq!(
+        (hit.channel, Some(hit.seq)),
+        (scene.general, opened.seq),
+        "the chosen hit is that reply"
+    );
     drop(app);
     scene.bjorn.stop();
 }
