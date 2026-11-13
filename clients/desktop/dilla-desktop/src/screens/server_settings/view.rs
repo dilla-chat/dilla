@@ -327,6 +327,19 @@ impl ServerSettingsView {
 
 impl Render for ServerSettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The last drawn frame keeps these settings until the window draws again: release lets go of their client at
+        // once (review M5).
+        if let Some(client) = self.client.clone() {
+            crate::release::hold(
+                &client,
+                &cx.entity(),
+                |v: &mut Self, cx| {
+                    v.client = None;
+                    v.body.update(cx, |b, cx| b.sync(Arc::default(), None, cx));
+                },
+                cx,
+            );
+        }
         let active = self.active();
         // The Overview is the one section with a draft: it registers with the workspace while it is open.
         if active == Some(ServerSection::Overview) {

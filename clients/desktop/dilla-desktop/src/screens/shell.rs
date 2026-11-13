@@ -851,6 +851,17 @@ const SEARCH_HINT: &str = if cfg!(target_os = "macos") {
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The last drawn frame keeps this view (and its composer) until the window draws again: release lets go of
+        // their client at once (review M5).
+        if let Some(client) = self.client.clone() {
+            crate::release::hold(&client, &cx.entity(), |s: &mut Self, _| s.client = None, cx);
+            crate::release::hold(
+                &client,
+                &self.composer,
+                |c, _| c.set_slots(SlotCx::default()),
+                cx,
+            );
+        }
         let state = self.state.clone();
         // An open DM is drawn with the channel's log, header and composer (Task 9's views on the DM's id, 13): a channel
         // record of no server, named as the DM is.

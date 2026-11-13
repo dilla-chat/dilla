@@ -293,6 +293,7 @@ fn signing_out_this_device_wipes_its_store_after_the_shell(cx: &mut gpui::TestAp
     let account = dilla_client::store::store_keychain_account(&cfg).unwrap();
     let devices = client.devices();
     let client = Rc::new(client);
+    let weak = Rc::downgrade(&client);
     cx.update(dilla_desktop::install);
     cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
     let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
@@ -306,7 +307,32 @@ fn signing_out_this_device_wipes_its_store_after_the_shell(cx: &mut gpui::TestAp
         vcx.update(|window, _| window.refresh());
         std::thread::sleep(Duration::from_millis(50));
     }
-    // The Devices section's Sign out (its key dialog's call), then nothing of the client is kept here.
+    // Settings -> Devices opens over the shell (review M5: the real path): its view keeps the client between frames.
+    app.update_in(vcx, |a, window, cx| {
+        a.open_route(
+            &dilla_desktop::router::Route::Settings(Some(
+                dilla_desktop::router::UserSection::Devices,
+            )),
+            window,
+            cx,
+        )
+    });
+    for _ in 0..5 {
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "settings");
+    let held = vcx.update(|_, cx| {
+        let c = weak.upgrade().expect("the client runs");
+        dilla_desktop::release::holders_of(&c, cx)
+    });
+    assert!(
+        held > 0,
+        "the Devices section registered its hold on the client"
+    );
+    // Its Sign out (the key dialog's call), then nothing of the client is kept here.
+    let signed_out_at = std::time::Instant::now();
     let mut answer = devices.sign_out_and_remove(Zeroizing::new(ada.recovery_key.clone()));
     drop(devices);
     let deadline = std::time::Instant::now() + WAIT;
@@ -327,11 +353,18 @@ fn signing_out_this_device_wipes_its_store_after_the_shell(cx: &mut gpui::TestAp
             cfg.data_dir.exists(),
             on_sign_in(vcx)
         );
+        // No frame is asked for: the wipe must not wait for the window to draw (review M5).
         vcx.run_until_parked();
         vcx.executor().advance_clock(Duration::from_millis(20));
-        vcx.update(|window, _| window.refresh());
         std::thread::sleep(Duration::from_millis(20));
     }
+    // No holder outlived the release: the wipe went straight through, not through the store-open fallback (which first
+    // waits 5 s for the last handle, then retries every second).
+    assert!(
+        signed_out_at.elapsed() < Duration::from_secs(4),
+        "wiped without waiting for a frame or a retry ({:?})",
+        signed_out_at.elapsed()
+    );
     let listed = dilla_client::instances::Instances::load(&root).unwrap();
     assert!(listed.get(cfg.id).is_none(), "the instance is forgotten");
     assert!(ada.kc.get(&account).unwrap().is_none(), "its key is gone");

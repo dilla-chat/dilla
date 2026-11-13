@@ -180,6 +180,15 @@ impl UserSettings {
     pub fn show(&mut self, which: UserSection, ctx: SlotCx, cx: &mut Context<Self>) {
         self.which = which;
         let saved = Fields::saved(ctx.state.profile.me.as_ref(), &ctx.state.account.username);
+        // Release lets go of this view's client at once (review M5), not when the window next draws.
+        if let Some(client) = ctx.client.clone() {
+            crate::release::hold(
+                &client,
+                &cx.entity(),
+                |v: &mut Self, _| v.ctx = SlotCx::default(),
+                cx,
+            );
+        }
         self.ctx = ctx;
         let moved = {
             let mut draft = self.draft.borrow_mut();

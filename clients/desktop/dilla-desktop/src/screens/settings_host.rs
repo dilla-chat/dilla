@@ -192,6 +192,19 @@ impl UserSettingsHost {
 
 impl Render for UserSettingsHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The last drawn frame keeps this host until the window draws again: release lets go of its client at once
+        // (review M5).
+        if let Some(client) = self.ctx.client.clone() {
+            crate::release::hold(
+                &client,
+                &cx.entity(),
+                |h: &mut Self, _| {
+                    h.ctx.client = None;
+                    h.handed = None;
+                },
+                cx,
+            );
+        }
         let section = self.section;
         let this = cx.entity();
         let nav = SettingsNav::new("user-settings-nav", nav_items(), section.id()).on_select({

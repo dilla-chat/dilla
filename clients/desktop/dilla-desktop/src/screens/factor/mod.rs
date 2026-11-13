@@ -66,6 +66,10 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
         cx.default_global::<PendingStepUps>().0.remove(id);
         cx.default_global::<WindowClients>().0.remove(id);
     }
+    let k = key(client);
+    cx.default_global::<SignInSections>()
+        .0
+        .retain(|(_, c), _| *c != k);
 }
 
 /// The instance `client` was registered with ([`register_instance`]).
@@ -147,12 +151,31 @@ pub fn settings_section(
     ) else {
         return Empty.into_any_element();
     };
-    let section: Entity<settings::SignInSection> =
-        window.use_keyed_state(("factor-signin", key(&client)), cx, |window, cx| {
-            settings::SignInSection::new(client, server, window, cx)
-        });
+    // One per window and client, kept in a map release empties at once (review M5: the window's keyed state would hold
+    // the client until the window next draws).
+    let slot = (window.window_handle().window_id(), key(&client));
+    let live: std::collections::HashSet<gpui::WindowId> =
+        cx.windows().iter().map(|w| w.window_id()).collect();
+    let sections = cx.default_global::<SignInSections>();
+    sections.0.retain(|(w, _), _| live.contains(w));
+    let section = match sections.0.get(&slot) {
+        Some(s) => s.clone(),
+        None => {
+            let s = cx.new(|cx| settings::SignInSection::new(client, server, window, cx));
+            cx.default_global::<SignInSections>()
+                .0
+                .insert(slot, s.clone());
+            s
+        }
+    };
     section.into_any_element()
 }
+
+/// Each window's Sign-in section, by window and client.
+#[derive(Default)]
+struct SignInSections(HashMap<(gpui::WindowId, usize), Entity<settings::SignInSection>>);
+
+impl Global for SignInSections {}
 
 /// What [`ask_step_up`] hands its caller: the token, then the window and the app (Task 21's `StepUpAsk` shape).
 pub type StepUpThen = Box<dyn FnOnce(Zeroizing<String>, &mut Window, &mut App)>;

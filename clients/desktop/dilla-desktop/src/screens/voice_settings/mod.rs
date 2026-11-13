@@ -29,6 +29,10 @@ pub fn section_view(
         section::VoiceSection::new(ctx.clone(), window, cx)
     });
     view.update(cx, |v, _| v.ctx = ctx.clone());
+    // Release lets go of this view's client at once (review M5), not when the window next draws.
+    if let Some(client) = &ctx.client {
+        crate::release::hold(client, &view, |v, _| v.ctx = SlotCx::default(), cx);
+    }
     view
 }
 

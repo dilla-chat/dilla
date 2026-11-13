@@ -686,6 +686,21 @@ pub fn render(
 ) -> impl IntoElement + use<> {
     let ui = ui::ui(window, cx);
     ui.update(cx, |u, _| u.ctx = Some(ctx.clone()));
+    // Release lets go of this window's message state's client at once (review M5), not when the window next draws.
+    if let Some(client) = &ctx.client {
+        crate::release::hold(
+            client,
+            &ui,
+            |u, _| {
+                u.ctx = None;
+                u.editing = None;
+                u.pins = None;
+                u.deleting = None;
+                u.menu = None;
+            },
+            cx,
+        );
+    }
     let members: &[Member] = state
         .members
         .get(&channel.community_id)

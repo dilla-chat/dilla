@@ -51,6 +51,15 @@ pub fn settings_section(
             )
         },
     );
+    // Release lets go of this view's client at once (review M5), not when the window next draws.
+    if let Some(client) = &ctx.client {
+        crate::release::hold(
+            client,
+            &body,
+            |b, cx| b.sync(std::sync::Arc::default(), None, cx),
+            cx,
+        );
+    }
     body.update(cx, |b, cx| {
         b.sync(ctx.state.clone(), ctx.client.clone(), cx)
     });
