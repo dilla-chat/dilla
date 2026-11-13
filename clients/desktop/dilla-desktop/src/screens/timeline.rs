@@ -94,6 +94,8 @@ pub type OnWheel = std::rc::Rc<dyn Fn(bool, &mut gpui::App)>;
 struct Shown<'a> {
     item: &'a TimelineItem,
     grouped: bool,
+    /// A follow-up that keeps a head line of its marks ([`marks_head`]).
+    marks: bool,
     divider: Option<String>,
     last: bool,
     /// The body: its height now (from the memo), its elements only when the row is drawn.
@@ -114,6 +116,7 @@ impl Shown<'_> {
     fn shape(&self) -> RowShape {
         RowShape {
             grouped: self.grouped,
+            marks: self.marks,
             last: self.last,
             before: before_shift(self.before_height),
             body: self.body.height(),
@@ -162,6 +165,8 @@ impl Plan {
 #[derive(Clone, Copy, Debug)]
 struct RowShape {
     grouped: bool,
+    /// A follow-up's head line of marks ([`marks_head`]).
+    marks: bool,
     last: bool,
     /// How far the head and the body move down for what is drawn above the head ([`before_shift`]).
     before: f32,
@@ -182,7 +187,7 @@ fn row_tops(start: f32, rows: &[RowShape]) -> (Vec<f32>, f32) {
             y += divider_height();
         }
         tops.push(y);
-        y += row_height(r.grouped, r.last, r.before, r.body, r.extras);
+        y += row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras);
     }
     (tops, y)
 }
@@ -354,12 +359,18 @@ fn body_parts(
     }
 }
 
-/// Where a row's body starts, below the row's top.
-fn body_offset(grouped: bool) -> f32 {
-    if grouped {
-        FOLLOW_PAD
-    } else {
-        ROW_TOP + head_line() + MAIN_GAP
+/// A follow-up whose head shows a mark (a webhook's "via", edited, pinned, the send state) keeps a head line of its marks
+/// (MessageRow.css: a grouped head leaves the flow only when everything in it is for a screen reader).
+fn marks_head(state: &AppState, community: CommunityId, item: &TimelineItem) -> bool {
+    !head_marks(item).is_empty() || via_mark(state, community, item).is_some()
+}
+
+/// Where a row's body starts, below the row's top: a follow-up's at its padding, under its marks' line when it keeps one.
+fn body_offset(grouped: bool, marks: bool) -> f32 {
+    match (grouped, marks) {
+        (true, false) => FOLLOW_PAD,
+        (true, true) => FOLLOW_PAD + head_line() + MAIN_GAP,
+        (false, _) => ROW_TOP + head_line() + MAIN_GAP,
     }
 }
 
@@ -381,10 +392,12 @@ fn before_shift(height: f32) -> f32 {
 
 /// The height Chromium gives a row with a body `body` px high, `extras` px of other areas' parts under the body and
 /// `before` px (a [`before_shift`]) above its head.
-fn row_height(grouped: bool, last: bool, before: f32, body: f32, extras: f32) -> f32 {
+fn row_height(grouped: bool, marks: bool, last: bool, before: f32, body: f32, extras: f32) -> f32 {
     let slot = attachments_slot(last);
     let body = before + body + extras;
-    if grouped {
+    if grouped && marks {
+        FOLLOW_PAD + head_line() + MAIN_GAP + body + slot + FOLLOW_PAD
+    } else if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
     } else {
         ROW_TOP + head_line() + MAIN_GAP + body + slot + ROW_BOTTOM
@@ -531,6 +544,54 @@ struct RowCx<'a> {
     width: f32,
 }
 
+/// The shaped width of meta text (a webhook's name is the admin's: wide glyphs and emoji are measured, not counted;
+/// final review M5).
+fn meta_width(window: &Window, text_: &str) -> f32 {
+    let run = gpui::TextRun {
+        len: text_.len(),
+        font: gpui::font(font::MONO),
+        color: color::FG_3,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped = window.text_system().shape_line(
+        gpui::SharedString::from(text_.to_owned()),
+        text::META,
+        &[run],
+        None,
+    );
+    f32::from(shaped.width)
+}
+
+/// The head's marks from `x`, 8px apart: a webhook post's "via webhook <name>" (MessageRow's `viaLabel`), then edited,
+/// pinned and the send state, in the meta style.
+fn draw_marks(
+    placer: &mut Placer,
+    cx_row: &RowCx<'_>,
+    item: &TimelineItem,
+    mut x: f32,
+    meta_top: f32,
+    meta_color: gpui::Hsla,
+    window: &Window,
+) {
+    if let Some(via) = via_mark(cx_row.state, cx_row.community, item) {
+        let w = meta_width(window, &via);
+        placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
+        x += w + HEAD_GAP;
+    }
+    for mark in head_marks(item) {
+        let tone = if item.state == TimelineItemState::Failed {
+            color::DANGER
+        } else {
+            meta_color
+        };
+        let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
+        placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
+        x += w + HEAD_GAP;
+    }
+}
+
 /// One row's elements, in coordinates relative to the row box at `base` (whole pixel); `top` is the row's CSS top.
 #[allow(clippy::too_many_arguments)]
 fn draw_row(
@@ -548,12 +609,13 @@ fn draw_row(
     // The body's box sits on a whole pixel; its lines keep the CSS position's fraction.
     let shift = before_shift(shown.before_height);
     let frac = {
-        let at = local + shift + body_offset(shown.grouped);
+        let at = local + shift + body_offset(shown.grouped, shown.marks);
         at - at.floor()
     };
     let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
     let height = row_height(
         shown.grouped,
+        shown.marks,
         shown.last,
         shift,
         laid.height,
@@ -630,24 +692,24 @@ fn draw_row(
             x += tag_w + HEAD_GAP;
         }
         let meta_top = baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line());
-        // A webhook post's "via webhook <name>" follows the tag (MessageRow's `viaLabel`), in the marks' meta style.
-        if let Some(via) = via_mark(cx_row.state, cx_row.community, item) {
-            let w = via.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
-            placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
-            x += w + HEAD_GAP;
-        }
-        for mark in head_marks(item) {
-            let tone = if item.state == TimelineItemState::Failed {
-                color::DANGER
-            } else {
-                meta_color
-            };
-            let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
-            placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
-            x += w + HEAD_GAP;
-        }
+        draw_marks(&mut placer, cx_row, item, x, meta_top, meta_color, window);
+    } else if shown.marks {
+        // A follow-up that shows a mark keeps a head line of only its marks (the name and the tag are for a screen
+        // reader there): a webhook's "via", edited, pinned, the send state (final review I3, MessageRow.css).
+        let head = local + FOLLOW_PAD + shift;
+        let baseline = head + chromium_baseline(Face::Mono, f32::from(text::SM), head_line());
+        let meta_top = baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line());
+        draw_marks(
+            &mut placer,
+            cx_row,
+            item,
+            CONTENT_X,
+            meta_top,
+            meta_color,
+            window,
+        );
     }
-    let body_top = local + shift + body_offset(shown.grouped);
+    let body_top = local + shift + body_offset(shown.grouped, shown.marks);
     let content_w = cx_row.width - CONTENT_X - ROW_RIGHT;
     let body_end = body_top + laid.height;
     placer.out.push(
@@ -814,9 +876,11 @@ pub fn render(
                 height,
             }
         };
+        let grouped = grouped_with_above(prev, item, clock);
         shown.push(Shown {
             item,
-            grouped: grouped_with_above(prev, item, clock),
+            grouped,
+            marks: grouped && marks_head(state, channel.community_id, item),
             divider: starts_day(prev, item, clock).then(|| day_label(item.ts, clock)),
             // Only an empty attachments slot is hidden in the last row; one with cards keeps its gap and margin.
             last: n + 1 == items.len() && item.attachments.is_empty(),
@@ -895,6 +959,7 @@ pub fn render(
         let bottom = top
             + row_height(
                 s.grouped,
+                s.marks,
                 s.last,
                 before_shift(s.before_height),
                 s.body.height(),
@@ -1063,9 +1128,9 @@ mod tests {
     fn heights_come_from_the_css() {
         // The reference's DOM: 54.89 for a row, 49.89 for the log's last row, 75.03 for two lines; 131 for the welcome.
         let lh = body_line();
-        assert!((row_height(false, false, 0.0, lh, 0.0) - 54.890_625).abs() < 1e-4);
-        assert!((row_height(false, true, 0.0, lh, 0.0) - 49.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, 0.0, 2.0 * lh, 0.0) - 75.031_25).abs() < 1e-4);
+        assert!((row_height(false, false, false, 0.0, lh, 0.0) - 54.890_625).abs() < 1e-4);
+        assert!((row_height(false, false, true, 0.0, lh, 0.0) - 49.890_625).abs() < 1e-4);
+        assert!((row_height(false, false, false, 0.0, 2.0 * lh, 0.0) - 75.031_25).abs() < 1e-4);
         assert_eq!(welcome_height(1, 1), 131.0);
         assert_eq!(divider_height(), 23.0);
     }
@@ -1185,6 +1250,66 @@ mod tests {
         );
     }
 
+    /// Integration 3, final review I3 (log-model.ts `groupedWithAbove` and MessageRow.css): two webhook posts in a row
+    /// group as on the web (one sender, the pinned Bot user), and the follow-up still shows its own "via webhook
+    /// <name>": a grouped row whose head shows a mark keeps a head line of its marks, so it is taller than a plain
+    /// follow-up and its body starts under that line.
+    #[test]
+    fn a_grouped_webhook_post_keeps_its_via_label() {
+        use dilla_client::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+        let community = CommunityId([7; 16]);
+        let mut s = AppState::default();
+        s.bot.catalogs.insert(
+            community,
+            BotCatalogView {
+                revision: 1,
+                commands: Vec::new(),
+                status: BotStatus {
+                    state: BotStatusState::Ready,
+                    since: None,
+                },
+                bot_channels: None,
+                bot_user: Some(UserId([9; 16])),
+                bot_name: "Glenn".into(),
+                fingerprint: None,
+            },
+        );
+        let post = |ts: u64, name: &str| {
+            let mut i = item(9, ts);
+            i.bot = true;
+            i.body = format!("text\n[dilla-webhook:v1:{}:{name}]", "ab".repeat(16));
+            i
+        };
+        let (ci, alerts) = (post(5, "CI"), post(65, "Alerts"));
+        let clock = Clock::Fixed {
+            now: 1_794_476_484,
+            utc: true,
+        };
+        assert!(
+            grouped_with_above(Some(&ci), &alerts, clock),
+            "they group, as on the web"
+        );
+        assert!(
+            marks_head(&s, community, &alerts),
+            "the follow-up keeps a head of its marks"
+        );
+        assert_eq!(
+            via_mark(&s, community, &alerts).as_deref(),
+            Some("via webhook Alerts")
+        );
+        assert!(
+            !marks_head(&s, community, &item(9, 70)),
+            "a plain follow-up has none"
+        );
+        let lh = body_line();
+        assert!(
+            row_height(true, true, false, 0.0, lh, 0.0)
+                > row_height(true, false, false, 0.0, lh, 0.0)
+        );
+        assert!(body_offset(true, true) > body_offset(true, false));
+        assert_eq!(body_offset(true, true), FOLLOW_PAD + head_line() + MAIN_GAP);
+    }
+
     fn item_with_body(body: &str) -> TimelineItem {
         let mut i = item(9, 5);
         i.body = body.into();
@@ -1208,6 +1333,7 @@ mod tests {
         let lh = body_line();
         let row = |extras: f32, last: bool| RowShape {
             grouped: false,
+            marks: false,
             last,
             before: 0.0,
             body: lh,
@@ -1216,6 +1342,7 @@ mod tests {
         };
         let follow = RowShape {
             grouped: true,
+            marks: false,
             last: true,
             before: 0.0,
             body: 2.0 * lh,
@@ -1239,6 +1366,7 @@ mod tests {
         let lh = body_line();
         let one = RowShape {
             grouped: false,
+            marks: false,
             last: false,
             before: 0.0,
             body: lh,
