@@ -60,6 +60,10 @@ pub(crate) struct AreaMemory {
     pub(crate) dms: Vec<super::dms::KnownDm>,
     /// DMs whose group an open is in flight for (one at a time per DM).
     pub(crate) opening: HashSet<[u8; 16]>,
+    /// How far the DM list's poll has backed off (`dms::poll_interval`); 0 after a ready or while the DM view shows.
+    pub(crate) poll_step: u32,
+    /// When each DM whose text group is unknown was last looked up (`dms::should_look_up`).
+    pub(crate) looked_up: HashMap<[u8; 16], std::time::Instant>,
 }
 
 type Registry = Mutex<Vec<(Weak<Inner>, Arc<tokio::sync::Mutex<AreaMemory>>)>>;
@@ -196,11 +200,6 @@ pub(crate) fn start(inner: &Arc<Inner>, state: &watch::Receiver<Arc<AppState>>) 
     });
 }
 
-/// While no ready came, the DM list is not read; afterwards it is read again on every ready and at this interval, so a DM
-/// another person opened shows without a restart (the engine keeps a Welcome for a group it does not expect and says
-/// nothing, see the task report).
-const DM_POLL: Duration = Duration::from_secs(15);
-
 /// The parts of the snapshot the trust slice and the DM list derive from (not the dms and trust slices themselves, so the
 /// area's own publishes do not wake it).
 fn fingerprint(s: &AppState) -> u64 {
@@ -232,26 +231,41 @@ fn fingerprint(s: &AppState) -> u64 {
 }
 
 async fn watch_loop(inner: Arc<Inner>, mut state: watch::Receiver<Arc<AppState>>) {
-    let mut revisions = crate::sync::trust::revisions();
+    let mut revisions = crate::sync::trust::revisions_of(inner.engine());
     let mut last_print = None;
     let mut last_readies = 0u64;
-    let mut poll = tokio::time::interval(DM_POLL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let area = memory(&inner);
+    // The DM list's poll (`dms::poll_interval`): from the last read, backing off until a ready or the DM view resets it.
+    let mut last_poll = tokio::time::Instant::now();
     loop {
         let mut polled = false;
+        let step = area.lock().await.poll_step;
+        let due = last_poll + super::dms::poll_interval(step);
         tokio::select! {
             changed = state.changed() => if changed.is_err() { return },
             _ = revisions.changed() => last_print = None,
-            _ = poll.tick() => polled = true,
+            _ = tokio::time::sleep_until(due) => polled = true,
         }
         // Coalesce a burst of snapshots.
         tokio::time::sleep(Duration::from_millis(30)).await;
         let s = state.borrow_and_update().clone();
         let online = s.connection.status == crate::state::ConnectionStatus::Online;
-        if online && (s.connection.readies != last_readies || polled) {
+        let ready = s.connection.readies != last_readies;
+        if online && (ready || polled) {
             last_readies = s.connection.readies;
+            {
+                let mut m = area.lock().await;
+                m.poll_step = if ready {
+                    0
+                } else {
+                    m.poll_step.saturating_add(1)
+                };
+            }
+            last_poll = tokio::time::Instant::now();
             let _ = super::dms::reload(&inner).await;
             last_print = None;
+        } else if polled {
+            last_poll = tokio::time::Instant::now();
         }
         let print = fingerprint(&s);
         if last_print != Some(print) {
@@ -299,14 +313,33 @@ pub(crate) fn name_of(s: &AppState, user: UserId) -> String {
             .get(&c)
             .and_then(|list| list.iter().find(|m| m.user_id == user))
         {
-            return if m.display.is_empty() {
-                m.username.clone()
+            let name = visible(if m.display.is_empty() {
+                &m.username
             } else {
-                m.display.clone()
-            };
+                &m.display
+            });
+            if !name.is_empty() {
+                return name;
+            }
         }
     }
     user.hex()[..8].to_owned()
+}
+
+/// A name as the trust surfaces show it: without control characters and without the invisible format characters
+/// (Unicode Cf: bidi embeddings, overrides and isolates, zero-width marks, the BOM, the soft hyphen) that could make one
+/// contact's name read as another's beside a security alert.
+pub(crate) fn visible(name: &str) -> String {
+    let format = |c: char| {
+        matches!(c,
+            '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{0600}'..='\u{0605}' | '\u{06DD}' | '\u{070F}' | '\u{110BD}' | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
+    };
+    name.chars()
+        .filter(|&c| !c.is_control() && !format(c))
+        .collect()
 }
 
 /// controller.ts `sharedUser`: a DM with `user` whose group is active here, or a community whose member list has them
@@ -378,10 +411,24 @@ fn note_changed_leaves(
     memory.changed_leaf_groups = now;
 }
 
+/// controller.ts only notes the changed leaves of a pending-leaves read that answered (`refreshTrustOnce` throws on a
+/// failed `pendingLeaves` before it notes anything): a failed read keeps what the last good read saw, so it can never
+/// read as "every changed leaf left" and name a validated Remove that did not happen.
+fn note_read(
+    memory: &mut AreaMemory,
+    leaves: &Result<Vec<crate::sync::trust::PendingLeaf>, ()>,
+    groups: &[GroupRow],
+) {
+    if let Ok(leaves) = leaves {
+        note_changed_leaves(memory, leaves, groups);
+    }
+}
+
 /// What one read of the core answered.
 struct CoreRead {
     records: Result<Vec<crate::sync::trust::TrustRecord>, ()>,
-    leaves: Vec<crate::sync::trust::PendingLeaf>,
+    /// `Err` when the core could not answer: then nothing is said about where the changed leaves are.
+    leaves: Result<Vec<crate::sync::trust::PendingLeaf>, ()>,
     blocks: Vec<([u8; 16], Option<&'static str>, bool)>,
 }
 
@@ -407,9 +454,8 @@ pub(crate) async fn publish_trust(inner: &Arc<Inner>) -> Result<(), ClientError>
             .and_then(|raw| decode_trust_state(&raw).map_err(|_| ()));
         let leaves = c
             .pending_leaves()
-            .ok()
-            .and_then(|raw| decode_pending_leaves(&raw).ok())
-            .unwrap_or_default();
+            .map_err(|_| ())
+            .and_then(|raw| decode_pending_leaves(&raw).map_err(|_| ()));
         // A group whose gate the core cannot read is blocked (fail closed).
         let blocks = blocked_groups
             .iter()
@@ -429,7 +475,7 @@ pub(crate) async fn publish_trust(inner: &Arc<Inner>) -> Result<(), ClientError>
     let annotations: Annotations = annotations_of(inner.engine()).await;
     let removed = {
         let mut m = memory.lock().await;
-        note_changed_leaves(&mut m, &read.leaves, &groups);
+        note_read(&mut m, &read.leaves, &groups);
         m.removed_groups.clone()
     };
     let own = s.account.user_id;
@@ -630,6 +676,38 @@ mod tests {
         // Group 1 is gone here: nothing to name.
         note_changed_leaves(&mut m, &[changed(9, 2)], &[group(1, 4), group(2, 2)]);
         assert!(m.removed_groups.is_empty());
+    }
+
+    // Review fix 1: a pending-leaves read that fails says nothing about where the changed leaves are; it must never read
+    // as "every changed leaf left" (which would name a validated Remove that did not happen).
+    #[test]
+    fn a_failed_leaves_read_never_names_a_remove() {
+        let mut m = AreaMemory::default();
+        let groups = [group(1, 2)];
+        note_read(&mut m, &Ok(vec![changed(9, 1)]), &groups);
+        note_read(&mut m, &Err(()), &groups);
+        assert!(m.removed_groups.is_empty(), "a failed read names no Remove");
+        assert_eq!(
+            m.changed_leaf_groups.get(&[9; 16]).cloned(),
+            Some(HashSet::from([[1; 16]])),
+            "and keeps what the last good read saw"
+        );
+        // A good read without the leaf still names it.
+        note_read(&mut m, &Ok(vec![]), &groups);
+        assert_eq!(
+            m.removed_groups.get(&[9; 16]).cloned(),
+            Some(HashSet::from([[1; 16]]))
+        );
+    }
+
+    // Review fix 6: a name never carries control or invisible format characters (bidi overrides, zero-width).
+    #[test]
+    fn names_lose_control_and_format_characters() {
+        assert_eq!(
+            visible("A\u{202E}da\u{200B}\u{0007}\u{FEFF}\u{2066}!"),
+            "Ada!"
+        );
+        assert_eq!(visible("Björn Ásgeir"), "Björn Ásgeir");
     }
 
     #[test]

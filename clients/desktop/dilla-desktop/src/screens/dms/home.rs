@@ -72,6 +72,8 @@ pub fn sidebar(
     let state = ctx.state.clone();
     if let Some(client) = &ctx.client {
         client.dms().start();
+        // The DM view is showing: the list is read at its shortest interval.
+        client.dms().viewing();
     }
     let n = state.dms.all().len();
     let count = if n == 1 {

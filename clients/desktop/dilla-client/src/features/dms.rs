@@ -61,6 +61,27 @@ fn idem() -> Vec<u8> {
     b
 }
 
+/// How often a DM whose text group is unknown is looked up again (`GET /v1/channels/{id}`).
+pub(crate) const LOOKUP_RETRY: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The DM list's poll interval after `step` reads without a ready: 15 s, 30 s, then 120 s.
+///
+/// TODO(Task 2, engine): the engine keeps a Welcome for a group it does not expect (welcome outcome 3) without telling
+/// anyone; engine.ts calls `onUnexpectedWelcome` there and controller.ts reloads its DMs on it. Once `SyncHooks` has that
+/// hook, reload the DM list on it and drop this poll.
+pub(crate) fn poll_interval(step: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(match step {
+        0 => 15,
+        1 => 30,
+        _ => 120,
+    })
+}
+
+/// Whether a DM whose text group is unknown is looked up now: never looked up, or not within [`LOOKUP_RETRY`].
+pub(crate) fn should_look_up(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|t| now.duration_since(t) >= LOOKUP_RETRY)
+}
+
 /// The total unread and mention counts of every DM (the Home tile's badge, `home.tileLabel`).
 pub fn home_counts(s: &AppState) -> BadgeState {
     let mut total = BadgeState::default();
@@ -116,6 +137,14 @@ impl Dms {
     /// Starts the area's watcher (the DM list and the trust slice), once per client. Idempotent.
     pub fn start(&self) {
         super::trust::start(&self.inner, &self.state);
+    }
+
+    /// The DM view is showing: the list's poll goes back to its shortest interval.
+    pub fn viewing(&self) {
+        let area = memory(&self.inner);
+        if let Ok(mut m) = area.try_lock() {
+            m.poll_step = 0;
+        }
     }
 
     /// Reads the DM list again.
@@ -229,14 +258,20 @@ pub(crate) async fn reload(inner: &Arc<Inner>) -> Result<(), ClientError> {
             .iter()
             .find(|d| d.channel == row.channel_id)
             .and_then(|d| d.group);
-        if group.is_none() {
-            // A failed read leaves the group unknown; the next load asks again.
+        let now = std::time::Instant::now();
+        let last = memory.lock().await.looked_up.get(&row.channel_id).copied();
+        if group.is_none() && should_look_up(last, now) {
+            memory.lock().await.looked_up.insert(row.channel_id, now);
+            // A failed read leaves the group unknown; a later load asks again after LOOKUP_RETRY.
             group = inner
                 .api()
                 .get_channel_text_group(&row.channel_id)
                 .await
                 .ok()
                 .flatten();
+        }
+        if group.is_some() {
+            memory.lock().await.looked_up.remove(&row.channel_id);
         }
         next.push(KnownDm {
             channel: row.channel_id,
@@ -313,6 +348,26 @@ mod tests {
         assert_eq!(type_ahead(&names, "be", 0), Some(2));
         assert_eq!(type_ahead(&names, "z", 0), None);
         assert_eq!(type_ahead(&names, "", 0), None);
+    }
+
+    // Review fix 2: the list poll backs off 15 s, 30 s, then 120 s, and a ready or the DM view resets it.
+    #[test]
+    fn the_list_poll_backs_off() {
+        use std::time::Duration;
+        let steps: Vec<Duration> = (0..5).map(poll_interval).collect();
+        assert_eq!(
+            steps,
+            [15, 30, 120, 120, 120].map(Duration::from_secs).to_vec()
+        );
+    }
+
+    // Review fix 2: a DM whose text group is unknown is looked up at most once per LOOKUP_RETRY.
+    #[test]
+    fn unknown_groups_are_looked_up_at_most_once_per_retry() {
+        let t0 = std::time::Instant::now();
+        assert!(should_look_up(None, t0));
+        assert!(!should_look_up(Some(t0), t0 + LOOKUP_RETRY / 2));
+        assert!(should_look_up(Some(t0), t0 + LOOKUP_RETRY));
     }
 
     #[test]

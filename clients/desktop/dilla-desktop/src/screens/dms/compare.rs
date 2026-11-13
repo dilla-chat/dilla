@@ -11,6 +11,7 @@
 use std::rc::Rc;
 
 use dilla_client::Client;
+use dilla_client::state::trust::TrustState;
 use dilla_client::state::trust::{
     CompareState, TrustSummary, compare_permitted, safety_qr_value, valid_groups,
 };
@@ -106,7 +107,7 @@ pub fn open(record: &TrustSummary, client: Option<Rc<Client>>, cx: &mut App) {
             m.loading = false;
             match result {
                 Ok(Ok(groups)) if valid_groups(&groups) => m.groups = groups,
-                Ok(Err(dilla_client::ClientError::Sync(code))) if code == "E_DEVICE_LIST_STALE" => {
+                Ok(Err(dilla_client::ClientError::Sync(code))) if key_moved(&code) => {
                     m.error = Some("privacy.keyMoved");
                 }
                 _ => m.error = Some("privacy.loadFailed"),
@@ -139,19 +140,32 @@ pub fn toggle_confirm(cx: &mut App) {
 /// Whether "All 12 blocks match" would approve now, against the trust slice of `state`: a verifiable contact whose
 /// comparison key is still the one shown, twelve groups, and the person's confirmation of exactly this comparison.
 pub fn permitted(state: &AppState, cx: &App) -> bool {
+    permitted_by(&state.trust, cx)
+}
+
+/// [`permitted`] against the trust slice alone. A dialog that says the key moved approves nothing, whatever was
+/// confirmed.
+fn permitted_by(trust: &TrustState, cx: &App) -> bool {
     let Some(m) = cx.try_global::<CompareModel>() else {
         return false;
     };
-    let Some(record) = m.user.and_then(|u| state.trust.contact(u)) else {
+    let Some(record) = m.user.and_then(|u| trust.contact(u)) else {
         return false;
     };
     let current = Some(record.comparison_key()) == m.approved_umk.as_deref();
+    let moved = m.error == Some("privacy.keyMoved");
     compare_permitted(
-        m.open && record.shared && !record.unlisted && current && !m.busy,
+        m.open && record.shared && !record.unlisted && current && !moved && !m.busy,
         m.approved_umk.as_deref(),
         &m.groups,
         m.confirmed(),
     )
+}
+
+/// A refusal that means the comparison key is no longer the one shown: the list moved on (`E_DEVICE_LIST_STALE`) or
+/// the contact's key changed again (`E_UMK_CHANGED`).
+fn key_moved(code: &str) -> bool {
+    matches!(code, "E_DEVICE_LIST_STALE" | "E_UMK_CHANGED")
 }
 
 /// Closes the comparison (its Close, Escape, the scrim, or after an approval).
@@ -190,7 +204,7 @@ fn approve(window: &mut Window, cx: &mut App) {
                         window.defer(cx, move |window, cx| h.focus(window, cx));
                     }
                 }
-                Ok(Err(dilla_client::ClientError::Sync(code))) if code == "E_DEVICE_LIST_STALE" => {
+                Ok(Err(dilla_client::ClientError::Sync(code))) if key_moved(&code) => {
                     m.error = Some("privacy.keyMoved");
                 }
                 _ => m.error = Some("privacy.verifyFailed"),
@@ -248,6 +262,7 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
     let confirmed = m.confirmed();
     let qr_value = safety_qr_value(user, &m.groups);
     let permitted = permitted(state, cx);
+    let trust = state.trust.clone();
     let m = cx.global::<CompareModel>();
     let mut body = SafetyCompareBody::new(
         format!("{name} · {}", state_label(compare_state)),
@@ -307,7 +322,8 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
                     .size(ButtonSize::Dialog)
                     .disabled(!permitted)
                     .on_click(move |_, window, cx| {
-                        if permitted {
+                        // Judged again at the click: the model may have moved since this frame was drawn.
+                        if permitted_by(&trust, cx) {
                             approve(window, cx);
                         }
                     }),

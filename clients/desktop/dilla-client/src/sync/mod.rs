@@ -292,6 +292,8 @@ pub struct Engine {
     st: Mutex<St>,
     stopped: AtomicBool,
     trust: tokio::sync::Mutex<trust::TrustMemory>,
+    /// The single-flight trust refresh and its revision (Task 13, `trust::TrustPass`).
+    trust_pass: trust::TrustPass,
     gateway: Mutex<Option<Arc<WsGateway>>>,
 }
 
@@ -330,6 +332,7 @@ impl Engine {
             }),
             stopped: AtomicBool::new(false),
             trust: tokio::sync::Mutex::default(),
+            trust_pass: trust::TrustPass::default(),
             gateway: Mutex::new(None),
         })
     }
@@ -2075,15 +2078,7 @@ impl Engine {
     /// The controller's `refreshTrust`: reads the signed device lists of the leaves the core cannot judge yet, and
     /// releases the rows they held.
     pub async fn refresh_trust(&self) {
-        if self.stopped() {
-            return;
-        }
-        if trust::refresh_once(&self.api, &self.core, &self.trust, now_s()).await {
-            self.hooks.trust_changed();
-            for g in self.groups().await.iter().filter(|g| g.state == 2) {
-                self.hooks.group_changed(g.group_id);
-            }
-        }
+        trust::refresh(self, now_s()).await;
     }
 
     /// Forgets which leaves were fetched, so the next refresh reads them all again (a new ready).

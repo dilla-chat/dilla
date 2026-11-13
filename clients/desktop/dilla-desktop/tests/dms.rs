@@ -215,6 +215,20 @@ fn copy_alone_does_not_approve(cx: &mut TestAppContext) {
         cx.global_mut::<compare::CompareModel>().groups[0] = "99999".into();
     });
     assert!(!cx.update(|_, cx| compare::permitted(&state, cx)));
+    // Review fix 4: while the dialog says the key moved, nothing approves, even confirmed.
+    cx.update(|_, cx| {
+        let m = cx.global_mut::<compare::CompareModel>();
+        m.groups = groups.clone();
+        m.error = Some("privacy.keyMoved");
+    });
+    cx.update(|_, cx| {
+        if !cx.global::<compare::CompareModel>().confirmed() {
+            compare::toggle_confirm(cx);
+        }
+    });
+    assert!(cx.update(|_, cx| cx.global::<compare::CompareModel>().confirmed()));
+    assert!(!cx.update(|_, cx| compare::permitted(&state, cx)));
+    cx.update(|_, cx| cx.global_mut::<compare::CompareModel>().error = None);
     // An unlisted contact is never verifiable from the dialog.
     let mut unlisted = changed;
     unlisted.unlisted = true;

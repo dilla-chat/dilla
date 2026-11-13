@@ -308,21 +308,83 @@ impl TrustMemory {
     }
 }
 
-/// Moves on whenever a refresh pass changed the annotations, so the trust slice is read again even when nothing was
-/// ingested (one process-wide counter: a spurious wake only re-reads the core).
-static REVISION: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> = std::sync::OnceLock::new();
-
-fn revision() -> &'static tokio::sync::watch::Sender<u64> {
-    REVISION.get_or_init(|| tokio::sync::watch::channel(0).0)
+/// One engine's trust refresh: a single pass at a time (controller.ts `trustRefresh` and `trustRefreshAgain`), and the
+/// revision its passes move whenever they changed what the trust slice shows, so the slice is read again even when
+/// nothing was ingested.
+pub struct TrustPass {
+    revision: tokio::sync::watch::Sender<u64>,
+    /// Held while a pass runs; a later request waits on it.
+    running: tokio::sync::Mutex<()>,
+    /// A pass was asked for that no running pass has started on yet.
+    again: std::sync::atomic::AtomicBool,
 }
 
-/// Wakes on every refresh pass that changed what the trust slice shows.
-pub fn revisions() -> tokio::sync::watch::Receiver<u64> {
-    revision().subscribe()
+impl Default for TrustPass {
+    fn default() -> Self {
+        Self {
+            revision: tokio::sync::watch::channel(0).0,
+            running: tokio::sync::Mutex::new(()),
+            again: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
 }
 
-fn bump() {
-    revision().send_modify(|n| *n = n.wrapping_add(1));
+impl TrustPass {
+    /// Runs `pass` unless a pass already running absorbs the request: a request during a pass makes exactly one more pass
+    /// run after it, however many came meanwhile. Returns once a pass that began after the request has finished.
+    pub async fn run<F, Fut>(&self, mut pass: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use std::sync::atomic::Ordering;
+        self.again.store(true, Ordering::SeqCst);
+        let _running = self.running.lock().await;
+        while self.again.swap(false, Ordering::SeqCst) {
+            pass().await;
+        }
+    }
+
+    /// Wakes on every pass that changed what the trust slice shows.
+    pub fn revisions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision.subscribe()
+    }
+
+    fn bump(&self) {
+        self.revision.send_modify(|n| *n = n.wrapping_add(1));
+    }
+}
+
+/// `Engine::refresh_trust`: one single-flight pass ([`TrustPass::run`]) of [`refresh_once`]; an ingest tells the hooks
+/// and marks every active group changed, as before.
+pub(crate) async fn refresh(engine: &super::Engine, now_s: u64) {
+    engine
+        .trust_pass
+        .run(|| async {
+            if engine.stopped() {
+                return;
+            }
+            if refresh_once(
+                &engine.api,
+                &engine.core,
+                &engine.trust,
+                &engine.trust_pass,
+                now_s,
+            )
+            .await
+            {
+                engine.hooks.trust_changed();
+                for g in engine.groups().await.iter().filter(|g| g.state == 2) {
+                    engine.hooks.group_changed(g.group_id);
+                }
+            }
+        })
+        .await;
+}
+
+/// The engine's trust revision, for the trust area's watcher.
+pub(crate) fn revisions_of(engine: &super::Engine) -> tokio::sync::watch::Receiver<u64> {
+    engine.trust_pass.revisions()
 }
 
 /// A user's served device-list head and the signed rows read up to it.
@@ -345,6 +407,7 @@ pub async fn refresh_once(
     api: &Api,
     core: &CoreHandle,
     memory: &tokio::sync::Mutex<TrustMemory>,
+    pass: &TrustPass,
     now_s: u64,
 ) -> bool {
     let Ok(Ok(leaves)) = with_core(core, |c| {
@@ -459,7 +522,7 @@ pub async fn refresh_once(
         m.annotations()
     };
     if ingested || after != before {
-        bump();
+        pass.bump();
     }
     ingested
 }
@@ -650,5 +713,60 @@ mod tests {
         assert_eq!(history_from(&malformed, 1), None);
         assert_eq!(history_from(&Value::Uint(7).encode(), 0), None);
         assert_eq!(history_from(&[0xff], 1), None);
+    }
+    // Review fix 3 (controller.ts `trustRefresh` / `trustRefreshAgain`): one pass at a time; a request during a pass
+    // runs exactly one more pass after it, however many came, and every caller returns after a pass that began after
+    // its request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn refresh_passes_are_single_flight_with_one_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let pass = std::sync::Arc::new(TrustPass::default());
+        let (running, most, runs) = (
+            std::sync::Arc::new(AtomicUsize::new(0)),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        );
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let (pass, running, most, runs) =
+                (pass.clone(), running.clone(), most.clone(), runs.clone());
+            tasks.push(tokio::spawn(async move {
+                pass.run(|| async {
+                    let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    running.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await;
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(most.load(Ordering::SeqCst), 1, "never two passes at once");
+        let n = runs.load(Ordering::SeqCst);
+        assert!(
+            (1..=3).contains(&n),
+            "the burst of 8 coalesced into {n} passes"
+        );
+        // Idle again: the next request runs its own pass.
+        pass.run(|| async {
+            runs.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+        assert_eq!(runs.load(Ordering::SeqCst), n + 1);
+    }
+
+    #[test]
+    fn each_engine_has_its_own_revision() {
+        let (a, b) = (TrustPass::default(), TrustPass::default());
+        let (ra, rb) = (a.revisions(), b.revisions());
+        a.bump();
+        assert!(ra.has_changed().unwrap());
+        assert!(
+            !rb.has_changed().unwrap(),
+            "one engine's pass does not wake another's watcher"
+        );
     }
 }
