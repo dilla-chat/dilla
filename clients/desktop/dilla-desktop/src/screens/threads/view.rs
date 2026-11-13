@@ -19,7 +19,6 @@ use gpui::{
 use gpui_component::input::{Enter, InputEvent, Textarea, TextareaState};
 
 use super::{close_thread, current, name_of, open_of, time_of};
-use crate::screens::timeline::grouped_with_above;
 use crate::strings::{t, tf};
 use crate::tracked_focus;
 
@@ -163,7 +162,7 @@ impl PaneView {
     fn row(
         &self,
         item: &TimelineItem,
-        prev: Option<&TimelineItem>,
+
         spaced: bool,
         ctx: &crate::slots::SlotCx,
     ) -> gpui::AnyElement {
@@ -198,7 +197,7 @@ impl PaneView {
             body,
             f32::from(dilla_desktop_ui::tokens::layout::THREAD),
         )
-        .grouped(grouped_with_above(prev, item, ctx.clock))
+        // ThreadView.tsx passes no `grouped` to MessageItem: every thread message keeps its avatar and head.
         .spaced(spaced)
         .kind(kind)
         .bot(bot)
@@ -226,7 +225,7 @@ impl Render for PaneView {
             .channel(open.channel)
             .map(|c| format!("#{}", c.name));
         let root = data.map(|d| match &d.root {
-            Some(root) => self.row(root, None, false, &ctx),
+            Some(root) => self.row(root, false, &ctx),
             None => line(
                 t("thread.rootMissing"),
                 text::SM,
@@ -240,10 +239,7 @@ impl Render for PaneView {
                 d.replies
                     .iter()
                     .enumerate()
-                    .map(|(n, item)| {
-                        let prev = n.checked_sub(1).map(|p| &d.replies[p]);
-                        self.row(item, prev, n > 0, &ctx)
-                    })
+                    .map(|(n, item)| self.row(item, n > 0, &ctx))
                     .collect()
             })
             .unwrap_or_default();
@@ -295,9 +291,12 @@ impl Render for PaneView {
                 "thread-composer",
                 &focus,
                 div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
+                    // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which wins.
                     Textarea::new(&self.input)
                         .appearance(false)
                         .disabled(blocked)
+                        .text_size(text::INPUT)
+                        .line_height(px(FIELD_LINE))
                         .h(px(rows as f32 * FIELD_LINE)),
                 ),
             ))

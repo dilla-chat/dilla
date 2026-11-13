@@ -13,6 +13,7 @@ use gpui::{
     Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 
+use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::{Row, RowKind};
 use dilla_desktop_ui::metrics::focus_ring;
 use dilla_desktop_ui::roving::{Roving, focus_handles, opens_context_menu};
@@ -21,7 +22,7 @@ use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
 use crate::screens::{LABEL_TRACKING_WIDE, centred};
-use crate::strings::tf;
+use crate::strings::{t, tf};
 
 /// ChannelList.css and ChannelHead: the lengths of the list's own boxes.
 mod css {
@@ -78,6 +79,8 @@ pub struct ListModel<'a> {
     /// The notify settings (Task 22): a muted channel or server (`notify.mute.*`, the account setting the web keeps) hides
     /// a row's unread count, its mentions still show (`notify::row_counts`).
     pub settings: &'a dyn SettingsSource,
+    /// Whether the head's server menu (the ⌄) is open: the shell's, as the web keeps `headMenu`.
+    pub server_menu_open: bool,
 }
 
 /// What a click on a channel row does.
@@ -86,8 +89,12 @@ pub type OnSelect = Rc<dyn Fn(ChannelId, &mut Window, &mut App)>;
 pub type OnToggle = Rc<dyn Fn(ChannelId, &mut Window, &mut App)>;
 /// A "+": a new channel, in the category when one is given.
 pub type OnAdd = Rc<dyn Fn(Option<ChannelId>, &mut Window, &mut App)>;
-/// The head's chevron was pressed.
+/// The head's server menu chose "Server settings".
 pub type OnServerSettings = Rc<dyn Fn(&mut Window, &mut App)>;
+/// The head's server menu opens (`true`) or closes.
+pub type OnServerMenuOpen = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+/// The head's server menu chose an item other than the settings: [`SERVER_MUTE`] or a [`SERVER_MODE`]`<mode>` id.
+pub type OnServerMenuPick = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 /// A row's context menu was asked for, at this point.
 pub type OnMenu = Rc<dyn Fn(ChannelId, Point<Pixels>, &mut Window, &mut App)>;
 
@@ -98,8 +105,43 @@ pub struct ListHandlers {
     pub on_toggle: OnToggle,
     pub on_add: OnAdd,
     pub on_menu: OnMenu,
-    /// The head's chevron: the server's settings (Shell.tsx's server menu `settings`; Task 15's host).
+    /// The head's server menu `settings`: the server's settings (Shell.tsx; Task 15's host).
     pub on_server_settings: OnServerSettings,
+    pub on_server_menu_open: OnServerMenuOpen,
+    /// The head's server menu's Mute server and notify modes.
+    pub on_server_menu_pick: OnServerMenuPick,
+}
+
+/// The server menu's item ids (Shell.tsx `serverMenu`): `settings`, `mute`, then `mode:<value>` per notify mode.
+pub const SERVER_SETTINGS: &str = "settings";
+pub const SERVER_MUTE: &str = "mute";
+pub const SERVER_MODE: &str = "mode:";
+
+/// Shell.tsx `NOTIFY_MODES`: a server's own notify mode, `default` deletes the stored value.
+const NOTIFY_MODES: [(&str, &str); 4] = [
+    ("default", "signalSettings.menu.notifyDefault"),
+    ("all", "signalSettings.menu.notifyAll"),
+    ("mentions", "signalSettings.menu.notifyMentions"),
+    ("nothing", "signalSettings.menu.notifyNothing"),
+];
+
+/// The head's server menu (Shell.tsx `serverMenu`): Server settings, Mute server (a check that keeps the menu open), then
+/// the server's notify mode (one checked), read from the same stored keys Settings writes.
+pub fn server_menu_items(settings: &dyn SettingsSource, community: CommunityId) -> Vec<MenuItem> {
+    let muted = settings
+        .get(&notify::key_community_mute(community))
+        .is_some_and(|v| v == "1");
+    let mode = settings
+        .get(&notify::key_community_mode(community))
+        .unwrap_or_else(|| "default".to_owned());
+    let mut items = vec![
+        MenuItem::new(SERVER_SETTINGS, t("signalSettings.menu.serverSettings")),
+        MenuItem::new(SERVER_MUTE, t("signalSettings.menu.muteServer")).check(muted),
+    ];
+    items.extend(NOTIFY_MODES.iter().map(|(value, key)| {
+        MenuItem::new(format!("{SERVER_MODE}{value}"), t(key)).checked(mode == *value)
+    }));
+    items
 }
 
 /// Whether `c` is the server's AFK channel (the built-in voice channel; the slice's state does not mark it).
@@ -276,6 +318,7 @@ fn row(
     badge: (u32, u32),
     muted: bool,
     voice: (usize, bool),
+    after_text_row: bool,
     handlers: &ListHandlers,
     window: &mut Window,
     cx: &mut App,
@@ -322,11 +365,15 @@ fn row(
         &focus,
     ));
     let group = SharedString::from(format!("voice-item-{}", c.id.hex()));
-    let mut item = div()
-        .relative()
-        .group(group.clone())
-        .mt(layout::LIST_GAP)
-        .child(wrapper);
+    // `--list-gap` above the item: a text row's margin collapses out of its `<li>` (above it, and below it onto the next
+    // item); a voice row's margins stay inside its `flow-root` item (VoiceChannelRow.css), so a voice item has a gap
+    // above it only under a text row.
+    let gap = if c.kind != 1 || after_text_row {
+        layout::LIST_GAP
+    } else {
+        Pixels::ZERO
+    };
+    let mut item = div().relative().group(group.clone()).mt(gap).child(wrapper);
     // A voice row the device is not in offers its join icon over the row's slot while hovered (VoiceChannelRow.css
     // `.d-voice-row__join`); its click joins (17) and never opens the row.
     if c.kind == 1 && !voice.1 {
@@ -365,13 +412,16 @@ fn row(
     }
 }
 
-/// The gap above a category's head. The CSS says its own 10px, plus `--list-gap` after a text row (the row's bottom margin
-/// collapsing out of its `<li>`); measured against the web client's frames of the shell fixtures that is worse than
-/// a flat 10px after every kind of row (chrome difference of categories-b 0.2950 % with +1 after a text row, 0.2504 %
-/// flat; 0.2378 % against 0.2319 % for categories with half a px after a voice row), so the gap is the same after every
-/// row and the difference is reported, not tuned.
-pub fn category_top_margin() -> f32 {
+/// The gap above a category's head: its own 10px (`.d-channel-list__cat-head`), plus `--list-gap` under a text row, whose
+/// bottom margin collapses out of its `<li>`; a voice row keeps its margins inside its `flow-root` item and a category
+/// head's list ends at its last item, so nothing is added after them.
+pub fn category_top_margin(after_text_row: bool) -> f32 {
     css::CAT_TOP
+        + if after_text_row {
+            f32::from(layout::LIST_GAP)
+        } else {
+            0.0
+        }
 }
 
 /// A category's head (ChannelList.css `.d-channel-list__cat-head`): the chevron, the name in tracked capitals, a rule, and
@@ -380,6 +430,7 @@ pub fn category_top_margin() -> f32 {
 fn category(
     c: &Channel,
     folded: bool,
+    after_text_row: bool,
     index: usize,
     roves: &Rc<Roves>,
     stop: usize,
@@ -453,7 +504,7 @@ fn category(
         .id(SharedString::from(format!("category-cell-{}", c.id.hex())))
         .group(group.clone())
         .relative()
-        .mt(Pixels::from(category_top_margin()))
+        .mt(Pixels::from(category_top_margin(after_text_row)))
         .child(head);
     if can_add {
         let label = tf("layout.category.add", &[("name", c.name.as_str())]);
@@ -507,6 +558,12 @@ pub fn render(
     let title = community.map_or_else(String::new, |c| c.name.clone());
     let on_add = handlers.on_add.clone();
     let on_server_settings = handlers.on_server_settings.clone();
+    let on_server_menu_open = handlers.on_server_menu_open.clone();
+    let on_server_menu_pick = handlers.on_server_menu_pick.clone();
+    let server_items = model
+        .community
+        .map(|c| server_menu_items(model.settings, c))
+        .unwrap_or_default();
     let title_for_tip = title.clone();
     let head = div()
         .flex_none()
@@ -545,20 +602,20 @@ pub fn render(
         }))
         .child(crate::tracked_box(
             "server-settings-open",
-            div()
-                .id("channel-list-server-menu")
-                .cursor_pointer()
-                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
-                    crate::strings::t("admin.title"),
-                    &[],
-                ))
-                .on_click(move |_: &ClickEvent, window, cx| on_server_settings(window, cx))
-                .child(centred(
-                    Pixels::from(css::MENU_HIT),
-                    Icon::new(IconName::ChevronDown)
-                        .size(Pixels::from(css::GLYPH))
-                        .color(color::FG_2),
-                )),
+            // Shell.tsx `serverMenu`: the ⌄ is the server's menu, labelled `admin.open`, in the head's 26px button.
+            ActionMenu::new("channel-list-server-menu", t("admin.open"), server_items)
+                .icon(IconName::ChevronDown)
+                .icon_size(Pixels::from(css::GLYPH))
+                .trigger_size(Pixels::from(css::MENU_HIT))
+                .open(model.server_menu_open)
+                .on_open_change(move |open, window, cx| on_server_menu_open(open, window, cx))
+                .on_select(move |item, window, cx| {
+                    if item == SERVER_SETTINGS {
+                        on_server_settings(window, cx);
+                    } else {
+                        on_server_menu_pick(item, window, cx);
+                    }
+                }),
         ));
     let meta = |s: String| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
     let stats = div()
@@ -597,6 +654,11 @@ pub fn render(
     let focused_at = handles.iter().position(|h| h.is_focused(window));
     let stop = Roving::stop(focused_at, selected_at, entries.len());
     let roves = Rc::new(Roves { handles });
+    // Whether the entry above `i` is a text row (its `--list-gap` bottom margin collapses onto the next item).
+    let after_text = |i: usize| {
+        i.checked_sub(1)
+            .is_some_and(|p| matches!(entries[p], Item::Channel(prev) if prev.kind != 1))
+    };
     let children: Vec<gpui::AnyElement> = entries
         .iter()
         .enumerate()
@@ -604,6 +666,7 @@ pub fn render(
             Item::Category { channel, folded } => category(
                 channel,
                 folded,
+                after_text(i),
                 i,
                 &roves,
                 stop,
@@ -622,6 +685,7 @@ pub fn render(
                     crate::screens::voice::count(state, ch.id),
                     crate::screens::voice::joined(state, ch.id),
                 ),
+                after_text(i),
                 handlers,
                 window,
                 cx,
@@ -703,8 +767,42 @@ mod tests {
     }
 
     #[test]
-    fn a_categorys_gap_is_ten_px_after_every_kind_of_row() {
-        assert_eq!(category_top_margin(), 10.0);
+    fn the_server_menu_reads_the_stored_mute_and_mode() {
+        let server = CommunityId([1; 16]);
+        let mut settings = std::collections::HashMap::<String, String>::new();
+        let ids = |items: &[MenuItem]| items.iter().map(|i| i.id.to_string()).collect::<Vec<_>>();
+        let items = server_menu_items(&settings, server);
+        assert_eq!(
+            ids(&items),
+            [
+                "settings",
+                "mute",
+                "mode:default",
+                "mode:all",
+                "mode:mentions",
+                "mode:nothing"
+            ]
+        );
+        assert_eq!(items[1].check, Some(false));
+        assert_eq!(items[2].checked, Some(true), "no stored mode is `default`");
+        settings.insert(notify::key_community_mute(server), "1".into());
+        settings.insert(notify::key_community_mode(server), "mentions".into());
+        let items = server_menu_items(&settings, server);
+        assert_eq!(items[1].check, Some(true));
+        assert_eq!(
+            items
+                .iter()
+                .filter(|i| i.checked == Some(true))
+                .map(|i| i.id.to_string())
+                .collect::<Vec<_>>(),
+            ["mode:mentions"]
+        );
+    }
+
+    #[test]
+    fn a_categorys_gap_is_ten_px_and_a_text_rows_list_gap() {
+        assert_eq!(category_top_margin(false), 10.0);
+        assert_eq!(category_top_margin(true), 11.0);
     }
 
     #[test]

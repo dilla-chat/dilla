@@ -35,9 +35,11 @@ pub struct Select {
     id: ElementId,
     label: SharedString,
     hint: Option<SharedString>,
+    hint_width: Option<f32>,
     value: SharedString,
     options: Vec<(SharedString, SharedString)>,
     disabled: bool,
+    show_label: bool,
     on_change: Option<PickHandler>,
 }
 
@@ -53,6 +55,7 @@ impl Select {
             id: id.into(),
             label: label.into(),
             hint: None,
+            hint_width: None,
             value: value.into(),
             options: options
                 .iter()
@@ -64,8 +67,23 @@ impl Select {
                 })
                 .collect(),
             disabled: false,
+            show_label: true,
             on_change: None,
         }
+    }
+
+    /// Draws the bare field: the host shows the label itself (the Voice page's `.d-voice-settings__label`, 8px over a native
+    /// `<select>` named by it), so the field's own label and its 6px gap take no room.
+    pub fn bare(mut self) -> Self {
+        self.show_label = false;
+        self
+    }
+
+    /// The measure the hint wraps at (the field's width, when the host knows it: a dialog's body); without one
+    /// it stays on one line.
+    pub fn hint_width(mut self, width: f32) -> Self {
+        self.hint_width = Some(width);
+        self
     }
 
     pub fn hint(mut self, hint: impl Into<SharedString>) -> Self {
@@ -152,10 +170,15 @@ impl RenderOnce for Select {
             .hover(|s| s.border_color(color::FG_3))
             .focus_visible(|s| s.border_color(color::ACCENT))
             .child(line(current, text::SM, line_height(text::SM, 1.5), color::FG).ellipsis())
+            // The web's field is a native <select>: Chromium draws its arrow in the text colour, 9 x 5.5px with its right
+            // tip 5px in from the outer edge, past the 10px padding. A 16px chevron-down (whose path spans 6..18 of 24)
+            // reaching 10px into that padding draws the same.
             .child(
-                Icon::new(IconName::ChevronDown)
-                    .size(px(14.0))
-                    .color(color::FG_3),
+                div().flex_none().mr(px(-10.0)).child(
+                    Icon::new(IconName::ChevronDown)
+                        .size(px(16.0))
+                        .color(color::FG),
+                ),
             );
         field = if disabled {
             field.opacity(OPACITY_MUTED).cursor_not_allowed()
@@ -251,26 +274,18 @@ impl RenderOnce for Select {
             );
         }
 
-        let mut root = div()
-            .id(self.id)
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .min_w_0()
-            .child(line(
+        let mut root = div().id(self.id).flex().flex_col().gap(px(6.0)).min_w_0();
+        if self.show_label {
+            root = root.child(line(
                 self.label,
                 text::XS,
                 line_height(text::XS, 1.5),
                 color::FG_2,
-            ))
-            .child(wrap);
-        if let Some(hint) = self.hint {
-            root = root.child(line(
-                hint,
-                text::SM,
-                line_height(text::SM, 1.5),
-                color::FG_3,
             ));
+        }
+        root = root.child(wrap);
+        if let Some(hint) = self.hint {
+            root = root.child(super::text_field::hint_lines(hint, self.hint_width));
         }
         root
     }

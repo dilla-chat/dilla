@@ -4,8 +4,8 @@
 //!   behind a counting TCP proxy that reads the request line of every HTTP request and counts the WebSocket upgrades.
 //!   They are `#[ignore]`d so a plain `cargo test` needs no Go toolchain.
 //! - Parity and keyboard tests drive the automation build on a screen fixture, drawn in the settings host (Task 1b,
-//!   merged in integration 3 with its `Settings` fixture arm). The keyboard test runs; the parity tests are ignored
-//!   under the R22 prefix with their measured numbers.
+//!   merged in integration 3 with its `Settings` fixture arm), against the references `shoot.mjs` shot in the parity
+//!   world's parity-fixture mode.
 
 mod support;
 
@@ -36,14 +36,12 @@ fn fixture_path(name: &str) -> PathBuf {
 const NEEDS_HOST: &str = "the diagnostics/section fixture loads in the settings host";
 
 #[test]
-#[ignore = "parity after T6c: whole frame 1.3488 % (drawn in the settings host)"]
 fn parity_diagnostics_section() {
     assert_screen(&fixture_path("diagnostics/section"))
         .unwrap_or_else(|e| panic!("diagnostics/section differs from its web reference: {e}"));
 }
 
 #[test]
-#[ignore = "parity after T6c: whole frame 0.9374 % (drawn in the settings host)"]
 fn parity_diagnostics_section_b() {
     assert_screen(&fixture_path("diagnostics/section-b"))
         .unwrap_or_else(|e| panic!("diagnostics/section-b differs from its web reference: {e}"));

@@ -2064,6 +2064,34 @@ impl HttpDs {
         )
     }
 
+    /// POST /v1/communities/{id}/channels with a position: `create_channel` / `create_channel_in` at `position` (the
+    /// request's seventh element), so a world can lay its channels out in a fixed order.
+    pub fn create_channel_at(
+        &mut self,
+        community: &[u8; 16],
+        kind: u64,
+        name: &str,
+        parent: Option<&[u8; 16]>,
+        position: u64,
+    ) -> Result<([u8; 16], u64, u64), DsError> {
+        let path = format!("/v1/communities/{}/channels", hex::encode(community));
+        self.socket_post_decoded(
+            &path,
+            &encode(|e| {
+                let e = e.array(8).uint(kind).uint(0).uint(0);
+                let e = match parent {
+                    Some(p) => e.bytes(p),
+                    None => e.null(),
+                };
+                e.text(name).text("").uint(position).uint(0);
+            }),
+            |d| {
+                d.array(3)?;
+                Ok((d.bytes_exact::<16>()?, d.uint()?, d.uint()?))
+            },
+        )
+    }
+
     /// POST /v1/communities/{id}/invites [max_uses, ttl_seconds, 0].
     pub fn create_invite(
         &mut self,

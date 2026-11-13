@@ -41,6 +41,7 @@ pub struct TextField {
     label: SharedString,
     control: Control,
     hint: Option<SharedString>,
+    hint_width: Option<f32>,
     note: Option<SharedString>,
     error: Option<SharedString>,
     disabled: bool,
@@ -75,11 +76,19 @@ impl TextField {
             label: label.into(),
             control,
             hint: None,
+            hint_width: None,
             note: None,
             error: None,
             disabled: false,
             rows: 3,
         }
+    }
+
+    /// The measure the hint and note wrap at (the field's width, when the host knows it: a dialog's body); without one
+    /// they stay on one line.
+    pub fn hint_width(mut self, width: f32) -> Self {
+        self.hint_width = Some(width);
+        self
     }
 
     pub fn hint(mut self, hint: impl Into<SharedString>) -> Self {
@@ -137,7 +146,15 @@ impl RenderOnce for TextField {
             .when_some(frame_h, |d, h| d.h(h))
             .hover(move |s| s.border_color(edge(invalid, focused, true)));
         frame = match &self.control {
-            Control::Single(input) => frame.child(Input::new(input).appearance(false)),
+            // `.d-text-field__input` is 13px (`--text-input`) with the frame's own 12px sides: the editor's own size
+            // (gpui-component's 14px `text_sm`) and its inner padding would set the text larger and further in.
+            Control::Single(input) => frame.child(
+                Input::new(input)
+                    .appearance(false)
+                    .text_size(text::INPUT)
+                    .px_0()
+                    .py_0(),
+            ),
             Control::Multi(input) => frame
                 .min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
                 .child(Textarea::new(input).appearance(false)),
@@ -159,12 +176,7 @@ impl RenderOnce for TextField {
             ))
             .child(frame);
         for note in [self.hint, self.note].into_iter().flatten() {
-            root = root.child(line(
-                note,
-                text::SM,
-                line_height(text::SM, 1.5),
-                color::FG_3,
-            ));
+            root = root.child(hint_lines(note, self.hint_width));
         }
         if let Some(error) = self.error {
             root = root.child(
@@ -182,6 +194,19 @@ impl RenderOnce for TextField {
             );
         }
         root
+    }
+}
+
+/// A field's hint (12.5px `--fg-3`): wrapped at `width` when given, else one line.
+pub(crate) fn hint_lines(hint: SharedString, width: Option<f32>) -> gpui::AnyElement {
+    let lh = line_height(text::SM, 1.5);
+    match width {
+        Some(w) => div()
+            .flex()
+            .flex_col()
+            .children(crate::text::paragraph(&hint, text::SM, lh, color::FG_3, w))
+            .into_any_element(),
+        None => line(hint, text::SM, lh, color::FG_3).into_any_element(),
     }
 }
 

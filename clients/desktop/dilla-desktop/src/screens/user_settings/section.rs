@@ -728,6 +728,8 @@ impl UserSettings {
                 t("devices.renameTitle"),
                 t("dialog.close"),
             )
+            // Devices.tsx renders its dialogs as its section's children (`Dialog::in_settings_section`).
+            .in_settings_section()
             .open(renaming)
             .can_close(!self.rename_busy)
             .body(field)
@@ -780,6 +782,7 @@ impl UserSettings {
                 t("devices.working"),
                 t("settings.editing.keepEditing"),
             )
+            .in_settings_section()
             .open(open_key)
             .tone(Tone::Danger)
             .busy(self.key_entry.busy)
@@ -809,6 +812,7 @@ impl UserSettings {
                 t("devices.working"),
                 t("settings.editing.keepEditing"),
             )
+            .in_settings_section()
             .open(unlisted.is_some())
             .tone(Tone::Danger)
             .busy(self.plain_busy)

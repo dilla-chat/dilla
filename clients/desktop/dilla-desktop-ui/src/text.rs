@@ -126,6 +126,7 @@ pub struct Line {
     spacing: f32,
     ellipsis: bool,
     clip: bool,
+    fallback: Option<&'static str>,
 }
 
 /// A line of JetBrains Mono.
@@ -140,6 +141,7 @@ pub fn line(text: impl Into<SharedString>, size: Pixels, line_height: f32, color
         spacing: 0.0,
         ellipsis: false,
         clip: false,
+        fallback: None,
     }
 }
 
@@ -161,6 +163,13 @@ impl Line {
         self
     }
 
+    /// The family a glyph the face lacks comes from, where the web's Chromium takes it from fontconfig's fallback (DejaVu
+    /// Sans on the reference machine) and the text system would pick another face with another advance.
+    pub fn fallback(mut self, family: &'static str) -> Self {
+        self.fallback = Some(family);
+        self
+    }
+
     /// `text-overflow: ellipsis`: the box may shrink below the text, which is then cut with "…".
     pub fn ellipsis(mut self) -> Self {
         self.ellipsis = true;
@@ -174,16 +183,23 @@ impl Line {
         self
     }
 
-    /// The width the web gives the text: the mono advance per character (plus the tracking) when the embedded face
-    /// covers every character, else `None` (measured by the text system, which falls back for the rest).
+    /// The width the web gives the text: the mono advance per character (plus the tracking), ceiled onto Chromium's
+    /// layout unit as its text widths are (`LayoutUnit::FromFloatCeil`: one "3" at 11px is 6.609375), when the embedded
+    /// face covers every character, else `None` (measured by the text system, which falls back for the rest).
     fn natural_width(&self) -> Option<f32> {
-        (self.face == Face::Mono && self.text.chars().all(mono_covers))
-            .then(|| self.text.chars().count() as f32 * (self.size * MONO_ADVANCE + self.spacing))
+        (self.face == Face::Mono && self.text.chars().all(mono_covers)).then(|| {
+            let w = self.text.chars().count() as f32 * (self.size * MONO_ADVANCE + self.spacing);
+            // The epsilon keeps a whole width whole against f32 noise (0.6 is not exact).
+            (w * 64.0 - 1e-3).ceil() / 64.0
+        })
     }
 
     fn run(&self, len: usize) -> TextRun {
         let mut font = gpui::font(self.face.family());
         font.weight = self.weight;
+        if let Some(family) = self.fallback {
+            font.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![family.to_owned()]));
+        }
         if self.face == Face::SerifItalic {
             font.style = FontStyle::Italic;
         }
@@ -212,6 +228,10 @@ impl Line {
         if self.face == Face::SerifItalic {
             text = text.italic();
         }
+        if let Some(family) = self.fallback {
+            text.text_style().font_fallbacks =
+                Some(gpui::FontFallbacks::from_fonts(vec![family.to_owned()]));
+        }
         match self.natural_width() {
             Some(width) => text.flex_none().w(px(width)).h(px(self.line_height)),
             None => text.flex_none().child(self.text.clone()),
@@ -219,13 +239,26 @@ impl Line {
     }
 }
 
+/// Whether a text `natural` wide fits the box it was laid out in, given the box's painted width `painted`. Chromium decides
+/// text overflow in layout units, before any edge is painted; GPUI's canvas sees the snapped box. At a whole scale each edge
+/// snaps to a whole logical px independently (`gpui::snap_layout_edge`): the origin rounds up by at most 0.5 and the far
+/// edge down by less than 0.5, so the painted box is less than 1px narrower than the laid-out one. At a fractional scale
+/// edges snap to device px: at most one device px.
+pub fn fits_laid_out(natural: f32, painted: f32, scale: f32) -> bool {
+    if scale.fract() == 0.0 {
+        natural < painted + 1.0
+    } else {
+        natural <= painted + 1.0 / scale
+    }
+}
+
 /// The text to paint in `width`: all of it, or (with an ellipsis) as many characters as fit before "…".
-/// `width` is the box as laid out (snapped to device pixels at `scale`): a text that fits its unsnapped box is whole.
+/// `width` is the painted box at `scale`: a text that fits its laid-out (unsnapped) box is whole ([`fits_laid_out`]).
 fn fitted(line: &Line, width: f32, scale: f32) -> SharedString {
     let Some(natural) = line.natural_width() else {
         return line.text.clone();
     };
-    if !line.ellipsis || natural <= width + 1.0 / scale {
+    if !line.ellipsis || fits_laid_out(natural, width, scale) {
         return line.text.clone();
     }
     let advance = line.size * MONO_ADVANCE + line.spacing;
@@ -404,6 +437,20 @@ mod tests {
     fn coverage_is_the_embedded_face() {
         assert!(mono_covers('a') && mono_covers('…') && mono_covers('›') && mono_covers('ö'));
         assert!(!mono_covers('↵'));
+    }
+
+    /// Review I2: "general" at 13px is 54.609375 wide. Laid out at x 100.5 in a box of exactly that width, its edges snap
+    /// to 101 and 155 (54 painted): it still fits its laid-out box, so no "…". A box really narrower than the text cuts it.
+    #[test]
+    fn a_line_within_the_snap_slack_keeps_its_text() {
+        let general = line("general", px(13.0), 20.0, gpui::black()).ellipsis();
+        assert_eq!(fitted(&general, 54.0, 2.0).as_ref(), "general");
+        assert_eq!(fitted(&general, 54.609375, 2.0).as_ref(), "general");
+        let cut = fitted(&general, 50.0, 2.0);
+        assert!(cut.ends_with('…'), "{cut}");
+        // A fractional scale keeps device-pixel snapping: one device pixel of slack.
+        assert_eq!(fitted(&general, 54.0, 1.5).as_ref(), "general");
+        assert!(fitted(&general, 53.5, 1.5).ends_with('…'));
     }
 
     #[test]

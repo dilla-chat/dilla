@@ -8,14 +8,16 @@
 //! `open(false)` after rendering it open) focus returns to what had it, if focus was inside the dialog or nowhere; a flow
 //! that already moved focus elsewhere keeps it there.
 //!
-//! Render the dialog last in the window's root (it fills that root and draws over it); a closed dialog draws nothing.
+//! **Placement.** The dialog is modal (`showModal`, the browser's top layer): it covers the window, wherever its element sits
+//! in the tree, and a closed dialog draws nothing. Its top margin is Dialog.css's 12vh, except for a dialog whose element is
+//! a child of a settings section ([`Dialog::in_settings_section`]).
 
 use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, Global, InteractiveElement, IntoElement, KeyBinding,
-    MouseButton, ParentElement, RenderOnce, SharedString, Styled, Window, actions, deferred, div,
-    px,
+    MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
+    Window, actions, anchored, deferred, div, point, px,
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
@@ -72,6 +74,16 @@ impl DialogKind {
             Self::Confirm => 440.0,
         };
         wide.min(viewport_width - 24.0)
+    }
+
+    /// The body's content width: the dialog inside its 1px edge and the body's padding (`.d-dialog__body` 16px, a
+    /// confirmation's 18px sides).
+    pub fn body_width(self, viewport_width: f32) -> f32 {
+        let side: f32 = match self {
+            Self::Form => 16.0,
+            Self::Confirm => 18.0,
+        };
+        self.width(viewport_width) - 2.0 - 2.0 * side
     }
 }
 
@@ -174,6 +186,7 @@ pub struct Dialog {
     close_handle: Option<FocusHandle>,
     on_close: Option<CloseHandler>,
     on_backdrop: Option<CloseHandler>,
+    in_section: bool,
 }
 
 impl Dialog {
@@ -199,7 +212,17 @@ impl Dialog {
             close_handle: None,
             on_close: None,
             on_backdrop: None,
+            in_section: false,
         }
+    }
+
+    /// The web renders this dialog's `<dialog>` as a child of a settings section (`.d-settings-frame__body > section`, a
+    /// channel's editor, a device's sign-out): the section's rhythm (`> * { margin-block: 0 }`, `> * + * { margin-top:
+    /// 14px }`) outranks Dialog.css's `margin: 12vh auto auto`, so the modal sits the section gap from the window's top. Its
+    /// `max-height` (`100dvh - 12vh - 20px`) stays Dialog.css's.
+    pub fn in_settings_section(mut self) -> Self {
+        self.in_section = true;
+        self
     }
 
     pub fn open(mut self, open: bool) -> Self {
@@ -413,18 +436,20 @@ impl RenderOnce for Dialog {
             .border_color(color::LINE_STRONG)
             .rounded(radius::XXL)
             .shadow(shadow_3())
-            .overflow_hidden()
+            // Taller than its max height, the dialog scrolls as one box (the `<dialog>`'s `overflow: auto`): its parts
+            // keep their heights.
+            .overflow_y_scroll()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(head);
+            .child(div().flex_none().child(head));
         if let Some(body) = self.body {
             let pad = if confirm {
                 div().px(px(18.0)).pt(px(12.0))
             } else {
                 div().p(px(16.0))
             };
-            panel_el = panel_el.child(pad.child(body));
+            panel_el = panel_el.child(pad.flex_none().child(body));
         }
-        panel_el = panel_el.child(footer);
+        panel_el = panel_el.child(div().flex_none().child(footer));
         let (next_panel, prev_panel) = (panel.clone(), panel.clone());
         let panel_el = panel_el
             .on_action(move |_: &TrapNext, window, cx| trap_tab(&next_panel, true, window, cx))
@@ -436,19 +461,27 @@ impl RenderOnce for Dialog {
                 }
             });
 
+        let top = if self.in_section {
+            super::settings::frame::SECTION_GAP
+        } else {
+            top_offset(f32::from(viewport.height))
+        };
+        // The top layer: the scrim and the panel cover the window, whatever box the dialog's element is in.
         deferred(
-            root.absolute()
-                .inset_0()
-                .flex()
-                .flex_col()
-                .items_center()
-                .pt(px(top_offset(f32::from(viewport.height))))
-                .bg(color::SCRIM)
-                .occlude()
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    on_backdrop(window, cx)
-                })
-                .child(panel_el),
+            anchored().position(point(px(0.0), px(0.0))).child(
+                root.w(viewport.width)
+                    .h(viewport.height)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .pt(px(top))
+                    .bg(color::SCRIM)
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        on_backdrop(window, cx)
+                    })
+                    .child(panel_el),
+            ),
         )
         .with_priority(10)
         .into_any_element()

@@ -40,14 +40,14 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_shell_conversation => "shell/conversation"; "parity after T6c: re-shoot (members pane default-open) 0.5234 % pixels",
-    parity_shell_conversation_b => "shell/conversation-b"; "parity after T6c: re-shoot (members pane default-open) 1.1482 % pixels",
-    parity_shell_categories => "shell/categories"; "parity after T6c: chrome 0.2319 % (voice row 29.5 px)",
-    parity_shell_categories_b => "shell/categories-b"; "parity after T6c: chrome 0.2504 % (voice row 29.5 px)",
-    parity_shell_panes_resized => "shell/panes-resized"; "parity after T6c: chrome 0.2533 % (voice row 29.5 px)",
-    parity_shell_panes_resized_b => "shell/panes-resized-b"; "parity after T6c: chrome 0.2145 % (voice row 29.5 px)",
-    parity_shell_header_tooltip => "shell/header-tooltip"; "parity after T6c: chrome 0.3283 % (tooltip above (shared))",
-    parity_shell_header_tooltip_b => "shell/header-tooltip-b"; "parity after T6c: chrome 0.2909 % (tooltip above (shared))",
+    parity_shell_conversation => "shell/conversation",
+    parity_shell_conversation_b => "shell/conversation-b",
+    parity_shell_categories => "shell/categories",
+    parity_shell_categories_b => "shell/categories-b",
+    parity_shell_panes_resized => "shell/panes-resized",
+    parity_shell_panes_resized_b => "shell/panes-resized-b",
+    parity_shell_header_tooltip => "shell/header-tooltip",
+    parity_shell_header_tooltip_b => "shell/header-tooltip-b",
 }
 
 fn rect(app: &mut Driver, id: &str) -> dilla_parity::ElementInfo {

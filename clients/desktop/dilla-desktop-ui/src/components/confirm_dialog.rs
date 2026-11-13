@@ -62,6 +62,7 @@ pub struct ConfirmDialog {
     field_focus: Option<FocusHandle>,
     on_confirm: Option<Handler>,
     on_close: Option<Handler>,
+    in_section: bool,
 }
 
 impl ConfirmDialog {
@@ -91,7 +92,14 @@ impl ConfirmDialog {
             field_focus: None,
             on_confirm: None,
             on_close: None,
+            in_section: false,
         }
+    }
+
+    /// The dialog's element is a settings section's child in the web ([`Dialog::in_settings_section`]).
+    pub fn in_settings_section(mut self) -> Self {
+        self.in_section = true;
+        self
     }
 
     pub fn open(mut self, open: bool) -> Self {
@@ -205,6 +213,9 @@ impl RenderOnce for ConfirmDialog {
                 Some(h) => InitialFocus::Handle(h.clone()),
                 None => InitialFocus::Close,
             });
+        if self.in_section {
+            dialog = dialog.in_settings_section();
+        }
         if let Some(handler) = self.on_close {
             dialog = dialog.on_close(move |window, cx| handler(window, cx));
         }

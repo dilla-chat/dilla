@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
     Styled, Window, div, px,
@@ -30,6 +31,7 @@ pub struct Segmented {
     options: Vec<(SharedString, SharedString)>,
     value: SharedString,
     disabled: bool,
+    tall: bool,
     on_change: Option<PickHandler>,
     /// An extra child of each option, by its value (the app's automation probe; the ui crate has none of its own).
     option_child: Option<OptionChild>,
@@ -55,6 +57,7 @@ impl Segmented {
                 .collect(),
             value: value.into(),
             disabled: false,
+            tall: false,
             on_change: None,
             option_child: None,
         }
@@ -69,6 +72,12 @@ impl Segmented {
     /// Shown but not changeable.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// The Voice page's input mode (`.d-voice-settings__mode .d-segmented__option`): 28px options, 12px across.
+    pub fn tall(mut self, tall: bool) -> Self {
+        self.tall = tall;
         self
     }
 
@@ -92,6 +101,7 @@ impl RenderOnce for Segmented {
             .id(self.id.clone())
             .flex()
             .flex_none()
+            // The options wrap as the web's do when the row is too narrow (`flex-wrap: wrap`).
             .flex_wrap()
             .p(px(2.0))
             .bg(color::SURFACE_2)
@@ -119,10 +129,10 @@ impl RenderOnce for Segmented {
         });
         for (i, (value, label)) in self.options.iter().enumerate() {
             let checked = *value == self.value;
-            let (fg, bg) = if checked {
-                (color::ACCENT_INK, color::ACCENT)
+            let fg = if checked {
+                color::ACCENT_INK
             } else {
-                (color::FG_STRONG, gpui::transparent_black())
+                color::FG_STRONG
             };
             let mut option = div()
                 .id((self.id.clone(), format!("option-{i}")))
@@ -131,11 +141,11 @@ impl RenderOnce for Segmented {
                 .flex()
                 .items_center()
                 .min_w(px(24.0))
-                .min_h(px(26.0))
-                .px(px(10.0))
-                .py(px(4.0))
+                .min_h(px(if self.tall { 28.0 } else { 26.0 }))
+                .px(px(if self.tall { 12.0 } else { 10.0 }))
+                .py(px(if self.tall { 0.0 } else { 4.0 }))
                 .rounded(radius::SEG - px(2.0))
-                .bg(bg)
+                .when(checked, |o| o.bg(color::ACCENT))
                 .focus_visible(|s| s.shadow(focus_ring()))
                 .relative()
                 .child(line(

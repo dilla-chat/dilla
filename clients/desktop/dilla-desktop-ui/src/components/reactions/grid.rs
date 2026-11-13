@@ -453,7 +453,7 @@ fn shadow_2() -> Vec<gpui::BoxShadow> {
     vec![gpui::BoxShadow {
         color: gpui::hsla(0.0, 0.0, 0.0, 0.55),
         offset: gpui::point(px(0.0), px(20.0)),
-        blur_radius: px(50.0),
+        blur_radius: crate::metrics::css_blur(50.0),
         spread_radius: px(0.0),
         inset: false,
     }]

@@ -1,13 +1,13 @@
 {
   "digest": "ceb58debb4b9ea832cf5823b8aabefa70c74a8394f4778a0bdd6392327b426e8",
-  "shift": 37384,
+  "shift": 88757,
   "hand_migrated": false,
   "ids": {
-    "channel:midgard/afk": "f99eb9cc9c73a2019e19ca2d3ca497aa",
-    "channel:midgard/general": "caee233cf72754a2857bf9f9771482d7",
-    "person:ada": "d7ff9da65be33dac8dd38d62628dde9c",
-    "person:bjorn": "5bc04447e72977307be4235cd2549846",
-    "person:mira": "b0a2f2527d176d01b885b317249980f9",
-    "server:midgard": "0a81a818f7fac92647fc72c5ffc93f15"
+    "channel:midgard/afk": "5e0738e34fab9c66c2ec7aa7fda13273",
+    "channel:midgard/general": "9754010f445279705a4ce1c1506d9d9f",
+    "person:ada": "632cb3e0c79c646cc3ac6b6d0373b454",
+    "person:bjorn": "75eb91a49ef64432fde5afc797971de8",
+    "person:mira": "d2cefbbd6f8f8258e0f50347dd1567dd",
+    "server:midgard": "7ee9957a529334918808c02d30c50fa1"
   }
 }

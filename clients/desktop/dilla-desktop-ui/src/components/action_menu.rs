@@ -117,6 +117,8 @@ pub struct ActionMenu {
     open: bool,
     at: Option<Point<Pixels>>,
     icon: Option<IconName>,
+    icon_size: Pixels,
+    trigger_size: Option<Pixels>,
     no_trigger: bool,
     width: Option<Pixels>,
     return_focus: Option<FocusHandle>,
@@ -139,6 +141,8 @@ impl ActionMenu {
             open: false,
             at: None,
             icon: None,
+            icon_size: px(22.0),
+            trigger_size: None,
             no_trigger: false,
             width: None,
             return_focus: None,
@@ -162,6 +166,19 @@ impl ActionMenu {
     /// A monoline icon on the trigger in place of the `⋯` glyph.
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// The trigger icon's size (22px unless set; a message toolbar's `⋯` is 14px in its 26px button).
+    pub fn icon_size(mut self, size: Pixels) -> Self {
+        self.icon_size = size;
+        self
+    }
+
+    /// A square trigger of `size` with no padding (a list head's button, `.d-channel-list__head-btn`: 26px), in place of
+    /// the default 24px minimum with 6px sides.
+    pub fn trigger_size(mut self, size: Pixels) -> Self {
+        self.trigger_size = Some(size);
         self
     }
 
@@ -244,7 +261,7 @@ impl RenderOnce for ActionMenu {
             let (open, memory_for_keys) = (self.open, memory.clone());
             let open_with = open_with.clone();
             let glyph = match self.icon {
-                Some(icon) => div().child(Icon::new(icon).size(px(22.0)).color(if open {
+                Some(icon) => div().child(Icon::new(icon).size(self.icon_size).color(if open {
                     color::FG
                 } else {
                     color::FG_2
@@ -265,9 +282,6 @@ impl RenderOnce for ActionMenu {
                 .flex()
                 .items_center()
                 .justify_center()
-                .min_w(px(24.0))
-                .min_h(px(24.0))
-                .px(px(6.0))
                 .rounded(radius::MD)
                 .cursor_pointer()
                 .hover(|s| s.bg(color::HOVER))
@@ -290,6 +304,10 @@ impl RenderOnce for ActionMenu {
                         open_with(true, window, cx);
                     }
                 });
+            button = match self.trigger_size {
+                Some(size) => button.size(size),
+                None => button.min_w(px(24.0)).min_h(px(24.0)).px(px(6.0)),
+            };
             if open {
                 button = button.bg(color::HOVER);
             }
@@ -428,8 +446,10 @@ fn menu_row(
     } else {
         color::SURFACE_HI
     };
+    let selector = format!("menu-item-{}", item.id);
     let mut row = div()
         .id(id)
+        .debug_selector(move || selector.clone())
         .track_focus(handle)
         .tab_stop(false)
         .flex()

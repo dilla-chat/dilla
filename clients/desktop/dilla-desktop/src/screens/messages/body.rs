@@ -42,10 +42,12 @@ const MENTION_PAD: f32 = 4.0;
 /// MessageRow.css `.d-link`: `text-underline-offset: 0.15em`.
 const UNDERLINE_OFFSET: f32 = 0.15;
 
-/// CodeBlock.css: the card's 640px maximum, its 30px head (and 1px rule), 8px body padding, 19px lines, 320px maximum
+/// CodeBlock.css: the card's 640px maximum, its 30px head (its 1px rule inside), 8px body padding, 19px lines, 320px maximum
 /// body, 38px number gutter and 16px right padding.
 const CARD_MAX: f32 = 640.0;
 const CARD_HEAD: f32 = 30.0;
+/// `.d-code-block__head` is border-box: its 1px rule is inside the 30px, so its content is 29px.
+const CARD_HEAD_CONTENT: f32 = CARD_HEAD - 1.0;
 const CARD_BODY_PAD: f32 = 8.0;
 const CARD_LINE: f32 = 19.0;
 const CARD_BODY_MAX: f32 = 320.0;
@@ -375,12 +377,15 @@ fn rule(x: f32, top: f32, width: f32, c: Hsla) -> AnyElement {
         .into_any_element()
 }
 
+/// A span's box at its CSS place: the layout keeps the fractions and snaps the edges as Chromium paints them
+/// (`round(x)` to `round(x + width)`, the vendored GPUI's edge snap), where rounding the width alone could move the
+/// right edge a pixel off the web's.
 fn frame(x: f32, top: f32, width: f32, height: f32) -> AnyElement {
     div()
         .absolute()
-        .left(px(x.round()))
-        .top(px(top.round()))
-        .w(px(width.round()))
+        .left(px(x))
+        .top(px(top))
+        .w(px(width))
         .h(px(height))
         .border_1()
         .border_color(color::HAIRLINE_2)
@@ -388,11 +393,12 @@ fn frame(x: f32, top: f32, width: f32, height: f32) -> AnyElement {
 }
 
 fn pill_box(kind: PillStyle, x: f32, top: f32, width: f32, height: f32) -> AnyElement {
+    // As [`frame`]: the edges snap where Chromium paints them.
     let base = div()
         .absolute()
-        .left(px(x.round()))
-        .top(px(top.round()))
-        .w(px(width.round()))
+        .left(px(x))
+        .top(px(top))
+        .w(px(width))
         .h(px(height))
         .rounded(radius::TAG);
     match kind {
@@ -457,8 +463,8 @@ fn layout_run(out: &mut Vec<AnyElement>, parts: &[Body], top: f32, avail: f32, f
 
 fn code_height(lines: usize) -> f32 {
     let body = (lines as f32 * CARD_LINE).min(CARD_BODY_MAX) + 2.0 * CARD_BODY_PAD;
-    // The 1px frame, the head with its 1px rule, then the body.
-    2.0 + CARD_HEAD + 1.0 + body
+    // The 1px frame, the head (its 1px rule inside it), then the body.
+    2.0 + CARD_HEAD + body
 }
 
 /// A fenced code card at (`x`, `top`) (README §6.4): the language, the line count, Copy, and the numbered, highlighted
@@ -472,7 +478,7 @@ fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
     let lang_text = lang.unwrap_or("text").to_uppercase();
     let micro = text::MICRO;
     let micro_lh = line_height(micro, 1.5);
-    let head_text_top = (CARD_HEAD - micro_lh) / 2.0;
+    let head_text_top = (CARD_HEAD_CONTENT - micro_lh) / 2.0;
     let tracking = crate::screens::LABEL_TRACKING_WIDE;
     let lang_w = lang_text.chars().count() as f32 * f32::from(micro) * (MONO_ADVANCE + tracking);
     kids.push(
@@ -501,7 +507,7 @@ fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
         div()
             .absolute()
             .left(px(btn_x.round()))
-            .top(px(((CARD_HEAD - 22.0) / 2.0).round()))
+            .top(px((CARD_HEAD_CONTENT - 22.0) / 2.0))
             .w(px(btn_w.round()))
             .h(len(22.))
             .rounded(radius::ROW)
@@ -521,7 +527,7 @@ fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
         div()
             .absolute()
             .left(len(0.))
-            .top(px(CARD_HEAD))
+            .top(px(CARD_HEAD_CONTENT))
             .w(px(inner))
             .h(len(1.))
             .bg(color::HAIRLINE)
@@ -534,7 +540,7 @@ fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
     let visible = rows
         .len()
         .min((CARD_BODY_MAX / CARD_LINE).floor() as usize + 1);
-    let body_top = CARD_HEAD + 1.0 + CARD_BODY_PAD;
+    let body_top = CARD_HEAD + CARD_BODY_PAD;
     for (r, toks) in rows.iter().take(visible).enumerate() {
         let top = body_top + r as f32 * CARD_LINE;
         let no = (r + 1).to_string();
@@ -572,7 +578,7 @@ fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
                 .left(len(0.))
                 .top(len(0.))
                 .w(px(inner))
-                .h(px(CARD_HEAD))
+                .h(px(CARD_HEAD_CONTENT))
                 .bg(color::BG_3),
         )
         .children(kids)
@@ -733,8 +739,8 @@ mod tests {
 
     #[test]
     fn a_code_card_scrolls_after_320px_of_lines() {
-        assert_eq!(code_height(1), 2.0 + 30.0 + 1.0 + 19.0 + 16.0);
-        assert_eq!(code_height(100), 2.0 + 30.0 + 1.0 + 320.0 + 16.0);
+        assert_eq!(code_height(1), 2.0 + 30.0 + 19.0 + 16.0);
+        assert_eq!(code_height(100), 2.0 + 30.0 + 320.0 + 16.0);
     }
 
     /// The height memo answers what a layout would, for every body and width, and a second ask is a lookup.

@@ -14,24 +14,12 @@ use gpui::{BoxShadow, Hsla, point, px};
 
 /// `--shadow-2`: `0 20px 50px rgba(0,0,0,0.55)` (the command list and the suggestions; packages/design-tokens).
 pub fn shadow_2() -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color: gpui::hsla(0.0, 0.0, 0.0, 0.55),
-        offset: point(px(0.0), px(20.0)),
-        blur_radius: px(50.0),
-        spread_radius: px(0.0),
-        inset: false,
-    }]
+    crate::metrics::css_shadow(gpui::hsla(0.0, 0.0, 0.0, 0.55), 20.0, 50.0)
 }
 
 /// `--shadow-popover`: `0 20px 50px rgba(0,0,0,0.6)` (the reminders popover).
 pub fn shadow_popover() -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color: gpui::hsla(0.0, 0.0, 0.0, 0.6),
-        offset: point(px(0.0), px(20.0)),
-        blur_radius: px(50.0),
-        spread_radius: px(0.0),
-        inset: false,
-    }]
+    crate::metrics::css_shadow(gpui::hsla(0.0, 0.0, 0.0, 0.6), 20.0, 50.0)
 }
 
 /// `box-shadow: inset 2px 0 0 var(--accent)`: the selected row's left bar. GPUI draws no inset shadow, so it is a 2px
@@ -58,4 +46,14 @@ pub fn halo(colour: Hsla) -> Vec<BoxShadow> {
         spread_radius: px(3.0),
         inset: false,
     }]
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    /// Review m6: the CSS blur (50px) is drawn as GPUI's deviation, half of it (`metrics::css_blur`).
+    #[test]
+    fn the_command_shadows_blur_as_css_does() {
+        assert_eq!(super::shadow_2()[0].blur_radius, gpui::px(25.0));
+        assert_eq!(super::shadow_popover()[0].blur_radius, gpui::px(25.0));
+    }
 }

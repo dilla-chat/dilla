@@ -26,7 +26,8 @@ use dilla_desktop_ui::components::settings::nav::{NavItem, SettingsNav};
 use dilla_desktop_ui::components::{Button, ButtonVariant};
 
 use crate::edit_state::{Nav, Workspace};
-use crate::router::{Route, UserSection};
+use crate::router::{Route, ServerSection, UserSection};
+use crate::screens::server_settings::model;
 use crate::slots::{self, SectionId, SlotCx};
 use crate::strings::t;
 
@@ -37,6 +38,8 @@ pub enum Dest {
     Section(UserSection),
     /// Out of the settings, to the route they were opened from.
     Close,
+    /// A section of the server whose group follows "You" (its settings open in place of these).
+    Server(ServerSection),
 }
 
 /// The guard of the open settings host, as the sections see it.
@@ -90,6 +93,44 @@ pub fn nav_items() -> Vec<NavItem> {
         .collect()
 }
 
+/// The server whose group follows "You" (Shell.tsx's `fallbackCommunity`): the one the settings were opened over, else
+/// the first server.
+pub fn nav_community(
+    state: &dilla_client::state::AppState,
+    opened_over: Option<dilla_client::state::CommunityId>,
+) -> Option<dilla_client::state::CommunityId> {
+    opened_over
+        .filter(|c| state.communities.iter().any(|x| x.id == *c))
+        .or_else(|| state.communities.first().map(|c| c.id))
+}
+
+/// The nav items: the person's own under "You", then that server's sections the person may use under its name
+/// (SettingsNavigation.tsx), each `server:<id>`.
+pub fn nav_items_with(
+    state: &dilla_client::state::AppState,
+    community: Option<dilla_client::state::CommunityId>,
+) -> Vec<NavItem> {
+    let mut items = nav_items();
+    let Some(community) = community else {
+        return items;
+    };
+    // The one access slice (final review I2), as the server settings read it.
+    let access = dilla_client::state::server_admin::access_in(state, community);
+    let name = state
+        .communities
+        .iter()
+        .find(|c| c.id == community)
+        .map(|c| c.name.clone());
+    if let (Some(name), true) = (name, access.loaded) {
+        items.extend(model::nav_sections(&access).into_iter().map(|s| {
+            NavItem::new(format!("server:{}", s.id()), model::label_of(s))
+                .icon(model::icon_of(s))
+                .group(name.clone())
+        }));
+    }
+    items
+}
+
 /// The user settings workspace.
 pub struct UserSettingsHost {
     section: UserSection,
@@ -101,6 +142,8 @@ pub struct UserSettingsHost {
     focus: gpui::FocusHandle,
     /// The guard the last render handed its section in `SlotCx::workspace` (always this host's own).
     handed: Option<SettingsWorkspace>,
+    /// The server the settings were opened over, if any ([`nav_community`] falls back to the first).
+    opened_over: Option<dilla_client::state::CommunityId>,
 }
 
 impl EventEmitter<SettingsEvent> for UserSettingsHost {}
@@ -127,7 +170,13 @@ impl UserSettingsHost {
             workspace,
             focus: cx.focus_handle(),
             handed: None,
+            opened_over: None,
         }
+    }
+
+    /// The server the settings were opened over: its group follows "You" in the nav.
+    pub fn set_opened_over(&mut self, community: Option<dilla_client::state::CommunityId>) {
+        self.opened_over = community;
     }
 
     pub fn section(&self) -> UserSection {
@@ -175,6 +224,15 @@ impl UserSettingsHost {
                 self.workspace.borrow_mut().detach();
                 cx.emit(SettingsEvent::Navigate(self.from.clone()));
             }
+            Dest::Server(section) => {
+                if let Some(community) = nav_community(&self.ctx.state, self.opened_over) {
+                    self.workspace.borrow_mut().detach();
+                    cx.emit(SettingsEvent::Navigate(Route::ServerSettings {
+                        community,
+                        section: Some(section),
+                    }));
+                }
+            }
         }
         cx.notify();
     }
@@ -207,11 +265,17 @@ impl Render for UserSettingsHost {
         }
         let section = self.section;
         let this = cx.entity();
-        let nav = SettingsNav::new("user-settings-nav", nav_items(), section.id()).on_select({
+        let community = nav_community(&self.ctx.state, self.opened_over);
+        let items = nav_items_with(&self.ctx.state, community);
+        let nav = SettingsNav::new("user-settings-nav", items, section.id()).on_select({
             let this = this.clone();
             move |id, _, cx| {
-                if let Some(s) = UserSection::from_id(id) {
-                    this.update(cx, |h, cx| h.request(Dest::Section(s), cx));
+                let dest = match id.strip_prefix("server:") {
+                    Some(s) => ServerSection::from_id(s).map(Dest::Server),
+                    None => UserSection::from_id(id).map(Dest::Section),
+                };
+                if let Some(dest) = dest {
+                    this.update(cx, |h, cx| h.request(dest, cx));
                 }
             }
         });

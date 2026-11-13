@@ -31,6 +31,12 @@ pub enum ButtonSize {
     /// A dialog's footer button (`Dialog.css`): 34px, 14px across (16px for the accent and danger action), `--text-ui`,
     /// no edge, radius `--r-seg`; the action is filled and bold, Cancel is `--fg-chip` on nothing.
     Dialog,
+    /// A panel's accent action (`InvitePanel.css` `.d-invite-panel__primary`, Make invite link and Copy): 36px, 14px
+    /// across, a 6px gap, `--text-ui` at the display weight, no edge, radius `--r-seg`, a 13px icon.
+    Panel,
+    /// A list row's small action (`.d-invite-panel__revoke`): 28px of content in its 1px edge, 10px across, `--text-xs` at
+    /// the body weight, radius `md`; a danger one is edged in `--danger-edge`.
+    Row,
 }
 
 /// The colours of one state, resolved from the variant.
@@ -227,7 +233,13 @@ impl RenderOnce for Button {
                 6.0,
                 text::UI,
             ),
+            ButtonSize::Panel => (36.0, 14.0, 6.0, text::UI),
+            ButtonSize::Row => (30.0, 10.0, 8.0, text::XS),
         };
+        if self.size == ButtonSize::Row && self.variant == ButtonVariant::Danger {
+            p.border = color::DANGER_EDGE;
+            p.hover_bg = color::DANGER_FAINT;
+        }
         let mut base = div()
             .id(self.id)
             .flex()
@@ -241,12 +253,24 @@ impl RenderOnce for Button {
             .font_weight(font::WEIGHT_BTN)
             .text_color(p.fg)
             .bg(p.bg)
-            .rounded(if dialog { radius::SEG } else { radius::MD });
-        if !matches!(self.size, ButtonSize::Bar | ButtonSize::Dialog) {
+            .rounded(if dialog || self.size == ButtonSize::Panel {
+                radius::SEG
+            } else {
+                radius::MD
+            });
+        if !matches!(
+            self.size,
+            ButtonSize::Bar | ButtonSize::Dialog | ButtonSize::Panel
+        ) {
             base = base.border_1().border_color(p.border);
         }
         if let Some(icon) = self.icon {
-            base = base.child(Icon::new(icon).size(px(14.0)).color(p.fg));
+            let glyph = if self.size == ButtonSize::Panel {
+                13.0
+            } else {
+                14.0
+            };
+            base = base.child(Icon::new(icon).size(px(glyph)).color(p.fg));
         }
         if self.pressed.is_some() {
             base = base.child(div().child(if self.pressed == Some(true) {
@@ -255,12 +279,16 @@ impl RenderOnce for Button {
                 "[ ]"
             }));
         }
-        let weight =
-            if dialog && matches!(self.variant, ButtonVariant::Accent | ButtonVariant::Danger) {
-                font::WEIGHT_DISPLAY
-            } else {
-                font::WEIGHT_BTN
-            };
+        let weight = if (dialog
+            && matches!(self.variant, ButtonVariant::Accent | ButtonVariant::Danger))
+            || self.size == ButtonSize::Panel
+        {
+            font::WEIGHT_DISPLAY
+        } else if self.size == ButtonSize::Row {
+            font::WEIGHT_BODY
+        } else {
+            font::WEIGHT_BTN
+        };
         base = base.child(line(self.label, size, line_height(size, 1.5), p.fg).weight(weight));
         if let Some(hint) = self.key_hint {
             base = base.child(

@@ -4,7 +4,8 @@
 //! Cancel and Save. Enter saves, Shift+Enter breaks the line, Escape cancels.
 
 use gpui::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement, Styled, Window, div, px,
+    AnyElement, App, Focusable as _, InteractiveElement as _, IntoElement, ParentElement, Styled,
+    Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{Enter, Textarea, TextareaState};
 
@@ -25,6 +26,8 @@ const MAX_FIELD: f32 = 160.0;
 /// A foot button's height (`Button`'s Md size).
 const FOOT: f32 = 32.0;
 const GAP: f32 = 4.0;
+/// The focused field's `--accent-soft` ring: `box-shadow: 0 0 0 3px`.
+const FOCUS_RING: f32 = 3.0;
 
 /// The field's height for `lines` lines of text: the content box (clamped) plus padding and the 1px edge.
 pub fn field_height(lines: usize) -> f32 {
@@ -44,8 +47,13 @@ pub fn counter_visible(remaining: i64) -> bool {
 
 /// The rows of the text being edited in a field `width` px wide (the textarea grows with its soft-wrapped lines,
 /// `field-sizing: content`): each hard line takes as many rows as the mono pre-wrap breaks it into.
+/// The width the field gives its text: less the padding and the 1px edge on each side.
+fn text_width(width: f32) -> f32 {
+    width - 2.0 * PAD_X - 2.0
+}
+
 pub fn lines_of(value: &str, width: f32) -> usize {
-    let inner = width - 2.0 * PAD_X - 2.0;
+    let inner = text_width(width);
     let columns = dilla_desktop_ui::text::columns(text::INPUT, inner);
     dilla_desktop_ui::text::wrap_mono(value, columns)
         .len()
@@ -58,7 +66,7 @@ pub fn editor(
     used: usize,
     ui: &gpui::Entity<MessageUi>,
     width: f32,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let value = input.read(cx).value();
@@ -66,6 +74,8 @@ pub fn editor(
     let used = used as i64;
     let remaining = EDIT_MAX as i64 - used;
     let refused = value.trim().is_empty() || remaining < 0;
+    // `--hairline-2`; focused, the accent edge and a 3px `--accent-soft` ring (`.d-message-editor__input:focus`).
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
     let field = div()
         .w_full()
         .h(px(field_height(lines)))
@@ -73,16 +83,44 @@ pub fn editor(
         .py(px(PAD_Y))
         .bg(color::SURFACE)
         .border_1()
-        .border_color(color::ACCENT)
+        .border_color(if focused {
+            color::ACCENT
+        } else {
+            color::HAIRLINE_2
+        })
+        .when(focused, |d| {
+            d.shadow(dilla_desktop_ui::metrics::spread_ring(
+                color::ACCENT_SOFT,
+                FOCUS_RING,
+            ))
+        })
         .rounded(radius::LG)
         .text_size(text::INPUT)
         .line_height(px(LINE))
         .font_family(font::MONO)
         .text_color(color::FG)
+        // The typed text's line boxes for the R13 mask (automation build only), over the field's text box.
+        .child(crate::screens::composer::typed_text(
+            div()
+                .absolute()
+                .left(px(PAD_X))
+                .top(px(PAD_Y))
+                .w(px(text_width(width)))
+                .h(px(lines as f32 * LINE)),
+            &value,
+            LINE,
+        ))
         .child(super::textarea_origin(
+            // The textarea's own size sets 14px text; the field's 13px on 20px lines are set on it, which wins.
             Textarea::new(input)
                 .appearance(false)
-                .h(px(field_height(lines) - 2.0 * PAD_Y - 2.0)),
+                .text_size(text::INPUT)
+                .line_height(px(LINE))
+                .w(px(text_width(width) + super::TEXTAREA_WRAP_EXTRA))
+                // Its own 8px above and below the lines take room in its box too, or the last line is cut.
+                .h(px(
+                    field_height(lines) - 2.0 * PAD_Y - 2.0 + 2.0 * super::TEXTAREA_PAD_Y
+                )),
         ));
     let mut foot = div()
         .flex()

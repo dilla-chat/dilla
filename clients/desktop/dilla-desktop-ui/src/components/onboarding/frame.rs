@@ -40,13 +40,7 @@ const FOOTER_GAP: f32 = 12.0;
 pub const ACTION_H: f32 = 40.0;
 /// `--card-shadow`: `0 30px 80px rgba(0,0,0,0.55)`.
 fn shadow_card() -> Vec<gpui::BoxShadow> {
-    vec![gpui::BoxShadow {
-        color: gpui::hsla(0.0, 0.0, 0.0, 0.55),
-        offset: gpui::point(px(0.0), px(30.0)),
-        blur_radius: px(80.0),
-        spread_radius: px(0.0),
-        inset: false,
-    }]
+    crate::metrics::css_shadow(gpui::hsla(0.0, 0.0, 0.0, 0.55), 30.0, 80.0)
 }
 
 /// The body text's line height: `--text-sm` at the base 1.5.
@@ -639,5 +633,14 @@ impl RenderOnce for ReadyPanel {
                 line_height(text::UI, 1.5),
                 color::OK_PANEL_TEXT,
             ))
+    }
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    /// Review m6: `--card-shadow`'s 80px blur is drawn as GPUI's deviation, half of it (`metrics::css_blur`).
+    #[test]
+    fn the_card_shadow_blurs_as_css_does() {
+        assert_eq!(super::shadow_card()[0].blur_radius, gpui::px(40.0));
     }
 }

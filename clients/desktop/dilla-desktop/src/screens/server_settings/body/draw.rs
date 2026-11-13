@@ -19,7 +19,7 @@ use dilla_desktop_ui::components::server_settings::layout;
 use dilla_desktop_ui::components::server_settings::permission_grid::{
     GridGroup, GridRow, PermissionGrid,
 };
-use dilla_desktop_ui::components::settings::frame::section_header;
+use dilla_desktop_ui::components::settings::frame::{section_header, section_header_full};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, SettingsRow};
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toggle::Toggle;
@@ -51,33 +51,8 @@ fn track_id(id: String) -> &'static str {
     })
 }
 
-/// `section_header` with a sub-line that wraps at 60 columns (`max-width: 60ch`), as a longer sub-line does on the web.
-fn header_wrapped(title: &str, sub: &str) -> AnyElement {
-    let width = 60.0 * f32::from(text::UI) * dilla_desktop_ui::text::MONO_ADVANCE;
-    div()
-        .flex()
-        .flex_col()
-        .pb(layout::HEADING_TOP)
-        .child(
-            line(
-                title.to_owned(),
-                text::HEADING,
-                line_height(text::HEADING, 1.5),
-                color::FG,
-            )
-            .weight(font::WEIGHT_DISPLAY),
-        )
-        .child(div().pt(layout::HEAD_GAP).flex().flex_col().children(
-            dilla_desktop_ui::text::paragraph(
-                sub,
-                text::UI,
-                line_height(text::UI, 1.5),
-                color::FG_2,
-                width,
-            ),
-        ))
-        .into_any_element()
-}
+/// The GIF key's row as the column measures it: its label and its buttons' labels.
+type GifKeyRow<'a> = Option<(&'a str, &'a [&'a str])>;
 
 /// A handler of the settings' own entity, for the components that take a plain closure.
 fn act(
@@ -362,9 +337,15 @@ impl Body {
                 .mb(layout::HEAD_GAP)
                 .child(
                     div().flex_1().min_w_0().child(
-                        line(head_name, text::SM, line_height(text::SM, 1.5), color::FG)
-                            .weight(font::WEIGHT_DISPLAY)
-                            .ellipsis(),
+                        // The `h3` inherits the page's `--text-base` (`.dw-admin-grouphead h3 { font-size: inherit }`).
+                        line(
+                            head_name,
+                            text::BASE,
+                            line_height(text::BASE, 1.5),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY)
+                        .ellipsis(),
                     ),
                 );
             if let Some(category) = group.category {
@@ -372,11 +353,11 @@ impl Body {
                 head = head.child(self.row_controls(category, up, down, false, cx));
             }
             block = block.child(head);
-            let n = group.channels.len();
-            // The list is one bordered card; its rows are divided by hairlines.
+            // The list is one bordered card; its rows are divided by hairlines, 1px apart.
             let mut card = div()
                 .flex()
                 .flex_col()
+                .gap(layout::LIST_GAP)
                 .border_1()
                 .border_color(color::HAIRLINE)
                 .rounded(radius::XL)
@@ -398,11 +379,12 @@ impl Body {
                     .border_color(color::HAIRLINE)
                     .when(i > 0, |r| r.border_t_1())
                     .child(
+                        // `.dw-admin-name` takes the page's `--text-base`.
                         div().flex_1().min_w_0().child(
                             line(
                                 model::shown(c),
-                                text::SM,
-                                line_height(text::SM, 1.5),
+                                text::BASE,
+                                line_height(text::BASE, 1.5),
                                 color::FG,
                             )
                             .ellipsis(),
@@ -414,9 +396,9 @@ impl Body {
                 row = row.child(self.row_controls(c, up, down, fixed, cx));
                 card = card.child(row);
             }
-            if n > 0 {
-                block = block.child(card);
-            }
+            // An empty category keeps its list (the web renders the empty `ul`): its two edges draw one line under the
+            // heading.
+            block = block.child(card);
             out.push(block.into_any_element());
         }
         out.push(self.edit_dialog(window, cx));
@@ -440,8 +422,9 @@ impl Body {
         let hex = c.id.hex();
         let afk = self.afk_channel() == Some(c.id);
         let button = |key: &'static str, icon: IconName, label: String, enabled: bool| {
+            // The web's IconButton default: 32px with an 18px glyph, filling the 32px slot.
             IconButton::new(SharedString::from(format!("{key}-{hex}")), icon, label)
-                .size(IconButtonSize::S28)
+                .size(IconButtonSize::S32)
                 .disabled(!enabled)
         };
         let up_slot = (!fixed).then(|| {
@@ -528,16 +511,20 @@ impl Body {
             1 => tf("admin.channel.titleVoice", &[("name", &c.name)]),
             _ => tf("admin.channel.titleText", &[("name", &c.name)]),
         };
+        // The fields' hints wrap at the dialog body's width, as the web's do.
+        let measure = DialogKind::Form.body_width(f32::from(window.viewport_size().width));
         let mut body = div().flex().flex_col().gap(layout::SECTION_GAP);
         body = body.child(
             TextField::new("edit-name", t("admin.channel.name"), &self.edit_name)
                 .hint(t("admin.channel.nameHint"))
+                .hint_width(measure)
                 .disabled(self.dialogue_busy),
         );
         if c.kind == 0 {
             body = body.child(
                 TextField::new("edit-topic", t("admin.channel.topic"), &self.edit_topic)
                     .hint(t("admin.channel.topicHint"))
+                    .hint_width(measure)
                     .disabled(self.dialogue_busy),
             );
         }
@@ -582,6 +569,7 @@ impl Body {
                     self.edit_slow.clone(),
                 )
                 .hint(t("slow.hint"))
+                .hint_width(measure)
                 .disabled(self.dialogue_busy)
                 .on_change(act_value(cx, |this, value, _w, cx| {
                     this.edit_slow = value.to_owned();
@@ -649,7 +637,9 @@ impl Body {
             .max_h(cap)
             .overflow_y_scroll()
             .child(body);
+        // ChannelsSection.tsx renders the editor as its section's child (`Dialog::in_settings_section`).
         Dialog::new("edit-channel", title, t("admin.cancel"))
+            .in_settings_section()
             .kind(DialogKind::Form)
             .show_default_close(false)
             .body(body)
@@ -1015,6 +1005,7 @@ impl Body {
             t("admin.channelDelete.busy"),
             t("admin.cancel"),
         )
+        .in_settings_section()
         .open(open)
         .busy(self.dialogue_busy)
         .error(self.dialogue_error.clone())
@@ -1047,6 +1038,7 @@ impl Body {
             t("admin.cancel"),
         )
         .open(self.dialogue == Dialogue::Category)
+        .in_settings_section()
         .kind(DialogKind::Form)
         .body(body)
         .footer(
@@ -1090,11 +1082,38 @@ impl Body {
         let gifs = self.state.server_admin.gifs.get(&self.community).copied();
         let mut out: Vec<AnyElement> =
             vec![section_header(t("workspace.gifs"), None).into_any_element()];
-        let mut inner = div().flex().flex_col().gap(layout::GIFS_GAP);
+        let (set_row, form): (GifKeyRow<'_>, Option<Vec<&str>>) = match gifs {
+            Some(g) if g.on && !self.gif_editing => (
+                Some((
+                    t("gif.settings.maskedLabel"),
+                    &[t("gif.settings.replace"), t("gif.settings.remove")][..],
+                )),
+                None,
+            ),
+            Some(g) => (
+                None,
+                Some(if g.on {
+                    vec![t("gif.settings.save"), t("gif.settings.cancel")]
+                } else {
+                    vec![t("gif.settings.save")]
+                }),
+            ),
+            None => (None, None),
+        };
+        let mut inner = div()
+            .flex()
+            .flex_col()
+            .gap(layout::GIFS_GAP)
+            .w(layout::gifs_column_width(
+                t("gif.settings.getKey"),
+                set_row,
+                form.as_deref(),
+            ));
+        // The link is the page's own type (`--text-base`).
         inner = inner.child(line(
             t("gif.settings.getKey"),
-            text::SM,
-            line_height(text::SM, 1.5),
+            text::BASE,
+            line_height(text::BASE, 1.5),
             color::FG_LINK,
         ));
         match gifs {
@@ -1104,14 +1123,15 @@ impl Body {
                 let showing_field = !g.on || self.gif_editing;
                 if g.on && !self.gif_editing {
                     inner = inner.child(
+                        // The column is this row's own width: it fits on one line.
                         div()
                             .flex()
                             .items_center()
-                            .gap(layout::FIELD_GAP)
+                            .gap(layout::GIFS_FORM_GAP)
                             .child(div().mr(layout::ROW_GAP).child(line(
                                 t("gif.settings.maskedLabel"),
-                                text::UI,
-                                line_height(text::UI, 1.5),
+                                text::BASE,
+                                line_height(text::BASE, 1.5),
                                 color::FG,
                             )))
                             .child(
@@ -1138,11 +1158,13 @@ impl Body {
                     if let Some(e) = &self.gif_error {
                         field = field.error(e.clone());
                     }
+                    // `.dw-gifs-settings__form`: the field's 20rem basis takes the line, Save wraps under it.
                     let mut form = div()
                         .flex()
+                        .flex_wrap()
                         .items_end()
-                        .gap(layout::FIELD_GAP)
-                        .child(field)
+                        .gap(layout::GIFS_FORM_GAP)
+                        .child(div().w_full().child(field))
                         .child(
                             Button::new("gif-save", t("gif.settings.save"))
                                 .variant(ButtonVariant::Accent)
@@ -1189,6 +1211,7 @@ impl Body {
         out.push(
             SettingsRow::new("gif-row", t("gif.settings.title"))
                 .hint(t("gif.settings.hint"))
+                .layout(Layout::Stacked)
                 .child(inner)
                 .into_any_element(),
         );
@@ -1208,7 +1231,7 @@ impl Body {
         let (ttl, uses) = model::clamp_choice(self.ttl, self.uses, manager);
         let now = self.clock.now();
         let mut out: Vec<AnyElement> = vec![
-            section_header(
+            section_header_full(
                 t("admin.invites.title"),
                 Some(&tf("serverSettings.invites.body", &[("server", &name)])),
             )
@@ -1264,7 +1287,7 @@ impl Body {
             .p(layout::INVITE_PAD_X)
             .border_1()
             .border_color(color::HAIRLINE)
-            .rounded(dilla_desktop_ui::tokens::radius::MD)
+            .rounded(radius::XL)
             .child(
                 div()
                     .flex()
@@ -1309,6 +1332,7 @@ impl Body {
                     )
                     .icon(IconName::Plus)
                     .variant(ButtonVariant::Accent)
+                    .size(ButtonSize::Panel)
                     .disabled(self.making)
                     .on_click(act_click(cx, |this, window, cx| {
                         this.make_invite(window, cx)
@@ -1452,6 +1476,7 @@ impl Body {
                             t("serverSettings.invites.revoke"),
                         )
                         .variant(ButtonVariant::Danger)
+                        .size(ButtonSize::Row)
                         .disabled(self.busy_invite.is_some())
                         .on_click(act_click(cx, move |this, window, cx| {
                             this.revoke_invite(id, window, cx)
@@ -1574,7 +1599,8 @@ impl Body {
             "admin.nav.leave"
         });
         let mut out: Vec<AnyElement> = vec![if owner {
-            header_wrapped(title, &tf("admin.leave.owner", &[("server", &name)]))
+            section_header(title, Some(&tf("admin.leave.owner", &[("server", &name)])))
+                .into_any_element()
         } else {
             section_header(title, None).into_any_element()
         }];

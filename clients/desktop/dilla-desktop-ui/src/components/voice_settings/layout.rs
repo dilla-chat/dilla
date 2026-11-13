@@ -26,9 +26,16 @@ pub fn column_width() -> f32 {
     (group_inner() - 18.0) / 2.0
 }
 
-/// The section: its head, the groups and the status lines under them, 16px apart (`.dw-settings-section`'s `--group-gap`).
+/// The section: its head (whose sub-line keeps the 22px over the groups, `h2 + p + *`), the groups and the status lines
+/// under them. The frame's section rule (`.d-settings-frame__body > section`, gap 0) beats `.dw-settings-section`'s gap:
+/// the parts are spaced by their own margins.
 pub fn page() -> Div {
-    div().flex().flex_col().gap(px(16.0)).min_w_0()
+    div().flex().flex_col().min_w_0()
+}
+
+/// A line under the groups: 14px below the block above (`section > * + *`).
+pub fn status() -> Div {
+    div().pt(px(14.0)).min_w_0()
 }
 
 /// The head of a section's text (title and sub-line) and its banners, stacked.
@@ -89,7 +96,7 @@ pub fn field() -> Div {
         .items_stretch()
 }
 
-/// A field's label (11px `--fg-2`).
+/// A field's label (11px `--fg-2`, its 16.5px line).
 pub fn label(text_: impl Into<SharedString>) -> Div {
     div().child(line(
         text_,
@@ -115,6 +122,11 @@ pub fn note(text_: &str, width: f32) -> Div {
 /// A group's description (11.5px `--fg-2`), wrapped to `width`.
 pub fn description(text_: &str, width: f32) -> Div {
     lines(text_, text::BTN, 1.5, color::FG_2, width)
+}
+
+/// The mic test's description (`.d-voice-settings__desc`): 4px into the 14px above it (`margin: -4px 0 0`).
+pub fn test_description(text_: &str, width: f32) -> Div {
+    description(text_, width).mt(px(-4.0))
 }
 
 /// A row's own description (11px `--fg-2`), wrapped to `width`.
@@ -313,7 +325,10 @@ pub fn switch_row(label_: &str, hint: &str, switch: impl IntoElement) -> Div {
                 .flex_1()
                 .min_w_0()
                 .child(row_label(label_, None))
-                .child(row_hint(hint, group_inner() - 14.0 - 44.0)),
+                .child(row_hint(
+                    hint,
+                    group_inner() - 14.0 - crate::components::toggle::TRACK_W,
+                )),
         )
         .child(div().flex_none().child(switch))
 }
@@ -332,15 +347,15 @@ pub fn control_row(text_col: impl IntoElement, control: impl IntoElement) -> Div
 
 /// The capture prompt: a status region that is always present; empty it takes no room, shown it is a 3px accent bar, 6px 12px
 /// of padding, 11px.
-pub fn prompt(text_: Option<&str>, width: f32) -> AnyElement {
-    match text_ {
-        None => div().into_any_element(),
-        Some(t) => div()
+pub fn prompt(text_: Option<&str>, width: f32) -> Option<AnyElement> {
+    // Empty, the web's prompt is taken out of the group's flow (`:empty { position: absolute }`): no gap above it.
+    text_.map(|t| {
+        div()
             .px(px(12.0))
             .py(px(6.0))
             .border_l(px(3.0))
             .border_color(color::ACCENT)
             .child(lines(t, text::XS, 1.5, color::FG, width - 15.0))
-            .into_any_element(),
-    }
+            .into_any_element()
+    })
 }

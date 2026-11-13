@@ -118,7 +118,7 @@ impl Render for ReactionTooltip {
             .shadow(vec![gpui::BoxShadow {
                 color: hsla(0.0, 0.0, 0.0, 0.55),
                 offset: gpui::point(px(0.0), px(12.0)),
-                blur_radius: px(30.0),
+                blur_radius: crate::metrics::css_blur(30.0),
                 spread_radius: px(0.0),
                 inset: false,
             }])

@@ -112,6 +112,9 @@ struct Drag {
     start_width: f32,
 }
 
+/// A hairline's width: the aside's border-left (`.d-app-shell__aside`).
+const HAIRLINE_W: f32 = 1.0;
+
 /// The width a drag asks for: the pointer's travel since it went down, in the pane's own direction (the aside's splitter
 /// is on its left edge, so moving left widens it).
 fn dragged_width(drag: Drag, x: f32) -> f32 {
@@ -162,6 +165,8 @@ pub struct ShellView {
     /// The aside that is open beside the main column.
     aside: Option<AsideKind>,
     menu: Option<ChannelMenu>,
+    /// The channel list head's server menu (the ⌄) is open.
+    server_menu_open: bool,
     /// Something is drawn over the shell (the channel menu, a dialog or another overlay of `slots::overlays`), as of the
     /// last frame: Ctrl+K does not open the search palette over it (the web's guard; Task 23).
     overlay_open: bool,
@@ -227,6 +232,7 @@ impl ShellView {
             drag: None,
             aside: None,
             menu: None,
+            server_menu_open: false,
             overlay_open: false,
             dm_view: false,
             mic_off: false,
@@ -535,6 +541,11 @@ impl ShellView {
         }
     }
 
+    /// The server on show (none on Home).
+    pub fn community(&self) -> Option<CommunityId> {
+        self.community.filter(|_| !self.dm_view)
+    }
+
     /// Shows server `community` on its first text channel.
     pub fn pick_community(&mut self, community: CommunityId, cx: &mut Context<Self>) {
         if self.community == Some(community) && !self.dm_view {
@@ -772,6 +783,60 @@ impl ShellView {
         cx.notify();
     }
 
+    // ---- the channel list head's server menu ----------------------------------------------------------------------
+
+    fn set_server_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.server_menu_open = open;
+        cx.notify();
+    }
+
+    /// Mute server and the server's notify mode (Shell.tsx `serverMenu`): the account settings Settings → Notifications
+    /// writes (Task 22's `set_community_muted` and `set_community_mode`; `default` deletes the stored mode).
+    fn choose_server_item(&mut self, community: CommunityId, item: &str, cx: &mut Context<Self>) {
+        let mode_key = notify::key_community_mode(community);
+        let mute_key = notify::key_community_mute(community);
+        if item == channel_list::SERVER_MUTE {
+            let on = self
+                .prefs
+                .as_ref()
+                .and_then(|p| notify::SettingsSource::get(p, &mute_key))
+                .is_none_or(|v| v != "1");
+            if let Some(client) = &self.client {
+                warn(
+                    "the muted servers",
+                    client.notify().set_community_muted(community, on),
+                );
+            } else if let Some(prefs) = &self.prefs {
+                // A shell without a client (tests): the same key in the same preferences.
+                warn(
+                    "the muted servers",
+                    if on {
+                        prefs.set(&mute_key, &"1".to_owned())
+                    } else {
+                        prefs.remove(&mute_key)
+                    },
+                );
+            }
+        } else if let Some(value) = item.strip_prefix(channel_list::SERVER_MODE) {
+            let mode = notify::NotifyMode::parse(value);
+            if let Some(client) = &self.client {
+                warn(
+                    "the server's notify mode",
+                    client.notify().set_community_mode(community, mode),
+                );
+            } else if let Some(prefs) = &self.prefs {
+                warn(
+                    "the server's notify mode",
+                    match mode {
+                        Some(m) => prefs.set(&mode_key, &m.as_str().to_owned()),
+                        None => prefs.remove(&mode_key),
+                    },
+                );
+            }
+        }
+        cx.notify();
+    }
+
     fn toggle_category(&mut self, category: ChannelId, cx: &mut Context<Self>) {
         let on = !self.collapsed.contains(&category.hex());
         if on {
@@ -981,11 +1046,28 @@ impl Render for ShellView {
                 on_menu: Rc::new(move |id, at, _, cx| {
                     let _ = w4.update(cx, |shell, cx| shell.open_menu(id, at, cx));
                 }),
+                on_server_menu_open: {
+                    let w6 = shell.clone();
+                    Rc::new(move |open, _, cx| {
+                        let _ = w6.update(cx, |shell, cx| shell.set_server_menu_open(open, cx));
+                    })
+                },
+                on_server_menu_pick: {
+                    let w7 = shell.clone();
+                    Rc::new(move |item, _, cx| {
+                        if let Some(community) = community {
+                            let _ = w7.update(cx, |shell, cx| {
+                                shell.choose_server_item(community, item, cx)
+                            });
+                        }
+                    })
+                },
                 on_server_settings: {
                     let w5 = shell.clone();
                     Rc::new(move |_, cx| {
                         if let Some(community) = community {
                             let _ = w5.update(cx, |shell, cx| {
+                                shell.server_menu_open = false;
                                 shell.navigate(
                                     Route::ServerSettings {
                                         community,
@@ -1036,6 +1118,7 @@ impl Render for ShellView {
                     can_add_in_category: owner && has_categories,
                     collapsed: &self.collapsed,
                     settings,
+                    server_menu_open: self.server_menu_open,
                 },
                 &handlers,
                 window,
@@ -1089,8 +1172,9 @@ impl Render for ShellView {
         // The members aside reads the slot context the shell holds (its hook takes none of its own; Task 14).
         crate::screens::members::sync(window.window_handle().window_id(), &ctx, cx);
         let aside = slots::aside(self.route(), window, cx);
+        // `.d-app-shell__aside`: the pane's width is its content's; its 1px border-left is outside it.
         let aside_width = if aside.is_some() && column {
-            panes.aside
+            panes.aside + HAIRLINE_W
         } else {
             0.0
         };
@@ -1264,8 +1348,10 @@ impl Render for ShellView {
         let aside_column = aside.map(|a| {
             div()
                 .flex_none()
-                .w(Pixels::from(panes.aside))
+                .w(Pixels::from(panes.aside + HAIRLINE_W))
                 .h_full()
+                .border_l_1()
+                .border_color(color::HAIRLINE)
                 .child(a)
         });
 
@@ -1277,6 +1363,7 @@ impl Render for ShellView {
                 .at(f32::from(layout::RAIL) + panes.sidebar
                     - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
                 .range(panes.sidebar, lo, hi)
+                .dragging(self.drag.is_some_and(|d| d.pane == Pane::Sidebar))
                 .on_press(move |x, _, cx| {
                     let _ = w_press.update(cx, |shell, _| {
                         shell.begin_drag(Pane::Sidebar, f32::from(x), window_width)
@@ -1304,8 +1391,10 @@ impl Render for ShellView {
             let splitter = Splitter::new("splitter-aside", Pane::Aside, &self.aside_splitter)
                 .at(window_width
                     - panes.aside
+                    - HAIRLINE_W
                     - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
                 .range(panes.aside, lo, hi)
+                .dragging(self.drag.is_some_and(|d| d.pane == Pane::Aside))
                 .on_press(move |x, _, cx| {
                     let _ = w_press.update(cx, |shell, _| {
                         shell.begin_drag(Pane::Aside, f32::from(x), window_width)
@@ -1354,7 +1443,8 @@ impl Render for ShellView {
             // Ctrl+K (23) does not open the palette over the channel menu or another overlay (the web's guard).
             .capture_action(
                 cx.listener(|this, _: &search::keys::OpenSearch, window, cx| {
-                    if palette_refused(this.overlay_open, &window.context_stack()) {
+                    let open = this.overlay_open || this.server_menu_open;
+                    if palette_refused(open, &window.context_stack()) {
                         cx.stop_propagation();
                     }
                 }),
@@ -1425,15 +1515,28 @@ impl Render for ShellView {
 /// frame (`overlay_open`: the channel menu, the palette itself, a DM dialog), or focus inside a dialog or the settings
 /// frame (`contexts`, the focused path's key contexts, carry the ui crate's overlay context).
 fn palette_refused(overlay_open: bool, contexts: &[gpui::KeyContext]) -> bool {
+    use dilla_desktop_ui::components::dialog::{MENU_CONTEXT, OVERLAY_CONTEXT};
+    // An open action menu (its items carry `MENU_CONTEXT` while focused) is an overlay too (review m2).
     overlay_open
         || contexts
             .iter()
-            .any(|c| c.contains(dilla_desktop_ui::components::dialog::OVERLAY_CONTEXT))
+            .any(|c| c.contains(OVERLAY_CONTEXT) || c.contains(MENU_CONTEXT))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review m2: focus inside an open action menu (the channel list head's ⌄, a toolbar's ⋯) refuses Ctrl+K, as the web's
+    /// guard refuses it over any open menu.
+    #[test]
+    fn the_palette_is_refused_over_an_open_menu() {
+        let menu =
+            gpui::KeyContext::parse(dilla_desktop_ui::components::dialog::MENU_CONTEXT).unwrap();
+        let plain = gpui::KeyContext::parse(keys::CONTEXT).unwrap();
+        assert!(palette_refused(false, &[plain.clone(), menu]));
+        assert!(!palette_refused(false, &[plain]));
+    }
 
     #[test]
     fn a_drag_moves_the_sidebar_with_the_pointer_and_the_aside_against_it() {

@@ -44,6 +44,23 @@ use crate::tracked_focus;
 
 /// Composer.css `.d-composer__input`: 20px lines, 5px above and below, at most 13.75rem (220px) high.
 const FIELD_LINE: f32 = 20.0;
+
+/// `field` (the box the textarea draws its text in, at the text's first line) with the typed text's line boxes recorded
+/// for the R13 mask in the automation build ([`crate::automation::typed_text_probe`]); unchanged elsewhere.
+pub(crate) fn typed_text(field: gpui::Div, value: &str, line: f32) -> gpui::Div {
+    #[cfg(feature = "automation")]
+    let field = field.child(crate::automation::typed_text_probe(
+        value.to_owned(),
+        text::INPUT,
+        line,
+    ));
+    #[cfg(not(feature = "automation"))]
+    let _ = (value, line);
+    field
+}
+/// The face Chromium falls back to for the ⇧ and ↵ JetBrains Mono lacks (fontconfig's sans-serif on the reference
+/// machine).
+const SYMBOL_FALLBACK: &str = "DejaVu Sans";
 const FIELD_PAD: f32 = 5.0;
 const FIELD_MAX: f32 = 220.0;
 
@@ -581,6 +598,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
         }
         list = list.child(row);
     }
+    // MentionList.css: `box-shadow: var(--shadow-2)`.
     div()
         .w(len(340.))
         .overflow_hidden()
@@ -588,6 +606,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
         .border_1()
         .border_color(color::LINE_STRONG)
         .rounded(radius::XL)
+        .shadow(dilla_desktop_ui::metrics::shadow_2())
         .child(
             div().px(len(12.)).pt(len(8.)).pb(len(6.)).child(
                 line(
@@ -659,13 +678,23 @@ impl Render for Composer {
             .child(tracked_focus(
                 "composer",
                 &self.input.read(cx).focus_handle(cx),
-                div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
-                    crate::screens::messages::textarea_origin(
-                        Textarea::new(&self.input)
-                            .appearance(false)
-                            .disabled(blocked.is_some())
-                            .h(px(rows as f32 * FIELD_LINE)),
-                    ),
+                typed_text(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(rows as f32 * FIELD_LINE))
+                        .child(crate::screens::messages::textarea_origin(
+                            // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which
+                            // wins.
+                            Textarea::new(&self.input)
+                                .appearance(false)
+                                .disabled(blocked.is_some())
+                                .text_size(text::INPUT)
+                                .line_height(px(FIELD_LINE))
+                                .h(px(rows as f32 * FIELD_LINE)),
+                        )),
+                    &value,
+                    FIELD_LINE,
                 ),
             ))
             .children(empty.then(|| {
@@ -693,8 +722,10 @@ impl Render for Composer {
             .flex()
             .items_center()
             .child(
+                // JetBrains Mono has no ↵: Chromium draws it from fontconfig's fallback face, DejaVu Sans (0.838em).
                 line("send ↵", text::BTN, line_height(text::BTN, 1.5), send_fg)
-                    .weight(font::WEIGHT_DISPLAY),
+                    .weight(font::WEIGHT_DISPLAY)
+                    .fallback(SYMBOL_FALLBACK),
             )
             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)));
         let row = div()
@@ -743,12 +774,17 @@ impl Render for Composer {
                 .ellipsis(),
             );
         }
-        foot = foot.child(div().ml(len(10.)).child(line(
-            t("shell.composer.newLine"),
-            text::META,
-            line_height(text::META, 1.5),
-            color::FG_3,
-        )));
+        foot = foot.child(
+            div().ml(len(10.)).child(
+                line(
+                    t("shell.composer.newLine"),
+                    text::META,
+                    line_height(text::META, 1.5),
+                    color::FG_3,
+                )
+                .fallback(SYMBOL_FALLBACK),
+            ),
+        );
         // The notice above the box: the read-only line, or the wait and its queue.
         let notice: Option<String> = match (blocked, slow_wait) {
             (Some(Blocked::ReadOnly), _) => None,

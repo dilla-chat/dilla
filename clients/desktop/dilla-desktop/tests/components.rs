@@ -420,3 +420,107 @@ fn every_component_renders_in_every_state(cx: &mut TestAppContext) {
         "Escape closed the settings frame"
     );
 }
+
+/// Settings over a nav taller than the window; `active` is the current section.
+struct NavHost {
+    active: &'static str,
+}
+
+impl Render for NavHost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        use dilla_desktop_ui::components::settings::frame::SettingsFrame;
+        use dilla_desktop_ui::components::settings::nav::{NavItem, SettingsNav};
+        let items: Vec<NavItem> = (0..30)
+            .map(|i| NavItem::new(format!("s{i}"), format!("Section {i}")))
+            .collect();
+        div().relative().size_full().child(
+            SettingsFrame::new("nav-host", "Close").nav(SettingsNav::new(
+                "nav-host-nav",
+                items,
+                self.active,
+            )),
+        )
+    }
+}
+
+/// Review I1: the nav scrolls its current item into view when it becomes current (the web's `scrollIntoView` on a route
+/// change), and then leaves the column to the person: wheeling it back to the top keeps it there.
+#[gpui::test]
+fn the_nav_column_scrolls_to_the_current_item_once(cx: &mut TestAppContext) {
+    install(cx);
+    let (host, cx) = cx.add_window_view(|_, _| NavHost { active: "s0" });
+    cx.simulate_resize(gpui::size(px(1280.0), px(500.0)));
+    cx.run_until_parked();
+    // The route changes to the last section: the column scrolls it into view.
+    host.update(cx, |h, cx| {
+        h.active = "s29";
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let height = f32::from(cx.update(|window, _| window.viewport_size().height));
+    let last = cx.debug_bounds("nav-item-s29").expect("the current item");
+    assert!(
+        f32::from(last.bottom()) <= height + 0.5,
+        "the current item is scrolled into view: {last:?}"
+    );
+    let first = cx.debug_bounds("nav-item-s0").expect("the first item");
+    assert!(
+        f32::from(first.top()) < 0.0,
+        "the first item is above the fold: {first:?}"
+    );
+
+    // Wheel the column back to its top: it stays there, frame after frame.
+    cx.simulate_event(gpui::ScrollEvent {
+        position: gpui::point(px(100.0), px(200.0)),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(5000.0))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    for _ in 0..3 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    let first = cx.debug_bounds("nav-item-s0").expect("the first item");
+    assert!(
+        f32::from(first.top()) >= 0.0,
+        "the column stays where the wheel left it: {first:?}"
+    );
+}
+
+/// A dialog whose body is taller than the window allows it.
+struct TallDialog;
+
+impl Render for TallDialog {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().relative().size_full().child(
+            Dialog::new("tall", "Tall", "Close")
+                .body(div().h(px(1500.0)))
+                .footer(dilla_desktop::tracked_box(
+                    "tall-save",
+                    Button::new("tall-save-b", "Save"),
+                )),
+        )
+    }
+}
+
+/// Review m3: a dialog taller than its max height scrolls as one box (the web's `<dialog>` is `overflow: auto`), so its
+/// footer can be reached with the wheel instead of being clipped away.
+#[gpui::test]
+fn a_dialog_taller_than_the_window_scrolls_to_its_footer(cx: &mut TestAppContext) {
+    install(cx);
+    let (_host, cx) = cx.add_window_view(|_, _| TallDialog);
+    cx.simulate_resize(gpui::size(px(1280.0), px(600.0)));
+    cx.run_until_parked();
+    let height = f32::from(cx.update(|window, _| window.viewport_size().height));
+    cx.simulate_event(gpui::ScrollEvent {
+        position: gpui::point(px(640.0), px(300.0)),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-5000.0))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let save = cx.debug_bounds("tall-save").expect("the footer's button");
+    assert!(
+        f32::from(save.bottom()) <= height && f32::from(save.top()) >= 0.0,
+        "the footer scrolls into the window: {save:?}"
+    );
+}

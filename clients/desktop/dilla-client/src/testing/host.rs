@@ -48,6 +48,8 @@ impl Drop for Host {
 }
 
 /// Starts a test host on free ports. `web_root`: the built web client the host serves (the parity world), else none.
+/// A host that serves the web client is the parity world's, so it also runs in the host's parity-fixture mode
+/// (`-parity-fixture`: GET /v1/instance carries the marker that makes the web client's diagnostics deterministic).
 pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
     let root = repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
@@ -87,7 +89,7 @@ pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
     .arg("-data-dir")
     .arg(&data);
     if let Some(web) = web_root {
-        cmd.arg("-web-root").arg(web);
+        cmd.arg("-web-root").arg(web).arg("-parity-fixture");
     }
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
@@ -446,6 +448,21 @@ pub fn community_with(
     members: &[&Person],
     channels: &[ChannelSpec<'_>],
 ) -> [u8; 16] {
+    let placed: Vec<PlacedChannel<'_>> = channels.iter().map(|c| (*c, None)).collect();
+    community_placed(host, owner, name, members, &placed)
+}
+
+/// A channel to make at a position of its own (`None`: the instance's default).
+pub type PlacedChannel<'a> = (ChannelSpec<'a>, Option<u64>);
+
+/// [`community_with`], each channel at its position: a screen fixture's `position`s, which the web client orders by.
+pub fn community_placed(
+    host: &Host,
+    owner: &Person,
+    name: &str,
+    members: &[&Person],
+    channels: &[PlacedChannel<'_>],
+) -> [u8; 16] {
     use dilla_core::ids::DeviceId;
     use dilla_testkit::HttpDs;
     let mut ds = HttpDs::with_session(
@@ -457,17 +474,19 @@ pub fn community_with(
     let c = ds.create_community(name).unwrap();
     ds.create_text_channel(&c, "general").unwrap();
     let mut made: Vec<(&str, [u8; 16])> = Vec::new();
-    for (kind, channel, parent) in channels {
-        let (id, _, _) = match parent {
-            Some(parent) => {
-                let parent = made
-                    .iter()
-                    .find(|(n, _)| n == parent)
-                    .expect("the category is made first")
-                    .1;
-                ds.create_channel_in(&c, *kind, channel, &parent).unwrap()
-            }
-            None => ds.create_channel(&c, *kind, channel).unwrap(),
+    for ((kind, channel, parent), position) in channels {
+        let parent = parent.map(|parent| {
+            made.iter()
+                .find(|(n, _)| *n == parent)
+                .expect("the category is made first")
+                .1
+        });
+        let (id, _, _) = match (parent, position) {
+            (parent, Some(at)) => ds
+                .create_channel_at(&c, *kind, channel, parent.as_ref(), *at)
+                .unwrap(),
+            (Some(parent), None) => ds.create_channel_in(&c, *kind, channel, &parent).unwrap(),
+            (None, None) => ds.create_channel(&c, *kind, channel).unwrap(),
         };
         made.push((channel, id));
     }

@@ -733,40 +733,38 @@ mod parity {
         }
     }
 
-    // The route `/settings/voice` is drawn by the shell's settings (Task 8 puts the settings frame behind
-    // `fixture::screen_of`); until it lands the loader refuses the route. Unignore with Task 8's merge.
     #[test]
-    #[ignore = "parity after T6c: whole frame 3.3537 % (drawn in the settings host since integration 3; the section layout)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_section() {
         check("section");
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 2.8210 % (drawn in the settings host since integration 3; the section layout)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_section_b() {
         check("section-b");
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 3.6199 % (drawn in the settings host since integration 3; the section layout)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_mic_test_running() {
         check("mic-test-running");
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 2.9962 % (drawn in the settings host since integration 3; the section layout)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_mic_test_running_b() {
         check("mic-test-running-b");
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 3.5498 % (drawn in the settings host since integration 3; the section layout)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_enhanced_unavailable() {
         check("enhanced-unavailable");
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 3.0420 % (drawn in the settings host since integration 3; the section layout)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_enhanced_unavailable_b() {
         check("enhanced-unavailable-b");
     }

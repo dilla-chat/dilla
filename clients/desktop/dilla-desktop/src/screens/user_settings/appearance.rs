@@ -12,8 +12,8 @@ use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div};
 use dilla_client::state::profile::{DensitySetting, MotionSetting};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::segmented::Segmented;
-use dilla_desktop_ui::components::settings::frame::section_header;
-use dilla_desktop_ui::components::settings::row::SettingsRow;
+use dilla_desktop_ui::components::settings::frame::{Section, section_header};
+use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
 use dilla_desktop_ui::icon_names::IconName;
 use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{line, line_height};
@@ -75,7 +75,6 @@ impl UserSettings {
     }
 
     pub(super) fn appearance_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let density = self.density();
         let state = &self.ctx.state.profile;
         let this = cx.entity();
 
@@ -128,17 +127,16 @@ impl UserSettings {
                 }),
             );
 
-        let mut col = div()
+        // The three rows touch (`.d-settings-row + .d-settings-row`): one group, its edges shared.
+        let rows = div()
             .flex()
             .flex_col()
-            .gap(density.group_gap())
-            .w_full()
-            .child(section_header(t("appearance.title"), None))
-            .child(theme)
-            .child(density_row)
-            .child(motion_row);
+            .child(theme.position(GroupPosition::First))
+            .child(density_row.position(GroupPosition::Middle))
+            .child(motion_row.position(GroupPosition::Last));
+        let mut section = Section::new(section_header(t("appearance.title"), None)).block(rows);
         if self.appearance_pending {
-            col = col.child(line(
+            section = section.paragraph(line(
                 t("workspace.preference.pending"),
                 text::UI,
                 line_height(text::UI, 1.5),
@@ -146,12 +144,13 @@ impl UserSettings {
             ));
         }
         if self.appearance_failed {
-            col = col.child(Banner::new(
+            section = section.block(Banner::new(
                 "appearance-failed",
                 BannerTone::Danger,
                 t("workspace.preference.error"),
             ));
         }
+        let col = section.into_div();
         col.into_any_element()
     }
 }

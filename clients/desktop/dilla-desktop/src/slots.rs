@@ -102,7 +102,7 @@ pub struct Extra {
 }
 
 /// Under a message's body (after its attachments slot): the attachments (12), the poll card (20), the reactions (10),
-/// the thread count (11), in this order, stacked without gaps. Answers the stack and its height (the sum of the parts';
+/// the thread count (11), in this order, each [`EXTRA_GAP`] below what is above it. Answers the stack and its height (the sum of the parts';
 /// 0 when every guest has nothing), which the timeline adds to the row's height.
 pub fn message_extras(
     item: &TimelineItem,
@@ -130,15 +130,26 @@ pub fn message_before_head(
     threads::reply_chip(item, ctx, window, cx)
 }
 
-/// [`Extra`]s stacked in order, each in a box of its height, and the total height.
+/// MessageRow.css `.d-message-row__main`: a grid with `gap: 1px`, so every extra under the body sits 1px below the item
+/// above it.
+pub const EXTRA_GAP: f32 = 1.0;
+
+/// [`Extra`]s stacked in order, each in a box of its height [`EXTRA_GAP`] below the item above it (the body, then each
+/// other), and the total height. A part with no height (a popover anchored to the row, such as the emoji picker on a
+/// message with no reactions) is no row of the web's grid, so it takes no gap.
 pub fn stack(parts: impl IntoIterator<Item = Extra>) -> (AnyElement, f32) {
     let mut height = 0.0;
     let column = div()
         .flex()
         .flex_col()
         .children(parts.into_iter().map(|part| {
-            height += part.height;
-            div().flex_none().h(px(part.height)).child(part.element)
+            let gap = if part.height > 0.0 { EXTRA_GAP } else { 0.0 };
+            height += gap + part.height;
+            div()
+                .flex_none()
+                .pt(px(gap))
+                .h(px(gap + part.height))
+                .child(part.element)
         }));
     (column.into_any_element(), height)
 }
@@ -289,4 +300,29 @@ pub fn settings_sections() -> Vec<SettingsSection> {
         .map(|&s| user(s))
         .chain(ServerSection::ALL.iter().map(|&s| server(s)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{IntoElement, div};
+
+    use super::{EXTRA_GAP, Extra, stack};
+
+    fn part(height: f32) -> Extra {
+        Extra {
+            element: div().into_any_element(),
+            height,
+        }
+    }
+
+    /// Review m1: a part with no height in the row (the emoji picker open on a message with no reactions: a popover, not a
+    /// row of the grid) takes no grid gap; the others each sit [`EXTRA_GAP`] below the item above.
+    #[test]
+    fn a_part_with_no_height_takes_no_gap() {
+        assert_eq!(stack([part(0.0)]).1, 0.0);
+        assert_eq!(
+            stack([part(28.0), part(0.0), part(24.0)]).1,
+            28.0 + 24.0 + 2.0 * EXTRA_GAP
+        );
+    }
 }

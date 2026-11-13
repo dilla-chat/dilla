@@ -30,6 +30,23 @@ fn is_direct(a: &MessageAction) -> bool {
     DIRECT.contains(&a.id.as_ref())
 }
 
+/// MessageToolbar.tsx `ICON`: the toolbar's own glyphs (the menus keep each action's icon).
+fn direct_icon(a: &MessageAction) -> IconName {
+    match a.id.as_ref() {
+        "react" => IconName::Smile,
+        "reply" => IconName::Reply,
+        "thread" => IconName::MessagesSquare,
+        _ => a.icon,
+    }
+}
+
+/// The icon buttons in MessageToolbar.tsx's order (react, reply, thread), whatever order the areas offer them in.
+fn direct_of(actions: &[MessageAction]) -> Vec<&MessageAction> {
+    let mut direct: Vec<&MessageAction> = actions.iter().filter(|a| is_direct(a)).collect();
+    direct.sort_by_key(|a| DIRECT.iter().position(|d| *d == a.id.as_ref()));
+    direct
+}
+
 /// The toolbar's width for `buttons` buttons: 2px padding and a 1px edge each side, 1px between.
 pub fn width(buttons: usize) -> f32 {
     buttons as f32 * BUTTON_W + buttons.saturating_sub(1) as f32 + 2.0 * (2.0 + 1.0)
@@ -51,7 +68,7 @@ pub fn toolbar(
         return None;
     }
     let menu_open = ui.read(cx).menu.as_deref() == Some(item.key.as_str());
-    let direct: Vec<&MessageAction> = actions.iter().filter(|a| is_direct(a)).collect();
+    let direct = direct_of(&actions);
     let more: Vec<&MessageAction> = actions.iter().filter(|a| !is_direct(a)).collect();
     let mut bar = div()
         .flex()
@@ -78,7 +95,7 @@ pub fn toolbar(
                 .rounded(radius::SM)
                 .cursor_pointer()
                 .hover(|s| s.bg(color::HOVER_HI))
-                .child(Icon::new(a.icon).size(len(14.)).color(color::FG_2))
+                .child(Icon::new(direct_icon(a)).size(len(14.)).color(color::FG_2))
                 .on_click(move |_, window, cx| run(&ctx, window, cx)),
         );
     }
@@ -108,6 +125,7 @@ pub fn toolbar(
                 items,
             )
             .icon(IconName::Ellipsis)
+            .icon_size(len(14.))
             .open(menu_open)
             .on_open_change(move |open, _, cx| {
                 let key = open.then(|| key_open.clone());
@@ -148,6 +166,35 @@ mod tests {
     fn the_bar_is_its_buttons_gaps_padding_and_edge() {
         assert_eq!(width(1), 26.0 + 6.0);
         assert_eq!(width(4), 4.0 * 26.0 + 3.0 + 6.0);
+    }
+
+    fn action(id: &'static str) -> MessageAction {
+        MessageAction {
+            id: id.into(),
+            label: "shell.message.react",
+            icon: IconName::SmilePlus,
+            area: dilla_client::Area::Reactions,
+            run: std::rc::Rc::new(|_, _, _| {}),
+        }
+    }
+
+    #[test]
+    fn the_buttons_are_react_reply_thread_in_the_webs_order_and_glyphs() {
+        // The slots offer them messages, threads, reactions: reply, thread, then react.
+        let offered = [
+            action("reply"),
+            action("thread"),
+            action("edit"),
+            action("react"),
+        ];
+        let direct = direct_of(&offered);
+        let ids: Vec<&str> = direct.iter().map(|a| a.id.as_ref()).collect();
+        assert_eq!(ids, ["react", "reply", "thread"]);
+        let icons: Vec<IconName> = direct.iter().map(|a| direct_icon(a)).collect();
+        assert_eq!(
+            icons,
+            [IconName::Smile, IconName::Reply, IconName::MessagesSquare]
+        );
     }
 
     #[test]

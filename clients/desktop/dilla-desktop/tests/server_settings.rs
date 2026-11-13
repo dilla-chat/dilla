@@ -49,43 +49,27 @@ macro_rules! parity_after_t6c {
 
 parity_tests! {
     parity_server_settings_welcome => "welcome",
+    parity_server_settings_overview => "overview",
+    parity_server_settings_overview_b => "overview-b",
+    parity_server_settings_afk => "afk",
+    parity_server_settings_afk_b => "afk-b",
+    parity_server_settings_invites => "invites",
+    parity_server_settings_invites_b => "invites-b",
+    parity_server_settings_gifs => "gifs",
+    parity_server_settings_gifs_b => "gifs-b",
+    parity_server_settings_channels => "channels",
+    parity_server_settings_channels_b => "channels-b",
 }
 
 parity_after_t6c! {
-    parity_server_settings_overview => "overview", "parity after T6c: chrome 0.4688 %",
-    parity_server_settings_overview_b => "overview-b", "parity after T6c: whole frame 1.3234 %",
-    parity_server_settings_afk => "afk", "parity after T6c: chrome 0.4688 %",
-    parity_server_settings_afk_b => "afk-b", "parity after T6c: whole frame 0.6805 %",
-    parity_server_settings_channels => "channels", "parity after T6c: chrome 2.3227 %",
-    parity_server_settings_channels_b => "channels-b", "parity after T6c: whole frame 1.3583 %",
-    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.5032 % (dialog anchored lower and taller than the web's; the permissions panel and the Bot channel switch now draw as the reference's)",
-    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.8487 % (dialog anchored lower and taller than the web's; the permissions panel now draws as the reference's)",
-    parity_server_settings_gifs => "gifs", "parity after T6c: whole frame 1.1892 %",
-    parity_server_settings_gifs_b => "gifs-b", "parity after T6c: whole frame 1.2638 %",
-    parity_server_settings_invites => "invites", "parity after T6c: chrome 0.8398 %",
-    parity_server_settings_invites_b => "invites-b", "parity after T6c: whole frame 0.6342 %",
+    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 0.8335 % (the dialog's place, fields and Bot channel switch match; the permissions panel differs: its heading's size, the private-channel switch row whose label and hint wrap beside the switch in the web, and the web's dialog scrolls as one 684px box with its footer below the fold)",
+    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 0.9293 % (as channel-permissions)",
 }
 
-// These fail only for causes in the shared frame and nav (Task 6), which this area does not edit:
-// - the web's nav scrolls the active item into view (Danger is the last item); the shared nav does not;
-// - the web's nav wraps a long server name in its group heading; the shared nav cuts it.
-// `welcome` passes with the same content, so `welcome-b` differs only by the nav's heading.
-#[test]
-#[ignore = "shared component parity (T6c): the nav does not scroll the active item into view"]
-fn parity_server_settings_danger() {
-    parity("danger");
-}
-
-#[test]
-#[ignore = "shared component parity (T6c): the nav does not scroll the active item into view, and cuts a long group heading"]
-fn parity_server_settings_danger_b() {
-    parity("danger-b");
-}
-
-#[test]
-#[ignore = "shared component parity (T6c): the nav cuts a long server name in its group heading, the web wraps it"]
-fn parity_server_settings_welcome_b() {
-    parity("welcome-b");
+parity_tests! {
+    parity_server_settings_danger => "danger",
+    parity_server_settings_danger_b => "danger-b",
+    parity_server_settings_welcome_b => "welcome-b",
 }
 
 // ---- keyboard (S6) ----
@@ -172,7 +156,7 @@ fn keyboard_server_settings_tab_reaches_leave_and_shift_tab_leaves_it() {
     assert_ne!(driver.focused().as_deref(), Some("server-settings-leave"));
 }
 
-/// Integration 3, step 2: the server menu's chevron opens Task 15's `ServerSettingsView` over the shell (THE server
+/// Integration 3, step 2: the server menu's chevron, then its Server settings, opens Task 15's `ServerSettingsView` over the shell (THE server
 /// settings host), one at a time, and Close brings the shell back.
 #[cfg(feature = "automation")]
 #[gpui::test]
@@ -190,6 +174,12 @@ fn the_server_menu_opens_the_server_settings_over_the_shell(cx: &mut gpui::TestA
         .debug_bounds("server-settings-open")
         .expect("the server menu's chevron");
     vcx.simulate_click(open.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    // M7: the chevron opens the server's menu; its first item opens the settings.
+    let settings = vcx
+        .debug_bounds("menu-item-settings")
+        .expect("the server menu's Server settings");
+    vcx.simulate_click(settings.center(), gpui::Modifiers::none());
     vcx.run_until_parked();
     assert_eq!(
         app.read_with(vcx, |a, _| a.screen_name()),
@@ -209,4 +199,80 @@ fn the_server_menu_opens_the_server_settings_over_the_shell(cx: &mut gpui::TestA
     vcx.run_until_parked();
     assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "shell");
     assert!(app.read_with(vcx, |a, _| a.server_settings()).is_none());
+}
+
+/// M7 (Shell.tsx `serverMenu`): the channel list head's ⌄ is the server's menu (ActionMenu, labelled `admin.open`; its
+/// trigger is a tab stop, `tests/components.rs`): Server settings, Mute server and the four notify modes. Escape closes it
+/// and leaves focus on the ⌄, from which Down opens it again; Enter on Mute server toggles it and keeps the menu open;
+/// Enter on Server settings opens the server's settings.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_server_menu_is_keyboard_reachable_and_lists_the_web_items(cx: &mut gpui::TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures/shell/channel-view.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let items = [
+        "menu-item-settings",
+        "menu-item-mute",
+        "menu-item-mode:default",
+        "menu-item-mode:all",
+        "menu-item-mode:mentions",
+        "menu-item-mode:nothing",
+    ];
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_none(),
+        "closed at first"
+    );
+    let chevron = vcx
+        .debug_bounds("server-settings-open")
+        .expect("the server menu's chevron");
+    vcx.simulate_click(chevron.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    for id in items {
+        assert!(vcx.debug_bounds(id).is_some(), "{id} is in the menu");
+    }
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_none(),
+        "Escape closes it"
+    );
+    // Focus went back to the ⌄: Down opens the menu on its first item, Down again is Mute server; Enter toggles it and the
+    // menu stays open.
+    vcx.simulate_keystrokes("down");
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_some(),
+        "Down opens it from the ⌄"
+    );
+    vcx.simulate_keystrokes("down");
+    vcx.run_until_parked();
+    activate(vcx);
+    assert!(
+        vcx.debug_bounds("menu-item-mute").is_some(),
+        "the mute check keeps the menu open"
+    );
+    vcx.simulate_keystrokes("home");
+    vcx.run_until_parked();
+    activate(vcx);
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.screen_name()),
+        "server-settings"
+    );
+}
+
+/// Enter as a person presses it: a click on the focused control fires on the key's release (gpui's keyboard click), which
+/// `simulate_keystrokes` does not send.
+#[cfg(feature = "automation")]
+fn activate(vcx: &mut gpui::VisualTestContext) {
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").expect("a keystroke"),
+    });
+    vcx.run_until_parked();
 }

@@ -947,6 +947,15 @@ export const REMOVALS_MAX = 8;
  *  the worker remembers for their notice. E_DEVICE_REVOKED is not one: a revoked device's row never opens, so nothing
  *  waits for it (trust.rs apply_verdict). */
 const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
+/** Task 6c (parity only): the diagnostics facts the page shows. Under dilla-testhost's fixture marker
+ *  (`Instance.parityFixture`, which dillad never serves) they carry no round trips and no key-package report, so a
+ *  reference shot of the section is the same on every run; otherwise they pass through unchanged. */
+export function diagnosticsFacts(parityFixture: boolean, keyPackages: DiagnosticsState['keyPackages'],
+  slowRoutes: DiagnosticsState['slowRoutes']): Pick<DiagnosticsState, 'keyPackages' | 'slowRoutes'> {
+  if (parityFixture) return { keyPackages: { count: null, lastAttempt: null, lastError: null }, slowRoutes: [] };
+  return { keyPackages, slowRoutes };
+}
+
 export const HELD_LIVE_MAX = 64;
 /** web3.8 R8: how long (elapsed ms) a live-held row keeps markRead one below it; one held longer stops holding the
  *  marker, so no badge sticks. */
@@ -1901,7 +1910,8 @@ export class Controller {
   private publishDiagnostics(): void {
     this.slices.set('diagnostics', { connection: this.connectionState.status, generation: this.connectionState.generation,
       instance: this.instance === null ? '' : toHex(this.instance.instanceId), devices: this.deviceCount,
-      errors: [...this.diagnosticsErrors], keyPackages: { ...this.keyPackages }, slowRoutes: this.routeRtt.slowest(5) });
+      errors: [...this.diagnosticsErrors],
+      ...diagnosticsFacts(this.instance?.parityFixture === true, { ...this.keyPackages }, this.routeRtt.slowest(5)) });
   }
 
   /** The gateway is being dropped: its queued and in-flight socket requests fail (E_NETWORK) rather than wait for ever. */
