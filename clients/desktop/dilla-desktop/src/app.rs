@@ -17,6 +17,11 @@ use gpui::{
 
 use dilla_desktop_ui::tokens::{color, text};
 
+use dilla_client::features::signup::SignupResult;
+use dilla_client::state::AccountPhase;
+
+use crate::screens::create::Navigate;
+use crate::screens::onboarding::{DoneView, OpenDilla, SignedUp, SignupView, WantsSignIn};
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{SignInView, SignedIn};
 use crate::tracked;
@@ -80,6 +85,10 @@ impl Launch {
 enum Screen {
     Starting,
     SignIn(Entity<SignInView>),
+    /// The sign-up's steps 1 to 3 (Task 25).
+    Signup(Entity<SignupView>),
+    /// The sign-up's step 6, over the started client (Task 25).
+    Done(Entity<DoneView>),
     Shell(Entity<ShellView>),
 }
 
@@ -87,6 +96,10 @@ enum Screen {
 pub struct AppView {
     launch: Launch,
     screen: Screen,
+    /// The client about to start is a new account's: once its factor is in place, the invite's server is joined and
+    /// the done step shows (Task 25).
+    after_signup: bool,
+    shell: Option<Entity<ShellView>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,6 +108,8 @@ impl AppView {
         let mut this = Self {
             launch,
             screen: Screen::Starting,
+            after_signup: false,
+            shell: None,
             _subscriptions: Vec::new(),
         };
         #[cfg(feature = "automation")]
@@ -132,9 +147,71 @@ impl AppView {
             .and_then(|list| list.list().first().cloned());
         match existing {
             Some(cfg) => this.start_client(cfg, window, cx),
-            None => this.show_sign_in(None, window, cx),
+            // A device with no account opens on the sign-up, as the web's /welcome does; its link leads to sign-in.
+            None => this.show_signup(window, cx),
         }
         this
+    }
+
+    /// The sign-up (Task 25). Task 27's pasted invite (`Launch.invite`) is handed in here once it lands.
+    fn show_signup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
+        let view = cx.new(|cx| SignupView::new(root, keychain, None, window, cx));
+        self._subscriptions = vec![
+            cx.subscribe_in(&view, window, |this, _, done: &SignedUp, window, cx| {
+                this.after_signup = true;
+                this.start_client(done.cfg.clone(), window, cx);
+            }),
+            cx.subscribe_in(&view, window, |this, _, _: &WantsSignIn, window, cx| {
+                this.show_sign_in(None, window, cx);
+            }),
+        ];
+        self.screen = Screen::Signup(view);
+        cx.notify();
+    }
+
+    /// The sign-up's done step, once the new account is ready and the invite's server joined (Task 25).
+    fn show_done(
+        &mut self,
+        client: Rc<Client>,
+        result: SignupResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let first = client.state().borrow().clone();
+        let view = cx.new(|cx| {
+            let mut done = DoneView::new(result, window, cx);
+            done.set_state(&first, cx);
+            done
+        });
+        let weak = view.downgrade();
+        let mut states = client.state();
+        cx.spawn(async move |_, cx| {
+            while states.changed().await.is_ok() {
+                let next = states.borrow_and_update().clone();
+                if weak
+                    .update(cx, |done, cx| done.set_state(&next, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        self._subscriptions =
+            vec![
+                cx.subscribe_in(&view, window, |this, _, open: &OpenDilla, _, cx| {
+                    if let Some(shell) = this.shell.clone() {
+                        if let Some(community) = open.result.community {
+                            shell.update(cx, |s, cx| s.pick_community(community, cx));
+                        }
+                        this.screen = Screen::Shell(shell);
+                        cx.notify();
+                    }
+                }),
+            ];
+        self.screen = Screen::Done(view);
+        cx.notify();
     }
 
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -179,7 +256,7 @@ impl AppView {
     ) {
         let client = match result {
             Ok(client) => Rc::new(client),
-            Err(ClientError::NoIdentity) => return self.show_sign_in(None, window, cx),
+            Err(ClientError::NoIdentity) => return self.show_signup(window, cx),
             Err(e) => return self.show_sign_in(Some(e.to_string()), window, cx),
         };
         let mut states = client.state();
@@ -199,7 +276,46 @@ impl AppView {
             }
         })
         .detach();
+        // Task 25: the create, join and invite dialogs act on this client and move the shell to what they made.
+        let to_shell = shell.downgrade();
+        crate::screens::create::attach(
+            window,
+            client.clone(),
+            Rc::new(move |to: Navigate, _: &mut Window, cx: &mut gpui::App| {
+                let _ = to_shell.update(cx, |s, cx| {
+                    s.pick_community(to.community, cx);
+                    if let Some(channel) = to.channel {
+                        s.select(channel, cx);
+                    }
+                });
+            }),
+            cx,
+        );
+        self.shell = Some(shell.clone());
         self.screen = Screen::Shell(shell);
+        if std::mem::take(&mut self.after_signup) {
+            // A new account: once its factor is in place (Task 26's screens) it is ready, the invite's server is joined
+            // (a refused join is the result, not a failure) and the done step shows.
+            let mut ready = client.state();
+            let client = client.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    let phase = ready.borrow_and_update().account.phase;
+                    if phase == AccountPhase::Ready {
+                        break;
+                    }
+                    if ready.changed().await.is_err() {
+                        return;
+                    }
+                }
+                let result = client.onboarding().finish_signup().await;
+                client.refresh();
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.show_done(client, result, window, cx)
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 }
@@ -216,6 +332,8 @@ impl Render for AppView {
                 .child(line("Opening dilla…", text::SM, 18.75, color::FG_3))
                 .into_any_element(),
             Screen::SignIn(view) => view.clone().into_any_element(),
+            Screen::Signup(view) => view.clone().into_any_element(),
+            Screen::Done(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
         };
         tracked("root", div().size_full().bg(color::BG).child(body))

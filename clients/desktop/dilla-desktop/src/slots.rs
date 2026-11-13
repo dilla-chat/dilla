@@ -185,13 +185,17 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     }
 }
 
-/// Over everything, in paint order: the search palette (23), then the ring banner (18). Toasts (Task 6) and dialogs
-/// join at merge.
+/// Over everything, in paint order: the create, join and invite dialogs (25), the search palette (23), then the ring
+/// banner (18). Toasts (Task 6) join at merge.
 pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
-    [search::palette(window, cx), ring::ring_banner(window, cx)]
-        .into_iter()
-        .flatten()
-        .collect()
+    [
+        crate::screens::create::overlay(window, cx),
+        search::palette(window, cx),
+        ring::ring_banner(window, cx),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Over the main column: the offline link banner and the version refusal (24).
