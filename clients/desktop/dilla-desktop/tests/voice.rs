@@ -12,8 +12,8 @@ use dilla_client::state::{
 };
 use dilla_desktop::screens::voice::{self, VoiceUi};
 use gpui::{
-    Context, FocusHandle, IntoElement, ParentElement, Render, Styled, TestAppContext,
-    VisualTestContext, Window, div,
+    App, Context, FocusHandle, IntoElement, ParentElement, Render, Styled, TestAppContext,
+    VisualTestContext, Window, WindowId, div,
 };
 
 const VOICE: ChannelId = ChannelId([9; 16]);
@@ -93,21 +93,23 @@ impl Render for Host {
 }
 
 fn host(cx: &mut TestAppContext, s: Arc<AppState>) -> &mut VisualTestContext {
-    cx.update(|cx| {
-        dilla_desktop::install(cx);
-        voice::sync(s, None, cx);
-    });
+    cx.update(dilla_desktop::install);
     let (_, cx) = cx.add_window_view(|_, _| Host);
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), s, None, cx);
+        window.refresh();
+    });
     cx.run_until_parked();
     cx
 }
 
+/// The voice area of the test's window.
+fn area<R>(cx: &mut VisualTestContext, f: impl FnOnce(&mut VoiceUi) -> R) -> R {
+    cx.update(|window, cx| f(voice::ui_mut(voice::wid(window), cx)))
+}
+
 fn stage_focus(cx: &mut VisualTestContext) -> FocusHandle {
-    cx.update(|_, cx| {
-        cx.global::<VoiceUi>()
-            .stage_focus_handle()
-            .expect("the stage drew")
-    })
+    area(cx, |ui| ui.stage_focus_handle().expect("the stage drew"))
 }
 
 fn press(cx: &mut VisualTestContext, key: &'static str) {
@@ -120,7 +122,7 @@ fn press(cx: &mut VisualTestContext, key: &'static str) {
 #[gpui::test]
 fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     let cx = host(cx, state(3));
-    let tiles = cx.update(|_, cx| voice::tiles(&cx.global::<VoiceUi>().state, VOICE));
+    let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
     assert_eq!(tiles.len(), 4, "three people and one screen");
     assert!(tiles[3].screen);
     let focus = stage_focus(cx);
@@ -128,21 +130,18 @@ fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     for _ in 0..3 {
         press(cx, "right");
     }
-    assert_eq!(cx.update(|_, cx| cx.global::<VoiceUi>().selected), 3);
+    assert_eq!(area(cx, |ui| ui.selected), 3);
     press(cx, "enter");
-    let focused = cx.update(|_, cx| cx.global::<VoiceUi>().focused.clone());
+    let focused = area(cx, |ui| ui.focused.clone());
     assert_eq!(
         focused,
         Some(tiles[3].clone()),
         "the screen share is focused"
     );
     press(cx, "left");
-    assert_eq!(cx.update(|_, cx| cx.global::<VoiceUi>().selected), 2);
+    assert_eq!(area(cx, |ui| ui.selected), 2);
     press(cx, "escape");
-    assert_eq!(
-        cx.update(|_, cx| cx.global::<VoiceUi>().focused.clone()),
-        None
-    );
+    assert_eq!(area(cx, |ui| ui.focused.clone()), None);
 }
 
 /// Twelve people with long names (the -b fixtures' world) draw without a panic, and the people group per user.
@@ -162,35 +161,74 @@ fn twelve_people_with_long_names_draw(cx: &mut TestAppContext) {
 #[gpui::test]
 fn leaving_resets_the_stage(cx: &mut TestAppContext) {
     let cx = host(cx, state(3));
-    cx.update(|_, cx| {
-        let ui = cx.global_mut::<VoiceUi>();
+    area(cx, |ui| {
         ui.selected = 2;
         ui.focused = Some(voice::tiles(&ui.state, VOICE)[0].clone());
     });
     let mut idle = (*state(3)).clone();
     idle.voice.call = OwnCall::default();
-    cx.update(|_, cx| voice::sync(Arc::new(idle), None, cx));
-    let (selected, focused) = cx.update(|_, cx| {
-        let ui = cx.global::<VoiceUi>();
-        (ui.selected, ui.focused.clone())
-    });
+    cx.update(|window, cx| voice::sync(voice::wid(window), Arc::new(idle), None, cx));
+    let (selected, focused) = area(cx, |ui| (ui.selected, ui.focused.clone()));
     assert_eq!((selected, focused), (0, None));
-    assert!(!voice::joined(
-        &cx.update(|_, cx| cx.global::<VoiceUi>().state.clone()),
-        VOICE
-    ));
+    assert!(!voice::joined(&area(cx, |ui| ui.state.clone()), VOICE));
 }
 
 /// The stream-quality menu opens over the controls with the share options (1080p at 30 by default) and draws.
 #[gpui::test]
 fn the_quality_menu_draws_the_share_options(cx: &mut TestAppContext) {
     let cx = host(cx, state(2));
-    cx.update(|_, cx| {
-        let ui = cx.global_mut::<VoiceUi>();
+    area(cx, |ui| {
         assert_eq!(ui.share_options, dilla_media::ShareOptions::default());
         ui.share_menu = true;
-        cx.refresh_windows();
     });
+    cx.update(|_, cx| cx.refresh_windows());
     cx.run_until_parked();
     assert_eq!(voice::frame_stat(1080, 30), "1080p · 30 fps");
+}
+
+/// Review C1: a call belongs to its instance window. Window B's syncs (every state its client publishes) never replace
+/// window A's voice state, and one repaint loop runs per live call, ending when the call does or its window closes.
+#[gpui::test]
+fn another_window_s_sync_leaves_this_window_s_call_alone(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let a = cx.add_window(|_, _| Host);
+    let b = cx.add_window(|_, _| Host);
+    let (wa, wb): (WindowId, WindowId) = (a.window_id(), b.window_id());
+    let mut idle = (*state(3)).clone();
+    idle.voice.call = OwnCall::default();
+    let idle = Arc::new(idle);
+    let in_call = state(3);
+    let loops = |cx: &mut TestAppContext| cx.update(|cx: &mut App| voice::repaint_loops(cx));
+    let phase = |cx: &mut TestAppContext, w: WindowId| {
+        cx.update(|cx: &mut App| voice::ui_of(w, cx).map(|u| u.state.voice.call.phase))
+    };
+    for _ in 0..10 {
+        cx.update(|cx| voice::sync(wa, in_call.clone(), None, cx));
+        cx.update(|cx| voice::sync(wb, idle.clone(), None, cx));
+        cx.run_until_parked();
+    }
+    assert_eq!(phase(cx, wa), Some(CallPhase::In), "A's call stays A's");
+    assert_eq!(phase(cx, wb), Some(CallPhase::Idle));
+    assert_eq!(
+        loops(cx),
+        1,
+        "one repaint loop for the one live call, however often the windows sync"
+    );
+    // The call ends: its loop ends with it.
+    cx.update(|cx| voice::sync(wa, idle.clone(), None, cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    assert_eq!(loops(cx), 0);
+    // A new call in A, then A closes: the loop ends, and A's area is let go at B's next sync.
+    cx.update(|cx| voice::sync(wa, in_call.clone(), None, cx));
+    assert_eq!(loops(cx), 1);
+    a.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| voice::sync(wb, idle.clone(), None, cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    assert_eq!(loops(cx), 0);
+    assert_eq!(phase(cx, wa), None, "a closed window's area is let go");
 }

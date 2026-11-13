@@ -167,6 +167,8 @@ pub struct ShellView {
     aside_splitter: FocusHandle,
     /// The shipping window: the title bar draws the window's own controls.
     controls: bool,
+    /// The window this shell is drawn in: the voice area keeps its state per window (one per instance).
+    window_id: gpui::WindowId,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -223,11 +225,12 @@ impl ShellView {
             sidebar_splitter: cx.focus_handle().tab_stop(true),
             aside_splitter: cx.focus_handle().tab_stop(true),
             controls: false,
+            window_id: window.window_handle().window_id(),
             _subscriptions: vec![sent],
         };
         this.settle_selection(cx);
         // The voice area's hooks read this state and client (17).
-        crate::screens::voice::sync(this.state.clone(), this.client.as_ref(), cx);
+        crate::screens::voice::sync(this.window_id, this.state.clone(), this.client.as_ref(), cx);
         let route = this.current_route();
         this.history = History::new(route);
         this.log.scroll_to_bottom();
@@ -257,7 +260,7 @@ impl ShellView {
             state.timelines.get(&c).map(|t| t.items.len())
                 != self.state.timelines.get(&c).map(|t| t.items.len())
         });
-        crate::screens::voice::sync(state.clone(), self.client.as_ref(), cx);
+        crate::screens::voice::sync(self.window_id, state.clone(), self.client.as_ref(), cx);
         self.state = state;
         self.settle_selection(cx);
         if grew {

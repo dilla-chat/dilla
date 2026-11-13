@@ -24,7 +24,7 @@ use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
     IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
-    Window, canvas, div, img, px, relative,
+    Window, WindowId, canvas, div, img, px, relative,
 };
 
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
@@ -86,8 +86,9 @@ mod m {
     pub const MENU_GAP: f32 = 8.0;
 }
 
-/// What the voice hooks draw from: the newest state, the running client and its call's media, and the stage's own
-/// view state (which tile is focused, which is selected).
+/// What one window's voice hooks draw from: the newest state of its instance, its running client and that client's
+/// call media, and the stage's own view state (which tile is focused, which is selected). One per instance window
+/// ([`VoiceAreas`]): a call belongs to its instance, and another window's state never replaces it.
 #[derive(Default)]
 pub struct VoiceUi {
     pub state: Arc<AppState>,
@@ -109,9 +110,90 @@ pub struct VoiceUi {
     /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
     told_in_call: Option<Option<String>>,
     told_roster: Option<(ChannelId, Vec<UserId>)>,
+    /// A repaint loop runs for this window's live call ([`repaint_on_video`]).
+    repainting: bool,
 }
 
-impl Global for VoiceUi {}
+/// Every instance window's voice area, by window. A window that closes is let go at the next sync (its call left, its
+/// media session and client dropped).
+#[derive(Default)]
+pub struct VoiceAreas {
+    windows: HashMap<WindowId, VoiceUi>,
+    /// The repaint loops running now, one per live call ([`repaint_on_video`]).
+    loops: usize,
+}
+
+impl Global for VoiceAreas {}
+
+/// How many repaint loops run (one per window with a live call).
+pub fn repaint_loops(cx: &App) -> usize {
+    cx.try_global::<VoiceAreas>().map_or(0, |a| a.loops)
+}
+
+/// The window an element is drawn in, as the voice areas are keyed.
+pub fn wid(window: &Window) -> WindowId {
+    window.window_handle().window_id()
+}
+
+/// `window`'s voice area, once its shell has synced it.
+pub fn ui_of(window: WindowId, cx: &App) -> Option<&VoiceUi> {
+    cx.try_global::<VoiceAreas>()?.windows.get(&window)
+}
+
+/// `window`'s voice area, made on first use.
+pub fn ui_mut(window: WindowId, cx: &mut App) -> &mut VoiceUi {
+    cx.default_global::<VoiceAreas>()
+        .windows
+        .entry(window)
+        .or_default()
+}
+
+/// The client `window`'s voice area acts through.
+pub fn client_of(window: WindowId, cx: &App) -> Option<Rc<Client>> {
+    ui_of(window, cx)?.client.clone()
+}
+
+/// The media session of `window`'s client.
+pub fn session_of(window: WindowId, cx: &App) -> Option<Rc<MediaSession>> {
+    ui_of(window, cx)?.session.clone()
+}
+
+/// The window whose call is this device's (one call per device), else the active window: where the app-wide mute and
+/// deafen keys act.
+fn call_window(cx: &App) -> Option<WindowId> {
+    cx.try_global::<VoiceAreas>()
+        .and_then(|a| {
+            a.windows
+                .iter()
+                .find(|(_, u)| u.state.voice.call.phase != CallPhase::Idle)
+                .map(|(w, _)| *w)
+        })
+        .or_else(|| cx.active_window().map(|w| w.window_id()))
+}
+
+/// Lets go of the voice areas of windows that are gone: a call still on there is left (its media session goes with
+/// the area), and its client is no longer held.
+fn prune(keep: WindowId, cx: &mut App) {
+    let live: std::collections::HashSet<WindowId> =
+        cx.windows().iter().map(|w| w.window_id()).collect();
+    let Some(areas) = cx.try_global::<VoiceAreas>() else {
+        return;
+    };
+    let gone: Vec<WindowId> = areas
+        .windows
+        .keys()
+        .filter(|w| **w != keep && !live.contains(w))
+        .copied()
+        .collect();
+    for w in gone {
+        if let Some(ui) = cx.global_mut::<VoiceAreas>().windows.remove(&w)
+            && ui.state.voice.call.phase != CallPhase::Idle
+            && let Some(client) = &ui.client
+        {
+            drop(client.voice().leave());
+        }
+    }
+}
 
 impl VoiceUi {
     /// The stage's focus handle, once the stage has drawn (the arrows and Escape act while it holds the focus).
@@ -128,14 +210,13 @@ pub struct TileKey {
     pub screen: bool,
 }
 
-/// Keeps the voice hooks current: the shell calls it with every new state (and the client once it runs). Starts the
-/// voice area's following of the instance and the call's media session once per client.
-pub fn sync(state: Arc<AppState>, client: Option<&Rc<Client>>, cx: &mut App) {
-    if !cx.has_global::<VoiceUi>() {
-        cx.set_global(VoiceUi::default());
-    }
+/// Keeps `window`'s voice hooks current: its shell calls it with every new state (and the client once it runs). Starts
+/// the voice area's following of the instance and the call's media session once per client of that window; another
+/// window's sync never touches them. A repaint loop runs while the window's call is live.
+pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>, cx: &mut App) {
+    prune(window, cx);
     let fresh_client = {
-        let ui = cx.global::<VoiceUi>();
+        let ui = ui_mut(window, cx);
         match (client, &ui.client) {
             (Some(c), Some(old)) => !Rc::ptr_eq(c, old),
             (Some(_), None) => true,
@@ -148,43 +229,83 @@ pub fn sync(state: Arc<AppState>, client: Option<&Rc<Client>>, cx: &mut App) {
             .map(Rc::new)
             .map_err(|e| log::warn!("voice: no media session: {e}"))
             .ok();
-        let ui = cx.global_mut::<VoiceUi>();
+        let ui = ui_mut(window, cx);
         ui.client = Some(client.clone());
         ui.session = session;
         ui.told_in_call = None;
         ui.told_roster = None;
-        repaint_on_video(cx);
     }
     if let Some(client) = client {
-        tell_ring(&state, client, cx);
+        tell_ring(window, &state, client, cx);
     }
-    let ui = cx.global_mut::<VoiceUi>();
+    let ui = ui_mut(window, cx);
     if ui.state.voice.call.phase != CallPhase::Idle && state.voice.call.phase == CallPhase::Idle {
         ui.focused = None;
         ui.selected = 0;
     }
+    let live = state.voice.call.phase != CallPhase::Idle;
     ui.state = state;
+    if live && !ui.repainting {
+        ui.repainting = true;
+        repaint_on_video(window, cx);
+    }
 }
 
-/// Repaints while new remote video frames arrive (at most 30 times a second).
-fn repaint_on_video(cx: &mut App) {
+/// What a repaint loop does on a tick.
+enum Tick {
+    /// The window or its call is gone: the loop ends.
+    Stop,
+    Wait,
+    /// A new remote frame arrived: the window repaints.
+    Repaint(u64),
+}
+
+/// Repaints `window` while new remote video frames arrive (at most 30 times a second), for as long as its call is live
+/// and the window is open; then the loop ends.
+fn repaint_on_video(window: WindowId, cx: &mut App) {
+    cx.default_global::<VoiceAreas>().loops += 1;
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor()
                 .timer(Duration::from_millis(33))
                 .await;
-            let moved = cx.update(|cx| {
-                let ui = cx.try_global::<VoiceUi>()?;
-                let seq = ui.session.as_ref()?.video_seq.load(Ordering::Relaxed);
-                (seq != ui.video_seq).then_some(seq)
+            let tick = cx.update(|cx| {
+                let open = cx.windows().iter().any(|w| w.window_id() == window);
+                let Some(ui) = ui_of(window, cx) else {
+                    return Tick::Stop;
+                };
+                if !open || ui.state.voice.call.phase == CallPhase::Idle {
+                    ui_mut(window, cx).repainting = false;
+                    return Tick::Stop;
+                }
+                match ui.session.as_ref() {
+                    Some(s) => {
+                        let seq = s.video_seq.load(Ordering::Relaxed);
+                        if seq == ui.video_seq {
+                            Tick::Wait
+                        } else {
+                            Tick::Repaint(seq)
+                        }
+                    }
+                    None => Tick::Wait,
+                }
             });
-            if let Some(seq) = moved {
-                cx.update(|cx| {
-                    cx.global_mut::<VoiceUi>().video_seq = seq;
-                    cx.refresh_windows();
-                });
+            match tick {
+                Tick::Stop => break,
+                Tick::Wait => {}
+                Tick::Repaint(seq) => cx.update(|cx| {
+                    ui_mut(window, cx).video_seq = seq;
+                    if let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == window)
+                    {
+                        let _ = handle.update(cx, |_, window, _| window.refresh());
+                    }
+                }),
             }
         }
+        cx.update(|cx| {
+            let a = cx.default_global::<VoiceAreas>();
+            a.loops = a.loops.saturating_sub(1);
+        });
     })
     .detach();
 }
@@ -209,7 +330,7 @@ fn call_place(state: &AppState) -> Option<String> {
 /// The ring area (18) follows this device's call: rings turn busy (or not) when the call's place changes
 /// (`Ring::set_in_call`), and the outgoing ring stops ringing whoever joined its call (`Ring::voice_roster`, op 50). Each
 /// is told only on a change.
-fn tell_ring(state: &AppState, client: &Rc<Client>, cx: &mut App) {
+fn tell_ring(window: WindowId, state: &AppState, client: &Rc<Client>, cx: &mut App) {
     let place = call_place(state);
     let roster = state
         .ring
@@ -226,7 +347,7 @@ fn tell_ring(state: &AppState, client: &Rc<Client>, cx: &mut App) {
             users.dedup();
             (channel, users)
         });
-    let ui = cx.global_mut::<VoiceUi>();
+    let ui = ui_mut(window, cx);
     if ui.told_in_call.as_ref() != Some(&place) {
         ui.told_in_call = Some(place.clone());
         client.ring().set_in_call(place);
@@ -239,12 +360,8 @@ fn tell_ring(state: &AppState, client: &Rc<Client>, cx: &mut App) {
     }
 }
 
-fn ui(cx: &App) -> Option<&VoiceUi> {
-    cx.try_global::<VoiceUi>()
-}
-
-fn voice(cx: &App) -> Option<dilla_client::features::voice::Voice> {
-    ui(cx)?.client.as_ref().map(|c| c.voice())
+fn voice(window: WindowId, cx: &App) -> Option<dilla_client::features::voice::Voice> {
+    ui_of(window, cx)?.client.as_ref().map(|c| c.voice())
 }
 
 /// The name a person shows in voice: the member's display name, else the username, else the short id.
@@ -325,35 +442,75 @@ pub fn joined(state: &AppState, channel: ChannelId) -> bool {
     state.voice.call.channel == Some(channel) && state.voice.call.phase == CallPhase::In
 }
 
-/// Joins `channel`'s call (the voice row's join, the stage's join).
-pub fn join(channel: ChannelId, cx: &mut App) {
-    if let Some(v) = voice(cx) {
-        drop(v.join(channel));
+/// The clients of other instance windows whose call is live (one call per device: a join elsewhere leaves them).
+pub fn other_calls(window: WindowId, cx: &App) -> Vec<Rc<Client>> {
+    let own = client_of(window, cx);
+    cx.try_global::<VoiceAreas>()
+        .map(|a| {
+            a.windows
+                .iter()
+                .filter(|(w, u)| **w != window && u.state.voice.call.phase != CallPhase::Idle)
+                .filter_map(|(_, u)| u.client.clone())
+                .filter(|c| own.as_ref().is_none_or(|o| !Rc::ptr_eq(o, c)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Leaves the call of every other instance window (one call per device, as the web has one per tab): what a join or an
+/// answered ring in `window` does first.
+pub fn leave_other_calls(window: WindowId, cx: &mut App) {
+    for other in other_calls(window, cx) {
+        drop(other.voice().leave());
     }
 }
 
-/// Leaves the call; the focus goes back to the call's voice row (leave-reload.spec.ts).
-pub fn leave(cx: &mut App) {
-    if let Some(v) = voice(cx) {
+/// Joins `channel`'s call through `window`'s own client (the voice row's join, the stage's join), after leaving a call
+/// another instance window is in.
+pub fn join(channel: ChannelId, window: WindowId, cx: &mut App) {
+    let Some(v) = voice(window, cx) else { return };
+    leave_other_calls(window, cx);
+    drop(v.join(channel));
+}
+
+/// Leaves `window`'s call; the focus goes back to the call's voice row (leave-reload.spec.ts).
+pub fn leave(window: WindowId, cx: &mut App) {
+    if let Some(v) = voice(window, cx) {
         drop(v.leave());
     }
 }
 
+/// Mutes or unmutes this device's call (the window it is in, else the active one): the app-wide key.
 pub fn toggle_mute(cx: &mut App) {
-    if let (Some(v), Some(ui)) = (voice(cx), ui(cx)) {
+    if let Some(w) = call_window(cx) {
+        toggle_mute_in(w, cx);
+    }
+}
+
+/// Mutes or unmutes `window`'s call.
+pub fn toggle_mute_in(window: WindowId, cx: &mut App) {
+    if let (Some(v), Some(ui)) = (voice(window, cx), ui_of(window, cx)) {
         let s = &ui.state.voice;
         v.set_muted(!(s.self_mute || s.self_deaf));
     }
 }
 
+/// Deafens or undeafens this device's call (the window it is in, else the active one): the app-wide key.
 pub fn toggle_deafen(cx: &mut App) {
-    if let (Some(v), Some(ui)) = (voice(cx), ui(cx)) {
+    if let Some(w) = call_window(cx) {
+        toggle_deafen_in(w, cx);
+    }
+}
+
+/// Deafens or undeafens `window`'s call.
+pub fn toggle_deafen_in(window: WindowId, cx: &mut App) {
+    if let (Some(v), Some(ui)) = (voice(window, cx), ui_of(window, cx)) {
         v.set_deafened(!ui.state.voice.self_deaf);
     }
 }
 
-pub fn toggle_share(kind: ShareKind, cx: &mut App) {
-    let Some(ui) = ui(cx) else { return };
+pub fn toggle_share(kind: ShareKind, window: WindowId, cx: &mut App) {
+    let Some(ui) = ui_of(window, cx) else { return };
     let on = match kind {
         ShareKind::Camera => !ui.state.voice.share.camera,
         ShareKind::Screen => !ui.state.voice.share.screen,
@@ -367,8 +524,8 @@ pub fn toggle_share(kind: ShareKind, cx: &mut App) {
 
 /// The people in a voice channel, nested under its row (`slots::channel_row_extras`): 26px rows, 30px in, the avatar
 /// ringed while they speak, then the name, the camera and LIVE, and the muted or deafened glyph at the right.
-pub fn channel_people(channel: &Channel, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let state = ui(cx)?.state.clone();
+pub fn channel_people(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let state = ui_of(wid(window), cx)?.state.clone();
     if channel.kind != 1 {
         return None;
     }
@@ -444,7 +601,11 @@ fn person_row(p: &Person) -> Div {
         )))
         .child(div().flex_1())
         .when_some(p.video.then_some(()), |d, ()| {
-            d.child(Icon::new(IconName::Video).size(px(m::GLYPH)).color(color::FG_2))
+            d.child(
+                Icon::new(IconName::Video)
+                    .size(px(m::GLYPH))
+                    .color(color::FG_2),
+            )
         })
         .when_some(p.screen.then_some(()), |d, ()| d.child(live_tag()))
         .when_some(glyph, |d, g| {
@@ -467,8 +628,9 @@ use gpui::prelude::FluentBuilder as _;
 
 /// The voice dock over the user panel (`slots::dock`, first): the call's channel and its state, camera, share and
 /// leave. Shown from the join's start to the leave.
-pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let state = ui(cx)?.state.clone();
+pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let w = wid(window);
+    let state = ui_of(w, cx)?.state.clone();
     let call = &state.voice.call;
     if call.phase == CallPhase::Idle {
         return None;
@@ -499,7 +661,7 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             )
             .size(IconButtonSize::S28)
             .pressed(share.camera)
-            .on_click(|_, _, cx| toggle_share(ShareKind::Camera, cx)),
+            .on_click(|_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx)),
         ))
         .child(tracked_box(
             "voice-dock-share",
@@ -514,13 +676,13 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             )
             .size(IconButtonSize::S28)
             .pressed(share.screen)
-            .on_click(|_, _, cx| toggle_share(ShareKind::Screen, cx)),
+            .on_click(|_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx)),
         ))
         .child(tracked_box(
             "voice-leave",
             IconButton::new("voice-leave-b", IconName::PhoneOff, t("voice.leave"))
                 .size(IconButtonSize::S28)
-                .on_click(|_, _, cx| leave(cx)),
+                .on_click(|_, window, cx| leave(wid(window), cx)),
         ));
     let status = div()
         .flex()
@@ -550,17 +712,17 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
                 .child(status)
                 .child(controls),
         )
-        .child(ptt_listener());
+        .child(ptt_listener(w));
     Some(tracked_box("voice-dock", card).into_any_element())
 }
 
 /// Push to talk while the window is focused: the person's chord (`voice.pttChord`) held opens the microphone, its
 /// release closes it. Listened for while a call is on (the dock is drawn).
-fn ptt_listener() -> impl IntoElement {
+fn ptt_listener(w: WindowId) -> impl IntoElement {
     canvas(
         |_, _, _| {},
-        |_, _, window, cx| {
-            let chord = ui(cx)
+        move |_, _, window, cx| {
+            let chord = ui_of(w, cx)
                 .and_then(|u| u.client.as_ref())
                 .and_then(|c| c.prefs().get::<String>("voice.pttChord"));
             let Some(chord) = chord else { return };
@@ -570,7 +732,7 @@ fn ptt_listener() -> impl IntoElement {
                 if phase == gpui::DispatchPhase::Capture
                     && !e.is_held
                     && e.keystroke.key.eq_ignore_ascii_case(&down)
-                    && let Some(v) = voice(cx)
+                    && let Some(v) = voice(w, cx)
                 {
                     v.set_ptt_held(true);
                 }
@@ -578,7 +740,7 @@ fn ptt_listener() -> impl IntoElement {
             window.on_key_event(move |e: &gpui::KeyUpEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture
                     && e.keystroke.key.eq_ignore_ascii_case(&key)
-                    && let Some(v) = voice(cx)
+                    && let Some(v) = voice(w, cx)
                 {
                     v.set_ptt_held(false);
                 }
@@ -628,12 +790,13 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     if channel.kind != 1 {
         return None;
     }
-    if ui(cx)?.stage_focus.is_none() {
+    let w = wid(window);
+    if ui_of(w, cx)?.stage_focus.is_none() {
         let handle = cx.focus_handle();
-        cx.global_mut::<VoiceUi>().stage_focus = Some(handle);
+        ui_mut(w, cx).stage_focus = Some(handle);
     }
     let images = refresh_images(window, cx);
-    let stats: HashMap<StreamKey, (u32, u32)> = ui(cx)
+    let stats: HashMap<StreamKey, (u32, u32)> = ui_of(w, cx)
         .map(|u| {
             let videos = u.session.as_ref().map(|s| s.videos()).unwrap_or_default();
             u.rates
@@ -642,8 +805,8 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .collect()
         })
         .unwrap_or_default();
-    let menu = ui(cx).and_then(share_menu);
-    let ui = ui(cx)?;
+    let menu = ui_of(w, cx).and_then(share_menu);
+    let ui = ui_of(w, cx)?;
     let state = ui.state.clone();
     let focus = ui.stage_focus.clone()?;
     let keys = tiles(&state, channel.id);
@@ -691,19 +854,15 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                         .child(main),
                 ),
             )
-            .child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .gap(px(m::TILE_GAP))
-                    .children(views.into_iter().map(|v| {
-                        div()
-                            .flex_none()
-                            .w(px(m::FILM_TILE_W))
-                            .aspect_ratio(16.0 / 9.0)
-                            .child(v)
-                    })),
-            )
+            .child(div().flex().justify_center().gap(px(m::TILE_GAP)).children(
+                views.into_iter().map(|v| {
+                    div()
+                        .flex_none()
+                        .w(px(m::FILM_TILE_W))
+                        .aspect_ratio(16.0 / 9.0)
+                        .child(v)
+                }),
+            ))
             .into_any_element()
     } else {
         let (share, max) = band(keys.len());
@@ -745,7 +904,10 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .flex()
         .flex_col()
         .bg(color::BG)
-        .on_key_down(move |e, window, cx| stage_key(&e.keystroke.key, n, window, cx))
+        .on_key_down(move |e, window, cx| {
+            stage_key(&e.keystroke.key, n, wid(window), cx);
+            window.refresh();
+        })
         .child(title)
         .child(notice(&state))
         .child(
@@ -764,12 +926,13 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
 }
 
 /// The stage's keys: the arrows move between tiles, Enter focuses the selected one, Escape leaves focus mode.
-fn stage_key(key: &str, n: usize, _window: &mut Window, cx: &mut App) {
-    if n == 0 || !cx.has_global::<VoiceUi>() {
+fn stage_key(key: &str, n: usize, window: WindowId, cx: &mut App) {
+    let Some(ui) = ui_of(window, cx) else { return };
+    if n == 0 {
         return;
     }
-    let channel = cx.global::<VoiceUi>().state.voice.call.channel;
-    let ui = cx.global_mut::<VoiceUi>();
+    let channel = ui.state.voice.call.channel;
+    let ui = ui_mut(window, cx);
     match key {
         "right" | "down" => ui.selected = (ui.selected + 1).min(n - 1),
         "left" | "up" => ui.selected = ui.selected.saturating_sub(1),
@@ -782,19 +945,22 @@ fn stage_key(key: &str, n: usize, _window: &mut Window, cx: &mut App) {
             ui.focused = None;
             ui.share_menu = false;
         }
-        _ => return,
+        _ => {}
     }
-    cx.refresh_windows();
 }
 
 /// The newest remote frames as images, rebuilt only for streams with a new frame.
 /// A replaced or ended stream's image leaves the GPU atlas (`drop_image`): without that every frame would stay there.
 fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<RenderImage>> {
-    let Some(videos) = ui(cx).and_then(|u| u.session.as_ref()).map(|s| s.videos()) else {
+    let w = wid(window);
+    let Some(videos) = ui_of(w, cx)
+        .and_then(|u| u.session.as_ref())
+        .map(|s| s.videos())
+    else {
         return HashMap::new();
     };
     let mut stale: Vec<Arc<RenderImage>> = Vec::new();
-    let ui = cx.global_mut::<VoiceUi>();
+    let ui = ui_mut(w, cx);
     let now = std::time::Instant::now();
     ui.rates.retain(|k, _| videos.contains_key(k));
     for (k, f) in &videos {
@@ -963,15 +1129,16 @@ fn tile(
             color::HAIRLINE
         })
         .cursor_pointer()
-        .on_click(move |_, _, cx| {
-            if cx.has_global::<VoiceUi>() {
-                let ui = cx.global_mut::<VoiceUi>();
+        .on_click(move |_, window, cx| {
+            let w = wid(window);
+            if ui_of(w, cx).is_some() {
+                let ui = ui_mut(w, cx);
                 ui.focused = if ui.focused.as_ref() == Some(&key) {
                     None
                 } else {
                     Some(key.clone())
                 };
-                cx.refresh_windows();
+                window.refresh();
             }
         })
         .child(media)
@@ -1033,8 +1200,8 @@ fn notice(state: &AppState) -> AnyElement {
                 t("voice.unsupported.close"),
             )
             .size(IconButtonSize::S28)
-            .on_click(|_, _, cx| {
-                if let Some(v) = voice(cx) {
+            .on_click(|_, window, cx| {
+                if let Some(v) = voice(wid(window), cx) {
                     v.set_notice(None);
                 }
             }),
@@ -1062,7 +1229,7 @@ fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
                 IconButton::new("voice-join-b", IconName::Phone, t("voice.join"))
                     .size(IconButtonSize::S40)
                     .pressed(busy)
-                    .on_click(move |_, _, cx| join(channel, cx)),
+                    .on_click(move |_, window, cx| join(channel, wid(window), cx)),
             ))
             .into_any_element();
     }
@@ -1081,7 +1248,7 @@ fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
         )
         .size(IconButtonSize::S40)
         .pressed(muted)
-        .on_click(|_, _, cx| toggle_mute(cx)),
+        .on_click(|_, window, cx| toggle_mute_in(wid(window), cx)),
     ))
     .child(tracked_box(
         "voice-deafen",
@@ -1096,7 +1263,7 @@ fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
         )
         .size(IconButtonSize::S40)
         .pressed(v.self_deaf)
-        .on_click(|_, _, cx| toggle_deafen(cx)),
+        .on_click(|_, window, cx| toggle_deafen_in(wid(window), cx)),
     ))
     .child(tracked_box(
         "voice-camera",
@@ -1111,14 +1278,14 @@ fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
         )
         .size(IconButtonSize::S40)
         .pressed(v.share.camera)
-        .on_click(|_, _, cx| toggle_share(ShareKind::Camera, cx)),
+        .on_click(|_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx)),
     ))
     .child(share_split(v.share.screen))
     .child(tracked_box(
         "voice-stage-leave",
         IconButton::new("voice-stage-leave-b", IconName::PhoneOff, t("voice.leave"))
             .size(IconButtonSize::S40)
-            .on_click(|_, _, cx| leave(cx)),
+            .on_click(|_, window, cx| leave(wid(window), cx)),
     ))
     .into_any_element()
 }
@@ -1145,7 +1312,7 @@ fn share_split(sharing: bool) -> Div {
             )
             .size(IconButtonSize::S40)
             .pressed(sharing)
-            .on_click(|_, _, cx| toggle_share(ShareKind::Screen, cx)),
+            .on_click(|_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx)),
         ))
         .child(tracked_box(
             "voice-share-quality",
@@ -1155,11 +1322,12 @@ fn share_split(sharing: bool) -> Div {
                 t("callStage.share.quality"),
             )
             .size(IconButtonSize::S28)
-            .on_click(|_, _, cx| {
-                if cx.has_global::<VoiceUi>() {
-                    let ui = cx.global_mut::<VoiceUi>();
+            .on_click(|_, window, cx| {
+                let w = wid(window);
+                if ui_of(w, cx).is_some() {
+                    let ui = ui_mut(w, cx);
                     ui.share_menu = !ui.share_menu;
-                    cx.refresh_windows();
+                    window.refresh();
                 }
             }),
         ))
@@ -1196,18 +1364,19 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
             )
         })
         .collect();
-    let pick = move |next: ShareOptions, cx: &mut App| {
-        if !cx.has_global::<VoiceUi>() {
+    let pick = move |next: ShareOptions, window: &mut Window, cx: &mut App| {
+        let w = wid(window);
+        if ui_of(w, cx).is_none() {
             return;
         }
-        let ui = cx.global_mut::<VoiceUi>();
+        let ui = ui_mut(w, cx);
         ui.share_options = next;
         if ui.state.voice.share.screen
             && let Some(s) = &ui.session
         {
             s.quality(next);
         }
-        cx.refresh_windows();
+        window.refresh();
     };
     let label = |key: &'static str| line(t(key), text::XS, 14.0, color::FG_2);
     let panel = div()
@@ -1243,9 +1412,9 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                 &resolutions,
                 o.resolution.name(),
             )
-            .on_change(move |v, _, cx| {
+            .on_change(move |v, window, cx| {
                 if let Some(resolution) = ShareResolution::from_name(v) {
-                    pick(ShareOptions { resolution, ..o }, cx);
+                    pick(ShareOptions { resolution, ..o }, window, cx);
                 }
             }),
         )
@@ -1256,9 +1425,9 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                 &[("15", "15"), ("30", "30"), ("60", "60")],
                 o.fps.to_string(),
             )
-            .on_change(move |v, _, cx| {
+            .on_change(move |v, window, cx| {
                 if let Ok(fps) = v.parse() {
-                    pick(ShareOptions { fps, ..o }, cx);
+                    pick(ShareOptions { fps, ..o }, window, cx);
                 }
             }),
         )
@@ -1275,11 +1444,12 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                     "voice-share-go-b",
                     t("callStage.share.go"),
                 )
-                .on_click(|_, _, cx| {
-                    if cx.has_global::<VoiceUi>() {
-                        cx.global_mut::<VoiceUi>().share_menu = false;
+                .on_click(|_, window, cx| {
+                    let w = wid(window);
+                    if ui_of(w, cx).is_some() {
+                        ui_mut(w, cx).share_menu = false;
                     }
-                    toggle_share(ShareKind::Screen, cx);
+                    toggle_share(ShareKind::Screen, w, cx);
                 }),
             ))
         });

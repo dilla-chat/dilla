@@ -172,6 +172,8 @@ fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) 
     let Some(ring) = find(&env.ctx.state, key) else {
         return;
     };
+    // One call per device: a call another instance window is in is left first.
+    crate::screens::voice::leave_other_calls(crate::screens::voice::wid(window), cx);
     let joining = client.ring().join(ring.channel, None, String::new());
     effects::hand_to_voice(client, ring.channel, joining, window, cx);
 }
