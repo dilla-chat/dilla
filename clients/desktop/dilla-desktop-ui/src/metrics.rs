@@ -90,6 +90,17 @@ pub fn css_blur(blur: f32) -> Pixels {
     px(blur / 2.0)
 }
 
+/// A ring of `spread` px in `color` (CSS `box-shadow: 0 0 0 Npx color`: no offset, no blur): a field's soft focus ring.
+pub fn spread_ring(color: Hsla, spread: f32) -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color,
+        offset: point(px(0.0), px(0.0)),
+        blur_radius: px(0.0),
+        spread_radius: px(spread),
+        inset: false,
+    }]
+}
+
 fn shadow(color: Hsla, y: f32, blur: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
         color,

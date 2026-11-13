@@ -89,13 +89,10 @@ pub fn editor(
             color::HAIRLINE_2
         })
         .when(focused, |d| {
-            d.shadow(vec![gpui::BoxShadow {
-                color: color::ACCENT_SOFT,
-                offset: gpui::point(px(0.), px(0.)),
-                blur_radius: px(0.),
-                spread_radius: px(FOCUS_RING),
-                inset: false,
-            }])
+            d.shadow(dilla_desktop_ui::metrics::spread_ring(
+                color::ACCENT_SOFT,
+                FOCUS_RING,
+            ))
         })
         .rounded(radius::LG)
         .text_size(text::INPUT)
