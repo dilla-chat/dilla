@@ -236,6 +236,13 @@ fn forget_after_the_shell_closes_and_wipes_the_store(cx: &mut gpui::TestAppConte
     }
     // The account owes a factor now: the forced screen, and its Forget this device.
     app.update_in(vcx, |a, window, cx| a.forget_from_forced(window, cx));
+    // Final review M1: a Forget's wipe is pending from its start, as a Sign out's is: a reopened window's start of the
+    // instance waits for it instead of meeting the store and key being deleted.
+    let id = cfg.id;
+    assert!(
+        vcx.update(|_, cx| dilla_desktop::windows::wipe_pending(cx, id)),
+        "the Forget's wipe is pending"
+    );
     let deadline = std::time::Instant::now() + WAIT;
     let signed_out =
         |vcx: &mut gpui::VisualTestContext| app.read_with(vcx, |a, _| a.shows_sign_in());
@@ -253,6 +260,10 @@ fn forget_after_the_shell_closes_and_wipes_the_store(cx: &mut gpui::TestAppConte
         std::thread::sleep(Duration::from_millis(20));
     }
     vcx.run_until_parked();
+    assert!(
+        !vcx.update(|_, cx| dilla_desktop::windows::wipe_pending(cx, id)),
+        "the wipe ended"
+    );
     let listed = dilla_client::instances::Instances::load(&root).unwrap();
     assert!(listed.get(cfg.id).is_none(), "the instance is forgotten");
     assert!(ada.kc.get(&account).unwrap().is_none(), "its key is gone");
