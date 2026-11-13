@@ -1010,8 +1010,13 @@ fn forced_setup_then_joins_invited_server(cx: &mut gpui::TestAppContext) {
     let setup = app
         .read_with(vcx, |a, cx| a.factor().map(|f| f.read(cx).setup()))
         .expect("the forced screen's set-up");
-    // The choice's Continue (an authenticator app), then the app step shows its secret.
-    setup.update_in(vcx, |s, window, cx| s.press_primary(window, cx));
+    // The choice's Continue (an authenticator app), clicked where it is drawn (the button's wiring, not only the
+    // function); then the app step shows its secret.
+    pump(vcx);
+    let next = vcx
+        .debug_bounds("factor-submit")
+        .expect("the choice's Continue is drawn");
+    vcx.simulate_click(next.center(), gpui::Modifiers::none());
     let mut secret = None;
     pump_until(vcx, "the app step's secret", |vcx| {
         secret = setup.read_with(vcx, |s, _| s.shown_secret());

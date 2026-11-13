@@ -696,6 +696,14 @@ fn edit_reply_react_pin_delete_one_flow(cx: &mut TestAppContext) {
         "the dialog stays open"
     );
 
+    // The pins dialog is closed (its close button's call), as a person must before reaching a message's toolbar.
+    vcx.update(|window, cx| {
+        let ui = dilla_desktop::screens::messages::ui::handle(window, cx).expect("the log drew");
+        ui.update(cx, |ui, cx| ui.close_pins(cx));
+    });
+    pump(vcx);
+    assert!(message_ui(vcx, |ui| ui.pins.is_none()), "the pins closed");
+
     // Delete for everyone, only through the dialog.
     let own = by_id(&ada, general, mine).unwrap();
     run_action(&app, vcx, &own, "delete");
@@ -707,7 +715,12 @@ fn edit_reply_react_pin_delete_one_flow(cx: &mut TestAppContext) {
         by_id(&ada, general, mine).unwrap().state,
         TimelineItemState::Ok
     );
-    vcx.update(dialogs::confirm_delete);
+    // A real click on the drawn dialog's Delete, at its painted bounds (the button's wiring, not only the function).
+    pump(vcx);
+    let delete = vcx
+        .debug_bounds("message-delete-confirm")
+        .expect("the delete dialog's Delete is drawn");
+    vcx.simulate_click(delete.center(), gpui::Modifiers::none());
     until_item(vcx, &ada, general, mine, "her message deleted", |i| {
         i.state == TimelineItemState::Deleted && !i.body.contains("edited")
     });
