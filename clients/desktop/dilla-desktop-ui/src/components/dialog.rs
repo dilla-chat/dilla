@@ -16,8 +16,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, Global, InteractiveElement, IntoElement, KeyBinding,
-    MouseButton, ParentElement, RenderOnce, SharedString, Styled, Window, actions, anchored,
-    deferred, div, point, px,
+    MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
+    Window, actions, anchored, deferred, div, point, px,
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
@@ -436,18 +436,20 @@ impl RenderOnce for Dialog {
             .border_color(color::LINE_STRONG)
             .rounded(radius::XXL)
             .shadow(shadow_3())
-            .overflow_hidden()
+            // Taller than its max height, the dialog scrolls as one box (the `<dialog>`'s `overflow: auto`): its parts
+            // keep their heights.
+            .overflow_y_scroll()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(head);
+            .child(div().flex_none().child(head));
         if let Some(body) = self.body {
             let pad = if confirm {
                 div().px(px(18.0)).pt(px(12.0))
             } else {
                 div().p(px(16.0))
             };
-            panel_el = panel_el.child(pad.child(body));
+            panel_el = panel_el.child(pad.flex_none().child(body));
         }
-        panel_el = panel_el.child(footer);
+        panel_el = panel_el.child(div().flex_none().child(footer));
         let (next_panel, prev_panel) = (panel.clone(), panel.clone());
         let panel_el = panel_el
             .on_action(move |_: &TrapNext, window, cx| trap_tab(&next_panel, true, window, cx))
