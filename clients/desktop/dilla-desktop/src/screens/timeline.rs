@@ -840,7 +840,11 @@ pub fn render(
         .key_context("MessageLog")
         .track_focus(&focus)
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            window.focus(&to_focus, cx);
+            // A focusable control inside (a reaction chip, a button) took the focus on this press already (GPUI marks
+            // that with prevent_default): it keeps it. A press on the log's own surface focuses the log.
+            if !window.default_prevented() {
+                window.focus(&to_focus, cx);
+            }
         })
         .size_full()
         .bg(color::BG)
