@@ -19,13 +19,13 @@ use tokio::sync::{oneshot, watch};
 
 use super::controller::{Left, RotateError, decline_ring};
 use super::{
-    CallCore, CallPhase, CallRoutes, CoreRefusal, HttpRoutes, JoinHooks, JoinRefused, JoinTarget,
-    Joined, MediaEpoch, RouteError, join_call, leave_call, media_epoch, rotate_call,
+    CallCatchUp, CallCore, CallPhase, CallRoutes, CoreRefusal, HttpRoutes, JoinHooks, JoinRefused,
+    JoinTarget, Joined, MediaEpoch, RouteError, join_call, leave_call, media_epoch, rotate_call,
 };
 use crate::client::{Client, ClientError, Inner};
 use crate::seams::{Http, HttpError, Route};
-use crate::sync::Engine;
 use crate::sync::requests::SocketHttp;
+use crate::sync::{Engine, Source};
 
 /// controller.ts `WAIT_LIST_MS`: the bound on the join's trust refresh of a group's leaves.
 pub const WAIT_LIST: Duration = Duration::from_millis(10_000);
@@ -169,6 +169,16 @@ impl JoinHooks for Hooks {
     }
 }
 
+/// [`CallCatchUp`] as the sync engine's own catch-up of the group (engine.ts `catchUpNow`).
+struct EngineCatchUp(Arc<Engine>);
+
+#[async_trait::async_trait]
+impl CallCatchUp for EngineCatchUp {
+    async fn catch_up(&self, group: &[u8; 16]) {
+        self.0.clone().catch_up_now(*group, Source::CatchUp).await;
+    }
+}
+
 /// A join that was cancelled (a leave, or its [`CallJoin`] dropped) by the time it ended: nobody takes its outcome, so
 /// whatever it holds is left here. A call it joined after its last check (the window between that check and this) is
 /// left (its self-Remove, the call ended when alone, the forget) and the outcome is the cancellation; a refusal that
@@ -263,15 +273,17 @@ impl<H: Http + 'static> Calls<H> {
             .spawn(async move { Ok(leave_call(&*core, &*routes, &group, &call, alone).await) })
     }
 
-    /// The hourly rotation ([`rotate_call`]).
+    /// The hourly rotation ([`rotate_call`]), reconciled through the sync engine's catch-up.
     pub fn rotate(
         &self,
         group: [u8; 16],
     ) -> oneshot::Receiver<Result<Result<u64, RotateError>, ClientError>> {
-        let core = self.inner.engine().core().clone();
+        let engine = self.inner.engine().clone();
         let routes = self.routes.clone();
-        self.inner
-            .spawn(async move { Ok(rotate_call(&*core, &*routes, &group).await) })
+        self.inner.spawn(async move {
+            let core = engine.core().clone();
+            Ok(rotate_call(&*core, &*routes, &EngineCatchUp(engine), &group).await)
+        })
     }
 
     /// Declines a ring ([`decline_ring`]).

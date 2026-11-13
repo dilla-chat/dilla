@@ -1,6 +1,13 @@
 //! The main window's root: which screen shows (sign-in, starting, the shell), and the running [`Client`] behind the
 //! shell. `Client::start` blocks until the device session stands, so it runs on a thread of its own; its state (a
 //! tokio watch) is forwarded into the shell on the UI thread.
+//!
+//! **The routing table.** [`Screen`] is the one list of what the window can show, and [`Screen::mode`] says which window
+//! shape each needs (the start window, the compact authentication window, the workspace; `screens/shell/window.rs`). A
+//! screen of another area is added in three places, each marked `// ROUTE:` below: a variant of [`Screen`] (with its
+//! mode), the `show_*` method that builds it, and its arm in `render`. The start and authentication windows resize in
+//! place; the workspace has another minimum size, so the window is opened again in that mode and the client is handed
+//! over ([`Launch::handoff`]).
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -17,6 +24,7 @@ use gpui::{
 
 use dilla_desktop_ui::tokens::{color, text};
 
+use crate::screens::shell::window::{SavedBounds, WindowMode, window_shape};
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{SignInView, SignedIn};
 use crate::tracked;
@@ -30,8 +38,13 @@ pub struct Launch {
     pub keychain: Arc<dyn Keychain>,
     /// Start the first listed instance's client at launch (a device already signed in).
     pub resume: bool,
-    /// The window's size, logical px.
+    /// The window's size, logical px (the workspace's, when the window opens in it).
     pub window: (f32, f32),
+    /// The shipping window: it opens in the start shape (400x280), takes the authentication shape for the sign-in and
+    /// the workspace shape for the shell, and draws the window's own controls. Tests and fixtures draw at `window`.
+    pub shipping: bool,
+    /// A client that is already running (the start or authentication window handing over to the workspace window).
+    pub handoff: Option<Rc<Client>>,
     #[cfg(feature = "automation")]
     pub fixture: Option<crate::fixture::Fixture>,
 }
@@ -49,6 +62,8 @@ impl Launch {
             keychain,
             resume: true,
             window: (1280.0, 800.0),
+            shipping: true,
+            handoff: None,
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -61,6 +76,8 @@ impl Launch {
             keychain: Arc::new(dilla_client::keychain::MemoryKeychain::new()),
             resume: false,
             window: (1280.0, 800.0),
+            shipping: false,
+            handoff: None,
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -77,6 +94,7 @@ impl Launch {
     }
 }
 
+/// What the window shows. // ROUTE: a screen of another area is a variant here.
 enum Screen {
     Starting,
     SignIn(Entity<SignInView>),
@@ -85,10 +103,24 @@ enum Screen {
     Factor(Entity<crate::screens::factor::forced::ForcedFactorView>),
 }
 
+impl Screen {
+    /// The window shape the screen needs.
+    fn mode(&self) -> WindowMode {
+        match self {
+            Screen::Starting => WindowMode::Starting,
+            Screen::SignIn(_) | Screen::Factor(_) => WindowMode::Authentication,
+            Screen::Shell(_) => WindowMode::Workspace,
+        }
+    }
+}
+
 /// The main window's root view.
 pub struct AppView {
     launch: Launch,
     screen: Screen,
+    /// The workspace window's bounds are kept a moment after the last change.
+    bounds_task: Option<gpui::Task<()>>,
+    bounds_sub: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -97,8 +129,13 @@ impl AppView {
         let mut this = Self {
             launch,
             screen: Screen::Starting,
+            bounds_task: None,
+            bounds_sub: None,
             _subscriptions: Vec::new(),
         };
+        if this.launch.shipping {
+            this.keep_bounds(window, cx);
+        }
         #[cfg(feature = "automation")]
         if let Some(fixture) = this.launch.fixture.clone() {
             // The route decides the screen (`fixture::screen_of`): the fixture loader already refused any route the app
@@ -119,10 +156,33 @@ impl AppView {
                             cx,
                         )
                     });
+                    this.focus_shell(&shell, window, cx);
+                    this.screen = Screen::Shell(shell);
+                }
+                crate::fixture::FixtureScreen::ShellHome { community } => {
+                    // The server's first text channel, by the list's own order.
+                    let channel = crate::screens::channel_list::ordered(&fixture.state, community)
+                        .into_iter()
+                        .find(|c| c.is_text())
+                        .map(|c| c.id);
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let shell = cx.new(|cx| {
+                        ShellView::new(Arc::new(fixture.state), None, channel, clock, window, cx)
+                    });
+                    this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
                 crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
             }
+            return this;
+        }
+        if let Some(client) = this.launch.handoff.take() {
+            // Task 26: the factor area follows the client into the workspace window.
+            crate::screens::factor::register_window_client(&client, window, cx);
+            this.show_shell(client, window, cx);
             return this;
         }
         let existing = this
@@ -150,14 +210,16 @@ impl AppView {
             },
         )];
         self.screen = Screen::SignIn(view);
+        self.fit_window(window, cx);
         cx.notify();
     }
 
     fn start_client(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Starting;
+        self.fit_window(window, cx);
         cx.notify();
         let keychain = self.launch.keychain.clone();
-        let server = cfg.clone();
+        let started_cfg = cfg.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("dilla-client-start".into())
@@ -170,7 +232,7 @@ impl AppView {
                 .await
                 .unwrap_or_else(|_| Err(ClientError::Runtime("the start thread ended".into())));
             let _ = this.update_in(cx, |this, window, cx| {
-                this.started(result, server, window, cx)
+                this.started(result, started_cfg, window, cx)
             });
         })
         .detach();
@@ -192,25 +254,39 @@ impl AppView {
                 return self.show_sign_in(Some(copy), window, cx);
             }
         };
-        // Task 26: the factor area knows this window's client and its instance (the system-browser ceremony, step-up).
-        crate::screens::factor::register_instance(&client, cfg.server.clone(), cx);
+        // Task 26: the factor area knows this window's client and its instance (the system-browser ceremony, step-up,
+        // Forget this device).
+        crate::screens::factor::register_instance(&client, cfg, cx);
         crate::screens::factor::register_window_client(&client, window, cx);
         if client.state().borrow().account.phase == dilla_client::state::AccountPhase::FactorSetup {
-            return self.show_factor(client, cfg, window, cx);
+            return self.show_factor(client, window, cx);
         }
-        self.show_shell(client, cfg, window, cx);
+        if self.launch.shipping && self.screen.mode().is_compact() {
+            return self.open_workspace(client, window, cx);
+        }
+        self.show_shell(client, window, cx);
+    }
+
+    /// The workspace has its own minimum size, which a window keeps from the day it opens: the compact window hands the
+    /// running client to a new window in the workspace shape and closes.
+    fn open_workspace(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
+        let mut launch = self.launch.clone();
+        launch.handoff = Some(client);
+        match crate::open_window_in(cx, launch, WindowMode::Workspace) {
+            Ok(_) => window.remove_window(),
+            // The workspace window did not open: this one stays, on the sign-in.
+            Err(e) => self.show_sign_in(Some(e.to_string()), window, cx),
+        }
     }
 
     /// Task 26: the forced-factor screen; it goes on to the shell once the factor is set, or forgets the device.
-    fn show_factor(
-        &mut self,
-        client: Rc<Client>,
-        cfg: InstanceConfig,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn show_factor(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         use crate::screens::factor::forced::{ForcedEvent, ForcedFactorView};
         use crate::screens::factor::setup::Origin;
+        let Some(cfg) = crate::screens::factor::instance_of(&client, cx) else {
+            let copy = crate::strings::tf("factor.error.other", &[("code", "E_INSTANCE")]);
+            return self.show_sign_in(Some(copy), window, cx);
+        };
         let view = cx.new(|cx| {
             ForcedFactorView::new(
                 client.clone(),
@@ -220,19 +296,30 @@ impl AppView {
                 cx,
             )
         });
+        let held = client.clone();
         self._subscriptions = vec![cx.subscribe_in(
             &view,
             window,
             move |this, _, e: &ForcedEvent, window, cx| match e {
-                ForcedEvent::Completed => this.show_shell(client.clone(), cfg.clone(), window, cx),
-                ForcedEvent::Forget => this.forget(client.clone(), cfg.clone(), window, cx),
+                ForcedEvent::Completed => {
+                    let client = held.clone();
+                    if this.launch.shipping && this.screen.mode().is_compact() {
+                        this.open_workspace(client, window, cx);
+                    } else {
+                        this.show_shell(client, window, cx);
+                    }
+                }
+                ForcedEvent::Forget => this.forget(held.clone(), cfg.clone(), window, cx),
             },
         )];
         self.screen = Screen::Factor(view);
+        self.fit_window(window, cx);
         cx.notify();
     }
 
-    /// Task 26 (ForgetBrowser): the client stops and this device forgets the instance; then the sign-in.
+    /// Task 26 (ForgetBrowser): the device signs out on the instance and forgets it, then the sign-in. Every view that
+    /// held the client is dropped first; the client halts through the shared handle, so a clone left anywhere cannot
+    /// keep it running. A refusal is shown on the forced screen's banner, never swallowed.
     fn forget(
         &mut self,
         client: Rc<Client>,
@@ -240,48 +327,40 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        crate::screens::factor::forget_instance(&client, cx);
-        self._subscriptions.clear();
-        self.screen = Screen::Starting;
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
-        client.disconnect();
-        let client = Rc::try_unwrap(client).ok();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        std::thread::Builder::new()
-            .name("dilla-forget".into())
-            .spawn(move || {
-                if let Some(client) = client {
-                    client.stop();
-                }
-                let result = root.as_deref().map(|root| {
-                    dilla_client::features::factors::forget_device(root, &cfg, keychain.as_ref())
-                });
-                let _ = tx.send(matches!(result, Some(Ok(()))));
-            })
-            .expect("a thread starts");
         cx.spawn_in(window, async move |this, cx| {
-            let forgot = rx.await.unwrap_or(false);
-            let _ = this.update_in(cx, |this, window, cx| {
-                let error = (!forgot)
-                    .then(|| crate::strings::tf("factor.error.other", &[("code", "E_FORGET")]));
-                this.show_sign_in(error, window, cx);
+            let result =
+                crate::screens::factor::forget_device(client.clone(), cfg, root, keychain).await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => {
+                    crate::screens::factor::forget_instance(&client, cx);
+                    this._subscriptions.clear();
+                    this.screen = Screen::Starting;
+                    // The last handles: the runtime goes with the client.
+                    if let Ok(client) = Rc::try_unwrap(client) {
+                        std::thread::spawn(move || client.stop());
+                    }
+                    this.show_sign_in(None, window, cx);
+                }
+                Err(code) => {
+                    if let Screen::Factor(view) = &this.screen {
+                        view.update(cx, |v, cx| v.forget_refused(&code, cx));
+                    }
+                }
             });
         })
         .detach();
-        cx.notify();
     }
 
-    fn show_shell(
-        &mut self,
-        client: Rc<Client>,
-        cfg: InstanceConfig,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    // ROUTE: the shell, for a running client.
+    fn show_shell(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         let mut states = client.state();
         let first = states.borrow_and_update().clone();
-        let shell = cx
-            .new(|cx| ShellView::new(first, Some(client.clone()), None, Clock::Local, window, cx));
+        let controls = self.launch.shipping;
+        let shell = cx.new(|cx| {
+            ShellView::new(first, Some(client.clone()), None, Clock::Local, window, cx)
+                .with_controls(controls)
+        });
         let weak = shell.downgrade();
         let factor_client = client.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -289,10 +368,9 @@ impl AppView {
                 let next = states.borrow_and_update().clone();
                 // Task 26: a renewal or a refusal found a factor owed: the forced screen.
                 if next.account.phase == dilla_client::state::AccountPhase::FactorSetup {
-                    let (client, cfg) = (factor_client.clone(), cfg.clone());
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.show_factor(client, cfg, window, cx)
-                    });
+                    let client = factor_client.clone();
+                    let _ =
+                        this.update_in(cx, |this, window, cx| this.show_factor(client, window, cx));
                     break;
                 }
                 if weak
@@ -304,13 +382,76 @@ impl AppView {
             }
         })
         .detach();
+        self.focus_shell(&shell, window, cx);
         self.screen = Screen::Shell(shell);
+        self.fit_window(window, cx);
         cx.notify();
+    }
+
+    /// The keyboard works from the first frame: the shell's root holds the focus, so Tab and the shell's keys reach it.
+    fn focus_shell(&self, shell: &Entity<ShellView>, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = gpui::Focusable::focus_handle(shell.read(cx), cx);
+        window.focus(&handle, cx);
+    }
+
+    /// Gives a compact screen its window shape (the start and authentication windows resize in place).
+    fn fit_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mode = self.screen.mode();
+        if !self.launch.shipping || !mode.is_compact() {
+            return;
+        }
+        let shape = window_shape(mode, None, crate::work_area_height(cx));
+        window.resize(gpui::size(
+            gpui::Pixels::from(shape.width),
+            gpui::Pixels::from(shape.height),
+        ));
+    }
+
+    /// Keeps the workspace window's bounds in the app's preferences, a moment after the last move or resize.
+    fn keep_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.launch.root.clone() else {
+            return;
+        };
+        let close_root = root.clone();
+        let subscription = cx.observe_window_bounds(window, move |this, window, cx| {
+            if this.screen.mode() != WindowMode::Workspace || window.is_maximized() {
+                return;
+            }
+            let bounds = window.bounds();
+            let root = root.clone();
+            this.bounds_task = Some(cx.spawn(async move |_, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(400))
+                    .await;
+                SavedBounds {
+                    x: f32::from(bounds.origin.x),
+                    y: f32::from(bounds.origin.y),
+                    width: f32::from(bounds.size.width),
+                    height: f32::from(bounds.size.height),
+                }
+                .write(&dilla_client::prefs::Prefs::app(&root));
+            }));
+        });
+        self.bounds_sub = Some(subscription);
+        // The last bounds are kept at once when the window closes, not only after the debounce.
+        window.on_window_should_close(cx, move |window, _| {
+            if window.is_resizable() && !window.is_maximized() {
+                let b = window.bounds();
+                SavedBounds {
+                    x: f32::from(b.origin.x),
+                    y: f32::from(b.origin.y),
+                    width: f32::from(b.size.width),
+                    height: f32::from(b.size.height),
+                }
+                .write(&dilla_client::prefs::Prefs::app(&close_root));
+            }
+            true
+        });
     }
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.screen {
             Screen::Starting => div()
                 .size_full()
@@ -324,6 +465,25 @@ impl Render for AppView {
             Screen::Shell(view) => view.clone().into_any_element(),
             Screen::Factor(view) => view.clone().into_any_element(),
         };
-        tracked("root", div().size_full().bg(color::BG).child(body))
+        // A window that draws its own frame is resized from strips at its rim.
+        let size = window.viewport_size();
+        let strips = (self.launch.shipping
+            && window.is_resizable()
+            && !window.is_maximized()
+            && matches!(
+                window.window_decorations(),
+                gpui::Decorations::Client { .. }
+            ))
+        .then(|| {
+            crate::screens::shell::resize::render(f32::from(size.width), f32::from(size.height))
+        });
+        tracked(
+            "root",
+            div()
+                .size_full()
+                .bg(color::BG)
+                .child(body)
+                .children(strips.into_iter().flatten()),
+        )
     }
 }

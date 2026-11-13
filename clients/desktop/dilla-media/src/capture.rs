@@ -25,7 +25,7 @@ use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 
 use crate::MediaError;
 use crate::MediaEvent;
-use crate::apm::Apm;
+use crate::apm::{Apm, ApmFlags};
 use crate::devices::{self, AudioHost, DeviceId, Running};
 use crate::noise::{FRAME_SAMPLES, ModelLoader, NoiseMode, NoiseProcessor, embedded_model};
 use crate::ring::Ring;
@@ -45,6 +45,8 @@ pub struct CaptureConfig {
     /// Shared with the call's [`crate::playout::Speaker`] so the echo canceller has its reference.
     pub apm: Apm,
     pub model: ModelLoader,
+    /// Echo cancellation and gain control (Settings -> Voice); both on by default.
+    pub flags: ApmFlags,
 }
 
 impl Default for CaptureConfig {
@@ -53,6 +55,7 @@ impl Default for CaptureConfig {
             host: devices::system(),
             apm: Apm::default(),
             model: Arc::new(embedded_model),
+            flags: ApmFlags::default(),
         }
     }
 }
@@ -132,6 +135,7 @@ impl Worker {
 
     /// Builds the chain for `mode`; returns the mode that actually runs.
     fn set_mode(&mut self, mode: NoiseMode) -> NoiseMode {
+        self.config.apm.set_flags(self.config.flags);
         self.dfn = None;
         self.dfn_failed = false;
         let mut effective = mode;

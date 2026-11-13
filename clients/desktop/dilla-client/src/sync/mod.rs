@@ -1448,7 +1448,61 @@ impl Engine {
             }
             self.request_catch_up(g);
             self.request_drain(g);
+            // A community group gated while it was not active (registering, joining, waiting for a resync) is read now,
+            // not at the publisher's next backoff tick.
+            self.request_removal_read(g);
         })
+    }
+
+    /// Reads `g`'s removal feed on its lane now (coalesced). A read that succeeds releases its timeline
+    /// ([`SyncHooks::removals_read`]); one that fails leaves the group to the publisher's retry.
+    pub fn request_removal_read(self: &Arc<Self>, g: Gid) {
+        if self.stopped() {
+            return;
+        }
+        let this = Arc::clone(self);
+        self.lane_coalesce(&key(&g), "removal-read", async move {
+            let _ = this.feed_read(g).await;
+        });
+    }
+
+    /// engine.ts `rejoined`: the account is in `community` again (a kick, a lifted ban or a leave, then a join) with
+    /// no reconnect. A resync is tried once per ready, and one refused while the account was out would stand as
+    /// not-member until the next ready, so each of the community's text groups may resync again from here: one that
+    /// last reported not-member, or still in state 3, resyncs at once on its lane; a loss no read has met yet resyncs
+    /// when one does.
+    pub fn rejoined(self: &Arc<Self>, community: Gid) {
+        if self.stopped() {
+            return;
+        }
+        let this = Arc::clone(self);
+        self.spawn_watched(async move {
+            for row in this.groups().await {
+                if row.kind != 0 || row.community_id != Some(community) {
+                    continue;
+                }
+                let g = row.group_id;
+                this.st().resync_tried.remove(&g);
+                if !this.lost(g).await {
+                    continue;
+                }
+                let t = Arc::clone(&this);
+                this.lane_coalesce(&key(&g), "resync", async move {
+                    if t.lost(g).await && t.clone().resync_group(g, true).await {
+                        t.st().heal_blocked.remove(&g);
+                    }
+                });
+            }
+        });
+    }
+
+    /// [`Self::rejoined`]'s lost group: waiting for a resync, or active but last reported not-member.
+    async fn lost(&self, g: Gid) -> bool {
+        match self.state_of(g).await {
+            Some(3) => true,
+            Some(2) => self.st().lost_reported.contains(&g),
+            _ => false,
+        }
     }
 
     /// engine.ts `resync`.
@@ -1485,8 +1539,15 @@ impl Engine {
             policy_version: self.instance.policy_version,
         };
         match self.clone().external_join(eg, &mut 0).await {
-            Ok(()) => true,
+            Ok(()) => {
+                // The rejoin ends the resync (controller.ts `onGroupChanged`: a state-2 apply ends `resyncing`; here the
+                // publisher hears it as a member report, as the hooks carry no apply result).
+                self.report_membership(g, Membership::Member);
+                true
+            }
             Err(e) => {
+                #[cfg(feature = "testing")]
+                probes::resync_refused(g);
                 // A refusal before the join leaves an active row in state 2; it is never discarded.
                 if self.state_of(g).await == Some(1) {
                     let _ = with_core(&self.core, move |c| c.group_discard(&g)).await;
@@ -2388,6 +2449,36 @@ pub enum Source {
     Frame,
     CatchUp,
     Commit,
+}
+
+/// Test-only probes (feature `testing`): what the engine did that no published state shows.
+#[cfg(feature = "testing")]
+pub mod probes {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static REFUSED: Mutex<Option<HashMap<[u8; 16], u32>>> = Mutex::new(None);
+
+    fn refused() -> std::sync::MutexGuard<'static, Option<HashMap<[u8; 16], u32>>> {
+        REFUSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn resync_refused(group: [u8; 16]) {
+        *refused()
+            .get_or_insert_with(HashMap::new)
+            .entry(group)
+            .or_default() += 1;
+    }
+
+    /// How many resyncs of `group` were refused so far, in this process.
+    pub fn resyncs_refused(group: [u8; 16]) -> u32 {
+        refused()
+            .as_ref()
+            .and_then(|m| m.get(&group).copied())
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
