@@ -587,6 +587,16 @@ impl SignIn {
             Ok(fetched) => self.complete(&key, &fetched).await,
             Err(e) => Err(e),
         };
+        // controller.ts `enrolWithKey`: once the core wrote the enrolment (it left phase 3), a later step that failed is
+        // not the sign-in's (an account an operator reset refuses the state backup with E_FACTOR_REQUIRED): entering
+        // ready publishes and uploads what is missing, or takes the forced set-up. A list race or an eviction stays one.
+        if let Err(e) = &result
+            && !matches!(e, SignInError::ListRace | SignInError::Evicted)
+            && self.enrolment_written()?
+        {
+            self.auth.clear();
+            return Ok(());
+        }
         if result
             .as_ref()
             .is_err_and(|e| !matches!(e, SignInError::WrongKey))
@@ -602,6 +612,13 @@ impl SignIn {
             self.auth.clear();
         }
         result
+    }
+
+    /// The core holds the enrolled identity (`enrol_complete` ran: phase 2, the ready identity with its user id).
+    fn enrolment_written(&mut self) -> Result<bool, SignInError> {
+        let identity = self.with_core(|c| c.identity())?;
+        Ok(crate::sync::api::Identity::decode(&identity)
+            .is_some_and(|i| i.phase == 2 && i.user_id.is_some()))
     }
 
     /// The user id of an enrolment this ceremony already registered (identity phase 3 with its user id).
