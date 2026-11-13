@@ -863,9 +863,9 @@ impl AppView {
         .detach();
     }
 
-    /// Tests (integration 3, step 0 item 1; built without the automation feature too, as CI runs them): the shell's client comes to owe a factor (the forced screen, as
+    /// Tests (feature `test-hooks`, review M6): the shell's client comes to owe a factor (the forced screen, as
     /// `show_shell`'s state loop shows it), and the person confirms Forget this device there.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn forget_from_forced(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self
             .shell
@@ -882,13 +882,13 @@ impl AppView {
     }
 
     /// Automation: the window shows the sign-in.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn shows_sign_in(&self) -> bool {
         matches!(self.screen, Screen::SignIn(_))
     }
 
     /// Automation: what the window shows, by name (`settings` while the host is open, whatever is behind it).
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn screen_name(&self) -> &'static str {
         match &self.screen {
             Screen::Starting => "starting",
@@ -904,7 +904,7 @@ impl AppView {
     }
 
     /// Automation: the open server settings and whether they sit over a screen that comes back on close.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn server_settings(
         &self,
     ) -> Option<(
@@ -918,7 +918,7 @@ impl AppView {
     }
 
     /// Automation: the open settings host, and how many settings hosts are stacked (one at most).
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn settings_host(&self) -> Option<(Entity<UserSettingsHost>, usize)> {
         let Screen::Settings { host, behind, .. } = &self.screen else {
             return None;

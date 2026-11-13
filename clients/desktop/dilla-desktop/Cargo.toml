@@ -13,7 +13,10 @@ workspace = true
 [features]
 # Test-only automation interface (src/automation.rs): a headless window driven over stdin/stdout, with
 # screenshots. It needs GPUI's test-support renderer, so release builds never enable it.
-automation = ["dep:serde", "dep:serde_json", "dilla-client/testing", "gpui/test-support", "gpui-platform/test-support"]
+automation = ["test-hooks", "dep:serde", "dep:serde_json", "dilla-client/testing", "gpui/test-support", "gpui-platform/test-support"]
+# The AppView hooks the tests drive (review M6: `forget_from_forced` signs out and wipes, so release builds do not have
+# it). The crate's own tests turn it on through the dev-dependency on itself below.
+test-hooks = []
 
 [dependencies]
 dilla-client = { path = "../dilla-client" }
@@ -61,6 +64,8 @@ dilla-testkit = { path = "../../../testkit" }
 dilla-parity = { path = "../parity" }
 # The shared real-dillad helpers (dilla-client src/testing/host.rs): tests/support/world.rs and the parity world.
 dilla-client = { path = "../dilla-client", features = ["testing-host"] }
+# The test hooks of AppView (feature `test-hooks`), for this crate's own integration tests.
+dilla-desktop = { path = ".", features = ["test-hooks"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 serde_json = "1.0.151"

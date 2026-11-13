@@ -2164,6 +2164,7 @@ dependencies = [
  "chrono",
  "dilla-client",
  "dilla-core",
+ "dilla-desktop",
  "dilla-desktop-ui",
  "dilla-media",
  "dilla-parity",
