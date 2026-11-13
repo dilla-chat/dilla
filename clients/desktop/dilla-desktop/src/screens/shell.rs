@@ -684,6 +684,8 @@ impl Render for ShellView {
             None => div().size_full().bg(color::BG).into_any_element(),
         };
         let banners = slots::banners(&ctx, window, cx);
+        // The members aside reads the slot context the shell holds (its hook takes none of its own; Task 14).
+        crate::screens::members::sync(&ctx, cx);
         let aside = slots::aside(&self.route(), window, cx);
         let overlays = slots::overlays(window, cx);
         let main = div()
