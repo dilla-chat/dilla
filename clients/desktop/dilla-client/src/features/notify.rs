@@ -456,6 +456,11 @@ impl RecordingNotifier {
         item.notification.channel
     }
 
+    /// Forgets everything shown (a release: titles and bodies name people and messages).
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Shown>> {
         self.shown
             .lock()
@@ -479,10 +484,18 @@ impl Notifier for RecordingNotifier {
             .flatten()
         {
             Some(at) => shown[at] = entry,
-            None => shown.push(entry),
+            None => {
+                shown.push(entry);
+                // A ring buffer: the newest `RECORDED_MAX`, the oldest dropped first.
+                let over = shown.len().saturating_sub(RECORDED_MAX);
+                shown.drain(..over);
+            }
         }
     }
 }
+
+/// The most notifications [`RecordingNotifier`] keeps.
+pub const RECORDED_MAX: usize = 64;
 
 /// `noticeTitle`: `notify.title.dm` for a DM notice, else `notify.title.channel`; an unknown name reads as the first 8
 /// hex digits of its id.
@@ -1006,6 +1019,23 @@ mod tests {
         AccountState, BadgeState, Channel, ChannelGroupState, Community, Member, Timeline,
         TimelineItem,
     };
+
+    /// Integration 3, re-review minor: the in-app notifier keeps the newest `RECORDED_MAX` notifications (oldest first,
+    /// the oldest dropped), and a release forgets them all (their titles and bodies name people and messages).
+    #[test]
+    fn the_recorder_is_bounded_and_forgets_on_release() {
+        let n = RecordingNotifier::new();
+        for i in 0..RECORDED_MAX + 5 {
+            let mut x = Notification::new(NotificationKind::Mention, format!("t{i}"), "b");
+            x.tag = format!("tag-{i}");
+            n.deliver(&x);
+        }
+        let shown = n.shown();
+        assert_eq!(shown.len(), RECORDED_MAX);
+        assert_eq!(shown[0].notification.title, "t5", "the oldest went first");
+        n.clear();
+        assert!(n.shown().is_empty());
+    }
 
     const COMMUNITY: CommunityId = CommunityId([0xa1; 16]);
     const GENERAL: ChannelId = ChannelId([0xc3; 16]);

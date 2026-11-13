@@ -123,6 +123,13 @@ pub struct RingNotifier(pub RecordingNotifier);
 
 impl Global for RingNotifier {}
 
+/// The release path: the notifier forgets what it showed (re-review minor; a notification names who rang and where).
+pub fn release_notifier(cx: &mut App) {
+    if let Some(n) = cx.try_global::<RingNotifier>() {
+        n.0.clear();
+    }
+}
+
 /// Raises the ring's notification through Task 22's notifier: `features::notify::ring_notification` decides (only while
 /// the window is hidden, with the permission granted, never for a busy or quiet ring or a DM whose mode is nothing), and
 /// the notifier shows it. Its click opens the DM (`Notification::channel`). Called only while the window is not focused.
