@@ -37,6 +37,14 @@ pub struct ImageKey {
     pub thumb: bool,
 }
 
+/// An entry of the images, the cards or the players, for [`AttachmentsUi::media_owners`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MediaKey {
+    Image(ImageKey),
+    Card(CardKey),
+    Player(CardKey),
+}
+
 /// A card's attachment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CardKey {
@@ -110,8 +118,8 @@ pub enum TrayPreview {
 
 /// The attachments area's state. One per app, and that is safe by construction (final review sweep): what belongs to a
 /// window is keyed by it (`targets`) or carries its owner window and is drawn only there (the lightbox, the GIF picker,
-/// the DM notice); what belongs to a client is keyed by its channels (channel ids are random per instance) and goes
-/// with it in [`release`] (trays by `tray_owners`, images, cards and players by the client's channels); the
+/// the DM notice); what belongs to a client records its owner client (or is keyed by its channels) and goes
+/// with it in [`release`] (trays by `tray_owners`, images, cards and players by `media_owners`); the
 /// played-video directories are per instance and are wiped at open and at quit.
 #[derive(Default)]
 pub struct AttachmentsUi {
@@ -122,6 +130,9 @@ pub struct AttachmentsUi {
     pub images: HashMap<ImageKey, Slot>,
     pub cards: HashMap<CardKey, CardStatus>,
     pub players: HashMap<CardKey, Player>,
+    /// Which client (by the address of its `Client`) opened each image, card and player: [`release`] drops what that
+    /// client opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
+    pub media_owners: HashMap<MediaKey, usize>,
     pub lightbox: Option<LightboxState>,
     pub gif: Option<GifState>,
     /// The DM GIF notice, while it asks.
@@ -276,24 +287,41 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
         u.tray_owners.remove(&channel);
         u.tray_previews.retain(|(c, _), _| *c != channel);
     }
-    // The decrypted images, the cards' state and the players of the client's channels go too (final review sweep): a
-    // released account's media is not left in the process. Another client's channels keep theirs.
-    let channels: HashSet<ChannelId> = client
-        .state()
-        .borrow()
-        .channels
-        .iter()
-        .map(|c| c.id)
-        .collect();
-    forget_channels(&channels, cx);
+    // The decrypted images, the cards' state and the players the client opened go too (re-review N3: by owner, so a
+    // DM's, a left channel's and a thread's go as well): a released account's media is not left in the process.
+    forget_owner(owner, cx);
 }
 
-/// Drops the images, cards and players of `channels` (a released client's).
-pub fn forget_channels(channels: &HashSet<ChannelId>, cx: &mut App) {
+/// `client` opened `key`.
+fn owns(client: &Client, key: MediaKey, cx: &mut App) {
+    ui(cx)
+        .media_owners
+        .insert(key, std::ptr::from_ref(client) as usize);
+}
+
+/// Drops the images, cards and players the client `owner` (by the address of its `Client`) opened.
+pub fn forget_owner(owner: usize, cx: &mut App) {
     let u = ui(cx);
-    u.images.retain(|k, _| !channels.contains(&k.channel));
-    u.cards.retain(|k, _| !channels.contains(&k.channel));
-    u.players.retain(|k, _| !channels.contains(&k.channel));
+    let gone: Vec<MediaKey> = u
+        .media_owners
+        .iter()
+        .filter(|(_, o)| **o == owner)
+        .map(|(k, _)| *k)
+        .collect();
+    for key in gone {
+        u.media_owners.remove(&key);
+        match key {
+            MediaKey::Image(k) => {
+                u.images.remove(&k);
+            }
+            MediaKey::Card(k) => {
+                u.cards.remove(&k);
+            }
+            MediaKey::Player(k) => {
+                u.players.remove(&k);
+            }
+        }
+    }
 }
 
 /// The tray of `channel`, made on first use.
@@ -449,6 +477,7 @@ pub fn ensure_image(client: &Client, key: ImageKey, cx: &mut App) {
         return;
     }
     ui(cx).images.insert(key, Slot::Loading);
+    owns(client, MediaKey::Image(key), cx);
     let rx = client
         .attachments()
         .open(key.channel, key.seq, key.index, key.thumb);
@@ -469,6 +498,7 @@ pub fn ensure_image(client: &Client, key: ImageKey, cx: &mut App) {
 /// path, and the plaintext is written there.
 pub fn save(client: &Client, key: CardKey, cx: &mut App) {
     ui(cx).cards.insert(key, CardStatus::Loading);
+    owns(client, MediaKey::Card(key), cx);
     cx.refresh_windows();
     let rx = client
         .attachments()
@@ -525,6 +555,7 @@ pub fn play(client: &Client, key: CardKey, video: bool, mime: String, cx: &mut A
         return;
     }
     ui(cx).players.insert(key, Player::Loading);
+    owns(client, MediaKey::Player(key), cx);
     cx.refresh_windows();
     let rx = client
         .attachments()
@@ -888,10 +919,10 @@ pub fn pick_gif(index: usize, cx: &mut App) {
 mod tests {
     use super::*;
 
-    /// Final review sweep: a release drops the decrypted images and the cards of the released client's channels, and
-    /// keeps another client's.
+    /// Re-review N3: a release drops the decrypted images and the cards the released client opened, by owner: a DM's
+    /// image (in no channel list) goes too, and another client's stay.
     #[gpui::test]
-    fn a_release_drops_the_media_of_the_clients_channels(cx: &mut gpui::TestAppContext) {
+    fn a_release_drops_the_media_the_client_opened(cx: &mut gpui::TestAppContext) {
         let (mine, theirs) = (ChannelId([1; 16]), ChannelId([2; 16]));
         let key = |channel| ImageKey {
             channel,
@@ -901,8 +932,11 @@ mod tests {
         };
         cx.update(|cx| {
             let u = ui(cx);
+            // `mine` is a DM of client 1: no channel list names it.
             u.images.insert(key(mine), Slot::Failed);
             u.images.insert(key(theirs), Slot::Failed);
+            u.media_owners.insert(MediaKey::Image(key(mine)), 1);
+            u.media_owners.insert(MediaKey::Image(key(theirs)), 2);
             let card = |channel| CardKey {
                 channel,
                 seq: 1,
@@ -910,7 +944,9 @@ mod tests {
             };
             u.cards.insert(card(mine), CardStatus::Loading);
             u.cards.insert(card(theirs), CardStatus::Loading);
-            forget_channels(&HashSet::from([mine]), cx);
+            u.media_owners.insert(MediaKey::Card(card(mine)), 1);
+            u.media_owners.insert(MediaKey::Card(card(theirs)), 2);
+            forget_owner(1, cx);
             let u = ui(cx);
             assert!(!u.images.contains_key(&key(mine)) && u.images.contains_key(&key(theirs)));
             assert_eq!(u.cards.len(), 1);
