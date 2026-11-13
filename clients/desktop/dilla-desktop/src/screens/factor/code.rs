@@ -63,6 +63,11 @@ impl CodeField {
         self.value.len() == CODE_LENGTH
     }
 
+    /// The boxes are drawn as refused (red).
+    pub fn is_invalid(&self) -> bool {
+        self.invalid
+    }
+
     pub fn set_invalid(&mut self, invalid: bool, cx: &mut Context<Self>) {
         self.invalid = invalid;
         cx.notify();
@@ -70,13 +75,15 @@ impl CodeField {
 
     /// Empties the field (a refused code, a step left). The host's reset, not the person's edit: it says no
     /// [`CodeEvent::Changed`], which the hosts read as "the person typed" and answer by dropping their error, so a
-    /// refusal set together with this reset stays on show. A completion timer of the old value says nothing.
+    /// refusal set together with this reset stays on show. A completion timer of the old value says nothing. The boxes
+    /// lose their refused red with their digits; a host that wants them red (a refused code) sets it after the clear.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         if !self.value.is_empty() {
             self.edits += 1;
         }
         self.value = Zeroizing::new(String::new());
         self.caret = 0;
+        self.invalid = false;
         cx.notify();
     }
 
@@ -262,6 +269,19 @@ mod tests {
         field.update(cx, |f, cx| f.insert("4", cx));
         cx.run_until_parked();
         assert_eq!(*seen.borrow(), vec![CodeEvent::Changed]);
+    }
+
+    /// The reset is a fresh field: a refused field's red goes with its digits (a host that wants it red again, a
+    /// refused code, sets it after the clear).
+    #[gpui::test]
+    fn clearing_drops_the_refused_red(cx: &mut TestAppContext) {
+        let field = cx.new(|cx| CodeField::new("code-test", cx));
+        field.update(cx, |f, cx| {
+            f.insert("123", cx);
+            f.set_invalid(true, cx);
+            f.clear(cx);
+            assert!(!f.is_invalid());
+        });
     }
 
     /// The sixth digit says the code is complete once it rests (the prototype's 350 ms), and only for that value.

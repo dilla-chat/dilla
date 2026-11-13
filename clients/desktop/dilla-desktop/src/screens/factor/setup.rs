@@ -212,6 +212,16 @@ impl FactorSetupView {
         self.code_error
     }
 
+    /// Whether the code boxes are drawn as refused (red).
+    pub fn code_invalid(&self, cx: &gpui::App) -> bool {
+        self.code.read(cx).is_invalid()
+    }
+
+    /// The app step's Back: the choice again.
+    pub fn press_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_choice(window, cx);
+    }
+
     /// Whether the code field has the keyboard.
     pub fn code_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         gpui::Focusable::focus_handle(self.code.read(cx), cx).is_focused(window)

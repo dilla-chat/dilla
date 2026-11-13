@@ -838,6 +838,26 @@ fn signup_factor_code_backup_code_wrong_code_settings(cx: &mut gpui::TestAppCont
         vcx.update(|window, cx| setup.read(cx).code_focused(window, cx)),
         "the code field has the keyboard"
     );
+    assert!(
+        setup.read_with(vcx, |s, cx| s.code_invalid(cx)),
+        "the refused boxes are red"
+    );
+    // Back to the choice and the app again: a new secret, and the boxes start plain, not in the old red.
+    setup.update_in(vcx, |s, window, cx| s.press_back(window, cx));
+    pump(vcx);
+    assert_eq!(setup.read_with(vcx, |s, _| s.step_name()), "Choose");
+    setup.update_in(vcx, |s, window, cx| s.press_primary(window, cx));
+    let mut again = None;
+    pump_until(vcx, "the app step's new secret", |vcx| {
+        again = setup.read_with(vcx, |s, _| s.shown_secret());
+        again.is_some()
+    });
+    assert!(
+        !setup.read_with(vcx, |s, cx| s.code_invalid(cx)),
+        "the app step again: plain boxes"
+    );
+    let secret = again.unwrap();
+    let right = world::totp_code(&secret, world::clock_now(&host) / 30);
     // The right code adds the app; the done step (step 6) shows the backup codes: collapsed under their count until
     // Show, then ten, and Open dilla waits for their tick.
     type_digits(vcx, &right);
