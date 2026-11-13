@@ -388,7 +388,8 @@ impl RenderOnce for Dialog {
                 .flex_1()
                 .min_w_0()
                 .child(
-                    line(
+                    // `.d-dialog__title` is an h2 that wraps in the heading column.
+                    crate::text::flow_paragraph(
                         self.title.clone(),
                         title_size,
                         line_height(title_size, 1.5),

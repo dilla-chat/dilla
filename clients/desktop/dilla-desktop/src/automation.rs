@@ -542,12 +542,16 @@ impl Session {
     fn key(&mut self, chord: &str) -> Result<(), String> {
         let keystroke = parse_chord(chord)?;
         let window = self.window();
+        let up = keystroke.clone();
         self.cx
             .update_window(window, |_, window, cx| {
                 window.dispatch_keystroke(keystroke, cx);
             })
             .map_err(|e| e.to_string())?;
         self.frame();
+        // A press is a key down and its key up (as Playwright's `press`): GPUI clicks a focused element on the key up of
+        // Enter or Space, so a menu item chosen from the keyboard needs both.
+        self.event(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: up }));
         Ok(())
     }
 

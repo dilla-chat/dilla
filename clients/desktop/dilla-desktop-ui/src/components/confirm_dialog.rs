@@ -246,6 +246,10 @@ impl RenderOnce for ConfirmDialog {
                 );
             }
             dialog = dialog.body(body);
+        } else {
+            // ConfirmDialog.tsx always hands the dialog its (hidden) `.d-confirm-dialog`, so the body's 12px top padding is
+            // there with no fields too.
+            dialog = dialog.body(div());
         }
         dialog
     }

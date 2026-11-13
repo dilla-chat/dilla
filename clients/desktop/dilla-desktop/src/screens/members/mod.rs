@@ -589,8 +589,8 @@ fn card_overlay(
     // window's edges.
     let viewport = window.viewport_size();
     let mut x = at.x + space::POINTER_GAP;
-    if x + space::CARD_W > viewport.width - space::CARD_EDGE {
-        x = at.x - space::CARD_W - space::POINTER_GAP;
+    if x + space::CARD_OUTER_W > viewport.width - space::CARD_EDGE {
+        x = at.x - space::CARD_OUTER_W - space::POINTER_GAP;
     }
     let x = x.max(space::CARD_EDGE);
     let y = (at.y - space::POINTER_RISE).max(space::CARD_EDGE);
@@ -666,16 +666,28 @@ fn menu_overlay(
         .border_b_1()
         .border_color(color::HAIRLINE)
         .child(Avatar::new("person-menu-avatar", card.name.clone()).size(AvatarSize::Member))
-        .child(
-            line(
-                card.name.clone(),
-                text::SM,
-                line_height(text::SM, 1.3),
-                color::FG,
-            )
-            .weight(font::WEIGHT_DISPLAY)
-            .ellipsis(),
-        );
+        // `.d-person-menu__who`: the name (12.5px 700) over where they are (`@username`, 10.5px `--fg-3`), at 1.3.
+        .child({
+            let mut who = div().flex().flex_col().min_w_0().child(
+                line(
+                    card.name.clone(),
+                    text::SM,
+                    line_height(text::SM, 1.3),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .ellipsis(),
+            );
+            if !card.username.is_empty() {
+                who = who.child(line(
+                    format!("@{}", card.username),
+                    text::META,
+                    line_height(text::META, 1.3),
+                    color::FG_3,
+                ));
+            }
+            who
+        });
     Some(
         ActionMenu::new(
             "person-menu",

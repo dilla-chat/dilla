@@ -232,12 +232,12 @@ macro_rules! parity {
 parity! {
     parity_members_pane => "members/pane";
     parity_members_pane_b => "members/pane-b";
-    parity_members_profile_card => "members/profile-card", "parity after T6c: chrome 0.2121 % (the card's edge and avatar, 1 css px: re-measured at the T6c merge)";
-    parity_members_profile_card_b => "members/profile-card-b", "needs its reference (shoot.mjs)";
-    parity_members_context_menu => "members/context-menu", "cannot be shot: shoot.mjs has no shift-f10 (Playwright wants F10) and the chord grammar no contextmenu key (Task 5)";
-    parity_members_context_menu_b => "members/context-menu-b", "cannot be shot: shoot.mjs has no shift-f10 (Playwright wants F10) and the chord grammar no contextmenu key (Task 5)";
-    parity_members_moderation_dialog => "members/moderation-dialog", "cannot be shot: the web opens kick only from the person menu (MemberCardHost CARD has no moderation), which no step can open: shoot.mjs has no shift-f10 and the chord grammar no contextmenu key (Task 5)";
-    parity_members_moderation_dialog_b => "members/moderation-dialog-b", "cannot be shot: the web opens kick only from the person menu (MemberCardHost CARD has no moderation), which no step can open: shoot.mjs has no shift-f10 and the chord grammar no contextmenu key (Task 5)";
+    parity_members_profile_card => "members/profile-card";
+    parity_members_profile_card_b => "members/profile-card-b";
+    parity_members_context_menu => "members/context-menu";
+    parity_members_context_menu_b => "members/context-menu-b";
+    parity_members_moderation_dialog => "members/moderation-dialog";
+    parity_members_moderation_dialog_b => "members/moderation-dialog-b";
     parity_server_settings_members => "server-settings/members", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
     parity_server_settings_members_b => "server-settings/members-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
     parity_server_settings_roles => "server-settings/roles", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
