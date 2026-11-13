@@ -222,7 +222,6 @@ fn forget_after_the_shell_closes_and_wipes_the_store(cx: &mut gpui::TestAppConte
     let client = Rc::new(client);
     let weak = Rc::downgrade(&client);
     cx.update(dilla_desktop::install);
-    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
     let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
     launch.shipping = false;
     launch.resume = false;
@@ -322,7 +321,6 @@ fn signing_out_this_device_wipes_its_store_after_the_shell(cx: &mut gpui::TestAp
     let client = Rc::new(client);
     let weak = Rc::downgrade(&client);
     cx.update(dilla_desktop::install);
-    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
     let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
     launch.shipping = false;
     launch.resume = false;
@@ -443,7 +441,6 @@ fn a_pending_wipe_survives_its_window_and_refuses_the_reopened_start(
     // The leftover holder: a handle no release reaches.
     let leftover = client.clone();
     cx.update(dilla_desktop::install);
-    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
     let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
     launch.shipping = false;
     launch.instance = Some(cfg.id);

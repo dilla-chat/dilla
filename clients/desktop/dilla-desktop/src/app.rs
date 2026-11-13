@@ -719,7 +719,6 @@ impl AppView {
         }
         // Task 26: the factor area knows this window's client and its instance (the system-browser ceremony, step-up,
         // Forget this device).
-        crate::screens::factor::register_instance(&client, cfg, cx);
         crate::screens::factor::register_window_client(&client, window, cx);
         if client.state().borrow().account.phase == dilla_client::state::AccountPhase::FactorSetup {
             return self.show_factor(client, window, cx);
@@ -756,10 +755,7 @@ impl AppView {
     fn show_factor(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         use crate::screens::factor::forced::{ForcedEvent, ForcedFactorView};
         use crate::screens::factor::setup::Origin;
-        let Some(cfg) = crate::screens::factor::instance_of(&client, cx) else {
-            let copy = crate::strings::tf("factor.error.other", &[("code", "E_INSTANCE")]);
-            return self.show_sign_in(Some(copy), window, cx);
-        };
+        let cfg = crate::screens::factor::instance_of(&client);
         // A new account's factor is the sign-up's step 4 (Task 25: its step line, dots and codes); any other owed factor
         // is the forced screen.
         let origin = if self.after_signup {
@@ -945,7 +941,6 @@ impl AppView {
                     // The Forget did not go through: nothing was wiped, and the client stays this window's.
                     wipe_end(cx);
                     let _ = this.update_in(cx, |this, window, cx| {
-                        crate::screens::factor::register_instance(&shared, cfg, cx);
                         crate::screens::factor::register_window_client(&shared, window, cx);
                         if let Some(id) = this.instance {
                             crate::windows::keep_client(cx, id, shared.clone());
@@ -971,9 +966,7 @@ impl AppView {
         else {
             return;
         };
-        let Some(cfg) = crate::screens::factor::instance_of(&client, cx) else {
-            return;
-        };
+        let cfg = crate::screens::factor::instance_of(&client);
         self.show_factor(client.clone(), window, cx);
         self.forget(client, cfg, window, cx);
     }
@@ -1056,9 +1049,7 @@ impl AppView {
 
     /// Task 16's Devices "Sign out" landed (`profile.signed_out`): the store goes through the one release path.
     fn signed_out(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(cfg) = crate::screens::factor::instance_of(&client, cx) else {
-            return self.show_sign_in(None, window, cx);
-        };
+        let cfg = crate::screens::factor::instance_of(&client);
         self.wipe(client, cfg, Wipe::SignedOut, window, cx);
     }
 

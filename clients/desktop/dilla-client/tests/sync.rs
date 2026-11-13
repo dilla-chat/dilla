@@ -207,6 +207,19 @@ async fn start_offline_from_an_async_task_is_an_error() {
     );
 }
 
+/// Task 28 item 23: a running client answers the instance it serves (the desktop's step-up and factor screens read it
+/// from the client, not from a registry keyed by the client's address).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_client_answers_its_instance() {
+    let (_host, pa, _pb, _c) = two_people("instance").await;
+    let a = Client::start(pa.cfg.clone(), pa.kc.clone()).expect("a starts");
+    let cfg = a.instance();
+    assert_eq!(cfg.id, pa.cfg.id);
+    assert_eq!(cfg.server, pa.cfg.server);
+    assert_eq!(cfg.data_dir, pa.cfg.data_dir);
+}
+
 /// Fix round 1: the instance's session sweep closes a live connection 4004 (not resumable) whose session no longer
 /// resolves: deleted, pruned or past its hard expiry (protocol/02 § Device sessions item 6, internal/gateway/heartbeat.go
 /// `sweepSessions`). As controller.ts `onRevokedSocket` does, the client establishes a new session from the device key

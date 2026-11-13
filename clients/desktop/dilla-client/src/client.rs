@@ -234,6 +234,8 @@ impl Drop for RuntimeGuard {
 pub struct Client {
     runtime: Option<tokio::runtime::Runtime>,
     inner: Arc<Inner>,
+    /// The instance this client serves (its id, address and data directory).
+    instance: InstanceConfig,
 }
 
 impl Client {
@@ -469,7 +471,14 @@ impl Client {
         Ok(Client {
             runtime: runtime.0.take(),
             inner,
+            instance: cfg,
         })
+    }
+
+    /// The instance this client serves, as it was started (Task 28 item 23: the desktop's step-up and factor screens
+    /// read the address here).
+    pub fn instance(&self) -> &InstanceConfig {
+        &self.instance
     }
 
     /// The observable state: a new snapshot is published on every change.
