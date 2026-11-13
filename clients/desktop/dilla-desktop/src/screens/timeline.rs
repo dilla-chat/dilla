@@ -918,7 +918,9 @@ pub fn render(
     // last row. A log shorter than its viewport keeps to the viewport's bottom (`margin-top: auto`).
     let viewport = f32::from(scroll.bounds().size.height);
     let height = content.round();
-    let lift = (viewport - height).max(0.0).round();
+    // `margin-top: auto` puts a shorter log's content at the viewport's bottom in layout units: its rows end on the
+    // bottom padding exactly, not on the rounded scroll height.
+    let lift = (viewport - content).max(0.0);
     let mut placer = Placer { out: Vec::new() };
     let mut y = lift + LOG_TOP;
     y += placer.welcome(y, title, body_lines);

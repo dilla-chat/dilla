@@ -77,7 +77,9 @@ pub fn toolbar(
         .bg(color::SURFACE_2)
         .border_1()
         .border_color(color::LINE_STRONG)
-        .rounded(radius::MD);
+        .rounded(radius::MD)
+        // MessageToolbar.css: `box-shadow: var(--shadow-1)`.
+        .shadow(dilla_desktop_ui::metrics::shadow_1());
     for a in &direct {
         let run = a.run.clone();
         let ctx = ctx.clone();

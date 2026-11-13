@@ -14,11 +14,11 @@ use dilla_client::{Client, ClientError};
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::Button;
 use dilla_desktop_ui::components::segmented::Segmented;
-use dilla_desktop_ui::components::settings::frame::section_header_full;
+use dilla_desktop_ui::components::settings::frame::{SECTION_GAP, section_header_full};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, SettingsRow};
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, div,
+    SharedString, Styled, Window, div, px,
 };
 
 use super::bot_page::error_line;
@@ -203,6 +203,7 @@ impl Render for MusicPage {
         let mut rows: Vec<Box<dyn FnOnce(GroupPosition) -> AnyElement>> = Vec::new();
         rows.push(Box::new(|position| {
             SettingsRow::new("music-dj", t("serverSettings.music.dj"))
+                .full_measure()
                 .icon(IconName::Disc3)
                 .hint(t("serverSettings.music.djNone"))
                 .position(position)
@@ -218,6 +219,7 @@ impl Render for MusicPage {
             rows.push(Box::new(move |position| {
                 let mut row =
                     SettingsRow::new("music-provider-youtube", t("serverSettings.music.youtube"))
+                        .full_measure()
                         .icon(IconName::Youtube)
                         .hint(t(hint))
                         .position(position);
@@ -238,6 +240,7 @@ impl Render for MusicPage {
         if let Some(starts) = starts {
             rows.push(Box::new(move |position| {
                 let mut row = SettingsRow::new("music-start-timings", t("bot.music.timings"))
+                    .full_measure()
                     .icon(IconName::Timer)
                     .layout(Layout::Stacked)
                     .position(position);
@@ -274,6 +277,7 @@ impl Render for MusicPage {
                     .map(|(v, l)| (v.as_str(), l.as_str()))
                     .collect();
                 SettingsRow::new("music-volume", t("serverSettings.music.volume"))
+                    .full_measure()
                     .icon(IconName::Volume2)
                     .hint(t("serverSettings.music.volumeHint"))
                     .position(position)
@@ -310,6 +314,7 @@ impl Render for MusicPage {
                     .map(|(v, l)| (v.as_str(), l.as_str()))
                     .collect();
                 SettingsRow::new("music-idle", t("serverSettings.music.idle"))
+                    .full_measure()
                     .icon(IconName::Timer)
                     .hint(tf("serverSettings.music.idleHint", &[("bot", &bot_name)]))
                     .position(position)
@@ -337,7 +342,8 @@ impl Render for MusicPage {
             Some(&tf("serverSettings.music.body", &[("bot", &bot)])),
         ));
         if installation.as_ref().is_none_or(|i| i.state != 3) {
-            page = page.child(div().flex().pb_3().child(crate::tracked_box(
+            // `.dw-settings-section` steps its blocks `--group-gap` apart.
+            page = page.child(div().flex().pb(px(SECTION_GAP)).child(crate::tracked_box(
                 "music-open-bot",
                 Button::new("music-open-bot-b", t("workspace.botSetup")).on_click(
                     |_: &ClickEvent, window, cx| {

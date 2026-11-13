@@ -46,7 +46,29 @@ pub struct TextField {
     error: Option<SharedString>,
     disabled: bool,
     rows: usize,
+    frame: Option<Frame>,
+    overlay: Option<gpui::AnyElement>,
 }
+
+/// A host's own size for the input's frame (a form that restyles `.d-text-field__input`, as `.dw-profile-form` does).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    /// The frame's height, its 1px edge included.
+    pub height: f32,
+    /// The padding over and under a multi-line field's text.
+    pub pad_y: f32,
+    /// A multi-line field's line height (the `<textarea>`'s `line-height`).
+    pub line: f32,
+}
+
+/// gpui-component's textarea pads its text by 10px at the sides and 8px over and under it, and wraps 10px short of its
+/// text box (`input/base/element.rs` `RIGHT_MARGIN`): a field that sets the text box itself shifts the textarea back by
+/// its padding and widens it by the padding and the margin, so its text sits and wraps where the CSS field's does.
+const TEXTAREA_PAD_X: f32 = 10.0;
+const TEXTAREA_PAD_Y: f32 = 8.0;
+const TEXTAREA_RIGHT_MARGIN: f32 = 10.0;
+/// `.d-text-field__input`'s side padding (`0 0.75rem`).
+const FIELD_PAD_X: f32 = 12.0;
 
 impl TextField {
     pub fn new(
@@ -81,7 +103,21 @@ impl TextField {
             error: None,
             disabled: false,
             rows: 3,
+            frame: None,
+            overlay: None,
         }
+    }
+
+    /// The host's own frame size (see [`Frame`]).
+    pub fn frame(mut self, frame: Frame) -> Self {
+        self.frame = Some(frame);
+        self
+    }
+
+    /// An element laid over a framed multi-line field's text box (the automation build's typed-text probe).
+    pub fn text_overlay(mut self, overlay: impl IntoElement) -> Self {
+        self.overlay = Some(overlay.into_any_element());
+        self
     }
 
     /// The measure the hint and note wrap at (the field's width, when the host knows it: a dialog's body); without one
@@ -125,16 +161,18 @@ impl RenderOnce for TextField {
             Control::Single(input) => input.focus_handle(cx).contains_focused(window, cx),
             Control::Multi(input) => input.focus_handle(cx).contains_focused(window, cx),
         };
-        let (frame_h, frame_pad_y) = match self.control {
-            Control::Single(_) => (Some(px(36.0)), 0.0),
-            Control::Multi(_) => (None, 8.0),
+        let (frame_h, frame_pad_y) = match (&self.control, self.frame) {
+            (Control::Single(_), Some(f)) => (Some(px(f.height)), 0.0),
+            (Control::Multi(_), Some(f)) => (Some(px(f.height)), f.pad_y),
+            (Control::Single(_), None) => (Some(px(36.0)), 0.0),
+            (Control::Multi(_), None) => (None, 8.0),
         };
         let mut frame = div()
             .id((self.id.clone(), "frame"))
             .flex()
             .items_center()
             .w_full()
-            .px(px(12.0))
+            .px(px(FIELD_PAD_X))
             .py(px(frame_pad_y))
             .bg(color::SURFACE_2)
             .rounded(radius::SEG)
@@ -155,9 +193,48 @@ impl RenderOnce for TextField {
                     .px_0()
                     .py_0(),
             ),
-            Control::Multi(input) => frame
-                .min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
-                .child(Textarea::new(input).appearance(false)),
+            Control::Multi(input) => match self.frame {
+                None => frame
+                    .min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
+                    .child(Textarea::new(input).appearance(false)),
+                // A fixed frame holds its text from the top, as a `<textarea>` does: the text box is the frame's content
+                // box, and the textarea is shifted back by its own padding so its lines start at the box's corner.
+                Some(f) => frame.items_start().child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .h_full()
+                        .children(self.overlay)
+                        // The `<textarea>` clips its text at its padding box: a line that does not fit shows through
+                        // the bottom padding, up to the edge.
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(-FIELD_PAD_X))
+                                .right(px(-FIELD_PAD_X))
+                                .top(px(-f.pad_y))
+                                .bottom(px(-f.pad_y))
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(px(FIELD_PAD_X - TEXTAREA_PAD_X))
+                                        .right(px(FIELD_PAD_X
+                                            - TEXTAREA_PAD_X
+                                            - TEXTAREA_RIGHT_MARGIN))
+                                        .top(px(f.pad_y - TEXTAREA_PAD_Y))
+                                        .bottom(px(-f.line))
+                                        .child(
+                                            Textarea::new(input)
+                                                .appearance(false)
+                                                .text_size(text::INPUT)
+                                                .line_height(px(f.line))
+                                                .size_full(),
+                                        ),
+                                ),
+                        ),
+                ),
+            },
         };
         if self.disabled {
             frame = frame.opacity(OPACITY_MUTED).cursor_not_allowed();

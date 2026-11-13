@@ -413,6 +413,9 @@ fn list_with_overlays(
                 ui(w, cx).open = false;
                 cx.refresh_windows();
             });
+    } else {
+        // Without its head the list is Server settings -> Members, inside a settings section.
+        list = list.in_settings_section();
     }
     let mut root = div().flex().flex_col().size_full().child(list);
     if let Some(card) = card_overlay(ctx, community, window, cx) {
@@ -589,8 +592,8 @@ fn card_overlay(
     // window's edges.
     let viewport = window.viewport_size();
     let mut x = at.x + space::POINTER_GAP;
-    if x + space::CARD_W > viewport.width - space::CARD_EDGE {
-        x = at.x - space::CARD_W - space::POINTER_GAP;
+    if x + space::CARD_OUTER_W > viewport.width - space::CARD_EDGE {
+        x = at.x - space::CARD_OUTER_W - space::POINTER_GAP;
     }
     let x = x.max(space::CARD_EDGE);
     let y = (at.y - space::POINTER_RISE).max(space::CARD_EDGE);
@@ -666,16 +669,28 @@ fn menu_overlay(
         .border_b_1()
         .border_color(color::HAIRLINE)
         .child(Avatar::new("person-menu-avatar", card.name.clone()).size(AvatarSize::Member))
-        .child(
-            line(
-                card.name.clone(),
-                text::SM,
-                line_height(text::SM, 1.3),
-                color::FG,
-            )
-            .weight(font::WEIGHT_DISPLAY)
-            .ellipsis(),
-        );
+        // `.d-person-menu__who`: the name (12.5px 700) over where they are (`@username`, 10.5px `--fg-3`), at 1.3.
+        .child({
+            let mut who = div().flex().flex_col().min_w_0().child(
+                line(
+                    card.name.clone(),
+                    text::SM,
+                    line_height(text::SM, 1.3),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .ellipsis(),
+            );
+            if !card.username.is_empty() {
+                who = who.child(line(
+                    format!("@{}", card.username),
+                    text::META,
+                    line_height(text::META, 1.3),
+                    color::FG_3,
+                ));
+            }
+            who
+        });
     Some(
         ActionMenu::new(
             "person-menu",
@@ -1713,7 +1728,13 @@ pub fn settings_section(
             .id("settings-members")
             .flex()
             .flex_col()
-            .child(section_head(t("members.toggle"), None))
+            // MembersSection.tsx: the section's h2 (20px at 1.5) with the 22px the frame keeps under it.
+            .child(
+                dilla_desktop_ui::components::settings::frame::section_header(
+                    t("members.toggle"),
+                    None,
+                ),
+            )
             .child(list_with_overlays(ctx, community, false, window, cx))
             .into_any_element(),
         SectionId::Server(ServerSection::Roles) => roles_section(w, ctx, community, cx),

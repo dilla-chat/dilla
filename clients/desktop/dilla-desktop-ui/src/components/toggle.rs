@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::metrics::{OPACITY_MUTED, focus_ring, shadow_knob};
-use crate::text::{line, line_height};
+use crate::text::{flow_paragraph, line_height};
 use crate::tokens::{color, radius, text};
 
 pub(crate) type ChangeHandler = Box<dyn Fn(bool, &mut Window, &mut App) + 'static>;
@@ -149,9 +149,11 @@ impl RenderOnce for Toggle {
                 }
             });
         }
+        // The label and the hint are flex items of text (`.d-toggle` is inline-flex): when the row is too narrow they shrink,
+        // down to their longest word, and wrap, as the web's do (a private-channel switch in the channel editor).
         let mut root = div().flex().items_center().gap(px(8.0)).min_w_0();
         if self.show_label {
-            root = root.child(line(
+            root = root.child(flow_paragraph(
                 self.label,
                 text::SM,
                 line_height(text::SM, 1.5),
@@ -160,7 +162,7 @@ impl RenderOnce for Toggle {
         }
         root = root.child(switch);
         if let Some(hint) = self.hint {
-            root = root.child(line(
+            root = root.child(flow_paragraph(
                 hint,
                 text::SM,
                 line_height(text::SM, 1.5),

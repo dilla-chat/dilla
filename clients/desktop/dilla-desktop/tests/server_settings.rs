@@ -36,17 +36,6 @@ macro_rules! parity_tests {
     )*};
 }
 
-/// Ruling R22: a parity test that still fails waits for the shared-component pass (T6c) and its parity sweep.
-macro_rules! parity_after_t6c {
-    ($($test:ident => $state:literal, $why:literal),* $(,)?) => {$(
-        #[test]
-        #[ignore = $why]
-        fn $test() {
-            parity($state);
-        }
-    )*};
-}
-
 parity_tests! {
     parity_server_settings_welcome => "welcome",
     parity_server_settings_overview => "overview",
@@ -59,11 +48,8 @@ parity_tests! {
     parity_server_settings_gifs_b => "gifs-b",
     parity_server_settings_channels => "channels",
     parity_server_settings_channels_b => "channels-b",
-}
-
-parity_after_t6c! {
-    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 0.8335 % (the dialog's place, fields and Bot channel switch match; the permissions panel differs: its heading's size, the private-channel switch row whose label and hint wrap beside the switch in the web, and the web's dialog scrolls as one 684px box with its footer below the fold)",
-    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 0.9293 % (as channel-permissions)",
+    parity_server_settings_channel_permissions => "channel-permissions",
+    parity_server_settings_channel_permissions_b => "channel-permissions-b",
 }
 
 parity_tests! {

@@ -22,7 +22,7 @@ use gpui::{
 
 use super::button::{Button, ButtonSize, ButtonVariant};
 use crate::metrics::shadow_3;
-use crate::text::{line, line_height};
+use crate::text::line_height;
 use crate::tokens::{color, font, radius, text};
 
 actions!(
@@ -388,7 +388,8 @@ impl RenderOnce for Dialog {
                 .flex_1()
                 .min_w_0()
                 .child(
-                    line(
+                    // `.d-dialog__title` is an h2 that wraps in the heading column.
+                    crate::text::flow_paragraph(
                         self.title.clone(),
                         title_size,
                         line_height(title_size, 1.5),

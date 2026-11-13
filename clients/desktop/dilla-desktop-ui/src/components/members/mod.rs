@@ -126,6 +126,7 @@ pub struct MemberList {
     on_menu: Option<OnMenu>,
     on_close: Option<OnClose>,
     probe: Option<Probe>,
+    in_section: bool,
 }
 
 impl MemberList {
@@ -144,7 +145,15 @@ impl MemberList {
             on_menu: None,
             on_close: None,
             probe: None,
+            in_section: false,
         }
+    }
+
+    /// The list drawn in a settings section (Server settings -> Members): `.dw-settings-section h3 { margin: 0 }` takes the
+    /// group headings' 10px/4px margins away.
+    pub fn in_settings_section(mut self) -> Self {
+        self.in_section = true;
+        self
     }
 
     /// The 44px head, with its close × when `close_label` is given.
@@ -265,7 +274,17 @@ fn row(
     let id: SharedString = format!("member-{}", m.name).into();
     let (open_id, menu_id, key_id) = (m.id.clone(), m.id.clone(), m.id.clone());
     let on_open_key = on_open.clone();
+    // The row's painted bounds, for a menu the keyboard opens under it.
+    let laid_out: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>> = Rc::default();
+    let record = laid_out.clone();
     div()
+        .child(
+            gpui::canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+        )
         .id(id.clone())
         .h(layout::ROW_H_2)
         .px(px(8.))
@@ -328,8 +347,13 @@ fn row(
                 window.focus(&focus.handles[next], cx);
                 cx.stop_propagation();
             } else if opens_context_menu(key) {
+                // From the keyboard the person menu opens under the row, at its left edge (MemberCardHost.tsx anchors it
+                // to the row; the menu keeps itself inside the window).
                 if let Some(f) = &on_menu {
-                    f(&menu_id, window.mouse_position(), window, cx);
+                    let at = laid_out
+                        .get()
+                        .map_or_else(|| window.mouse_position(), |b| b.bottom_left());
+                    f(&menu_id, at, window, cx);
                 }
                 cx.stop_propagation();
             } else if key.key == "enter" && !key.modifiers.modified() {
@@ -449,8 +473,8 @@ impl RenderOnce for MemberList {
                     None
                 };
                 let mut heading = div()
-                    .mt(px(10.))
-                    .mb(px(4.))
+                    .mt(px(if self.in_section { 0. } else { 10. }))
+                    .mb(px(if self.in_section { 0. } else { 4. }))
                     .px(px(8.))
                     .flex()
                     .items_center()
@@ -634,10 +658,16 @@ impl ProfileCard {
 impl RenderOnce for ProfileCard {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let hue = f32::from(self.hue) / 360.;
+        // `hsl(var(--avatar-hue) var(--avatar-s, 45%) ...)`: the saturation of the person's avatar palette entry (the
+        // name's), 45% for a hue that is not the name's.
+        let saturation = match super::avatar::colour_of(&self.name) {
+            (h, s, _) if h == self.hue => f32::from(s) / 100.,
+            _ => 0.45,
+        };
         let band = div().h(px(56.)).bg(gpui::linear_gradient(
             135.,
-            gpui::linear_color_stop(gpui::hsla(hue, 0.45, 0.30, 1.), 0.),
-            gpui::linear_color_stop(gpui::hsla(hue, 0.45, 0.16, 1.), 1.),
+            gpui::linear_color_stop(gpui::hsla(hue, saturation, 0.30, 1.), 0.),
+            gpui::linear_color_stop(gpui::hsla(hue, saturation, 0.16, 1.), 1.),
         ));
         let mut title = div()
             .mt(px(10.))
@@ -792,7 +822,7 @@ impl RenderOnce for ProfileCard {
         }
         div()
             .id(self.id)
-            .w(px(300.))
+            .w(space::CARD_OUTER_W)
             .overflow_hidden()
             .bg(color::SURFACE_2)
             .border_1()
@@ -839,6 +869,9 @@ pub mod space {
     pub const PERSON_MENU_W: Pixels = px(236.);
     /// The profile card's width (ProfileCard.css).
     pub const CARD_W: Pixels = px(300.);
+    /// Its laid-out width: `box-sizing: content-box`, so the 300px content plus its 1px edges (`offsetWidth`, which
+    /// ProfileCard.tsx places by).
+    pub const CARD_OUTER_W: Pixels = px(302.);
     /// The card's distance from the window's edges and from the aside (`calc(100vw - 16px)`).
     pub const CARD_EDGE: Pixels = px(8.);
     /// ProfileCard.tsx: the card sits 14px beside the pointer and 24px above it.

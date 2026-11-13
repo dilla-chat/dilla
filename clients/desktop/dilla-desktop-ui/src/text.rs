@@ -514,9 +514,190 @@ pub fn paragraph(text: &str, size: Pixels, line_height: f32, color: Hsla, width:
         .collect()
 }
 
+/// A mono paragraph that wraps at the width its parent lays it out at, as a CSS block of text with no `max-width` does
+/// (a settings row's hint in a `data-measure="full"` section): [`paragraph`] needs the width before layout, this one asks
+/// the layout for it. Each line sits at its own fractional top (`k * line_height`), as [`Line::exact`] places it.
+pub struct FlowParagraph {
+    text: SharedString,
+    size: Pixels,
+    line_height: f32,
+    color: Hsla,
+    weight: FontWeight,
+}
+
+/// [`FlowParagraph`] of `text`.
+pub fn flow_paragraph(
+    text: impl Into<SharedString>,
+    size: Pixels,
+    line_height: f32,
+    color: Hsla,
+) -> FlowParagraph {
+    FlowParagraph {
+        text: text.into(),
+        size,
+        line_height,
+        color,
+        weight: font::WEIGHT_BODY,
+    }
+}
+
+impl FlowParagraph {
+    pub fn weight(mut self, weight: FontWeight) -> Self {
+        self.weight = weight;
+        self
+    }
+}
+
+/// The lines [`FlowParagraph`] breaks `text` into at `width` (`None`: the max-content width, one line per hard line).
+fn flow_lines(text: &str, size: Pixels, width: Option<f32>) -> Vec<String> {
+    match width {
+        Some(w) => wrap_mono(text, columns(size, w)),
+        None => text.split('\n').map(str::to_owned).collect(),
+    }
+}
+
+/// A mono width of `chars` characters on Chromium's layout unit (as [`Line`]'s natural width).
+fn mono_width(chars: usize, size: Pixels) -> f32 {
+    let w = chars as f32 * f32::from(size) * MONO_ADVANCE;
+    (w * 64.0 - 1e-3).ceil() / 64.0
+}
+
+/// The min-content (longest word) and max-content (longest hard line) widths of mono `text`.
+fn flow_extent(text: &str, size: Pixels) -> (f32, f32) {
+    let word = text
+        .split([' ', '\n'])
+        .map(|w| w.chars().count())
+        .max()
+        .unwrap_or(0);
+    let line = text
+        .split('\n')
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    (mono_width(word, size), mono_width(line, size))
+}
+
+impl IntoElement for FlowParagraph {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl gpui::Element for FlowParagraph {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<AnyElement>;
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        _cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        let (text, size, lh) = (self.text.clone(), self.size, self.line_height);
+        let layout_id = window.request_measured_layout(
+            gpui::Style::default(),
+            move |known, available, _window, _cx| {
+                // CSS sizing of a block of text: its min-content width is its longest word, its max-content width its
+                // longest hard line, and in a definite space it fits: min(max-content, max(min-content, available)).
+                let (min, max) = flow_extent(&text, size);
+                let width = known.width.map(f32::from).unwrap_or(match available.width {
+                    gpui::AvailableSpace::Definite(w) => max.min(min.max(f32::from(w))),
+                    gpui::AvailableSpace::MinContent => min,
+                    gpui::AvailableSpace::MaxContent => max,
+                });
+                let lines = flow_lines(&text, size, Some(width));
+                gpui::Size {
+                    width: px(width),
+                    height: px(lines.len() as f32 * lh),
+                }
+            },
+        );
+        (layout_id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> Self::PrepaintState {
+        let lh = self.line_height;
+        let lines = flow_lines(&self.text, self.size, Some(f32::from(bounds.size.width)));
+        let mut block = div()
+            .relative()
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .children(lines.into_iter().enumerate().map(|(k, l)| {
+                line(l, self.size, lh, self.color)
+                    .weight(self.weight)
+                    .exact(0.0, k as f32 * lh)
+            }))
+            .into_any_element();
+        block.prepaint_as_root(
+            bounds.origin,
+            bounds.size.map(gpui::AvailableSpace::Definite),
+            window,
+            cx,
+        );
+        Some(block)
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        if let Some(block) = prepaint {
+            block.paint(window, cx);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A flow paragraph breaks where a fixed-width one would at the same width, and lays out on one line per hard line when
+    /// it is not constrained.
+    #[test]
+    fn a_flow_paragraph_breaks_at_its_laid_out_width() {
+        let text = "Connect the music provider so the Bot can play from it in voice channels";
+        let at = |w: f32| flow_lines(text, px(11.0), Some(w));
+        assert_eq!(at(396.0), wrap_mono(text, columns(px(11.0), 396.0)));
+        assert_eq!(at(800.0).len(), 1);
+        assert!(at(200.0).len() > 2);
+        assert_eq!(flow_lines("a\nb c", px(11.0), None), ["a", "b c"]);
+    }
+
+    /// Shrunk in a flex row, a flow paragraph stops at its longest word (CSS min-content): the channel editor's "private
+    /// channel" label is 52.5px ("private") at 12.5px, its max-content one line of 15 characters.
+    #[test]
+    fn a_flow_paragraph_shrinks_to_its_longest_word() {
+        assert_eq!(flow_extent("private channel", px(12.5)), (52.5, 112.5));
+        assert_eq!(
+            flow_lines("private channel", px(12.5), Some(52.5)),
+            ["private", "channel"]
+        );
+    }
 
     #[test]
     fn baselines_match_the_measured_web_lines() {

@@ -33,8 +33,9 @@ fn colour_of(c: &str) -> Option<u32> {
     (hex.len() == 6).then(|| u32::from_str_radix(hex, 16).ok())?
 }
 
-/// Seeds the facet once the history is posted, with the live clients keyed by person id.
-pub(super) async fn seed(f: &ScreenFixture, people: &[(String, Person)]) {
+/// Seeds the facet before the browser signs in: the web client reads the viewer's access to a server when it signs in and
+/// opens it, and a role granted later does not reach a settings page that is already drawn.
+pub(super) async fn before_sign_in(f: &ScreenFixture, people: &[(String, Person)]) {
     for server in f.world.servers.iter().filter(|s| !s.roles.is_empty()) {
         let person = |id: &str| &people.iter().find(|(p, _)| p == id).expect("validated").1;
         let owner = world::start(person(&server.owner)).await;
@@ -69,6 +70,7 @@ pub(super) async fn seed(f: &ScreenFixture, people: &[(String, Person)]) {
                     .unwrap_or_else(|e| panic!("grant {} to {m}: {e}", r.name));
             }
         }
-        drop(owner);
+        owner.stop();
+        world::clear_session(person(&server.owner));
     }
 }

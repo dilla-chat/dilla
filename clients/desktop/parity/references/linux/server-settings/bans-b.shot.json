@@ -1,0 +1,22 @@
+{
+  "digest": "7ceb82911468a64b82ab107790fae33b4bc922686f337f053099281f93d49bf0",
+  "shift": 105884,
+  "hand_migrated": false,
+  "ids": {
+    "channel:harbour/afk": "60048ea3ce633bd45dccf1d37cce2c47",
+    "channel:harbour/general": "fd2d91cec5dbea22f2026276b2b556c6",
+    "person:ada": "7d4f35e7107968750962ba06eb224c09",
+    "person:astrid": "7c5ce385c7032d70cf9243fdeac99009",
+    "person:bjorn": "f40e81691278baefdf0e7d9d94e11db0",
+    "person:freya": "e23a19c7558727b37c1353a9d5afdb88",
+    "person:gunnar": "2f6f509af37112abd5dad11a65235584",
+    "person:ingrid": "6c50f1c60911fe408cc5f6b41df4925b",
+    "person:leif": "4f7b3976ba9c7ba19b829ad9ddf480d0",
+    "person:mira": "d7ea74e1b49e6d12e57b0bf81f4e48ad",
+    "person:ragnar": "3b407ecb119867b88fe5504668f736bd",
+    "person:sigrid": "bddceb3d42b517b3516e39715d2cd833",
+    "person:tove": "6e79dd7828be90c201c87dbc67c7b4d0",
+    "person:ulf": "acc797155f4fe7a73240e037a03bb8a5",
+    "server:harbour": "b17264d047810640ff97ab55ed1e2acb"
+  }
+}

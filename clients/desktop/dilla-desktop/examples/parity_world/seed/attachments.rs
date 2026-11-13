@@ -1,30 +1,20 @@
 //! Seeds the attachments of a fixture into the real dillad. Owned by Task 12; no other file does.
 //!
-//! A message's attachments are part of its post, so they cannot be added after the history is posted: the posting
-//! loop in `parity_world/main.rs` (not Task 12's file) has to call [`send`] instead of `send_text` for a message with
-//! attachments. Until the controller wires that one line (Task 12's report), the facet stays refused.
-
-#![allow(
-    dead_code,
-    reason = "send is called once main.rs's posting loop is wired (Task 12's report)"
-)]
+//! A message's attachments are part of its post, so they cannot be added after the history is posted: the history loop
+//! of `parity_world/main.rs` posts a message with attachments through [`send`] (by way of `seed::post`) instead of
+//! `send_text`.
 
 use std::time::Duration;
 
-use dilla_client::Client;
 use dilla_client::features::attachments::NewFile;
-use dilla_client::state::ChannelId;
 use dilla_client::state::attachments::TrayPhase;
+use dilla_client::state::{ChannelId, MessageId};
 use dilla_client::testing::host::Person;
 use dilla_client::testing::spec::{AttachmentSpec, MessageSpec, ScreenFixture};
+use dilla_client::{Client, ClientError};
 
-/// Names the facet when the fixture asks for it and this world cannot seed it yet.
-pub(super) fn unseedable(f: &ScreenFixture, out: &mut Vec<String>) {
-    let w = &f.world;
-    if w.messages.iter().any(|m| !m.attachments.is_empty()) {
-        out.push("attachments".to_owned());
-    }
-}
+/// Names what this world cannot seed. Nothing: a message's files go out with its post ([`send`]).
+pub(super) fn unseedable(_f: &ScreenFixture, _out: &mut Vec<String>) {}
 
 /// Nothing to add after the history: attachments go out with their post ([`send`]).
 #[allow(clippy::unused_async)]
@@ -43,8 +33,16 @@ pub(super) fn bytes_of(a: &AttachmentSpec) -> Vec<u8> {
     }
 }
 
-/// Posts `m` with its attachments: each file through the tray (sealed, previewed, uploaded), then the post.
-pub(super) async fn send(client: &Client, channel: ChannelId, m: &MessageSpec) {
+/// Posts `m` with its attachments: each file through the tray (sealed, previewed, uploaded), then the post. `None` for a
+/// message without attachments.
+pub(super) async fn send(
+    client: &Client,
+    channel: ChannelId,
+    m: &MessageSpec,
+) -> Option<Result<MessageId, ClientError>> {
+    if m.attachments.is_empty() {
+        return None;
+    }
     let tray = client.attachments().tray(channel);
     let files = m
         .attachments
@@ -63,10 +61,11 @@ pub(super) async fn send(client: &Client, channel: ChannelId, m: &MessageSpec) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let descriptors = tray.take_all().expect("every file is ready");
-    client
-        .attachments()
-        .send(channel, m.body.clone(), descriptors, None)
-        .await
-        .unwrap()
-        .expect("queued");
+    Some(
+        client
+            .attachments()
+            .send(channel, m.body.clone(), descriptors, None)
+            .await
+            .unwrap_or(Err(ClientError::Stopped)),
+    )
 }

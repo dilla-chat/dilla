@@ -165,6 +165,14 @@ async function visit(page, server, channel) {
   await page.getByPlaceholder(`Message #${channel}`).waitFor();
 }
 
+/** A chord of the fixture grammar as Playwright's key: `ctrl-shift-m` -> `Control+Shift+m`; `secondary` is Control off
+ * macOS; a function key `f1`..`f12` is Playwright's `F1`..`F12`; a bare letter or digit stays as written (lower case:
+ * `shift` is its own modifier). */
+export function playwrightChord(chord) {
+  const names = { ctrl: 'Control', alt: 'Alt', shift: 'Shift', fn: 'Fn', secondary: 'Control', enter: 'Enter', tab: 'Tab', escape: 'Escape', backspace: 'Backspace', delete: 'Delete', space: 'Space', up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', minus: 'Minus', comma: 'Comma', period: 'Period', slash: 'Slash', semicolon: 'Semicolon', quote: 'Quote', backslash: 'Backslash', equals: 'Equal', backtick: 'Backquote', insert: 'Insert' };
+  return chord.split('-').map((p) => names[p] ?? (/^f([1-9]|1[0-2])$/.test(p) ? p.toUpperCase() : p)).join('+');
+}
+
 /** One step of the fixture, on the web side. */
 async function replayStep(page, step) {
   const pick = (sel) => {
@@ -188,11 +196,7 @@ async function replayStep(page, step) {
       return;
     }
     case 'key': {
-      // `ctrl-shift-m` -> Playwright's `Control+Shift+M`; `secondary` is Control off macOS.
-      const names = { ctrl: 'Control', alt: 'Alt', shift: 'Shift', fn: 'Fn', secondary: 'Control', enter: 'Enter', tab: 'Tab', escape: 'Escape', backspace: 'Backspace', delete: 'Delete', space: 'Space', up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', minus: 'Minus', comma: 'Comma', period: 'Period', slash: 'Slash', semicolon: 'Semicolon', quote: 'Quote', backslash: 'Backslash', equals: 'Equal', backtick: 'Backquote', insert: 'Insert' };
-      // A bare letter or digit stays as written (lower case: `shift` is its own modifier).
-      const parts = step.chord.split('-').map((p) => names[p] ?? p);
-      await page.keyboard.press(parts.join('+'));
+      await page.keyboard.press(playwrightChord(step.chord));
       return;
     }
     case 'settle':
@@ -237,24 +241,30 @@ async function shoot(args, fixture, text) {
     page.setDefaultTimeout(WAIT);
     await page.clock.setFixedTime(state.now * 1000);
     await page.goto(`${state.publicUrl}/welcome`);
-    await page.getByRole('button', { name: 'Already have an account? Sign in', exact: true }).click();
-    await page.getByLabel('Username', { exact: true }).fill(state.username);
-    await page.getByLabel('Password', { exact: true }).fill(state.password);
-    await page.getByRole('button', { name: 'Continue', exact: true }).click();
-    await page.getByRole('heading', { name: 'Enter your code' }).waitFor();
-    await page.getByLabel('Code', { exact: true }).fill(await nextCode(state));
-    await page.getByRole('heading', { name: 'Add this browser' }).waitFor();
-    await page.getByLabel('Recovery key', { exact: true }).fill(state.recoveryKey);
-    await page.getByRole('button', { name: 'Add browser', exact: true }).click();
-    await page.getByRole('button', { name: 'Open dilla', exact: true }).click();
-    await page.locator('.d-channel-header').waitFor();
-    for (const v of state.visit) await visit(page, v.server, v.channel);
-    await page.waitForTimeout(3000);
+    // A `signed_out` fixture is a browser with no account on it: no sign-in, the route opened as a fresh load.
+    const signedOut = fixture.phase === 'signed_out';
+    if (!signedOut) {
+      await page.getByRole('button', { name: 'Already have an account? Sign in', exact: true }).click();
+      await page.getByLabel('Username', { exact: true }).fill(state.username);
+      await page.getByLabel('Password', { exact: true }).fill(state.password);
+      await page.getByRole('button', { name: 'Continue', exact: true }).click();
+      await page.getByRole('heading', { name: 'Enter your code' }).waitFor();
+      await page.getByLabel('Code', { exact: true }).fill(await nextCode(state));
+      await page.getByRole('heading', { name: 'Add this browser' }).waitFor();
+      await page.getByLabel('Recovery key', { exact: true }).fill(state.recoveryKey);
+      await page.getByRole('button', { name: 'Add browser', exact: true }).click();
+      await page.getByRole('button', { name: 'Open dilla', exact: true }).click();
+      await page.locator('.d-channel-header').waitFor();
+      for (const v of state.visit) await visit(page, v.server, v.channel);
+      await page.waitForTimeout(3000);
+    }
     world.child.stdin.write('post\n');
     await world.ready;
     // The route: in-app, with the real ids.
     const route = resolveRoute(fixture.route, (kind, local) => state.ids[`${kind}:${local}`]);
-    if (new URL(page.url()).pathname !== route.split('?')[0]) {
+    if (signedOut && new URL(page.url()).pathname !== route.split('?')[0]) {
+      await page.goto(`${state.publicUrl}${route}`);
+    } else if (new URL(page.url()).pathname !== route.split('?')[0]) {
       await page.evaluate((p) => { history.pushState({}, '', p); dispatchEvent(new PopStateEvent('popstate')); }, route);
     }
     // The last message of the route's own channel is on screen before the frame.

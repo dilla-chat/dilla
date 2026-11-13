@@ -18,7 +18,19 @@ mod reactions;
 mod roles;
 mod threads;
 
-pub use threads::post;
+/// Posts `m` when it is more than plain text: with its files (attachments), or as a reply or a thread reply (threads).
+/// `None` for a plain message, which the history loop sends with `send_text`.
+pub async fn post(
+    m: &dilla_client::testing::spec::MessageSpec,
+    client: &Client,
+    channel: dilla_client::state::ChannelId,
+    posted: &std::collections::HashMap<String, dilla_client::state::MessageId>,
+) -> Option<Result<dilla_client::state::MessageId, dilla_client::ClientError>> {
+    if let Some(sent) = attachments::send(client, channel, m).await {
+        return Some(sent);
+    }
+    threads::post(m, client, channel, posted).await
+}
 
 /// What this world cannot seed yet, by facet; empty when it can seed the fixture.
 pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
@@ -38,6 +50,12 @@ pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
     out
 }
 
+/// Seeds what the browser reads when it signs in (profiles, roles and the access they give), once the servers are made.
+pub async fn before_sign_in(f: &ScreenFixture, people: &[(String, Person)]) {
+    members::before_sign_in(f, people).await;
+    roles::before_sign_in(f, people).await;
+}
+
 /// Seeds every facet once the history is posted.
 pub async fn seed(f: &ScreenFixture, people: &[(String, Person)], clients: &[(&str, Client)]) {
     attachments::seed(f, people).await;
@@ -50,6 +68,5 @@ pub async fn seed(f: &ScreenFixture, people: &[(String, Person)], clients: &[(&s
     messages::seed(f, people).await;
     polls::seed(f, people).await;
     reactions::seed(f, people, clients).await;
-    roles::seed(f, people).await;
     threads::seed(f, people).await;
 }

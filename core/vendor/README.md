@@ -203,6 +203,15 @@ px dashes 3 widths on and 2 off (Blink's `StrokeData` ratios for thin strokes) i
 rail's 1px dashed "+" circle has the web's dash count (about 23 at scale 2, upstream drew about 39). Thicker borders keep
 upstream's pattern.
 
+A third change (Task 28 parity lane, 2026-11-13), marked `DILLA PATCH`: in `src/shaders.wgsl`, `gradient_color`'s linear
+gradient follows CSS (`linear-gradient(135deg, ...)`): the angle is a true angle and the gradient line, through the centre,
+is `|w sin a| + |h cos a|` long. Upstream stretched the direction to the box's aspect and measured `t` along the longer
+side, so a 135deg band on a 258 x 52 box ran almost left to right (the profile preview's band: 5-6 levels off at its right
+end; the colour gate failed at 0.63 %). Test: `parity_user_settings_profile` in `clients/desktop/dilla-desktop/tests/
+user_settings.rs` (the band against the web's). Only the wgpu
+renderer (Linux, Windows) carries it; the Metal renderer of macOS keeps upstream's geometry until its tolerances are
+measured.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs
@@ -237,7 +246,8 @@ both to whole device px: a box's fractions (a 42.609375px button whose "3" is 6.
 in Chromium. A fractional scale keeps upstream's device-px lengths.
 
 The edge rule is `util::snap_layout_edge`, re-exported with the two length rules as `gpui::{snap_layout_edge, layout_length, measured_length}` so the client can
-pin them: the tests `box_edges_snap_as_chromium_paints_them` and `lengths_lay_out_on_chromiums_layout_unit` in `clients/desktop/dilla-desktop-ui/src/metrics.rs`.
+pin them. `util::whole_layout_units` (Task 28, re-exported as `gpui::whole_layout_units`) is the shared "a whole unit but
+for f32 noise" rule both length rules use; the client's text painter (`dilla-desktop-ui/src/text.rs`) reads it too. Tests: `box_edges_snap_as_chromium_paints_them` and `lengths_lay_out_on_chromiums_layout_unit` in `clients/desktop/dilla-desktop-ui/src/metrics.rs`.
 
 `Window::laid_out_size` (with `TaffyLayoutEngine::laid_out_size`, Task 28) answers a box's laid-out size before its edges
 snap. Chromium decides `text-overflow: ellipsis` against that width, in layout units; the snapped box can be up to 1px

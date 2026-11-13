@@ -312,9 +312,47 @@
       "gpui": "member-Gunnar"
     },
     {
-      "do": "click",
-      "web": "css=.d-profile-card__icon-action[data-danger=\"true\"] >> nth=0",
-      "gpui": "profile-action-kick"
+      "do": "key",
+      "chord": "escape"
+    },
+    {
+      "do": "key",
+      "chord": "shift-f10"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "enter"
     },
     {
       "do": "settle"

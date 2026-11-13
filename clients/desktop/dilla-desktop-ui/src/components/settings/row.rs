@@ -89,6 +89,7 @@ pub struct SettingsRow {
     position: GroupPosition,
     menu: Option<RowMenu>,
     hint_width: Option<f32>,
+    full_measure: bool,
     control: Vec<AnyElement>,
 }
 
@@ -104,6 +105,7 @@ impl SettingsRow {
             position: GroupPosition::Only,
             menu: None,
             hint_width: None,
+            full_measure: false,
             control: Vec::new(),
         }
     }
@@ -122,6 +124,13 @@ impl SettingsRow {
     /// `max-width: none` sections): the host knows the column's width from its own layout.
     pub fn hint_width(mut self, width: f32) -> Self {
         self.hint_width = Some(width);
+        self
+    }
+
+    /// The row sits in a `data-measure="full"` section (`section[data-measure="full"] .d-settings-row__hint { max-width:
+    /// none }`): its hint wraps at the text column's laid-out width, not at 60ch.
+    pub fn full_measure(mut self) -> Self {
+        self.full_measure = true;
         self
     }
 
@@ -212,7 +221,15 @@ impl RenderOnce for SettingsRow {
         }
         text_col = text_col.child(label);
         let mut text_h = line_height(text::SM, 1.4);
-        if let Some(hint) = &self.hint {
+        let flow = self.full_measure && self.hint_width.is_none();
+        if let Some(hint) = self.hint.as_ref().filter(|_| flow) {
+            text_col = text_col.child(crate::text::flow_paragraph(
+                hint.clone(),
+                text::XS,
+                line_height(text::XS, 1.4),
+                color::FG_2,
+            ));
+        } else if let Some(hint) = &self.hint {
             let lines = paragraph(
                 hint,
                 text::XS,
@@ -236,7 +253,9 @@ impl RenderOnce for SettingsRow {
         }
         // The text sizes the row (its fractional line boxes, on Chromium's layout unit; the layout snap puts the row's
         // edges where the web paints them).
-        text_col = text_col.h(px(text_h));
+        if !flow || self.hint.is_none() {
+            text_col = text_col.h(px(text_h));
+        }
 
         let mut control = div()
             .flex()

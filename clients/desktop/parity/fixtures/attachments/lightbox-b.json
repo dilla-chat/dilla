@@ -155,12 +155,12 @@
     {
       "do": "click",
       "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
-      "gpui": "-"
+      "gpui": "header-members"
     },
     {
       "do": "click",
       "web": "css=.d-attachment-card__open >> nth=4",
-      "gpui": "attachment-s3-4"
+      "gpui": "attachment-m3-4"
     },
     {
       "do": "settle"

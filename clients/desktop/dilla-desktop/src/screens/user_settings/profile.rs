@@ -12,8 +12,8 @@ use gpui::{
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, colour_of};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::settings::frame::section_header;
-use dilla_desktop_ui::components::text_field::TextField;
-use dilla_desktop_ui::text::{line, line_height, paragraph};
+use dilla_desktop_ui::components::text_field::{Frame, TextField};
+use dilla_desktop_ui::text::{flow_paragraph, line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
 use super::draft::Failure;
@@ -40,6 +40,21 @@ const BAND_DARK: f32 = 0.18;
 const BAND_ANGLE: f32 = 135.0;
 /// `.dw-profile-form__saved`: the status line sits 4px under the form.
 const NOTE_PAD: f32 = 4.0;
+/// `.dw-profile-form .d-text-field__input { height: 2.375rem }`.
+const INPUT_HEIGHT: f32 = 38.0;
+/// `.dw-profile-form textarea.d-text-field__input`: `padding: 10px 12px; line-height: 1.5`, three rows, the 1px edge.
+const BIO_PAD_Y: f32 = 10.0;
+const BIO_ROWS: f32 = 3.0;
+const EDGE: f32 = 1.0;
+
+/// The bio's frame: three rows of 13px at 1.5, its padding and edges.
+fn bio_frame() -> Frame {
+    Frame {
+        height: BIO_ROWS * line_height(text::INPUT, 1.5) + 2.0 * (BIO_PAD_Y + EDGE),
+        pad_y: BIO_PAD_Y,
+        line: line_height(text::INPUT, 1.5),
+    }
+}
 
 /// The band's colour at a lightness, from the avatar palette entry of the shown name.
 fn band_stop(name: &str, lightness: f32) -> Hsla {
@@ -53,7 +68,7 @@ fn band_stop(name: &str, lightness: f32) -> Hsla {
 }
 
 impl UserSettings {
-    pub(super) fn profile_view(&mut self, _cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn profile_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let username = self.ctx.state.account.username.clone();
         let (e, preview, failed, pending, done, display_error, dirty) = {
             let d = self.draft.borrow();
@@ -71,18 +86,33 @@ impl UserSettings {
             p.map(|p| t(p.string_key()))
         };
 
+        let input = Frame {
+            height: INPUT_HEIGHT,
+            pad_y: 0.0,
+            line: line_height(text::INPUT, 1.5),
+        };
         let mut display =
-            TextField::new("profile-display", t("profile.display.label"), &self.display);
+            TextField::new("profile-display", t("profile.display.label"), &self.display)
+                .frame(input);
         if let Some(text) = problem(e.problem_display) {
             display = display.error(text);
         } else if display_error {
             display = display.error(t("profile.error.display"));
         }
-        let mut status = TextField::new("profile-status", t("profile.status.label"), &self.status);
+        let mut status =
+            TextField::new("profile-status", t("profile.status.label"), &self.status).frame(input);
         if let Some(text) = problem(e.problem_status) {
             status = status.error(text);
         }
-        let mut bio = TextField::multiline("profile-bio", t("profile.bio.label"), &self.bio);
+        // The typed bio's line boxes for the R13 mask (automation build only), over the field's text box.
+        let typed = crate::screens::composer::typed_text(
+            div().absolute().top_0().left_0().size_full(),
+            &self.bio.read(cx).value(),
+            bio_frame().line,
+        );
+        let mut bio = TextField::multiline("profile-bio", t("profile.bio.label"), &self.bio)
+            .frame(bio_frame())
+            .text_overlay(typed);
         if let Some(text) = problem(e.problem_bio) {
             bio = bio.error(text);
         }
@@ -103,7 +133,8 @@ impl UserSettings {
             .child(display)
             .child(status)
             .child(bio)
-            .child(line(
+            // `.dw-profile-form__note` wraps at the form's width.
+            .child(flow_paragraph(
                 t("profile.footnote"),
                 text::XS,
                 line_height(text::XS, 1.5),
@@ -130,6 +161,8 @@ impl UserSettings {
             .px(px(BODY_PAD))
             .pb(px(BODY_PAD))
             .mt(px(-AVATAR_LIFT))
+            // The ring is a box-shadow: it takes no room, so the avatar's 48px box is what lays out (the ring's wrapper
+            // reaches 4px past it on every side).
             .child(
                 div()
                     .flex()
@@ -137,23 +170,26 @@ impl UserSettings {
                     .rounded_full()
                     .bg(color::BG_3)
                     .p(px(AVATAR_RING))
+                    .m(px(-AVATAR_RING))
                     .w(px(AVATAR_SIZE + 2.0 * AVATAR_RING))
                     .child(
-                        Avatar::new("profile-preview-avatar", name.clone()).size(AvatarSize::Card),
+                        Avatar::new("profile-preview-avatar", name.clone())
+                            .size(AvatarSize::Preview),
                     ),
             )
+            // `.dw-profile-preview__name`: 14px (`--text-md`), bold.
             .child(
                 div().mt(px(NAME_GAP)).child(
-                    line(
+                    flow_paragraph(
                         name.clone(),
-                        text::BASE,
-                        line_height(text::BASE, 1.5),
+                        text::MD,
+                        line_height(text::MD, 1.5),
                         color::FG,
                     )
                     .weight(font::WEIGHT_DISPLAY),
                 ),
             )
-            .child(line(
+            .child(flow_paragraph(
                 handle_line,
                 text::XS,
                 line_height(text::XS, 1.5),
@@ -165,7 +201,7 @@ impl UserSettings {
                 text::BTN,
                 line_height(text::BTN, 1.5),
                 color::FG_STRONG,
-                PREVIEW_WIDTH - 2.0 * BODY_PAD,
+                PREVIEW_WIDTH - 2.0 * (EDGE + BODY_PAD),
             )));
         }
         let card = div()

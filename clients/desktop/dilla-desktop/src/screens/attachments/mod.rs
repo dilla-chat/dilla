@@ -253,7 +253,16 @@ pub fn attachment_cards(
                         }
                     })
                 });
-                let el = image_tile(id, w, shown, badge, open);
+                // The tile's automation probe (`attachment-<key>-<index>`), which the lightbox fixtures click.
+                let probe = crate::screens::messages::probe(crate::screens::messages::id_of(
+                    &format!("attachment-{}", item.key),
+                    a.index as usize,
+                ));
+                let el = div()
+                    .relative()
+                    .child(image_tile(id, w, shown, badge, open))
+                    .child(probe)
+                    .into_any_element();
                 cards.push(with_state(el, w, tile_height(w), state_text));
             }
             AttachmentKind::Audio | AttachmentKind::Video if !too_large && key.is_some() => {

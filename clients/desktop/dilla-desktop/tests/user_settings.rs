@@ -78,8 +78,7 @@ fn fixtures_are_valid_named_by_their_file_and_paired() {
 }
 
 /// S4: one parity test per fixture, drawn in the settings host (Task 1b, since integration 3) against the references
-/// `shoot.mjs` shot. The ones still parked (ruling R22) carry their measured numbers; the two `-b` Profile fixtures have
-/// no reference yet: the parity world cannot seed statuses and bios.
+/// `shoot.mjs` shot. The ones still parked (ruling R22) carry their measured numbers and causes.
 macro_rules! parity {
     ($($test:ident => $name:literal $(, $why:literal)?);* $(;)?) => {$(
         #[test]
@@ -94,14 +93,14 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_user_settings_profile => "profile", "parity after T6c: chrome 0.8596 % (the profile rows end 2 css px short of the web's and the offset grows down the page)";
-    parity_user_settings_profile_b => "profile-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)";
-    parity_user_settings_profile_short_wide => "profile-short-wide", "parity after T6c: chrome 1.0161 % (as profile)";
-    parity_user_settings_profile_short_wide_b => "profile-short-wide-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)";
-    parity_user_settings_devices => "devices", "parity after T6c: chrome 0.4962 % (device rows: their text lines and edges 1-3 css px off)";
-    parity_user_settings_devices_b => "devices-b", "parity after T6c: chrome 0.3922 % (as devices)";
-    parity_user_settings_devices_sign_out => "devices-sign-out", "parity after T6c: whole frame 1.3868 % (the key dialog now sits where the web's does; its fields and the rows under it differ)";
-    parity_user_settings_devices_sign_out_b => "devices-sign-out-b", "parity after T6c: whole frame 1.0958 % (as devices-sign-out)";
+    parity_user_settings_profile => "profile";
+    parity_user_settings_profile_b => "profile-b", "parity after T6c: chrome 0.2469 % (the bio textarea: gpui-component lays its lines 20px apart where the web's 1.5 line height is 19.5px, and draws no resize grip)";
+    parity_user_settings_profile_short_wide => "profile-short-wide";
+    parity_user_settings_profile_short_wide_b => "profile-short-wide-b";
+    parity_user_settings_devices => "devices", "parity after T6c: chrome 0.4956 % (this device is the desktop app, \"Dilla on Linux\" with its DESKTOP · LINUX tag, where the web reference's is a browser, \"Chrome on Linux\"; the shot's device ids and the sign-up device's last activity are not in the sidecar)";
+    parity_user_settings_devices_b => "devices-b", "parity after T6c: chrome 0.3917 % (as devices)";
+    parity_user_settings_devices_sign_out => "devices-sign-out";
+    parity_user_settings_devices_sign_out_b => "devices-sign-out-b";
     parity_user_settings_appearance => "appearance";
     parity_user_settings_appearance_b => "appearance-b";
     parity_user_settings_keyboard => "keyboard";
