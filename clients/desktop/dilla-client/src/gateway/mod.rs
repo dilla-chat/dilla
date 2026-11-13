@@ -121,7 +121,29 @@ pub enum Refusal {
     InstanceOutdated,
     /// No common version, neither newer nor older throughout (close 4006).
     VersionUnsupported,
+    /// The check before a connection ([`PreConnect`]) found the instance's signer key no longer the one this device
+    /// pinned, or another instance answering (controller.ts `failInstanceSignerPin`): the gateway stops, closed.
+    InstanceSignerChanged,
 }
+
+/// What the check before a connection attempt answers ([`PreConnect`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreConnectVerdict {
+    /// Connect.
+    Go,
+    /// The check could not be made now (the instance unreachable): no socket, the attempt is retried after the backoff.
+    Retry,
+    /// The check failed: the gateway stops for good with [`Refusal::InstanceSignerChanged`].
+    Refuse,
+}
+
+/// A check run before every connection attempt, the reconnects included (controller.ts `mintTicket`: the instance
+/// signer pin is checked again before each one).
+pub type PreConnect = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = PreConnectVerdict> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// The `hello` (op 0) of a connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,6 +348,16 @@ impl WsGateway {
     }
 
     pub fn connect_with(base: url::Url, auth: AuthToken, options: GatewayOptions) -> WsGateway {
+        Self::connect_checked(base, auth, options, None)
+    }
+
+    /// [`WsGateway::connect_with`], with `pre_connect` run before every connection attempt.
+    pub fn connect_checked(
+        base: url::Url,
+        auth: AuthToken,
+        options: GatewayOptions,
+        pre_connect: Option<PreConnect>,
+    ) -> WsGateway {
         let (events_tx, events_rx) = mpsc::channel(options.event_capacity.max(1));
         let (stop, stop_rx) = watch::channel(false);
         let shared = Arc::new(Shared::default());
@@ -337,6 +369,7 @@ impl WsGateway {
             events: events_tx,
             stop: stop_rx,
             tls: None,
+            pre_connect,
         };
         tokio::spawn(driver.run());
         WsGateway {
@@ -465,6 +498,8 @@ struct Driver {
     stop: watch::Receiver<bool>,
     /// The wss client configuration, built once on the first wss attempt.
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// Run before every connection attempt.
+    pre_connect: Option<PreConnect>,
 }
 
 impl Driver {
@@ -566,6 +601,23 @@ impl Driver {
     async fn attempt(&mut self, backoff: &mut Backoff, was_ready: &mut bool) -> End {
         if *self.stop.borrow() {
             return End::Stop;
+        }
+        if let Some(check) = self.pre_connect.clone() {
+            let mut stop = self.stop.clone();
+            let verdict = tokio::select! {
+                () = stopped(&mut stop) => return End::Stop,
+                v = check() => v,
+            };
+            match verdict {
+                PreConnectVerdict::Go => {}
+                PreConnectVerdict::Retry => return End::Retry(DisconnectReason::Network),
+                PreConnectVerdict::Refuse => {
+                    return End::Refused {
+                        refusal: Refusal::InstanceSignerChanged,
+                        code: 0,
+                    };
+                }
+            }
         }
         let Ok(request) = self.request() else {
             return End::Retry(DisconnectReason::Network);

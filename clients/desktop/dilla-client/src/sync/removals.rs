@@ -82,6 +82,8 @@ pub const TERMINAL_LOCAL: &[&str] = &[
     "E_SYNC_HEAL_MISMATCH",
     "E_SYNC_HEAL_GENERATION",
     "E_NOT_MEMBER",
+    // The gateway stopped on a changed instance signer key: nothing reads on until the client restarts.
+    "E_CORE_STATE",
 ];
 
 /// Sorts a feed read's error ([`FeedFailure`]).

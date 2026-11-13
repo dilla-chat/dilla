@@ -182,6 +182,8 @@ struct Link {
     updates: mpsc::UnboundedSender<Update>,
     /// The app took the connection down (`Client::disconnect`) and has not asked for it again.
     app_offline: AtomicBool,
+    /// Run before every connection attempt: the instance signer pin ([`pin_check`]).
+    pre_connect: Option<crate::gateway::PreConnect>,
 }
 
 /// What every handle of the client shares: the area features (`crate::features`) hold it and reach the engine, the API,
@@ -420,6 +422,7 @@ impl Client {
             gateway: Mutex::new(None),
             app_offline: AtomicBool::new(false),
             updates: updates.clone(),
+            pre_connect: Some(pin_check(api.clone(), core.clone())),
         });
         let inner = Arc::new(Inner {
             link: link.clone(),
@@ -719,10 +722,11 @@ impl Link {
         if slot.is_some() || self.engine.stopped() || self.app_offline.load(Ordering::Acquire) {
             return;
         }
-        let gateway = Arc::new(WsGateway::connect_with(
+        let gateway = Arc::new(WsGateway::connect_checked(
             self.server.clone(),
             self.auth.clone(),
             self.options.clone(),
+            self.pre_connect.clone(),
         ));
         let events = gateway.events();
         self.engine.set_gateway(Some(gateway.clone()));
@@ -926,6 +930,38 @@ pub(crate) async fn check_instance_signer_pin(
     with_core(core, move |c| c.instance_signer_key_pin(&id, &key))
         .await
         .map_err(|e| ClientError::Sync(e.code.to_string()))
+}
+
+/// controller.ts `mintTicket`: before every gateway connection attempt (the reconnects included) the instance's signer
+/// key is read over the session again and held to the pin, as at the start ([`check_instance_signer_pin`]). An instance
+/// that cannot be read now (unreachable, a 5xx) is tried again after the backoff; a document that does not decode, a
+/// changed key or another instance stops the gateway, closed (`failInstanceSignerPin`).
+fn pin_check(api: Arc<Api>, core: CoreHandle) -> crate::gateway::PreConnect {
+    Arc::new(move || {
+        let (api, core) = (api.clone(), core.clone());
+        Box::pin(async move {
+            let read = api.get_instance().await;
+            let pinned = match &read {
+                Ok(instance) => Some(check_instance_signer_pin(&core, instance).await),
+                Err(_) => None,
+            };
+            pin_verdict(read.as_ref().map(|_| ()), pinned)
+        })
+    })
+}
+
+/// [`pin_check`]'s verdict from the instance read (`Err`: its refusal) and, once read, the pin check.
+pub(crate) fn pin_verdict(
+    read: Result<(), &crate::sync::api::ApiError>,
+    pinned: Option<Result<(), ClientError>>,
+) -> crate::gateway::PreConnectVerdict {
+    use crate::gateway::PreConnectVerdict as V;
+    match (read, pinned) {
+        (Err(e), _) if e.code == "E_DECODE" => V::Refuse,
+        (Err(_), _) => V::Retry,
+        (Ok(()), Some(Ok(()))) => V::Go,
+        (Ok(()), _) => V::Refuse,
+    }
 }
 
 /// signup.ts `publishDeviceList`'s 409 branch, before any adoption: what the served list's version says about this
@@ -1457,6 +1493,13 @@ impl Publisher {
                     }
                     OnRefused::SignOut => self.sign_out(),
                 }
+                false
+            }
+            // controller.ts `failInstanceSignerPin`: the instance's signer key is no longer the pinned one (or another
+            // instance answers). The gateway stopped; the client fails closed, and a restart's start refuses it too.
+            ConnectionEvent::Refused(Refusal::InstanceSignerChanged, _) => {
+                self.state.connection.status = ConnectionStatus::Offline;
+                self.state.account.phase = AccountPhase::Failed;
                 false
             }
             ConnectionEvent::Refused(Refusal::SecondFactorRequired, _) => {

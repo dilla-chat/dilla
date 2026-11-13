@@ -640,6 +640,11 @@ impl Engine {
                         | crate::gateway::Refusal::SecondFactorRequired => {
                             ApiError::local(401, "E_UNAUTHENTICATED", "the session was revoked")
                         }
+                        crate::gateway::Refusal::InstanceSignerChanged => ApiError::local(
+                            0,
+                            "E_CORE_STATE",
+                            "the instance's signer key is not the pinned one",
+                        ),
                         _ => ApiError::local(
                             426,
                             "E_UPGRADE_REQUIRED",
