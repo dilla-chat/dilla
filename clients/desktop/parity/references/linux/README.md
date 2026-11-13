@@ -34,7 +34,8 @@ Linux):
    that clicks only when the element is there), moves the pointer to the corner (unless a step hovers), blurs the focus,
    awaits `document.fonts` and takes one viewport screenshot.
 
-Chromium runs with `--font-render-hinting=none --enable-font-subpixel-positioning` (Jonas's 2026-11-12 decision for the Linux
+Chromium runs with `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream` (a granted fake microphone, so the
+Voice page's mic test runs; T6c) and, on Linux, `--font-render-hinting=none --enable-font-subpixel-positioning` (Jonas's 2026-11-12 decision for the Linux
 reference), `deviceScaleFactor: 2`, `reducedMotion: 'reduce'`, `timezoneId: 'UTC'`, `locale: 'en-US'`.
 
 ## Prerequisites (once per worktree)

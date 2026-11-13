@@ -225,7 +225,12 @@ async function shoot(args, fixture, text) {
     const state = JSON.parse(readFileSync(join(out, 'state.json'), 'utf8'));
     const viewport = { width: state.window[0], height: state.window[1] };
     const { chromium } = await import('playwright');
-    const args2 = process.platform === 'linux' ? ['--font-render-hinting=none', '--enable-font-subpixel-positioning'] : [];
+    // A fake capture device that the browser grants without asking: the Voice page's mic test runs as on a machine with a
+    // microphone (a shooter without one shows "The microphone test could not start."). It plays silence (`silence.wav`,
+    // one second of zeros) where Chromium's default fake device beeps, as the GPUI side's test hears no input.
+    const media = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
+      `--use-file-for-fake-audio-capture=${join(HERE, 'silence.wav')}`];
+    const args2 = process.platform === 'linux' ? ['--font-render-hinting=none', '--enable-font-subpixel-positioning', ...media] : media;
     browser = await chromium.launch({ args: args2 });
     const context = await browser.newContext({ viewport, deviceScaleFactor: 2, reducedMotion: 'reduce', timezoneId: 'UTC', locale: 'en-US' });
     const page = await context.newPage();

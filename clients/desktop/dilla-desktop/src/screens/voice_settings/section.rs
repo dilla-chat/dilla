@@ -23,7 +23,7 @@ use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::segmented::Segmented;
 use dilla_desktop_ui::components::select::Select;
 use dilla_desktop_ui::components::settings::frame::section_header;
-use dilla_desktop_ui::components::toggle::Toggle;
+use dilla_desktop_ui::components::toggle::{Fit, Toggle};
 use dilla_desktop_ui::components::voice_settings::layout::{
     self, Heard, RELEASE_VALUE_W, StatusPill, VOLUME_VALUE_W,
 };
@@ -430,11 +430,11 @@ impl Render for VoiceSection {
                 .iter()
                 .map(|(v, l)| (v.as_str(), l.as_str()))
                 .collect();
-            Select::new(id, label.to_owned(), &pairs, value.to_owned()).on_change(
-                move |picked, _, cx| {
+            Select::new(id, label.to_owned(), &pairs, value.to_owned())
+                .bare()
+                .on_change(move |picked, _, cx| {
                     on_pick((!picked.is_empty()).then(|| picked.to_owned()), cx);
-                },
-            )
+                })
         };
         let input_select = {
             let me = me.clone();
@@ -483,6 +483,7 @@ impl Render for VoiceSection {
                 layout::grid()
                     .child(
                         layout::field()
+                            .child(layout::label(t("settings.voice.input")))
                             .child(tracked_box("voice-input-select", input_select))
                             .child(tracked_box(
                                 "voice-input-volume",
@@ -501,6 +502,7 @@ impl Render for VoiceSection {
                     )
                     .child(
                         layout::field()
+                            .child(layout::label(t("settings.voice.output")))
                             .child(tracked_box("voice-output-select", output_select))
                             .child(tracked_box(
                                 "voice-output-volume",
@@ -602,6 +604,7 @@ impl Render for VoiceSection {
                 v.sensitivity_auto,
             )
             .show_label(false)
+            .fit(Fit::Tight)
             .on_change(move |on, _, cx| {
                 me.update(cx, |this, cx| this.set(Setting::SensitivityAuto(on), cx));
             })
@@ -613,9 +616,9 @@ impl Render for VoiceSection {
                     .child(div().flex_1())
                     .child(tracked_box("voice-check", check)),
             )
-            .child(layout::description(hint, width));
+            .child(layout::test_description(hint, width));
         if !v.echo {
-            test_group = test_group.child(layout::description(
+            test_group = test_group.child(layout::test_description(
                 t("signalSettings.voice.testEchoOff"),
                 width,
             ));
@@ -649,6 +652,7 @@ impl Render for VoiceSection {
                 ],
                 mode_str(v.mode),
             )
+            .tall(true)
             .on_change(move |picked, _, cx| {
                 let mode = InputMode::parse(picked).unwrap_or_default();
                 me.update(cx, |this, cx| this.set(Setting::Mode(mode), cx));
@@ -741,7 +745,7 @@ impl Render for VoiceSection {
                 t("settings.voice.pttPrompt")
             }
         });
-        mode_group = mode_group.child(layout::prompt(prompt, width));
+        mode_group = mode_group.children(layout::prompt(prompt, width));
 
         // ---- Processing
         let noise = {
@@ -774,6 +778,7 @@ impl Render for VoiceSection {
             let me = me.clone();
             Toggle::new("voice-echo-switch", t("signalSettings.voice.echo"), v.echo)
                 .show_label(false)
+                .fit(Fit::Tight)
                 .on_change(move |on, _, cx| {
                     me.update(cx, |this, cx| this.set(Setting::Echo(on), cx));
                 })
@@ -782,6 +787,7 @@ impl Render for VoiceSection {
             let me = me.clone();
             Toggle::new("voice-agc-switch", t("signalSettings.voice.agc"), v.agc)
                 .show_label(false)
+                .fit(Fit::Tight)
                 .on_change(move |on, _, cx| {
                     me.update(cx, |this, cx| this.set(Setting::Agc(on), cx));
                 })
@@ -818,21 +824,21 @@ impl Render for VoiceSection {
         );
         // The status line under the groups: what the microphone test runs on and why it fell back.
         if let Some(line) = processor_line(&test) {
-            section = section.child(tracked_box(
+            section = section.child(layout::status().child(tracked_box(
                 "voice-processor",
                 layout::description(&line, layout::group_inner() + 34.0),
-            ));
+            )));
         }
         // What the audio devices did (never swallowed): a lost microphone or speaker, a processor that failed.
         for (i, notice) in self.local.notices.iter().enumerate() {
-            section = section.child(tracked_box(
+            section = section.child(layout::status().child(tracked_box(
                 match i {
                     0 => "voice-notice-0",
                     1 => "voice-notice-1",
                     _ => "voice-notice-2",
                 },
                 Banner::new(("voice-notice", i), BannerTone::Warn, notice_text(*notice)),
-            ));
+            )));
         }
         section
     }

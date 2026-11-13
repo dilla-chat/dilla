@@ -23,6 +23,11 @@ const MAX: i32 = 0;
 /// The line's width: the thumb of the web's transparent range.
 const LINE: f32 = 2.0;
 
+/// A segment's height, gap and corner (`.d-sens__segs`, `.d-sens__seg`).
+const SEGMENT_H: f32 = 28.0;
+const SEGMENT_GAP: f32 = 2.0;
+const SEGMENT_RADIUS: f32 = 2.0;
+
 /// A threshold or level as the prototype writes it: `-48 dB`.
 pub fn format_db(db: f32) -> String {
     format!("{} dB", db.round().clamp(-100.0, 0.0) as i32)
@@ -162,9 +167,15 @@ impl RenderOnce for SensitivityMeter {
         };
 
         let left = gpui::relative((threshold - MIN) as f32 / (MAX - MIN) as f32);
-        let mut segments = div().flex().gap(px(2.0)).h(px(28.0));
+        // `flex: 1` shares of what the gaps leave (11.76px at 686px); the layout snap paints each between whole pixels.
+        let mut segments = div().flex().gap(px(SEGMENT_GAP)).h(px(SEGMENT_H));
         for state in segment_states(self.level_db, threshold as f32, self.testing) {
-            segments = segments.child(div().flex_1().rounded(px(2.0)).bg(segment_color(state)));
+            segments = segments.child(
+                div()
+                    .flex_1()
+                    .rounded(px(SEGMENT_RADIUS))
+                    .bg(segment_color(state)),
+            );
         }
         let line_el = div()
             .absolute()

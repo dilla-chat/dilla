@@ -5,6 +5,7 @@
 //! Text wraps at the width of the frame's content column ([`crate::components::settings::frame::section_width`], 720px) less
 //! the group's border and padding, as the web lays it out.
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Div, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, Styled, div, px,
@@ -13,7 +14,7 @@ use gpui::{
 use super::slider::Slider;
 use crate::components::settings::frame::section_width;
 use crate::metrics::LABEL_TRACKING_WIDE;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{line, line_height, painted_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
 /// A group's inner width: the content column less 2px of border and 2 x 16px of padding.
@@ -26,9 +27,16 @@ pub fn column_width() -> f32 {
     (group_inner() - 18.0) / 2.0
 }
 
-/// The section: its head, the groups and the status lines under them, 16px apart (`.dw-settings-section`'s `--group-gap`).
+/// The section: its head (whose sub-line keeps the 22px over the groups, `h2 + p + *`), the groups and the status lines
+/// under them. The frame's section rule (`.d-settings-frame__body > section`, gap 0) beats `.dw-settings-section`'s gap:
+/// the parts are spaced by their own margins.
 pub fn page() -> Div {
-    div().flex().flex_col().gap(px(16.0)).min_w_0()
+    div().flex().flex_col().min_w_0()
+}
+
+/// A line under the groups: 14px below the block above (`section > * + *`).
+pub fn status() -> Div {
+    div().pt(px(14.0)).min_w_0()
 }
 
 /// The head of a section's text (title and sub-line) and its banners, stacked.
@@ -89,14 +97,19 @@ pub fn field() -> Div {
         .items_stretch()
 }
 
-/// A field's label (11px `--fg-2`).
+/// A field's label (11px `--fg-2`), taking the height the web paints for its 16.5px line (17). The layout snap places the
+/// field under it from its unrounded top, but the line boxes above it on the page are authored lengths GPUI rounds to a
+/// device pixel before layout (the 17.25px description lines to 17, the 14.25px scale to 14), which leaves the fields
+/// half a pixel above the web's layout; at the painted height they land on the web's pixels (section and section-b).
 pub fn label(text_: impl Into<SharedString>) -> Div {
-    div().child(line(
-        text_,
-        text::XS,
-        line_height(text::XS, 1.5),
-        color::FG_2,
-    ))
+    div()
+        .h(px(painted_height(line_height(text::XS, 1.5))))
+        .child(line(
+            text_,
+            text::XS,
+            line_height(text::XS, 1.5),
+            color::FG_2,
+        ))
 }
 
 fn lines(text_: &str, size: gpui::Pixels, height_ratio: f32, colour: Hsla, width: f32) -> Div {
@@ -115,6 +128,11 @@ pub fn note(text_: &str, width: f32) -> Div {
 /// A group's description (11.5px `--fg-2`), wrapped to `width`.
 pub fn description(text_: &str, width: f32) -> Div {
     lines(text_, text::BTN, 1.5, color::FG_2, width)
+}
+
+/// The mic test's description (`.d-voice-settings__desc`): 4px into the 14px above it (`margin: -4px 0 0`).
+pub fn test_description(text_: &str, width: f32) -> Div {
+    description(text_, width).mt(px(-4.0))
 }
 
 /// A row's own description (11px `--fg-2`), wrapped to `width`.
@@ -260,12 +278,27 @@ impl RenderOnce for StatusPill {
             Heard::Heard => (color::OK, color::OK_TINT, color::OK_LINE),
             Heard::Quiet => (color::WARN, color::WARN_FAINT, color::WARN_LINE),
         };
+        // The web paints the pill (its width follows its text) between whole pixels: from its whole-pixel left edge that
+        // is the natural width rounded. The layout snap cannot give it: the text's width is an authored length GPUI rounds
+        // to a device pixel before layout, half a pixel off the web's fraction.
+        let natural = self.text.chars().all(crate::text::mono_covers).then(|| {
+            crate::text::painted_height(
+                2.0 * 10.0
+                    + 2.0
+                    + 6.0
+                    + 7.0
+                    + self.text.chars().count() as f32
+                        * f32::from(text::XS)
+                        * crate::text::MONO_ADVANCE,
+            )
+        });
         div()
             .id(self.id)
             .flex()
             .flex_none()
             .items_center()
             .gap(px(7.0))
+            .when_some(natural, |d, w| d.w(px(w)))
             .h(px(28.0))
             .px(px(10.0))
             .border_1()
@@ -313,7 +346,10 @@ pub fn switch_row(label_: &str, hint: &str, switch: impl IntoElement) -> Div {
                 .flex_1()
                 .min_w_0()
                 .child(row_label(label_, None))
-                .child(row_hint(hint, group_inner() - 14.0 - 44.0)),
+                .child(row_hint(
+                    hint,
+                    group_inner() - 14.0 - crate::components::toggle::TRACK_W,
+                )),
         )
         .child(div().flex_none().child(switch))
 }
@@ -332,15 +368,15 @@ pub fn control_row(text_col: impl IntoElement, control: impl IntoElement) -> Div
 
 /// The capture prompt: a status region that is always present; empty it takes no room, shown it is a 3px accent bar, 6px 12px
 /// of padding, 11px.
-pub fn prompt(text_: Option<&str>, width: f32) -> AnyElement {
-    match text_ {
-        None => div().into_any_element(),
-        Some(t) => div()
+pub fn prompt(text_: Option<&str>, width: f32) -> Option<AnyElement> {
+    // Empty, the web's prompt is taken out of the group's flow (`:empty { position: absolute }`): no gap above it.
+    text_.map(|t| {
+        div()
             .px(px(12.0))
             .py(px(6.0))
             .border_l(px(3.0))
             .border_color(color::ACCENT)
             .child(lines(t, text::XS, 1.5, color::FG, width - 15.0))
-            .into_any_element(),
-    }
+            .into_any_element()
+    })
 }

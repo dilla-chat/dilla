@@ -30,8 +30,9 @@ use dilla_client::testing::spec::{self, ChannelKind, ScreenFixture, ServerSpec};
 
 mod seed;
 
-/// The server's channels the world makes: every non-system one but the first `general`, which the world makes itself.
-fn extra_channels(server: &ServerSpec) -> Vec<world::ChannelSpec<'_>> {
+/// The server's channels the world makes: every non-system one but the first `general`, which the world makes itself,
+/// each at the fixture's `position` when it gives one (the web client orders a server's channels by position, then id).
+fn extra_channels(server: &ServerSpec) -> Vec<world::PlacedChannel<'_>> {
     let made: Vec<_> = server.channels.iter().filter(|c| !c.system).collect();
     assert!(
         made.first()
@@ -51,7 +52,10 @@ fn extra_channels(server: &ServerSpec) -> Vec<world::ChannelSpec<'_>> {
                     .name
                     .as_str()
             });
-            (u64::from(c.kind.wire()), c.name.as_str(), parent)
+            (
+                (u64::from(c.kind.wire()), c.name.as_str(), parent),
+                c.position.map(u64::from),
+            )
         })
         .collect()
 }
@@ -114,7 +118,7 @@ async fn main() {
                 .collect();
             let channels = extra_channels(server);
             let id = tokio::task::block_in_place(|| {
-                world::community_with(&host, owner, &server.name, &others, &channels)
+                world::community_placed(&host, owner, &server.name, &others, &channels)
             });
             made.push((server.id.clone(), CommunityId(id)));
         }

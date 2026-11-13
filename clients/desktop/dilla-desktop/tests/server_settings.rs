@@ -49,43 +49,27 @@ macro_rules! parity_after_t6c {
 
 parity_tests! {
     parity_server_settings_welcome => "welcome",
+    parity_server_settings_overview => "overview",
+    parity_server_settings_overview_b => "overview-b",
+    parity_server_settings_afk => "afk",
+    parity_server_settings_afk_b => "afk-b",
+    parity_server_settings_invites => "invites",
+    parity_server_settings_invites_b => "invites-b",
+    parity_server_settings_gifs => "gifs",
+    parity_server_settings_gifs_b => "gifs-b",
+    parity_server_settings_channels => "channels",
+    parity_server_settings_channels_b => "channels-b",
 }
 
 parity_after_t6c! {
-    parity_server_settings_overview => "overview", "parity after T6c: chrome 0.4688 %",
-    parity_server_settings_overview_b => "overview-b", "parity after T6c: whole frame 1.3234 %",
-    parity_server_settings_afk => "afk", "parity after T6c: chrome 0.4688 %",
-    parity_server_settings_afk_b => "afk-b", "parity after T6c: whole frame 0.6805 %",
-    parity_server_settings_channels => "channels", "parity after T6c: chrome 2.3227 %",
-    parity_server_settings_channels_b => "channels-b", "parity after T6c: whole frame 1.3583 %",
-    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.2690 %",
-    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.7017 %",
-    parity_server_settings_gifs => "gifs", "parity after T6c: whole frame 1.1892 %",
-    parity_server_settings_gifs_b => "gifs-b", "parity after T6c: whole frame 1.2638 %",
-    parity_server_settings_invites => "invites", "parity after T6c: chrome 0.8398 %",
-    parity_server_settings_invites_b => "invites-b", "parity after T6c: whole frame 0.6342 %",
+    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.3386 % (no Bot channel switch in the GPUI editor: a Task 28 feature port; and the dialog: the reference's layout puts it at [380, 14, 520, 684] in the window, a Chromium probe of Dialog.css nested in the settings frame at 12vh = 96, GPUI's at 12vh in the scrolled body, 132; the CSS behind 14 is not found yet)",
+    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.6756 % (as channel-permissions)",
 }
 
-// These fail only for causes in the shared frame and nav (Task 6), which this area does not edit:
-// - the web's nav scrolls the active item into view (Danger is the last item); the shared nav does not;
-// - the web's nav wraps a long server name in its group heading; the shared nav cuts it.
-// `welcome` passes with the same content, so `welcome-b` differs only by the nav's heading.
-#[test]
-#[ignore = "shared component parity (T6c): the nav does not scroll the active item into view"]
-fn parity_server_settings_danger() {
-    parity("danger");
-}
-
-#[test]
-#[ignore = "shared component parity (T6c): the nav does not scroll the active item into view, and cuts a long group heading"]
-fn parity_server_settings_danger_b() {
-    parity("danger-b");
-}
-
-#[test]
-#[ignore = "shared component parity (T6c): the nav cuts a long server name in its group heading, the web wraps it"]
-fn parity_server_settings_welcome_b() {
-    parity("welcome-b");
+parity_tests! {
+    parity_server_settings_danger => "danger",
+    parity_server_settings_danger_b => "danger-b",
+    parity_server_settings_welcome_b => "welcome-b",
 }
 
 // ---- keyboard (S6) ----

@@ -538,6 +538,11 @@ impl ShellView {
         }
     }
 
+    /// The server on show (none on Home).
+    pub fn community(&self) -> Option<CommunityId> {
+        self.community.filter(|_| !self.dm_view)
+    }
+
     /// Shows server `community` on its first text channel.
     pub fn pick_community(&mut self, community: CommunityId, cx: &mut Context<Self>) {
         if self.community == Some(community) && !self.dm_view {

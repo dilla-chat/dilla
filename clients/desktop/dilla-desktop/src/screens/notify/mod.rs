@@ -28,7 +28,7 @@ use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::segmented::Segmented;
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
-use dilla_desktop_ui::components::toggle::Toggle;
+use dilla_desktop_ui::components::toggle::{Fit, Toggle};
 
 use crate::slots::{SectionId, SlotCx};
 use crate::strings::{t, tf};
@@ -143,23 +143,56 @@ fn probed(id: &'static str, control: impl IntoElement) -> AnyElement {
 pub fn settings_section(
     _section: SectionId,
     ctx: &SlotCx,
-    _window: &mut Window,
-    _cx: &mut App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
-    let empty: HashMap<String, String> = HashMap::new();
-    let prefs = ctx.client.as_ref().map(|c| c.prefs());
-    let src: &dyn SettingsSource = match &prefs {
-        Some(p) => p,
-        None => &empty,
+    let Some(client) = ctx.client.clone() else {
+        // No client (a fixture's window): the choices are kept in the window, written as the client's preferences
+        // would be, so a click shows what it shows in the app.
+        let local = window.use_keyed_state("notify-local-prefs", cx, |_, _| {
+            HashMap::<String, String>::new()
+        });
+        let model = model(&ctx.state, ctx.community, local.read(cx));
+        let sink: Sink = Rc::new(move |change, cx| {
+            local.update(cx, |prefs, cx| {
+                apply_local(prefs, change);
+                cx.notify();
+            });
+        });
+        return view(&model, sink);
     };
-    let model = model(&ctx.state, ctx.community, src);
-    let client = ctx.client.clone();
-    let sink: Sink = Rc::new(move |change, _| {
-        if let Some(client) = &client {
-            apply(client, change);
-        }
-    });
+    let prefs = client.prefs();
+    let model = model(&ctx.state, ctx.community, &prefs);
+    let sink: Sink = Rc::new(move |change, _| apply(&client, change));
     view(&model, sink)
+}
+
+/// Writes `change` into `prefs` under the keys and values the client's notify handle writes (desktop notifications ask
+/// the system first: without a client nothing asks, so they stay as they are).
+fn apply_local(prefs: &mut HashMap<String, String>, change: Change) {
+    let mut write = |key: String, value: Option<&str>| match value {
+        Some(v) => {
+            prefs.insert(key, v.to_owned());
+        }
+        None => {
+            prefs.remove(&key);
+        }
+    };
+    match change {
+        Change::ServerMode(id, mode) => write(
+            dilla_client::features::notify::key_community_mode(id),
+            Some(mode.as_str()),
+        ),
+        Change::EveryoneNotifies(id, on) => write(
+            dilla_client::features::notify::key_community_everyone(id),
+            (!on).then_some("1"),
+        ),
+        Change::Sounds(on) => write(
+            dilla_client::features::notify::KEY_SOUNDS.to_owned(),
+            (!on).then_some("off"),
+        ),
+        Change::Desktop(_) => {}
+    }
 }
 
 /// The section for `model`; the controls report their changes to `sink`.
@@ -207,6 +240,7 @@ pub fn view(model: &SectionModel, sink: Sink) -> AnyElement {
                         t("notify.everyone.label"),
                         server.everyone_notifies,
                     )
+                    .fit(Fit::Row)
                     .on_change(move |on, _, cx| on_everyone(Change::EveryoneNotifies(id, on), cx)),
                 )),
         );
@@ -228,6 +262,7 @@ pub fn view(model: &SectionModel, sink: Sink) -> AnyElement {
                     t("notify.desktop.label"),
                     model.desktop_on,
                 )
+                .fit(Fit::Row)
                 .disabled(model.desktop_blocked.is_some())
                 .on_change(move |on, _, cx| on_desktop(Change::Desktop(on), cx)),
             )),
@@ -246,6 +281,7 @@ pub fn view(model: &SectionModel, sink: Sink) -> AnyElement {
                     t("notify.sounds.label"),
                     model.sounds_on,
                 )
+                .fit(Fit::Row)
                 .on_change(move |on, _, cx| on_sounds(Change::Sounds(on), cx)),
             )),
     );

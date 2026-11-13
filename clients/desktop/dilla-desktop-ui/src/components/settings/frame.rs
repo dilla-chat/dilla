@@ -14,7 +14,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px,
+    RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, deferred,
+    div, px,
 };
 
 use super::super::dialog::{
@@ -23,7 +24,7 @@ use super::super::dialog::{
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
-use crate::text::{line, line_height};
+use crate::text::{line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
@@ -127,6 +128,21 @@ impl ParentElement for SettingsFrame {
 
 /// A section's title (20/700) and its sub-line (12px `--fg-2`, 4px under the title), then the 22px the content below keeps.
 pub fn section_header(title: impl Into<SharedString>, sub: Option<&str>) -> gpui::Div {
+    header_at(title, sub, sub_measure())
+}
+
+/// [`section_header`] of a section whose intro takes the full width (`section[data-measure="full"] > p`: Roles, Invites,
+/// Bot, Music): the sub-line wraps at the content column instead of 60 characters.
+pub fn section_header_full(title: impl Into<SharedString>, sub: Option<&str>) -> gpui::Div {
+    header_at(title, sub, section_width(false))
+}
+
+/// The sub-line's measure (`.d-settings-frame__body > section > p { max-width: 60ch }`) at its 12px mono advance.
+pub fn sub_measure() -> f32 {
+    60.0 * f32::from(text::UI) * crate::text::MONO_ADVANCE
+}
+
+fn header_at(title: impl Into<SharedString>, sub: Option<&str>, measure: f32) -> gpui::Div {
     let mut head = div().flex().flex_col().pb(px(22.0)).child(
         line(
             title,
@@ -137,11 +153,12 @@ pub fn section_header(title: impl Into<SharedString>, sub: Option<&str>) -> gpui
         .weight(font::WEIGHT_DISPLAY),
     );
     if let Some(sub) = sub {
-        head = head.child(div().pt(px(4.0)).child(line(
-            sub.to_owned(),
+        head = head.child(div().pt(px(4.0)).flex().flex_col().children(paragraph(
+            sub,
             text::UI,
             line_height(text::UI, 1.5),
             color::FG_2,
+            measure,
         )));
     }
     head
@@ -181,9 +198,17 @@ impl RenderOnce for SettingsFrame {
             }
         };
 
-        // The side column: identity, search, nav.
+        // The side column: identity, search, nav. Its scroll handle lets the nav bring its current item into view.
+        let side_scroll = window
+            .use_keyed_state((self.id.clone(), "side-scroll"), cx, |_, _| {
+                ScrollHandle::new()
+            })
+            .read(cx)
+            .clone();
+        super::nav::register_side(&side_scroll, window, cx);
         let mut side = div()
             .id((self.id.clone(), "side"))
+            .track_scroll(&side_scroll)
             .flex()
             .flex_col()
             .flex_none()

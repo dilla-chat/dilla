@@ -738,6 +738,7 @@ pub fn dm_gif_privacy(ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Opti
                 t("gif.dm.title"),
                 on,
             )
+            .fit(dilla_desktop_ui::components::toggle::Fit::Row)
             .on_change(move |v, _, cx| {
                 // DmGifPrivacySetting.tsx: enabling here is "on", which still asks with the server named on next use.
                 if toggle_client
