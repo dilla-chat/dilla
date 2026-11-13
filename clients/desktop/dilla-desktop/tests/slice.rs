@@ -72,6 +72,9 @@ fn slice_sign_in_read_send() {
     // The app, on an empty data root: a new device of Alice's.
     let root = scratch_dir("slice-app");
     let mut app = Driver::launch(&root);
+    // A device with no account opens on the sign-up (Task 25); its link leads to the sign-in.
+    app.wait_for("onboarding-signin", Duration::from_secs(30));
+    app.click("onboarding-signin");
     app.wait_for("signin-server", Duration::from_secs(30));
     keep(&mut app, "1-sign-in");
     app.type_text("signin-server", &host.public);

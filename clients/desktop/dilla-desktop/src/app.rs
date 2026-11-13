@@ -26,6 +26,11 @@ use dilla_desktop_ui::tokens::color;
 
 use crate::screens::boot;
 use crate::screens::shell::window::{SavedBounds, WindowMode, window_shape};
+use dilla_client::features::signup::SignupResult;
+use dilla_client::state::AccountPhase;
+
+use crate::screens::create::Navigate;
+use crate::screens::onboarding::{DoneView, OpenDilla, SignedUp, SignupView, WantsSignIn};
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{SignInView, SignedIn};
 use crate::tracked;
@@ -50,6 +55,9 @@ pub struct Launch {
     pub shipping: bool,
     /// A client that is already running (the start or authentication window handing over to the workspace window).
     pub handoff: Option<Rc<Client>>,
+    /// The handed-over client is a new account's from the sign-up (Task 25): the workspace window finishes its join and
+    /// shows the done step.
+    pub after_signup: bool,
     #[cfg(feature = "automation")]
     pub fixture: Option<crate::fixture::Fixture>,
 }
@@ -71,6 +79,7 @@ impl Launch {
             window: (1280.0, 800.0),
             shipping: true,
             handoff: None,
+            after_signup: false,
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -87,6 +96,7 @@ impl Launch {
             window: (1280.0, 800.0),
             shipping: false,
             handoff: None,
+            after_signup: false,
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -109,6 +119,10 @@ enum Screen {
     /// `Client::start` failed with something sign-in cannot answer: the fatal splash, with a retry (Task 24).
     Fatal(ClientError, InstanceConfig),
     SignIn(Entity<SignInView>),
+    /// The sign-up's steps 1 to 3 (Task 25).
+    Signup(Entity<SignupView>),
+    /// The sign-up's step 6, over the started client (Task 25).
+    Done(Entity<DoneView>),
     Shell(Entity<ShellView>),
 }
 
@@ -117,8 +131,8 @@ impl Screen {
     fn mode(&self) -> WindowMode {
         match self {
             Screen::Starting | Screen::Fatal(..) => WindowMode::Starting,
-            Screen::SignIn(_) => WindowMode::Authentication,
-            Screen::Shell(_) => WindowMode::Workspace,
+            Screen::SignIn(_) | Screen::Signup(_) => WindowMode::Authentication,
+            Screen::Shell(_) | Screen::Done(_) => WindowMode::Workspace,
         }
     }
 }
@@ -132,6 +146,10 @@ pub struct AppView {
     /// The workspace window's bounds are kept a moment after the last change.
     bounds_task: Option<gpui::Task<()>>,
     bounds_sub: Option<Subscription>,
+    /// The client about to start is a new account's: once its factor is in place, the invite's server is joined and
+    /// the done step shows (Task 25).
+    after_signup: bool,
+    shell: Option<Entity<ShellView>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -143,6 +161,8 @@ impl AppView {
             screen: Screen::Starting,
             bounds_task: None,
             bounds_sub: None,
+            after_signup: false,
+            shell: None,
             _subscriptions: Vec::new(),
         };
         if this.launch.shipping {
@@ -192,6 +212,7 @@ impl AppView {
             return this;
         }
         if let Some(client) = this.launch.handoff.take() {
+            this.after_signup = std::mem::take(&mut this.launch.after_signup);
             this.show_shell(client, window, cx);
             return this;
         }
@@ -208,7 +229,11 @@ impl AppView {
             });
         match existing {
             Some(cfg) => this.start_client(cfg, window, cx),
-            None => this.show_sign_in(None, window, cx),
+            // A device with no account opens on the sign-up, as the web's /welcome does; its link leads to sign-in.
+            None => {
+                let invite = this.launch.invite.clone();
+                this.show_signup(invite, window, cx);
+            }
         }
         this
     }
@@ -221,6 +246,70 @@ impl AppView {
     /// The instance this window runs, once it has one.
     pub fn instance(&self) -> Option<InstanceId> {
         self.instance
+    }
+
+    /// The sign-up (Task 25), with the invite this window was opened with (Task 27's `Launch.invite`) in step 1.
+    fn show_signup(&mut self, invite: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
+        let view = cx.new(|cx| SignupView::new(root, keychain, invite, window, cx));
+        self._subscriptions = vec![
+            cx.subscribe_in(&view, window, |this, _, done: &SignedUp, window, cx| {
+                this.after_signup = true;
+                this.start_client(done.cfg.clone(), window, cx);
+            }),
+            cx.subscribe_in(&view, window, |this, _, _: &WantsSignIn, window, cx| {
+                this.show_sign_in(None, window, cx);
+            }),
+        ];
+        self.screen = Screen::Signup(view);
+        self.fit_window(window, cx);
+        cx.notify();
+    }
+
+    /// The sign-up's done step, once the new account is ready and the invite's server joined (Task 25).
+    fn show_done(
+        &mut self,
+        client: Rc<Client>,
+        result: SignupResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let first = client.state().borrow().clone();
+        let view = cx.new(|cx| {
+            let mut done = DoneView::new(result, window, cx);
+            done.set_state(&first, cx);
+            done
+        });
+        let weak = view.downgrade();
+        let mut states = client.state();
+        cx.spawn(async move |_, cx| {
+            while states.changed().await.is_ok() {
+                let next = states.borrow_and_update().clone();
+                if weak
+                    .update(cx, |done, cx| done.set_state(&next, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        self._subscriptions =
+            vec![
+                cx.subscribe_in(&view, window, |this, _, open: &OpenDilla, _, cx| {
+                    if let Some(shell) = this.shell.clone() {
+                        if let Some(community) = open.result.community {
+                            shell.update(cx, |s, cx| s.pick_community(community, cx));
+                        }
+                        this.screen = Screen::Shell(shell);
+                        // A join refused after the factor is offered again, with its invite and why (App.tsx).
+                        crate::screens::create::offer_refused_join(&open.result, cx);
+                        cx.notify();
+                    }
+                }),
+            ];
+        self.screen = Screen::Done(view);
+        cx.notify();
     }
 
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -316,7 +405,16 @@ impl AppView {
         }
         let client = match result {
             Ok(client) => client,
-            Err(ClientError::NoIdentity) => return self.show_sign_in(None, window, cx),
+            // No account on this instance yet: the sign-up, as the web's /welcome (Task 25); an invite this window
+            // was opened with names this instance, so step 1 gets its link.
+            Err(ClientError::NoIdentity) => {
+                let invite = self.launch.invite.clone().map(|code| {
+                    cfg.server
+                        .join(&format!("i/{code}"))
+                        .map_or(code, |u| u.to_string())
+                });
+                return self.show_signup(invite, window, cx);
+            }
             // A key lost from the keychain (an interrupted removal, a reset keychain): say what to do (Task 27).
             Err(ClientError::Store(m)) if m.contains("key is missing") => {
                 return self.show_sign_in(
@@ -356,6 +454,7 @@ impl AppView {
     fn open_workspace(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         let mut launch = self.launch.clone();
         launch.handoff = Some(client);
+        launch.after_signup = std::mem::take(&mut self.after_signup);
         match crate::open_window_in(cx, launch, WindowMode::Workspace) {
             Ok(handle) => {
                 // The instance's window is the workspace window from now on (Task 27's registry).
@@ -394,9 +493,59 @@ impl AppView {
             }
         })
         .detach();
+        // Task 25: the create, join and invite dialogs act on this client and move the shell to what they made.
+        let to_shell = shell.downgrade();
+        crate::screens::create::attach(
+            window,
+            client.clone(),
+            Rc::new(move |to: Navigate, _: &mut Window, cx: &mut gpui::App| {
+                let _ = to_shell.update(cx, |s, cx| {
+                    s.pick_community(to.community, cx);
+                    if let Some(channel) = to.channel {
+                        s.select(channel, cx);
+                    }
+                });
+            }),
+            cx,
+        );
+        self.shell = Some(shell.clone());
         self.focus_shell(&shell, window, cx);
         self.screen = Screen::Shell(shell);
         self.fit_window(window, cx);
+        let after_signup = std::mem::take(&mut self.after_signup);
+        // An invite this window was opened with (Task 27), for a running client: the join dialog takes it (a sign-up's
+        // own join is done by the sign-up).
+        if !after_signup && let Some(invite) = self.launch.invite.take() {
+            crate::screens::create::open_join(Some(invite), cx);
+        }
+        let starts_ready = client.state().borrow().account.phase == AccountPhase::Ready;
+        if after_signup || !starts_ready {
+            // A new account, or any client that starts before it is ready (the app closed at the factor step and opened
+            // again): once its factor is in place (Task 26's screens) it is ready, and if a sign-up's join is kept in the
+            // store, the invite's server is joined (a refused join is the result, not a failure) and the done step shows.
+            let mut ready = client.state();
+            let client = client.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                if !after_signup && !client.onboarding().has_pending_join().await {
+                    return;
+                }
+                loop {
+                    let phase = ready.borrow_and_update().account.phase;
+                    if phase == AccountPhase::Ready {
+                        break;
+                    }
+                    if ready.changed().await.is_err() {
+                        return;
+                    }
+                }
+                let result = client.onboarding().finish_signup().await;
+                client.refresh();
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.show_done(client, result, window, cx)
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -482,6 +631,8 @@ impl Render for AppView {
                 )
             }
             Screen::SignIn(view) => view.clone().into_any_element(),
+            Screen::Signup(view) => view.clone().into_any_element(),
+            Screen::Done(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
         };
         // A window that draws its own frame is resized from strips at its rim.

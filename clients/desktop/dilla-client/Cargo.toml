@@ -59,6 +59,10 @@ dilla-testkit = { path = "../../../testkit", optional = true }
 hmac = { version = "0.13", optional = true }
 sha1 = { version = "0.11", optional = true }
 
+# Task 25: the recovery key file is opened with O_NOFOLLOW (already in the lock).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Tests and examples get the real-dillad helpers (src/testing/host.rs) without a feature flag, and every test target
 # builds with the `testing` feature (Client::snapshots, the feed fault hooks), so a plain `cargo test -p dilla-client`
