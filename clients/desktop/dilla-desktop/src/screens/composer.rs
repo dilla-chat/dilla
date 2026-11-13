@@ -225,7 +225,10 @@ impl Composer {
         match event {
             InputEvent::Change => {
                 self.active = 0;
-                let empty = input.read(cx).value().trim().is_empty();
+                // Task 20's `/` list reads the draft the composer reports.
+                let draft = input.read(cx).value().to_string();
+                crate::screens::commands::draft_changed(&draft, cx);
+                let empty = draft.trim().is_empty();
                 if let (Some(client), Some(channel)) = (&self.slots.client, self.loaded) {
                     // Someone writing signals typing (at most every 3 s); an emptied field stops it.
                     client.messages().typing(channel, !empty);
@@ -365,6 +368,21 @@ impl Composer {
         if raw.trim().is_empty() && !files {
             return;
         }
+        // Task 20: a draft without files is the bot area's to decide first: posted (`//x` as `/x`, a built-in's text),
+        // answered privately on this device, or kept (a command still lacking its arguments).
+        let raw = if files {
+            raw
+        } else {
+            match crate::screens::commands::on_send(&self.slots, &raw, cx) {
+                crate::screens::commands::SendDecision::Post(text) => text,
+                crate::screens::commands::SendDecision::Handled => {
+                    self.clear_sent(window, cx);
+                    cx.notify();
+                    return;
+                }
+                crate::screens::commands::SendDecision::Keep => return,
+            }
+        };
         let posted = self.encoded(&composing::outgoing(&raw));
         // Over the budget the text stays in the field; the counter already says by how much.
         if posted.len() > MAX_LEN {
@@ -384,6 +402,13 @@ impl Composer {
         if raw.trim().is_empty() && attachments.is_empty() {
             return;
         }
+        self.clear_sent(window, cx);
+        cx.emit(Sent(posted, attachments));
+        cx.notify();
+    }
+
+    /// The draft went (posted, or answered privately): the field empties, typing stops and the stored draft goes.
+    fn clear_sent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
         self.dismissed = None;
         if let (Some(client), Some(channel)) = (&self.slots.client, self.loaded) {
@@ -391,8 +416,6 @@ impl Composer {
         }
         self.save = None;
         self.write_draft(cx);
-        cx.emit(Sent(posted, attachments));
-        cx.notify();
     }
 
     /// The keys the textarea would take itself, offered to the mention list and the edit shortcut first.

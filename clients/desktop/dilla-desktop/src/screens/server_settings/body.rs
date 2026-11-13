@@ -129,6 +129,9 @@ pub struct Body {
     dialogue: Dialogue,
     dialogue_busy: bool,
     dialogue_error: Option<SharedString>,
+    /// The edit dialog's "Bot channel" switch (ChannelEditFlow.tsx): a mark in flight, and why the last one failed.
+    bot_marking: bool,
+    bot_mark_error: Option<String>,
     edit_name: Entity<InputState>,
     edit_topic: Entity<InputState>,
     edit_parent: String,
@@ -248,6 +251,8 @@ impl Body {
             dialogue: Dialogue::None,
             dialogue_busy: false,
             dialogue_error: None,
+            bot_marking: false,
+            bot_mark_error: None,
             edit_name,
             edit_topic,
             edit_parent: "top".into(),
@@ -734,6 +739,40 @@ impl Body {
             let reply = client.server_admin().load_access(self.community);
             self.run(reply, window, cx, |_, _, _, cx| cx.notify());
         }
+        cx.notify();
+    }
+
+    /// ChannelEditFlow.tsx `mark`: the "Bot channel" switch acts at once, beside the form (the mark is the instance's, not
+    /// a field of the channel); the catalog's next read shows it.
+    fn mark_bot_channel(&mut self, channel: ChannelId, on: bool, cx: &mut Context<Self>) {
+        if self.bot_marking {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.bot_marking = true;
+        self.bot_mark_error = None;
+        let admin = client.bot_admin();
+        let reply = if on {
+            admin.mark_bot_channel(self.community, channel)
+        } else {
+            admin.unmark_bot_channel(self.community, channel)
+        };
+        cx.spawn(async move |this, cx| {
+            let answer = reply.await;
+            let _ = this.update(cx, |this, cx| {
+                this.bot_marking = false;
+                let code = match answer {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(crate::screens::bot_admin::bot_page::refusal_of(&e).0),
+                    Err(_) => Some("E_DROPPED".to_owned()),
+                };
+                this.bot_mark_error = code.map(|code| tf("bot.channel.error", &[("code", &code)]));
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 

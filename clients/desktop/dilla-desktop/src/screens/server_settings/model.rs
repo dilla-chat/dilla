@@ -10,6 +10,22 @@ use dilla_desktop_ui::IconName;
 use crate::router::ServerSection;
 use crate::strings::{t, tf};
 
+/// ChannelEditFlow.tsx `canMark` (Bot v2 Task 22): a readable text channel (mode 0) that is not the AFK channel can be a
+/// Bot channel; only who manages the server marks one.
+pub fn can_mark_bot_channel(channel: &Channel, afk: bool, access: &Access) -> bool {
+    channel.kind == 0 && channel.mode == 0 && !afk && access.loaded && access.manage_community
+}
+
+/// ChannelEditFlow.tsx `botChannel`: the catalog lists the channel among its community's Bot channels.
+pub fn is_bot_channel(state: &dilla_client::state::AppState, channel: &Channel) -> bool {
+    state
+        .bot
+        .catalogs
+        .get(&channel.community_id)
+        .and_then(|c| c.bot_channels.as_ref())
+        .is_some_and(|ids| ids.contains(&channel.id))
+}
+
 /// registry.ts `server(..)` `visible`: a section is offered when the permissions are read and allow it.
 pub fn visible(section: ServerSection, access: &Access) -> bool {
     if !access.loaded {
@@ -340,6 +356,62 @@ mod tests {
         };
         f(&mut a);
         a
+    }
+
+    /// Integration 3, step 5 (ChannelEditFlow.tsx, Bot v2 Task 22): the "Bot channel" switch is offered on a readable
+    /// text channel that is not the AFK channel, to who manages the server; it is on while the catalog lists the channel
+    /// among the Bot channels.
+    #[test]
+    fn the_bot_channel_switch_follows_channel_edit_flow() {
+        let manager = access(|a| a.manage_community = true);
+        let text = ch(1, 0, None, 0);
+        assert!(can_mark_bot_channel(&text, false, &manager));
+        assert!(
+            !can_mark_bot_channel(&text, true, &manager),
+            "the AFK channel"
+        );
+        assert!(
+            !can_mark_bot_channel(&ch(2, 1, None, 0), false, &manager),
+            "a voice channel"
+        );
+        let mut announce = text.clone();
+        announce.mode = 1;
+        assert!(
+            !can_mark_bot_channel(&announce, false, &manager),
+            "not a readable one"
+        );
+        assert!(
+            !can_mark_bot_channel(&text, false, &access(|_| {})),
+            "not a manager"
+        );
+        let unloaded = Access {
+            manage_community: true,
+            ..Access::default()
+        };
+        assert!(
+            !can_mark_bot_channel(&text, false, &unloaded),
+            "before the read"
+        );
+        let mut s = dilla_client::state::AppState::default();
+        let community = text.community_id;
+        assert!(!is_bot_channel(&s, &text), "no catalog");
+        s.bot.catalogs.insert(
+            community,
+            dilla_client::state::bot::BotCatalogView {
+                revision: 1,
+                commands: Vec::new(),
+                status: dilla_client::state::bot::BotStatus {
+                    state: dilla_client::state::bot::BotStatusState::Ready,
+                    since: None,
+                },
+                bot_channels: Some(vec![text.id]),
+                bot_user: None,
+                bot_name: String::new(),
+                fingerprint: None,
+            },
+        );
+        assert!(is_bot_channel(&s, &text));
+        assert!(!is_bot_channel(&s, &ch(3, 0, None, 0)));
     }
 
     fn ch(id: u8, kind: u8, parent: Option<u8>, position: u32) -> Channel {

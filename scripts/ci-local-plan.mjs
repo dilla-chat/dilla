@@ -126,7 +126,7 @@ export const EXTRA_JOBS = {
       'cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
       'cargo test -p dilla-client --test calls --locked -- --ignored',
       'cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored',
-      'cargo test -p dilla-client --test attachments --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored',
+      'cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored',
       'cargo test -p dilla-client --test notify --locked -- --ignored --skip dm_from_tab_reaches_peer_reply_badges_until_read --skip dm_opened_by_peer_appears_badges_notifies_live',
       'cargo build -p dilla-testkit --bin dilla-testkit --locked',
       'cargo test -p dilla-client --test dms --locked -- --ignored',
@@ -137,7 +137,7 @@ export const EXTRA_JOBS = {
       // automation-gated suites never ran), and its lint.
       'cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings',
       'cargo test -p dilla-desktop --features automation --locked',
-      'cargo test -p dilla-desktop --features automation --test members --test search --test server_settings --test settings_host --test shell --test user_settings --test voice_settings --locked -- --ignored --skip parity_',
+      'cargo test -p dilla-desktop --features automation --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test user_settings --test voice_settings --locked -- --ignored --skip parity_',
       'cargo test -p dilla-desktop --test slice --locked -- --ignored',
       // The media call tests' prerequisites (desktop-gpui.yml builds packages/media's wasm with clang 23 and installs Chromium).
       'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
