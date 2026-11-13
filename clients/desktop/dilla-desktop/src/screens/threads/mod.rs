@@ -5,8 +5,8 @@
 //! ([`view::PaneView`]) with a composer of its own.
 //!
 //! What the hooks cannot be handed by their signatures is kept in one [`Ui`] global: per window, the [`SlotCx`] its shell
-//! last drew (the aside's hook gets only a route), its pane and its pending jump; the focus handles of the thread chips (a closing pane gives focus back to its chip),
-//! and, in a fixture with no client, the open thread and the reply target a running client would keep in
+//! last drew (the aside's hook gets only a route), its pane, its pending jump and the focus handles of its thread chips (a
+//! closing pane gives focus back to its chip); and, in a fixture with no client, the open thread and the reply target a running client would keep in
 //! `AppState::threads`.
 
 use std::collections::HashMap;
@@ -58,14 +58,15 @@ struct PerWindow {
     pane: Option<Entity<PaneView>>,
     /// A reply line was pressed: the message to scroll to and flash. This window's log (Task 9) takes it.
     jump: Option<MessageId>,
+    /// This window's thread chips' focus handles, by root: Enter and Space press one, and a closing pane gives focus
+    /// back to it (never to a chip of the same thread drawn in another window).
+    chips: HashMap<MessageId, FocusHandle>,
 }
 
 /// What the area keeps between frames.
 #[derive(Default)]
 struct Ui {
     windows: HashMap<WindowId, PerWindow>,
-    /// A thread chip's focus handle, by root: Enter and Space press it, and a closing pane gives focus back to it.
-    chips: HashMap<MessageId, FocusHandle>,
     /// The channel each client (by the address of its `Rc<Client>`) was asked to keep the summaries of: one per client, so
     /// leaving a channel untracks it, and one client's channel is never another's.
     tracked: HashMap<usize, ChannelId>,
@@ -210,7 +211,7 @@ pub fn close_thread(window: &mut Window, cx: &mut App) {
         Some(client) => client.threads().close(),
         None => ui(cx).local_open = None,
     }
-    if let Some(handle) = ui(cx).chips.get(&open.root).cloned() {
+    if let Some(handle) = per_window(wid(window), cx).chips.get(&open.root).cloned() {
         window.focus(&handle, cx);
     }
     cx.refresh_windows();
@@ -342,7 +343,7 @@ pub fn reply_chip(
 pub fn thread_count(
     item: &TimelineItem,
     ctx: &SlotCx,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> Option<Extra> {
     remember(ctx, cx);
@@ -364,12 +365,13 @@ pub fn thread_count(
         "thread.summary.last",
         &[("time", &time_of(summary.last_ts, ctx.clock))],
     );
-    let focus = ui(cx)
+    let here = wid(window);
+    let focus = per_window(here, cx)
         .chips
         .get(&root)
         .cloned()
         .unwrap_or_else(|| cx.focus_handle().tab_stop(true));
-    ui(cx).chips.insert(root, focus.clone());
+    per_window(here, cx).chips.insert(root, focus.clone());
     let opener = ctx.clone();
     let probe = focus.clone();
     let chip = ThreadChip::new("thread-chip", label)
@@ -774,5 +776,50 @@ mod tests {
         press(b, cx);
         cx.run_until_parked();
         assert_eq!(*log_b.borrow(), 0, "B's read-only view refuses the send");
+    }
+
+    /// Review N4: a thread chip's focus handle is its window's. The same thread drawn in two windows (two accounts on one
+    /// server) has a chip in each, and a closing pane in A gives focus back to A's chip, never B's.
+    #[gpui::test]
+    fn each_window_keeps_its_own_thread_chips(cx: &mut TestAppContext) {
+        use dilla_client::state::threads::ThreadSummary;
+        let (ctx, channel) = channel_ctx(None);
+        let root = MessageId([7; 16]);
+        let mut state = (*ctx.state).clone();
+        state.threads.summaries.insert(
+            channel,
+            std::iter::once((
+                root,
+                ThreadSummary {
+                    count: 2,
+                    last_ts: 1,
+                },
+            ))
+            .collect(),
+        );
+        let ctx = SlotCx {
+            state: Arc::new(state),
+            ..ctx
+        };
+        let a = cx.add_window(|_, _| Blank);
+        let b = cx.add_window(|_, _| Blank);
+        for w in [a, b] {
+            w.update(cx, |_, window, cx| {
+                thread_count(&item(TimelineItemState::Ok, "root"), &ctx, window, cx)
+                    .expect("the chip draws");
+            })
+            .unwrap();
+        }
+        let chip = |w: gpui::WindowHandle<Blank>, cx: &mut TestAppContext| {
+            let id = w.window_id();
+            cx.update(|cx| {
+                ui(cx)
+                    .windows
+                    .get(&id)
+                    .and_then(|p| p.chips.get(&root).cloned())
+            })
+            .expect("a chip handle")
+        };
+        assert_ne!(chip(a, cx), chip(b, cx), "each window has its own chip");
     }
 }
