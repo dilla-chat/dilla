@@ -61,6 +61,8 @@ pub struct VoiceUi {
     /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
     told_in_call: Option<Option<String>>,
     told_roster: Option<(ChannelId, Vec<UserId>)>,
+    /// The AFK page's Come back: the shell's way to a text channel this person can send in ([`set_come_back`]).
+    come_back: Option<crate::screens::ring::OnComeBack>,
 }
 
 impl Global for VoiceUi {}
@@ -189,6 +191,139 @@ fn tell_ring(state: &AppState, client: &Rc<Client>, cx: &mut App) {
             client.ring().voice_roster(channel, &users);
         }
     }
+}
+
+/// The shell's way out of the AFK page (Shell.tsx `onLeaveAfk`), set on each render of the shell.
+pub fn set_come_back(come_back: crate::screens::ring::OnComeBack, cx: &mut App) {
+    if !cx.has_global::<VoiceUi>() {
+        cx.set_global(VoiceUi::default());
+    }
+    cx.global_mut::<VoiceUi>().come_back = Some(come_back);
+}
+
+/// The slot context of the stage's channel, from what the voice hooks hold (the ring area's stage reads take one).
+fn stage_ctx(ui: &VoiceUi, channel: &Channel) -> crate::slots::SlotCx {
+    crate::slots::SlotCx {
+        state: ui.state.clone(),
+        client: ui.client.clone(),
+        community: Some(channel.community_id),
+        channel: Some(channel.id),
+        clock: crate::screens::shell::Clock::Local,
+    }
+}
+
+/// The AFK channel's page (VoiceView.tsx `AfkPage`), in place of the stage, when `channel` is its server's AFK channel:
+/// the stage's title bar, the stage notice and the ring area's page (Task 18: who is away, the server's timeout, Go AFK
+/// or Come back). A server whose AFK snapshot is not read yet is asked for it (`Ring::load_afk` reads one at a time) and
+/// shows the ordinary stage meanwhile.
+fn afk_stage(channel: &Channel, cx: &mut App) -> Option<AnyElement> {
+    let ui = ui(cx)?;
+    let community = channel.community_id;
+    let Some(snapshot) = ui.state.ring.afk.get(&community) else {
+        if let Some(client) = &ui.client {
+            drop(client.ring().load_afk(community));
+        }
+        return None;
+    };
+    if snapshot.channel != Some(channel.id) {
+        return None;
+    }
+    let ctx = stage_ctx(ui, channel);
+    let come_back = ui
+        .come_back
+        .clone()
+        .unwrap_or_else(|| Rc::new(|_: &mut Window, _: &mut App| {}));
+    let page = crate::screens::ring::afk_page(&ctx, community, come_back)?;
+    let stage = div()
+        .id("voice-stage")
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .bg(color::BG)
+        .child(stage_title(channel))
+        .children(ring_notice(&ctx.state, channel))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(tracked("voice-afk-page", page)),
+        );
+    Some(tracked("voice-stage-root", stage).into_any_element())
+}
+
+/// The stage's title bar: the channel's name.
+fn stage_title(channel: &Channel) -> Div {
+    div()
+        .flex_none()
+        .h(layout::BAR)
+        .px(px(14.0))
+        .flex()
+        .items_center()
+        .border_b_1()
+        .border_color(color::HAIRLINE)
+        .child(line(channel.name.clone(), text::MD, 18.0, color::FG).weight(font::WEIGHT_LABEL))
+}
+
+/// The ring area's stage notice for `channel` (VoiceView.tsx `stageNotice`): a block (Task 18's
+/// `ring::block_notice`, with the comparison of the changed contact it names), else the line an AFK move left on the
+/// stage of a voice channel of that server (`ring::afk_moved`).
+pub fn ring_notice(state: &AppState, channel: &Channel) -> Option<AnyElement> {
+    use crate::screens::ring::{afk_moved, block_notice};
+    if let Some(n) = block_notice(state, channel.id, |u| {
+        dilla_client::features::ring::name_of(state, u)
+    }) {
+        let record = n.compare.and_then(|u| {
+            state
+                .trust
+                .contacts
+                .iter()
+                .find(|r| r.user_id == u)
+                .cloned()
+        });
+        return Some(notice_strip("voice-blocked", n.text, record));
+    }
+    let afk_channel = state
+        .ring
+        .afk
+        .get(&channel.community_id)
+        .and_then(|s| s.channel);
+    let moved = state
+        .ring
+        .afk_notice
+        .as_ref()
+        .filter(|n| n.community == channel.community_id && afk_channel != Some(channel.id))
+        .and_then(|_| {
+            afk_moved(state, |id| {
+                state
+                    .channel(id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default()
+            })
+        })?;
+    Some(notice_strip("voice-afk-moved", moved, None))
+}
+
+/// One stage notice: its line, and the comparison it offers (`voice.pausedAction`) when it names a changed contact.
+fn notice_strip(
+    id: &'static str,
+    text: String,
+    compare: Option<dilla_client::state::trust::TrustSummary>,
+) -> AnyElement {
+    let action = compare.map(|record| {
+        tracked_box(
+            "voice-notice-compare",
+            dilla_desktop_ui::components::Button::new(
+                "voice-notice-compare-b",
+                t("voice.pausedAction"),
+            )
+            .on_click(move |_, _, cx| {
+                let client = ui(cx).and_then(|u| u.client.clone());
+                crate::screens::dms::compare::open(&record, client, cx);
+            }),
+        )
+    });
+    tracked_box(id, notice_box(text).children(action)).into_any_element()
 }
 
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): its handle and its call's media session go,
@@ -596,6 +731,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     if channel.kind != 1 {
         return None;
     }
+    if let Some(page) = afk_stage(channel, cx) {
+        return Some(page);
+    }
     if ui(cx)?.stage_focus.is_none() {
         let handle = cx.focus_handle();
         cx.global_mut::<VoiceUi>().stage_focus = Some(handle);
@@ -695,15 +833,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             }))
             .into_any_element()
     };
-    let title = div()
-        .flex_none()
-        .h(layout::BAR)
-        .px(px(14.0))
-        .flex()
-        .items_center()
-        .border_b_1()
-        .border_color(color::HAIRLINE)
-        .child(line(channel.name.clone(), text::MD, 18.0, color::FG).weight(font::WEIGHT_LABEL));
+    let title = stage_title(channel);
     let n = keys.len();
     let stage = div()
         .id("voice-stage")
@@ -715,6 +845,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .bg(color::BG)
         .on_key_down(move |e, window, cx| stage_key(&e.keystroke.key, n, window, cx))
         .child(title)
+        .children(ring_notice(&state, channel))
         .child(notice(&state))
         .child(
             div()
@@ -959,20 +1090,9 @@ fn tile(
         .into_any_element()
 }
 
-/// The media notice over the tiles, until dismissed.
-fn notice(state: &AppState) -> AnyElement {
-    let key = match state.voice.notice {
-        None => return div().into_any_element(),
-        Some(VoiceNotice::MicLost) => "voice.micMissing",
-        Some(VoiceNotice::SpeakerLost) => "voice.outputFailed",
-        Some(VoiceNotice::DevicesChanged) => "voice.outputFailed",
-        Some(VoiceNotice::EnhancedUnavailable | VoiceNotice::EnhancedFailed) => "voice.micFailed",
-        Some(VoiceNotice::ShareCancelled) => "voice.why.noShare",
-        Some(VoiceNotice::ShareWithoutSound) => "voice.shareAudio.none.application",
-        Some(VoiceNotice::MediaFailed) => "voice.failed",
-    };
+/// A stage notice's box: the warning glyph and its line (the media notice and the ring area's notices).
+fn notice_box(text: String) -> Div {
     div()
-        .id("voice-notice")
         .mx(px(14.0))
         .mt(px(14.0))
         .px(px(12.0))
@@ -989,11 +1109,23 @@ fn notice(state: &AppState) -> AnyElement {
                 .size(px(14.0))
                 .color(color::WARN),
         )
-        .child(
-            div()
-                .flex_1()
-                .child(line(t(key), text::UI, 15.6, color::FG)),
-        )
+        .child(div().flex_1().child(line(text, text::UI, 15.6, color::FG)))
+}
+
+/// The media notice over the tiles, until dismissed.
+fn notice(state: &AppState) -> AnyElement {
+    let key = match state.voice.notice {
+        None => return div().into_any_element(),
+        Some(VoiceNotice::MicLost) => "voice.micMissing",
+        Some(VoiceNotice::SpeakerLost) => "voice.outputFailed",
+        Some(VoiceNotice::DevicesChanged) => "voice.outputFailed",
+        Some(VoiceNotice::EnhancedUnavailable | VoiceNotice::EnhancedFailed) => "voice.micFailed",
+        Some(VoiceNotice::ShareCancelled) => "voice.why.noShare",
+        Some(VoiceNotice::ShareWithoutSound) => "voice.shareAudio.none.application",
+        Some(VoiceNotice::MediaFailed) => "voice.failed",
+    };
+    notice_box(t(key).to_owned())
+        .id("voice-notice")
         .child(
             IconButton::new(
                 "voice-notice-close",
@@ -1023,6 +1155,10 @@ fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
         .border_t_1()
         .border_color(color::HAIRLINE);
     if !joined {
+        // Flow 06: no join button while a block holds the join back (Task 18's `join_held`).
+        if crate::screens::ring::join_held(state, channel) {
+            return bar.into_any_element();
+        }
         let busy = state.voice.call.channel == Some(channel);
         return bar
             .child(tracked_box(

@@ -35,7 +35,12 @@ pub const APP_ID: &str = "dev.dilla.desktop.preview";
 /// Gives `child` the element id `id`, which the test-only automation interface looks up by name.
 /// Without the `automation` feature this is a plain id-carrying wrapper.
 pub fn tracked(id: &'static str, child: impl IntoElement) -> impl IntoElement {
-    let wrapper = div().id(id).relative().size_full().child(child);
+    let wrapper = div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .relative()
+        .size_full()
+        .child(child);
     #[cfg(feature = "automation")]
     let wrapper = wrapper.child(automation::bounds_probe(id));
     wrapper
@@ -44,7 +49,12 @@ pub fn tracked(id: &'static str, child: impl IntoElement) -> impl IntoElement {
 /// [`tracked`] for an element that keeps its own size (a button, a field, a row): the wrapper takes the child's size
 /// instead of filling its parent.
 pub fn tracked_box(id: &'static str, child: impl IntoElement) -> impl IntoElement {
-    let wrapper = div().id(id).relative().flex_none().child(child);
+    let wrapper = div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .relative()
+        .flex_none()
+        .child(child);
     #[cfg(feature = "automation")]
     let wrapper = wrapper.child(automation::bounds_probe(id));
     wrapper
@@ -57,7 +67,12 @@ pub fn tracked_focus<C: IntoElement>(
     handle: &gpui::FocusHandle,
     child: C,
 ) -> impl IntoElement + use<C> {
-    let wrapper = div().id(id).relative().flex_none().child(child);
+    let wrapper = div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .relative()
+        .flex_none()
+        .child(child);
     #[cfg(feature = "automation")]
     let wrapper = wrapper
         .child(automation::bounds_probe(id))

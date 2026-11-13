@@ -40,9 +40,15 @@ pub struct HeaderModel<'a> {
     pub members: usize,
     /// The aside that is open (`None`: none).
     pub aside: Option<AsideKind>,
+    /// A DM's call button (VoiceView.tsx `dmCallStart`, an icon in the DM header): its label (`call.start` or
+    /// `call.join`) and what it does; `None` where there is nothing to start.
+    pub call: Option<(&'static str, OnCall)>,
 }
 
 pub type OnToggle = Rc<dyn Fn(AsideKind, &mut Window, &mut App)>;
+
+/// The DM call button's press.
+pub type OnCall = Rc<dyn Fn(&mut Window, &mut App)>;
 
 pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> impl IntoElement + use<> {
     let name = model.channel.map_or_else(String::new, |c| c.name.clone());
@@ -51,6 +57,13 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> impl IntoElement
     let count = model.members.to_string();
     let members_label = tf("layout.header.membersCount", &[("n", count.as_str())]);
     let members_tip = SharedString::from(t("layout.header.members"));
+    let call = model.call.clone().map(|(label, on_call)| {
+        crate::tracked_box(
+            "header-dm-call",
+            BarButton::new("header-dm-call-b", IconName::Phone, label)
+                .on_click(move |_: &ClickEvent, window, cx| on_call(window, cx)),
+        )
+    });
     let members_button = div()
         .id("header-members-tip")
         .relative()
@@ -101,6 +114,7 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> impl IntoElement
                 .flex()
                 .items_center()
                 .gap(Pixels::from(css::ACTIONS_GAP))
+                .children(call)
                 .child(
                     BarButton::new(
                         "header-threads",

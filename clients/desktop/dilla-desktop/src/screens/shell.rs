@@ -4,7 +4,7 @@
 //! kept in prefs, `layout.*`); the shell keeps the route history. Sizes come from the web CSS (AppShell.css, TopBar.css,
 //! CommunityRail.css, UserPanel.css, ChannelHeader.css) and Task 6's components.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -167,6 +167,8 @@ pub struct ShellView {
     aside_splitter: FocusHandle,
     /// The shipping window: the title bar draws the window's own controls.
     controls: bool,
+    /// The text channel last opened in each server: the AFK page's Come back returns there (Shell.tsx `lastText`).
+    last_text: HashMap<CommunityId, ChannelId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -223,6 +225,7 @@ impl ShellView {
             sidebar_splitter: cx.focus_handle().tab_stop(true),
             aside_splitter: cx.focus_handle().tab_stop(true),
             controls: false,
+            last_text: HashMap::new(),
             _subscriptions: vec![sent],
         };
         this.settle_selection(cx);
@@ -232,6 +235,34 @@ impl ShellView {
         this.history = History::new(route);
         this.log.scroll_to_bottom();
         this
+    }
+
+    /// The AFK page's Come back (Shell.tsx `onLeaveAfk`, `textChannelHere`): the server's text channel last opened when
+    /// this person can send in it, else the first one in list order they can send in; with none the page stays.
+    pub fn leave_afk(&mut self, cx: &mut Context<Self>) {
+        let Some(community) = self.community else {
+            return;
+        };
+        let state = self.state.clone();
+        // Shell.tsx `canSendIn`: a plain text channel whose group is readable; unknown bits (a slice still loading)
+        // behave as the composer does, sending is not refused here.
+        let can_send = |c: &Channel| {
+            c.kind == 0
+                && c.mode == 0
+                && c.group != dilla_client::state::ChannelGroupState::Unsupported
+                && dilla_client::features::roles::viewer_channel_bits(&state, c.id)
+                    .is_none_or(|b| b & dilla_client::state::threads::SEND_MESSAGES != 0)
+        };
+        let ordered = channel_list::ordered(&state, community);
+        let last = self.last_text.get(&community).copied();
+        let to = ordered
+            .iter()
+            .find(|c| Some(c.id) == last && can_send(c))
+            .or_else(|| ordered.iter().find(|c| can_send(c)))
+            .map(|c| c.id);
+        if let Some(to) = to {
+            self.select(to, cx);
+        }
     }
 
     /// The running client this shell shows (`None` for a fixture).
@@ -404,6 +435,9 @@ impl ShellView {
         }
         self.channel = Some(channel);
         self.pinned = true;
+        if let Some(c) = self.state.channel(channel).filter(|c| c.is_text()) {
+            self.last_text.insert(c.community_id, channel);
+        }
         let slots = self.slot_cx();
         self.composer
             .update(cx, |composer, _| composer.set_slots(slots));
@@ -1104,7 +1138,30 @@ impl Render for ShellView {
         );
         let ring = crate::screens::ring::ring_banner(window, cx);
         // A voice channel's stage takes over the conversation (17): its own header, the tiles and the controls.
+        // The AFK page's Come back opens a text channel this person can send in (Shell.tsx `onLeaveAfk`).
+        let back = shell.clone();
+        crate::screens::voice::set_come_back(
+            Rc::new(move |_, cx| {
+                let _ = back.update(cx, |shell, cx| shell.leave_afk(cx));
+            }),
+            cx,
+        );
         let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
+        // A DM: its call button in the header (VoiceView.tsx `dmCallStart`, Task 18: none while in that call or while a
+        // block holds the join), and the call's notice strip under the header while this device is not in its call.
+        let dm_call = channel.filter(|_| self.dm_view).and_then(|dm| {
+            let id = dm.id;
+            let in_call = crate::screens::voice::joined(&state, id);
+            let live = crate::screens::voice::count(&state, id) > 0;
+            crate::screens::ring::dm_call_start(&state, id, in_call, live).map(|label| {
+                let on_call: header::OnCall =
+                    Rc::new(move |_, cx| crate::screens::voice::join(id, cx));
+                (label, on_call)
+            })
+        });
+        let dm_strip = channel
+            .filter(|dm| self.dm_view && !crate::screens::voice::joined(&state, dm.id))
+            .and_then(|dm| crate::screens::voice::ring_notice(&state, dm));
 
         let weak = shell.clone();
         let on_toggle: header::OnToggle = Rc::new(move |kind, _, cx| {
@@ -1129,9 +1186,11 @@ impl Render for ShellView {
                             (aside.is_some() && crate::screens::members::is_open(cx))
                                 .then_some(AsideKind::Members)
                         }),
+                        call: dm_call,
                     },
                     &on_toggle,
                 ))
+                .children(dm_strip.map(|s| div().flex_none().child(s)))
                 .child(div().flex_1().min_h_0().child(log))
                 .child(div().flex_none().child(self.composer.clone())),
         };

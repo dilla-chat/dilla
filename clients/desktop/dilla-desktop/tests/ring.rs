@@ -447,3 +447,228 @@ fn an_afk_move_is_said_once_with_its_reason() {
     );
     assert!(s.ring.is_away(c, BOB));
 }
+
+// ---- integration 3, step 0 item 2: the voice stage and the DM header read the ring area's state ----
+
+const SERVER: CommunityId = CommunityId([0x51; 16]);
+const GENERAL: ChannelId = ChannelId([0x61; 16]);
+const LOUNGE: ChannelId = ChannelId([0x62; 16]);
+const IDLE: ChannelId = ChannelId([0x63; 16]);
+
+fn chan(id: ChannelId, kind: u8, name: &str, position: u32) -> dilla_client::state::Channel {
+    dilla_client::state::Channel {
+        id,
+        community_id: SERVER,
+        kind,
+        mode: 0,
+        name: name.into(),
+        topic: String::new(),
+        parent_id: None,
+        position,
+        slowmode: 0,
+        text_group_id: None,
+        group: dilla_client::state::ChannelGroupState::Active,
+    }
+}
+
+/// A server with #general, the voice channel Lounge and the AFK channel Idle, and a DM with Bob.
+fn server() -> AppState {
+    let mut s = AppState::default();
+    s.communities.push(dilla_client::state::Community {
+        id: SERVER,
+        name: "Midgard".into(),
+        owner: UserId([9; 16]),
+        policy_version: 0,
+    });
+    s.channels = vec![
+        chan(GENERAL, 0, "general", 0),
+        chan(LOUNGE, 1, "Lounge", 1),
+        chan(IDLE, 1, "Idle", 2),
+    ];
+    s.dms.list = Some(vec![dilla_client::state::dms::DmSummary {
+        id: DM,
+        kind: dilla_client::state::dms::DM_KIND_PAIR,
+        members: vec![BOB],
+        name: "Bob".into(),
+        group: dilla_client::state::ChannelGroupState::Active,
+    }]);
+    s.ring.afk.insert(
+        SERVER,
+        AfkSnapshot {
+            channel: Some(IDLE),
+            timeout_seconds: 300,
+            ..AfkSnapshot::default()
+        },
+    );
+    s
+}
+
+/// The shell on `state`, showing `route`, drawn.
+fn shell_on(
+    state: AppState,
+    route: dilla_desktop::router::Route,
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<dilla_desktop::screens::shell::ShellView>,
+    &mut VisualTestContext,
+) {
+    install(cx);
+    let (shell, vcx) = cx.add_window_view(move |window, cx| {
+        dilla_desktop::screens::shell::ShellView::new(
+            Arc::new(state),
+            None,
+            None,
+            dilla_desktop::screens::shell::Clock::Fixed { now: 0, utc: true },
+            window,
+            cx,
+        )
+    });
+    shell.update(vcx, |s, cx| s.navigate(route, cx));
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    (shell, vcx)
+}
+
+fn lounge() -> dilla_desktop::router::Route {
+    dilla_desktop::router::Route::Channel {
+        community: SERVER,
+        channel: Some(LOUNGE),
+    }
+}
+
+/// VoiceView.tsx `Stage`: a block that holds the join says so on the stage, and the stage offers no join; without one
+/// the join is there and no notice.
+#[gpui::test]
+fn the_stage_says_a_held_block_and_offers_no_join(cx: &mut TestAppContext) {
+    let mut s = server();
+    s.ring.blocked = Some(CallBlock {
+        channel: LOUNGE,
+        code: "E_DEVICE_UNLISTED".into(),
+        changed_user: None,
+        when: BlockWhen::BeforeJoin,
+    });
+    let (_, vcx) = shell_on(s, lounge(), cx);
+    assert!(vcx.debug_bounds("voice-stage-root").is_some(), "the stage");
+    assert!(
+        vcx.debug_bounds("voice-blocked").is_some(),
+        "the block's notice"
+    );
+    assert!(
+        vcx.debug_bounds("voice-join").is_none(),
+        "no join while held"
+    );
+}
+
+#[gpui::test]
+fn the_stage_without_a_block_offers_the_join(cx: &mut TestAppContext) {
+    let (_, vcx) = shell_on(server(), lounge(), cx);
+    assert!(vcx.debug_bounds("voice-join").is_some());
+    assert!(vcx.debug_bounds("voice-blocked").is_none());
+    assert!(
+        vcx.debug_bounds("voice-afk-page").is_none(),
+        "Lounge is no AFK channel"
+    );
+}
+
+/// A changed contact's block offers the comparison.
+#[gpui::test]
+fn a_named_block_on_the_stage_offers_the_comparison(cx: &mut TestAppContext) {
+    let mut s = server();
+    s.ring.blocked = Some(CallBlock {
+        channel: LOUNGE,
+        code: "E_UMK_CHANGED".into(),
+        changed_user: Some(BOB),
+        when: BlockWhen::BeforeJoin,
+    });
+    s.trust
+        .contacts
+        .push(dilla_client::state::trust::TrustSummary {
+            user_id: BOB,
+            name: "Bob".into(),
+            shared: true,
+            umk: "a".repeat(64),
+            first_seen: 1,
+            verified: false,
+            changed_umk: Some("b".repeat(64)),
+            unlisted: false,
+            removed_in: Vec::new(),
+            blocked: None,
+        });
+    let (_, vcx) = shell_on(s, lounge(), cx);
+    assert!(vcx.debug_bounds("voice-blocked").is_some());
+    assert!(vcx.debug_bounds("voice-notice-compare").is_some());
+}
+
+/// VoiceView.tsx `VoiceView`: the server's AFK channel shows the AFK page in place of the stage, and Come back opens the
+/// text channel last opened there.
+#[gpui::test]
+fn the_afk_channel_shows_the_afk_page_and_come_back_returns(cx: &mut TestAppContext) {
+    let (shell, vcx) = shell_on(
+        server(),
+        dilla_desktop::router::Route::Channel {
+            community: SERVER,
+            channel: Some(GENERAL),
+        },
+        cx,
+    );
+    shell.update(vcx, |s, cx| {
+        s.navigate(
+            dilla_desktop::router::Route::Channel {
+                community: SERVER,
+                channel: Some(IDLE),
+            },
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("voice-afk-page").is_some(), "the AFK page");
+    assert!(vcx.debug_bounds("voice-join").is_none(), "no call controls");
+    shell.update(vcx, |s, cx| s.leave_afk(cx));
+    assert_eq!(
+        shell.read_with(vcx, |s, _| s.route().clone()),
+        dilla_desktop::router::Route::Channel {
+            community: SERVER,
+            channel: Some(GENERAL),
+        }
+    );
+}
+
+/// R-AFK4: the move's line shows on a voice channel of that server.
+#[gpui::test]
+fn an_afk_move_is_said_on_the_stage(cx: &mut TestAppContext) {
+    let mut s = server();
+    s.ring.afk_notice = Some(AfkNotice {
+        community: SERVER,
+        channel: Some(IDLE),
+        reason: 1,
+        seq: 1,
+    });
+    let (_, vcx) = shell_on(s, lounge(), cx);
+    assert!(vcx.debug_bounds("voice-afk-moved").is_some());
+}
+
+/// VoiceView.tsx `dmCallStart` / `DmCall`: the DM header's call button, gone while a block holds the join, whose notice
+/// then stands under the header.
+#[gpui::test]
+fn the_dm_header_has_its_call_button_until_a_block_holds_it(cx: &mut TestAppContext) {
+    let (_, vcx) = shell_on(server(), dilla_desktop::router::Route::Dm(DM), cx);
+    assert!(vcx.debug_bounds("header-dm-call").is_some(), "Start call");
+    assert!(vcx.debug_bounds("voice-blocked").is_none());
+}
+
+#[gpui::test]
+fn a_held_dm_block_hides_the_call_button_and_says_why(cx: &mut TestAppContext) {
+    let mut s = server();
+    s.ring.blocked = Some(CallBlock {
+        channel: DM,
+        code: "E_DEVICE_UNLISTED".into(),
+        changed_user: None,
+        when: BlockWhen::BeforeJoin,
+    });
+    let (_, vcx) = shell_on(s, dilla_desktop::router::Route::Dm(DM), cx);
+    assert!(vcx.debug_bounds("header-dm-call").is_none());
+    assert!(vcx.debug_bounds("voice-blocked").is_some());
+}
