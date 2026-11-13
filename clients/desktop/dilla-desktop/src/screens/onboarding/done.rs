@@ -307,13 +307,9 @@ impl DoneView {
             })
             .child(summary)
             .children(list)
+            // The web's hint ("Tick the box to continue.") is `d-sr-only`, for screen readers only: not drawn here; it
+            // comes with the accessibility work after the switch.
             .child(ack)
-            .when(!self.saved, |d| {
-                d.child(frame::body_paragraph(
-                    t("onboarding.done.codesHint"),
-                    color::FG_3,
-                ))
-            })
             .into_any_element()
     }
 }
@@ -470,6 +466,28 @@ mod tests {
         view.update(cx, |v, cx| v.open(cx));
         cx.run_until_parked();
         assert_eq!(opened.get(), 1);
+    }
+
+    /// Onboarding.tsx draws the tick's hint `d-sr-only` (for screen readers, never on screen): the step's layout is the
+    /// same ticked or not, so Open dilla does not move when the box is ticked.
+    #[gpui::test]
+    fn the_ticks_hint_is_not_drawn(cx: &mut TestAppContext) {
+        cx.update(crate::install);
+        let (view, vcx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| DoneView::new(result(), Some(ten()), window, cx));
+            Host(view)
+        });
+        let done = view.read_with(vcx, |h, _| h.0.clone());
+        let open_at = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, _| window.refresh());
+            vcx.run_until_parked();
+            vcx.debug_bounds("onboarding-open")
+                .expect("Open dilla is drawn")
+                .origin
+        };
+        let unticked = open_at(vcx);
+        done.update(vcx, |d, cx| d.toggle_saved(cx));
+        assert_eq!(open_at(vcx), unticked, "no hint line above Open dilla");
     }
 
     /// The handover's holder (`AppView::open_workspace`): a launch dropped without a window leaves the codes with the
