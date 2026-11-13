@@ -2303,7 +2303,7 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-client --test sync --locked -- --ignored',
     '    cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
     '    cargo test -p dilla-client --test calls --locked -- --ignored',
-    '    cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --locked -- --ignored',
+    '    cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --locked -- --ignored',
     '    cargo test -p dilla-client --test attachments --test diagnostics --test members --test reactions --test search --locked -- --ignored',
     '    cargo test -p dilla-client --test notify --locked -- --ignored --skip dm_from_tab_reaches_peer_reply_badges_until_read --skip dm_opened_by_peer_appears_badges_notifies_live',
     '    cargo build -p dilla-testkit --bin dilla-testkit --locked',
@@ -2342,6 +2342,25 @@ export const GPUI_PINNED_STEPS = {
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
 /** Test files whose #[ignore] needs something CI cannot give (the real OS keychain, a developer's desktop session). */
 const GPUI_IGNORED_BY_HAND = new Set(['clients/desktop/dilla-client/tests/store.rs']);
+/**
+ * Parity tests parked by controller ruling R22 until the shared-component pass (`#[ignore = "parity after T6c: ..."]`, each carrying
+ * its measured miss). They are known to fail, so no `--ignored` run may pick them up; any other ignore in the same file still counts.
+ * Temporary: the parity sweep removes every such attribute, and this exemption with them.
+ */
+const GPUI_PARKED_PARITY = /#\[\s*ignore\s*=\s*"parity after T6c[^"]*"\s*\]/g;
+/** An ignore that applies only off Linux: the plain Linux run already runs those tests, so no `--ignored` line is owed for it. */
+const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*target_os\s*=\s*"linux"\s*\)\s*,\s*ignore\b[^\]]*\]/g;
+
+/** A test file's source with the ignores that need no Linux `--ignored` run removed (see the two patterns above). */
+function liveIgnoreSource(source) {
+  let s = source.replace(GPUI_PARKED_PARITY, '').replace(GPUI_OFF_LINUX_IGNORE, '');
+  // A macro that forwards its reason (`#[ignore = $why]`) is parked only when every reason literal passed to it is the R22 one.
+  if (/#\[\s*ignore\s*=\s*\$\w+\s*\]/.test(s)) {
+    const reasons = [...s.matchAll(/;\s*"([^"]*)"/g)].map((m) => m[1]);
+    if (reasons.length > 0 && reasons.every((r) => r.startsWith('parity after T6c'))) s = s.replace(/#\[\s*ignore\s*=\s*\$\w+\s*\]/g, '');
+  }
+  return s;
+}
 
 /** The `cargo test ... --ignored` command lines of the gpui job's Linux steps (run blocks, comment lines dropped, wrapped lines joined). */
 function gpuiIgnoredRunLines(text) {
@@ -2382,7 +2401,7 @@ export function checkDesktopGpuiWorkflow(root) {
     } catch { continue; }
     for (const [name, rel] of entries) {
       let source;
-      try { source = readFileSync(join(root, rel), 'utf8'); } catch { continue; }
+      try { source = liveIgnoreSource(readFileSync(join(root, rel), 'utf8')); } catch { continue; }
       if (GPUI_IGNORED_BY_HAND.has(rel) || !/#\[\s*(?:ignore\b|cfg_attr\([^\]]*\bignore\b)/.test(source)) continue;
       const forCrate = runLines.filter((l) => l.includes(`cargo test -p ${crate} `));
       // A run with no --test filter runs every ignored test of the crate.

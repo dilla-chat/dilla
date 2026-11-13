@@ -444,6 +444,7 @@ impl Client {
             focus: None,
             not_member: HashSet::new(),
             resyncing: HashSet::new(),
+            listed: None,
             renew: RenewGate::default(),
             upkeep,
             inner: area_inner,
@@ -950,6 +951,9 @@ struct Publisher {
     focus: Option<ChannelId>,
     not_member: HashSet<GroupId>,
     resyncing: HashSet<GroupId>,
+    /// The communities the last structure load listed (`None` before the first): one listed again after a load left
+    /// it out (a kick, a lifted ban or a leave, then a join) is the engine's [`Engine::rejoined`].
+    listed: Option<HashSet<CommunityId>>,
     /// The renewals of refused sessions (one per ready, one at a time).
     renew: RenewGate,
     /// The account's upkeep, started on every ready.
@@ -1422,6 +1426,51 @@ impl Publisher {
                 })
             })
             .collect();
+        let now: HashSet<CommunityId> = loaded.communities.iter().map(|c| c.id).collect();
+        // controller.ts `dropCommunity`: a server this account is no longer in shows none of its channels' timelines.
+        let dropped: Vec<ChannelId> = self
+            .state
+            .channels
+            .iter()
+            .filter(|c| !now.contains(&c.community_id))
+            .map(|c| c.id)
+            .collect();
+        for id in &dropped {
+            self.state.timelines.remove(id);
+            self.state.messages.unavailable.remove(id);
+        }
+        if let Some(before) = self.listed.replace(now.clone()) {
+            let rejoined: Vec<CommunityId> = now.difference(&before).copied().collect();
+            if !rejoined.is_empty() {
+                // Jonas (2026-11-13), stricter than the web: a server joined again keeps its history hidden until each
+                // text group's removal feed is read (a moderator may have removed a message while the account was
+                // out). The rejoin's activation reads it at once (`Engine::activate`); a group that stays active is
+                // read by the retry, whose 404 resyncs a lost leaf first.
+                let rows = self.engine.groups().await;
+                let groups = loaded
+                    .channels
+                    .iter()
+                    .filter(|c| rejoined.contains(&c.community_id))
+                    .filter_map(|c| c.text_group_id.map(|g| g.0))
+                    .chain(
+                        rows.iter()
+                            .filter(|r| {
+                                r.kind == 0
+                                    && r.community_id
+                                        .is_some_and(|c| rejoined.contains(&CommunityId(c)))
+                            })
+                            .map(|r| r.group_id),
+                    );
+                self.removals.unread.extend(groups);
+                self.retry_removals();
+            }
+            // controller.ts `joinPath`: a server joined again resyncs what was refused while the account was out. This
+            // client learns of the join from the list (it may have been made elsewhere), so a server the previous load
+            // left out is one joined again.
+            for c in rejoined {
+                self.engine.rejoined(c.0);
+            }
+        }
         self.state.communities = loaded.communities;
         self.state.channels = loaded.channels;
         self.state.members = loaded.members;
@@ -1462,6 +1511,15 @@ impl Publisher {
             let Some(group) = channel_group(id, &rows).filter(|g| g.state != 4).cloned() else {
                 continue;
             };
+            // A channel of a server this account is not in (kicked, banned, left) shows no timeline, whatever its
+            // group still holds (controller.ts `dropCommunity`).
+            if group
+                .community_id
+                .is_some_and(|c| !self.state.communities.iter().any(|x| x.id.0 == c))
+            {
+                self.state.timelines.remove(&id);
+                continue;
+            }
             // A removal feed not read yet: the store may hold a message removed meanwhile. The timeline is shown as
             // loading (no timeline), never with what the store holds; a feed that cannot be read is the channel's
             // state (`messages.unavailable`), with why.
