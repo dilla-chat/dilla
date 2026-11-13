@@ -44,7 +44,7 @@ fn parity(name: &str) {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2174 % (the row with reactions sits 1 css px low against the web; not yet traced)"]
+#[ignore = "parity after T6c: chrome 0.2174 % (traced: every row height matches layout.json, but the bottom-anchored log ends 0.28-0.39 css px lower than the web's, so rows round to the next px; the cause between the last row and the composer is not resolved)"]
 fn parity_reactions_bar() {
     parity("bar");
 }
@@ -57,21 +57,21 @@ fn parity_reactions_bar_b() {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.4414 % (the chip rows: as bar)"]
+#[ignore = "parity after T6c: chrome 0.4414 % (as bar: the log end offset)"]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2547 % (as many-wrapping)"]
+#[ignore = "parity after T6c: chrome 0.2547 % (as bar: the log end offset)"]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2792 % (the picker grid cells, 1 css px)"]
+#[ignore = "parity after T6c: chrome 0.2792 % (the picker grid cells, 1 css px; as bar for the rows behind it)"]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }

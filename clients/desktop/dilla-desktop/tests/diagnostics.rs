@@ -36,14 +36,14 @@ fn fixture_path(name: &str) -> PathBuf {
 const NEEDS_HOST: &str = "the diagnostics/section fixture loads in the settings host";
 
 #[test]
-#[ignore = "parity after T6c: 1.3117 % over 0.5 % (the web shot holds live request timings and key-package times; the GPUI settings nav has no server section)"]
+#[ignore = "parity after T6c: 1.2870 % over 0.5 % (the web shot holds the worker's live request round trips and key-package time: needs a parity-only timings hook in the web client; then the settings nav's server section, lane B)"]
 fn parity_diagnostics_section() {
     assert_screen(&fixture_path("diagnostics/section"))
         .unwrap_or_else(|e| panic!("diagnostics/section differs from its web reference: {e}"));
 }
 
 #[test]
-#[ignore = "parity after T6c: 0.9304 % over 0.5 % (as section)"]
+#[ignore = "parity after T6c: 0.9110 % over 0.5 % (as section)"]
 fn parity_diagnostics_section_b() {
     assert_screen(&fixture_path("diagnostics/section-b"))
         .unwrap_or_else(|e| panic!("diagnostics/section-b differs from its web reference: {e}"));
