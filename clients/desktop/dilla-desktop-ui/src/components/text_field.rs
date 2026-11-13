@@ -197,19 +197,6 @@ impl RenderOnce for TextField {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_edge_follows_the_state() {
-        assert_eq!(edge(false, false, false), color::CONTROL_EDGE_FIELD);
-        assert_eq!(edge(false, false, true), color::FG_3);
-        assert_eq!(edge(false, true, true), color::ACCENT);
-        assert_eq!(edge(true, true, true), color::DANGER);
-    }
-}
-
 /// A field's hint (12.5px `--fg-3`): wrapped at `width` when given, else one line.
 pub(crate) fn hint_lines(hint: SharedString, width: Option<f32>) -> gpui::AnyElement {
     let lh = line_height(text::SM, 1.5);
@@ -220,5 +207,18 @@ pub(crate) fn hint_lines(hint: SharedString, width: Option<f32>) -> gpui::AnyEle
             .children(crate::text::paragraph(&hint, text::SM, lh, color::FG_3, w))
             .into_any_element(),
         None => line(hint, text::SM, lh, color::FG_3).into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_edge_follows_the_state() {
+        assert_eq!(edge(false, false, false), color::CONTROL_EDGE_FIELD);
+        assert_eq!(edge(false, false, true), color::FG_3);
+        assert_eq!(edge(false, true, true), color::ACCENT);
+        assert_eq!(edge(true, true, true), color::DANGER);
     }
 }
