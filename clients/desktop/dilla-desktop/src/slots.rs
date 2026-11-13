@@ -197,15 +197,17 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 }
 
 /// The modal surfaces over everything, in paint order: the create, join and invite dialogs (25), the search palette
-/// (23), the DM picker and the safety-number comparison (13), then the delete confirmation and the pins dialog (9).
-/// Toasts (Task 6) and other dialogs join at merge. While any is drawn, Ctrl+K does not open the palette (the shell's
-/// guard).
+/// (23), the DM picker and the safety-number comparison (13), the step-up (26), then the delete confirmation and the pins
+/// dialog (9). Toasts (Task 6) and other dialogs join at merge. While any is drawn, Ctrl+K does not open the palette
+/// (the shell's guard).
 pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = [
         crate::screens::create::overlay(window, cx),
         search::palette(window, cx),
         dms::picker_overlay(&ctx.state, window, cx),
         dms::compare_overlay(&ctx.state, window, cx),
+        // The step-up dialog (26), asked for by Task 21's bot page once it merges.
+        factor::step_up_overlay(window, cx),
     ]
     .into_iter()
     .flatten()

@@ -180,45 +180,13 @@ impl Default for BrowserAuth {
     }
 }
 
-/// browser-auth.ts `canonicalInstance` for a stored instance: no credentials, query or fragment; HTTPS, or HTTP on a
-/// loopback host when `allow_loopback`; the path ends in `/`.
+/// browser-auth.ts `canonicalInstance` for a stored instance: Task 27's [`crate::instances::address::canonical_instance`]
+/// (one implementation for the desktop: no credentials, `?` or `#`; no encoded slash, backslash, NUL or dot, which could
+/// steer the fixed `desktop-auth/` navigation elsewhere; HTTPS, or HTTP on a loopback host when `allow_loopback`; a host
+/// not ending in a dot; the path ends in `/` and is not under `/assets/`).
 pub fn canonical_instance(server: &Url, allow_loopback: bool) -> Result<Url, BrowserAuthError> {
-    let bad = BrowserAuthError::Invalid;
-    // policy.ts: an encoded slash, backslash, NUL or dot could steer the fixed `desktop-auth/` navigation elsewhere.
-    // (Task 25 ports the same function: one copy at merge.)
-    let lower = server.as_str().to_ascii_lowercase();
-    if ["%2f", "%5c", "%00", "%2e"]
-        .iter()
-        .any(|p| lower.contains(p))
-    {
-        return Err(bad("instance URL"));
-    }
-    if !server.username().is_empty()
-        || server.password().is_some()
-        || server.query().is_some()
-        || server.fragment().is_some()
-    {
-        return Err(bad("instance URL"));
-    }
-    let host = server.host_str().unwrap_or_default();
-    if host.is_empty() || host.ends_with('.') {
-        return Err(bad("instance host"));
-    }
-    let loopback = matches!(host, "127.0.0.1" | "[::1]" | "localhost");
-    match server.scheme() {
-        "https" => {}
-        "http" if allow_loopback && loopback => {}
-        _ => return Err(bad("an HTTPS instance is required")),
-    }
-    let mut url = server.clone();
-    if !url.path().ends_with('/') {
-        let path = format!("{}/", url.path());
-        url.set_path(&path);
-    }
-    if url.path().starts_with("/assets/") {
-        return Err(bad("instance base path"));
-    }
-    Ok(url)
+    crate::instances::address::canonical_instance(server.as_str(), allow_loopback)
+        .map_err(|e| BrowserAuthError::Invalid(e.0))
 }
 
 /// base64url without padding (RFC 4648 §5).

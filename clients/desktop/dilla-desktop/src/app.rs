@@ -32,7 +32,7 @@ use dilla_client::state::AccountPhase;
 use crate::screens::create::Navigate;
 use crate::screens::onboarding::{DoneView, OpenDilla, SignedUp, SignupView, WantsSignIn};
 use crate::screens::shell::{Clock, ShellView};
-use crate::screens::sign_in::{SignInView, SignedIn};
+use crate::screens::sign_in::{CreateInstead, SignInView, SignedIn};
 use crate::tracked;
 
 /// Where the app keeps its instances and their keys, or the fixture it draws instead.
@@ -321,14 +321,27 @@ impl AppView {
 
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
-        let view = cx.new(|cx| SignInView::new(root, keychain, None, error, window, cx));
-        self._subscriptions = vec![cx.subscribe_in(
-            &view,
-            window,
-            |this, _, SignedIn(cfg): &SignedIn, window, cx| {
-                this.start_client(cfg.clone(), window, cx);
-            },
-        )];
+        // An instance window's sign-in is pinned to its instance (Task 27, Task 26's `pin`): it signs in nowhere else.
+        let pin = self.launch.instance.and_then(|id| {
+            root.as_deref()
+                .and_then(|r| Instances::load(r).ok())
+                .and_then(|list| list.get(id).cloned())
+        });
+        let view = cx.new(|cx| SignInView::new(root, keychain, pin, error, window, cx));
+        self._subscriptions = vec![
+            cx.subscribe_in(
+                &view,
+                window,
+                |this, _, SignedIn(cfg): &SignedIn, window, cx| {
+                    this.start_client(cfg.clone(), window, cx);
+                },
+            ),
+            // "Create an account instead": the sign-up (Task 25), with the window's invite.
+            cx.subscribe_in(&view, window, |this, _, _: &CreateInstead, window, cx| {
+                let invite = this.launch.invite.clone();
+                this.show_signup(invite, window, cx);
+            }),
+        ];
         self.screen = Screen::SignIn(view);
         self.fit_window(window, cx);
         cx.notify();
@@ -495,14 +508,22 @@ impl AppView {
             let copy = crate::strings::tf("factor.error.other", &[("code", "E_INSTANCE")]);
             return self.show_sign_in(Some(copy), window, cx);
         };
+        // A new account's factor is the sign-up's step 4 (Task 25: its step line, dots and codes); any other owed factor
+        // is the forced screen.
+        let origin = if self.after_signup {
+            use crate::screens::onboarding::signup::TOTAL;
+            Origin::Signup {
+                step: crate::strings::tf(
+                    "onboarding.step",
+                    &[("n", "4"), ("total", &TOTAL.to_string())],
+                ),
+                progress: (4, TOTAL),
+            }
+        } else {
+            Origin::Required
+        };
         let view = cx.new(|cx| {
-            ForcedFactorView::new(
-                client.clone(),
-                cfg.server.clone(),
-                Origin::Required,
-                window,
-                cx,
-            )
+            ForcedFactorView::new(client.clone(), cfg.server.clone(), origin, window, cx)
         });
         let held = client.clone();
         self._subscriptions = vec![cx.subscribe_in(
@@ -540,6 +561,9 @@ impl AppView {
     ) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
         cx.spawn_in(window, async move |this, cx| {
+            // A call this device is in is left first (Task 17): its media and its self-Remove go before the session and
+            // the store do.
+            let _ = client.voice().leave().await;
             if let Err(message) = crate::screens::factor::sign_out(&client).await {
                 let _ = this.update(cx, |this, cx| this.forget_failed(message, cx));
                 return;
@@ -548,6 +572,10 @@ impl AppView {
             // store to close.
             let _ = this.update(cx, |this, cx| {
                 crate::screens::factor::forget_instance(&client, cx);
+                // An instance window's registry holds the client too (Task 27): it lets go, so the store can close.
+                if let Some(id) = this.instance {
+                    crate::windows::drop_client(cx, id);
+                }
                 this._subscriptions.clear();
                 this.screen = Screen::Starting;
                 cx.notify();
@@ -587,6 +615,9 @@ impl AppView {
                 Err(shared) => {
                     let _ = this.update_in(cx, |this, window, cx| {
                         crate::screens::factor::register_instance(&shared, cfg, cx);
+                        if let Some(id) = this.instance {
+                            crate::windows::keep_client(cx, id, shared.clone());
+                        }
                         this.forget_note = Some(store());
                         shared.reconnect();
                         this.show_factor(shared, window, cx);

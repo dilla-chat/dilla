@@ -141,6 +141,13 @@ pub fn keep_client(cx: &mut App, id: InstanceId, client: Rc<Client>) {
     }
 }
 
+/// Lets go of the client the registry keeps for `id` (Task 26's Forget closes its store): the window and the hold stay.
+pub fn drop_client(cx: &mut App, id: InstanceId) {
+    if let Some(live) = Registry::of(cx).live.get_mut(&id.0) {
+        live.client = None;
+    }
+}
+
 /// The instance's window is now `window`: the compact start window handed its client to a workspace window (Task 8's
 /// window shapes) and closes, so the registry follows the new one.
 pub fn moved_window(cx: &mut App, id: InstanceId, window: WindowHandle<AppView>) {
