@@ -5,16 +5,19 @@
 
 use std::rc::Rc;
 
+use std::collections::HashMap;
+
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    App, ElementId, Global, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, WindowId, canvas, div,
+    point, px,
 };
 
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
 use crate::roving::{Roving, focus_handles};
-use crate::text::{line, line_height};
+use crate::text::{line, line_height, wrap_mono};
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -60,6 +63,36 @@ pub fn group_headings(items: &[NavItem]) -> Vec<Option<SharedString>> {
 }
 
 type SelectHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
+
+/// The scroll handle of each window's settings side column (the frame registers it): the nav scrolls its current item
+/// into it, as the web's `scrollIntoView({ block: 'nearest' })` does.
+#[derive(Default)]
+pub(crate) struct SideScroll(HashMap<WindowId, ScrollHandle>);
+
+impl Global for SideScroll {}
+
+pub(crate) fn register_side(handle: &ScrollHandle, window: &Window, cx: &mut App) {
+    cx.default_global::<SideScroll>()
+        .0
+        .insert(window.window_handle().window_id(), handle.clone());
+}
+
+/// The scroll offset that brings `item` (top, bottom) fully into `port` (top, bottom) by the least movement, from
+/// `offset` (negative down the column), or `None` when it is already in view.
+pub fn nearest_offset(offset: f32, item: (f32, f32), port: (f32, f32)) -> Option<f32> {
+    if item.1 - item.0 > port.1 - port.0 || item.0 < port.0 {
+        (item.0 != port.0).then_some(offset + (port.0 - item.0))
+    } else if item.1 > port.1 {
+        Some(offset - (item.1 - port.1))
+    } else {
+        None
+    }
+}
+
+/// The side column's inner width less a heading's 10px sides (`.d-settings-frame__side` 240px, 14px padding, 1px edge).
+fn heading_width() -> f32 {
+    240.0 - 2.0 * 14.0 - 1.0 - 2.0 * 10.0
+}
 
 #[derive(IntoElement)]
 pub struct SettingsNav {
@@ -116,17 +149,24 @@ impl RenderOnce for SettingsNav {
             });
         for (i, item) in self.items.iter().enumerate() {
             if let Some(heading) = &headings[i] {
+                // A long heading (a server's name) wraps in the column, as the web's does.
+                let advance =
+                    f32::from(text::MICRO) * (crate::text::MONO_ADVANCE + LABEL_TRACKING_WIDE);
+                let columns = ((heading_width() / advance).floor() as usize).max(1);
                 list = list.child(
-                    div().px(px(10.0)).pt(px(14.0)).pb(px(6.0)).child(
-                        line(
-                            heading.to_uppercase(),
-                            text::MICRO,
-                            line_height(text::MICRO, 1.5),
-                            color::FG_3,
-                        )
-                        .weight(font::WEIGHT_LABEL)
-                        .tracking(LABEL_TRACKING_WIDE),
-                    ),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .px(px(10.0))
+                        .pt(px(14.0))
+                        .pb(px(6.0))
+                        .children(wrap_mono(&heading.to_uppercase(), columns).into_iter().map(
+                            |l| {
+                                line(l, text::MICRO, line_height(text::MICRO, 1.5), color::FG_3)
+                                    .weight(font::WEIGHT_LABEL)
+                                    .tracking(LABEL_TRACKING_WIDE)
+                            },
+                        )),
                 );
             }
             let current = item.id == self.active;
@@ -150,6 +190,36 @@ impl RenderOnce for SettingsNav {
                 row.hover(|s| s.bg(color::HOVER))
             };
             if current {
+                // Scrolls the side column the least that shows this item whole (`scrollIntoView({ block: 'nearest' })`).
+                row = row.child(
+                    canvas(
+                        |bounds, window, cx| {
+                            let Some(side) = cx
+                                .try_global::<SideScroll>()
+                                .and_then(|s| s.0.get(&window.window_handle().window_id()))
+                                .cloned()
+                            else {
+                                return;
+                            };
+                            let port = side.bounds();
+                            if port.size.height <= px(0.0) {
+                                return;
+                            }
+                            let offset = side.offset();
+                            if let Some(y) = nearest_offset(
+                                f32::from(offset.y),
+                                (f32::from(bounds.top()), f32::from(bounds.bottom())),
+                                (f32::from(port.top()), f32::from(port.bottom())),
+                            ) {
+                                side.set_offset(point(offset.x, px(y)));
+                                window.refresh();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
                 // The channel row's bar: 2px at the left edge, 8px in from the top and bottom.
                 row = row.child(
                     div()
@@ -203,6 +273,40 @@ impl RenderOnce for SettingsNav {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_current_item_scrolls_the_least_into_view() {
+        // Below the port: its bottom meets the port's bottom.
+        assert_eq!(
+            nearest_offset(0.0, (760.0, 794.0), (0.0, 700.0)),
+            Some(-94.0)
+        );
+        // Above the port: its top meets the port's top.
+        assert_eq!(
+            nearest_offset(-94.0, (-10.0, 24.0), (0.0, 700.0)),
+            Some(-84.0)
+        );
+        // In view: no change.
+        assert_eq!(nearest_offset(0.0, (100.0, 134.0), (0.0, 700.0)), None);
+    }
+
+    #[test]
+    fn a_long_heading_wraps_at_the_column() {
+        let advance = f32::from(text::MICRO) * (crate::text::MONO_ADVANCE + LABEL_TRACKING_WIDE);
+        let columns = (heading_width() / advance).floor() as usize;
+        assert_eq!(
+            wrap_mono(
+                "MIDGARD CREW OF THE NORTHERN LIGHTS AND THE VERY LONG WINTER NIGHTS SOCIETY",
+                columns
+            ),
+            [
+                "MIDGARD CREW OF THE",
+                "NORTHERN LIGHTS AND THE",
+                "VERY LONG WINTER NIGHTS",
+                "SOCIETY"
+            ]
+        );
+    }
 
     #[test]
     fn a_group_heading_shows_where_the_group_changes() {

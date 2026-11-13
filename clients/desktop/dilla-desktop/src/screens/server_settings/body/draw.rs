@@ -19,7 +19,7 @@ use dilla_desktop_ui::components::server_settings::layout;
 use dilla_desktop_ui::components::server_settings::permission_grid::{
     GridGroup, GridRow, PermissionGrid,
 };
-use dilla_desktop_ui::components::settings::frame::section_header;
+use dilla_desktop_ui::components::settings::frame::{section_header, section_header_full};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, SettingsRow};
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toggle::Toggle;
@@ -48,34 +48,6 @@ fn track_id(id: String) -> &'static str {
         ids.insert(id, leaked);
         leaked
     })
-}
-
-/// `section_header` with a sub-line that wraps at 60 columns (`max-width: 60ch`), as a longer sub-line does on the web.
-fn header_wrapped(title: &str, sub: &str) -> AnyElement {
-    let width = 60.0 * f32::from(text::UI) * dilla_desktop_ui::text::MONO_ADVANCE;
-    div()
-        .flex()
-        .flex_col()
-        .pb(layout::HEADING_TOP)
-        .child(
-            line(
-                title.to_owned(),
-                text::HEADING,
-                line_height(text::HEADING, 1.5),
-                color::FG,
-            )
-            .weight(font::WEIGHT_DISPLAY),
-        )
-        .child(div().pt(layout::HEAD_GAP).flex().flex_col().children(
-            dilla_desktop_ui::text::paragraph(
-                sub,
-                text::UI,
-                line_height(text::UI, 1.5),
-                color::FG_2,
-                width,
-            ),
-        ))
-        .into_any_element()
 }
 
 /// A handler of the settings' own entity, for the components that take a plain closure.
@@ -1184,7 +1156,7 @@ impl Body {
         let (ttl, uses) = model::clamp_choice(self.ttl, self.uses, manager);
         let now = self.clock.now();
         let mut out: Vec<AnyElement> = vec![
-            section_header(
+            section_header_full(
                 t("admin.invites.title"),
                 Some(&tf("serverSettings.invites.body", &[("server", &name)])),
             )
@@ -1550,7 +1522,8 @@ impl Body {
             "admin.nav.leave"
         });
         let mut out: Vec<AnyElement> = vec![if owner {
-            header_wrapped(title, &tf("admin.leave.owner", &[("server", &name)]))
+            section_header(title, Some(&tf("admin.leave.owner", &[("server", &name)])))
+                .into_any_element()
         } else {
             section_header(title, None).into_any_element()
         }];

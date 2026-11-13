@@ -14,7 +14,7 @@ use dilla_client::state::{AppState, CommunityId};
 use dilla_client::testing::spec::{WorldSpec, derive_id};
 
 /// The bits of `@everyone` on a server the world makes (internal/api/communities.go `everyoneRoleAllow`).
-const EVERYONE_DEFAULT: u32 = perm::VIEW_CHANNEL
+pub(super) const EVERYONE_DEFAULT: u32 = perm::VIEW_CHANNEL
     | perm::SEND_MESSAGES
     | perm::ATTACH_FILES
     | perm::ADD_REACTIONS

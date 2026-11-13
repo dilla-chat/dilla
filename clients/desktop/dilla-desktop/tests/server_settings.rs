@@ -66,26 +66,10 @@ parity_after_t6c! {
     parity_server_settings_invites_b => "invites-b", "parity after T6c: whole frame 0.6342 %",
 }
 
-// These fail only for causes in the shared frame and nav (Task 6), which this area does not edit:
-// - the web's nav scrolls the active item into view (Danger is the last item); the shared nav does not;
-// - the web's nav wraps a long server name in its group heading; the shared nav cuts it.
-// `welcome` passes with the same content, so `welcome-b` differs only by the nav's heading.
-#[test]
-#[ignore = "shared component parity (T6c): the nav does not scroll the active item into view"]
-fn parity_server_settings_danger() {
-    parity("danger");
-}
-
-#[test]
-#[ignore = "shared component parity (T6c): the nav does not scroll the active item into view, and cuts a long group heading"]
-fn parity_server_settings_danger_b() {
-    parity("danger-b");
-}
-
-#[test]
-#[ignore = "shared component parity (T6c): the nav cuts a long server name in its group heading, the web wraps it"]
-fn parity_server_settings_welcome_b() {
-    parity("welcome-b");
+parity_tests! {
+    parity_server_settings_danger => "danger",
+    parity_server_settings_danger_b => "danger-b",
+    parity_server_settings_welcome_b => "welcome-b",
 }
 
 // ---- keyboard (S6) ----
