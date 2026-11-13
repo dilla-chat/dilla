@@ -564,7 +564,19 @@ fn edit_reply_react_pin_delete_one_flow(cx: &mut TestAppContext) {
         i.edited && i.body == "the peer edited"
     });
 
-    // A reply: the toolbar's Reply aims the composer at the peer's message; the answer carries its reference.
+    // A reply: the toolbar's Reply aims the composer at the peer's message; the answer carries its reference. The
+    // keyboard is first moved off the composer (to the shell's root, as a click on the toolbar leaves it), so the
+    // focus assertion below holds only if Reply itself puts the keyboard back in the composer.
+    let shell = shell_of(&app, vcx);
+    vcx.update(|window, cx| {
+        let root = gpui::Focusable::focus_handle(shell.read(cx), cx);
+        window.focus(&root, cx);
+    });
+    pump(vcx);
+    assert!(
+        !composer_focused(&app, vcx),
+        "the keyboard is off the composer before Reply"
+    );
     run_action(&app, vcx, &target, "reply");
     let replying = ada.state().borrow().threads.replying.clone();
     assert_eq!(replying.map(|r| r.msg_id), Some(theirs), "the reply bar");
