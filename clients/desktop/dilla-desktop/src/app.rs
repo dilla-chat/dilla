@@ -189,6 +189,8 @@ pub struct AppView {
     /// The window's root: it takes the focus when nothing else holds it, so every key reaches the root's handlers
     /// (push to talk, review I1).
     root_focus: gpui::FocusHandle,
+    /// The window going inactive lets push to talk go at once (review B).
+    _activation: Subscription,
     _subscriptions: Vec<Subscription>,
     /// Task 26: why the last Forget did not finish, for the forced screen the client comes back to.
     forget_note: Option<String>,
@@ -206,6 +208,14 @@ impl AppView {
             shell: None,
             shell_sub: None,
             root_focus: cx.focus_handle(),
+            _activation: cx.observe_window_activation(window, |_, window, cx| {
+                if !window.is_window_active() {
+                    crate::screens::voice::window_deactivated(
+                        crate::screens::voice::wid(window),
+                        cx,
+                    );
+                }
+            }),
             _subscriptions: Vec::new(),
             forget_note: None,
         };
@@ -1234,10 +1244,14 @@ impl Render for AppView {
         }
         // The window's outermost element carries push to talk's keys: it is on every key's dispatch path (it takes the
         // focus itself when nothing holds it).
-        // Only while this window's call is on, where push to talk can matter (a capture rests with no focus otherwise).
-        if window.focused(cx).is_none() && crate::screens::voice::call_live(w, cx) {
-            window.focus(&self.root_focus, cx);
-        }
+        // The focus outside the root (none, or a stale one on a control that went away) lets push to talk go and, while
+        // the call is on, comes back to the root (review B); checked again on the next frame, once a control that went
+        // away is gone from the drawn tree.
+        crate::screens::voice::guard_focus(w, &self.root_focus, window, cx);
+        let root_focus = self.root_focus.clone();
+        window.on_next_frame(move |window, cx| {
+            crate::screens::voice::guard_focus(w, &root_focus, window, cx);
+        });
         crate::screens::voice::ptt_keys(
             w,
             div()
@@ -1248,7 +1262,6 @@ impl Render for AppView {
                     div()
                         .size_full()
                         .bg(color::BG)
-                        .child(crate::screens::voice::ptt_root(w))
                         .child(body)
                         .children(strips.into_iter().flatten()),
                 )),

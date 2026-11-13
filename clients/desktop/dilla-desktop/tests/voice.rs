@@ -90,7 +90,6 @@ impl Render for Host {
             .children(voice::channel_people(&ch, window, cx))
             .children(voice::dock(window, cx))
             .children(voice::stage(&ch, window, cx))
-            .child(voice::ptt_root(voice::wid(window)))
     }
 }
 
@@ -324,7 +323,6 @@ impl Render for FieldHost {
         voice::ptt_keys(voice::wid(window), div().track_focus(&self.root))
             .size_full()
             .child(gpui_component::input::Input::new(&self.field))
-            .child(voice::ptt_root(voice::wid(window)))
     }
 }
 
@@ -397,6 +395,98 @@ fn push_to_talk_opens_the_mic_outside_text_fields(cx: &mut TestAppContext) {
         vcx.update(|_, cx| voice::ptt_sending(w, cx)),
         "held: sending"
     );
+}
+
+/// A window whose focused control can go away mid-hold, under the root's push-to-talk handlers and focus guard.
+struct GoneHost {
+    root: FocusHandle,
+    control: FocusHandle,
+    show: bool,
+}
+
+impl Render for GoneHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let w = voice::wid(window);
+        voice::guard_focus(w, &self.root, window, cx);
+        voice::ptt_keys(w, div().track_focus(&self.root))
+            .size_full()
+            .children(
+                self.show
+                    .then(|| div().track_focus(&self.control).size_full()),
+            )
+    }
+}
+
+/// Review B: the focused control goes away while the key is held (GPUI keeps a stale focus, and a key then reaches no
+/// handler of ours): push to talk lets go, and the key-up after it changes nothing.
+#[gpui::test]
+fn a_focused_control_going_away_mid_hold_closes_the_mic(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let (host, vcx) = cx.add_window_view(|_, cx| GoneHost {
+        root: cx.focus_handle(),
+        control: cx.focus_handle(),
+        show: true,
+    });
+    let w = vcx.update(|window, _| voice::wid(window));
+    vcx.update(|_, cx| {
+        voice::sync(w, state(2), None, cx);
+        voice::set_ptt_key(w, Some(("insert".into(), 200)), cx);
+    });
+    vcx.update(|window, _| window.activate_window());
+    let control = host.read_with(vcx, |h, _| h.control.clone());
+    vcx.update(|window, cx| control.focus(window, cx));
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    key_down(vcx, "insert");
+    assert!(
+        vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "held: sending"
+    );
+    host.update(vcx, |h, cx| {
+        h.show = false;
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    vcx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("insert").unwrap(),
+    });
+    vcx.run_until_parked();
+    assert!(
+        !vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "the mic is closed"
+    );
+}
+
+/// Review B: the window going inactive lets push to talk go at once, from the window's activation observer (no frame
+/// needed: a hidden Wayland surface gets none).
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_window_deactivating_closes_the_mic(cx: &mut TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/shell/channel-view.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (_app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    let w = vcx.update(|window, _| voice::wid(window));
+    vcx.update(|_, cx| {
+        voice::sync(w, state(2), None, cx);
+        voice::set_ptt_key(w, Some(("insert".into(), 200)), cx);
+    });
+    vcx.update(|window, _| window.activate_window());
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    key_down(vcx, "insert");
+    assert!(
+        vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "held: sending"
+    );
+    vcx.deactivate_window();
+    // At once, from the observer: no frame is drawn in between.
+    assert!(!vcx.update(|_, cx| voice::ptt_sending(w, cx)), "released");
 }
 
 #[path = "../../dilla-client/tests/support/call_world.rs"]

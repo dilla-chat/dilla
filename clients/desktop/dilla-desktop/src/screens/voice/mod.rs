@@ -24,7 +24,7 @@ use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
     IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
-    Window, WindowId, canvas, div, img, px, relative,
+    Window, WindowId, div, img, px, relative,
 };
 
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
@@ -949,6 +949,26 @@ pub fn ptt_sending(window: WindowId, cx: &App) -> bool {
     })
 }
 
+/// Review B: GPUI keeps a focus on an element no longer drawn, and a key then reaches none of the root's handlers (a
+/// key-up would be lost and the mic stay open). When the focus is not inside `root` (the window's outermost element),
+/// push to talk lets go at once, and while the call is on the root takes the focus, so the next key reaches it. Called
+/// on every render of the window's root, and again on the frame after it (when a control that went away is gone).
+pub fn guard_focus(w: WindowId, root: &FocusHandle, window: &mut Window, cx: &mut App) {
+    if root.contains_focused(window, cx) {
+        return;
+    }
+    release_ptt(w, cx);
+    if call_live(w, cx) {
+        window.focus(root, cx);
+    }
+}
+
+/// Review B: the window stopped being the active one (it lost the focus, or was hidden): push to talk lets go at once.
+/// The app calls it from the window's activation observer, which needs no frame (a hidden Wayland surface gets none).
+pub fn window_deactivated(w: WindowId, cx: &mut App) {
+    release_ptt(w, cx);
+}
+
 /// Whether `window`'s call is on (joining or in it).
 pub fn call_live(window: WindowId, cx: &App) -> bool {
     ui_of(window, cx).is_some_and(in_a_call)
@@ -970,22 +990,6 @@ pub fn release_ptt(window: WindowId, cx: &mut App) {
     if let Some(v) = voice(window, cx) {
         v.set_ptt_held(false);
     }
-}
-
-/// Push to talk while the window is focused (review I1: drawn at the app's root, so it hears the key whatever screen
-/// shows): the person's key held opens the microphone; let go, it keeps sending for the release delay (Task 19's
-/// `PttHold`); the window losing the focus closes it at once. Listened for while this window's call is on.
-pub fn ptt_root(w: WindowId) -> impl IntoElement {
-    // The window losing the focus is noticed when it next draws: nothing is sent from here on.
-    canvas(
-        |_, _, _| {},
-        move |_, _, window, cx| {
-            if !window.is_window_active() {
-                release_ptt(w, cx);
-            }
-        },
-    )
-    .size_0()
 }
 
 /// The key context every text field carries (gpui-component's inputs, the composer's included): push to talk never
