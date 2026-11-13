@@ -1,17 +1,17 @@
 {
-  "digest": "35c9ed8222576cdb97f0988623de7b228e18a0c4f1d90b9f7df4e4ca6117dcaa",
-  "shift": 38055,
+  "digest": "87960cdc3ea5e803e7d47411f8a6c8efa7ea62a9a1e46d39f8fd253ceb4f37af",
+  "shift": 74541,
   "hand_migrated": false,
   "ids": {
-    "channel:midgard/general": "f966b57ab569d8cb27721a8918dc1652",
-    "channel:northern/design": "8b5c5f7adfd1606f8bd66315580667fc",
-    "channel:northern/general": "b481a91f4d6a050addf415fcde31431c",
-    "channel:northern/release": "6189225bbe287467feead5c3dfa11269",
-    "channel:northern/weekly": "1c0478dcfd30a332c9bf3b1bd562ff1e",
-    "person:ada": "17c6336d662042f138259d5ac35b9508",
-    "person:bjorn": "bf481d6387fa912416e1298ddec415c5",
-    "person:mira": "c188449d475da49d866bbb31f79e0483",
-    "server:midgard": "9de53bad41fd9b4bd6ea28f7b1fd183a",
-    "server:northern": "4dfaa0f1ed5c2e9de1bb243005035dcd"
+    "channel:midgard/general": "691ac9a7914ff64bea522b109fdddde0",
+    "channel:northern/design": "b2f435a013dee17e392ec7148b6d1fb7",
+    "channel:northern/general": "b7e2fd1db6fd700717840e279b8c83c3",
+    "channel:northern/release": "1d003cf0b2e7c15d30c70685eceba99a",
+    "channel:northern/weekly": "b65f85140e775853d48b6a9234efeb01",
+    "person:ada": "4f3930fa25fa35bb41d7c65274ccc524",
+    "person:bjorn": "6c87270f370c6c143612c892630f99ee",
+    "person:mira": "ccd32945628f17e4d9dc32aa2216cbe5",
+    "server:midgard": "bc546f7a3eef5ad92c534343b6e13448",
+    "server:northern": "ae835135a87465461877b89addf0775a"
   }
 }

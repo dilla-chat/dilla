@@ -95,11 +95,6 @@
   },
   "steps": [
     {
-      "do": "click",
-      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
-      "gpui": "-"
-    },
-    {
       "do": "hover",
       "web": "css=.d-message-row >> nth=5",
       "gpui": "message-row-5"

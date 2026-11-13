@@ -24,6 +24,7 @@
         "owner": "ada",
         "members": ["ada", "mira"],
         "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
           { "id": "release", "kind": "text", "name": "release-planning-and-coordination" }
         ]
       }
