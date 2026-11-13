@@ -35,6 +35,12 @@ fn shoot_with(name: &str, env: &[(&str, &str)], grow: f32) -> (RgbaImage, TextMa
     let loaded = fixture::load(&fixture_path(name), Os::Linux).unwrap();
     let mut driver = Driver::launch_fixture(&fixture_path(name), loaded.shot_path.as_deref(), env);
     driver.wait_idle();
+    // The fixture's steps, as `assert_screen` replays them (the channel views close the member list the shell opens).
+    for step in &loaded.fixture.steps {
+        dilla_parity::screen::replay(&mut driver, step);
+    }
+    dilla_parity::screen::rest_before_frame(&mut driver, &loaded.fixture);
+    driver.wait_idle();
     let shot = driver.screenshot();
     let mask = text_mask(&mut driver, grow);
     (shot, mask)

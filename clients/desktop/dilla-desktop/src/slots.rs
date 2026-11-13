@@ -161,6 +161,8 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyE
     div()
         .flex()
         .items_center()
+        // The tools are the composer foot's siblings on the web: its 2px gap lies between each area's buttons too.
+        .gap(px(COMPOSER_TOOL_GAP))
         .children(
             [
                 attachments::composer_buttons(ctx, window, cx),
@@ -171,6 +173,9 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyE
         )
         .into_any_element()
 }
+
+/// Composer.css `.d-composer__foot`: `gap: 2px` between the tools.
+const COMPOSER_TOOL_GAP: f32 = 2.0;
 
 /// The popup over the composer: the command picker (20), else the emoji grid (10). The mention popup stays the
 /// composer's own (9).
