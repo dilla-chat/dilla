@@ -58,7 +58,7 @@ parity_after_t6c! {
     parity_server_settings_afk_b => "afk-b", "parity after T6c: whole frame 0.6805 %",
     parity_server_settings_channels => "channels", "parity after T6c: chrome 2.3227 %",
     parity_server_settings_channels_b => "channels-b", "parity after T6c: whole frame 1.3583 %",
-    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.2690 %",
+    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.3857 % (dialog anchored lower than the web's, permissions read note; the Bot channel switch is drawn as the reference's)",
     parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.7017 %",
     parity_server_settings_gifs => "gifs", "parity after T6c: whole frame 1.1892 %",
     parity_server_settings_gifs_b => "gifs-b", "parity after T6c: whole frame 1.2638 %",

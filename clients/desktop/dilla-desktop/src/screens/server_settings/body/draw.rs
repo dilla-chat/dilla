@@ -582,6 +582,27 @@ impl Body {
                 })),
             );
         }
+        // Bot v2 Task 22 (integration 3, step 5): the "Bot channel" switch, beside the form.
+        if model::can_mark_bot_channel(&c, afk, &access) {
+            let id = c.id;
+            body = body.child(
+                Toggle::new(
+                    "bot-channel",
+                    t("bot.channel.toggle"),
+                    model::is_bot_channel(&self.state, &c),
+                )
+                .show_label(true)
+                .hint(
+                    self.bot_mark_error
+                        .clone()
+                        .unwrap_or_else(|| t("bot.channel.toggleHint").to_owned()),
+                )
+                .disabled(self.bot_marking)
+                .on_change(act_bool(cx, move |this, on, cx| {
+                    this.mark_bot_channel(id, on, cx)
+                })),
+            );
+        }
         if afk {
             body = body.child(dim(t("afk.channel.note")));
         }
