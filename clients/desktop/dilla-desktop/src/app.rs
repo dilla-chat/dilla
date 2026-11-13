@@ -206,6 +206,8 @@ impl AppView {
                             shell.update(cx, |s, cx| s.pick_community(community, cx));
                         }
                         this.screen = Screen::Shell(shell);
+                        // A join refused after the factor is offered again, with its invite and why (App.tsx).
+                        crate::screens::create::offer_refused_join(&open.result, cx);
                         cx.notify();
                     }
                 }),
@@ -293,12 +295,18 @@ impl AppView {
         );
         self.shell = Some(shell.clone());
         self.screen = Screen::Shell(shell);
-        if std::mem::take(&mut self.after_signup) {
-            // A new account: once its factor is in place (Task 26's screens) it is ready, the invite's server is joined
-            // (a refused join is the result, not a failure) and the done step shows.
+        let after_signup = std::mem::take(&mut self.after_signup);
+        let starts_ready = client.state().borrow().account.phase == AccountPhase::Ready;
+        if after_signup || !starts_ready {
+            // A new account, or any client that starts before it is ready (the app closed at the factor step and opened
+            // again): once its factor is in place (Task 26's screens) it is ready, and if a sign-up's join is kept in the
+            // store, the invite's server is joined (a refused join is the result, not a failure) and the done step shows.
             let mut ready = client.state();
             let client = client.clone();
             cx.spawn_in(window, async move |this, cx| {
+                if !after_signup && !client.onboarding().has_pending_join().await {
+                    return;
+                }
                 loop {
                     let phase = ready.borrow_and_update().account.phase;
                     if phase == AccountPhase::Ready {
