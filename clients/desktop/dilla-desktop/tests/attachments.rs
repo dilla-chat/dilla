@@ -359,7 +359,45 @@ mod two_accounts {
                 "a release of bob keeps alice's tray"
             );
         });
-        let _ = Blank;
+        drop(w);
+    }
+
+    /// Review M4 (the security half of each window's target): with two clients in two windows on the same channel, a
+    /// paste or a drop in each window goes through that window's own client.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn each_window_attaches_through_its_own_client(cx: &mut TestAppContext) {
+        let w = world("t28-targets");
+        let channel = w.general;
+        let a = cx.add_window(|_, _| Blank);
+        let b = cx.add_window(|_, _| Blank);
+        a.update(cx, |_, win, cx| {
+            ui::track(win, Some(w.alice.clone()), Some(channel), cx)
+        })
+        .unwrap();
+        b.update(cx, |_, win, cx| {
+            ui::track(win, Some(w.bob.clone()), Some(channel), cx)
+        })
+        .unwrap();
+        let in_a = a.update(cx, |_, win, cx| ui::target(win, cx)).unwrap();
+        let in_b = b.update(cx, |_, win, cx| ui::target(win, cx)).unwrap();
+        assert!(
+            in_a.client
+                .as_ref()
+                .is_some_and(|c| Rc::ptr_eq(c, &w.alice)),
+            "A's paste goes through alice's client"
+        );
+        assert!(
+            in_b.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, &w.bob)),
+            "B's paste goes through bob's client"
+        );
+        assert_eq!((in_a.channel, in_b.channel), (Some(channel), Some(channel)));
+        // A drop in B lands in bob's tray only.
+        cx.update(|cx| {
+            ui::attach(in_b, vec![file("bob.bin")], vec![None], cx);
+            assert_eq!(ui::tray_of(&w.bob, channel, cx).entries().len(), 1);
+            assert!(ui::tray_of(&w.alice, channel, cx).entries().is_empty());
+        });
         drop(w);
     }
 }
