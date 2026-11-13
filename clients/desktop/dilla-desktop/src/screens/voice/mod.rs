@@ -20,7 +20,7 @@ use dilla_client::Client;
 use dilla_client::calls::CallPhase;
 use dilla_client::state::voice::{VoiceNotice, VoiceParticipant};
 use dilla_client::state::{AppState, Channel, ChannelId, DeviceId, UserId};
-use dilla_media::{ShareKind, StreamKey};
+use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
     IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
@@ -51,6 +51,12 @@ pub struct VoiceUi {
     pub selected: usize,
     stage_focus: Option<FocusHandle>,
     images: HashMap<StreamKey, (u64, Arc<RenderImage>)>,
+    /// Each stream's frame rate, measured over the last second: `(at, frames then, fps)`.
+    rates: HashMap<StreamKey, (std::time::Instant, u64, u32)>,
+    /// The stream-quality menu (the share button's split half, or the picker before a share) is open.
+    pub share_menu: bool,
+    /// The stream quality the next (or the running) screen share uses.
+    pub share_options: ShareOptions,
     video_seq: u64,
 }
 
@@ -247,7 +253,7 @@ pub fn toggle_share(kind: ShareKind, cx: &mut App) {
         ShareKind::Screen => !ui.state.voice.share.screen,
     };
     if let Some(s) = &ui.session {
-        s.share(kind, on);
+        s.share(kind, on, ui.share_options);
     }
 }
 
@@ -520,7 +526,17 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         let handle = cx.focus_handle();
         cx.global_mut::<VoiceUi>().stage_focus = Some(handle);
     }
-    let images = refresh_images(cx);
+    let images = refresh_images(window, cx);
+    let stats: HashMap<StreamKey, (u32, u32)> = ui(cx)
+        .map(|u| {
+            let videos = u.session.as_ref().map(|s| s.videos()).unwrap_or_default();
+            u.rates
+                .iter()
+                .filter_map(|(k, (_, _, fps))| Some((k.clone(), (videos.get(k)?.height, *fps))))
+                .collect()
+        })
+        .unwrap_or_default();
+    let menu = ui(cx).and_then(share_menu);
     let ui = ui(cx)?;
     let state = ui.state.clone();
     let focus = ui.stage_focus.clone()?;
@@ -531,7 +547,16 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let tile_views: Vec<AnyElement> = keys
         .iter()
         .enumerate()
-        .map(|(i, k)| tile(&state, channel, k, i == selected, focused.as_ref(), &images))
+        .map(|(i, k)| {
+            tile(
+                &state,
+                channel,
+                k,
+                (i == selected, focused.as_ref()),
+                &images,
+                &stats,
+            )
+        })
         .collect();
     let body = if keys.is_empty() {
         div()
@@ -608,6 +633,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let n = keys.len();
     let stage = div()
         .id("voice-stage")
+        .relative()
         .track_focus(&focus)
         .size_full()
         .flex()
@@ -625,7 +651,8 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .p(px(14.0))
                 .child(body),
         )
-        .child(controls(&state, joined, channel.id));
+        .child(controls(&state, joined, channel.id))
+        .children(menu);
     let _ = window;
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
@@ -645,19 +672,40 @@ fn stage_key(key: &str, n: usize, _window: &mut Window, cx: &mut App) {
                 ui.focused = tiles(&ui.state, ch).get(ui.selected).cloned();
             }
         }
-        "escape" => ui.focused = None,
+        "escape" => {
+            ui.focused = None;
+            ui.share_menu = false;
+        }
         _ => return,
     }
     cx.refresh_windows();
 }
 
 /// The newest remote frames as images, rebuilt only for streams with a new frame.
-fn refresh_images(cx: &mut App) -> HashMap<StreamKey, Arc<RenderImage>> {
+/// A replaced or ended stream's image leaves the GPU atlas (`drop_image`): without that every frame would stay there.
+fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<RenderImage>> {
     let Some(videos) = ui(cx).and_then(|u| u.session.as_ref()).map(|s| s.videos()) else {
         return HashMap::new();
     };
+    let mut stale: Vec<Arc<RenderImage>> = Vec::new();
     let ui = cx.global_mut::<VoiceUi>();
-    ui.images.retain(|k, _| videos.contains_key(k));
+    let now = std::time::Instant::now();
+    ui.rates.retain(|k, _| videos.contains_key(k));
+    for (k, f) in &videos {
+        let rate = ui.rates.entry(k.clone()).or_insert((now, f.frames, 0));
+        let dt = now.duration_since(rate.0).as_secs_f32();
+        if dt >= 1.0 {
+            rate.2 = ((f.frames.saturating_sub(rate.1)) as f32 / dt).round() as u32;
+            *rate = (now, f.frames, rate.2);
+        }
+    }
+    ui.images.retain(|k, (_, image)| {
+        let keep = videos.contains_key(k);
+        if !keep {
+            stale.push(image.clone());
+        }
+        keep
+    });
     for (k, f) in &videos {
         if ui.images.get(k).is_some_and(|(n, _)| *n == f.frames) {
             continue;
@@ -669,25 +717,32 @@ fn refresh_images(cx: &mut App) -> HashMap<StreamKey, Arc<RenderImage>> {
         }
         if let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, bgra) {
             let frame = image::Frame::new(buf);
-            ui.images.insert(
+            if let Some((_, old)) = ui.images.insert(
                 k.clone(),
                 (f.frames, Arc::new(RenderImage::new(vec![frame]))),
-            );
+            ) {
+                stale.push(old);
+            }
         }
     }
-    ui.images
+    let out = ui
+        .images
         .iter()
         .map(|(k, (_, i))| (k.clone(), i.clone()))
-        .collect()
+        .collect();
+    for image in stale {
+        cx.drop_image(image, Some(window));
+    }
+    out
 }
 
 fn tile(
     state: &AppState,
     channel: &Channel,
     k: &TileKey,
-    selected: bool,
-    focused: Option<&TileKey>,
+    (selected, focused): (bool, Option<&TileKey>),
     images: &HashMap<StreamKey, Arc<RenderImage>>,
+    stats: &HashMap<StreamKey, (u32, u32)>,
 ) -> AnyElement {
     let p = state
         .voice
@@ -705,6 +760,11 @@ fn tile(
         },
     };
     let video = images.get(&stream).cloned();
+    let stat = video
+        .is_some()
+        .then(|| stats.get(&stream))
+        .flatten()
+        .map(|(h, fps)| frame_stat(*h, *fps));
     let muted = p.is_some_and(|p| p.muted() || p.deafened());
     let deafened = p.is_some_and(VoiceParticipant::deafened);
     let is_focused = focused == Some(k);
@@ -810,6 +870,18 @@ fn tile(
         })
         .child(media)
         .child(caption)
+        .when_some(stat, |d, stat| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(8.0))
+                    .right(px(8.0))
+                    .px(px(6.0))
+                    .rounded(radius::MD)
+                    .bg(color::BG_2)
+                    .child(line(stat, text::MICRO, 14.0, color::FG_2)),
+            )
+        })
         .into_any_element()
 }
 
@@ -823,6 +895,7 @@ fn notice(state: &AppState) -> AnyElement {
         Some(VoiceNotice::EnhancedUnavailable | VoiceNotice::EnhancedFailed) => "voice.micFailed",
         Some(VoiceNotice::ShareCancelled) => "voice.why.noShare",
         Some(VoiceNotice::ShareWithoutSound) => "voice.shareAudio.none.application",
+        Some(VoiceNotice::MediaFailed) => "voice.failed",
     };
     div()
         .id("voice-notice")
@@ -934,21 +1007,7 @@ fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
         .pressed(v.share.camera)
         .on_click(|_, _, cx| toggle_share(ShareKind::Camera, cx)),
     ))
-    .child(tracked_box(
-        "voice-share",
-        IconButton::new(
-            "voice-share-b",
-            if v.share.screen {
-                IconName::MonitorX
-            } else {
-                IconName::MonitorUp
-            },
-            t("callStage.bar.share"),
-        )
-        .size(IconButtonSize::S40)
-        .pressed(v.share.screen)
-        .on_click(|_, _, cx| toggle_share(ShareKind::Screen, cx)),
-    ))
+    .child(share_split(v.share.screen))
     .child(tracked_box(
         "voice-stage-leave",
         IconButton::new("voice-stage-leave-b", IconName::PhoneOff, t("voice.leave"))
@@ -956,6 +1015,187 @@ fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
             .on_click(|_, _, cx| leave(cx)),
     ))
     .into_any_element()
+}
+
+/// The share button and its split half, the stream-quality menu (CallControls' split button).
+fn share_split(sharing: bool) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .child(tracked_box(
+            "voice-share",
+            IconButton::new(
+                "voice-share-b",
+                if sharing {
+                    IconName::MonitorX
+                } else {
+                    IconName::MonitorUp
+                },
+                t(if sharing {
+                    "callStage.bar.stopShare"
+                } else {
+                    "callStage.bar.share"
+                }),
+            )
+            .size(IconButtonSize::S40)
+            .pressed(sharing)
+            .on_click(|_, _, cx| toggle_share(ShareKind::Screen, cx)),
+        ))
+        .child(tracked_box(
+            "voice-share-quality",
+            IconButton::new(
+                "voice-share-quality-b",
+                IconName::ChevronUp,
+                t("callStage.share.quality"),
+            )
+            .size(IconButtonSize::S28)
+            .on_click(|_, _, cx| {
+                if cx.has_global::<VoiceUi>() {
+                    let ui = cx.global_mut::<VoiceUi>();
+                    ui.share_menu = !ui.share_menu;
+                    cx.refresh_windows();
+                }
+            }),
+        ))
+}
+
+/// The stream-quality menu (SharePicker's options on a desktop: resolution and frame rate, with the upload estimate;
+/// no surface or sound choice, share-options.ts `shareSupport` with `desktop`). Before a share its button goes live;
+/// while sharing a change applies to the running share.
+fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
+    if !ui.share_menu {
+        return None;
+    }
+    let o = ui.share_options;
+    let sharing = ui.state.voice.share.screen;
+    let (mbps, heavy) = o.estimate(None);
+    let estimate = tf(
+        if heavy {
+            "callStage.share.estimateHeavy"
+        } else {
+            "callStage.share.estimate"
+        },
+        &[("mbps", &mbps)],
+    );
+    let resolutions: Vec<(&str, &str)> = ShareResolution::ALL
+        .iter()
+        .map(|r| {
+            (
+                r.name(),
+                if *r == ShareResolution::Source {
+                    t("callStage.share.source")
+                } else {
+                    r.name()
+                },
+            )
+        })
+        .collect();
+    let pick = move |next: ShareOptions, cx: &mut App| {
+        if !cx.has_global::<VoiceUi>() {
+            return;
+        }
+        let ui = cx.global_mut::<VoiceUi>();
+        ui.share_options = next;
+        if ui.state.voice.share.screen
+            && let Some(s) = &ui.session
+        {
+            s.quality(next);
+        }
+        cx.refresh_windows();
+    };
+    let label = |key: &'static str| line(t(key), text::XS, 14.0, color::FG_2);
+    let panel = div()
+        .id("voice-share-menu")
+        .absolute()
+        .bottom(px(72.0))
+        .w(px(320.0))
+        .p(px(12.0))
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .bg(color::SURFACE_2)
+        .border_1()
+        .border_color(color::LINE_STRONG)
+        .rounded(radius::MENU)
+        .child(
+            line(
+                t(if sharing {
+                    "callStage.share.titleSharing"
+                } else {
+                    "callStage.share.title"
+                }),
+                text::UI,
+                15.6,
+                color::FG,
+            )
+            .weight(font::WEIGHT_LABEL),
+        )
+        .child(label("callStage.share.resolution"))
+        .child(
+            dilla_desktop_ui::components::segmented::Segmented::new(
+                "voice-share-resolution",
+                &resolutions,
+                o.resolution.name(),
+            )
+            .on_change(move |v, _, cx| {
+                if let Some(resolution) = ShareResolution::from_name(v) {
+                    pick(ShareOptions { resolution, ..o }, cx);
+                }
+            }),
+        )
+        .child(label("callStage.share.frameRate"))
+        .child(
+            dilla_desktop_ui::components::segmented::Segmented::new(
+                "voice-share-fps",
+                &[("15", "15"), ("30", "30"), ("60", "60")],
+                o.fps.to_string(),
+            )
+            .on_change(move |v, _, cx| {
+                if let Ok(fps) = v.parse() {
+                    pick(ShareOptions { fps, ..o }, cx);
+                }
+            }),
+        )
+        .child(line(
+            estimate,
+            text::XS,
+            14.0,
+            if heavy { color::WARN } else { color::FG_3 },
+        ))
+        .when(!sharing, |d| {
+            d.child(tracked_box(
+                "voice-share-go",
+                dilla_desktop_ui::components::Button::new(
+                    "voice-share-go-b",
+                    t("callStage.share.go"),
+                )
+                .on_click(|_, _, cx| {
+                    if cx.has_global::<VoiceUi>() {
+                        cx.global_mut::<VoiceUi>().share_menu = false;
+                    }
+                    toggle_share(ShareKind::Screen, cx);
+                }),
+            ))
+        });
+    Some(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .flex()
+            .justify_center()
+            .child(panel)
+            .into_any_element(),
+    )
+}
+
+/// The tile stats (tile-stats.ts `frameStat`): the stream's height and its frame rate over the last second.
+pub fn frame_stat(height: u32, fps: u32) -> String {
+    tf(
+        "callStage.stat.frame",
+        &[("height", &height.to_string()), ("fps", &fps.to_string())],
+    )
 }
 
 #[allow(
@@ -1026,6 +1266,11 @@ mod tests {
         let t = tiles(&s, ch.id);
         assert_eq!(t.len(), 3);
         assert!(t[2].screen && t[2].device == DeviceId([1; 16]));
+    }
+
+    #[test]
+    fn a_tile_stat_names_height_and_rate() {
+        assert_eq!(frame_stat(720, 30), "720p · 30 fps");
     }
 
     #[test]

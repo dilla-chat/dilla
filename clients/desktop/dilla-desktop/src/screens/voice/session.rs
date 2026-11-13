@@ -19,7 +19,7 @@ use dilla_media::apm::ApmFlags;
 use dilla_media::noise::NoiseMode;
 use dilla_media::{
     Call, CallOptions, CaptureSource, EpochFeed, IceServer, LiveKitToken, MediaEvent, Mic,
-    RemoteVideos, ShareKind,
+    RemoteVideos, ShareKind, ShareOptions,
 };
 use tokio::sync::{mpsc, watch};
 use zeroize::Zeroizing;
@@ -58,7 +58,9 @@ pub fn mic_open(s: &AppState, ptt_mode: bool) -> bool {
 
 /// What a share asks for.
 pub enum Command {
-    Share(ShareKind, bool),
+    Share(ShareKind, bool, ShareOptions),
+    /// The stream quality changed while sharing: the screen share starts again at it.
+    Quality(ShareOptions),
 }
 
 /// The running session (see the module docs). Dropping it leaves the call's media.
@@ -71,19 +73,31 @@ pub struct MediaSession {
 }
 
 /// Where share sources come from. The real screen and camera sources are the next plan's; the automation build (and
-/// `DILLA_TEST_FRAMES=1`) uses the moving test pattern, anything else has none, which is a cancelled selection.
-pub type SourceFactory = Arc<dyn Fn(ShareKind) -> Option<Box<dyn CaptureSource>> + Send + Sync>;
+/// a debug build with `DILLA_TEST_PATTERN=1`) uses the moving test pattern; a release build never does. Anything else
+/// has none, which is a cancelled selection.
+pub type SourceFactory =
+    Arc<dyn Fn(ShareKind, ShareOptions) -> Option<Box<dyn CaptureSource>> + Send + Sync>;
 
 pub fn default_sources() -> SourceFactory {
-    Arc::new(|kind| {
+    Arc::new(|kind, options: ShareOptions| {
         let test = cfg!(feature = "automation")
-            || std::env::var("DILLA_TEST_FRAMES").is_ok_and(|v| v == "1");
+            || (cfg!(debug_assertions)
+                && std::env::var("DILLA_TEST_PATTERN").is_ok_and(|v| v == "1"));
         test.then(|| {
+            // The pattern at the asked size, at most 720p (it is drawn on the CPU).
             let (w, h) = match kind {
                 ShareKind::Camera => (640, 360),
-                ShareKind::Screen => (1280, 720),
+                ShareKind::Screen => options
+                    .resolution
+                    .frame()
+                    .map_or((1280, 720), |(w, h)| (w.min(1280), h.min(720))),
             };
-            Box::new(dilla_media::TestPattern::new(kind, w, h, 15)) as Box<dyn CaptureSource>
+            let fps = if kind == ShareKind::Screen {
+                options.fps.min(30)
+            } else {
+                15
+            };
+            Box::new(dilla_media::TestPattern::new(kind, w, h, fps)) as Box<dyn CaptureSource>
         })
     })
 }
@@ -116,8 +130,13 @@ impl MediaSession {
     }
 
     /// Starts or stops a share.
-    pub fn share(&self, kind: ShareKind, on: bool) {
-        let _ = self.commands.send(Command::Share(kind, on));
+    pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions) {
+        let _ = self.commands.send(Command::Share(kind, on, options));
+    }
+
+    /// Applies a new stream quality to the running screen share.
+    pub fn quality(&self, options: ShareOptions) {
+        let _ = self.commands.send(Command::Quality(options));
     }
 
     /// Every remote video stream's newest frame.
@@ -186,20 +205,33 @@ fn token_of(link: &MediaLink) -> LiveKitToken {
             .map(|(urls, username, credential)| IceServer {
                 urls: urls.clone(),
                 username: username.clone(),
+                // livekit's `IceServer` takes a plain `String`: this copy is not zeroized (the TURN credential is a
+                // short-lived per-call secret the SFU minted, not a key).
                 password: credential.to_string(),
             })
             .collect(),
     }
 }
 
-/// Hands each epoch the call group reaches to the media.
-fn feed_epochs(link: &MediaLink) -> (Arc<EpochFeed>, tokio::task::JoinHandle<()>) {
+/// Where the epoch feeder drops the keys once the call's media exists.
+type MediaSlot = Arc<std::sync::OnceLock<Arc<dilla_media::transform::CallMedia>>>;
+
+/// Hands each epoch the call group reaches to the media, in order; an epoch the core's gate refused (the link's epochs
+/// turn `None`) drops every media key (WB security I1) until the next one.
+fn feed_epochs(link: &MediaLink) -> (Arc<EpochFeed>, MediaSlot, tokio::task::JoinHandle<()>) {
     let feed = EpochFeed::new();
+    let slot: MediaSlot = Arc::default();
     let mut epochs = link.epochs.clone();
     let out = feed.clone();
+    let media = slot.clone();
     let task = tokio::spawn(async move {
         loop {
             let e = epochs.borrow_and_update().clone();
+            if e.is_none()
+                && let Some(m) = media.get()
+            {
+                m.drop_keys();
+            }
             if let Some(e) = e {
                 out.publish(dilla_media::MediaEpoch {
                     epoch: e.epoch,
@@ -213,7 +245,7 @@ fn feed_epochs(link: &MediaLink) -> (Arc<EpochFeed>, tokio::task::JoinHandle<()>
             }
         }
     });
-    (feed, task)
+    (feed, slot, task)
 }
 
 async fn in_call(
@@ -222,8 +254,13 @@ async fn in_call(
     links: &mut watch::Receiver<Option<Arc<MediaLink>>>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
 ) {
-    let (feed, feeder) = feed_epochs(link);
-    let call = match Call::join_with(token_of(link), feed.clone(), ctx.options()).await {
+    let (feed, slot, feeder) = feed_epochs(link);
+    // A muted or push-to-talk join: the microphone is muted before it is published.
+    let options = CallOptions {
+        muted: !mic_open(&ctx.states.borrow(), ctx.ptt_mode()),
+        ..ctx.options()
+    };
+    let call = match Call::join_with(token_of(link), feed.clone(), options).await {
         Ok(call) => call,
         Err(dilla_media::MediaError::Audio(e)) => {
             // No microphone: the call goes on listen-only, and the person is told.
@@ -231,6 +268,7 @@ async fn in_call(
             ctx.voice.set_notice(Some(VoiceNotice::MicLost));
             let listen = CallOptions {
                 mic: Mic::None,
+                muted: true,
                 ..ctx.options()
             };
             match Call::join_with(token_of(link), feed, listen).await {
@@ -240,6 +278,11 @@ async fn in_call(
         }
         Err(e) => return failed(ctx, feeder, &e),
     };
+    let _ = slot.set(call.media());
+    // An epoch refused before the call existed: its keys go now.
+    if link.epochs.borrow().is_none() {
+        call.drop_keys();
+    }
     let ptt = ctx.ptt_mode();
     let mut states = ctx.states.clone();
     let mut levels = call.remote_audio_levels();
@@ -289,7 +332,12 @@ async fn in_call(
                 let _ = ctx.voice.set_share(share).await;
             }
             Some(cmd) = commands.recv() => match cmd {
-                Command::Share(kind, on) => share(ctx, &call, kind, on).await,
+                Command::Share(kind, on, options) => share(ctx, &call, kind, on, options).await,
+                Command::Quality(options) => {
+                    if ctx.states.borrow().voice.share.screen {
+                        share(ctx, &call, ShareKind::Screen, true, options).await;
+                    }
+                }
             },
             _ = stats.tick() => {
                 let st = call.stats();
@@ -308,10 +356,13 @@ async fn in_call(
     call.leave().await;
 }
 
+/// The media did not start (the room refused, no key in time): the person is told the join failed and the call is
+/// left, so the signalling never stays "in" a call nobody hears.
 fn failed(ctx: &Ctx, feeder: tokio::task::JoinHandle<()>, e: &dilla_media::MediaError) {
     log::warn!("voice: the call's media did not start: {e}");
     feeder.abort();
-    ctx.voice.set_notice(Some(VoiceNotice::SpeakerLost));
+    ctx.voice.set_notice(Some(VoiceNotice::MediaFailed));
+    drop(ctx.voice.leave());
 }
 
 fn set_kind(share: &mut LocalShare, kind: ShareKind, on: bool) {
@@ -328,7 +379,7 @@ fn set_kind(share: &mut LocalShare, kind: ShareKind, on: bool) {
 
 /// Starts or stops a share: the instance's sharing slot first, then the track. A selection that gives no source (the
 /// person cancelled it) publishes nothing and says so.
-async fn share(ctx: &Ctx, call: &Call, kind: ShareKind, on: bool) {
+async fn share(ctx: &Ctx, call: &Call, kind: ShareKind, on: bool, options: ShareOptions) {
     let mut next = ctx.states.borrow().voice.share;
     if !on {
         call.unpublish_video(kind).await;
@@ -336,7 +387,7 @@ async fn share(ctx: &Ctx, call: &Call, kind: ShareKind, on: bool) {
         let _ = ctx.voice.set_share(next).await;
         return;
     }
-    let Some(source) = (ctx.sources)(kind) else {
+    let Some(source) = (ctx.sources)(kind, options) else {
         ctx.voice.set_notice(Some(VoiceNotice::ShareCancelled));
         return;
     };
@@ -346,7 +397,7 @@ async fn share(ctx: &Ctx, call: &Call, kind: ShareKind, on: bool) {
         next.screen_audio = audio;
     }
     if let Ok(Ok(())) = ctx.voice.set_share(next).await {
-        if let Err(e) = call.publish_video(source).await {
+        if let Err(e) = call.publish_video_with(source, options).await {
             log::warn!("voice: the share did not start: {e}");
             set_kind(&mut next, kind, false);
             let _ = ctx.voice.set_share(next).await;

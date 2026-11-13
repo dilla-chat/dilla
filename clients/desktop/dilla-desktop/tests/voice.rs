@@ -180,3 +180,17 @@ fn leaving_resets_the_stage(cx: &mut TestAppContext) {
         VOICE
     ));
 }
+
+/// The stream-quality menu opens over the controls with the share options (1080p at 30 by default) and draws.
+#[gpui::test]
+fn the_quality_menu_draws_the_share_options(cx: &mut TestAppContext) {
+    let cx = host(cx, state(2));
+    cx.update(|_, cx| {
+        let ui = cx.global_mut::<VoiceUi>();
+        assert_eq!(ui.share_options, dilla_media::ShareOptions::default());
+        ui.share_menu = true;
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    assert_eq!(voice::frame_stat(1080, 30), "1080p · 30 fps");
+}

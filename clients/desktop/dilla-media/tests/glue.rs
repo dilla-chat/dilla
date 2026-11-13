@@ -251,6 +251,53 @@ fn the_microphone_sender_is_bound_as_it_attaches_and_an_unbound_sender_sends_not
     testing::release(other);
 }
 
+/// Task 17 fix (WB security I1, session.ts `dropKeys`): an epoch the core's gate refused drops every media key: nothing
+/// is sealed under the old epoch (a removed member must not keep hearing this device), and a received frame is not
+/// opened, until the next epoch is installed.
+#[test]
+fn dropped_keys_seal_and_open_nothing_until_the_next_epoch() {
+    let f = call();
+    f.media.expect_local("mic-drop", Slot::Microphone);
+    let tx = testing::attach(true, false, "mic-drop");
+    testing::frame(tx, "audio/opus", OPUS, false);
+    assert_eq!(testing::take_emitted(tx).len(), 1);
+    let sealed_before: u64 = f.media.stats().encrypted.values().sum();
+    f.media.drop_keys();
+    assert_eq!(f.media.sending_epoch(), None);
+    for _ in 0..3 {
+        testing::frame(tx, "audio/opus", OPUS, false);
+    }
+    assert!(
+        testing::take_emitted(tx).is_empty(),
+        "nothing sent without a key"
+    );
+    assert_eq!(
+        f.media.stats().encrypted.values().sum::<u64>(),
+        sealed_before,
+        "frames_encrypted stays flat"
+    );
+    // A peer's frame under the dropped epoch is not opened.
+    let rx = testing::attach(false, false, "TR_drop");
+    f.media.bind_remote(rx, PEER, Slot::Microphone).unwrap();
+    let frame = peer_sender(EPOCH, &BASE)
+        .encrypt(Codec::Opus, Slot::Microphone, 0, OPUS)
+        .unwrap();
+    testing::frame(rx, "audio/opus", &frame, false);
+    assert!(testing::take_emitted(rx).is_empty());
+    // The refused epoch coming back is not sealed under again (a new sender would repeat its nonces).
+    f.media.install_epoch(EPOCH, &BASE, &ROSTER, 0).unwrap();
+    assert_eq!(f.media.sending_epoch(), None);
+    // The next epoch seals again.
+    f.media
+        .install_epoch(EPOCH + 1, &BASE2, &ROSTER, 0)
+        .unwrap();
+    assert_eq!(f.media.sending_epoch(), Some(EPOCH + 1));
+    testing::frame(tx, "audio/opus", OPUS, false);
+    assert_eq!(testing::take_emitted(tx).len(), 1);
+    testing::release(tx);
+    testing::release(rx);
+}
+
 #[test]
 fn after_the_call_ends_no_frame_is_sent_or_decoded() {
     let f = call();

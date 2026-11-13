@@ -47,7 +47,7 @@ use zeroize::Zeroizing;
 
 use crate::apm::{Apm, ApmFlags};
 use crate::capture::{self, CaptureConfig};
-use crate::capture_source::{CaptureSource, ShareKind};
+use crate::capture_source::{CaptureSource, ShareKind, ShareOptions};
 use crate::devices::{self, AudioHost, DeviceId};
 use crate::noise::{FRAME_SAMPLES, NoiseMode, NoiseProcessor, RATE, embedded_model};
 use crate::playout::{PlayoutSink, Speaker};
@@ -101,6 +101,9 @@ pub struct CallOptions {
     pub key_timeout: Duration,
     /// Echo cancellation and gain control of a device microphone (the person's voice settings).
     pub apm_flags: ApmFlags,
+    /// Join muted: the microphone track is muted before it is published, so no frame of the person's voice is ever
+    /// encoded before the mute (a muted or push-to-talk join).
+    pub muted: bool,
 }
 
 impl Default for CallOptions {
@@ -113,6 +116,7 @@ impl Default for CallOptions {
             playout: true,
             key_timeout: Duration::from_secs(10),
             apm_flags: ApmFlags::default(),
+            muted: false,
         }
     }
 }
@@ -328,7 +332,7 @@ impl Call {
         let (videos_tx, videos) = watch::channel(RemoteVideos::new());
         let (shares_ended, shares_ended_rx) = mpsc::unbounded_channel();
         let tails: Tails = Arc::default();
-        let muted = Arc::new(AtomicBool::new(false));
+        let muted = Arc::new(AtomicBool::new(options.muted));
         let mut tasks = vec![tokio::spawn(remote_tracks(
             events,
             media.clone(),
@@ -426,6 +430,10 @@ impl Call {
         };
         let track_id = track.rtc_track().id();
         self.media.expect_local(&track_id, Slot::Microphone);
+        // A muted join: the track is muted (silence, still sealed) before it is published.
+        if self.muted.load(Ordering::SeqCst) {
+            track.mute();
+        }
         self.room
             .local_participant()
             .publish_track(
@@ -544,6 +552,23 @@ impl Call {
 
     /// Deafens or undeafens: every remote source plays silence (the echo reference with it), and
     /// nothing queues up meanwhile.
+    /// WB security I1: the core's gate refused the call group's newest epoch, so every media key is dropped and
+    /// nothing is sealed or opened until a newer epoch is installed ([`CallMedia::drop_keys`]).
+    pub fn drop_keys(&self) {
+        self.media.drop_keys();
+    }
+
+    /// This call's keys and bindings, for whoever follows the call group: it calls [`CallMedia::drop_keys`] in
+    /// order with the epochs it installs, so a drop never lands after a newer install.
+    pub fn media(&self) -> Arc<CallMedia> {
+        self.media.clone()
+    }
+
+    /// The epoch the microphone seals under, `None` while no key is installed (or after [`Call::drop_keys`]).
+    pub fn sending_epoch(&self) -> Option<u64> {
+        self.media.sending_epoch()
+    }
+
     pub fn set_deafened(&self, on: bool) {
         if let Some(speaker) = &self.speaker {
             speaker.sink().set_deafened(on);
@@ -575,9 +600,16 @@ impl Call {
     /// Publishes `source` as the camera or the screen share: a VP8 video track whose sender
     /// transformer is bound to the camera or screen slot before its first frame (fail closed: a
     /// sender without one is unpublished and refused). A share of the same kind is replaced.
-    pub async fn publish_video(
+    pub async fn publish_video(&self, source: Box<dyn CaptureSource>) -> Result<(), MediaError> {
+        self.publish_video_with(source, ShareOptions::default())
+            .await
+    }
+
+    /// [`Call::publish_video`] with the person's stream quality (the encoder's bitrate and frame-rate bound).
+    pub async fn publish_video_with(
         &self,
         mut source: Box<dyn CaptureSource>,
+        quality: ShareOptions,
     ) -> Result<(), MediaError> {
         let kind = source.kind();
         self.unpublish_video(kind).await;
@@ -599,6 +631,10 @@ impl Call {
                 TrackPublishOptions {
                     source: track_source,
                     video_codec: livekit::options::VideoCodec::VP8,
+                    video_encoding: Some(livekit::options::VideoEncoding {
+                        max_bitrate: quality.bitrate_bps(None),
+                        max_framerate: f64::from(quality.fps),
+                    }),
                     simulcast: false,
                     red: false,
                     dtx: false,
@@ -931,6 +967,10 @@ async fn read_audio(
     }
 }
 
+/// The largest remote video frame converted for a tile (4K UHD); a larger one is dropped.
+pub const MAX_VIDEO_W: u32 = 3840;
+pub const MAX_VIDEO_H: u32 = 2160;
+
 /// Frees a remote source's playout slot when its reader ends.
 struct FreeOnDrop {
     sink: PlayoutSink,
@@ -967,12 +1007,24 @@ async fn read_video(
     let _gone = Gone(videos.clone(), key.clone());
     let mut stream = NativeVideoStream::new(track);
     let mut frames = 0u64;
+    let mut warned = false;
     while let Some(frame) = stream.next().await {
         if !media.verified_devices().contains(&key.device) {
             continue;
         }
         let buffer = frame.buffer.as_ref();
         let (w, h) = (buffer.width(), buffer.height());
+        // A stream larger than 4K is not converted: its RGBA would be unbounded memory per frame.
+        if w == 0 || h == 0 || w > MAX_VIDEO_W || h > MAX_VIDEO_H {
+            if !warned {
+                log::warn!(
+                    "dilla-media: a {w}x{h} stream from {} is larger than {MAX_VIDEO_W}x{MAX_VIDEO_H}: not shown",
+                    key.device
+                );
+                warned = true;
+            }
+            continue;
+        }
         let mut rgba = vec![0u8; (w * h * 4) as usize];
         if let Some(native) = buffer.as_native() {
             native.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);

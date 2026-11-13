@@ -27,7 +27,9 @@ pub mod ring;
 pub mod room;
 pub mod transform;
 
-pub use capture_source::{CaptureSource, RgbaFrame, ShareKind, TestPattern};
+pub use capture_source::{
+    CaptureSource, RgbaFrame, ShareKind, ShareOptions, ShareResolution, TestPattern,
+};
 pub use livekit::webrtc::peer_connection_factory::IceServer;
 pub use room::{
     Call, CallOptions, LiveKitToken, Mic, RemoteFrame, RemoteLevels, RemoteVideos, StreamKey,

@@ -94,6 +94,7 @@ async fn main() {
     let mut token = String::new();
     let mut tone: Option<f64> = None;
     let mut noise = NoiseMode::Off;
+    let mut muted = false;
     let mut args = std::env::args().skip(1);
     while let Some(k) = args.next() {
         let v = args.next().unwrap_or_else(|| panic!("{k} needs a value"));
@@ -101,6 +102,7 @@ async fn main() {
             "--url" => url = v,
             "--token" => token = v,
             "--tone" => tone = Some(v.parse().expect("--tone")),
+            "--muted" => muted = v == "1",
             "--noise" => {
                 noise = match v.as_str() {
                     "off" => NoiseMode::Off,
@@ -173,6 +175,7 @@ async fn main() {
             mic,
             playout: false,
             key_timeout: Duration::from_secs(30),
+            muted,
             ..CallOptions::default()
         },
     )

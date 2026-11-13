@@ -145,6 +145,102 @@ pub fn nearest_bar(rgb: [u8; 3]) -> (usize, u32) {
         .unwrap_or((0, u32::MAX))
 }
 
+/// share-options.ts `ShareResolution`: the largest frame a screen share sends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ShareResolution {
+    P720,
+    #[default]
+    P1080,
+    P1440,
+    /// The source's own size.
+    Source,
+}
+
+impl ShareResolution {
+    pub const ALL: [ShareResolution; 4] = [Self::P720, Self::P1080, Self::P1440, Self::Source];
+
+    /// The value as share-options.ts names it (`720p`, ..., `source`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::P720 => "720p",
+            Self::P1080 => "1080p",
+            Self::P1440 => "1440p",
+            Self::Source => "source",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.name() == name)
+    }
+
+    /// The frame's bound, `None` for the source's size.
+    pub fn frame(self) -> Option<(u32, u32)> {
+        match self {
+            Self::P720 => Some((1280, 720)),
+            Self::P1080 => Some((1920, 1080)),
+            Self::P1440 => Some((2560, 1440)),
+            Self::Source => None,
+        }
+    }
+
+    /// `SHARE_TARGET_KBPS`.
+    fn target_kbps(self) -> u64 {
+        match self {
+            Self::P720 => 2500,
+            Self::P1080 => 4500,
+            Self::P1440 => 8000,
+            Self::Source => 12000,
+        }
+    }
+}
+
+/// share-options.ts `SHARE_FPS`.
+pub const SHARE_FPS: [u32; 3] = [15, 30, 60];
+/// share-options.ts `SHARE_HEAVY_KBPS`: above it the estimate warns that frames may drop.
+pub const SHARE_HEAVY_KBPS: u64 = 9000;
+
+/// share-options.ts `ShareOptions`, narrowed to what a desktop share has: no surface choice and no system sound
+/// (`shareSupport` with `desktop: true`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShareOptions {
+    pub resolution: ShareResolution,
+    /// 15, 30 or 60.
+    pub fps: u32,
+}
+
+impl Default for ShareOptions {
+    /// `DEFAULT_SHARE_OPTIONS`: 1080p at 30 fps.
+    fn default() -> Self {
+        Self {
+            resolution: ShareResolution::P1080,
+            fps: 30,
+        }
+    }
+}
+
+impl ShareOptions {
+    /// `shareBitrateBps`: the target for the resolution, scaled by the frame rate (`SHARE_FPS_FACTOR`), under the
+    /// instance's cap when it has one.
+    pub fn bitrate_bps(&self, cap_bps: Option<u64>) -> u64 {
+        let factor = match self.fps {
+            0..=15 => 0.6,
+            16..=30 => 1.0,
+            _ => 1.6,
+        };
+        let target = (self.resolution.target_kbps() as f64 * factor * 1000.0).round() as u64;
+        cap_bps.map_or(target, |cap| target.min(cap))
+    }
+
+    /// `shareEstimate`: the upload in Mb/s with one decimal, and whether it is heavy.
+    pub fn estimate(&self, cap_bps: Option<u64>) -> (String, bool) {
+        let kbps = self.bitrate_bps(cap_bps) as f64 / 1000.0;
+        (
+            format!("{:.1}", kbps / 1000.0),
+            kbps > SHARE_HEAVY_KBPS as f64,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +269,31 @@ mod tests {
         assert!(p.next_frame().is_none());
         assert_eq!(p.interval(), Duration::from_millis(50));
         assert_eq!(p.kind(), ShareKind::Camera);
+    }
+
+    /// share-options.test.ts: the targets, the frame-rate factor, the cap and the heavy mark.
+    #[test]
+    fn share_bitrates_follow_share_options_ts() {
+        let o = |resolution, fps| ShareOptions { resolution, fps };
+        assert_eq!(ShareOptions::default().bitrate_bps(None), 4_500_000);
+        assert_eq!(o(ShareResolution::P720, 15).bitrate_bps(None), 1_500_000);
+        assert_eq!(o(ShareResolution::P1440, 60).bitrate_bps(None), 12_800_000);
+        assert_eq!(
+            o(ShareResolution::Source, 30).bitrate_bps(Some(3_000_000)),
+            3_000_000
+        );
+        assert_eq!(
+            ShareOptions::default().estimate(None),
+            ("4.5".to_owned(), false)
+        );
+        assert_eq!(
+            o(ShareResolution::P1440, 60).estimate(None),
+            ("12.8".to_owned(), true)
+        );
+        assert_eq!(
+            ShareResolution::from_name("1440p"),
+            Some(ShareResolution::P1440)
+        );
+        assert_eq!(ShareResolution::P720.frame(), Some((1280, 720)));
     }
 }

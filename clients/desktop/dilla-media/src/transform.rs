@@ -126,6 +126,8 @@ struct KeyFrameWait {
 
 struct State {
     closed: bool,
+    /// The keys were dropped ([`CallMedia::drop_keys`]): only a newer epoch than `epoch` seals again.
+    dropped: bool,
     own_leaf: Option<u16>,
     epoch: u64,
     sender: Option<SframeSender>,
@@ -149,6 +151,7 @@ impl CallMedia {
         Arc::new(Self {
             state: Mutex::new(State {
                 closed: false,
+                dropped: false,
                 own_leaf: None,
                 epoch: 0,
                 sender: None,
@@ -193,6 +196,7 @@ impl CallMedia {
             s.ring
                 .install_epoch(epoch, base_key, roster, Some(own_leaf), now);
             let current = s.epoch;
+            let dropped = s.dropped;
             match s.sender.as_mut() {
                 Some(sender) if epoch > current => {
                     sender.rekey(base_key, own_leaf, epoch);
@@ -200,7 +204,11 @@ impl CallMedia {
                     s.own_leaf = Some(own_leaf);
                 }
                 Some(_) => {}
+                // After a drop, never seal again under an epoch already sealed under: a new sender restarts its
+                // counter, which under the same key would repeat nonces.
+                None if dropped && epoch <= current => {}
                 None => {
+                    s.dropped = false;
                     s.sender = Some(
                         SframeSender::new(base_key, own_leaf, epoch, epoch)
                             .map_err(|e| MediaError::Keys(e.code().into()))?,
@@ -213,6 +221,18 @@ impl CallMedia {
         // Outside the lock: a drain runs every transform, which takes it.
         ffi::drain_holds();
         Ok(())
+    }
+
+    /// WB security I1 (session.ts `dropKeys`): the core's gate refused the call group's newest epoch (an identity
+    /// change, a stale or unlisted device), so every media key goes: the sender is gone (nothing is sealed under the
+    /// old epoch, so a member the group removed stops hearing this device) and the receive ring is emptied (nothing is
+    /// opened), until the next [`install_epoch`](Self::install_epoch).
+    pub fn drop_keys(&self) {
+        let mut s = self.lock();
+        s.dropped = s.dropped || s.sender.is_some();
+        s.sender = None;
+        s.own_leaf = None;
+        s.ring = KeyRing::new();
     }
 
     /// The epoch the sender seals under, once one is installed.

@@ -69,6 +69,8 @@ pub enum VoiceNotice {
     ShareCancelled,
     /// A screen share without sound (share-audio-advice.ts).
     ShareWithoutSound,
+    /// The call's media did not start: the call was left.
+    MediaFailed,
 }
 
 /// This device's own call (types.ts `CallState`, the parts the desktop draws).

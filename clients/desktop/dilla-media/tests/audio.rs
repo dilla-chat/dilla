@@ -46,6 +46,8 @@ struct State {
     out_latency: u32,
     /// No output can be opened (every speaker is gone).
     no_output: bool,
+    /// Microphone access was withdrawn.
+    denied: bool,
 }
 
 #[derive(Clone)]
@@ -58,6 +60,10 @@ struct Token {
 }
 
 impl Running for Token {
+    fn denied(&self) -> bool {
+        self.input && self.state.lock().unwrap().denied
+    }
+
     fn latency_ms(&self) -> u32 {
         let s = self.state.lock().unwrap();
         if self.input {
@@ -98,6 +104,7 @@ impl Fake {
             in_latency: 0,
             out_latency: 0,
             no_output: false,
+            denied: false,
         })))
     }
 
@@ -149,6 +156,18 @@ impl Fake {
             .input
             .as_ref()
             .map(|i| i.device.clone())
+    }
+
+    /// Withdraws microphone access (a privacy toggle): the stream fails as denied.
+    fn deny_input(&self) {
+        let lost = {
+            let mut s = self.0.lock().unwrap();
+            s.denied = true;
+            s.input.as_mut().and_then(|i| i.lost.take())
+        };
+        if let Some(f) = lost {
+            f();
+        }
     }
 
     /// Pulls the speaker out; with `none_left` there is no default to take over either.
@@ -708,6 +727,30 @@ fn deafen_plays_silence_and_queues_nothing() {
     );
     sink.push("a", &[5000; 480]);
     assert!(host.pull(480).contains(&5000));
+}
+
+/// Task 17 fix: withdrawn microphone access is `MicLost`, and the default does not take over (it would be refused
+/// too, and a silent switch would hide that the person's microphone is off).
+#[test]
+fn withdrawn_microphone_access_is_mic_lost_without_a_fallback() {
+    let host = Fake::new();
+    let mut mic = Mic::open_with(
+        config(&host, Apm::default(), embedded()),
+        Some(DeviceId("usb".into())),
+        NoiseMode::Off,
+    )
+    .unwrap();
+    let mut ev = mic.take_events().unwrap();
+    host.deny_input();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = Vec::new();
+    while seen.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        seen = events(&mut ev);
+    }
+    assert_eq!(seen, vec![MediaEvent::MicLost]);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(host.capturing_from(), None, "no fallback to the default");
 }
 
 #[test]

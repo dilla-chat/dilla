@@ -33,6 +33,8 @@ use crate::sync::route::AreaFrames;
 /// controller.ts `VOICE_SELF_RESENDS`: how often per join the own `voice_self` is sent again while the instance's
 /// `voice_state` lacks it.
 pub const VOICE_SELF_RESENDS: u8 = 3;
+/// controller.ts `VOICE_SELF_RECONNECT_SENDS`: how often the reconnect sends a `voice_self` made while offline.
+pub const VOICE_SELF_RECONNECT_SENDS: u8 = 1;
 /// routes.ts `COMMUNITY_CALLS_MAX`.
 pub const COMMUNITY_CALLS_MAX: usize = 4096;
 /// stats.ts `STATS_EVERY_MS`: one coarse report per call every 10 s, at most.
@@ -104,6 +106,9 @@ struct Runtime {
     last_self: Option<([u8; 16], u8)>,
     own_in_call: HashSet<[u8; 16]>,
     resends: Option<([u8; 16], u8)>,
+    /// controller.ts `selfOffline`: a `voice_self` made while offline, owed to the instance: the reconnect sends it
+    /// (at most [`VOICE_SELF_RECONNECT_SENDS`] times), apart from the re-send rule's own budget.
+    self_offline: Option<([u8; 16], u8)>,
     last_stats: Option<std::time::Instant>,
 }
 
@@ -119,6 +124,7 @@ impl Default for Runtime {
             last_self: None,
             own_in_call: HashSet::new(),
             resends: None,
+            self_offline: None,
             last_stats: None,
         }
     }
@@ -356,6 +362,9 @@ impl Voice {
                     } else {
                         communities.clone()
                     };
+                    if s.connection.readies != seen.0 {
+                        this.send_offline_self();
+                    }
                     seen = (s.connection.readies, communities);
                     for c in fresh {
                         // A failed read keeps what the frames show; the next ready reads again.
@@ -656,7 +665,16 @@ impl Voice {
         drop(self.inner.spawn(async move {
             loop {
                 tokio::time::sleep(EPOCH_POLL).await;
-                if lock(&this.rt()).generation != generation || this.inner.engine().stopped() {
+                if this.inner.engine().stopped() {
+                    // The client stopped: the media goes with it.
+                    let rt = this.rt();
+                    let r = lock(&rt);
+                    if r.generation == generation {
+                        r.link.send_replace(None);
+                    }
+                    return Ok(());
+                }
+                if lock(&this.rt()).generation != generation {
                     return Ok(());
                 }
                 match this.calls.media_epoch(&live.group_id) {
@@ -676,8 +694,14 @@ impl Voice {
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        // The gate refused the epoch (an identity change, a stale device list): the error stands
-                        // until the next epoch passes; the ring area (Task 18) owns the paused flows.
+                        // WB security I1 (session.ts `dropKeys`): the gate refused the group's newest epoch (an
+                        // identity change, a stale or unlisted device list). Every media key is dropped (the epochs
+                        // turn `None`), so nothing is sealed under the old epoch and a removed member stops hearing
+                        // this device; the next epoch the gate passes is handed on. The error stands until then; the
+                        // ring area (Task 18) owns the paused flows.
+                        if epochs.borrow().is_some() {
+                            epochs.send_replace(None);
+                        }
                         let code = e.code;
                         this.inner.publish(move |s| {
                             if s.voice.call.group_id == Some(live.group_id) {
@@ -690,8 +714,10 @@ impl Voice {
         }));
     }
 
-    /// Leaves the call (or stops the join in flight): this device's self-Remove first, then the media goes (its link
-    /// turns `None`), and the call ends when this device was alone in it.
+    /// Leaves the call (or stops the join in flight). The media goes first: the link turns `None` at once, so the media
+    /// layer stops sealing and leaves the room, then this device's self-Remove is posted, and the call ends when this
+    /// device was alone in it. (The web posts the self-Remove before it disconnects; here the keys stop first, so
+    /// nothing is sent while the Remove is in flight. The instance's own leave report covers a Remove that fails.)
     pub fn leave(&self) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
         self.inner.spawn(async move { this.leave_inner().await })
@@ -704,6 +730,9 @@ impl Voice {
             r.generation += 1;
             r.link.send_replace(None);
             r.last_self = None;
+            r.self_offline = None;
+            r.resends = None;
+            r.own_in_call.clear();
             (r.live.take(), r.joining.take())
         };
         drop(joining);
@@ -733,9 +762,38 @@ impl Voice {
         Ok(())
     }
 
-    /// controller.ts `voiceSelf`: kept as the last one for the call, sent when online.
+    /// controller.ts `voiceSelf`: kept as the last one for the call (before the online check, so the re-send rule
+    /// covers a press made offline), and sent only while online; one made offline is owed to the reconnect.
     fn voice_self(&self, call: [u8; 16], flags: u8) {
-        lock(&self.rt()).last_self = Some((call, flags));
+        let online =
+            self.inner.snapshot().connection.status == crate::state::ConnectionStatus::Online;
+        let rt = self.rt();
+        let mut r = lock(&rt);
+        r.last_self = Some((call, flags));
+        if !online {
+            r.self_offline = Some((call, VOICE_SELF_RECONNECT_SENDS));
+            return;
+        }
+        r.self_offline = None;
+        drop(r);
+        send_voice_self(&self.inner, call, flags);
+    }
+
+    /// controller.ts `sendOfflineSelf`: the reconnect sends the `voice_self` made while offline, for the call it was
+    /// made in, at most [`VOICE_SELF_RECONNECT_SENDS`] times.
+    fn send_offline_self(&self) {
+        let rt = self.rt();
+        let mut r = lock(&rt);
+        let (Some((owed_call, left)), Some((call, flags))) = (r.self_offline, r.last_self) else {
+            r.self_offline = None;
+            return;
+        };
+        if owed_call != call || left == 0 {
+            r.self_offline = None;
+            return;
+        }
+        r.self_offline = (left > 1).then_some((call, left - 1));
+        drop(r);
         send_voice_self(&self.inner, call, flags);
     }
 
