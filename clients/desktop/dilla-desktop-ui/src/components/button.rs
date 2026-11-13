@@ -144,6 +144,7 @@ pub struct Button {
     key_hint: Option<SharedString>,
     pressed: Option<bool>,
     disabled: bool,
+    blocked: bool,
     on_click: Option<ClickHandler>,
     focus: Option<FocusHandle>,
 }
@@ -159,9 +160,17 @@ impl Button {
             key_hint: None,
             pressed: None,
             disabled: false,
+            blocked: false,
             on_click: None,
             focus: None,
         }
+    }
+
+    /// `aria-disabled="true"`: the button draws at 0.4 opacity in its own colours (not the `:disabled` palette) and stays a
+    /// focusable, clickable control, so a press can say why it is blocked (a key dialog's confirm before the key is whole).
+    pub fn blocked(mut self, blocked: bool) -> Self {
+        self.blocked = blocked;
+        self
     }
 
     /// Tracks `handle` as this button's focus, for a host that moves focus to it (a dialog's Cancel).
@@ -304,6 +313,9 @@ impl RenderOnce for Button {
         }
         if self.disabled {
             return base.opacity(OPACITY_DISABLED).cursor_not_allowed();
+        }
+        if self.blocked {
+            base = base.opacity(OPACITY_DISABLED);
         }
         // Focusable, with the accent focus ring (`.d-root :focus-visible`); Enter and Space click it, as GPUI does for any
         // focused element with a click handler.

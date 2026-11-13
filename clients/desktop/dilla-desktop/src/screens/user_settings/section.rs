@@ -19,13 +19,13 @@ use dilla_desktop_ui::components::action_menu::MenuItem;
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::components::confirm_dialog::{ConfirmDialog, Tone};
-use dilla_desktop_ui::components::dialog::Dialog;
+use dilla_desktop_ui::components::dialog::{Dialog, InitialFocus};
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::GroupPosition;
-use dilla_desktop_ui::components::text_field::TextField;
+use dilla_desktop_ui::components::text_field::{Frame, TextField};
 use dilla_desktop_ui::components::toast::show_toast;
 use dilla_desktop_ui::metrics::Density;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::{flow_paragraph, line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::device_row::DeviceRow;
@@ -37,6 +37,13 @@ use super::draft::{Fields, ProfileDraft, SAVE_AFTER_MS};
 use crate::router::UserSection;
 use crate::slots::SlotCx;
 use crate::strings::{t, tf};
+
+/// `.d-recovery-key-field__input`: the recovery-key field's 40px input (2.5rem).
+const KEY_FIELD: Frame = Frame {
+    height: 40.0,
+    pad_y: 0.0,
+    line: 0.0,
+};
 
 /// The dialog open over Settings -> Devices.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -762,40 +769,60 @@ impl UserSettings {
                 t("devices.confirmRevoke"),
             ),
         };
+        // KeyDialog.tsx: a form dialog (Close in its footer beside the danger action, which is aria-disabled while the key
+        // is not whole), its body the subject, the warning, a refusal, the recovery-key field and the length line.
         let mut key_field = TextField::new("devices-key", t("devices.keyLabel"), &self.key)
+            .frame(KEY_FIELD)
             .hint(self.key_entry.hint());
         if let Some(e) = self.key_entry.field_error {
             key_field = key_field.error(t(e));
         }
-        let fields = div()
+        let body_line =
+            |s: String| flow_paragraph(s, text::UI, line_height(text::UI, 1.5), color::FG_2);
+        let mut fields = div()
             .flex()
             .flex_col()
             .child(self.subject(subject_id))
-            .child(key_field);
+            .child(body_line(body.to_owned()));
+        if let Some(banner) = &self.key_entry.banner {
+            fields = fields.child(Banner::new(
+                "devices-key-banner",
+                BannerTone::Danger,
+                banner.clone(),
+            ));
+        }
+        fields = fields.child(key_field);
+        if self.key_entry.short() {
+            fields = fields.child(body_line(t("signin.error.keyLength").to_owned()));
+        }
         let first = self.key.read(cx).focus_handle(cx);
-        out.push(
-            ConfirmDialog::new(
-                "devices-key-dialog",
-                title,
-                body,
-                confirm,
-                t("devices.working"),
-                t("settings.editing.keepEditing"),
+        let confirm_button = {
+            let this = this.clone();
+            Button::new(
+                "devices-key-confirm",
+                if self.key_entry.busy {
+                    t("devices.working")
+                } else {
+                    confirm
+                },
             )
-            .in_settings_section()
-            .open(open_key)
-            .tone(Tone::Danger)
-            .busy(self.key_entry.busy)
-            .error(self.key_entry.banner.clone().map(SharedString::from))
-            .fields(fields, Some(&first))
-            .on_confirm({
-                let this = this.clone();
-                move |window, cx| {
-                    this.update(cx, |v, cx| v.confirm_key(window, cx));
-                }
+            .variant(ButtonVariant::Danger)
+            .size(ButtonSize::Dialog)
+            .blocked(self.key_entry.short() || self.key_entry.busy)
+            .on_click(move |_, window, cx| {
+                this.update(cx, |v, cx| v.confirm_key(window, cx));
             })
-            .on_close(close.clone())
-            .into_any_element(),
+        };
+        out.push(
+            Dialog::new("devices-key-dialog", title, t("dialog.close"))
+                .in_settings_section()
+                .open(open_key)
+                .can_close(!self.key_entry.busy)
+                .initial_focus(InitialFocus::Handle(first))
+                .body(fields)
+                .footer(confirm_button)
+                .on_close(close.clone())
+                .into_any_element(),
         );
 
         // The plain removal of a device no signed list names.

@@ -52,6 +52,7 @@ fn bio_frame() -> Frame {
     Frame {
         height: BIO_ROWS * line_height(text::INPUT, 1.5) + 2.0 * (BIO_PAD_Y + EDGE),
         pad_y: BIO_PAD_Y,
+        line: line_height(text::INPUT, 1.5),
     }
 }
 
@@ -67,7 +68,7 @@ fn band_stop(name: &str, lightness: f32) -> Hsla {
 }
 
 impl UserSettings {
-    pub(super) fn profile_view(&mut self, _cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn profile_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let username = self.ctx.state.account.username.clone();
         let (e, preview, failed, pending, done, display_error, dirty) = {
             let d = self.draft.borrow();
@@ -88,6 +89,7 @@ impl UserSettings {
         let input = Frame {
             height: INPUT_HEIGHT,
             pad_y: 0.0,
+            line: line_height(text::INPUT, 1.5),
         };
         let mut display =
             TextField::new("profile-display", t("profile.display.label"), &self.display)
@@ -102,8 +104,15 @@ impl UserSettings {
         if let Some(text) = problem(e.problem_status) {
             status = status.error(text);
         }
+        // The typed bio's line boxes for the R13 mask (automation build only), over the field's text box.
+        let typed = crate::screens::composer::typed_text(
+            div().absolute().top_0().left_0().size_full(),
+            &self.bio.read(cx).value(),
+            bio_frame().line,
+        );
         let mut bio = TextField::multiline("profile-bio", t("profile.bio.label"), &self.bio)
-            .frame(bio_frame());
+            .frame(bio_frame())
+            .text_overlay(typed);
         if let Some(text) = problem(e.problem_bio) {
             bio = bio.error(text);
         }
@@ -171,7 +180,7 @@ impl UserSettings {
             // `.dw-profile-preview__name`: 14px (`--text-md`), bold.
             .child(
                 div().mt(px(NAME_GAP)).child(
-                    line(
+                    flow_paragraph(
                         name.clone(),
                         text::MD,
                         line_height(text::MD, 1.5),
@@ -180,7 +189,7 @@ impl UserSettings {
                     .weight(font::WEIGHT_DISPLAY),
                 ),
             )
-            .child(line(
+            .child(flow_paragraph(
                 handle_line,
                 text::XS,
                 line_height(text::XS, 1.5),

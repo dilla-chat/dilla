@@ -430,6 +430,7 @@ pub struct FlowParagraph {
     size: Pixels,
     line_height: f32,
     color: Hsla,
+    weight: FontWeight,
 }
 
 /// [`FlowParagraph`] of `text`.
@@ -444,6 +445,14 @@ pub fn flow_paragraph(
         size,
         line_height,
         color,
+        weight: font::WEIGHT_BODY,
+    }
+}
+
+impl FlowParagraph {
+    pub fn weight(mut self, weight: FontWeight) -> Self {
+        self.weight = weight;
+        self
     }
 }
 
@@ -540,12 +549,11 @@ impl gpui::Element for FlowParagraph {
             .relative()
             .w(bounds.size.width)
             .h(bounds.size.height)
-            .children(
-                lines
-                    .into_iter()
-                    .enumerate()
-                    .map(|(k, l)| line(l, self.size, lh, self.color).exact(0.0, k as f32 * lh)),
-            )
+            .children(lines.into_iter().enumerate().map(|(k, l)| {
+                line(l, self.size, lh, self.color)
+                    .weight(self.weight)
+                    .exact(0.0, k as f32 * lh)
+            }))
             .into_any_element();
         block.prepaint_as_root(
             bounds.origin,
