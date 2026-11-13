@@ -212,7 +212,7 @@ async fn send_files(client: &Client, channel: ChannelId, files: Vec<NewFile>, bo
     let descriptors = tray.take_all().expect("every file is ready");
     client
         .attachments()
-        .send(channel, body.to_owned(), descriptors)
+        .send(channel, body.to_owned(), descriptors, None)
         .await
         .unwrap()
         .expect("the post is queued");
@@ -303,6 +303,58 @@ async fn images_and_files_go_both_ways() {
             Some("E_ATTACHMENT_MISSING".to_owned())
         );
     }
+}
+
+/// Task 28 item 8 (review M1): a reply with files reaches the other side as a reply, its files with it (the web's one
+/// `send` with `replyTo` and `attachments`).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs dilla-testhost and the WASI core"]
+async fn a_reply_with_files_arrives_as_a_reply() {
+    let (_host, pa, pb, c) = two_people("t28-reply-files").await;
+    let (a, b) = (start(&pa).await, start(&pb).await);
+    let channel = general(&a, c).await;
+    general(&b, c).await;
+    both_in(&a, &b, channel).await;
+    b.send_text(channel, "the question".into())
+        .await
+        .unwrap()
+        .expect("the post is queued");
+    let s = wait_for(&a, WAIT, "a has b's post", |s| {
+        row_with(s, channel, "the question").is_some_and(|i| i.msg_id.is_some())
+    })
+    .await;
+    let to = row_with(&s, channel, "the question")
+        .and_then(|i| i.msg_id)
+        .unwrap();
+    let tray = a.attachments().tray(channel);
+    tray.add(vec![NewFile::from_bytes(
+        "answer.bin",
+        "application/octet-stream",
+        vec![7u8; 1000],
+    )])
+    .await
+    .expect("the tray takes the file");
+    wait_for(&a, WAIT, "the tray is ready", |s| {
+        let t = s.attachments.tray(channel);
+        t.len() == 1 && t.iter().all(|e| e.phase == TrayPhase::Ready)
+    })
+    .await;
+    let descriptors = tray.take_all().expect("the file is ready");
+    a.attachments()
+        .send(channel, "the answer".into(), descriptors, Some(to))
+        .await
+        .unwrap()
+        .expect("the post is queued");
+    let s = wait_for(&b, WAIT, "b has the reply with its file", |s| {
+        row_with(s, channel, "the answer").is_some_and(|i| i.attachments.len() == 1)
+    })
+    .await;
+    let row = row_with(&s, channel, "the answer").unwrap();
+    assert_eq!(
+        row.reply.map(|r| r.msg_id),
+        Some(to),
+        "the post replies to b's"
+    );
 }
 
 /// e2e/web/conversation.spec.ts "a 25 MB file goes through and one byte more stays as an oversized card with a toast":

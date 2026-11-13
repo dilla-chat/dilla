@@ -579,17 +579,13 @@ impl ShellView {
         let (Some(client), Some(channel)) = (&self.client, self.channel) else {
             return;
         };
-        // A post with files goes through the attachments area (12), which confirms each file first; it carries no reply
-        // reference, so an aimed reply stays for the next send. A reply goes through the threads area (11), once.
-        // Otherwise a DM's message goes through the DM area (13), which opens the DM's group; a channel's through the
-        // client.
-        let reply = if files.is_empty() {
-            crate::screens::threads::take_reply(&self.slot_cx(), channel, cx)
-        } else {
-            None
-        };
+        // A post with files goes through the attachments area (12), which confirms each file first; an aimed reply goes
+        // with it, in the same post (Shell.tsx: one `send` with `replyTo` and `attachments`). A reply without files goes
+        // through the threads area (11), once. Otherwise a DM's message goes through the DM area (13), which opens the
+        // DM's group; a channel's through the client.
+        let reply = crate::screens::threads::take_reply(&self.slot_cx(), channel, cx);
         let queued = if !files.is_empty() {
-            client.attachments().send(channel, text, files)
+            client.attachments().send(channel, text, files, reply)
         } else if let Some(to) = reply {
             client.threads().reply(channel, to, text)
         } else if self.dm_view {
