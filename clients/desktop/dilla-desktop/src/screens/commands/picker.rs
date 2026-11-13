@@ -453,6 +453,7 @@ mod tests {
                 bot_channels: channels,
                 bot_user: None,
                 bot_name: "Dilla Bot".into(),
+                fingerprint: None,
             },
         );
         s.bot.catalogs = catalogs;

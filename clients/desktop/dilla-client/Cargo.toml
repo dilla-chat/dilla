@@ -60,6 +60,8 @@ hmac = { version = "0.13", optional = true }
 sha1 = { version = "0.11", optional = true }
 
 [dev-dependencies]
+# Task 20: the sealed Bot path's 5 s first-answer timeout is tested on a paused clock.
+tokio = { version = "1", features = ["test-util"] }
 # Tests and examples get the real-dillad helpers (src/testing/host.rs) without a feature flag.
 dilla-client = { path = ".", features = ["testing-host"] }
 # The real-dillad tests enrol an account the way every native peer does.

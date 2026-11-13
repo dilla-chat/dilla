@@ -41,3 +41,15 @@ pub const STATUS_FAILED: &str = "Failed";
 pub const STATUS_CANCELLED: &str = "Not confirmed";
 pub const ONLY_YOU: &str = "Only you can see this";
 pub const DISMISS: &str = "Dismiss";
+
+/// `privateResultCopy.pending(id)`.
+pub fn pending(id: &str) -> String {
+    match id {
+        "remind" => "Saving your reminder…".to_owned(),
+        "help" => "Looking that up…".to_owned(),
+        "play" | "pause" | "resume" | "skip" | "stop" | "queue" | "volume" => {
+            "Checking your voice channel…".to_owned()
+        }
+        other => format!("/{other}…"),
+    }
+}

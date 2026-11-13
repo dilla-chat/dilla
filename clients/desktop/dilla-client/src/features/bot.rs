@@ -12,23 +12,24 @@
 //!   finished row goes away [`PRIVATE_RESULT_TTL_MS`] after it finished; the area sweeps itself on a timer.
 
 pub mod catalog;
+mod io;
 pub mod private;
 pub mod registry;
+pub mod run;
+pub mod sealed;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crate::client::{Client, Inner};
 use crate::gateway::frames::{self, Frame, Op};
-use crate::state::bot::{
-    BotCatalogView, BotState, BotStatus, BotStatusState, Conversation, PRIVATE_RESULT_TTL_MS,
-    ResultProvider, ResultStatus,
-};
+use crate::state::bot::{Conversation, PRIVATE_RESULT_TTL_MS, ResultProvider, ResultStatus};
 use crate::state::{AppState, CommunityId};
 use crate::sync::route::AreaFrames;
 
 use registry::{CommandDefinition, Parsed, Provider};
+use sealed::{Refusal, Sealed, Transport};
 
 /// The bot area's handle for bot: cheap to clone, no I/O on construction.
 #[derive(Clone)]
@@ -54,6 +55,11 @@ pub enum RunOutcome {
     Private(u64),
     /// The command is not complete: the draft stays and the picker shows why.
     Incomplete,
+    /// A Bot command: the caller runs it with [`Bot::run_command`] (it supplies the copy of the private result).
+    Bot {
+        definition: CommandDefinition,
+        args: registry::Args,
+    },
 }
 
 /// `privateResultCopy.author`: who a private result names as its author.
@@ -114,12 +120,11 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
                 return Plan::Incomplete;
             };
             if def.provider == Provider::Bot {
-                // Sealed Bot commands answer through the Bot (op 62); until this device runs them, it says so privately.
-                return Plan::Private(
-                    ResultStatus::Failed,
-                    UNAVAILABLE.to_owned(),
-                    ResultProvider::Bot,
-                );
+                // A catalog command: sealed to the community's Bot, answered privately ([`Bot::run_command`]).
+                return Plan::Bot {
+                    definition: def.clone(),
+                    args,
+                };
             }
             let arg = |n: &str| args.get(n).map(String::as_str);
             match command_id.as_str() {
@@ -195,6 +200,11 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
 pub enum Plan {
     Post(String),
     Private(ResultStatus, String, ResultProvider),
+    /// A Bot command to seal and send.
+    Bot {
+        definition: CommandDefinition,
+        args: registry::Args,
+    },
     Incomplete,
 }
 
@@ -213,6 +223,7 @@ impl Bot {
             Plan::Private(status, text, provider) => {
                 RunOutcome::Private(self.add_result(conversation, status, text, provider))
             }
+            Plan::Bot { definition, args } => RunOutcome::Bot { definition, args },
         }
     }
 
@@ -260,85 +271,66 @@ impl Bot {
         }));
     }
 
-    /// Reads `community`'s catalog from the instance (`GET /v1/communities/{community}/bot/catalog`). A Bot with a
-    /// published command key stays `Unverified` on this device until the key is checked against the Bot's device list.
-    pub async fn sync_catalog(
-        &self,
-        community: CommunityId,
-    ) -> Result<(), crate::sync::api::ApiError> {
-        let route = format!("/v1/communities/{}/bot/catalog", community.hex());
-        let answer = self
-            .inner
-            .socket_requests()
-            .request("GET", route, Vec::new(), None)
-            .await?;
-        if answer.status == 404 {
-            self.inner.publish(move |s| {
-                s.bot.catalogs.remove(&community);
-            });
-            return Ok(());
+    /// The handle of the client `inner` (the utilities reach the transport through it).
+    pub(crate) fn of(inner: &Arc<Inner>) -> Self {
+        Self {
+            inner: inner.clone(),
         }
-        let decoded = catalog::decode_catalog_response(&answer.body).map_err(|e| {
-            crate::sync::api::ApiError::local(answer.status, "E_BOT_CATALOG", &e.to_string())
-        })?;
-        self.inner.publish(move |s| {
-            let previous = s.bot.catalogs.get(&community);
-            let status =
-                if decoded.publication.is_some() && decoded.status.state == BotStatusState::Ready {
-                    BotStatus {
-                        state: BotStatusState::Unverified,
-                        since: decoded.status.since,
-                    }
-                } else {
-                    decoded.status
-                };
-            let view = BotCatalogView {
-                revision: decoded.revision,
-                commands: decoded.commands,
-                status,
-                bot_channels: previous.and_then(|p| p.bot_channels.clone()),
-                bot_user: previous.and_then(|p| p.bot_user),
-                bot_name: previous.map(|p| p.bot_name.clone()).unwrap_or_default(),
-            };
-            s.bot.catalogs.insert(community, view);
-        });
-        Ok(())
+    }
+
+    /// The sealed path of this client (the key store and the reply secrets).
+    pub fn sealed(&self) -> Arc<Sealed> {
+        sealed_for(&self.inner)
+    }
+
+    /// Reads `community`'s catalog and Bot channels from the instance, then checks its key against the pinned Bot user.
+    pub async fn sync_catalog(&self, community: CommunityId) -> Result<(), Refusal> {
+        self.sealed().refresh(community).await
+    }
+
+    /// The transport Task 21's Bot operations and this area's polls and reminders use.
+    pub fn transport(&self) -> Arc<dyn crate::features::bot_admin::SealedBot> {
+        Arc::new(Transport(self.sealed()))
     }
 }
 
-/// Applies an op 61 catalog to `state`: the newer revision replaces the held commands; the status stays.
-pub fn apply_catalog_frame(state: &mut BotState, f: &frames::BotCatalogFrame) {
-    let Ok(commands) = catalog::decode_commands(&f.commands) else {
-        return;
-    };
-    let community = CommunityId(f.community_id);
-    let entry = state
-        .catalogs
-        .entry(community)
-        .or_insert_with(|| BotCatalogView {
-            revision: 0,
-            commands: Vec::new(),
-            status: BotStatus {
-                state: BotStatusState::Unverified,
-                since: None,
-            },
-            bot_channels: None,
-            bot_user: None,
-            bot_name: String::new(),
-        });
-    if f.revision < entry.revision {
-        return;
+/// The sealed path of each running client, by its `Inner` (the gateway's op 62 reaches the area through a static hook).
+static REGISTRY: Mutex<Vec<(Weak<Inner>, Arc<Sealed>)>> = Mutex::new(Vec::new());
+
+/// The sealed path of the client `inner`, made on first use.
+pub(crate) fn sealed_for(inner: &Arc<Inner>) -> Arc<Sealed> {
+    let mut r = REGISTRY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    r.retain(|(w, _)| w.strong_count() > 0);
+    if let Some((_, s)) = r
+        .iter()
+        .find(|(w, _)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(inner)))
+    {
+        return s.clone();
     }
-    entry.revision = f.revision;
-    entry.commands = commands;
+    let sealed = Sealed::new(Arc::new(io::InnerIo {
+        inner: Arc::downgrade(inner),
+    }));
+    r.push((Arc::downgrade(inner), sealed.clone()));
+    sealed
 }
 
 impl AreaFrames for Bot {
     fn on_frame(inner: &Arc<Inner>, f: &Frame) {
+        let sealed = sealed_for(inner);
         match f.op {
             Op::BOT_CATALOG => {
                 if let Ok(frame) = frames::bot_catalog_of(f) {
-                    inner.publish(move |s| apply_catalog_frame(&mut s.bot, &frame));
+                    drop(inner.spawn(async move {
+                        sealed.apply_frame(&frame).await;
+                        Ok(())
+                    }));
+                }
+            }
+            Op::BOT_REPLY => {
+                if let Ok(frame) = frames::bot_reply_of(f) {
+                    sealed.on_reply(&frame);
                 }
             }
             Op::BOT_STATE_CHANGED => {
@@ -346,16 +338,12 @@ impl AreaFrames for Bot {
                 if let Ok(frame) = frames::bot_state_changed_of(f)
                     && frame.scope_kind == 0
                 {
-                    let bot = Bot {
-                        inner: inner.clone(),
-                    };
                     drop(inner.spawn(async move {
-                        let _ = bot.sync_catalog(CommunityId(frame.scope_id)).await;
+                        let _ = sealed.refresh(CommunityId(frame.scope_id)).await;
                         Ok(())
                     }));
                 }
             }
-            // op 62 answers a sealed command this device sent; it holds no reply secret until it seals one.
             _ => {}
         }
     }
@@ -365,7 +353,7 @@ impl AreaFrames for Bot {
 mod tests {
     use super::*;
     use crate::gateway::frames::Value;
-    use crate::state::bot::BotCommandSpec;
+    use crate::state::bot::{BotCatalogView, BotStatus, BotStatusState};
 
     fn state_with_catalog() -> (AppState, CommunityId) {
         let c = CommunityId([7; 16]);
@@ -391,13 +379,19 @@ mod tests {
             Value::Uint(0),
             Value::Uint(0),
         ]);
-        apply_catalog_frame(
-            &mut s.bot,
-            &frames::BotCatalogFrame {
-                community_id: c.0,
+        s.bot.catalogs.insert(
+            c,
+            BotCatalogView {
                 revision: 3,
-                commands: vec![remind],
-                publication: None,
+                commands: catalog::decode_commands(&[remind]).unwrap(),
+                status: BotStatus {
+                    state: BotStatusState::Ready,
+                    since: None,
+                },
+                bot_channels: None,
+                bot_user: None,
+                bot_name: String::new(),
+                fingerprint: None,
             },
         );
         (s, c)
@@ -443,12 +437,15 @@ mod tests {
     }
 
     #[test]
-    fn catalog_commands_parse_only_in_their_community() {
+    fn catalog_commands_are_sealed_and_only_in_their_community() {
         let (s, c) = state_with_catalog();
-        assert!(matches!(
-            plan(&s, Some(c), "/remind 1h stretch"),
-            Plan::Private(_, _, ResultProvider::Bot)
-        ));
+        match plan(&s, Some(c), "/remind 1h stretch") {
+            Plan::Bot { definition, args } => {
+                assert_eq!(definition.id, "remind");
+                assert_eq!(args.get("text").map(String::as_str), Some("stretch"));
+            }
+            other => panic!("{other:?}"),
+        }
         assert_eq!(
             plan(&s, None, "/remind 1h stretch"),
             Plan::Private(
@@ -456,29 +453,6 @@ mod tests {
                 not_a_command("remind"),
                 ResultProvider::Builtin
             )
-        );
-    }
-
-    #[test]
-    fn an_older_catalog_frame_is_ignored() {
-        let (mut s, c) = state_with_catalog();
-        apply_catalog_frame(
-            &mut s.bot,
-            &frames::BotCatalogFrame {
-                community_id: c.0,
-                revision: 2,
-                commands: vec![],
-                publication: None,
-            },
-        );
-        let view = &s.bot.catalogs[&c];
-        assert_eq!(view.revision, 3);
-        assert_eq!(
-            view.commands
-                .iter()
-                .map(|c: &BotCommandSpec| c.name.as_str())
-                .collect::<Vec<_>>(),
-            ["remind"]
         );
     }
 }

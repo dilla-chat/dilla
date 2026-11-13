@@ -161,3 +161,53 @@ async fn private_results_stay_private_and_auto_dismiss() {
         "a restart holds no private result"
     );
 }
+
+/// The sealed path against a real dillad with no Bot (the test host runs none yet; Task 28 adds one): the catalog read
+/// leaves nothing to seal to, so a Bot command is refused on this device (`E_BOT_OFFLINE`) before anything is sealed or
+/// posted, and Task 21's operations over the same transport are refused the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_bot_command_with_no_verified_key_is_refused_before_anything_is_sent() {
+    use dilla_client::features::bot::sealed::{RunEnd, Submit};
+    use dilla_client::features::bot_admin::{BotArg, BotOperations, BotRequest, OpError};
+
+    let (_host, pa, _pb, c) = two_people("nobot").await;
+    let a = start(&pa).await;
+    let channel = general(&a, c).await;
+    let community = CommunityId(c);
+    // The instance answers for a community without a Bot (a 404, or a catalog with no key); either way no key is held.
+    let _ = a.bot().sync_catalog(community).await;
+    let sealed = a.bot().sealed();
+    let submit = Submit {
+        community,
+        channel: Some(channel),
+        operation: 80,
+        args: vec![BotArg::Uint(3600), BotArg::Text("stretch".into())],
+        request_id: [5; 16],
+    };
+    let started = std::time::Instant::now();
+    let end = sealed.run(&submit, |_| {}).await;
+    let RunEnd::Refused(r) = end else {
+        panic!("refused locally, not {end:?}");
+    };
+    assert_eq!((r.code.as_str(), r.status), ("E_BOT_OFFLINE", 503));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "no wait for an answer that cannot come"
+    );
+    assert!(
+        !sealed.holds([5; 16]),
+        "no reply secret is kept for a command that was never sealed"
+    );
+    let err = BotOperations::new(community, a.bot().transport())
+        .request(BotRequest {
+            operation: 94,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, OpError::Refused { code, .. } if code == "E_BOT_OFFLINE"),
+        "{err:?}"
+    );
+}

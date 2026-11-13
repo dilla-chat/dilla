@@ -81,6 +81,8 @@ pub struct BotResult {
     labels: Labels,
     width: f32,
     on_dismiss: Option<OnDismiss>,
+    /// A held row (no answer yet): its Retry label and handler.
+    retry: Option<(SharedString, OnDismiss)>,
 }
 
 impl BotResult {
@@ -103,7 +105,18 @@ impl BotResult {
             labels,
             width,
             on_dismiss: None,
+            retry: None,
         }
+    }
+
+    /// Offers Retry (the same request id) on a row that got no answer.
+    pub fn on_retry(
+        mut self,
+        label: impl Into<SharedString>,
+        f: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.retry = Some((label.into(), Rc::new(f)));
+        self
     }
 
     pub fn on_dismiss(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
@@ -247,6 +260,15 @@ impl RenderOnce for BotResult {
                                         color::FG_3,
                                     )),
                             )
+                            .children(self.retry.map(|(label, f)| {
+                                div()
+                                    .id("bot-result-retry")
+                                    .cursor_pointer()
+                                    .border_b_1()
+                                    .border_color(color::ACCENT)
+                                    .on_click(move |_, window, cx| f(window, cx))
+                                    .child(line(label, text::META, meta_lh, color::ACCENT))
+                            }))
                             .child(
                                 div()
                                     .id("bot-result-dismiss")

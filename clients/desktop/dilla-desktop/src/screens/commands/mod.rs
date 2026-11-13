@@ -13,7 +13,7 @@ pub mod copy;
 pub mod keys;
 pub mod picker;
 
-use dilla_client::features::bot::{self, Plan};
+use dilla_client::features::bot::{self, Plan, run};
 use dilla_client::features::utilities::polls;
 use dilla_client::state::bot::{
     Conversation, PollView, PrivateResult, ResultProvider, ResultStatus,
@@ -286,11 +286,78 @@ pub fn on_send(ctx: &SlotCx, draft: &str, cx: &mut App) -> SendDecision {
             SendDecision::Handled
         }
         (None, Plan::Private(..)) => SendDecision::Handled,
+        (Some(client), Plan::Bot { definition, args }) => {
+            let Some(community) = ctx.community else {
+                return SendDecision::Keep;
+            };
+            // Music has no text channel and is Task 21's; every other Bot command is sent from this channel.
+            client.bot().run_command(
+                Conversation {
+                    channel,
+                    thread: None,
+                },
+                community,
+                Some(channel),
+                definition,
+                args,
+                &local_zone(),
+                texts(ctx.clock),
+            );
+            SendDecision::Handled
+        }
+        (None, Plan::Bot { .. }) => SendDecision::Handled,
     };
     if decision != SendDecision::Keep {
         draft_changed("", cx);
     }
     decision
+}
+
+/// The local zone a reminder's `when` is read in: the OS zone's name and its offset at each instant.
+fn local_zone() -> run::Zone {
+    let name = std::env::var("TZ")
+        .ok()
+        .filter(|z| run_zone_name_ok(z))
+        .unwrap_or_else(|| "UTC".to_owned());
+    run::Zone {
+        name,
+        offset_at: std::sync::Arc::new(|t| crate::format::local_zone(t).local_minus_utc()),
+    }
+}
+
+fn run_zone_name_ok(z: &str) -> bool {
+    dilla_client::features::utilities::time::valid_zone_name(z)
+}
+
+/// The private results' copy (bot-run.ts, copy.ts), in the strings and the times of this app.
+fn texts(clock: Clock) -> run::Texts {
+    std::sync::Arc::new(move |text: &run::Text| {
+        let (zone, _) = zone_of(clock);
+        let since = |s: &Option<u64>| {
+            s.map_or_else(|| "—".to_owned(), |s| crate::format::time_in(s, &zone))
+        };
+        match text {
+            run::Text::Pending(id) => copy::pending(id),
+            run::Text::NoAnswer => t("commands.botNoAnswer").to_owned(),
+            run::Text::Failed => t("privateResult.failed").to_owned(),
+            run::Text::Forbidden => t("commands.botForbidden").to_owned(),
+            run::Text::Disabled => t("commands.botDisabled").to_owned(),
+            run::Text::Offline(s) => tf("commands.botOffline", &[("time", &since(s))]),
+            run::Text::Degraded(s) => tf("commands.botDegraded", &[("time", &since(s))]),
+            run::Text::Absent => t("commands.botNotOnInstance").to_owned(),
+            run::Text::NeedsBotChannel => t("commands.needsBotChannel").to_owned(),
+            run::Text::CantCheckDevice => t("commands.botCantCheckDevice").to_owned(),
+            run::Text::Unverified => t("commands.botUnverified").to_owned(),
+            run::Text::Changed => t("commands.botChanged").to_owned(),
+            run::Text::PostedIn { what, channel } => {
+                tf("commands.postedIn", &[("what", what), ("channel", channel)])
+            }
+            run::Text::WholeNumber(name) => format!("{name} must be a whole number"),
+            run::Text::ChooseFrom(name) => format!("Choose {name} from the suggestions."),
+            run::Text::Duration(name) => format!("{name} must be a duration such as 10m or 2h"),
+            run::Text::WhenHint => copy::WHEN_HINT.to_owned(),
+        }
+    })
 }
 
 /// The private results of the open conversation, oldest first, each with its height in a log `width` wide: the log
@@ -345,8 +412,9 @@ fn result_row(
         },
     };
     let client = ctx.client.clone();
+    let dismiss_client = client.clone();
     let id = row.id;
-    BotResult::new(
+    let result = BotResult::new(
         ElementId::Name(format!("bot-result-{id}").into()),
         author,
         crate::format::time_in(row.at / 1000, zone),
@@ -360,11 +428,21 @@ fn result_row(
         width,
     )
     .on_dismiss(move |window, _cx| {
-        if let Some(client) = &client {
+        if let Some(client) = &dismiss_client {
             client.bot().dismiss(conversation, id);
         }
         window.refresh();
-    })
+    });
+    if row.hold
+        && let Some(client) = client
+    {
+        result.on_retry(t("commands.retry"), move |window, _cx| {
+            client.bot().retry(id);
+            window.refresh();
+        })
+    } else {
+        result
+    }
 }
 
 /// The name a Bot's private result shows (`result-bot-name.ts`): the community Bot's display name, else "Glenn".
