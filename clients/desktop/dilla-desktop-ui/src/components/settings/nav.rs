@@ -79,6 +79,36 @@ pub(crate) fn register_side(handle: &ScrollHandle, window: &Window, cx: &mut App
     sides.insert(window.window_handle().window_id(), handle.clone());
 }
 
+/// The nav's scroll-into-view of its current item: which item, whether it is in view, and how many frames it took.
+#[derive(Default)]
+struct ScrolledTo {
+    id: Option<SharedString>,
+    done: bool,
+    tries: u8,
+}
+
+impl ScrolledTo {
+    /// The frames a newly current item may take to come into view.
+    const TRIES: u8 = 4;
+
+    /// Whether to try (again) to bring `id` into view: always for a newly current item, then until it is in view or the
+    /// tries run out.
+    fn try_for(&mut self, id: &SharedString) -> bool {
+        if self.id.as_ref() != Some(id) {
+            *self = Self {
+                id: Some(id.clone()),
+                done: false,
+                tries: 0,
+            };
+        }
+        if self.done || self.tries >= Self::TRIES {
+            return false;
+        }
+        self.tries += 1;
+        true
+    }
+}
+
 /// Asks for another frame from inside a draw: `Window::refresh` is a no-op while the window draws, so it runs once this
 /// frame is done.
 fn redraw(window: &mut Window, cx: &mut App) {
@@ -144,7 +174,7 @@ impl RenderOnce for SettingsNav {
         // The item the side column last scrolled to: the web scrolls on a route change only, so a column the person
         // wheels away from the current item stays where they left it (review I1).
         let scrolled_to = window.use_keyed_state((self.id.clone(), "scrolled-to"), cx, |_, _| {
-            None::<SharedString>
+            ScrolledTo::default()
         });
         let mut list = div()
             .id(self.id.clone())
@@ -211,7 +241,9 @@ impl RenderOnce for SettingsNav {
                 row = row.child(
                     canvas(
                         move |bounds, window, cx| {
-                            if scrolled_to.read(cx).as_ref() == Some(&current_id) {
+                            // One frame per try: a column that cannot show the item (no size, no room to scroll) stops
+                            // asking after a few.
+                            if !scrolled_to.update(cx, |s, _| s.try_for(&current_id)) {
                                 return;
                             }
                             let Some(side) = cx
@@ -238,8 +270,7 @@ impl RenderOnce for SettingsNav {
                                 side.set_offset(point(offset.x, px(y)));
                                 redraw(window, cx);
                             } else {
-                                let id = current_id.clone();
-                                scrolled_to.update(cx, |s, _| *s = Some(id));
+                                scrolled_to.update(cx, |s, _| s.done = true);
                             }
                         },
                         |_, _, _, _| {},
