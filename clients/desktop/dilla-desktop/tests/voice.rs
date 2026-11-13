@@ -755,6 +755,55 @@ fn a_join_in_another_window_leaves_this_window_s_call(cx: &mut TestAppContext) {
     assert_eq!(phase_of(&w.alice), CallPhase::Idle);
 }
 
+/// Task 28 item 3: quitting the app leaves the live calls (the leave sends the voice Remove to the instance), waiting
+/// for the leaves a bounded time: the leave has answered once the quit goes on.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn quitting_leaves_the_live_call(cx: &mut TestAppContext) {
+    let w = call_world("t-quit-call");
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    // No other call: the handover starts the join in its first turn.
+    cx.run_until_parked();
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    assert!(
+        cx.update(voice::on_quit),
+        "the call's leave answered within the quit's wait"
+    );
+    assert_eq!(phase_of(&w.alice), CallPhase::Idle);
+    assert!(
+        w.alice.voice().media().borrow().is_none(),
+        "the media link is cut"
+    );
+}
+
+/// Task 28 item 3: the quit's wait for the leaves is bounded: a leave that never answers does not hold the quit.
+#[test]
+fn the_quit_s_wait_for_the_leaves_is_bounded() {
+    let (_tx, never) = answer_pair();
+    let started = std::time::Instant::now();
+    assert!(!voice::wait_answers(
+        vec![never],
+        std::time::Duration::from_millis(150)
+    ));
+    let took = started.elapsed();
+    assert!(
+        took >= std::time::Duration::from_millis(150) && took < std::time::Duration::from_secs(2)
+    );
+    let (tx, answered) = answer_pair();
+    tx.send(Ok(())).unwrap();
+    let (tx2, closed) = answer_pair();
+    drop(tx2);
+    assert!(voice::wait_answers(
+        vec![answered, closed],
+        std::time::Duration::from_secs(5)
+    ));
+}
+
 // ---- the handover: another window's leave, then this window's join (Task 28 items 1 and 2) ------------------------
 
 type Answer = tokio::sync::oneshot::Sender<Result<(), dilla_client::ClientError>>;

@@ -49,8 +49,10 @@ fn main() {
     gpui_platform::application()
         .with_assets(dilla_desktop_ui::theme::Assets)
         .run(move |cx| {
-            // Videos handed to the system player are wiped when the app quits (Task 12).
+            // Videos handed to the system player are wiped when the app quits (Task 12); live calls are left, with a
+            // bounded wait (Task 28 item 3).
             cx.on_app_quit(|cx| {
+                let _ = dilla_desktop::screens::voice::on_quit(cx);
                 dilla_desktop::screens::attachments::ui::on_quit(cx);
                 async {}
             })

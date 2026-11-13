@@ -749,6 +749,55 @@ fn area_open(window: WindowId, cx: &App) -> bool {
     ui_of(window, cx).is_some() && cx.windows().iter().any(|w| w.window_id() == window)
 }
 
+/// How long quitting waits for the live calls' leaves (Task 28 item 3).
+pub const QUIT_WAIT: Duration = Duration::from_secs(3);
+
+/// Task 28 item 3: quitting leaves every live call (its voice Remove reaches the instance, as a closed window's does),
+/// waiting for the leaves [`QUIT_WAIT`] at most. The leaves answer on their clients' runtimes, so the UI thread may
+/// block on them here. Answers whether every leave answered in time.
+pub fn on_quit(cx: &mut App) -> bool {
+    let mut clients: Vec<Rc<Client>> = Vec::new();
+    if let Some(areas) = cx.try_global::<VoiceAreas>() {
+        for c in areas
+            .windows
+            .values()
+            .filter(|u| in_a_call(u))
+            .filter_map(|u| u.client.clone())
+        {
+            if !clients.iter().any(|k| Rc::ptr_eq(k, &c)) {
+                clients.push(c);
+            }
+        }
+    }
+    let leaves: Vec<_> = clients.iter().map(|c| c.voice().leave()).collect();
+    let answered = wait_answers(leaves, QUIT_WAIT);
+    if !answered {
+        log::warn!("voice: a call's leave did not answer before the app quit");
+    }
+    answered
+}
+
+/// Waits for every answer in `answers` (an answer, or its sender gone) for `within` at most, blocking the calling
+/// thread. Answers whether all answered.
+pub fn wait_answers(mut answers: Vec<VoiceAnswer>, within: Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        answers.retain_mut(|a| {
+            matches!(
+                a.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            )
+        });
+        if answers.is_empty() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// A join that did not happen: `window` says so (VoiceView.tsx's `voice.failed`).
 fn join_failed(window: WindowId, cx: &mut App) {
     dilla_desktop_ui::components::toast::show_toast_in(Some(window), t("voice.failed"), cx);
