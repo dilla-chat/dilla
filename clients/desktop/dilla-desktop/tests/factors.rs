@@ -25,6 +25,9 @@ fn scratch_dir(tag: &str) -> std::path::PathBuf {
 
 /// The login step, as a person types it: the server, then Tab to the username and the password, then Enter.
 fn log_in(app: &mut Driver, server: &str, username: &str) {
+    // A device with no account opens on the sign-up (Task 25); its link leads to the sign-in.
+    app.wait_for("onboarding-signin", WAIT);
+    app.click("onboarding-signin");
     app.wait_for("signin-server", WAIT);
     app.type_text("signin-server", server);
     app.press("tab");
@@ -128,6 +131,9 @@ fn keyboard_factors_focus_order() {
     let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t26-keys"));
     world::clear_session(&ada);
     let mut app = Driver::launch(&scratch_dir("keys"));
+    // A device with no account opens on the sign-up (Task 25); its link leads to the sign-in.
+    app.wait_for("onboarding-signin", WAIT);
+    app.click("onboarding-signin");
     app.wait_for("signin-server", WAIT);
     app.click("signin-server");
     app.type_focused(&host.public);

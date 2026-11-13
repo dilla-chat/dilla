@@ -413,6 +413,9 @@ fn app_chip_click_toggles_the_reaction() {
     // The app signs a new device of Alice's in, as the slice test does, and opens #general.
     let root = scratch_dir("reactions-app");
     let mut app = Driver::launch(&root);
+    // A device with no account opens on the sign-up (Task 25); its link leads to the sign-in.
+    app.wait_for("onboarding-signin", Duration::from_secs(30));
+    app.click("onboarding-signin");
     app.wait_for("signin-server", Duration::from_secs(30));
     app.type_text("signin-server", &host.public);
     app.press("tab");
