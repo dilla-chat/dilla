@@ -370,6 +370,7 @@ impl Call {
             }
             Err(e) => {
                 call.tasks = tasks;
+                let e = retry_safe(e, call.media.has_sealed());
                 call.leave().await;
                 Err(e)
             }
@@ -765,6 +766,20 @@ impl Drop for Call {
     }
 }
 
+/// A failed join's error as the caller may act on it. An `Audio` error invites a listen-only retry of the same join
+/// (a new `CallMedia` for the same epoch, whose sender's counter starts at 0): that is only safe while this attempt
+/// sealed nothing under that epoch's key. Today every `Audio` failure comes before the microphone is published (the
+/// speaker and the capture open first), so nothing was sealed; should one ever come later, it is reported as a room
+/// failure instead, which nobody retries under the same key.
+pub(crate) fn retry_safe(e: MediaError, sealed: bool) -> MediaError {
+    match e {
+        MediaError::Audio(detail) if sealed => {
+            MediaError::Room(format!("the join failed after sealing frames: {detail}"))
+        }
+        other => other,
+    }
+}
+
 /// Feeds the application's 10 ms frames through the noise processor into the published source.
 async fn feed_pcm(
     mut frames: mpsc::Receiver<Vec<i16>>,
@@ -1059,4 +1074,25 @@ fn native_source() -> NativeAudioSource {
         1,
         100,
     )
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn an_audio_failure_after_sealing_is_not_retryable() {
+        assert!(matches!(
+            retry_safe(MediaError::Audio("mic".into()), false),
+            MediaError::Audio(_)
+        ));
+        assert!(matches!(
+            retry_safe(MediaError::Audio("mic".into()), true),
+            MediaError::Room(_)
+        ));
+        assert!(matches!(
+            retry_safe(MediaError::NoEpoch, true),
+            MediaError::NoEpoch
+        ));
+    }
 }

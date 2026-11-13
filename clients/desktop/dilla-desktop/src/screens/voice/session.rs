@@ -228,44 +228,51 @@ fn feed_epochs(link: &MediaLink) -> (Arc<EpochFeed>, MediaSlot, tokio::task::Joi
         let mut suspended = false;
         loop {
             let e = epochs.borrow_and_update().clone();
-            if e.is_none()
-                && let Some(m) = media.get()
-            {
-                m.drop_keys();
-                suspended = true;
-            }
-            if let Some(e) = e {
-                // Ruling R24: the epoch a refusal suspended passes again: the feed has it already, so the call's media
-                // installs it directly and its suspended sender resumes.
-                if suspended
-                    && out.current() == Some(e.epoch)
-                    && let Some(m) = media.get()
-                    && let Err(err) = m.install_epoch(
-                        e.epoch,
-                        &e.base_key,
-                        &e.roster
-                            .iter()
-                            .map(|(l, d, _)| (*l, *d))
-                            .collect::<Vec<_>>(),
-                        e.own_leaf,
-                    )
-                {
-                    log::warn!("voice: the epoch did not resume: {err}");
-                }
-                suspended = false;
-                out.publish(dilla_media::MediaEpoch {
-                    epoch: e.epoch,
-                    base_key: Zeroizing::new(*e.base_key),
-                    roster: e.roster.iter().map(|(l, d, _)| (*l, *d)).collect(),
-                    own_leaf: e.own_leaf,
-                });
-            }
+            apply_epoch(
+                e.as_deref(),
+                &mut suspended,
+                &out,
+                media.get().map(|m| &**m),
+            );
             if epochs.changed().await.is_err() {
                 return;
             }
         }
     });
     (feed, slot, task)
+}
+
+/// One step of the epoch feeder: `None` (the gate refused the newest epoch) suspends the call's keys; an epoch goes to
+/// the feed, and (ruling R24) the epoch a refusal suspended, passing again, is installed into the call's media directly
+/// (the feed already has it), so its suspended sender resumes with its counter.
+pub fn apply_epoch(
+    e: Option<&dilla_client::calls::MediaEpoch>,
+    suspended: &mut bool,
+    out: &EpochFeed,
+    media: Option<&dilla_media::transform::CallMedia>,
+) {
+    let Some(e) = e else {
+        if let Some(m) = media {
+            m.drop_keys();
+            *suspended = true;
+        }
+        return;
+    };
+    let roster: Vec<(u16, [u8; 16])> = e.roster.iter().map(|(l, d, _)| (*l, *d)).collect();
+    if *suspended
+        && out.current() == Some(e.epoch)
+        && let Some(m) = media
+        && let Err(err) = m.install_epoch(e.epoch, &e.base_key, &roster, e.own_leaf)
+    {
+        log::warn!("voice: the epoch did not resume: {err}");
+    }
+    *suspended = false;
+    out.publish(dilla_media::MediaEpoch {
+        epoch: e.epoch,
+        base_key: Zeroizing::new(*e.base_key),
+        roster,
+        own_leaf: e.own_leaf,
+    });
 }
 
 async fn in_call(
@@ -453,6 +460,47 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn epoch(n: u64, key: u8) -> dilla_client::calls::MediaEpoch {
+        dilla_client::calls::MediaEpoch {
+            epoch: n,
+            base_key: Zeroizing::new([key; 16]),
+            own_leaf: 0,
+            roster: vec![(0, [1; 16], [2; 16]), (1, [3; 16], [4; 16])],
+            code: String::new(),
+        }
+    }
+
+    /// The production feeder (ruling R24): a refusal suspends the call's keys, the same epoch passing again resumes
+    /// them (through the direct install: the feed refuses an epoch it has), and a newer epoch installs normally.
+    #[test]
+    fn the_feeder_suspends_and_resumes_the_same_epoch_and_installs_a_newer_one() {
+        use dilla_media::EpochKeys as _;
+        let media = dilla_media::transform::CallMedia::new();
+        let feed = EpochFeed::new();
+        let target = Arc::downgrade(&media);
+        feed.on_epoch_while(Box::new(move |e, k, r, l| {
+            target
+                .upgrade()
+                .is_some_and(|m| m.install_epoch(e, k, &r, l).is_ok())
+        }));
+        let mut suspended = false;
+        apply_epoch(Some(&epoch(4, 7)), &mut suspended, &feed, Some(&media));
+        assert_eq!(media.sending_epoch(), Some(4));
+        apply_epoch(None, &mut suspended, &feed, Some(&media));
+        assert_eq!(media.sending_epoch(), None, "suspended: nothing seals");
+        assert!(suspended);
+        apply_epoch(Some(&epoch(4, 7)), &mut suspended, &feed, Some(&media));
+        assert_eq!(media.sending_epoch(), Some(4), "the same epoch resumes");
+        assert!(!suspended);
+        apply_epoch(None, &mut suspended, &feed, Some(&media));
+        apply_epoch(Some(&epoch(5, 9)), &mut suspended, &feed, Some(&media));
+        assert_eq!(media.sending_epoch(), Some(5), "a newer epoch installs");
+        // A refusal then an older epoch never seals again.
+        apply_epoch(None, &mut suspended, &feed, Some(&media));
+        apply_epoch(Some(&epoch(4, 7)), &mut suspended, &feed, Some(&media));
+        assert_eq!(media.sending_epoch(), None);
+    }
 
     #[test]
     fn speaking_lights_over_the_threshold_and_holds_for_the_hangover() {

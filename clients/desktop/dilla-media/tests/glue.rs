@@ -59,6 +59,14 @@ fn call() -> Fixture {
 }
 
 /// The peer's own sender (leaf 1): what the web client's MediaSender produces.
+/// The sequence part of a sealed Opus frame's SFrame CTR (no codec prefix).
+fn seq_of(frame: &[u8]) -> u64 {
+    dilla_core::sframe::peek_kid_ctr(0, frame)
+        .expect("an SFrame header")
+        .1
+        .seq()
+}
+
 fn peer_sender(epoch: u64, base: &[u8; NK]) -> SframeSender {
     SframeSender::new(base, 1, epoch, epoch).unwrap()
 }
@@ -297,6 +305,11 @@ fn dropped_keys_seal_and_open_nothing_until_the_next_epoch() {
         "frames_encrypted rises again"
     );
     assert_ne!(resumed[0], first[0], "a new nonce: the counter went on");
+    assert_eq!(
+        seq_of(&resumed[0]),
+        seq_of(&first[0]) + 1,
+        "the resumed frame's CTR is the one after the last sealed before the suspend"
+    );
     let mut peer_ring = KeyRing::new();
     peer_ring.install_epoch(EPOCH, &BASE, &ROSTER, Some(1), 0);
     for frame in [&first[0], &resumed[0]] {
@@ -305,15 +318,39 @@ fn dropped_keys_seal_and_open_nothing_until_the_next_epoch() {
             .unwrap();
         assert_eq!(opened.frame, OPUS);
     }
-    // The next epoch seals again.
+    // Suspended again, then a newer epoch: the same sender (no second one) is rekeyed. Its counter starts over under
+    // the new epoch's own key (SframeSender keeps counters per epoch), so no nonce repeats either.
+    f.media.drop_keys();
     f.media
         .install_epoch(EPOCH + 1, &BASE2, &ROSTER, 0)
         .unwrap();
     assert_eq!(f.media.sending_epoch(), Some(EPOCH + 1));
     testing::frame(tx, "audio/opus", OPUS, false);
-    assert_eq!(testing::take_emitted(tx).len(), 1);
+    let newer = testing::take_emitted(tx);
+    assert_eq!(newer.len(), 1);
+    assert_eq!(seq_of(&newer[0]), 0, "a fresh counter under a fresh key");
+    let mut next_ring = KeyRing::new();
+    next_ring.install_epoch(EPOCH + 1, &BASE2, &ROSTER, Some(1), 0);
+    let opened = next_ring
+        .decrypt(Codec::Opus, &newer[0], Some(&ME), Slot::Microphone, 0)
+        .unwrap();
+    assert_eq!(opened.frame, OPUS);
     testing::release(tx);
     testing::release(rx);
+}
+
+/// A call that ends while suspended drops the suspended key too: nothing holds a key after `close`.
+#[test]
+fn closing_a_suspended_call_drops_the_suspended_key() {
+    let f = call();
+    f.media.drop_keys();
+    assert!(f.media.holds_keys(), "suspended: the sender is kept aside");
+    f.media.close();
+    assert!(!f.media.holds_keys());
+    assert!(matches!(
+        f.media.install_epoch(EPOCH, &BASE, &ROSTER, 0),
+        Err(MediaError::Closed)
+    ));
 }
 
 #[test]

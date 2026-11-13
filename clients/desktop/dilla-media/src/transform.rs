@@ -252,6 +252,18 @@ impl CallMedia {
         s.ring = KeyRing::new();
     }
 
+    /// Whether any media key is held: a sender, a suspended one, or a receive epoch (tests).
+    pub fn holds_keys(&self) -> bool {
+        let s = self.lock();
+        s.sender.is_some() || s.suspended.is_some()
+    }
+
+    /// Whether this call has sealed any frame (a retried join must not start a fresh counter under a key this one
+    /// used).
+    pub fn has_sealed(&self) -> bool {
+        self.lock().stats.encrypted.values().any(|n| *n > 0)
+    }
+
     /// The epoch the sender seals under, once one is installed.
     pub fn sending_epoch(&self) -> Option<u64> {
         let s = self.lock();
@@ -314,6 +326,7 @@ impl CallMedia {
         let mut s = self.lock();
         s.closed = true;
         s.sender = None;
+        s.suspended = None;
         s.ring = KeyRing::new();
         s.bindings.clear();
         s.expected_local.clear();
