@@ -638,5 +638,7 @@ fn join_refused() -> JoinRefused {
         phase: join::Phase::Failed,
         leave: Some(GROUP),
         alone: false,
+        users: Vec::new(),
+        reported: None,
     }
 }
