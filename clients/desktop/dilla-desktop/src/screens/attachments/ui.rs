@@ -44,7 +44,6 @@ pub struct ImageKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MediaKey {
     Image(ImageKey),
-    Card(CardKey),
     Player(CardKey),
 }
 
@@ -314,7 +313,7 @@ impl MediaKey {
     pub fn client(&self) -> u64 {
         match self {
             MediaKey::Image(k) => k.client,
-            MediaKey::Card(k) | MediaKey::Player(k) => k.client,
+            MediaKey::Player(k) => k.client,
         }
     }
 }
@@ -333,9 +332,6 @@ pub fn forget_owner(owner: u64, cx: &mut App) {
         match key {
             MediaKey::Image(k) => {
                 u.images.remove(&k);
-            }
-            MediaKey::Card(k) => {
-                u.cards.remove(&k);
             }
             MediaKey::Player(k) => {
                 u.players.remove(&k);
@@ -362,7 +358,6 @@ fn still_waiting(open: u64, key: MediaKey, cx: &mut App) -> bool {
     u.media_owners.get(&key) == Some(&open)
         && match key {
             MediaKey::Image(k) => matches!(u.images.get(&k), Some(Slot::Loading)),
-            MediaKey::Card(k) => matches!(u.cards.get(&k), Some(CardStatus::Loading)),
             MediaKey::Player(k) => matches!(u.players.get(&k), Some(Player::Loading)),
         }
 }
@@ -1130,7 +1125,8 @@ mod tests {
     use super::*;
 
     /// Re-review N3: a release drops the decrypted images and the cards the released client opened, by owner: a DM's
-    /// image (in no channel list) goes too, and another client's stay.
+    /// image (in no channel list) goes too, and another client's stay. A card's state is dropped by its own key, which
+    /// names its client (review L m8: no owner entry for cards).
     #[gpui::test]
     fn a_release_drops_the_media_the_client_opened(cx: &mut gpui::TestAppContext) {
         let (mine, theirs) = (ChannelId([1; 16]), ChannelId([2; 16]));
@@ -1156,8 +1152,6 @@ mod tests {
             u.media_owners.insert(MediaKey::Image(key(2, theirs)), 11);
             u.cards.insert(card(1, mine), CardStatus::Loading);
             u.cards.insert(card(2, theirs), CardStatus::Loading);
-            u.media_owners.insert(MediaKey::Card(card(1, mine)), 12);
-            u.media_owners.insert(MediaKey::Card(card(2, theirs)), 13);
             forget_owner(1, cx);
             let u = ui(cx);
             assert!(
