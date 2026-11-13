@@ -39,6 +39,7 @@ pub fn release_client(client: &Rc<Client>, cx: &mut App) {
     screens::create::release(client, cx);
     screens::ring::release(client, cx);
     screens::search::release(client, cx);
+    screens::reactions::picker::release(client, cx);
     screens::threads::release(client, cx);
     screens::factor::release(client, cx);
     screens::factor::forget_instance(client, cx);

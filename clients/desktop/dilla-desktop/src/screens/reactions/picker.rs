@@ -37,6 +37,8 @@ struct Open {
     back: Option<FocusHandle>,
     /// Where a composer pick is typed.
     insert: Option<FocusHandle>,
+    /// The client its subscription holds (by the address of its `Rc<Client>`), for [`release`].
+    owner: Option<usize>,
     _subscription: Subscription,
 }
 
@@ -47,6 +49,18 @@ struct Picker {
     open: Option<Open>,
     /// The composer button's bounds, painted each frame (a press on it is its own toggle).
     opener: Option<Bounds<Pixels>>,
+}
+
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): every window's grid opened with it closes,
+/// since its subscription holds the slot context it was opened with, and so the client (re-review N1).
+pub fn release(client: &Rc<dilla_client::Client>, cx: &mut App) {
+    let key = Rc::as_ptr(client) as usize;
+    crate::per_window::each_mut::<Picker>(cx, |_, p| {
+        if p.open.as_ref().is_some_and(|o| o.owner == Some(key)) {
+            p.open = None;
+        }
+    });
+    cx.refresh_windows();
 }
 
 fn picker<'a>(window: &Window, cx: &'a mut App) -> &'a mut Picker {
@@ -132,11 +146,13 @@ pub fn open(
         }
     };
     let subscription = window.subscribe(&grid, cx, on_event);
+    let owner = ctx.client.as_ref().map(|c| Rc::as_ptr(c) as usize);
     picker(window, cx).open = Some(Open {
         target,
         grid: grid.clone(),
         back,
         insert,
+        owner,
         _subscription: subscription,
     });
     window.defer(cx, move |window, cx| {

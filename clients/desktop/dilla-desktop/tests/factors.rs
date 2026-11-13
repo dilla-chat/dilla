@@ -220,6 +220,7 @@ fn forget_after_the_shell_closes_and_wipes_the_store(cx: &mut gpui::TestAppConte
     let account = dilla_client::store::store_keychain_account(&cfg).unwrap();
     assert!(ada.kc.get(&account).unwrap().is_some());
     let client = Rc::new(client);
+    let weak = Rc::downgrade(&client);
     cx.update(dilla_desktop::install);
     cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
     let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
@@ -234,6 +235,21 @@ fn forget_after_the_shell_closes_and_wipes_the_store(cx: &mut gpui::TestAppConte
         vcx.update(|window, _| window.refresh());
         std::thread::sleep(Duration::from_millis(50));
     }
+    // Re-review N1: an open emoji grid holds the client (its pick sends a reaction on it); release lets go of it.
+    vcx.update(|window, cx| {
+        let ctx = dilla_desktop::slots::SlotCx {
+            client: weak.upgrade(),
+            ..dilla_desktop::slots::SlotCx::default()
+        };
+        dilla_desktop::screens::reactions::picker::open(
+            dilla_desktop::screens::reactions::picker::Target::Composer,
+            &ctx,
+            None,
+            None,
+            window,
+            cx,
+        );
+    });
     // The account owes a factor now: the forced screen, and its Forget this device.
     app.update_in(vcx, |a, window, cx| a.forget_from_forced(window, cx));
     // Final review M1: a Forget's wipe is pending from its start, as a Sign out's is: a reopened window's start of the
