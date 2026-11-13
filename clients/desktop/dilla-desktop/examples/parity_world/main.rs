@@ -56,6 +56,11 @@ fn extra_channels(server: &ServerSpec) -> Vec<world::ChannelSpec<'_>> {
         .collect()
 }
 
+/// internal/gateway/presence.go `presenceIdleAfter`: a device with no input for this long is idle.
+const PRESENCE_IDLE_S: u64 = 10 * 60;
+/// What the browser's sign-in may move the host clock by (shoot.mjs `nextCode` steps it 30 s at a time).
+const SIGN_IN_CLOCK_S: u64 = 5 * 60;
+
 /// The host's clock, unix seconds (a blocking call on a thread of its own).
 fn read_clock(host: &world::Host) -> u64 {
     tokio::task::block_in_place(|| world::clock_now(host))
@@ -178,8 +183,13 @@ async fn main() {
         .min()
         .unwrap_or(f.clock);
     let host_now = read_clock(&host);
-    // The host's clock only moves forward: lift the fixture past it, with a minute to spare for what is still to be set up.
-    let shift = (host_now + 60).saturating_sub(first_ts);
+    // The host's clock only moves forward: lift the fixture past it, with a minute to spare for what is still to be set up,
+    // and past the gateway's idle time (`presenceIdleAfter`), so the browser's one input while it signs in and visits
+    // (App.tsx reports activity at most every 5 s of `Date.now()`, which the frozen page clock never passes again) is
+    // always older than that at the frame: the viewer is idle in every reference, as the GPUI mapping draws it
+    // (`fixture/members.rs`). Whether that input reached the gateway before its socket was ready used to decide it. Five
+    // more minutes cover the clock the sign-in moves (the shooter steps it 30 s per authenticator code it needs).
+    let shift = (host_now + 60 + PRESENCE_IDLE_S + SIGN_IN_CLOCK_S).saturating_sub(first_ts);
     let viewer = person_of(&f.viewer);
     let secrets = serde_json::json!({
         "publicUrl": host.public,

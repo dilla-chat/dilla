@@ -39,11 +39,10 @@ use crate::slots::{Extra, MessageAction, SlotCx};
 use crate::strings::{t, tf};
 use crate::{tracked_box, tracked_focus};
 
-/// MessageRow.css: the content's left edge (44px gutter, 10px, 30px avatar, 10px) and the 16px right of it, and the 1px gap
-/// of the row's grid between the body and what follows.
+/// MessageRow.css: the content's left edge (44px gutter, 10px, 30px avatar, 10px) and the 16px right of it. The row
+/// grid's 1px gap above the bar is the timeline's extras stack's (`slots::EXTRA_GAP`).
 const CONTENT_X: f32 = 44.0 + 10.0 + 30.0 + 10.0;
 const ROW_RIGHT: f32 = 16.0;
-const MAIN_GAP: f32 = 1.0;
 /// Composer.css `.d-composer__tool`: 26 x 24 with a 14px glyph (`Icon size={14}`).
 const TOOL_WIDTH: f32 = 26.0;
 const TOOL_HEIGHT: f32 = 24.0;
@@ -208,7 +207,7 @@ pub fn reaction_bar(
         })
         .collect();
 
-    // The height: the chips and the add button wrapped in the column, as `flex-wrap` does, under the row's 1px grid gap.
+    // The height: the chips and the add button wrapped in the column, as `flex-wrap` does.
     let width = column_width(window, cx);
     let mut widths: Vec<f32> = chips
         .iter()
@@ -221,7 +220,7 @@ pub fn reaction_bar(
     let height = if chips.is_empty() {
         0.0
     } else {
-        MAIN_GAP + bar_height(lines)
+        bar_height(lines)
     };
 
     let key = item.key.clone();
@@ -271,7 +270,7 @@ pub fn reaction_bar(
             }
             Slot::Add => tag(format!("reaction-{id_key}-add"), handle, element),
         }));
-        column = column.child(div().pt(px(MAIN_GAP)).child(bar));
+        column = column.child(bar);
     }
     if let Some(grid) = grid {
         column = column.child(

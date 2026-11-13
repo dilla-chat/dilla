@@ -209,9 +209,9 @@ fn every_members_fixture_parses_and_the_pane_ones_open_the_channel() {
 }
 
 macro_rules! parity {
-    ($($test:ident => $name:literal, $why:literal;)*) => {$(
+    ($($test:ident => $name:literal $(, $why:literal)?;)*) => {$(
         #[test]
-        #[ignore = $why]
+        $(#[ignore = $why])?
         fn $test() {
             assert_screen(&fixture_path($name))
                 .unwrap_or_else(|e| panic!("{} differs from its web reference: {e}", $name));
@@ -220,9 +220,9 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_members_pane => "members/pane", "parity after T6c: chrome 0.3451 % (allowed 0.2 %)";
+    parity_members_pane => "members/pane";
     parity_members_pane_b => "members/pane-b", "needs its reference (shoot.mjs)";
-    parity_members_profile_card => "members/profile-card", "parity after T6c: chrome 0.4373 % (allowed 0.2 %)";
+    parity_members_profile_card => "members/profile-card", "parity after T6c: chrome 0.2121 % (the card's edge and avatar, 1 css px: re-measured at the T6c merge)";
     parity_members_profile_card_b => "members/profile-card-b", "needs its reference (shoot.mjs)";
     parity_members_context_menu => "members/context-menu", "cannot be shot: shoot.mjs has no shift-f10 (Playwright wants F10) and the chord grammar no contextmenu key (Task 5)";
     parity_members_context_menu_b => "members/context-menu-b", "cannot be shot: shoot.mjs has no shift-f10 (Playwright wants F10) and the chord grammar no contextmenu key (Task 5)";

@@ -126,6 +126,7 @@ pub struct Line {
     spacing: f32,
     ellipsis: bool,
     clip: bool,
+    fallback: Option<&'static str>,
 }
 
 /// A line of JetBrains Mono.
@@ -140,6 +141,7 @@ pub fn line(text: impl Into<SharedString>, size: Pixels, line_height: f32, color
         spacing: 0.0,
         ellipsis: false,
         clip: false,
+        fallback: None,
     }
 }
 
@@ -161,6 +163,13 @@ impl Line {
         self
     }
 
+    /// The family a glyph the face lacks comes from, where the web's Chromium takes it from fontconfig's fallback (DejaVu
+    /// Sans on the reference machine) and the text system would pick another face with another advance.
+    pub fn fallback(mut self, family: &'static str) -> Self {
+        self.fallback = Some(family);
+        self
+    }
+
     /// `text-overflow: ellipsis`: the box may shrink below the text, which is then cut with "…".
     pub fn ellipsis(mut self) -> Self {
         self.ellipsis = true;
@@ -174,16 +183,23 @@ impl Line {
         self
     }
 
-    /// The width the web gives the text: the mono advance per character (plus the tracking) when the embedded face
-    /// covers every character, else `None` (measured by the text system, which falls back for the rest).
+    /// The width the web gives the text: the mono advance per character (plus the tracking), ceiled onto Chromium's
+    /// layout unit as its text widths are (`LayoutUnit::FromFloatCeil`: one "3" at 11px is 6.609375), when the embedded
+    /// face covers every character, else `None` (measured by the text system, which falls back for the rest).
     fn natural_width(&self) -> Option<f32> {
-        (self.face == Face::Mono && self.text.chars().all(mono_covers))
-            .then(|| self.text.chars().count() as f32 * (self.size * MONO_ADVANCE + self.spacing))
+        (self.face == Face::Mono && self.text.chars().all(mono_covers)).then(|| {
+            let w = self.text.chars().count() as f32 * (self.size * MONO_ADVANCE + self.spacing);
+            // The epsilon keeps a whole width whole against f32 noise (0.6 is not exact).
+            (w * 64.0 - 1e-3).ceil() / 64.0
+        })
     }
 
     fn run(&self, len: usize) -> TextRun {
         let mut font = gpui::font(self.face.family());
         font.weight = self.weight;
+        if let Some(family) = self.fallback {
+            font.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![family.to_owned()]));
+        }
         if self.face == Face::SerifItalic {
             font.style = FontStyle::Italic;
         }
@@ -211,6 +227,10 @@ impl Line {
             .text_color(transparent_black());
         if self.face == Face::SerifItalic {
             text = text.italic();
+        }
+        if let Some(family) = self.fallback {
+            text.text_style().font_fallbacks =
+                Some(gpui::FontFallbacks::from_fonts(vec![family.to_owned()]));
         }
         match self.natural_width() {
             Some(width) => text.flex_none().w(px(width)).h(px(self.line_height)),

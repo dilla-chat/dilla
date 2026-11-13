@@ -1,14 +1,16 @@
 //! The separator between two panes of the desktop shell (packages/ui `AppShell/Splitter.tsx`): a 24px hit area centred on
-//! the 1px line the neighbouring pane already draws. A press starts a drag the shell follows (the shell sees the pointer
-//! over the whole window); keys move it by 1rem (4rem with Shift), Home and End go to the limits, Enter and a double
+//! the 1px line the neighbouring pane already draws. At rest the hit area is invisible: the sidebar's splitter draws the
+//! one hairline on the pixel of the sidebar's own edge (Splitter.css `.d-splitter--sidebar::before`), the aside's draws
+//! nothing (the aside's `border-left` is the line). Hovered, focused or dragged, the line is the accent. A press starts a
+//! drag the shell follows (the shell sees the pointer over the whole window); keys move it by 1rem (4rem with Shift), Home and End go to the limits, Enter and a double
 //! click reset to the default.
 
 use std::rc::Rc;
 
 use gpui::{
     App, ClickEvent, ElementId, FocusHandle, InteractiveElement, IntoElement, Keystroke,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, RenderOnce, StatefulInteractiveElement,
-    Styled, Window, div,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, div,
 };
 
 use super::panes::{Pane, REM};
@@ -61,6 +63,7 @@ pub struct Splitter {
     min: f32,
     max: f32,
     left: f32,
+    dragging: bool,
     probe: Option<gpui::AnyElement>,
     on_press: Option<Press>,
     on_set: Option<Set>,
@@ -76,6 +79,7 @@ impl Splitter {
             min: 0.0,
             max: 0.0,
             left: 0.0,
+            dragging: false,
             probe: None,
             on_press: None,
             on_set: None,
@@ -91,6 +95,12 @@ impl Splitter {
     /// The hit area's left edge, from its container's.
     pub fn at(mut self, left: f32) -> Self {
         self.left = left;
+        self
+    }
+
+    /// The shell is dragging this splitter (`.d-app-shell[data-resizing]`): the line is the accent.
+    pub fn dragging(mut self, dragging: bool) -> Self {
+        self.dragging = dragging;
         self
     }
 
@@ -123,18 +133,23 @@ impl RenderOnce for Splitter {
         let reset = self.on_set.clone();
         let press = self.on_press.clone();
         let focus = self.focus.clone();
-        // The line is 1px; focused it is the accent, as the web's `:focus-visible` ring on the separator.
+        // The line is 1px, 11px into the hit area: on the sidebar's edge pixel, or on the aside's border-left. At rest only
+        // the sidebar's splitter draws it (the hairline); the aside's border is the aside's own. Hovered, focused or
+        // dragged it is the accent; the hit area itself never paints.
+        let group = SharedString::from(format!("splitter-{pane:?}"));
+        let accent = focused || self.dragging;
+        let at_rest = match pane {
+            Pane::Sidebar => color::HAIRLINE,
+            Pane::Aside => gpui::transparent_black(),
+        };
         let line = div()
             .absolute()
             .left(Pixels::from(HIT / 2.0 - 1.0))
             .top_0()
             .h_full()
             .w(Pixels::from(1.0f32))
-            .bg(if focused {
-                color::ACCENT
-            } else {
-                color::HAIRLINE
-            });
+            .bg(if accent { color::ACCENT } else { at_rest })
+            .group_hover(group.clone(), |s| s.bg(color::ACCENT));
         div()
             .id(self.id)
             .track_focus(&self.focus)
@@ -143,8 +158,8 @@ impl RenderOnce for Splitter {
             .top_0()
             .h_full()
             .w(Pixels::from(HIT))
+            .group(group)
             .cursor_col_resize()
-            .hover(|s| s.bg(color::ACCENT_SPLIT))
             .on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, window, cx| {
                 window.focus(&focus, cx);
                 if let Some(press) = &press {

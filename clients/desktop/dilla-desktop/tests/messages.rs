@@ -172,25 +172,17 @@ mod driven {
 
     parity! {
         parity_messages_conversation_actions => "conversation-actions",
-            ignore "parity after T6c: shared: the toolbar lacks react, reply and thread (T10 and T11 fill slots::message_actions); chrome 0.243 % over 0.2 %";
-        parity_messages_conversation_actions_b => "conversation-actions-b",
-            ignore "parity after T6c: re-shoot (members pane default-open) 0.8187 % over 0.5 %";
-        parity_messages_edit => "edit",
-            ignore "parity after T6c: T9 gap: 0.507 % over 0.5 % (the field's focus ring: the web shot is blurred, the GPUI editor holds the focus)";
-        parity_messages_edit_b => "edit-b",
-            ignore "parity after T6c: T9 gap: 0.994 % over 0.5 % (wrapped-line rows of the textarea and the focus ring)";
-        parity_messages_mention => "mention",
-            ignore "parity after T6c: T9 gap: chrome 0.270 % over 0.2 % (the typed text and send button of the composer, thin text-edge differences)";
+            ignore "parity after T6c: colour 0.3113 % (the toolbar matches; the hovered row\'s fill edge, 1px: re-measured at the T6c merge)";
+        parity_messages_conversation_actions_b => "conversation-actions-b";
+        parity_messages_edit => "edit";
+        parity_messages_edit_b => "edit-b";
+        parity_messages_mention => "mention";
         parity_messages_mention_b => "mention-b",
-            ignore "parity after T6c: T9 gap: chrome 0.367 % over 0.2 % (as the mention pair)";
-        parity_messages_code_block => "code-block",
-            ignore "parity after T6c: T9 gap: 0.646 % over 0.5 % (code card and inline spans: sub-pixel text positions)";
-        parity_messages_code_block_b => "code-block-b",
-            ignore "parity after T6c: T9 gap: 0.968 % over 0.5 % (as the code-block pair; json and sh cards)";
-        parity_messages_slow_mode => "slow-mode",
-            ignore "parity after T6c: re-shoot (members pane default-open) 0.5382 % over 0.5 %";
-        parity_messages_slow_mode_b => "slow-mode-b",
-            ignore "parity after T6c: re-shoot (members pane default-open) 0.8050 % over 0.5 %";
+            ignore "parity after T6c: chrome 0.2596 % (the mention list over the composer, 1 css px: re-measured at the T6c merge)";
+        parity_messages_code_block => "code-block";
+        parity_messages_code_block_b => "code-block-b";
+        parity_messages_slow_mode => "slow-mode";
+        parity_messages_slow_mode_b => "slow-mode-b";
     }
 
     fn launch(name: &str) -> Driver {
@@ -273,6 +265,34 @@ mod driven {
             differing(&before, &closed, LOG),
             0,
             "Escape closes the editor and the log is as it was"
+        );
+    }
+
+    /// Task 6c: the composer's typed text is in the R13 text mask, as a line box exactly its glyphs' advance wide and a
+    /// line tall at the field's text origin (the textarea draws it itself, so no `Line` reports it); nothing wider.
+    #[test]
+    fn typed_text_is_in_the_text_mask_as_its_line_box() {
+        let mut d = launch("mention");
+        let field = d.element("composer").expect("the composer field");
+        let has_line = |d: &mut dilla_parity::Driver| {
+            d.text_bounds().iter().any(|e| {
+                (e.x - field.x).abs() < 0.01
+                    && (e.y - field.y).abs() < 0.01
+                    && (e.width - 10.0 * 13.0 * 0.6).abs() < 0.02
+                    && (e.height - 20.0).abs() < 0.01
+            })
+        };
+        assert!(!has_line(&mut d), "an empty composer reports no typed line");
+        d.type_text("composer", "see you @b");
+        d.wait_idle();
+        assert!(
+            has_line(&mut d),
+            "the typed line `see you @b` (10 characters at 7.8px) is a text line at the field's origin: {:?}",
+            d.text_bounds()
+                .iter()
+                .filter(|e| (e.y - field.y).abs() < 2.0)
+                .map(|e| (e.x, e.y, e.width, e.height))
+                .collect::<Vec<_>>()
         );
     }
 

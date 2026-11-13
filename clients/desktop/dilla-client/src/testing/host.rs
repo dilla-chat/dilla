@@ -48,6 +48,8 @@ impl Drop for Host {
 }
 
 /// Starts a test host on free ports. `web_root`: the built web client the host serves (the parity world), else none.
+/// A host that serves the web client is the parity world's, so it also runs in the host's parity-fixture mode
+/// (`-parity-fixture`: GET /v1/instance carries the marker that makes the web client's diagnostics deterministic).
 pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
     let root = repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
@@ -87,7 +89,7 @@ pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
     .arg("-data-dir")
     .arg(&data);
     if let Some(web) = web_root {
-        cmd.arg("-web-root").arg(web);
+        cmd.arg("-web-root").arg(web).arg("-parity-fixture");
     }
     let mut child = cmd
         .stdout(std::process::Stdio::piped())

@@ -148,11 +148,5 @@
       }
     ]
   },
-  "steps": [
-    {
-      "do": "click",
-      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
-      "gpui": "-"
-    }
-  ]
+  "steps": []
 }

@@ -155,6 +155,53 @@ pub fn text_probe() -> impl gpui::IntoElement {
     .size_full()
 }
 
+/// An invisible overlay over the box a textarea or input draws its typed `text` in (`size` px mono on `line` px lines,
+/// wrapped at the box's width as the mono pre-wrap breaks it): each line's own box (its advance wide, a line tall) is
+/// recorded as a text line, as [`text_probe`] records a [`dilla_desktop_ui::text::Line`]'s. The component draws that
+/// text itself, so no `Line` reports it; without this the R13 mask counted typed text as chrome. Nothing wider than the
+/// glyphs' line boxes is recorded, and only the part inside the current clip.
+pub fn typed_text_probe(text: String, size: Pixels, line: f32) -> impl gpui::IntoElement {
+    canvas(
+        move |bounds, window, _cx| {
+            for rect in
+                typed_line_boxes(&text, size, line, f32::from(bounds.size.width)).into_iter()
+            {
+                let b = Bounds::new(bounds.origin + rect.origin, rect.size);
+                let visible = window.content_mask().bounds.intersect(&b);
+                if visible.size.width > px(0.) && visible.size.height > px(0.) {
+                    TEXT.lock().expect("text registry").push(visible);
+                }
+            }
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// The line boxes of typed `text` in a box `width` wide (relative to the box): one per wrapped line that has glyphs, its
+/// mono advance wide (ceiled onto Chromium's layout unit, as a `Line`'s natural width is) and `line` tall.
+pub fn typed_line_boxes(text: &str, size: Pixels, line: f32, width: f32) -> Vec<Bounds<Pixels>> {
+    let advance = f32::from(size) * dilla_desktop_ui::text::MONO_ADVANCE;
+    let columns = dilla_desktop_ui::text::columns(size, width);
+    dilla_desktop_ui::text::wrap_mono(text, columns)
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let chars = l.trim_end().chars().count();
+            (chars > 0).then(|| {
+                let w = ((chars as f32 * advance) * 64.0 - 1e-3).ceil() / 64.0;
+                Bounds::new(
+                    gpui::point(px(0.), px(i as f32 * line)),
+                    gpui::size(px(w.min(width)), px(line)),
+                )
+            })
+        })
+        .collect()
+}
+
 /// What `--harness` shows: the harness's own view, to prove the interface without any screen of the app.
 ///
 /// - `field-a` and `field-b` are focusable, tab stops in that order, and append `<id>:<keystroke>` to the log for every

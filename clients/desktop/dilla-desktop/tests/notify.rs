@@ -53,28 +53,24 @@ fn parity_notify_settings_b() {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2901 % (on Task 8's shell)"]
 fn parity_notify_unread_badge() {
     parity("unread-badge");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: re-shoot (members pane default-open) 0.5617 % pixels"]
 fn parity_notify_unread_badge_b() {
     parity("unread-badge-b");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2796 % (on Task 8's shell)"]
 fn parity_notify_dm_badge() {
     parity("dm-badge");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "parity after T6c: chrome 0.2195 % (on Task 8's shell)"]
 fn parity_notify_dm_badge_b() {
     parity("dm-badge-b");
 }

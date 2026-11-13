@@ -102,7 +102,7 @@ pub struct Extra {
 }
 
 /// Under a message's body (after its attachments slot): the attachments (12), the poll card (20), the reactions (10),
-/// the thread count (11), in this order, stacked without gaps. Answers the stack and its height (the sum of the parts';
+/// the thread count (11), in this order, each [`EXTRA_GAP`] below what is above it. Answers the stack and its height (the sum of the parts';
 /// 0 when every guest has nothing), which the timeline adds to the row's height.
 pub fn message_extras(
     item: &TimelineItem,
@@ -130,15 +130,24 @@ pub fn message_before_head(
     threads::reply_chip(item, ctx, window, cx)
 }
 
-/// [`Extra`]s stacked in order, each in a box of its height, and the total height.
+/// MessageRow.css `.d-message-row__main`: a grid with `gap: 1px`, so every extra under the body sits 1px below the item
+/// above it.
+pub const EXTRA_GAP: f32 = 1.0;
+
+/// [`Extra`]s stacked in order, each in a box of its height [`EXTRA_GAP`] below the item above it (the body, then each
+/// other), and the total height.
 pub fn stack(parts: impl IntoIterator<Item = Extra>) -> (AnyElement, f32) {
     let mut height = 0.0;
     let column = div()
         .flex()
         .flex_col()
         .children(parts.into_iter().map(|part| {
-            height += part.height;
-            div().flex_none().h(px(part.height)).child(part.element)
+            height += EXTRA_GAP + part.height;
+            div()
+                .flex_none()
+                .pt(px(EXTRA_GAP))
+                .h(px(EXTRA_GAP + part.height))
+                .child(part.element)
         }));
     (column.into_any_element(), height)
 }

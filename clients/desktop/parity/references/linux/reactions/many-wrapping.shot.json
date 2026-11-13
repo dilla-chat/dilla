@@ -1,16 +1,16 @@
 {
-  "digest": "92f7b3747db1715e81e0ac77c8afe96c25baeefab5534e6868d161cf51ee7e64",
-  "shift": 37328,
+  "digest": "ffce84f30dec899cfd43cdfe7cf97baa8503dea05a98732e383a79c7b4673b9b",
+  "shift": 79595,
   "hand_migrated": false,
   "ids": {
-    "channel:midgard/afk": "e665a002fbe7ba080d95982996311b04",
-    "channel:midgard/general": "0c95fc871e7a22cb5022590e42389dde",
-    "person:ada": "70baf733162532680656e257f18c3619",
-    "person:bjorn": "46b1d21ff9246c5561080e954874b5e8",
-    "person:kari": "688b25582cbe7444a506a2cf5a569214",
-    "person:liv": "3ca42c2f4274c08da8b4c0829e69988e",
-    "person:mira": "09566ff75fa282f7606d2d197077c0a3",
-    "person:sven": "c1fe32a8a853d6829262d946f6886009",
-    "server:midgard": "75c8cd5121eb618b058270f76e3c92db"
+    "channel:midgard/afk": "e9c3ace7ac5f71ab1d11d807c14bcf18",
+    "channel:midgard/general": "dcca99f65ca9b167b1ebb65b5d1d5137",
+    "person:ada": "18cfebd428c2df316e70742212fddd63",
+    "person:bjorn": "c86787db17f35869cd0546376e2de195",
+    "person:kari": "2dfcd9f6afeda985c54994c6bd92f066",
+    "person:liv": "46decfe44fc62957c8913a5326867855",
+    "person:mira": "ad33e87648781a1d49b6a0ff1eac7423",
+    "person:sven": "a81f1d99c078560dcd67aed6d930e455",
+    "server:midgard": "b5a2948eb0709e8949094ae4a30dc046"
   }
 }

@@ -112,6 +112,9 @@ struct Drag {
     start_width: f32,
 }
 
+/// A hairline's width: the aside's border-left (`.d-app-shell__aside`).
+const HAIRLINE_W: f32 = 1.0;
+
 /// The width a drag asks for: the pointer's travel since it went down, in the pane's own direction (the aside's splitter
 /// is on its left edge, so moving left widens it).
 fn dragged_width(drag: Drag, x: f32) -> f32 {
@@ -1086,8 +1089,9 @@ impl Render for ShellView {
         // The members aside reads the slot context the shell holds (its hook takes none of its own; Task 14).
         crate::screens::members::sync(&ctx, cx);
         let aside = slots::aside(self.route(), window, cx);
+        // `.d-app-shell__aside`: the pane's width is its content's; its 1px border-left is outside it.
         let aside_width = if aside.is_some() && column {
-            panes.aside
+            panes.aside + HAIRLINE_W
         } else {
             0.0
         };
@@ -1255,8 +1259,10 @@ impl Render for ShellView {
         let aside_column = aside.map(|a| {
             div()
                 .flex_none()
-                .w(Pixels::from(panes.aside))
+                .w(Pixels::from(panes.aside + HAIRLINE_W))
                 .h_full()
+                .border_l_1()
+                .border_color(color::HAIRLINE)
                 .child(a)
         });
 
@@ -1268,6 +1274,7 @@ impl Render for ShellView {
                 .at(f32::from(layout::RAIL) + panes.sidebar
                     - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
                 .range(panes.sidebar, lo, hi)
+                .dragging(self.drag.is_some_and(|d| d.pane == Pane::Sidebar))
                 .on_press(move |x, _, cx| {
                     let _ = w_press.update(cx, |shell, _| {
                         shell.begin_drag(Pane::Sidebar, f32::from(x), window_width)
@@ -1295,8 +1302,10 @@ impl Render for ShellView {
             let splitter = Splitter::new("splitter-aside", Pane::Aside, &self.aside_splitter)
                 .at(window_width
                     - panes.aside
+                    - HAIRLINE_W
                     - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
                 .range(panes.aside, lo, hi)
+                .dragging(self.drag.is_some_and(|d| d.pane == Pane::Aside))
                 .on_press(move |x, _, cx| {
                     let _ = w_press.update(cx, |shell, _| {
                         shell.begin_drag(Pane::Aside, f32::from(x), window_width)

@@ -24,10 +24,10 @@ fn launch(name: &str) -> Driver {
 }
 
 macro_rules! parity {
-    ($($test:ident => $name:literal, $why:literal),* $(,)?) => {$(
+    ($($test:ident => $name:literal $(, $why:literal)?),* $(,)?) => {$(
         #[test]
         #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-        #[ignore = $why]
+        $(#[ignore = $why])?
         fn $test() {
             let report = assert_screen(&fixture($name))
                 .unwrap_or_else(|e| panic!("threads/{} differs from its web reference: {e}", $name));
@@ -37,12 +37,12 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_threads_reply_chip => "reply-chip", "parity after T6c: chrome 0.3709 % over 0.2 %",
-    parity_threads_reply_chip_b => "reply-chip-b", "parity after T6c: chrome 0.3020 % over 0.2 %",
-    parity_threads_pane_open => "pane-open", "parity after T6c: 0.5751 % over 0.5 %",
-    parity_threads_pane_open_b => "pane-open-b", "parity after T6c: 1.1182 % over 0.5 %",
-    parity_threads_count => "count", "parity after T6c: 0.7453 % over 0.5 %",
-    parity_threads_count_b => "count-b", "parity after T6c: 0.6163 % over 0.5 %",
+    parity_threads_reply_chip => "reply-chip",
+    parity_threads_reply_chip_b => "reply-chip-b",
+    parity_threads_pane_open => "pane-open",
+    parity_threads_pane_open_b => "pane-open-b", "parity after T6c: 0.5231 % over 0.5 % (the thread pane's contents at the pane edge: re-measured at the T6c merge)",
+    parity_threads_count => "count",
+    parity_threads_count_b => "count-b",
 }
 
 const SOON: Duration = Duration::from_secs(5);

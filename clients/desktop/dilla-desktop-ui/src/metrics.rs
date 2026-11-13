@@ -84,11 +84,17 @@ impl Density {
     }
 }
 
+/// GPUI's `blur_radius` for a CSS shadow blur `blur`: CSS blurs with a Gaussian of standard deviation half the blur
+/// radius (CSS Backgrounds 3, `box-shadow`), and GPUI's shadow shader takes `blur_radius` as that deviation.
+pub fn css_blur(blur: f32) -> Pixels {
+    px(blur / 2.0)
+}
+
 fn shadow(color: Hsla, y: f32, blur: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
         color,
         offset: point(px(0.0), px(y)),
-        blur_radius: px(blur),
+        blur_radius: css_blur(blur),
         spread_radius: px(0.0),
         inset: false,
     }]
@@ -101,6 +107,11 @@ fn black(alpha: f32) -> Hsla {
 /// `--shadow-1`: `0 8px 20px rgba(0,0,0,0.4)` (a tooltip).
 pub fn shadow_1() -> Vec<BoxShadow> {
     shadow(black(0.4), 8.0, 20.0)
+}
+
+/// `--shadow-2`: `0 20px 50px rgba(0,0,0,0.55)` (the mention list).
+pub fn shadow_2() -> Vec<BoxShadow> {
+    shadow(black(0.55), 20.0, 50.0)
 }
 
 /// `--shadow-3`: `0 30px 80px rgba(0,0,0,0.65)` (a dialog).
@@ -138,6 +149,40 @@ pub fn focus_ring() -> Vec<BoxShadow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The vendored GPUI's box-edge snap (core/vendor/README.md, "gpui-pre 0.3.12"): at a whole scale factor an edge goes
+    /// to a whole logical px, half up, as Chromium paints the web client's boxes; at a fractional scale it keeps
+    /// upstream's device-px rounding (midpoints toward zero). Device px in, device px out.
+    #[test]
+    fn box_edges_snap_as_chromium_paints_them() {
+        use gpui::snap_layout_edge as snap;
+        // Scale 2: 51.5px paints from 52px; 51.25px from 51px; 51.75px from 52px.
+        assert_eq!(snap(103.0, 2.0), 104.0);
+        assert_eq!(snap(102.5, 2.0), 102.0);
+        assert_eq!(snap(103.5, 2.0), 104.0);
+        assert_eq!(snap(104.0, 2.0), 104.0);
+        // Scale 1: half up.
+        assert_eq!(snap(50.5, 1.0), 51.0);
+        assert_eq!(snap(50.49, 1.0), 50.0);
+        // A fractional scale keeps device-px rounding, midpoints toward zero.
+        assert_eq!(snap(77.5, 1.5), 77.0);
+        assert_eq!(snap(77.6, 1.5), 78.0);
+    }
+
+    /// Before the edges snap, the vendored GPUI lays lengths out on Chromium's layout unit (1/64 css px) at a whole scale
+    /// factor: an authored length floored onto it, a measured one (text) ceiled, as LayoutUnit does. A fractional scale
+    /// keeps upstream's whole device px. Logical px in, device px out.
+    #[test]
+    fn lengths_lay_out_on_chromiums_layout_unit() {
+        // 6.6px of mono "3": authored 6.59375, measured 6.609375 (the web's count span); upstream made both 6.5.
+        assert_eq!(gpui::layout_length(6.6, 2.0), 6.59375 * 2.0);
+        assert_eq!(gpui::measured_length(6.6, 2.0), 6.609375 * 2.0);
+        assert_eq!(gpui::layout_length(28.0, 2.0), 56.0);
+        assert_eq!(gpui::measured_length(28.0, 2.0), 56.0);
+        // Scale 1.5: whole device px, as upstream (authored rounded half toward zero, measured ceiled).
+        assert_eq!(gpui::layout_length(6.6, 1.5), 10.0);
+        assert_eq!(gpui::measured_length(6.6, 1.5), 10.0);
+    }
 
     const TOKENS_TS: &str = include_str!("../../../../packages/design-tokens/src/tokens.ts");
 
@@ -195,7 +240,11 @@ mod tests {
             let (y, blur, alpha) = shadow_of(name);
             let s = &got[0];
             assert_eq!(
-                (f32::from(s.offset.y), f32::from(s.blur_radius), s.color.a),
+                (
+                    f32::from(s.offset.y),
+                    2.0 * f32::from(s.blur_radius),
+                    s.color.a
+                ),
                 (y, blur, alpha),
                 "shadow {name}"
             );

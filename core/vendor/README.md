@@ -198,6 +198,11 @@ installed).
 
 Keep this patch until upstream lets a colour emoji face load as a named family.
 
+A second change (Task 6c, 2026-11-13), marked `DILLA PATCH`: in `src/shaders.wgsl`, a dashed border thinner than 3 device
+px dashes 3 widths on and 2 off (Blink's `StrokeData` ratios for thin strokes) instead of upstream's 2 on and 1 off, so the
+rail's 1px dashed "+" circle has the web's dash count (about 23 at scale 2, upstream drew about 39). Thicker borders keep
+upstream's pattern.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs
@@ -212,3 +217,26 @@ LockLevel::Reserved`), so a fresh connection reports no RESERVED lock and plays 
 Still covered by `e2e/tests/mls-store.spec.ts` ("a write interrupted by a reload rolls back on the
 next open"), and across the upgrade by `core/dilla-core-wasm/tests/sqlite_compat.rs` (a hot journal
 written by the 0.5.5 build is played back by the current one).
+
+## gpui-pre 0.3.12
+
+Upstream: <https://crates.io/crates/gpui-pre> (Zed's GPUI). Apache-2.0. The copy is the published crate minus `.cargo-ok`,
+`.cargo_vcs_info.json`, `Cargo.lock` and `examples/` (with their `[[example]]` targets dropped from `Cargo.toml`).
+
+One change (Task 6c, 2026-11-13), marked `DILLA PATCH`: in `src/taffy.rs`, `layout_bounds` snaps a box's outer edges to
+whole logical px, half up, when the scale factor is whole; upstream rounds them to device px, midpoints toward zero. The web
+client's frames (Chromium, `deviceScaleFactor: 2`) paint a box laid out at 51.5px from 52px (two device px further than
+upstream GPUI), so every centred control, avatar, tile and field with a half-px offset (the 28px header buttons in the 43px
+bar, the 30px panel avatar in the 63px panel, the 28px search field in the 44px top bar, the 17px `@` glyph in its 38px tile)
+drew one device px off, which read as anti-aliasing on their rounded edges. With the patch `shell/conversation` goes from
+0.21 % to 0.09 % chrome difference. A fractional scale keeps upstream's device-pixel snapping, so edges stay crisp there.
+
+Before that snap, at a whole scale factor, authored lengths lie on Chromium's layout unit (1/64 css px, floored:
+`util::layout_length`) and measured sizes (text) are ceiled onto it (`util::measured_length`), where upstream rounds
+both to whole device px: a box's fractions (a 42.609375px button whose "3" is 6.609375px) carry to the edge snap as
+in Chromium. A fractional scale keeps upstream's device-px lengths.
+
+The edge rule is `util::snap_layout_edge`, re-exported with the two length rules as `gpui::{snap_layout_edge, layout_length, measured_length}` so the client can
+pin them: the tests `box_edges_snap_as_chromium_paints_them` and `lengths_lay_out_on_chromiums_layout_unit` in `clients/desktop/dilla-desktop-ui/src/metrics.rs`.
+
+Keep this patch while the Linux parity references are Chromium frames.
