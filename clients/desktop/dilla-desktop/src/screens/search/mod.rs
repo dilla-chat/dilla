@@ -29,9 +29,8 @@ use dilla_desktop_ui::components::dialog::{
 use dilla_desktop_ui::components::search::{self as ui, ResultRow};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EntityInputHandler, FocusHandle, Focusable,
-    Global, InteractiveElement, IntoElement, MouseButton, ParentElement, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, WindowId, deferred,
-    div,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, WindowId, deferred, div,
 };
 use gpui_component::input::{Input, InputEvent, InputState, MoveDown, MoveUp};
 
@@ -93,12 +92,46 @@ pub struct SearchEnv {
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): every window's environment of it goes (the
 /// next render of a host provides a new one).
 pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
-    crate::per_window::retain::<SearchEnv>(cx, |_, env| {
-        !env.ctx
+    let mut gone = Vec::new();
+    crate::per_window::retain::<SearchEnv>(cx, |w, env| {
+        let holds = env
+            .ctx
             .client
             .as_ref()
-            .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
+            .is_some_and(|c| std::rc::Rc::ptr_eq(c, client));
+        if holds {
+            gone.push(w);
+        }
+        !holds
     });
+    // Re-review N2: the palettes of those windows forget the decrypted snippets, the hits and the query.
+    for w in gone {
+        forget_palette(w, cx);
+    }
+}
+
+/// `window`'s palette closes and forgets what it showed: its rows (decrypted snippets and their hits), its status and
+/// the query typed into it.
+fn forget_palette(window: WindowId, cx: &mut App) {
+    let Some(palette) = crate::per_window::get::<PaletteOf>(window, cx).map(|p| p.0.clone()) else {
+        return;
+    };
+    let input = palette.update(cx, |p, _| {
+        p.open = false;
+        p.active = None;
+        p.unavailable = false;
+        p.rows.clear();
+        p.status.clear();
+        p.input.clone()
+    });
+    // The field is emptied in its window, once nothing else updates it (a release can run inside that window's update).
+    if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == window) {
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                input.update(cx, |s, cx| s.set_value("", window, cx));
+            });
+        });
+    }
 }
 
 /// The window's host view for its palette, set on each render of the host. Per window (final review sweep): one window's
@@ -170,10 +203,8 @@ impl HasOpenFocus for Palette {
     }
 }
 
-#[derive(Default)]
-struct Palettes(Vec<(WindowId, Entity<Palette>)>);
-
-impl Global for Palettes {}
+/// One window's palette (per window: pruned when the window closes, re-review N2).
+struct PaletteOf(Entity<Palette>);
 
 impl Palette {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -249,17 +280,11 @@ fn search_messages(window: WindowId, query: &str, cx: &mut App) {
 /// The palette of `window`, made on first use.
 fn palette_of(window: &mut Window, cx: &mut App) -> Entity<Palette> {
     let id = window.window_handle().window_id();
-    if let Some((_, p)) = cx
-        .try_global::<Palettes>()
-        .and_then(|ps| ps.0.iter().find(|(w, _)| *w == id))
-    {
-        return p.clone();
+    if let Some(p) = crate::per_window::get::<PaletteOf>(id, cx) {
+        return p.0.clone();
     }
     let palette = cx.new(|cx| Palette::new(window, cx));
-    if !cx.has_global::<Palettes>() {
-        cx.set_global(Palettes::default());
-    }
-    cx.global_mut::<Palettes>().0.push((id, palette.clone()));
+    crate::per_window::set(id, Some(PaletteOf(palette.clone())), cx);
     palette
 }
 
@@ -351,13 +376,7 @@ pub struct Inspect {
 /// The palette of `window` as last drawn; `None` before it was first drawn.
 pub fn inspect(window: &Window, cx: &App) -> Option<Inspect> {
     let id = window.window_handle().window_id();
-    let palette = cx
-        .try_global::<Palettes>()?
-        .0
-        .iter()
-        .find(|(w, _)| *w == id)?
-        .1
-        .clone();
+    let palette = crate::per_window::get::<PaletteOf>(id, cx)?.0.clone();
     let p = palette.read(cx);
     Some(Inspect {
         open: p.open,
@@ -736,5 +755,44 @@ mod tests {
             assert!(crate::per_window::get::<OpenRequest>(a, cx).is_some_and(|r| r.0));
             assert!(crate::per_window::get::<OpenRequest>(b, cx).is_none_or(|r| !r.0));
         });
+    }
+
+    /// Re-review N2: a release forgets what the palette showed (decrypted snippets, their hits) and the query typed
+    /// into it, and a closed window's palette goes.
+    #[gpui::test]
+    fn a_release_forgets_the_palettes_snippets_and_query(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let vcx = cx.add_empty_window();
+        let (w, palette) = vcx.update(|window, cx| {
+            let palette = palette_of(window, cx);
+            let input = palette.read(cx).input.clone();
+            input.update(cx, |s, cx| s.set_value("harbour", window, cx));
+            palette.update(cx, |p, _| {
+                p.open = true;
+                p.rows.push(Shown {
+                    id: "m-1".into(),
+                    label: "a decrypted snippet of the harbour plan".into(),
+                    sub: None,
+                    target: Navigate::Channel {
+                        community: dilla_client::state::CommunityId([1; 16]),
+                        channel: dilla_client::state::ChannelId([2; 16]),
+                    },
+                });
+                p.status = "1 result".into();
+            });
+            (window.window_handle().window_id(), palette)
+        });
+        vcx.update(|_, cx| forget_palette(w, cx));
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let p = palette.read(cx);
+            assert!(
+                !p.open && p.rows.is_empty() && p.status.is_empty(),
+                "nothing shown is kept"
+            );
+            assert_eq!(p.input.read(cx).value().to_string(), "", "the query goes");
+        });
+        vcx.update(|_, cx| crate::per_window::window_closed(w, cx));
+        vcx.update(|_, cx| assert!(crate::per_window::get::<PaletteOf>(w, cx).is_none()));
     }
 }
