@@ -12,7 +12,9 @@
 //! Each row is a box of its own at its CSS position: it takes the hover fill and bar (`--bg-3`, 2px `--accent`), the
 //! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
-use dilla_client::state::{AppState, Channel, Member, TimelineItem, TimelineItemState};
+use dilla_client::state::{
+    AppState, Channel, CommunityId, Member, TimelineItem, TimelineItemState,
+};
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     StatefulInteractiveElement, Styled, Window, div, px,
@@ -296,14 +298,47 @@ fn mention_pill(state: &AppState, members: &[Member], target: &str, mentions_me:
     }
 }
 
-/// The body a row shows: the message's markdown for a readable one, the state's note for the rest.
-fn body_parts(state: &AppState, members: &[Member], item: &TimelineItem) -> Vec<Body> {
+/// A webhook post (Task 21's `decode_webhook_label`, MessageItem.tsx): the unedited message of `community`'s pinned Bot
+/// user ending in its label line. Only that user's posts are read for it: the Bot defangs `[dilla-` in every text it
+/// posts, a sender's included, so anyone else's stays text.
+fn webhook_of(
+    state: &AppState,
+    community: CommunityId,
+    item: &TimelineItem,
+) -> Option<dilla_client::state::bot_admin::WebhookLabel> {
+    let pinned = state.bot.catalogs.get(&community)?.bot_user?;
+    if !item.bot || item.edited || item.sender_user != Some(pinned) {
+        return None;
+    }
+    dilla_client::state::bot_admin::decode_webhook_label(&item.body)
+}
+
+/// The head's "via webhook <name>" after the tag, for a webhook post ([`webhook_of`]).
+fn via_mark(state: &AppState, community: CommunityId, item: &TimelineItem) -> Option<String> {
+    webhook_of(state, community, item)
+        .map(|w| tf("message.viaWebhook", &[("name", w.name.as_str())]))
+}
+
+/// The body a row shows: the message's markdown for a readable one (a webhook post's text before its label line), the
+/// state's note for the rest.
+fn body_parts(
+    state: &AppState,
+    members: &[Member],
+    community: CommunityId,
+    item: &TimelineItem,
+) -> Vec<Body> {
     match item.state {
         TimelineItemState::CannotRead => vec![Body::Text(t("shell.message.cannotRead").to_owned())],
         TimelineItemState::Deleted => vec![Body::Text(t("shell.message.deleted").to_owned())],
-        _ => markdown::parse_markdown(&item.body, &|target| {
-            mention_pill(state, members, target, item.mention)
-        }),
+        _ => {
+            let webhook = webhook_of(state, community, item);
+            let text = webhook
+                .as_ref()
+                .map_or(item.body.as_str(), |w| w.text.as_str());
+            markdown::parse_markdown(text, &|target| {
+                mention_pill(state, members, target, item.mention)
+            })
+        }
     }
 }
 
@@ -478,6 +513,8 @@ fn head_marks(item: &TimelineItem) -> Vec<String> {
 struct RowCx<'a> {
     state: &'a AppState,
     members: &'a [Member],
+    /// The timeline's community: its pinned Bot user is the only author of a webhook post.
+    community: CommunityId,
     clock: Clock,
     width: f32,
 }
@@ -581,6 +618,12 @@ fn draw_row(
             x += tag_w + HEAD_GAP;
         }
         let meta_top = baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line());
+        // A webhook post's "via webhook <name>" follows the tag (MessageRow's `viaLabel`), in the marks' meta style.
+        if let Some(via) = via_mark(cx_row.state, cx_row.community, item) {
+            let w = via.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
+            placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
+            x += w + HEAD_GAP;
+        }
         for mark in head_marks(item) {
             let tone = if item.state == TimelineItemState::Failed {
                 color::DANGER
@@ -746,7 +789,7 @@ pub fn render(
                 }),
             }
         } else {
-            let parts = body_parts(state, members, item);
+            let parts = body_parts(state, members, channel.community_id, item);
             // The height comes from the memo (by the parts and the width): a body is laid out once, not on every draw.
             let mut height = body::height_cached(&parts, body_width);
             // An empty body still keeps its line (the web's row holds the empty text node's line box).
@@ -813,6 +856,7 @@ pub fn render(
     let row_cx = RowCx {
         state,
         members,
+        community: channel.community_id,
         clock,
         width,
     };
@@ -1040,6 +1084,74 @@ mod tests {
         assert!(me.me && me.label == "@me");
         let unknown = mention_pill(&s, &[], &UserId([4; 16]).hex(), true);
         assert!(!unknown.me && unknown.user.is_none());
+    }
+
+    /// Integration 3, step 5 (Task 21's `decode_webhook_label` in Task 9's row): a webhook post is the community's pinned
+    /// Bot user's unedited message ending in its label line. The row shows "via webhook <name>" in its head and the text
+    /// before the label as its body; the same body from anyone else, or edited, stays text.
+    #[test]
+    fn a_webhook_post_of_the_pinned_bot_reads_via_webhook() {
+        use dilla_client::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+        let community = CommunityId([7; 16]);
+        let bot = UserId([9; 16]);
+        let mut s = AppState::default();
+        s.bot.catalogs.insert(
+            community,
+            BotCatalogView {
+                revision: 1,
+                commands: Vec::new(),
+                status: BotStatus {
+                    state: BotStatusState::Ready,
+                    since: None,
+                },
+                bot_channels: None,
+                bot_user: Some(bot),
+                bot_name: "Glenn".into(),
+                fingerprint: None,
+            },
+        );
+        let mut i = item(9, 5);
+        i.bot = true;
+        i.body = format!(
+            "Deploy done\n[dilla-webhook:v1:{}:CI%20bot]",
+            "ab".repeat(16)
+        );
+        let label = webhook_of(&s, community, &i).expect("the pinned Bot's webhook post");
+        assert_eq!(
+            (label.text.as_str(), label.name.as_str()),
+            ("Deploy done", "CI bot")
+        );
+        assert_eq!(
+            via_mark(&s, community, &i).as_deref(),
+            Some("via webhook CI bot")
+        );
+        assert_eq!(
+            body_parts(&s, &[], community, &i),
+            body_parts(&s, &[], community, &item_with_body("Deploy done")),
+            "the body is the text before the label"
+        );
+        let mut edited = i.clone();
+        edited.edited = true;
+        assert!(
+            webhook_of(&s, community, &edited).is_none(),
+            "an edited post stays text"
+        );
+        let mut other = i.clone();
+        other.sender_user = Some(UserId([4; 16]));
+        assert!(
+            webhook_of(&s, community, &other).is_none(),
+            "anyone else's stays text"
+        );
+        assert!(
+            webhook_of(&s, CommunityId([1; 16]), &i).is_none(),
+            "another community's Bot is not this one's"
+        );
+    }
+
+    fn item_with_body(body: &str) -> TimelineItem {
+        let mut i = item(9, 5);
+        i.body = body.into();
+        i
     }
 
     #[test]
