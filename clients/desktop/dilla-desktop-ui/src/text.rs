@@ -97,6 +97,14 @@ pub fn line_height(size: Pixels, ratio: f32) -> f32 {
     layout_unit(f32::from(size) * ratio)
 }
 
+/// The height Chromium paints for a box of `height` CSS px made of fractional line boxes (a label over a wrapped hint: 17.5 +
+/// 2 x 15.390625): its edges land on whole CSS px, so it covers the rounded height. GPUI rounds every line box to a whole
+/// device pixel instead (15.390625 to 15.5 at scale 2), which grows such a block by up to a quarter pixel per line; a block
+/// that sizes its row (a settings row's text) takes this height so the row's edges fall where the web's do.
+pub fn painted_height(height: f32) -> f32 {
+    height.round()
+}
+
 /// The font's ascent and descent at `size`, each rounded to a whole pixel as Chromium's `SimpleFontData` does: the box an
 /// inline span's background and border cover (a code span, a mention pill), and what text decorations are measured from.
 pub fn ascent_descent(face: Face, size: f32) -> (f32, f32) {
@@ -404,6 +412,17 @@ mod tests {
     fn coverage_is_the_embedded_face() {
         assert!(mono_covers('a') && mono_covers('…') && mono_covers('›') && mono_covers('ö'));
         assert!(!mono_covers('↵'));
+    }
+
+    #[test]
+    fn a_block_of_fractional_lines_paints_whole_pixels() {
+        let label_and_two_hint_lines =
+            line_height(px(12.5), 1.4) + 2.0 * line_height(px(11.0), 1.4);
+        assert_eq!(painted_height(label_and_two_hint_lines), 48.0);
+        assert_eq!(
+            painted_height(line_height(px(12.5), 1.4) + line_height(px(11.0), 1.4)),
+            33.0
+        );
     }
 
     #[test]

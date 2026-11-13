@@ -15,7 +15,8 @@ use super::super::action_menu::{ActionMenu, MenuItem, opens_context_menu};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
-use crate::text::{line, line_height, paragraph};
+use crate::snap::snapped;
+use crate::text::{line, line_height, painted_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -88,6 +89,7 @@ pub struct SettingsRow {
     layout: Layout,
     position: GroupPosition,
     menu: Option<RowMenu>,
+    hint_width: Option<f32>,
     control: Vec<AnyElement>,
 }
 
@@ -102,6 +104,7 @@ impl SettingsRow {
             layout: Layout::Inline,
             position: GroupPosition::Only,
             menu: None,
+            hint_width: None,
             control: Vec::new(),
         }
     }
@@ -113,6 +116,13 @@ impl SettingsRow {
 
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// The measure the hint wraps at, when the text column is narrower than the hint's 60ch (a wide control beside it,
+    /// `max-width: none` sections): the host knows the column's width from its own layout.
+    pub fn hint_width(mut self, width: f32) -> Self {
+        self.hint_width = Some(width);
         self
     }
 
@@ -202,15 +212,20 @@ impl RenderOnce for SettingsRow {
             );
         }
         text_col = text_col.child(label);
+        let mut text_h = line_height(text::SM, 1.4);
         if let Some(hint) = &self.hint {
-            text_col = text_col.children(paragraph(
+            let lines = paragraph(
                 hint,
                 text::XS,
                 line_height(text::XS, 1.4),
                 color::FG_2,
-                hint_width(),
-            ));
+                self.hint_width.unwrap_or_else(hint_width),
+            );
+            text_h += lines.len() as f32 * line_height(text::XS, 1.4);
+            text_col = text_col.children(lines);
         }
+        // The text sizes the row: it takes the height the web paints for it, so the hairline under the row is the web's.
+        text_col = text_col.h(px(painted_height(text_h)));
 
         let mut control = div()
             .flex()
@@ -324,7 +339,8 @@ impl RenderOnce for SettingsRow {
                     .child(Icon::new(icon).size(px(15.0)).color(color::ACCENT)),
             );
         }
-        row.child(text_col).child(control).children(menus)
+        // The control is centred in the row's line: on a half pixel it paints where the web's does (`snap`).
+        row.child(text_col).child(snapped(control)).children(menus)
     }
 }
 

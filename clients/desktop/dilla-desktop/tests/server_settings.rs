@@ -49,13 +49,13 @@ macro_rules! parity_after_t6c {
 
 parity_tests! {
     parity_server_settings_welcome => "welcome",
+    parity_server_settings_overview => "overview",
+    parity_server_settings_overview_b => "overview-b",
+    parity_server_settings_afk => "afk",
+    parity_server_settings_afk_b => "afk-b",
 }
 
 parity_after_t6c! {
-    parity_server_settings_overview => "overview", "parity after T6c: chrome 0.4688 %",
-    parity_server_settings_overview_b => "overview-b", "parity after T6c: whole frame 1.3234 %",
-    parity_server_settings_afk => "afk", "parity after T6c: chrome 0.4688 %",
-    parity_server_settings_afk_b => "afk-b", "parity after T6c: whole frame 0.6805 %",
     parity_server_settings_channels => "channels", "parity after T6c: chrome 2.3227 %",
     parity_server_settings_channels_b => "channels-b", "parity after T6c: whole frame 1.3583 %",
     parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.2690 %",
