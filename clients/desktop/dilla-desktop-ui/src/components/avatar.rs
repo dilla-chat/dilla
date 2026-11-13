@@ -81,6 +81,8 @@ pub enum AvatarSize {
     Panel,
     Confirm,
     Card,
+    /// The profile preview card's avatar (`.dw-profile-preview__body .d-avatar`: 48px, `--text-ui`).
+    Preview,
 }
 
 impl AvatarSize {
@@ -98,6 +100,7 @@ impl AvatarSize {
             Self::Row | Self::Md => (px(32.0), text::XS),
             Self::Confirm => (px(40.0), text::UI),
             Self::Card => (px(56.0), text::LG),
+            Self::Preview => (px(48.0), text::UI),
             Self::Lg => (px(64.0), text::LG),
         }
     }

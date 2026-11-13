@@ -88,16 +88,6 @@ pub mod layout {
     /// The gap between a row's four trailing slots.
     pub const TRAIL_GAP: Pixels = px(4.0);
 
-    /// What a form dialog's two bars and its body padding take (`Dialog.css`: head 14px + title + edge, footer 12px + 34px +
-    /// edge, body 16px over and under), and its offset from the top (12vh plus 20px): the body scrolls inside what is left.
-    pub fn dialog_body_cap(viewport_height: f32) -> Pixels {
-        let head = 2.0 * 14.0 + crate::text::line_height(crate::tokens::text::BASE, 1.5) + 1.0;
-        let foot = 2.0 * 12.0 + 34.0 + 1.0;
-        let body_pad = 2.0 * 16.0;
-        let top = crate::components::dialog::top_offset(viewport_height) + 20.0;
-        px((viewport_height - top - head - foot - body_pad).max(0.0))
-    }
-
     /// The height of a text field's frame (`TextField.css`: 2.25rem).
     pub const FIELD_H: Pixels = px(36.0);
     /// A text field's side padding (`0.75rem`) and edge (`1px`): `.d-text-field__input`.

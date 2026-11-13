@@ -46,6 +46,16 @@ pub struct TextField {
     error: Option<SharedString>,
     disabled: bool,
     rows: usize,
+    frame: Option<Frame>,
+}
+
+/// A host's own size for the input's frame (a form that restyles `.d-text-field__input`, as `.dw-profile-form` does).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    /// The frame's height, its 1px edge included.
+    pub height: f32,
+    /// The padding over and under a multi-line field's text.
+    pub pad_y: f32,
 }
 
 impl TextField {
@@ -81,7 +91,14 @@ impl TextField {
             error: None,
             disabled: false,
             rows: 3,
+            frame: None,
         }
+    }
+
+    /// The host's own frame size (see [`Frame`]).
+    pub fn frame(mut self, frame: Frame) -> Self {
+        self.frame = Some(frame);
+        self
     }
 
     /// The measure the hint and note wrap at (the field's width, when the host knows it: a dialog's body); without one
@@ -125,9 +142,11 @@ impl RenderOnce for TextField {
             Control::Single(input) => input.focus_handle(cx).contains_focused(window, cx),
             Control::Multi(input) => input.focus_handle(cx).contains_focused(window, cx),
         };
-        let (frame_h, frame_pad_y) = match self.control {
-            Control::Single(_) => (Some(px(36.0)), 0.0),
-            Control::Multi(_) => (None, 8.0),
+        let (frame_h, frame_pad_y) = match (&self.control, self.frame) {
+            (Control::Single(_), Some(f)) => (Some(px(f.height)), 0.0),
+            (Control::Multi(_), Some(f)) => (Some(px(f.height)), f.pad_y),
+            (Control::Single(_), None) => (Some(px(36.0)), 0.0),
+            (Control::Multi(_), None) => (None, 8.0),
         };
         let mut frame = div()
             .id((self.id.clone(), "frame"))
@@ -156,7 +175,9 @@ impl RenderOnce for TextField {
                     .py_0(),
             ),
             Control::Multi(input) => frame
-                .min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
+                .when(self.frame.is_none(), |f| {
+                    f.min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
+                })
                 .child(Textarea::new(input).appearance(false)),
         };
         if self.disabled {

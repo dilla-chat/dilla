@@ -445,24 +445,14 @@ fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
             let stop0_percentage = background.colors[0].percentage;
             let stop1_percentage = background.colors[1].percentage;
 
-            // Expand the short side to be the same as the long side
-            if (bounds.size.x > bounds.size.y) {
-                direction.y *= bounds.size.y / bounds.size.x;
-            } else {
-                direction.x *= bounds.size.x / bounds.size.y;
-            }
-
-            // Get the t value for the linear gradient with the color stop percentages.
+            // DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): CSS's linear-gradient geometry. The angle is a
+            // true angle (not stretched to the box), and the gradient line runs through the centre for
+            // |w sin a| + |h cos a|, so its ends pass through the corners: `t` is the point's projection on it.
             let half_size = bounds.size / 2.0;
             let center = bounds.origin + half_size;
             let center_to_point = position - center;
-            var t = dot(center_to_point, direction) / length(direction);
-            // Check the direct to determine the use x or y
-            if (abs(direction.x) > abs(direction.y)) {
-                t = (t + half_size.x) / bounds.size.x;
-            } else {
-                t = (t + half_size.y) / bounds.size.y;
-            }
+            let line_length = abs(bounds.size.x * direction.x) + abs(bounds.size.y * direction.y);
+            var t = dot(center_to_point, direction) / max(line_length, 0.0001) + 0.5;
 
             // Adjust t based on the stop percentages
             t = (t - stop0_percentage) / (stop1_percentage - stop0_percentage);

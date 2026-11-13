@@ -203,6 +203,15 @@ px dashes 3 widths on and 2 off (Blink's `StrokeData` ratios for thin strokes) i
 rail's 1px dashed "+" circle has the web's dash count (about 23 at scale 2, upstream drew about 39). Thicker borders keep
 upstream's pattern.
 
+A third change (Task 28 parity lane, 2026-11-13), marked `DILLA PATCH`: in `src/shaders.wgsl`, `gradient_color`'s linear
+gradient follows CSS (`linear-gradient(135deg, ...)`): the angle is a true angle and the gradient line, through the centre,
+is `|w sin a| + |h cos a|` long. Upstream stretched the direction to the box's aspect and measured `t` along the longer
+side, so a 135deg band on a 258 x 52 box ran almost left to right (the profile preview's band: 5-6 levels off at its right
+end; the colour gate failed at 0.63 %). Test: `parity_user_settings_profile` in `clients/desktop/dilla-desktop/tests/
+user_settings.rs` (the band against the web's). Only the wgpu
+renderer (Linux, Windows) carries it; the Metal renderer of macOS keeps upstream's geometry until its tolerances are
+measured.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs
