@@ -10,19 +10,14 @@ fn fixture(name: &str) -> PathBuf {
         .join(format!("{name}.json"))
 }
 
-macro_rules! parity {
-    ($($test:ident => $name:literal $(, $why:literal)?;)*) => {$(
-        #[test]
-        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-        $(#[ignore = $why])?
-        fn $test() {
-            if let Err(e) = dilla_parity::screen::assert_screen(&fixture($name)) {
-                panic!("{}: {e}", $name);
-            }
-        }
-    )*};
+fn parity(name: &str) {
+    if let Err(e) = dilla_parity::screen::assert_screen(&fixture(name)) {
+        panic!("{name}: {e}");
+    }
 }
 
-parity! {
-    parity_sign_in_welcome => "sign-in/welcome", "parity after T6c: whole frame 3.1447 % (/welcome on the web is the sign-up's first step, Join with an invite, over the radial glow; the app draws its sign-in form there)";
+#[test]
+#[ignore = "parity after T6c: whole frame 3.1447 % (/welcome on the web is the sign-up's first step, Join with an invite, over the radial glow; the app draws its sign-in form there)"]
+fn parity_sign_in_welcome() {
+    parity("sign-in/welcome");
 }
