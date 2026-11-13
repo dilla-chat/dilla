@@ -791,14 +791,15 @@ impl AppView {
     ) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
         cx.spawn_in(window, async move |this, cx| {
-            if how == Wipe::Forget {
-                // A call this device is in is left first (Task 17): its media and its self-Remove go before the session
-                // and the store do.
-                let _ = client.voice().leave().await;
-                if let Err(message) = crate::screens::factor::sign_out(&client).await {
-                    let _ = this.update(cx, |this, cx| this.forget_failed(message, cx));
-                    return;
-                }
+            // A call this device is in is left first (Task 17; review M3: a Sign out too): its media and its
+            // self-Remove go before the session and the store do. After a Sign out the engine may already be stopped:
+            // the leave then ends with an error, which is fine (the device is gone from the account anyway).
+            let _ = client.voice().leave().await;
+            if how == Wipe::Forget
+                && let Err(message) = crate::screens::factor::sign_out(&client).await
+            {
+                let _ = this.update(cx, |this, cx| this.forget_failed(message, cx));
+                return;
             }
             // Every view that held the client goes first; then the last handle stops it and the wipe waits for the
             // store to close.
@@ -840,10 +841,33 @@ impl AppView {
                 }
                 // A view still holds the client: it was never stopped, nothing was wiped; back on the forced screen (a
                 // device that removed itself: the sign-in, saying the store could not go).
+                // A device that removed itself: the sign-in says the store has not gone yet (review M4), and the wipe is
+                // tried again whenever the last other holder lets go (every second, for as long as the app runs), then
+                // the sign-in's note goes. The halted client sends nothing meanwhile.
                 Err(shared) if how == Wipe::SignedOut => {
+                    shared.halt();
                     let _ = this.update_in(cx, |this, window, cx| {
-                        shared.halt();
                         this.show_sign_in(Some(store()), window, cx);
+                    });
+                    let mut client = shared;
+                    let owned = loop {
+                        match Rc::try_unwrap(client) {
+                            Ok(owned) => break owned,
+                            Err(again) => {
+                                client = again;
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_secs(1))
+                                    .await;
+                            }
+                        }
+                    };
+                    let result =
+                        crate::screens::factor::close_and_wipe(owned, cfg.clone(), root, keychain)
+                            .await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if result.is_ok() && this.shows_sign_in_screen() {
+                            this.show_sign_in(None, window, cx);
+                        }
                     });
                 }
                 Err(shared) => {
@@ -954,6 +978,10 @@ impl AppView {
             return self.show_sign_in(None, window, cx);
         };
         self.wipe(client, cfg, Wipe::SignedOut, window, cx);
+    }
+
+    fn shows_sign_in_screen(&self) -> bool {
+        matches!(self.screen, Screen::SignIn(_))
     }
 
     /// A Forget that did not go through: said on the forced screen.
