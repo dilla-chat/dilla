@@ -109,6 +109,19 @@ pub fn open_join(invite: Option<String>, cx: &mut App) {
     );
 }
 
+/// [`open_join`] in `window`, whichever window is active: the window an invite was opened with joins through its own
+/// client, never through another instance's window that happens to be in front.
+pub fn open_join_in(window: &Window, invite: Option<String>, cx: &mut App) {
+    windows(cx).pending.insert(
+        window.window_handle().window_id(),
+        Open::Join {
+            invite,
+            refusal: None,
+        },
+    );
+    cx.refresh_windows();
+}
+
 /// The window's running client and the shell's navigation, for the flows' submits. The app calls it when the shell
 /// starts; a later call replaces it (a client restarted after a revocation).
 pub fn attach(window: &Window, client: Rc<Client>, on_navigate: OnNavigate, cx: &mut App) {
@@ -208,4 +221,39 @@ pub fn empty_view(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> AnyElem
         }),
     )
     .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Blank;
+    impl gpui::Render for Blank {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    /// Review M3: an invite a window was opened with opens its join dialog in that window, not in the active one.
+    #[gpui::test]
+    fn an_invite_opens_its_join_in_its_own_window(cx: &mut gpui::TestAppContext) {
+        let a = cx.add_window(|_, _| Blank);
+        let b = cx.add_window(|_, _| Blank);
+        b.update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        a.update(cx, |_, window, cx| {
+            open_join_in(window, Some("https://dilla.test/i/AB12".into()), cx)
+        })
+        .unwrap();
+        let pending: Vec<WindowId> = cx.update(|cx| windows(cx).pending.keys().copied().collect());
+        assert_eq!(
+            pending,
+            [a.window_id()],
+            "the join waits in A, not in the active B"
+        );
+    }
 }
