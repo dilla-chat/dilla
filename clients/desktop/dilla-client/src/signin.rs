@@ -1,12 +1,17 @@
 //! Signing in on a new device, as the web client's sign-in screen drives `packages/client-core/src/account/enrol.ts`:
-//! a password login, the authenticator code it owes, then the device's registration and its recovery from the
-//! account's sealed backup with the recovery key. The device ends with a ready identity (phase 2) in its store, its
-//! device list published and its sealed state uploaded, so [`crate::Client::start`] can take over.
+//! a password login (or a passkey, or the instance's OIDC sign-in), the second factor it owes (the authenticator code, a
+//! passkey, or a backup code), then the device's registration and its recovery from the account's sealed backup with the
+//! recovery key. The device ends with a ready identity (phase 2) in its store, its device list published and its sealed
+//! state uploaded, so [`crate::Client::start`] can take over.
 //!
-//! Every secret (the password, the code, the recovery key, the assertion and the session token) is held in
-//! [`Zeroizing`] buffers or the core and never printed. Narrowed against enrol.ts: a passkey or backup code instead of
-//! the app code, and the device-list fork repair after a 409 (adoptServedList), are not ported; a 409 on the list is
-//! [`SignInError::ListRace`] and the person signs in again.
+//! web3.8 (R6) order: the login and the factor never register this device; the held, settled assertion waits for the
+//! key step, which registers, fetches, completes and publishes back to back. A backup code waits in memory too and goes
+//! only with the key ([`SignIn::add_device_with_backup`]), so an assertion that ran out meanwhile spends none.
+//!
+//! Every secret (the password, the code, the backup code, the recovery key, the assertion, the passkey response and the
+//! session token) is held in [`Zeroizing`] buffers or the core and never printed. Narrowed against enrol.ts: the
+//! device-list fork repair after a 409 (adoptServedList) is not ported; a 409 on the list is [`SignInError::ListRace`]
+//! and the person signs in again.
 
 use std::sync::{Arc, Mutex};
 
@@ -32,9 +37,27 @@ pub enum SignInError {
     /// The step was taken out of order (no login, or a login that owes something else).
     #[error("sign in first")]
     NoAssertion,
-    /// This login owes a passkey, which this client cannot offer yet.
+    /// This login owes a passkey (or a backup code), and none was given.
     #[error("this account signs in with a passkey")]
     PasskeyOnly,
+    /// The backup code was refused; the assertion is spent, so the person signs in again.
+    #[error("that backup code did not work")]
+    BackupFailed,
+    /// The instance does not know this passkey (401 `E_PASSKEY_UNKNOWN`).
+    #[error("the instance does not know this passkey")]
+    PasskeyUnknown,
+    /// A passkey of another account than the password login (403 `E_PASSKEY_OTHER_ACCOUNT`).
+    #[error("that passkey belongs to another account")]
+    PasskeyOtherAccount,
+    /// The system browser's ceremony ended without a passkey or an OIDC assertion.
+    #[error("the browser sign-in did not finish: {0}")]
+    Browser(crate::features::browser_auth::BrowserAuthError),
+    /// The account has as many devices as the instance allows (the registration's 403 `E_FORBIDDEN`).
+    #[error("the account has as many devices as the instance allows")]
+    DeviceCap,
+    /// The held assertion ran out before the key step registered this device (enrol.ts E_SIGNIN_EXPIRED).
+    #[error("the sign-in ran out")]
+    Expired,
     /// The account has no sealed backup on the instance (enrol.ts E_NO_BACKUP).
     #[error("the account has no recovery data on this instance")]
     NoBackup,
@@ -50,9 +73,9 @@ pub enum SignInError {
     /// The registration was replaced by another (enrol.ts E_SIGNIN_EVICTED).
     #[error("someone else is signing in to this account")]
     Evicted,
-    /// Too many attempts (429).
+    /// Too many attempts (429), with the instance's wait in ms when it named one.
     #[error("too many sign-in attempts")]
-    TooMany,
+    TooMany(Option<u64>),
     /// The instance could not be reached.
     #[error("the connection dropped: {0}")]
     Network(String),
@@ -72,8 +95,10 @@ impl From<StoreError> for SignInError {
 
 fn http_error(e: &HttpError) -> SignInError {
     match e {
-        HttpError::Status { status: 429, .. } => SignInError::TooMany,
-        HttpError::Status { status: s, .. } => SignInError::Other(format!("HTTP {s}")),
+        HttpError::Status { status: 429, .. } => SignInError::TooMany(None),
+        HttpError::Status { status: s, code } => {
+            SignInError::Other(code.clone().unwrap_or_else(|| format!("HTTP {s}")))
+        }
         HttpError::Transport(t) => SignInError::Network(t.clone()),
         HttpError::Decode(d) => SignInError::Other(format!("decode: {d}")),
         HttpError::Unanswered { code, detail } => SignInError::Network(format!("{code}: {detail}")),
@@ -95,10 +120,99 @@ pub enum Owed {
     Passkey,
 }
 
+impl SignInError {
+    /// The web's refusal code for this error (`signin.error.other`'s `{code}`), never the instance's detail text.
+    pub fn code(&self) -> String {
+        match self {
+            Self::LoginFailed | Self::CodeFailed | Self::BackupFailed => "E_UNAUTHENTICATED".into(),
+            Self::NoAssertion => "E_NO_ASSERTION".into(),
+            Self::PasskeyOnly => "E_PASSKEY_REQUIRED".into(),
+            Self::PasskeyUnknown => "E_PASSKEY_UNKNOWN".into(),
+            Self::PasskeyOtherAccount => "E_PASSKEY_OTHER_ACCOUNT".into(),
+            Self::Browser(_) => "E_PASSKEY".into(),
+            Self::DeviceCap => "E_FORBIDDEN".into(),
+            Self::Expired => "E_SIGNIN_EXPIRED".into(),
+            Self::NoBackup => "E_NO_BACKUP".into(),
+            Self::WrongKey => "E_RECOVERY_KEY".into(),
+            Self::KeyLength => "E_KEY_LENGTH".into(),
+            Self::ListRace => "E_LIST_RACE".into(),
+            Self::Evicted => "E_SIGNIN_EVICTED".into(),
+            Self::TooMany(_) => "E_RATE_LIMITED".into(),
+            Self::Network(_) => "E_NETWORK".into(),
+            Self::Store(_) => "E_STORE".into(),
+            Self::Other(code) => code.chars().take(48).collect(),
+        }
+    }
+}
+
 /// The held server assertion and what it still owes.
 struct Assertion {
     value: Zeroizing<String>,
     owes: Owed,
+}
+
+/// The status and code of a refused route.
+fn refused(e: &HttpError) -> Option<(u16, &str)> {
+    match e {
+        HttpError::Status { status, code } => Some((*status, code.as_deref().unwrap_or("E_HTTP"))),
+        _ => None,
+    }
+}
+
+/// One element of a credential-carrying body.
+enum Part<'a> {
+    Text(&'a str),
+    Bytes(&'a [u8]),
+}
+
+/// `[p0, p1, ...]`, encoded into one zeroizing buffer of its final size (no reallocation leaves a copy behind).
+fn secret_body(parts: &[Part<'_>]) -> r::Secret {
+    // Each head is at most 9 bytes, the array head 1.
+    let size = 1 + parts
+        .iter()
+        .map(|p| {
+            9 + match p {
+                Part::Text(t) => t.len(),
+                Part::Bytes(b) => b.len(),
+            }
+        })
+        .sum::<usize>();
+    let mut e = dilla_core::cbor::Encoder::with_capacity(size);
+    e.array(parts.len());
+    for p in parts {
+        match p {
+            Part::Text(t) => {
+                e.text(t);
+            }
+            Part::Bytes(b) => {
+                e.bytes(b);
+            }
+        }
+    }
+    r::Secret(Zeroizing::new(e.into_vec()))
+}
+
+/// `[assertion, ...]`: the new assertion of a recovery or passkey answer, read into a zeroizing buffer, and the
+/// passkey answer's `needs` (0 or 1) when `with_needs`.
+fn decode_assertion(raw: &[u8], with_needs: bool) -> Result<(Zeroizing<String>, u8), SignInError> {
+    let raw = Zeroizing::new(raw.to_vec());
+    dilla_core::cbor::decode_strict(&raw, |d| {
+        let len = d.array_len()?;
+        let want = if with_needs { 2 } else { 1 };
+        if len < want {
+            return Err(dilla_core::cbor::CborError::Truncated);
+        }
+        let assertion = Zeroizing::new(d.text()?.to_owned());
+        let needs = if with_needs { d.uint()? } else { 0 };
+        if needs > 1 {
+            return Err(dilla_core::cbor::CborError::IntegerOverflow);
+        }
+        for _ in want..len {
+            d.skip()?;
+        }
+        Ok((assertion, needs as u8))
+    })
+    .map_err(|_| SignInError::Other("E_DECODE".into()))
 }
 
 /// One sign-in on a new device of one instance. Each step is `async` (reqwest needs a tokio runtime); the store is
@@ -111,7 +225,17 @@ pub struct SignIn {
     core: Option<Arc<Mutex<ClientCore>>>,
     assertion: Option<Assertion>,
     username: String,
+    /// The password login said the account holds a passkey (wave B task 3).
+    holds_passkey: bool,
+    /// The factor this ceremony signed in with so far: a passkey whose authenticator did not verify the person still
+    /// owes a code (web `account.signIn.factor === 'passkey'`).
+    used_passkey: bool,
+    /// When the held assertion was issued.
+    held_at: Option<std::time::Instant>,
 }
+
+/// What the instance's document says about signing in (`GET /v1/instance`).
+pub use crate::features::factors::InstanceDoc;
 
 impl std::fmt::Debug for SignIn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -174,7 +298,181 @@ impl SignIn {
             core: None,
             assertion: None,
             username: String::new(),
+            holds_passkey: false,
+            used_passkey: false,
+            held_at: None,
         })
+    }
+
+    /// The instance's name and its sign-in methods.
+    pub async fn instance_doc(&self) -> Result<InstanceDoc, SignInError> {
+        let Raw(doc) = self
+            .http
+            .call::<r::GetInstance>(&[], NoBody)
+            .await
+            .map_err(|e| http_error(&e))?;
+        InstanceDoc::decode(&doc).map_err(|e| SignInError::Other(e.code))
+    }
+
+    /// The username of this ceremony's login (lower-cased as sent).
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// The login said the account holds a passkey, or the person just used one: the code step offers "Use a passkey".
+    pub fn holds_passkey(&self) -> bool {
+        self.holds_passkey || self.used_passkey
+    }
+
+    /// The passkey just used did not verify the person, so the code step says so (`factorSignin.passkey.needsCode`).
+    pub fn used_passkey(&self) -> bool {
+        self.used_passkey
+    }
+
+    /// What the held assertion still owes, if one is held.
+    pub fn owes(&self) -> Option<Owed> {
+        self.assertion.as_ref().map(|a| a.owes)
+    }
+
+    /// enrol.ts `signInBack`: the held assertion is dropped, so nothing half-signed-in survives; the login asks again.
+    pub fn back(&mut self) {
+        self.assertion = None;
+        self.used_passkey = false;
+    }
+
+    /// `POST /v1/auth/passkey/login/begin` `[]`: a discoverable ceremony for the system browser.
+    pub async fn passkey_begin(
+        &mut self,
+    ) -> Result<crate::features::factors::Ceremony, SignInError> {
+        let Raw(raw) = self
+            .http
+            .call::<r::PasskeyLoginBegin>(&[], Raw::empty_list())
+            .await
+            .map_err(|e| http_error(&e))?;
+        crate::features::factors::decode_ceremony(&raw).map_err(|e| SignInError::Other(e.code))
+    }
+
+    /// `POST /v1/auth/passkey/login/finish` `[ceremony_id, response, assertion?]`: bound to the held assertion when a
+    /// password login owes its factor (wave B task 3), unbound on its own. Answers what is still owed: nothing, or a
+    /// code when the authenticator did not verify the person.
+    pub async fn passkey_finish(
+        &mut self,
+        ceremony: [u8; 16],
+        response: &str,
+    ) -> Result<Owed, SignInError> {
+        let bound = match self.assertion.take() {
+            Some(Assertion {
+                value,
+                owes: Owed::Code | Owed::Passkey,
+            }) => Some(value),
+            _ => None,
+        };
+        let mut parts = vec![Part::Bytes(&ceremony), Part::Text(response)];
+        if let Some(a) = &bound {
+            parts.push(Part::Text(a));
+        }
+        let body = secret_body(&parts);
+        let raw = match self.http.call::<r::PasskeyLoginFinish>(&[], body).await {
+            Ok(Raw(raw)) => raw,
+            Err(e) => {
+                return Err(match refused(&e) {
+                    Some((_, "E_PASSKEY_UNKNOWN")) => SignInError::PasskeyUnknown,
+                    Some((_, "E_PASSKEY_OTHER_ACCOUNT")) => {
+                        // The instance refused it and issued nothing: the password login's assertion stands.
+                        if let Some(value) = bound {
+                            self.assertion = Some(Assertion {
+                                value,
+                                owes: if self.holds_passkey {
+                                    Owed::Passkey
+                                } else {
+                                    Owed::Code
+                                },
+                            });
+                        }
+                        SignInError::PasskeyOtherAccount
+                    }
+                    _ => http_error(&e),
+                });
+            }
+        };
+        let (assertion, needs) = decode_assertion(&raw, true)?;
+        let owes = if needs == 1 {
+            Owed::Code
+        } else {
+            Owed::Nothing
+        };
+        self.used_passkey = true;
+        // The passkey names the account: the typed username is not kept.
+        self.username.clear();
+        self.hold(assertion, owes);
+        Ok(owes)
+    }
+
+    /// web `signInOIDC`: the identity provider's assertion from the system browser, and what it owes. The assertion
+    /// names the account, so no username is kept (as for a passkey).
+    pub fn oidc(&mut self, assertion: Zeroizing<String>, needs: u8) -> Owed {
+        let owes = match needs {
+            0 => Owed::Nothing,
+            1 => Owed::Code,
+            _ => Owed::Passkey,
+        };
+        self.hold(assertion, owes);
+        self.username.clear();
+        owes
+    }
+
+    fn hold(&mut self, value: Zeroizing<String>, owes: Owed) {
+        self.assertion = Some(Assertion { value, owes });
+        self.held_at = Some(std::time::Instant::now());
+    }
+
+    /// The held assertion ran out (enrol.ts `ASSERTION_EXPIRED_MS`, five minutes on the instance).
+    fn held_too_long(&self) -> bool {
+        self.held_at
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(5 * 60))
+    }
+
+    /// web3.8 (R6) `signInBackupCode`: the backup code the code or passkey step took, sent now with the key. dillad checks
+    /// the assertion before the code: a 401 once the held assertion is past its five minutes spent no code
+    /// ([`SignInError::Expired`]); inside them it is the refused code ([`SignInError::BackupFailed`]), and the person
+    /// logs in again.
+    pub async fn add_device_with_backup(
+        &mut self,
+        backup_code: &str,
+        recovery_key: &str,
+    ) -> Result<(), SignInError> {
+        let key = normalise_recovery_key(recovery_key);
+        if key.chars().count() != 52 {
+            return Err(SignInError::KeyLength);
+        }
+        let code = crate::features::factors::normalise_backup_code(backup_code);
+        if !crate::features::factors::is_backup_code(&code) {
+            return Err(SignInError::BackupFailed);
+        }
+        let expired = self.held_too_long();
+        let Some(Assertion {
+            value,
+            owes: Owed::Code | Owed::Passkey,
+        }) = self.assertion.take()
+        else {
+            return Err(SignInError::NoAssertion);
+        };
+        let body = secret_body(&[Part::Text(&value), Part::Text(&code)]);
+        let raw = match self.http.call::<r::RecoveryVerify>(&[], body).await {
+            Ok(Raw(raw)) => raw,
+            Err(e) => {
+                return Err(match refused(&e) {
+                    Some((401, _)) if expired => SignInError::Expired,
+                    Some((s, _)) if (400..500).contains(&s) && s != 429 => {
+                        SignInError::BackupFailed
+                    }
+                    _ => http_error(&e),
+                });
+            }
+        };
+        let (assertion, _) = decode_assertion(&raw, false)?;
+        self.hold(assertion, Owed::Nothing);
+        self.add_device(recovery_key).await
     }
 
     /// The instance this sign-in is for.
@@ -205,6 +503,8 @@ impl SignIn {
     /// enrol.ts `login`: answers what the login still owes.
     pub async fn login(&mut self, username: &str, password: &str) -> Result<Owed, SignInError> {
         self.assertion = None;
+        self.used_passkey = false;
+        self.holds_passkey = false;
         let answer = match self
             .http
             .call::<r::PasswordLogin>(&[], r::password_login_body(username, password))
@@ -221,10 +521,8 @@ impl SignIn {
             1 => Owed::Code,
             _ => Owed::Passkey,
         };
-        self.assertion = Some(Assertion {
-            value: answer.assertion,
-            owes,
-        });
+        self.holds_passkey = answer.passkey;
+        self.hold(answer.assertion, owes);
         username.clone_into(&mut self.username);
         Ok(owes)
     }
@@ -249,10 +547,7 @@ impl SignIn {
             }
             Err(e) => return Err(http_error(&e)),
         };
-        self.assertion = Some(Assertion {
-            value: answer.assertion,
-            owes: Owed::Nothing,
-        });
+        self.hold(answer.assertion, Owed::Nothing);
         Ok(())
     }
 
@@ -264,10 +559,20 @@ impl SignIn {
         if key.chars().count() != 52 {
             return Err(SignInError::KeyLength);
         }
-        let user_id = self.register().await?;
-        let fetched = self.fetch(&user_id).await?;
-        let result = self.complete(&key, &fetched).await;
-        if result.is_err() {
+        // A wrong key keeps the registration (enrol.ts phase signin-key after it): the retry goes straight on to the
+        // fetch with the same enrolment and session.
+        let user_id = match self.registered()? {
+            Some(user_id) if self.auth.is_set() => user_id,
+            _ => self.register().await?,
+        };
+        let result = match self.fetch(&user_id).await {
+            Ok(fetched) => self.complete(&key, &fetched).await,
+            Err(e) => Err(e),
+        };
+        if result
+            .as_ref()
+            .is_err_and(|e| !matches!(e, SignInError::WrongKey))
+        {
             // enrol.ts `reset`: an enrolment cut short starts over on the next attempt.
             let _ = self.with_core(|c| {
                 let id = c.identity()?;
@@ -281,7 +586,16 @@ impl SignIn {
         result
     }
 
+    /// The user id of an enrolment this ceremony already registered (identity phase 3 with its user id).
+    fn registered(&mut self) -> Result<Option<[u8; 16]>, SignInError> {
+        let identity = self.with_core(|c| c.identity())?;
+        Ok(crate::sync::api::Identity::decode(&identity)
+            .filter(|i| i.phase == 3)
+            .and_then(|i| i.user_id))
+    }
+
     async fn register(&mut self) -> Result<[u8; 16], SignInError> {
+        let expired = self.held_too_long();
         let assertion = match self.assertion.take() {
             Some(Assertion {
                 value,
@@ -319,9 +633,12 @@ impl SignIn {
             .await
         {
             Ok(s) => s,
-            Err(HttpError::Status { status: s, .. }) if s == 401 || s == 403 => {
-                return Err(SignInError::LoginFailed);
+            // REGISTRATION-DEVICES-02: the registration's 403 is the device cap.
+            Err(HttpError::Status { status: 403, .. }) => return Err(SignInError::DeviceCap),
+            Err(HttpError::Status { status: 401, .. }) if expired => {
+                return Err(SignInError::Expired);
             }
+            Err(HttpError::Status { status: 401, .. }) => return Err(SignInError::LoginFailed),
             Err(e) => return Err(http_error(&e)),
         };
         if session.scope != 1 {

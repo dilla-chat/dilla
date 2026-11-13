@@ -82,7 +82,7 @@ fn message(e: &SignInError) -> String {
             "The account’s devices changed while you were signing in. Sign in again.".into()
         }
         SignInError::Evicted => "Someone else is signing in to this account.".into(),
-        SignInError::TooMany => "Too many sign-in attempts. Try again in a minute.".into(),
+        SignInError::TooMany(_) => "Too many sign-in attempts. Try again in a minute.".into(),
         SignInError::Network(_) => "The connection dropped. Check it and try again.".into(),
         SignInError::PasskeyOnly => "This account signs in with a passkey.".into(),
         other => format!("Signing in did not work ({other}). Try again."),
