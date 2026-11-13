@@ -46,7 +46,7 @@ fn stubs_change_nothing(cx: &mut TestAppContext) {
         assert!(slots::composer_popup(&ctx, window, cx).is_none());
         assert!(slots::aside(&route, window, cx).is_none());
         assert!(slots::dock(window, cx).is_none());
-        assert!(slots::overlays(window, cx).is_empty());
+        assert!(slots::overlays(&slots::SlotCx::default(), window, cx).is_empty());
         assert!(slots::banners(&ctx, window, cx).is_empty());
         // Stubbed extras take no height, so the timeline's rows keep theirs.
         let (_, height) = slots::message_extras(&item(), &ctx, window, cx);

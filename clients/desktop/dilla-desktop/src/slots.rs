@@ -185,18 +185,26 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     }
 }
 
-/// Over everything, in paint order: the search palette (23), then the ring banner (18). Toasts (Task 6) and dialogs
-/// join at merge.
-pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
-    [search::palette(window, cx), ring::ring_banner(window, cx)]
-        .into_iter()
-        .flatten()
-        .collect()
+/// Over everything, in paint order: the search palette (23), the DM picker and the safety-number comparison (13), then
+/// the ring banner (18). Toasts (Task 6) and other dialogs join at merge.
+pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+    [
+        search::palette(window, cx),
+        dms::picker_overlay(&ctx.state, window, cx),
+        dms::compare_overlay(&ctx.state, window, cx),
+        ring::ring_banner(window, cx),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
-/// Over the main column: the offline link banner and the version refusal (24).
+/// Over the main column: the offline link banner and the version refusal (24), then the conversation's trust surfaces (13).
 pub fn banners(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
-    diagnostics::banners(ctx, window, cx)
+    let mut out = diagnostics::banners(ctx, window, cx);
+    // A conversation's trust alerts, the removed note and the own-account banner (13).
+    out.extend(dms::conversation::banners(ctx, window, cx));
+    out
 }
 
 /// The user and server settings registries, in settings/registry.ts's order; each entry points into its area's module.

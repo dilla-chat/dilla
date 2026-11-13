@@ -12,7 +12,7 @@ use chrono::{Datelike, FixedOffset, TimeZone};
 use dilla_client::Client;
 use dilla_client::features::notify;
 use dilla_client::prefs::{LayoutPrefs, Prefs};
-use dilla_client::state::{AppState, ChannelId, CommunityId, ConnectionStatus};
+use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, ConnectionStatus};
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
@@ -44,12 +44,12 @@ pub type Action = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 /// A server tile's handler.
 pub type PickServer = Rc<dyn Fn(CommunityId, &mut Window, &mut gpui::App)>;
 
-use crate::router::{History, Route};
+use crate::router::{History, Route, UserSection};
 use crate::screens::composer::{Composer, Sent};
 use crate::screens::header::{self, AsideKind};
 use crate::screens::search::{self, Navigate, SearchEnv};
 use crate::screens::{
-    FocusNext, FocusPrevious, channel_list, rail, timeline, titlebar, user_panel,
+    FocusNext, FocusPrevious, channel_list, dms, rail, timeline, titlebar, user_panel,
 };
 use crate::slots::{self, SlotCx};
 use crate::strings::{t, tf};
@@ -158,6 +158,8 @@ pub struct ShellView {
     /// Something is drawn over the shell (the channel menu, a dialog or another overlay of `slots::overlays`), as of the
     /// last frame: Ctrl+K does not open the search palette over it (the web's guard; Task 23).
     overlay_open: bool,
+    /// The Home/DMs view is shown (`/dm`, `/dm/<id>`): the sidebar is the DM list (13) and `channel` is the open DM.
+    dm_view: bool,
     /// This device's microphone and speakers, as the panel's buttons last set them (the voice area owns the call).
     mic_off: bool,
     deaf: bool,
@@ -215,6 +217,7 @@ impl ShellView {
             aside: None,
             menu: None,
             overlay_open: false,
+            dm_view: false,
             mic_off: false,
             deaf: false,
             sidebar_splitter: cx.focus_handle().tab_stop(true),
@@ -263,6 +266,20 @@ impl ShellView {
     /// Keeps the selection valid: the first community, and its first text channel when none is chosen (the web opens a
     /// server on its first channel).
     fn settle_selection(&mut self, cx: &mut Context<Self>) {
+        // The DM view keeps its own selection (a DM is no channel of a server); the composer reads "Message {name}".
+        if self.dm_view {
+            let target: SharedString = self
+                .channel
+                .and_then(|c| self.state.dms.get(c))
+                .map_or_else(String::new, |d| d.name.clone())
+                .into();
+            let slots = self.slot_cx();
+            self.composer.update(cx, |composer, cx| {
+                composer.set_slots(slots);
+                composer.set_target(target, cx);
+            });
+            return;
+        }
         if let Some(channel) = self.channel.and_then(|c| self.state.channel(c)) {
             self.community = Some(channel.community_id);
         }
@@ -335,7 +352,13 @@ impl ShellView {
     }
 
     fn apply(&mut self, route: &Route, cx: &mut Context<Self>) {
+        self.dm_view = matches!(route, Route::Dms | Route::Dm(_));
         match route {
+            Route::Dm(dm) => self.focus_dm(*dm, cx),
+            Route::Dms => {
+                self.channel = None;
+                self.settle_selection(cx);
+            }
             Route::Channel { community, channel } => {
                 if self.community != Some(*community) {
                     self.community = Some(*community);
@@ -387,11 +410,31 @@ impl ShellView {
         cx.notify();
     }
 
-    /// Shows `channel` as a new history entry.
-    pub fn select(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
-        if self.channel == Some(channel) {
+    /// Shows DM `dm` (13): its group is opened so its timeline is kept; the log and composer are the channel's (Task 9).
+    fn focus_dm(&mut self, dm: ChannelId, cx: &mut Context<Self>) {
+        if self.channel == Some(dm) {
             return;
         }
+        self.channel = Some(dm);
+        self.pinned = true;
+        // The composer's slots and its "Message {name}".
+        self.settle_selection(cx);
+        if let Some(client) = &self.client {
+            let opened = client.dms().open(dm);
+            cx.background_spawn(async move {
+                let _ = opened.await;
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Shows `channel` as a new history entry.
+    pub fn select(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
+        if self.channel == Some(channel) && !self.dm_view {
+            return;
+        }
+        self.dm_view = false;
         let community = self
             .state
             .channel(channel)
@@ -437,9 +480,10 @@ impl ShellView {
 
     /// Shows server `community` on its first text channel.
     pub fn pick_community(&mut self, community: CommunityId, cx: &mut Context<Self>) {
-        if self.community == Some(community) {
+        if self.community == Some(community) && !self.dm_view {
             return;
         }
+        self.dm_view = false;
         self.community = Some(community);
         self.channel = None;
         self.settle_selection(cx);
@@ -449,7 +493,7 @@ impl ShellView {
 
     /// Alt+Up and Alt+Down: the previous or next listed channel.
     pub fn step_channel(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let Some(community) = self.community else {
+        let Some(community) = self.community.filter(|_| !self.dm_view) else {
             return;
         };
         if let Some(next) = channel_list::step_channel(&self.state, community, self.channel, delta)
@@ -462,7 +506,12 @@ impl ShellView {
         let (Some(client), Some(channel)) = (&self.client, self.channel) else {
             return;
         };
-        let queued = client.send_text(channel, text);
+        // A DM's message goes through the DM area (13), which opens the DM's group; a channel's through the client.
+        let queued = if self.dm_view {
+            client.dms().send_text(channel, text)
+        } else {
+            client.send_text(channel, text)
+        };
         self.pinned = true;
         cx.background_spawn(async move {
             let _ = queued.await;
@@ -716,7 +765,30 @@ const SEARCH_HINT: &str = if cfg!(target_os = "macos") {
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.clone();
-        let channel = self.channel.and_then(|c| state.channel(c));
+        // An open DM is drawn with the channel's log, header and composer (Task 9's views on the DM's id, 13): a channel
+        // record of no server, named as the DM is.
+        let dm_channel = self
+            .channel
+            .filter(|_| self.dm_view)
+            .and_then(|c| state.dms.get(c))
+            .map(|d| Channel {
+                id: d.id,
+                community_id: CommunityId([0; 16]),
+                kind: 0,
+                mode: 0,
+                name: d.name.clone(),
+                topic: String::new(),
+                parent_id: None,
+                position: 0,
+                slowmode: 0,
+                text_group_id: None,
+                group: Default::default(),
+            });
+        let channel = if self.dm_view {
+            dm_channel.as_ref()
+        } else {
+            self.channel.and_then(|c| state.channel(c))
+        };
         let members = self
             .community
             .and_then(|c| state.members.get(&c))
@@ -799,22 +871,41 @@ impl Render for ShellView {
                 }),
             }
         };
-        let list = channel_list::render(
-            &channel_list::ListModel {
-                state: &state,
-                community: self.community,
-                selected: self.channel,
-                online,
-                in_voice: 0,
-                can_add: owner && !has_categories,
-                can_add_in_category: owner && has_categories,
-                collapsed: &self.collapsed,
-                settings,
-            },
-            &handlers,
-            window,
+        // The DM area asks the shell to go somewhere through this (13).
+        let nav = shell.clone();
+        dms::set_navigator(
             cx,
+            Rc::new(move |to, _, cx| {
+                let route = match to {
+                    dms::Nav::Dm(dm) => Route::Dm(dm),
+                    dms::Nav::Privacy => Route::Settings(Some(UserSection::Privacy)),
+                    dms::Nav::Devices => Route::Settings(Some(UserSection::Devices)),
+                };
+                let _ = nav.update(cx, |shell, cx| shell.navigate(route, cx));
+            }),
         );
+        let list = if self.dm_view {
+            // Home: the DM list in place of a server's channels (13).
+            dms::home::sidebar(&ctx, self.channel, online, window, cx)
+        } else {
+            channel_list::render(
+                &channel_list::ListModel {
+                    state: &state,
+                    community: self.community,
+                    selected: self.channel,
+                    online,
+                    in_voice: 0,
+                    can_add: owner && !has_categories,
+                    can_add_in_category: owner && has_categories,
+                    collapsed: &self.collapsed,
+                    settings,
+                },
+                &handlers,
+                window,
+                cx,
+            )
+            .into_any_element()
+        };
 
         let (w_mic, w_deaf) = (shell.clone(), shell.clone());
         let panel = user_panel::render(
@@ -905,7 +996,7 @@ impl Render for ShellView {
             },
             cx,
         );
-        let mut overlays = slots::overlays(window, cx);
+        let mut overlays = slots::overlays(&ctx, window, cx);
         if let Some(menu) = self.menu {
             let (w_sel, w_open) = (shell.clone(), shell.clone());
             let name = state
@@ -1141,7 +1232,7 @@ mod tests {
         );
     }
 
-    use dilla_client::state::{Channel, ChannelGroupState, Community, UserId};
+    use dilla_client::state::{ChannelGroupState, Community, UserId};
     use gpui::VisualContext as _;
 
     fn channel(n: u8, name: &str, position: u32) -> Channel {
@@ -1281,6 +1372,59 @@ mod tests {
         assert!(!notify::is_muted(&prefs, ChannelId([3; 16]), None));
         assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A DM route (13) shows the DM list and the DM: a new state keeps it (a DM is no server channel), and a server route
+    /// leaves it.
+    #[gpui::test]
+    fn a_dm_route_keeps_its_dm_until_a_server_is_picked(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let dm = ChannelId([9; 16]);
+        let mut with_dm = (*world()).clone();
+        with_dm.dms.list = Some(vec![dilla_client::state::dms::DmSummary {
+            id: dm,
+            kind: dilla_client::state::dms::DM_KIND_PAIR,
+            members: Vec::new(),
+            name: "Mira".into(),
+            group: ChannelGroupState::None,
+        }]);
+        let state = Arc::new(with_dm);
+        let (shell, vcx) = cx.add_window_view({
+            let state = state.clone();
+            move |window, cx| {
+                ShellView::new(
+                    state,
+                    None,
+                    None,
+                    Clock::Fixed { now: 0, utc: true },
+                    window,
+                    cx,
+                )
+            }
+        });
+        shell.update(vcx, |s, cx| {
+            s.navigate(Route::Dm(dm), cx);
+            assert!(s.dm_view);
+            assert_eq!(s.channel, Some(dm));
+            s.set_state(state.clone(), cx);
+            assert_eq!(s.channel, Some(dm), "a new state keeps the open DM");
+            s.step_channel(1, cx);
+            assert_eq!(
+                s.channel,
+                Some(dm),
+                "Alt+Down steps no server list in the DM view"
+            );
+            s.pick_community(CommunityId([1; 16]), cx);
+            assert!(!s.dm_view);
+            assert_eq!(
+                s.channel,
+                Some(ChannelId([2; 16])),
+                "the server opens on its first channel"
+            );
+            assert_eq!(s.back(cx), Some(Route::Dm(dm)));
+            assert!(s.dm_view);
+            assert_eq!(s.channel, Some(dm));
+        });
     }
 
     /// Route history: selecting a channel is an entry, back and forward step through them, Alt+Up and Alt+Down step the list.

@@ -213,7 +213,7 @@ impl Host {
 impl Render for Host {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         search::provide(self.env.clone(), cx);
-        let overlays = slots::overlays(window, cx);
+        let overlays = slots::overlays(&slots::SlotCx::default(), window, cx);
         div()
             .id("host")
             .relative()

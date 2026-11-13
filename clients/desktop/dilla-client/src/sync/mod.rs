@@ -1148,7 +1148,15 @@ impl Engine {
                     && self.st().removal_trust_tried.insert(g) =>
             {
                 *self.trust.lock().await = trust::TrustMemory::default();
-                if trust::refresh_once(&self.api, &self.core, &self.trust, now_s()).await {
+                if trust::refresh_once(
+                    &self.api,
+                    &self.core,
+                    &self.trust,
+                    &self.trust_pass,
+                    now_s(),
+                )
+                .await
+                {
                     self.hooks.trust_changed();
                 }
                 removals::recover_group(&self.core, &self.api, g).await
