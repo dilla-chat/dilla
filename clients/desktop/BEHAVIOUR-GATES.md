@@ -9,7 +9,7 @@ Every test title in `e2e/web`, `e2e/voice`, `e2e/media` and `packages/desktop/te
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of those directories and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 141 with a Rust test, 42 n/a (browser/phone only), 21 next plan (native), 29 TODO only (32 TODO tests proposed in all).
+Totals: 233 e2e tests; 146 with a Rust test, 42 n/a (browser/phone only), 21 next plan (native), 24 TODO only (26 TODO tests proposed in all).
 
 ## e2e/web
 
