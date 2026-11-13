@@ -333,9 +333,15 @@ impl Body {
                 .mb(layout::HEAD_GAP)
                 .child(
                     div().flex_1().min_w_0().child(
-                        line(head_name, text::SM, line_height(text::SM, 1.5), color::FG)
-                            .weight(font::WEIGHT_DISPLAY)
-                            .ellipsis(),
+                        // The `h3` inherits the page's `--text-base` (`.dw-admin-grouphead h3 { font-size: inherit }`).
+                        line(
+                            head_name,
+                            text::BASE,
+                            line_height(text::BASE, 1.5),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY)
+                        .ellipsis(),
                     ),
                 );
             if let Some(category) = group.category {
@@ -343,7 +349,6 @@ impl Body {
                 head = head.child(self.row_controls(category, up, down, false, cx));
             }
             block = block.child(head);
-            let n = group.channels.len();
             // The list is one bordered card; its rows are divided by hairlines, 1px apart.
             let mut card = div()
                 .flex()
@@ -373,11 +378,12 @@ impl Body {
                     .border_color(color::HAIRLINE)
                     .when(i > 0, |r| r.border_t_1())
                     .child(
+                        // `.dw-admin-name` takes the page's `--text-base`.
                         div().flex_1().min_w_0().child(
                             line(
                                 model::shown(c),
-                                text::SM,
-                                line_height(text::SM, 1.5),
+                                text::BASE,
+                                line_height(text::BASE, 1.5),
                                 color::FG,
                             )
                             .ellipsis(),
@@ -389,9 +395,9 @@ impl Body {
                 row = row.child(self.row_controls(c, up, down, fixed, cx));
                 card = card.child(row);
             }
-            if n > 0 {
-                block = block.child(card);
-            }
+            // An empty category keeps its list (the web renders the empty `ul`): its two edges draw one line under the
+            // heading.
+            block = block.child(card);
             out.push(block.into_any_element());
         }
         out.push(self.edit_dialog(window, cx));
