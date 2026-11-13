@@ -1108,7 +1108,11 @@ impl Body {
                 t("gif.settings.getKey"),
                 set_row,
                 form.as_deref(),
-            ));
+            ))
+            // Review m9: the web's content-sized track shrinks to a narrow row and its parts wrap; the column never
+            // grows past its row.
+            .max_w(gpui::relative(1.0))
+            .min_w_0();
         // The link is the page's own type (`--text-base`).
         inner = inner.child(line(
             t("gif.settings.getKey"),
@@ -1207,6 +1211,13 @@ impl Body {
                     })),
                 );
             }
+        }
+        // The automation build records the column's bounds (the narrow-body test).
+        #[cfg(feature = "automation")]
+        {
+            inner = inner
+                .relative()
+                .child(crate::automation::bounds_probe("gif-settings"));
         }
         out.push(
             SettingsRow::new("gif-row", t("gif.settings.title"))

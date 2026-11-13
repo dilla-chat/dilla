@@ -247,7 +247,14 @@ impl RenderOnce for SettingsRow {
         control = if stacked {
             // `.d-settings-row--stacked .d-settings-row__control`: one grid column, `justify-content: flex-end` (the base
             // rule's) keeps the track at its content's width on the row's right, its items at the track's start.
-            control.flex_col().items_start().self_end().gap(px(16.0))
+            // A grid track never grows past its row (`minmax(auto, ...)` in a row narrower than its content: the
+            // content wraps), so the track is at most the row's width (Task 28, review m9).
+            control
+                .flex_col()
+                .items_start()
+                .self_end()
+                .gap(px(16.0))
+                .max_w(gpui::relative(1.0))
         } else {
             control.justify_end().ml_auto()
         };
