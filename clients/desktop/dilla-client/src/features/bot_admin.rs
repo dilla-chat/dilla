@@ -395,9 +395,11 @@ pub struct RestartCounts {
 
 const RETRY_MAX_ATTEMPTS: u32 = 5;
 
-/// A refusal code as it may be shown: 1 to 32 of `A-Z`, `0-9` and `_`, else `E_UNKNOWN`. The Bot's answers and the
+/// A refusal code as it may be shown: the part before any `:`, 1 to 32 of `A-Z`, `0-9` and `_`, else `E_UNKNOWN`. The Bot's answers and the
 /// instance's bodies are not trusted to carry text.
 pub fn clean_code(raw: &str) -> String {
+    // A locally made refusal may carry detail after a colon ("E_ROUTE_INPUT: invalid ..."): only the code is kept.
+    let raw = raw.split_once(':').map_or(raw, |(code, _)| code);
     let ok = (1..=32).contains(&raw.len())
         && raw
             .bytes()
@@ -472,9 +474,9 @@ impl BotAdmin {
     }
 
     /// [`Self::call`] with a body that is zeroized on drop (a step-up token is in it) and the idempotency key of the
-    /// request (a mutation without one gets a random key). The caller's buffer is wiped when it drops; each attempt hands
-    /// the socket transport its own copy of the body (`SocketRequests::request` takes the bytes by value and queues them
-    /// in a plain `Vec` until the answer), and that copy is not wiped: it is outside this module.
+    /// request (a mutation without one gets a random key). Every copy of the body is a `Zeroizing` buffer (the caller's, each
+    /// attempt's, the transport queue's), wiped when it drops. Not wiped, and outside this crate's reach: the encoded frame,
+    /// which the websocket library owns once it is queued.
     async fn call_with<R: Route>(
         inner: &Arc<Inner>,
         args: &[&str],
@@ -497,7 +499,7 @@ impl BotAdmin {
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
             let answer = inner
                 .socket_requests()
-                .request(method, route.clone(), body.to_vec(), idem.clone())
+                .request(method, route.clone(), body.clone(), idem.clone())
                 .await?;
             let answer_body = Zeroizing::new(answer.body);
             if entry.accepts(answer.status) {
@@ -1142,26 +1144,50 @@ fn webhook_address(
     url_at: usize,
     has_id: bool,
 ) -> Result<WebhookAddress, ClientError> {
-    let Value::Array(mut items) =
+    let Value::Array(items) =
         Value::decode(body).map_err(|_| decode_err(v::DecodeError("not CBOR")))?
     else {
         return Err(decode_err(v::DecodeError("not an array")));
     };
-    if items.len() != len {
+    // Whatever text the decoded tree holds is wiped when it drops, on every path out of here.
+    let mut items = WipeValues(items);
+    if items.0.len() != len {
         return Err(decode_err(v::DecodeError("an array of the wrong length")));
     }
     let webhook_id = if has_id {
-        bin16(&items[0]).map_err(decode_err)?
+        bin16(&items.0[0]).map_err(decode_err)?
     } else {
         [0; 16]
     };
-    let Value::Text(url) = items.swap_remove(url_at) else {
+    let Value::Text(url) = std::mem::replace(&mut items.0[url_at], Value::Null) else {
         return Err(decode_err(v::DecodeError("not a text string")));
     };
     Ok(WebhookAddress {
         webhook_id,
         url: Zeroizing::new(url),
     })
+}
+
+/// A decoded array whose strings and byte strings are zeroized when it drops.
+struct WipeValues(Vec<Value>);
+
+impl Drop for WipeValues {
+    fn drop(&mut self) {
+        wipe_values(&mut self.0);
+    }
+}
+
+/// Zeroizes (and empties) every string and byte string among `items`, one level deep and through nested arrays.
+fn wipe_values(items: &mut [Value]) {
+    use zeroize::Zeroize;
+    for item in items {
+        match item {
+            Value::Text(t) => t.zeroize(),
+            Value::Bytes(b) => b.zeroize(),
+            Value::Array(inner) => wipe_values(inner),
+            _ => {}
+        }
+    }
 }
 
 fn op_err(e: OpError) -> ClientError {
@@ -1421,6 +1447,44 @@ mod tests {
             matches!(&odd, ClientError::Sync(s) if split_refusal(s) == ("E_UNKNOWN", Some(409)))
         );
         assert_eq!(split_refusal("E_X"), ("E_X", None));
+        // A locally made refusal keeps its code and drops the detail after the colon.
+        assert_eq!(
+            clean_code("E_ROUTE_INPUT: invalid revision"),
+            "E_ROUTE_INPUT"
+        );
+        assert_eq!(clean_code("E_DECODE: not CBOR"), "E_DECODE");
+        assert_eq!(clean_code("not a code: detail"), "E_UNKNOWN");
+        assert_eq!(clean_code(": detail"), "E_UNKNOWN");
+    }
+
+    #[test]
+    fn a_webhook_answer_that_is_refused_names_no_text_and_a_good_one_moves_it_out() {
+        // Wrong length, wrong type, not CBOR: each is refused without the text in the error.
+        let secret = "https://dilla.test/hooks/a/SECRETSECRET";
+        let wrong_len =
+            Value::Array(vec![Value::Text(secret.into()), Value::Text("x".into())]).encode();
+        let not_text = Value::Array(vec![Value::Bytes(vec![7; 16]), Value::Uint(1)]).encode();
+        for body in [wrong_len, not_text, vec![0xff]] {
+            let e = webhook_address(&body, 1, 0, false).expect_err("refused");
+            assert!(!format!("{e:?}").contains("SECRETSECRET"), "{e:?}");
+        }
+        let ok = Value::Array(vec![Value::Text(secret.into())]).encode();
+        assert_eq!(&*webhook_address(&ok, 1, 0, false).unwrap().url, secret);
+        // The wiping guard really zeroes what it holds.
+        let mut tree = vec![
+            Value::Text("abc".into()),
+            Value::Bytes(vec![9; 3]),
+            Value::Array(vec![Value::Text("def".into())]),
+        ];
+        wipe_values(&mut tree);
+        assert_eq!(
+            tree,
+            vec![
+                Value::Text(String::new()),
+                Value::Bytes(Vec::new()),
+                Value::Array(vec![Value::Text(String::new())])
+            ]
+        );
     }
 
     #[test]

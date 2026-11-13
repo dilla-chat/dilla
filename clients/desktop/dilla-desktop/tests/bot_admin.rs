@@ -227,25 +227,25 @@ fn parity(name: &str) {
 }
 
 #[test]
-#[ignore = "shared component parity (T6c) + server settings host"]
+#[ignore = "parity after T6c: 0.5% 2.85% (section-header wrap, toggle, row hint)"]
 fn parity_bot_admin_health_channels() {
     parity("bot-admin/health-channels.json");
 }
 
 #[test]
-#[ignore = "shared component parity (T6c) + server settings host"]
+#[ignore = "parity after T6c: 0.5% 2.85% (section-header wrap, toggle, row hint)"]
 fn parity_bot_admin_health_channels_b() {
     parity("bot-admin/health-channels-b.json");
 }
 
 #[test]
-#[ignore = "shared component parity (T6c) + server settings host"]
+#[ignore = "parity after T6c: 0.5% 1.01% (row hint wrap, segmented, button)"]
 fn parity_bot_admin_music() {
     parity("bot-admin/music.json");
 }
 
 #[test]
-#[ignore = "shared component parity (T6c) + server settings host"]
+#[ignore = "parity after T6c: 0.5% 1.31% (row hint wrap, segmented, button)"]
 fn parity_bot_admin_music_b() {
     parity("bot-admin/music-b.json");
 }

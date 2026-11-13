@@ -269,7 +269,12 @@ impl Api {
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
             let answer = self
                 .socket
-                .request(method, route.clone(), body.clone(), idem.clone())
+                .request(
+                    method,
+                    route.clone(),
+                    Zeroizing::new(body.clone()),
+                    idem.clone(),
+                )
                 .await?;
             if entry.accepts(answer.status) {
                 if let Some(cap) = entry.max_body

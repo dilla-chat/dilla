@@ -481,7 +481,8 @@ pub struct RequestFrame {
     pub id: u64,
     pub method: String,
     pub route: String,
-    pub body: Vec<u8>,
+    /// Zeroizing: a request body may carry a step-up token.
+    pub body: zeroize::Zeroizing<Vec<u8>>,
     pub idem: Option<Vec<u8>>,
 }
 
@@ -505,18 +506,32 @@ pub fn encode_request(r: &RequestFrame) -> Result<Vec<u8>, FrameError> {
         Value::Uint(r.id),
         Value::Text(r.method.clone()),
         Value::Text(r.route.clone()),
-        Value::Bytes(r.body.clone()),
+        Value::Bytes(r.body.to_vec()),
         r.idem.clone().map_or(Value::Null, Value::Bytes),
     ];
     if !valid_request_payload(&payload) {
-        return Err(FrameError::Shape);
+        return Err(wipe_body(payload, FrameError::Shape));
     }
-    encode(&Frame {
+    let mut frame = Frame {
         op: Op::REQUEST,
         n: 0,
         group_id: None,
         payload,
-    })
+    };
+    let encoded = encode(&frame);
+    // The body copy made for the encoder is wiped now; the encoded frame is the caller's.
+    if let Some(Value::Bytes(b)) = frame.payload.get_mut(3) {
+        zeroize::Zeroize::zeroize(b);
+    }
+    encoded
+}
+
+/// Wipes the body copy of a request payload that is not going to be encoded, and answers `error`.
+fn wipe_body(mut payload: Vec<Value>, error: FrameError) -> FrameError {
+    if let Some(Value::Bytes(b)) = payload.get_mut(3) {
+        zeroize::Zeroize::zeroize(b);
+    }
+    error
 }
 
 /// op 60 `[id, status, body]`, checked as `decode` checks it; any other frame, or an id past the safe integers, is
@@ -915,7 +930,7 @@ mod tests {
             id: 7,
             method: "POST".into(),
             route: "/v1/communities".into(),
-            body: vec![0x80],
+            body: vec![0x80].into(),
             idem: Some(vec![1; 16]),
         })
         .unwrap();
@@ -925,9 +940,12 @@ mod tests {
             id: 1,
             method: String::new(),
             route: "/v1/x".into(),
-            body: vec![],
+            body: vec![].into(),
             idem: None,
         };
+        // The body is a wiping buffer: this does not compile for a plain `Vec<u8>`.
+        fn wipes_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        wipes_on_drop(&empty_method.body);
         assert_eq!(encode_request(&empty_method), Err(FrameError::Shape));
         let long_idem = RequestFrame {
             idem: Some(vec![0; 65]),
