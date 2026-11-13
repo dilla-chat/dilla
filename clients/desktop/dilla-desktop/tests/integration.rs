@@ -364,7 +364,20 @@ fn thread_opens_from_search_hit(cx: &mut TestAppContext) {
     }
     vcx.simulate_keystrokes("enter");
     assert_plan_thread_open(&scene, &app, vcx);
-    let _ = scene.reply;
+    // The hit chosen is the needle reply itself: the pane holds it, by its id.
+    let held = scene
+        .ada
+        .state()
+        .borrow()
+        .threads
+        .threads
+        .get(&scene.plan)
+        .is_some_and(|d| {
+            d.replies
+                .iter()
+                .any(|r| r.msg_id == Some(scene.reply) && r.body.contains(&scene.needle))
+        });
+    assert!(held, "the pane holds the hit's reply");
     drop(app);
     scene.bjorn.stop();
 }
