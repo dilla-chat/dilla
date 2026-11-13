@@ -1341,6 +1341,73 @@ impl Roles {
         Ok(())
     }
 
+    /// controller.ts `getBotJoinRole` (Server settings → Bot → Join roles): the role the Bot gives every member who joins
+    /// (`None` when it gives none) and the installation it is set on; `None` when the community has no Bot installation.
+    pub async fn bot_join_role(
+        &self,
+        community: CommunityId,
+    ) -> Result<Option<(Option<RoleId>, [u8; 16])>, ApiError> {
+        self.listed(community)?;
+        let c = community.hex();
+        let raw = match call::<r::GetBotJoinRole>(&self.inner, &[&c], None, None).await {
+            Ok(raw) => raw,
+            Err(e) if e.status == 404 => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let v = Value::decode(&raw).map_err(|_| refusal("E_DECODE", "not CBOR"))?;
+        let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| {
+            refusal(
+                "E_CBOR_SHAPE",
+                "expected bot join-role and installation ids",
+            )
+        })?;
+        let role = match &a[0] {
+            Value::Null => None,
+            other => Some(bin16(other).map_err(bad)?),
+        };
+        Ok(Some((role, bin16(&a[1]).map_err(bad)?)))
+    }
+
+    /// controller.ts `configureBotJoinRole`: the role the Bot gives on join, on `installation` (`None` clears it). The
+    /// request id is stable across retries (routes.ts: no 429 wait). Answers the installation id.
+    pub async fn configure_bot_join_role(
+        &self,
+        community: CommunityId,
+        role: Option<RoleId>,
+        installation: [u8; 16],
+    ) -> Result<[u8; 16], ApiError> {
+        self.listed(community)?;
+        let request = request_id();
+        let body = Value::Array(vec![
+            Value::Bytes(request.to_vec()),
+            Value::Bytes(role.unwrap_or([0; 16]).to_vec()),
+            Value::Bytes(installation.to_vec()),
+        ])
+        .encode();
+        let c = community.hex();
+        let raw = self
+            .guarded(
+                community,
+                call_once::<r::ConfigureBotJoinRole>(
+                    &self.inner,
+                    &[&c],
+                    Some(body),
+                    Some(request.to_vec()),
+                ),
+            )
+            .await?;
+        let v = Value::decode(&raw).map_err(|_| refusal("E_DECODE", "not CBOR"))?;
+        match v.as_array() {
+            Some(a) if a.len() == 2 && a[0].as_bytes() == Some(&request[..]) => {
+                bin16(&a[1]).map_err(bad)
+            }
+            _ => Err(refusal(
+                "E_CBOR_SHAPE",
+                "invalid bot join-role acknowledgement",
+            )),
+        }
+    }
+
     /// controller.ts `selectSelfRole`: picks (or drops) a self-assignable role for oneself.
     pub async fn select_self_role(
         &self,

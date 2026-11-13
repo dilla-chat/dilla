@@ -1,8 +1,7 @@
 //! Task 22's client tests for the notify area (standard procedure S2), against a real dillad.
 //!
-//! The ports of `e2e/web/badges.spec.ts` that this area's client answers; the ones that open a DM need Task 13's `dms`
-//! and go to Task 28's list (`dm_from_tab_reaches_peer_reply_badges_until_read`,
-//! `dm_opened_by_peer_appears_badges_notifies_live`). The unit tables (`features::notify::tests`) port the web's
+//! The ports of `e2e/web/badges.spec.ts` that this area's client answers, the DM ones over Task 13's `dms` area
+//! (Task 28). The unit tables (`features::notify::tests`) port the web's
 //! `notify.test.ts` rows; these tests prove the same decisions over what a real gateway delivers.
 //!
 //! Needs `target/dilla-testhost` and the WASI core, like `tests/sync.rs`; `#[ignore]`d so a plain `cargo test` needs no Go
@@ -300,27 +299,140 @@ async fn notifications_follow_default_and_channel_on_screen() {
     );
 }
 
-/// `e2e/web/badges.spec.ts` test 3: a direct message opened from the DMs tab reaches the peer, and the reply badges it
-/// until it is read. Needs Task 13's DM commands (open a DM, send in it).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs Task 13 DMs; Task 28"]
-async fn dm_from_tab_reaches_peer_reply_badges_until_read() {
-    // 1. alice opens a DM with bob (Task 13: `Client::dms().open(bob)`), sends "hello"; bob's client receives it.
-    // 2. alice focuses another channel; bob replies in the DM.
-    // 3. alice's DM channel has `unread_of(dm) == 1`, `dm_counts(..) == (1, 0)`, and a recorded notification titled
-    //    with bob's name whose body is the reply and whose tag is `dilla:<dm id>`.
-    // 4. alice focuses the DM: `unread_of(dm) == 0`.
-    todo!("needs Task 13's dms area");
+/// The bodies of `channel`'s timeline.
+fn bodies(s: &dilla_client::state::AppState, channel: ChannelId) -> Vec<String> {
+    s.timelines
+        .get(&channel)
+        .map(|t| t.items.iter().map(|i| i.body.clone()).collect())
+        .unwrap_or_default()
 }
 
-/// `e2e/web/badges.spec.ts` test 5: a DM the peer opens appears, badges and notifies without a restart. Needs Task 13
-/// (the DM list reloads on an unexpected Welcome, and its timeline must be published empty before the first message so
-/// the tracker treats the message as live).
+/// `e2e/web/badges.spec.ts` test 3: a direct message opened from the DMs tab reaches the peer, and the reply badges it
+/// until it is read: alice opens a DM with bob and says hello, bob's client has it; with another channel in front, bob's
+/// reply is one unread DM message and one notification titled with bob's name; opening the DM reads it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs Task 13 DMs; Task 28"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn dm_from_tab_reaches_peer_reply_badges_until_read() {
+    use dilla_client::features::notify::dm_counts;
+    use dilla_client::state::UserId;
+    let (_host, pa, pb, c) = two_people("dm-tab").await;
+    let (a, b) = (start(&pa).await, start(&pb).await);
+    let general = channel_named(&a, c, "general").await;
+    channel_named(&b, c, "general").await;
+    all_in(&a, &b, &[general]).await;
+    // The DM area runs as the shell starts it (dms/home.rs).
+    a.dms().start();
+    b.dms().start();
+    let recorder = RecordingNotifier::new();
+    let env = Arc::new(Env {
+        on_screen: Mutex::new(None),
+    });
+    let _task = a
+        .notify()
+        .start(&a, Arc::new(recorder.clone()), env.clone(), text());
+
+    let dm = a.dms().open_dm(UserId(pb.user_id)).await.unwrap().unwrap();
+    a.focus(Some(dm));
+    *env.on_screen.lock().unwrap() = Some(dm);
+    a.dms()
+        .send_text(dm, "hello".into())
+        .await
+        .unwrap()
+        .unwrap();
+    wait_for(&b, Duration::from_secs(30), "bob has the hello", |s| {
+        bodies(s, dm).contains(&"hello".to_owned())
+    })
+    .await;
+
+    a.focus(Some(general));
+    *env.on_screen.lock().unwrap() = Some(general);
+    b.dms()
+        .send_text(dm, "hi alice".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let s = wait_for(&a, Duration::from_secs(30), "one unread in the DM", |s| {
+        s.unread_of(dm) == 1
+    })
+    .await;
+    assert_eq!(dm_counts(&s, &a.prefs()), (1, 0));
+    let shown = wait_for_notices(&recorder, 1).await;
+    assert_eq!(recorder.tags(), [format!("dilla:{}", dm.hex())]);
+    assert_eq!(shown[0].notification.title, "bob");
+    assert_eq!(shown[0].notification.body, "hi alice");
+
+    a.focus(Some(dm));
+    wait_for(&a, Duration::from_secs(20), "the DM read", |s| {
+        s.unread_of(dm) == 0
+    })
+    .await;
+}
+
+/// Waits (at most 20 s) for the recorder to hold `n` notifications, answering them.
+async fn wait_for_notices(
+    recorder: &RecordingNotifier,
+    n: usize,
+) -> Vec<dilla_client::features::notify::Shown> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let shown = recorder.shown();
+        if shown.len() >= n {
+            return shown;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{n} notifications, not {shown:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// `e2e/web/badges.spec.ts` test 5: a DM the peer opens appears, badges and notifies without a restart: bob opens a DM
+/// with alice and writes in it; alice's client lists the DM, counts one unread DM message and shows one notification
+/// titled with bob's name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn dm_opened_by_peer_appears_badges_notifies_live() {
-    // 1. bob opens a DM with alice and sends "dm from peer".
-    // 2. alice's state gains the DM (Task 13) and `dm_counts(..) == (1, 0)`.
-    // 3. the recorder holds one notification: title bob's name, body "dm from peer", tag `dilla:<dm id>`.
-    todo!("needs Task 13's dms area");
+    use dilla_client::features::notify::dm_counts;
+    use dilla_client::state::UserId;
+    let (host, pa, pb, c) = two_people("dm-peer").await;
+    // The instance's clock runs, as a real one does: the notifier's floor and the rows' receive times are on it.
+    host.follow_wall_clock();
+    let (a, b) = (start(&pa).await, start(&pb).await);
+    let general = channel_named(&a, c, "general").await;
+    channel_named(&b, c, "general").await;
+    all_in(&a, &b, &[general]).await;
+    a.dms().start();
+    b.dms().start();
+    a.focus(Some(general));
+    let recorder = RecordingNotifier::new();
+    let env = Arc::new(Env {
+        on_screen: Mutex::new(Some(general)),
+    });
+    let _task = a
+        .notify()
+        .start(&a, Arc::new(recorder.clone()), env.clone(), text());
+    // Settled before the DM exists: nothing to show yet.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(recorder.shown().is_empty());
+
+    let dm = b.dms().open_dm(UserId(pa.user_id)).await.unwrap().unwrap();
+    b.dms()
+        .send_text(dm, "dm from peer".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let s = wait_for(
+        &a,
+        Duration::from_secs(30),
+        "the DM listed and unread",
+        |s| s.dms.get(dm).is_some() && s.unread_of(dm) == 1,
+    )
+    .await;
+    assert_eq!(dm_counts(&s, &a.prefs()), (1, 0));
+    let shown = wait_for_notices(&recorder, 1).await;
+    assert_eq!(shown.len(), 1);
+    assert_eq!(recorder.tags(), [format!("dilla:{}", dm.hex())]);
+    assert_eq!(shown[0].notification.title, "bob");
+    assert_eq!(shown[0].notification.body, "dm from peer");
 }

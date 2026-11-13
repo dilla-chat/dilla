@@ -27,6 +27,11 @@ pub fn bind(cx: &mut App) {
         if stroke.modifiers.control || stroke.modifiers.alt || stroke.modifiers.platform {
             return;
         }
+        if chips_key(window.window_handle().window_id(), stroke, cx) {
+            cx.stop_propagation();
+            window.refresh();
+            return;
+        }
         let key = match (stroke.key.as_str(), stroke.modifiers.shift) {
             ("up", false) => Key::Up,
             ("down", false) => Key::Down,
@@ -77,7 +82,44 @@ pub fn pick(window: gpui::WindowId, i: usize, cx: &mut App) {
         return;
     };
     s.selected = i;
-    s.picked = Some(id);
+    s.picked = Some(id.clone());
     s.closed_for = Some(s.draft.clone());
     s.rows = None;
+    // The composer's field becomes the command's chips (CommandPicker.tsx `enterCommand`).
+    s.chips = Some(super::chips::Chips::new(id));
+}
+
+/// A key while `window`'s composer shows chips: typing fills the active field, Backspace deletes its last character,
+/// Tab and Shift+Tab move between fields, Escape leaves the chips (the typed draft stays, its list closed). Enter is the
+/// composer's: its send runs the chips' typed form (`super::chips::draft`). `false` with no chips, or for a key they
+/// leave alone.
+pub fn chips_key(window: gpui::WindowId, stroke: &gpui::Keystroke, cx: &mut App) -> bool {
+    let Some(state) = crate::per_window::get::<PickerState>(window, cx) else {
+        return false;
+    };
+    if state.chips.is_none() {
+        return false;
+    }
+    let s = super::picker_state_mut(window, cx);
+    let Some(chips) = s.chips.as_mut() else {
+        return false;
+    };
+    match stroke.key.as_str() {
+        "enter" => return false,
+        "escape" => {
+            s.chips = None;
+            return true;
+        }
+        "tab" => chips.step(stroke.modifiers.shift),
+        "backspace" => {
+            chips.active_value().pop();
+        }
+        _ => match stroke.key_char.as_deref() {
+            Some(text) if !text.is_empty() && !text.chars().any(char::is_control) => {
+                chips.active_value().push_str(text);
+            }
+            _ => return false,
+        },
+    }
+    true
 }

@@ -5,17 +5,16 @@
 //!
 //! What needs the Bot's own process (the sealed commands: status read 94, provider status 24, the moderation pages, the
 //! music operations, a webhook post being delivered into the channel) goes through the `SealedBot` seam that Task 20's
-//! transport fills at merge; those tests live in `features::bot_admin` and `features::music` with a fake Bot, and the
-//! end-to-end ones are Task 28's list (`BEHAVIOUR-GATES.md`): `welcome_channel_greets_new_member`, `webhook_post_appears`,
-//! `bot_enabled_reaches_ready`, `music_text_never_executes`, `moderation_log_across_bot_restart`,
-//! `join_role_applied_on_join_and_rejoin`, `self_role_panel_reaction_grant`, `warning_retrievable_from_bot_settings` and the
-//! six `e2e/voice/bot-music.spec.ts` tests.
+//! transport fills at merge; those tests live in `features::bot_admin` and `features::music` with a fake Bot. The
+//! end-to-end ones run against dilla's real Bot (Task 28, `testing::host::bot`): the Bot reaching ready and the join
+//! role are below; the rest are listed in `BEHAVIOUR-GATES.md`.
 
 use std::time::Duration;
 
 use dilla_client::state::{ChannelId, CommunityId};
+use dilla_client::testing::host::bot::enable_bot;
 use dilla_client::testing::host::{
-    Person, clear_session, community, sign_up, start, start_host, wait_for,
+    Host, Person, clear_session, community, sign_up, start, start_bot_host, start_host, wait_for,
 };
 
 async fn owner(tag: &str) -> (dilla_client::testing::host::Host, Person, [u8; 16]) {
@@ -177,4 +176,179 @@ async fn a_mark_re_reads_the_bot_channels() {
     )
     .await;
     client.stop();
+}
+
+/// [`owner`] on a host that runs the Bot (Task 28, `testing::host::bot`).
+async fn bot_owner(tag: &str) -> (Host, Person, [u8; 16]) {
+    let host = tokio::task::spawn_blocking({
+        let tag = tag.to_owned();
+        move || start_bot_host(&tag, "127.0.0.1:0")
+    })
+    .await
+    .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let a = sign_up(&host, &invite, "alice", "alice", tag).await;
+    tokio::task::spawn_blocking(move || {
+        let c = community(&host, &a, "gpui", &[]);
+        clear_session(&a);
+        (host, a, c)
+    })
+    .await
+    .unwrap()
+}
+
+/// e2e/web/bot-runtime.spec.ts "a bot enabled through server settings reaches ready through the native runtime": no
+/// installation at first; the owner enables the Bot (an empty capability mask) behind a password step-up; the operator
+/// runtime lists the one installation ready (state 3), and the owner's read says ready ("admin.bot.status.ready").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn a_bot_enabled_in_server_settings_reaches_ready() {
+    let (host, pa, c) = bot_owner("t28-ready").await;
+    let a = start(&pa).await;
+    let community = CommunityId(c);
+    wait_for(&a, Duration::from_secs(30), "the community", |s| {
+        s.members.contains_key(&community)
+    })
+    .await;
+    assert_eq!(
+        recv(a.bot_admin().refresh_installation(community)).await,
+        None,
+        "no Bot before it is enabled (admin.bot.none)"
+    );
+    let installation = enable_bot(&a, c, 0).await;
+    assert_eq!((installation.state, installation.capabilities), (3, 0));
+    let (host, listed) = tokio::task::spawn_blocking(move || {
+        let rows = host.bot_installations();
+        (host, rows)
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        listed,
+        vec![(c, 3)],
+        "the runtime lists one ready installation"
+    );
+    let s = a.state().borrow().clone();
+    assert_eq!(
+        s.bot_admin.installation.get(&community).map(|i| i.state),
+        Some(3),
+        "the settings page reads ready"
+    );
+    a.stop();
+    drop(host);
+}
+
+/// An invite code to `community`, made by `owner` (the invite link's code).
+fn invite_code(host: &Host, owner: &Person, community: [u8; 16]) -> String {
+    use dilla_core::ids::DeviceId;
+    let mut ds = dilla_testkit::HttpDs::with_session(
+        &host.public,
+        DeviceId::from_bytes(owner.device_id),
+        owner.token.clone(),
+    )
+    .unwrap();
+    ds.create_invite(&community, 64, 3600).unwrap()
+}
+
+/// How many members of `community` hold `role`, as the owner's Roles page counts them.
+fn holders(s: &dilla_client::state::AppState, community: CommunityId, role: [u8; 16]) -> usize {
+    s.members.get(&community).map_or(0, |m| {
+        m.iter().filter(|m| m.role_ids.contains(&role)).count()
+    })
+}
+
+/// e2e/web/bot-runtime.spec.ts "a Roles-enabled bot applies the configured join role on join and rejoin": the owner makes
+/// "Arrival Crew" (no members), enables the Bot with the Roles capability, sets it as the join role (read back the same);
+/// Bea joins and the role counts one member; she leaves (zero) and joins again, and the Bot gives it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn a_roles_bot_applies_the_join_role_on_join_and_rejoin() {
+    use dilla_client::testing::host::bot::cap;
+    let (host, pa, c) = bot_owner("t28-joinrole").await;
+    let invite = host.invites.last().unwrap().clone();
+    let pb = sign_up(&host, &invite, "bea", "Bea", "t28-joinrole").await;
+    clear_session(&pb);
+    let a = start(&pa).await;
+    let community = CommunityId(c);
+    wait_for(&a, Duration::from_secs(30), "the community", |s| {
+        s.members.contains_key(&community)
+    })
+    .await;
+    let role = a
+        .roles()
+        .create_role(community, "Arrival Crew", 0, false, false, 0)
+        .await
+        .expect("the role");
+    let s = wait_for(&a, Duration::from_secs(10), "the role listed", |s| {
+        s.roles
+            .roles
+            .get(&community)
+            .is_some_and(|r| r.iter().any(|r| r.id == role))
+    })
+    .await;
+    assert_eq!(holders(&s, community, role), 0);
+    let installation = enable_bot(&a, c, cap::ROLES).await;
+    assert_eq!(
+        a.roles().bot_join_role(community).await.unwrap(),
+        Some((None, installation.id)),
+        "no join role yet"
+    );
+    let saved = a
+        .roles()
+        .configure_bot_join_role(community, Some(role), installation.id)
+        .await
+        .expect("the join role is saved");
+    assert_eq!(saved, installation.id);
+    assert_eq!(
+        a.roles().bot_join_role(community).await.unwrap(),
+        Some((Some(role), installation.id)),
+        "read back"
+    );
+
+    let code = invite_code(&host, &pa, c);
+    let b = start(&pb).await;
+    b.onboarding().join(&code).await.expect("bea joins");
+    let bea = dilla_client::state::UserId(pb.user_id);
+    wait_for(
+        &a,
+        Duration::from_secs(90),
+        "the Bot gives bea the join role",
+        |s| {
+            s.members.get(&community).is_some_and(|m| {
+                m.iter()
+                    .any(|m| m.user_id == bea && m.role_ids.contains(&role))
+            })
+        },
+    )
+    .await;
+
+    b.server_admin()
+        .leave(community)
+        .wait()
+        .await
+        .expect("bea leaves");
+    wait_for(&a, Duration::from_secs(30), "bea gone", |s| {
+        s.members
+            .get(&community)
+            .is_some_and(|m| m.iter().all(|m| m.user_id != bea))
+            && holders(s, community, role) == 0
+    })
+    .await;
+
+    b.onboarding().join(&code).await.expect("bea joins again");
+    wait_for(
+        &a,
+        Duration::from_secs(90),
+        "the join role again on rejoin",
+        |s| {
+            s.members.get(&community).is_some_and(|m| {
+                m.iter()
+                    .any(|m| m.user_id == bea && m.role_ids.contains(&role))
+            })
+        },
+    )
+    .await;
+    a.stop();
+    b.stop();
+    drop(host);
 }

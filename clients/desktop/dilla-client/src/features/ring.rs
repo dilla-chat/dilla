@@ -547,6 +547,8 @@ struct PerClient {
     queue: OnceLock<mpsc::Sender<Frame>>,
     /// When the DM list was last read: at most once per [`DMS_REREAD`].
     last_dms_read: Mutex<Option<Instant>>,
+    /// Held while the DM list is read: a read that waited out the window finds the one that ran meanwhile finished.
+    dms_reading: tokio::sync::Mutex<()>,
     /// Each channel's ring timer: re-arming aborts the one before.
     timers: Mutex<HashMap<ChannelId, tokio::task::AbortHandle>>,
 }
@@ -890,9 +892,29 @@ pub fn dms_read_due(last: &mut Option<Instant>, now: Instant) -> bool {
     true
 }
 
+/// How long a read of the DM list asked for at `now` waits for its turn: nothing when one is due, else the rest of the
+/// [`DMS_REREAD`] window of the last read.
+pub fn dms_read_wait(last: Option<Instant>, now: Instant) -> Duration {
+    last.map_or(Duration::ZERO, |at| {
+        DMS_REREAD.saturating_sub(now.saturating_duration_since(at))
+    })
+}
+
 /// Reads this device's DM list again, at most once per [`DMS_REREAD`] (a ring flood for unknown channels reads it no
-/// more often). A failed read keeps the list it had.
+/// more often). A read asked for inside the window waits for its end rather than being dropped: a ring of a DM opened
+/// a moment after an earlier read (a second DM's call within 5 s of the first's ring) is still checked against a list
+/// that holds it, as the web's, whose channels are read as they come. A read that started meanwhile answers for it. A
+/// failed read keeps the list it had.
 async fn load_dms(inner: &Arc<Inner>, pc: &Arc<PerClient>) {
+    let asked = Instant::now();
+    let wait = dms_read_wait(*guard(&pc.last_dms_read), asked);
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+    let _reading = pc.dms_reading.lock().await;
+    if guard(&pc.last_dms_read).is_some_and(|at| at >= asked) {
+        return;
+    }
     if !dms_read_due(&mut guard(&pc.last_dms_read), Instant::now()) {
         return;
     }

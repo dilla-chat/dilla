@@ -9,6 +9,7 @@
 //! - [`private_results`]: the rows only this device shows, for the log of their conversation; [`on_send`] decides what
 //!   a sent draft does (post it, or answer privately).
 
+pub mod chips;
 pub mod copy;
 pub mod keys;
 pub mod picker;
@@ -70,6 +71,8 @@ pub struct PickerState {
     pub rows: Option<Vec<String>>,
     /// The command Tab or Enter picked on the list, for the chips.
     pub picked: Option<String>,
+    /// The chips of the picked command, in place of the composer's field (Task 28 follow-up 14).
+    pub chips: Option<chips::Chips>,
 }
 
 /// `window`'s picker state (empty until its composer reports a draft).
@@ -92,6 +95,7 @@ pub fn draft_changed(window: gpui::WindowId, draft: &str, cx: &mut App) {
         state.draft = draft.to_owned();
         state.selected = 0;
         state.picked = None;
+        state.chips = None;
         if state.closed_for.as_deref() != Some(draft) {
             state.closed_for = None;
         }
@@ -545,6 +549,7 @@ mod tests {
             closed_for: Some("/".into()),
             rows: None,
             picked: None,
+            chips: None,
         };
         // draft_changed's rule, applied without an App.
         let next = "/r";

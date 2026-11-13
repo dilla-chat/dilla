@@ -22,6 +22,8 @@ use crate::state::AppState;
 use crate::store::open_store;
 use dilla_core::cbor::{Encoder, decode_strict};
 
+pub mod bot;
+
 pub const PASSWORD: &str = "correct horse battery staple";
 
 pub fn repo_root() -> PathBuf {
@@ -37,13 +39,23 @@ pub struct Host {
     pub control: String,
     pub invites: Vec<String>,
     data: PathBuf,
+    /// The Bot side of a [`start_bot_host`] host.
+    bot: Option<bot::BotSide>,
 }
 
 impl Drop for Host {
     fn drop(&mut self) {
+        if let Some(b) = &self.bot {
+            // The Bot stops first, while its instance still serves (dilla-testhost's own order): a killed host would
+            // leave its supervised child behind.
+            b.stop_on_drop(&self.control);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.data);
+        if self.bot.is_some() {
+            let _ = std::fs::remove_dir_all(bot::socket_dir(&self.data));
+        }
     }
 }
 
@@ -51,6 +63,18 @@ impl Drop for Host {
 /// A host that serves the web client is the parity world's, so it also runs in the host's parity-fixture mode
 /// (`-parity-fixture`: GET /v1/instance carries the marker that makes the web client's diagnostics deterministic).
 pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
+    launch(tag, listen, web_root, false)
+}
+
+/// [`start_host`] with dilla's real Bot supervised beside the instance (`-bot`, see [`bot`]): the Bot is started and
+/// healthy when this answers, and the host's fake clock follows the wall clock. Blocking.
+pub fn start_bot_host(tag: &str, listen: &str) -> Host {
+    let host = launch(tag, listen, None, true);
+    host.start_bot();
+    host
+}
+
+fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool) -> Host {
     let root = repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
         .map_or_else(|| root.join("target/dilla-testhost"), PathBuf::from);
@@ -68,10 +92,16 @@ pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
         "{} missing: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release",
         wasm.display()
     );
-    let data = root.join(format!(
-        "target/slice-test-host-{tag}-{}",
-        std::process::id()
-    ));
+    let data = if with_bot {
+        // The Bot's socket is `<data-dir>-bot/gateway.sock`: a Unix socket path holds 107 bytes, so it lives under a
+        // short root (host.ts `DILLA_E2E_HOST_DATA_ROOT`, default /tmp/dw), not under a worktree's target/.
+        bot::data_dir(tag)
+    } else {
+        root.join(format!(
+            "target/slice-test-host-{tag}-{}",
+            std::process::id()
+        ))
+    };
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
     let mut cmd = std::process::Command::new(bin);
@@ -91,11 +121,21 @@ pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
     if let Some(web) = web_root {
         cmd.arg("-web-root").arg(web).arg("-parity-fixture");
     }
+    let bot_state = with_bot.then(|| {
+        let (args, state) = bot::args(&data, &wasm);
+        cmd.args(args);
+        state
+    });
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
+        .stderr(if with_bot {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::inherit()
+        })
         .spawn()
         .expect("start dilla-testhost");
+    let bot = bot_state.map(|state| bot::watch(child.stderr.take().unwrap(), state));
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let (mut public, mut control, mut invites) = (None, None, None);
     while public.is_none() || control.is_none() || invites.is_none() {
@@ -111,12 +151,17 @@ pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
         }
     }
     std::thread::spawn(move || for _ in lines {});
+    let control = control.unwrap();
+    if let Some(b) = &bot {
+        bot::follow_wall_clock(control.clone(), b.stop_clock());
+    }
     Host {
         child,
         public: public.unwrap(),
-        control: control.unwrap(),
+        control,
         invites: invites.unwrap(),
         data,
+        bot,
     }
 }
 
@@ -510,6 +555,42 @@ pub async fn start(p: &Person) -> Client {
     tokio::task::spawn_blocking(move || Client::start(cfg, kc).expect("client starts"))
         .await
         .unwrap()
+}
+
+/// A new device of `person`'s account, signed in as the app does on a fresh install (password, authenticator code,
+/// recovery key), on a data root of its own under `target/` (named by `tag`), and started. Answers the client and the
+/// data root (the caller's to delete).
+pub async fn second_device(host: &Host, person: &mut Person, tag: &str) -> (Client, PathBuf) {
+    use crate::signin::{Owed, SignIn};
+    let root = repo_root().join(format!(
+        "target/testing-client-{tag}-{}-second-{}",
+        person.username,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let cfg = Instances::load(&root)
+        .expect("an instance list")
+        .add(person.cfg.server.clone())
+        .expect("an instance");
+    let kc = Arc::new(MemoryKeychain::new());
+    let mut sign_in = SignIn::new(cfg.clone(), kc.clone()).expect("a sign-in");
+    let owed = sign_in
+        .login(&person.username, PASSWORD)
+        .await
+        .expect("the password");
+    assert_eq!(owed, Owed::Code);
+    let code = person.next_code(host);
+    sign_in.code(&code).await.expect("the code");
+    sign_in
+        .add_device(&person.recovery_key)
+        .await
+        .expect("the recovery key");
+    drop(sign_in);
+    let client =
+        tokio::task::spawn_blocking(move || Client::start(cfg, kc).expect("the device starts"))
+            .await
+            .unwrap();
+    (client, root)
 }
 
 /// Waits (at most `within`) until `pred` holds for the client's state, answering that state.

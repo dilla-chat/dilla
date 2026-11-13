@@ -37,6 +37,8 @@ pub(crate) struct Fake {
     pub(crate) published: Mutex<Vec<Option<BotCatalogView>>>,
     /// The client's runtime; the test's own when none is set.
     pub(crate) runtime: Mutex<Option<tokio::runtime::Handle>>,
+    /// While set, each key check waits for a permit (a check in flight).
+    pub(crate) verify_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
 }
 
 #[async_trait]
@@ -69,7 +71,11 @@ impl BotIo for Fake {
         *lock(&self.pinned)
     }
     async fn verify(&self, _: Vec<u8>, _: [u8; 16]) -> Result<([u8; 16], String), Refusal> {
+        let gate = lock(&self.verify_gate).clone();
         *lock(&self.verified) += 1;
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
+        }
         let mut v = lock(&self.verify);
         if v.len() > 1 {
             v.remove(0)
@@ -553,6 +559,42 @@ async fn a_umk_change_refused_by_the_core_is_changed_and_refused() {
         RunEnd::Refused(Refusal::new("E_BOT_OFFLINE", 503))
     );
     assert!(lock(&fake.posted).is_empty());
+}
+
+/// Task 28 (found by `tests/bot::enter_to_first_answer_is_within_rtt_plus_100ms_at_p95`): the web checks a key in the
+/// same step that replaces the entry (its core call is synchronous), so a re-read of the catalog never shows it
+/// unchecked. Here the check is awaited: while a re-read (a sync, a state change) or a push of the same publication is
+/// checked again, the key stays verified, so a command sent then is not refused "unverified".
+#[tokio::test]
+async fn a_re_read_of_the_same_publication_stays_verified_while_it_is_checked_again() {
+    let fake = ready_fake();
+    *lock(&fake.catalog) = Some(catalog_body(1));
+    let sealed = ready(&fake).await;
+    assert!(sealed.view(COMMUNITY).unwrap().fingerprint.is_some());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *lock(&fake.verify_gate) = Some(gate.clone());
+    let before = *lock(&fake.verified);
+    let read = tokio::spawn({
+        let sealed = sealed.clone();
+        async move { sealed.refresh(COMMUNITY).await }
+    });
+    while *lock(&fake.verified) == before {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        sealed.view(COMMUNITY).unwrap().fingerprint.as_deref(),
+        Some("ABCDEFGHJKMN"),
+        "verified while the same key is checked again"
+    );
+    gate.add_permits(1);
+    read.await.unwrap().unwrap();
+    assert!(sealed.view(COMMUNITY).unwrap().fingerprint.is_some());
+
+    // A check that now fails takes the key away.
+    *lock(&fake.verify) = vec![Err(Refusal::new("E_BOT_SIGNATURE", 0))];
+    *lock(&fake.verify_gate) = None;
+    sealed.refresh(COMMUNITY).await.unwrap();
+    assert_eq!(sealed.view(COMMUNITY).unwrap().fingerprint, None);
 }
 
 #[tokio::test]

@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use dilla_client::features::ring::{
     AFK_RETRY, AfkBook, AfkRead, DMS_REREAD, Expiry, RingBook, RingDeps, away_patched,
-    changed_user, decode_afk, decode_changed, dms_read_due, is_builtin_afk, outgoing_declined,
-    outgoing_shrink, outgoing_start,
+    changed_user, decode_afk, decode_changed, dms_read_due, dms_read_wait, is_builtin_afk,
+    outgoing_declined, outgoing_shrink, outgoing_start,
 };
 use dilla_client::gateway::frames::{AfkAwayFrame, CallRingFrame};
 use dilla_client::state::ring::{AFK_AWAY_MAX, AfkSnapshot, Away, RING, RINGS_MAX};
@@ -601,6 +601,18 @@ fn the_dm_list_is_read_again_at_most_once_per_5_s() {
     assert!(dms_read_due(&mut last, t0 + DMS_REREAD));
 }
 
+/// Task 28 (`blocked_dm`'s control): a read asked for inside the window waits for the rest of it, never dropped.
+#[test]
+fn a_dm_list_read_inside_the_window_waits_for_its_end() {
+    let t0 = Instant::now();
+    assert_eq!(dms_read_wait(None, t0), Duration::ZERO);
+    assert_eq!(
+        dms_read_wait(Some(t0), t0 + Duration::from_secs(2)),
+        DMS_REREAD - Duration::from_secs(2)
+    );
+    assert_eq!(dms_read_wait(Some(t0), t0 + DMS_REREAD), Duration::ZERO);
+}
+
 #[test]
 fn the_builtin_afk_channel_is_found_by_id_else_by_the_reservation() {
     let afk = ChannelId([7; 16]);
@@ -930,21 +942,16 @@ mod real {
         client: &Client,
     ) -> (Arc<Mutex<Vec<ChannelId>>>, tokio::task::JoinHandle<()>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let mut rx = client.state();
+        // Every snapshot, not the coalesced latest: a ring listed for a moment is seen too.
+        let mut rx = client.snapshots();
         let out = seen.clone();
         let task = tokio::spawn(async move {
-            loop {
-                {
-                    let s = rx.borrow_and_update().clone();
-                    let mut seen = out.lock().unwrap();
-                    for r in &s.ring.rings {
-                        if !seen.contains(&r.channel) {
-                            seen.push(r.channel);
-                        }
+            while let Some(s) = rx.recv().await {
+                let mut seen = out.lock().unwrap();
+                for r in &s.ring.rings {
+                    if !seen.contains(&r.channel) {
+                        seen.push(r.channel);
                     }
-                }
-                if rx.changed().await.is_err() {
-                    return;
                 }
             }
         });
@@ -1090,12 +1097,12 @@ async fn busy() {
 
 /// e2e/voice/ring.spec.ts "blocked DM": a ring of a DM whose contact's identity changed never shows; a trusted peer's
 /// ring after it does (the positive control, on the very path the blocked ring would have taken).
-/// Needs Task 13: without its DM area this device never joins the DM's text group, so no send block is seen on it (the
-/// test then stops at "the DM never became send-blocked"). Parked for Task 28, as Task 22 parks its DM tests.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs Task 13 DMs (this device joining the DM's text group); Task 28"]
+#[ignore = "needs dillad: target/dilla-testhost, the wasi core and dilla-testkit"]
 async fn blocked_dm() {
     let p = pair("t18-blocked-dm", 0x1804).await;
+    // The DM area runs as the shell starts it (dms/home.rs): the DM list, and this device in each DM's text group.
+    p.client.dms().start();
     let (seen, recorder) = record_rings(&p.client);
     // The peer's identity is replaced, and its new device opens a DM with this person: its leaf carries the new key.
     p.peer.call("sync", json!({})).await;
@@ -1142,6 +1149,28 @@ async fn blocked_dm() {
         )
         .await;
     let odm = open_dm(&other, p.me()).await;
+    // As the e2e: the trusted DM holds both people before its call (this device joined its text group).
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let v = other
+            .call("sync_dm", json!({ "channel_id": odm.hex() }))
+            .await;
+        if v["members"].as_u64().unwrap_or(0) >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "this device never joined the trusted DM's group: {v}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    // Open on this device's screen, as the e2e's openDm.
+    p.client
+        .dms()
+        .open(odm)
+        .await
+        .unwrap()
+        .expect("the trusted DM opens");
     peer_calls(&other, odm).await;
     wait_for(&p.client, WAIT, "the trusted ring", |s| ringing(s, odm)).await;
     assert_eq!(

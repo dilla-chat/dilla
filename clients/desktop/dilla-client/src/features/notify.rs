@@ -693,10 +693,16 @@ pub fn ring_notification(
 
 /// The worker's `reportActivity`: remembers the newest stored message of each channel it has seen and answers the notices
 /// of the messages that are newer, from another user, readable, beyond the high-water mark of their channel. A channel's mark is seeded
-/// from everything its timeline holds the first time it appears, so history is never replayed, however late it loads.
+/// from what its timeline holds the first time it appears, so history is never replayed, however late it loads; but a
+/// message in it received at or after the tracker's start (`floor`, the web's `noticeFloor`, on the instance's clock) is live: the first message
+/// of a DM opened by its peer reaches this device in the same snapshot as the DM itself (Task 28,
+/// `tests/notify::dm_opened_by_peer_appears_badges_notifies_live`).
 #[derive(Clone, Debug)]
 pub struct NoticeTracker {
     marks: HashMap<ChannelId, u64>,
+    /// Unix seconds on the instance's clock (the rows' `recv_ts`): a first-seen channel's messages received before it are
+    /// history.
+    floor: u64,
 }
 
 impl Default for NoticeTracker {
@@ -706,9 +712,19 @@ impl Default for NoticeTracker {
 }
 
 impl NoticeTracker {
+    /// A tracker starting now on this device's clock ([`Notify::start`] uses the instance's).
     pub fn new() -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        Self::with_floor(now)
+    }
+
+    /// A tracker whose start is `floor` (unix seconds).
+    pub fn with_floor(floor: u64) -> Self {
         Self {
             marks: HashMap::new(),
+            floor,
         }
     }
 
@@ -724,8 +740,8 @@ impl NoticeTracker {
             for item in &timeline.items {
                 let Some(seq) = item.seq else { continue };
                 newest = newest.max(seq);
-                // The first time a channel appears, everything it holds is history.
-                if !seeded
+                // The first time a channel appears, what it holds from before the start is history.
+                if (!seeded && item.ts < self.floor)
                     || seq <= mark
                     || item.state != TimelineItemState::Ok
                     || item.own
@@ -990,6 +1006,9 @@ impl Notify {
         let mut state = client.state();
         let prefs = self.inner.prefs().clone();
         let mut engine = Engine::new(notifier, env, text);
+        // The floor is on the instance's clock, as the rows' receive times are (controller.ts `noticeFloor =
+        // serverNowS()`).
+        engine.tracker = NoticeTracker::with_floor(self.inner.api().server_now_s());
         // The first value only sets the marks.
         let first = state.borrow_and_update().clone();
         engine.tracker.observe(&first);
@@ -1697,6 +1716,28 @@ mod tests {
             vec![unreadable, pending, item(6, ME, 1_022, "me", false)],
         );
         assert!(tracker.observe(&quiet).is_empty());
+    }
+
+    /// Task 28: a channel first seen holding a message received after the start (a DM its peer just opened) notifies it;
+    /// one received before the start stays history.
+    #[test]
+    fn a_channel_first_seen_with_a_message_received_after_the_start_notifies_it() {
+        let mut tracker = NoticeTracker::with_floor(1_000);
+        assert!(tracker.observe(&world()).is_empty());
+        let opened = with_items(
+            &world(),
+            RANDOM,
+            vec![
+                item(1, BOB, 999, "before", false),
+                item(2, BOB, 1_000, "after", false),
+            ],
+        );
+        let notices = tracker.observe(&opened);
+        assert_eq!(
+            notices.iter().map(|n| n.body.as_str()).collect::<Vec<_>>(),
+            ["after"]
+        );
+        assert!(tracker.observe(&opened).is_empty(), "once");
     }
 
     #[test]
