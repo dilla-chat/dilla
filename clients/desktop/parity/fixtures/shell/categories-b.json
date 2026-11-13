@@ -185,7 +185,7 @@
   "steps": [
     {
       "do": "click",
-      "web": "css=.d-channel-list__cat-head >> nth=1",
+      "web": "css=.d-channel-list__cat-head:has-text(\"boats\")",
       "gpui": "category-boats"
     },
     {
