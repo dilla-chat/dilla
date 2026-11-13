@@ -369,9 +369,8 @@ impl InstanceGuard {
 ///
 /// The one place the manager reaches the keychain account of a key it removes.
 pub fn delete_instance_key(kc: &dyn Keychain, cfg: &InstanceConfig) -> Result<(), InstanceError> {
-    let install_id = install_id_for(&cfg.data_dir, cfg.id)?;
-    // T2: use store_keychain_account(cfg), the account with its generation suffix, once Task 2 merges.
-    let account = crate::store::keychain_account(&install_id, cfg.id);
+    // The account that holds the key now: its generation suffix read as an open reads it (Task 2).
+    let account = crate::store::store_keychain_account(cfg)?;
     kc.delete(&account).map_err(|_| InstanceError::Keychain)
 }
 

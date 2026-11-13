@@ -9,7 +9,7 @@ use dilla_client::instances::address::{canonical_instance, instance_input, parse
 use dilla_client::instances::{InstanceError, Instances, MAX_INSTANCES, delete_instance_key};
 use dilla_client::keychain::MemoryKeychain;
 use dilla_client::seams::{InstanceId, Keychain};
-use dilla_client::store::{StoreError, keychain_account, open_store};
+use dilla_client::store::{StoreError, open_store, store_keychain_account};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -173,16 +173,16 @@ fn two_instances_same_host_isolated() {
     assert_eq!(
         kc.accounts(),
         vec![
-            keychain_account(instances.install_id(), a.id),
-            keychain_account(instances.install_id(), b.id),
+            store_keychain_account(&a).unwrap(),
+            store_keychain_account(&b).unwrap(),
         ]
     );
     let key_a = kc
-        .get(&keychain_account(instances.install_id(), a.id))
+        .get(&store_keychain_account(&a).unwrap())
         .unwrap()
         .unwrap();
     let key_b = kc
-        .get(&keychain_account(instances.install_id(), b.id))
+        .get(&store_keychain_account(&b).unwrap())
         .unwrap()
         .unwrap();
     assert_ne!(*key_a, *key_b);
@@ -306,10 +306,7 @@ fn removing_an_instance_deletes_its_key() {
         .unwrap()
         .unwrap();
     assert_eq!(removed.id, a.id);
-    assert_eq!(
-        kc.accounts(),
-        vec![keychain_account(instances.install_id(), b.id)]
-    );
+    assert_eq!(kc.accounts(), vec![store_keychain_account(&b).unwrap()]);
     assert!(!a.data_dir.exists());
     assert!(b.data_dir.exists());
     assert_eq!(instances.list().len(), 1);

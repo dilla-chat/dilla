@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dilla_client::instances::{Instances, MAX_INSTANCES};
 use dilla_client::keychain::MemoryKeychain;
 use dilla_client::seams::{InstanceConfig, InstanceId, Keychain};
-use dilla_client::store::{keychain_account, open_store};
+use dilla_client::store::{open_store, store_keychain_account};
 use dilla_desktop::screens::instances::model::label_of;
 use dilla_desktop::screens::instances::view::Host;
 use dilla_desktop::screens::instances::{ManagerEvent, ManagerView, copy, model::Manager};
@@ -276,13 +276,12 @@ fn two_instances_same_host_isolated(cx: &mut TestAppContext) {
     };
     assert!(has(&store_a));
     assert!(!has(&store_b));
-    let install = Instances::load(&root).unwrap().install_id().to_owned();
     assert_ne!(
-        kc.get(&keychain_account(&install, a.id))
+        kc.get(&store_keychain_account(a).unwrap())
             .unwrap()
             .unwrap()
             .as_slice(),
-        kc.get(&keychain_account(&install, b.id))
+        kc.get(&store_keychain_account(b).unwrap())
             .unwrap()
             .unwrap()
             .as_slice(),

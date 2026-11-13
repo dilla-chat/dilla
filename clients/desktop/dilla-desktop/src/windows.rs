@@ -141,6 +141,14 @@ pub fn keep_client(cx: &mut App, id: InstanceId, client: Rc<Client>) {
     }
 }
 
+/// The instance's window is now `window`: the compact start window handed its client to a workspace window (Task 8's
+/// window shapes) and closes, so the registry follows the new one.
+pub fn moved_window(cx: &mut App, id: InstanceId, window: WindowHandle<AppView>) {
+    if let Some(live) = Registry::of(cx).live.get_mut(&id.0) {
+        live.window = Some(window);
+    }
+}
+
 /// What [`mark_starting`] found.
 pub enum Starting {
     /// This window may start the client. The token (when the instance is registered) is kept alive until the start ends.

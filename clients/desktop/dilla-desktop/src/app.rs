@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use dilla_client::instances::{Instances, default_root};
 use dilla_client::keychain::OsKeychain;
-use dilla_client::seams::{InstanceConfig, Keychain};
+use dilla_client::seams::{InstanceConfig, InstanceId, Keychain};
 use dilla_client::{Client, ClientError};
 use gpui::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window,
@@ -38,6 +38,11 @@ pub struct Launch {
     pub keychain: Arc<dyn Keychain>,
     /// Start the first listed instance's client at launch (a device already signed in).
     pub resume: bool,
+    /// The instance this window runs (`windows::open_instance`, Task 27); `None`: the first listed instance.
+    pub instance: Option<InstanceId>,
+    /// The code of an invite the person pasted into the manager: the window's welcome and join flow starts from it (the
+    /// GPUI side of the shell's `/welcome?invite=<code>`). Read through [`AppView::pending_invite`].
+    pub invite: Option<String>,
     /// The window's size, logical px (the workspace's, when the window opens in it).
     pub window: (f32, f32),
     /// The shipping window: it opens in the start shape (400x280), takes the authentication shape for the sign-in and
@@ -61,6 +66,8 @@ impl Launch {
             root,
             keychain,
             resume: true,
+            instance: None,
+            invite: None,
             window: (1280.0, 800.0),
             shipping: true,
             handoff: None,
@@ -75,6 +82,8 @@ impl Launch {
             root: None,
             keychain: Arc::new(dilla_client::keychain::MemoryKeychain::new()),
             resume: false,
+            instance: None,
+            invite: None,
             window: (1280.0, 800.0),
             shipping: false,
             handoff: None,
@@ -118,6 +127,8 @@ impl Screen {
 pub struct AppView {
     launch: Launch,
     screen: Screen,
+    /// The instance whose client this window shows (set when it starts; Task 27).
+    instance: Option<InstanceId>,
     /// The workspace window's bounds are kept a moment after the last change.
     bounds_task: Option<gpui::Task<()>>,
     bounds_sub: Option<Subscription>,
@@ -127,6 +138,7 @@ pub struct AppView {
 impl AppView {
     pub fn new(launch: Launch, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            instance: launch.instance,
             launch,
             screen: Screen::Starting,
             bounds_task: None,
@@ -189,12 +201,26 @@ impl AppView {
             .as_deref()
             .filter(|_| this.launch.resume)
             .and_then(|root| Instances::load(root).ok())
-            .and_then(|list| list.list().first().cloned());
+            .and_then(|list| match this.launch.instance {
+                // An instance window runs its own instance (Task 27).
+                Some(id) => list.get(id).cloned(),
+                None => list.list().first().cloned(),
+            });
         match existing {
             Some(cfg) => this.start_client(cfg, window, cx),
             None => this.show_sign_in(None, window, cx),
         }
         this
+    }
+
+    /// The invite code this window was opened with, until the welcome and join flow takes it.
+    pub fn pending_invite(&self) -> Option<&str> {
+        self.launch.invite.as_deref()
+    }
+
+    /// The instance this window runs, once it has one.
+    pub fn instance(&self) -> Option<InstanceId> {
+        self.instance
     }
 
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -213,11 +239,45 @@ impl AppView {
     }
 
     fn start_client(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
+        // An instance window runs its own instance only: a sign-in that ended on another one (the sign-in view takes
+        // any server address) is refused here, so this window never starts, or holds, a different instance (Task 27).
+        if self.launch.instance.is_some_and(|pinned| pinned != cfg.id) {
+            let wrong = crate::screens::instances::copy::ERROR_WRONG_INSTANCE;
+            return self.show_sign_in(Some(wrong.into()), window, cx);
+        }
         // The instance's played-video directory is wiped at open, and remembered for the wipe at quit (Task 12).
         crate::screens::attachments::ui::instance_opened(&cfg.data_dir, cx);
+        self.instance = Some(cfg.id);
+        // A window opened again on an instance whose client kept running shows that client (windows.rs).
+        if let Some(client) = crate::windows::running_client(cx, cfg.id) {
+            return self.started(cfg, Ok(client), window, cx);
+        }
         self.screen = Screen::Starting;
         self.fit_window(window, cx);
         cx.notify();
+        // Another window's start of this instance is running: wait for it instead of starting a second client.
+        let crate::windows::Starting::Go(token) = crate::windows::mark_starting(cx, cfg.id) else {
+            let id = cfg.id;
+            cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    let done = this.update_in(cx, |this, window, cx| {
+                        let over = !crate::windows::is_starting(cx, id);
+                        if over {
+                            this.start_client(cfg.clone(), window, cx);
+                        }
+                        over
+                    });
+                    if done.unwrap_or(true) {
+                        break;
+                    }
+                }
+            })
+            .detach();
+            return;
+        };
         let retry = cfg.clone();
         let keychain = self.launch.keychain.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -228,11 +288,13 @@ impl AppView {
             })
             .expect("a thread starts");
         cx.spawn_in(window, async move |this, cx| {
+            // Held until this start ends, or the window goes (a released instance waits on it).
+            let _token = token;
             let result = rx
                 .await
                 .unwrap_or_else(|_| Err(ClientError::Runtime("the start thread ended".into())));
             let _ = this.update_in(cx, |this, window, cx| {
-                this.started(retry, result, window, cx);
+                this.started(retry, result.map(Rc::new), window, cx);
             });
         })
         .detach();
@@ -241,13 +303,26 @@ impl AppView {
     fn started(
         &mut self,
         cfg: InstanceConfig,
-        result: Result<Client, ClientError>,
+        result: Result<Rc<Client>, ClientError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if result.is_err()
+            && let Some(id) = self.instance
+        {
+            crate::windows::finish_starting(cx, id);
+        }
         let client = match result {
-            Ok(client) => Rc::new(client),
+            Ok(client) => client,
             Err(ClientError::NoIdentity) => return self.show_sign_in(None, window, cx),
+            // A key lost from the keychain (an interrupted removal, a reset keychain): say what to do (Task 27).
+            Err(ClientError::Store(m)) if m.contains("key is missing") => {
+                return self.show_sign_in(
+                    Some(crate::screens::instances::copy::KEY_MISSING.into()),
+                    window,
+                    cx,
+                );
+            }
             // A device the instance no longer knows is the sign-in's to answer (the web's `enterRevoked`); any other failed
             // start is a splash with its stable code (Task 24: `boot::classify`).
             Err(e) if boot::classify(&e) == boot::StartFailure::SignIn => {
@@ -260,6 +335,10 @@ impl AppView {
                 return;
             }
         };
+        // The registry keeps the client: closing the window does not stop it (Task 27).
+        if let Some(id) = self.instance {
+            crate::windows::keep_client(cx, id, client.clone());
+        }
         // The Diagnostics section's instance fact and the connecting line's node: the server's host.
         if let Some(host) = cfg.server.host_str() {
             client.diagnostics().set_instance_name(host);
@@ -276,7 +355,13 @@ impl AppView {
         let mut launch = self.launch.clone();
         launch.handoff = Some(client);
         match crate::open_window_in(cx, launch, WindowMode::Workspace) {
-            Ok(_) => window.remove_window(),
+            Ok(handle) => {
+                // The instance's window is the workspace window from now on (Task 27's registry).
+                if let Some(id) = self.instance {
+                    crate::windows::moved_window(cx, id, handle);
+                }
+                window.remove_window();
+            }
             // The workspace window did not open: this one stays, on the sign-in.
             Err(e) => self.show_sign_in(Some(e.to_string()), window, cx),
         }
