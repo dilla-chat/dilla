@@ -759,7 +759,7 @@ pub const QUIT_WAIT: Duration = Duration::from_secs(3);
 
 /// Task 28 item 3: quitting leaves every live call (its voice Remove reaches the instance, as a closed window's does),
 /// waiting for the leaves [`QUIT_WAIT`] at most. The leaves answer on their clients' runtimes, so the UI thread may
-/// block on them here. Answers whether every leave answered in time.
+/// block on them here. Answers whether every leave answered Ok in time.
 pub fn on_quit(cx: &mut App) -> bool {
     let mut clients: Vec<Rc<Client>> = Vec::new();
     if let Some(areas) = cx.try_global::<VoiceAreas>() {
@@ -777,24 +777,28 @@ pub fn on_quit(cx: &mut App) -> bool {
     let leaves: Vec<_> = clients.iter().map(|c| c.voice().leave()).collect();
     let answered = wait_answers(leaves, QUIT_WAIT);
     if !answered {
-        log::warn!("voice: a call's leave did not answer before the app quit");
+        log::warn!("voice: a call's leave failed or did not answer before the app quit");
     }
     answered
 }
 
 /// Waits for every answer in `answers` (an answer, or its sender gone) for `within` at most, blocking the calling
-/// thread. Answers whether all answered.
+/// thread. Answers whether all answered `Ok` in time (review L I3: a leave answers `Ok` only once the instance
+/// acknowledged its voice Remove; an error, or a sender gone, is no success).
 pub fn wait_answers(mut answers: Vec<VoiceAnswer>, within: Duration) -> bool {
     let deadline = std::time::Instant::now() + within;
+    let mut all_ok = true;
     loop {
-        answers.retain_mut(|a| {
-            matches!(
-                a.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            )
+        answers.retain_mut(|a| match a.try_recv() {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => true,
+            Ok(Ok(())) => false,
+            Ok(Err(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                all_ok = false;
+                false
+            }
         });
         if answers.is_empty() {
-            return true;
+            return all_ok;
         }
         if std::time::Instant::now() >= deadline {
             return false;

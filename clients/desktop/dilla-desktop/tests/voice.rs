@@ -770,15 +770,35 @@ fn quitting_leaves_the_live_call(cx: &mut TestAppContext) {
     w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
         s.voice.call.phase == CallPhase::In
     }));
+    // Review L I3: the quit's answer is the leaves' outcome, not only that they answered: `leave` answers Ok only once
+    // the instance acknowledged the voice Remove (`calls.leave`), so a Remove that fails fails this.
     assert!(
         cx.update(voice::on_quit),
-        "the call's leave answered within the quit's wait"
+        "the call's leave answered Ok within the quit's wait"
     );
     assert_eq!(phase_of(&w.alice), CallPhase::Idle);
     assert!(
         w.alice.voice().media().borrow().is_none(),
         "the media link is cut"
     );
+}
+
+/// Review L I3: a leave that answers an error, or whose answer is dropped, is no successful quit.
+#[test]
+fn a_failed_leave_fails_the_quit_s_wait() {
+    let (tx, failed) = answer_pair();
+    tx.send(Err(dilla_client::ClientError::Network("down".into())))
+        .unwrap();
+    assert!(!voice::wait_answers(
+        vec![failed],
+        std::time::Duration::from_secs(5)
+    ));
+    let (tx, closed) = answer_pair();
+    drop(tx);
+    assert!(!voice::wait_answers(
+        vec![closed],
+        std::time::Duration::from_secs(5)
+    ));
 }
 
 /// Task 28 item 3: the quit's wait for the leaves is bounded: a leave that never answers does not hold the quit.
@@ -796,10 +816,10 @@ fn the_quit_s_wait_for_the_leaves_is_bounded() {
     );
     let (tx, answered) = answer_pair();
     tx.send(Ok(())).unwrap();
-    let (tx2, closed) = answer_pair();
-    drop(tx2);
+    let (tx2, answered2) = answer_pair();
+    tx2.send(Ok(())).unwrap();
     assert!(voice::wait_answers(
-        vec![answered, closed],
+        vec![answered, answered2],
         std::time::Duration::from_secs(5)
     ));
 }
