@@ -440,7 +440,20 @@ impl UserSettings {
                 client.devices().revoke(*id, Some(key)),
                 Some(self.name_of(*id)),
             ),
-            _ => (client.devices().sign_out_and_remove(key), None),
+            _ => {
+                // A call this device is in is left first (re-review M3): its self-Remove reaches the server while the
+                // device is still listed; then the device signs itself out and removes itself.
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let (voice, devices) = (client.voice(), client.devices());
+                cx.spawn(async move |_, _| {
+                    let _ = voice.leave().await;
+                    if let Ok(r) = devices.sign_out_and_remove(key).await {
+                        let _ = tx.send(r);
+                    }
+                })
+                .detach();
+                (rx, None)
+            }
         };
         cx.spawn_in(window, async move |this, cx| {
             let r = rx.await;
