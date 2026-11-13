@@ -577,6 +577,7 @@ impl SignInView {
     /// The flow for the typed server (or the pinned instance): the one already listed for it, else a new one.
     fn flow_for_server(&mut self, cx: &gpui::App) -> Result<SignIn, String> {
         if let Some(cfg) = &self.pin {
+            wipe_not_pending(cx, cfg.id)?;
             return match self.flow.take() {
                 Some(flow) => Ok(flow),
                 None => SignIn::new(cfg.clone(), self.keychain.clone()).map_err(|e| e.to_string()),
@@ -602,6 +603,7 @@ impl SignInView {
             Some(cfg) => cfg.clone(),
             None => instances.add(url).map_err(|e| e.to_string())?,
         };
+        wipe_not_pending(cx, cfg.id)?;
         SignIn::new(cfg, self.keychain.clone()).map_err(|e| e.to_string())
     }
 
@@ -1239,9 +1241,40 @@ impl Drop for SignInView {
     }
 }
 
+/// Re-review C: a Sign out's wipe of instance `id` is still pending (its old store is open, and the wipe would delete a
+/// new session's store): the sign-in for it waits, saying so (`E_FORGET_STORE`).
+fn wipe_not_pending(cx: &gpui::App, id: dilla_client::seams::InstanceId) -> Result<(), String> {
+    if crate::windows::wipe_pending(cx, id) {
+        Err(tf("factor.error.other", &[("code", "E_FORGET_STORE")]))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Re-review C: while a Sign out's wipe of an instance is pending, a sign-in for it is refused with the
+    /// E_FORGET_STORE notice (both the pinned and the typed-server paths of `flow_for_server` ask this first).
+    #[gpui::test]
+    fn a_sign_in_waits_for_a_pending_wipe(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let id = dilla_client::seams::InstanceId(5);
+        cx.update(|cx| {
+            assert!(wipe_not_pending(cx, id).is_ok());
+            crate::windows::wipe_begin(cx, id);
+            assert_eq!(
+                wipe_not_pending(cx, id),
+                Err(tf("factor.error.other", &[("code", "E_FORGET_STORE")]))
+            );
+            crate::windows::wipe_end(cx, id);
+            assert!(
+                wipe_not_pending(cx, id).is_ok(),
+                "the wipe ended: the sign-in goes on"
+            );
+        });
+    }
 
     /// SignIn.tsx `signInRefusal`: the step a refusal shows on and what it says, by kind only.
     #[test]

@@ -133,6 +133,50 @@ pub fn running_client(cx: &App, id: InstanceId) -> Option<Rc<Client>> {
         .and_then(|l| l.client.clone())
 }
 
+/// Re-review C: the instances whose store a Sign out still has to wipe (a holder kept the old client), and how often
+/// each instance was started, so a wipe that waited never deletes a session started after it.
+#[derive(Default)]
+struct Wipes {
+    pending: std::collections::HashSet<InstanceId>,
+    starts: HashMap<InstanceId, u64>,
+}
+
+impl Global for Wipes {}
+
+/// A Sign out's wipe of `id` waits for the old client: the sign-in for `id` is refused until [`wipe_end`]. Answers the
+/// instance's start count now, for [`wipe_may_delete`].
+pub fn wipe_begin(cx: &mut App, id: InstanceId) -> u64 {
+    let w = cx.default_global::<Wipes>();
+    w.pending.insert(id);
+    w.starts.get(&id).copied().unwrap_or(0)
+}
+
+/// The pending wipe of `id` ended (done, or skipped).
+pub fn wipe_end(cx: &mut App, id: InstanceId) {
+    cx.default_global::<Wipes>().pending.remove(&id);
+}
+
+/// A Sign out's wipe of `id` is still pending: a sign-in for it waits.
+pub fn wipe_pending(cx: &App, id: InstanceId) -> bool {
+    cx.try_global::<Wipes>()
+        .is_some_and(|w| w.pending.contains(&id))
+}
+
+/// A client of `id` is starting (any window): a wipe that began before it may no longer delete anything.
+pub fn note_start(cx: &mut App, id: InstanceId) {
+    *cx.default_global::<Wipes>().starts.entry(id).or_insert(0) += 1;
+}
+
+/// Whether the wipe of `id` that began at start count `generation` may still delete the store: no client of `id` runs
+/// or starts in this process and none started since (defence in depth behind the refused sign-in).
+pub fn wipe_may_delete(cx: &App, id: InstanceId, generation: u64) -> bool {
+    let starts = cx
+        .try_global::<Wipes>()
+        .and_then(|w| w.starts.get(&id).copied())
+        .unwrap_or(0);
+    running_client(cx, id).is_none() && !is_starting(cx, id) && starts == generation
+}
+
 /// Hands the registry the client a window started for `id`, so closing the window does not stop it.
 pub fn keep_client(cx: &mut App, id: InstanceId, client: Rc<Client>) {
     if let Some(live) = Registry::of(cx).live.get_mut(&id.0) {
@@ -465,4 +509,31 @@ fn install_close_hook(cx: &mut App, launch: Launch, allow_loopback: bool) {
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Re-review C: a deferred wipe of an instance deletes nothing once the instance started again (a new session on
+    /// the same data dir); while it is pending, a sign-in for that instance is refused.
+    #[gpui::test]
+    fn a_deferred_wipe_never_deletes_a_new_session(cx: &mut gpui::TestAppContext) {
+        let id = InstanceId(3);
+        cx.update(|cx| {
+            let generation = wipe_begin(cx, id);
+            assert!(wipe_pending(cx, id), "pending: the sign-in is refused");
+            assert!(
+                wipe_may_delete(cx, id, generation),
+                "nothing started meanwhile"
+            );
+            note_start(cx, id);
+            assert!(
+                !wipe_may_delete(cx, id, generation),
+                "the instance started again: the old wipe deletes nothing"
+            );
+            wipe_end(cx, id);
+            assert!(!wipe_pending(cx, id));
+        });
+    }
 }

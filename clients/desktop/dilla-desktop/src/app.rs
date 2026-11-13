@@ -573,6 +573,8 @@ impl AppView {
     }
 
     fn start_client(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
+        // A wipe that waits for an older client of this instance deletes nothing once it starts again (re-review C).
+        crate::windows::note_start(cx, cfg.id);
         // An instance window runs its own instance only: a sign-in that ended on another one (the sign-in view takes
         // any server address) is refused here, so this window never starts, or holds, a different instance (Task 27).
         if self.launch.instance.is_some_and(|pinned| pinned != cfg.id) {
@@ -856,9 +858,15 @@ impl AppView {
                 // the sign-in's note goes. The halted client sends nothing meanwhile.
                 Err(shared) if how == Wipe::SignedOut => {
                     shared.halt();
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.show_sign_in(Some(store()), window, cx);
-                    });
+                    // Re-review C: until this wipe ends, a sign-in for the instance is refused (its old store is
+                    // still open), and a start of it after now means this wipe deletes nothing.
+                    let generation = this
+                        .update_in(cx, |this, window, cx| {
+                            let generation = crate::windows::wipe_begin(cx, cfg.id);
+                            this.show_sign_in(Some(store()), window, cx);
+                            generation
+                        })
+                        .unwrap_or(0);
                     let mut client = shared;
                     let owned = loop {
                         match Rc::try_unwrap(client) {
@@ -871,10 +879,22 @@ impl AppView {
                             }
                         }
                     };
-                    let result =
+                    // Defence in depth: a client of the instance runs, starts or started since this wipe began (a new
+                    // session on the same data dir): the old client just goes, nothing is deleted.
+                    let may_delete = this
+                        .update(cx, |_, cx| {
+                            crate::windows::wipe_may_delete(cx, cfg.id, generation)
+                        })
+                        .unwrap_or(false);
+                    let result = if may_delete {
                         crate::screens::factor::close_and_wipe(owned, cfg.clone(), root, keychain)
-                            .await;
+                            .await
+                    } else {
+                        drop(owned);
+                        Err(store())
+                    };
                     let _ = this.update_in(cx, |this, window, cx| {
+                        crate::windows::wipe_end(cx, cfg.id);
                         if result.is_ok() && this.shows_sign_in_screen() {
                             this.show_sign_in(None, window, cx);
                         }
