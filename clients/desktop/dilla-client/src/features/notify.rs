@@ -694,13 +694,14 @@ pub fn ring_notification(
 /// The worker's `reportActivity`: remembers the newest stored message of each channel it has seen and answers the notices
 /// of the messages that are newer, from another user, readable, beyond the high-water mark of their channel. A channel's mark is seeded
 /// from what its timeline holds the first time it appears, so history is never replayed, however late it loads; but a
-/// message in it received at or after the tracker's start (`floor`, the web's `noticeFloor`) is live: the first message
+/// message in it received at or after the tracker's start (`floor`, the web's `noticeFloor`, on the instance's clock) is live: the first message
 /// of a DM opened by its peer reaches this device in the same snapshot as the DM itself (Task 28,
 /// `tests/notify::dm_opened_by_peer_appears_badges_notifies_live`).
 #[derive(Clone, Debug)]
 pub struct NoticeTracker {
     marks: HashMap<ChannelId, u64>,
-    /// Unix seconds: a first-seen channel's messages received before it are history.
+    /// Unix seconds on the instance's clock (the rows' `recv_ts`): a first-seen channel's messages received before it are
+    /// history.
     floor: u64,
 }
 
@@ -711,7 +712,7 @@ impl Default for NoticeTracker {
 }
 
 impl NoticeTracker {
-    /// A tracker starting now.
+    /// A tracker starting now on this device's clock ([`Notify::start`] uses the instance's).
     pub fn new() -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1005,6 +1006,9 @@ impl Notify {
         let mut state = client.state();
         let prefs = self.inner.prefs().clone();
         let mut engine = Engine::new(notifier, env, text);
+        // The floor is on the instance's clock, as the rows' receive times are (controller.ts `noticeFloor =
+        // serverNowS()`).
+        engine.tracker = NoticeTracker::with_floor(self.inner.api().server_now_s());
         // The first value only sets the marks.
         let first = state.borrow_and_update().clone();
         engine.tracker.observe(&first);

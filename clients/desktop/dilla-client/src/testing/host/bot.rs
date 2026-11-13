@@ -224,6 +224,21 @@ fn post(url: &str) -> u16 {
 }
 
 impl Host {
+    /// Moves the host's frozen fake clock to the wall clock and keeps it there (one tick a second), as a real instance's
+    /// clock runs: for tests that compare the instance's times with the time that passed (a Bot host does this itself).
+    /// The follower ends with the host.
+    pub fn follow_wall_clock(&self) {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let behind = wall.saturating_sub(super::clock_now(self));
+        if behind > 0 {
+            super::advance_clock(self, behind);
+        }
+        follow_wall_clock(self.control.clone(), Arc::new(AtomicBool::new(false)));
+    }
+
     fn bot_side(&self) -> &BotSide {
         self.bot
             .as_ref()

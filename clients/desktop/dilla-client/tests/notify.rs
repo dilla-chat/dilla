@@ -395,7 +395,9 @@ async fn wait_for_notices(
 async fn dm_opened_by_peer_appears_badges_notifies_live() {
     use dilla_client::features::notify::dm_counts;
     use dilla_client::state::UserId;
-    let (_host, pa, pb, c) = two_people("dm-peer").await;
+    let (host, pa, pb, c) = two_people("dm-peer").await;
+    // The instance's clock runs, as a real one does: the notifier's floor and the rows' receive times are on it.
+    host.follow_wall_clock();
     let (a, b) = (start(&pa).await, start(&pb).await);
     let general = channel_named(&a, c, "general").await;
     channel_named(&b, c, "general").await;
