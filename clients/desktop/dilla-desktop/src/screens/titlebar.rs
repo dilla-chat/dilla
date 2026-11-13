@@ -48,6 +48,15 @@ const MINIMIZE: &str = "Minimize window";
 const MAXIMIZE: &str = "Maximize or restore window";
 const CLOSE: &str = "Close window";
 
+/// The bar is the window's drag region except where the web excludes it (`button, input, a, .d-topbar__search`): an
+/// interactive child takes its own press, so a click on it is a click and not the start of a window move.
+fn interactive<E: InteractiveElement>(element: E) -> E {
+    element.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, window, cx| {
+        window.prevent_default();
+        cx.stop_propagation();
+    })
+}
+
 pub struct TitlebarModel {
     /// Draws the window's own buttons (and makes the bar a drag region): the shipping window, not a fixture.
     pub controls: bool,
@@ -68,8 +77,7 @@ fn window_button(
     danger_hover: bool,
     run: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
+    interactive(div().id(id))
         .tab_index(0)
         .flex_none()
         .size(Pixels::from(css::BUTTON))
@@ -130,7 +138,7 @@ pub fn render(model: &TitlebarModel, handlers: &TitlebarHandlers) -> impl IntoEl
         .flex()
         .justify_center()
         .child(
-            div()
+            interactive(div())
                 .w(Pixels::from(css::SEARCH_W))
                 .h(Pixels::from(css::SEARCH_H))
                 .bg(color::SURFACE_2)
@@ -188,8 +196,7 @@ pub fn render(model: &TitlebarModel, handlers: &TitlebarHandlers) -> impl IntoEl
                 .color(color::FG_2),
         ))
         .child(
-            div()
-                .id("topbar-settings")
+            interactive(div().id("topbar-settings"))
                 .tab_index(0)
                 .cursor_pointer()
                 .rounded(radius::MD)

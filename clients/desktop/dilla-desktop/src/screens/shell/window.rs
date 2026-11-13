@@ -107,7 +107,9 @@ impl SavedBounds {
     }
 
     pub fn write(&self, prefs: &Prefs) {
-        let _ = prefs.set(Self::KEY, &[self.x, self.y, self.width, self.height]);
+        if let Err(e) = prefs.set(Self::KEY, &[self.x, self.y, self.width, self.height]) {
+            eprintln!("dilla: the window bounds were not kept: {e}");
+        }
     }
 }
 

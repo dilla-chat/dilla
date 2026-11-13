@@ -144,11 +144,21 @@ pub fn open_window_in(
         Some((x, y)) => Bounds::new(point(px(x), px(y)), size(px(width), px(height))),
         None => Bounds::centered(None, size(px(width), px(height)), cx),
     };
+    let options = window_options_for(mode, bounds);
+    cx.open_window(options, |window, cx| {
+        window.set_window_title(PRODUCT_NAME);
+        cx.new(|cx| AppView::new(launch, window, cx))
+    })
+}
+
+/// The options of the shipping window in `mode` at `bounds`: the shape's minimum size (the workspace cannot be resized
+/// below 900x600; the compact windows are fixed), and the app's own title bar (no OS frame where the window can be drawn
+/// without one; macOS keeps its traffic lights, inset into the bar).
+pub fn window_options_for(mode: WindowMode, bounds: Bounds<Pixels>) -> WindowOptions {
+    let shape = window_shape(mode, None, bounds.size.height.into());
     let mut options = main_window_options(bounds);
     options.window_min_size = Some(size(px(shape.min_width), px(shape.min_height)));
     options.is_resizable = shape.resizable;
-    // The title bar is the app's own (screens::titlebar): no OS frame, on the platforms where the window can be drawn
-    // without one; macOS keeps its traffic lights, inset into the bar.
     if let Some(titlebar) = options.titlebar.as_mut() {
         titlebar.appears_transparent = true;
         #[cfg(target_os = "macos")]
@@ -160,10 +170,7 @@ pub fn open_window_in(
     {
         options.window_decorations = Some(gpui::WindowDecorations::Client);
     }
-    cx.open_window(options, |window, cx| {
-        window.set_window_title(PRODUCT_NAME);
-        cx.new(|cx| AppView::new(launch, window, cx))
-    })
+    options
 }
 
 /// The main window's options at `bounds`: the workspace's minimum size (900x600). They carry no title: the window sets

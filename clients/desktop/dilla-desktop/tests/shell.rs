@@ -178,7 +178,7 @@ fn keyboard_shell_focus_order() {
     let mut app = launch("shell/categories");
     app.wait_idle();
     let mut seen = Vec::new();
-    for _ in 0..12 {
+    for _ in 0..16 {
         app.press("tab");
         if let Some(id) = app.focused()
             && seen.last() != Some(&id)
@@ -192,6 +192,16 @@ fn keyboard_shell_focus_order() {
     let list = at("focus-channel-general")
         .unwrap_or_else(|| panic!("the list's stop is the selected channel: {seen:?}"));
     assert!(rail < list, "the rail comes before the list: {seen:?}");
+    // The order goes on past the list through the panel's buttons, the header's and the composer's stops (focus the app
+    // does not name with a probe shows as `-`); the sidebar splitter is the last stop of the tree, after the main column.
+    assert!(
+        seen.len() >= list + 3,
+        "the tab order continues after the list: {seen:?}"
+    );
+    assert!(
+        at("splitter-sidebar").is_some_and(|s| s > list),
+        "the splitter comes after the list: {seen:?}"
+    );
     // The arrows rove inside the list: Down from the stop goes to the next row, Up back.
     while app.focused().as_deref() != Some("focus-channel-general") {
         app.press("tab");
@@ -243,4 +253,105 @@ fn desktop_home_title_is_not_server_name(cx: &mut TestAppContext) {
         .expect("the main window opens");
     let mut window_cx = VisualTestContext::from_window(handle.into(), cx);
     assert_eq!(window_cx.window_title().as_deref(), Some("Dilla Preview"));
+}
+
+fn bounds(width: f32, height: f32) -> gpui::Bounds<gpui::Pixels> {
+    gpui::Bounds::new(
+        gpui::point(gpui::px(0.0), gpui::px(0.0)),
+        gpui::size(gpui::px(width), gpui::px(height)),
+    )
+}
+
+/// packages/desktop/test/electron/shell.spec.ts `startup_and_sign_in_compact_window_expands_for_workspace`: the app starts
+/// in the 400x280 start window (not resizable), the sign-in takes the compact authentication shape (still 400 wide and
+/// fixed), and the workspace is 1240 wide and resizable with a 900x600 minimum.
+#[gpui::test]
+fn startup_and_sign_in_compact_window_expands_for_workspace(cx: &mut TestAppContext) {
+    use dilla_desktop::screens::shell::window::{WindowMode, window_shape};
+    let start = window_shape(WindowMode::Starting, None, 1080.0);
+    assert_eq!(
+        (start.width, start.height, start.resizable),
+        (400.0, 280.0, false)
+    );
+    let auth = window_shape(WindowMode::Authentication, None, 1080.0);
+    assert_eq!((auth.width, auth.resizable), (400.0, false));
+    assert!(auth.height >= 220.0);
+    let work = window_shape(WindowMode::Workspace, None, 1080.0);
+    assert_eq!(
+        (work.width, work.min_width, work.min_height, work.resizable),
+        (1240.0, 900.0, 600.0, true)
+    );
+
+    // The options the shipping window opens with, per mode.
+    let start_options =
+        dilla_desktop::window_options_for(WindowMode::Starting, bounds(400.0, 280.0));
+    assert!(!start_options.is_resizable);
+    let work_options =
+        dilla_desktop::window_options_for(WindowMode::Workspace, bounds(1240.0, 820.0));
+    assert!(work_options.is_resizable);
+
+    // A shipping launch with no instance opens at the start size, then fits the sign-in's compact shape: 400 wide, fixed.
+    let mut launch = dilla_desktop::Launch::empty();
+    launch.shipping = true;
+    let handle = cx
+        .update(|cx| dilla_desktop::open_main_window_with(cx, launch))
+        .expect("the start window opens");
+    let (width, resizable) = handle
+        .update(cx, |_, window, _| {
+            (f32::from(window.bounds().size.width), window.is_resizable())
+        })
+        .expect("the window is open");
+    assert_eq!(width, 400.0);
+    assert!(!resizable, "the start and sign-in windows are fixed");
+
+    // The workspace window.
+    let loaded = dilla_desktop::fixture::Fixture::load(&fixture("shell/categories"), None).unwrap();
+    let handle = cx
+        .update(|cx| {
+            dilla_desktop::open_window_in(
+                cx,
+                dilla_desktop::Launch::fixture(loaded),
+                WindowMode::Workspace,
+            )
+        })
+        .expect("the workspace window opens");
+    let (width, resizable) = handle
+        .update(cx, |_, window, _| {
+            (f32::from(window.bounds().size.width), window.is_resizable())
+        })
+        .expect("the window is open");
+    assert!(width >= 900.0);
+    assert!(resizable);
+}
+
+/// packages/desktop/test/electron/shell.spec.ts `resize_cannot_shrink_below_desktop_minimum`: the workspace window carries
+/// a 900x600 minimum (the platform enforces it on every resize), the compact windows are not resizable, and bounds kept
+/// under the minimum are restored at it.
+#[test]
+fn resize_cannot_shrink_below_desktop_minimum() {
+    use dilla_desktop::screens::shell::window::{
+        SavedBounds, WindowMode, restore_bounds, window_shape,
+    };
+    let options = dilla_desktop::window_options_for(WindowMode::Workspace, bounds(1240.0, 820.0));
+    let min = options
+        .window_min_size
+        .expect("the workspace has a minimum size");
+    assert_eq!(
+        (f32::from(min.width), f32::from(min.height)),
+        (900.0, 600.0)
+    );
+    let main = dilla_desktop::main_window_options(bounds(1240.0, 820.0));
+    assert_eq!(main.window_min_size, options.window_min_size);
+    let compact =
+        dilla_desktop::window_options_for(WindowMode::Authentication, bounds(400.0, 620.0));
+    assert!(!compact.is_resizable);
+    let shape = window_shape(WindowMode::Workspace, None, 1080.0);
+    let saved = SavedBounds {
+        x: 0.0,
+        y: 0.0,
+        width: 500.0,
+        height: 300.0,
+    };
+    let (w, h, _) = restore_bounds(Some(saved), shape, &[]);
+    assert_eq!((w, h), (900.0, 600.0));
 }

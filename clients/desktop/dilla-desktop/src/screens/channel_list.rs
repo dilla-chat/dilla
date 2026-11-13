@@ -322,6 +322,26 @@ fn row(
     }
 }
 
+/// What precedes a category's head in the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Before {
+    /// Nothing, or another category.
+    Nothing,
+    /// A text row.
+    TextRow,
+    /// A voice row.
+    VoiceRow,
+}
+
+/// The gap above a category's head. The CSS says its own 10px, plus `--list-gap` after a text row (the row's bottom margin
+/// collapsing out of its `<li>`); measured against the web client's frames of the shell fixtures that is worse than
+/// a flat 10px after every kind of row (chrome difference of categories-b 0.2950 % with +1 after a text row, 0.2504 %
+/// flat; 0.2378 % against 0.2319 % for categories with half a px after a voice row), so the gap is the same after every
+/// row and the difference is reported, not tuned.
+pub fn category_top_margin(_before: Before) -> f32 {
+    css::CAT_TOP
+}
+
 /// A category's head (ChannelList.css `.d-channel-list__cat-head`): the chevron, the name in tracked capitals, a rule, and
 /// on hover or focus the "+" that makes a channel in it.
 #[allow(clippy::too_many_arguments)]
@@ -332,6 +352,7 @@ fn category(
     roves: &Rc<Roves>,
     stop: usize,
     can_add: bool,
+    before: Before,
     handlers: &ListHandlers,
 ) -> gpui::AnyElement {
     let id = c.id;
@@ -401,7 +422,7 @@ fn category(
         .id(SharedString::from(format!("category-cell-{}", c.id.hex())))
         .group(group.clone())
         .relative()
-        .mt(Pixels::from(css::CAT_TOP))
+        .mt(Pixels::from(category_top_margin(before)))
         .child(head);
     if can_add {
         let label = tf("layout.category.add", &[("name", c.name.as_str())]);
@@ -544,6 +565,11 @@ pub fn render(
                 &roves,
                 stop,
                 model.can_add_in_category,
+                match i.checked_sub(1).map(|p| entries[p]) {
+                    Some(Item::Channel(prev)) if prev.kind == 1 => Before::VoiceRow,
+                    Some(Item::Channel(_)) => Before::TextRow,
+                    _ => Before::Nothing,
+                },
                 handlers,
             ),
             Item::Channel(ch) => {
@@ -635,6 +661,13 @@ mod tests {
                 Item::Channel(c) => c.name.clone(),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_categorys_gap_is_ten_px_after_every_kind_of_row() {
+        assert_eq!(category_top_margin(Before::VoiceRow), 10.0);
+        assert_eq!(category_top_margin(Before::TextRow), 10.0);
+        assert_eq!(category_top_margin(Before::Nothing), 10.0);
     }
 
     #[test]

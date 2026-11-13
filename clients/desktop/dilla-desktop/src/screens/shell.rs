@@ -28,7 +28,15 @@ use dilla_desktop_ui::components::shell::{
 use dilla_desktop_ui::tokens::{color, font, layout};
 
 pub mod keys;
+pub mod resize;
 pub mod window;
+
+/// A preference that could not be kept is reported on stderr (the layout still works for this run).
+fn warn(what: &str, result: Result<(), dilla_client::prefs::PrefsError>) {
+    if let Err(e) = result {
+        eprintln!("dilla: {what} was not kept: {e}");
+    }
+}
 
 /// A button's handler: it gets the window and the app.
 pub type Action = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
@@ -490,8 +498,14 @@ impl ShellView {
     /// Keeps the widths (the drag ended, or a key moved a splitter).
     fn commit_widths(&self) {
         if let Some(prefs) = &self.prefs {
-            let _ = LayoutPrefs::write_sidebar(prefs, self.widths.sidebar);
-            let _ = LayoutPrefs::write_aside(prefs, self.widths.aside);
+            warn(
+                "the sidebar width",
+                LayoutPrefs::write_sidebar(prefs, self.widths.sidebar),
+            );
+            warn(
+                "the aside width",
+                LayoutPrefs::write_aside(prefs, self.widths.aside),
+            );
         }
     }
 
@@ -571,7 +585,10 @@ impl ShellView {
                     self.muted.remove(&channel.hex());
                 }
                 if let Some(prefs) = &self.prefs {
-                    let _ = LayoutPrefs::set_id(prefs, LayoutPrefs::MUTED, &channel.hex(), on);
+                    warn(
+                        "the muted channels",
+                        LayoutPrefs::set_id(prefs, LayoutPrefs::MUTED, &channel.hex(), on),
+                    );
                 }
             }
             "link" => {
@@ -597,7 +614,10 @@ impl ShellView {
             self.collapsed.remove(&category.hex());
         }
         if let Some(prefs) = &self.prefs {
-            let _ = LayoutPrefs::set_id(prefs, LayoutPrefs::COLLAPSED, &category.hex(), on);
+            warn(
+                "the folded categories",
+                LayoutPrefs::set_id(prefs, LayoutPrefs::COLLAPSED, &category.hex(), on),
+            );
         }
         cx.notify();
     }
@@ -1047,6 +1067,7 @@ mod tests {
     }
 
     use dilla_client::state::{Channel, ChannelGroupState, Community, UserId};
+    use gpui::VisualContext as _;
 
     fn channel(n: u8, name: &str, position: u32) -> Channel {
         Channel {
@@ -1221,5 +1242,74 @@ mod tests {
             assert_eq!(s.route(), &Route::Settings(None));
             assert_eq!(s.back(cx), Some(at(3)));
         });
+    }
+
+    /// Alt+Up and Alt+Down step the listed channels from anywhere in the shell, Alt+Left and Alt+Right the route history,
+    /// as keystrokes through the registered bindings.
+    #[gpui::test]
+    fn alt_arrows_step_channels_and_history(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let state = world();
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        vcx.focus(&shell);
+        let channel = |shell: &Entity<ShellView>, vcx: &mut gpui::VisualTestContext| {
+            shell.read_with(vcx, |s, _| s.channel)
+        };
+        assert_eq!(channel(&shell, vcx), Some(ChannelId([2; 16])));
+        vcx.simulate_keystrokes("alt-down");
+        assert_eq!(channel(&shell, vcx), Some(ChannelId([3; 16])));
+        vcx.simulate_keystrokes("alt-down");
+        assert_eq!(
+            channel(&shell, vcx),
+            Some(ChannelId([3; 16])),
+            "the last channel stops it"
+        );
+        vcx.simulate_keystrokes("alt-up");
+        assert_eq!(channel(&shell, vcx), Some(ChannelId([2; 16])));
+        // History: the two selections are entries; back goes to the one before, forward again.
+        vcx.simulate_keystrokes("alt-left");
+        assert_eq!(channel(&shell, vcx), Some(ChannelId([3; 16])));
+        vcx.simulate_keystrokes("alt-left");
+        assert_eq!(channel(&shell, vcx), Some(ChannelId([2; 16])));
+        vcx.simulate_keystrokes("alt-right");
+        assert_eq!(channel(&shell, vcx), Some(ChannelId([3; 16])));
+    }
+
+    /// A click on a title bar button reaches the button's handler: the bar's drag handler does not take the press
+    /// (the web leaves `button, input, a` out of its drag region).
+    #[cfg(not(target_os = "macos"))]
+    #[gpui::test]
+    fn a_click_on_a_title_bar_button_reaches_its_handler(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let state = world();
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+            .with_controls(true)
+        });
+        let width = vcx.update(|window, _| f32::from(window.viewport_size().width));
+        // The settings button is the fourth from the right: settings, minimise, maximise, close (28 wide, 8 apart, 12
+        // from the edge); the bar is 44 high.
+        let x = width - 12.0 - 3.0 * 36.0 - 14.0;
+        vcx.simulate_click(
+            gpui::point(Pixels::from(x), Pixels::from(22.0f32)),
+            gpui::Modifiers::none(),
+        );
+        shell.read_with(vcx, |s, _| assert_eq!(s.route(), &Route::Settings(None)));
     }
 }

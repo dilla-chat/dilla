@@ -312,6 +312,7 @@ impl AppView {
         let Some(root) = self.launch.root.clone() else {
             return;
         };
+        let close_root = root.clone();
         let subscription = cx.observe_window_bounds(window, move |this, window, cx| {
             if this.screen.mode() != WindowMode::Workspace || window.is_maximized() {
                 return;
@@ -332,11 +333,25 @@ impl AppView {
             }));
         });
         self.bounds_sub = Some(subscription);
+        // The last bounds are kept at once when the window closes, not only after the debounce.
+        window.on_window_should_close(cx, move |window, _| {
+            if window.is_resizable() && !window.is_maximized() {
+                let b = window.bounds();
+                SavedBounds {
+                    x: f32::from(b.origin.x),
+                    y: f32::from(b.origin.y),
+                    width: f32::from(b.size.width),
+                    height: f32::from(b.size.height),
+                }
+                .write(&dilla_client::prefs::Prefs::app(&close_root));
+            }
+            true
+        });
     }
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.screen {
             Screen::Starting => div()
                 .size_full()
@@ -349,6 +364,25 @@ impl Render for AppView {
             Screen::SignIn(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
         };
-        tracked("root", div().size_full().bg(color::BG).child(body))
+        // A window that draws its own frame is resized from strips at its rim.
+        let size = window.viewport_size();
+        let strips = (self.launch.shipping
+            && window.is_resizable()
+            && !window.is_maximized()
+            && matches!(
+                window.window_decorations(),
+                gpui::Decorations::Client { .. }
+            ))
+        .then(|| {
+            crate::screens::shell::resize::render(f32::from(size.width), f32::from(size.height))
+        });
+        tracked(
+            "root",
+            div()
+                .size_full()
+                .bg(color::BG)
+                .child(body)
+                .children(strips.into_iter().flatten()),
+        )
     }
 }
