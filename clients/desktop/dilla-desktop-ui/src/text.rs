@@ -248,7 +248,11 @@ impl Line {
 /// device px, so the box may be up to one device px off the web's: that much slack.
 pub fn fits_laid_out(natural: f32, laid_out: f32, scale: f32) -> bool {
     if scale.fract() == 0.0 {
-        (natural * 64.0).round() <= (laid_out * 64.0).round()
+        let text = gpui::whole_layout_units(natural)
+            .unwrap_or_else(|| (f64::from(natural) * 64.0).ceil());
+        let room = gpui::whole_layout_units(laid_out)
+            .unwrap_or_else(|| (f64::from(laid_out) * 64.0).floor());
+        text <= room
     } else {
         natural <= laid_out + 1.0 / scale
     }
@@ -746,6 +750,10 @@ mod tests {
         );
         assert!(fits_laid_out(54.609375, 54.609375, 1.0));
         assert!(!fits_laid_out(54.609375, 54.59375, 1.0));
+        // Review L m5: a flex-distributed box off the unit (54.608 px, 3494.9 units) is floored onto it (3494), as
+        // Chromium's LayoutUnit is, so "general" (3495 units) does not fit; a text off the unit is ceiled.
+        assert!(!fits_laid_out(54.609375, 54.608, 2.0));
+        assert!(!fits_laid_out(54.5940, 54.59375, 2.0));
     }
 
     #[test]
