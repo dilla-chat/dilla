@@ -94,9 +94,9 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_user_settings_profile => "profile", "parity after T6c: chrome 0.8596 % (the profile rows end 2 css px short of the web's and the offset grows down the page)";
+    parity_user_settings_profile => "profile";
     parity_user_settings_profile_b => "profile-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)";
-    parity_user_settings_profile_short_wide => "profile-short-wide", "parity after T6c: chrome 1.0161 % (as profile)";
+    parity_user_settings_profile_short_wide => "profile-short-wide";
     parity_user_settings_profile_short_wide_b => "profile-short-wide-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)";
     parity_user_settings_devices => "devices", "parity after T6c: chrome 0.4962 % (device rows: their text lines and edges 1-3 css px off)";
     parity_user_settings_devices_b => "devices-b", "parity after T6c: chrome 0.3922 % (as devices)";

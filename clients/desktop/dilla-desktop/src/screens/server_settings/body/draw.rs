@@ -4,8 +4,8 @@ use dilla_client::features::server_admin::{AFK_TIMEOUTS, Direction, SLOW_STEPS, 
 use dilla_client::state::Channel;
 use dilla_client::state::server_admin::GifRating;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use dilla_desktop_ui::IconName;
@@ -75,6 +75,11 @@ fn act_click(
         let _ = view.update(app, |this, cx| f(this, window, cx));
     }
 }
+
+/// The user agent's `h3` size (`font-size: 1.17em`), which `.dw-settings-section h3` keeps.
+const UA_H3_EM: f32 = 1.17;
+/// The user agent's `h4` block margins (`margin-block: 1.33em`), which `.dw-admin-name` keeps.
+const UA_H4_MARGIN_EM: f32 = 1.33;
 
 fn dim(text_: impl Into<SharedString>) -> AnyElement {
     div()
@@ -630,13 +635,8 @@ impl Body {
         .on_click(act_click(cx, move |this, window, cx| {
             this.save_edit(channel_id, window, cx)
         }));
-        // The panel is anchored under the top and capped; what does not fit scrolls inside (`.d-dialog` max-height).
-        let cap = layout::dialog_body_cap(f32::from(window.viewport_size().height));
-        let body = div()
-            .id("edit-channel-body")
-            .max_h(cap)
-            .overflow_y_scroll()
-            .child(body);
+        // Taller than the `.d-dialog`'s max-height, the dialog scrolls as one box, its footer under the body (the `<dialog>`'s
+        // own overflow): `Dialog` does that.
         // ChannelsSection.tsx renders the editor as its section's child (`Dialog::in_settings_section`).
         Dialog::new("edit-channel", title, t("admin.cancel"))
             .in_settings_section()
@@ -658,14 +658,12 @@ impl Body {
         };
         let access = self.access();
         let id = c.id;
+        // The section's `<h3>` keeps the user agent's heading (only its margin is reset, `.dw-settings-section h3`): 1.17em of
+        // the section's 12px, bold.
         let heading = || {
-            line(
-                t("chperm.title"),
-                text::SM,
-                line_height(text::SM, 1.5),
-                color::FG,
-            )
-            .weight(font::WEIGHT_LABEL)
+            let size = px(f32::from(text::UI) * UA_H3_EM);
+            line(t("chperm.title"), size, line_height(size, 1.5), color::FG)
+                .weight(font::WEIGHT_DISPLAY)
         };
         let (Some(everyone), true) = (access.everyone, access.overwrites_loaded) else {
             return div()
@@ -728,10 +726,11 @@ impl Body {
             }
         };
 
+        // `.dw-settings-section`: a column, `--group-gap` apart.
         let mut panel = div()
             .flex()
             .flex_col()
-            .gap(layout::ROW_GAP)
+            .gap(layout::GROUP_GAP)
             .child(heading());
         panel = panel.child(
             Toggle::new("channel-private", t("chperm.private"), private)
@@ -744,14 +743,17 @@ impl Body {
                     cx.notify();
                 })),
         );
+        // `h4.dw-admin-name`: the user agent's heading, bold at the section's 12px, its 1.33em block margins kept.
         panel = panel.child(
-            line(
-                t("chperm.who"),
-                text::SM,
-                line_height(text::SM, 1.5),
-                color::FG,
-            )
-            .weight(font::WEIGHT_LABEL),
+            div().my(px(f32::from(text::UI) * UA_H4_MARGIN_EM)).child(
+                line(
+                    t("chperm.who"),
+                    text::UI,
+                    line_height(text::UI, 1.5),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY),
+            ),
         );
         if entries.is_empty() {
             panel = panel.child(dim(t("chperm.none")));

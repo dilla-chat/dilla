@@ -24,7 +24,7 @@ use dilla_desktop_ui::components::select::Select;
 use dilla_desktop_ui::components::settings::frame::{group_heading, section_header_full};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
 use dilla_desktop_ui::components::text_field::TextField;
-use dilla_desktop_ui::components::toggle::Toggle;
+use dilla_desktop_ui::components::toggle::{Fit, Toggle};
 use dilla_desktop_ui::components::{Button, ButtonSize, ButtonVariant};
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Entity, Global, InteractiveElement,
@@ -481,6 +481,7 @@ impl Render for BotPage {
             let bot_name = bot.clone();
             rows.push(Box::new(move |position| {
                 let mut row = SettingsRow::new("bot-glenn", bot_name)
+                    .full_measure()
                     .icon(IconName::Bot)
                     .tag(t("serverSettings.bot.tag"))
                     .hint(card_hint)
@@ -529,11 +530,13 @@ impl Render for BotPage {
             rows.push(Box::new(move |position| {
                 let label = t(&format!("serverSettings.bot.cap.{name}"));
                 SettingsRow::new(format!("bot-capability-{name}"), label)
+                    .full_measure()
                     .icon(icon)
                     .hint(t(&format!("serverSettings.bot.cap.{name}.hint")))
                     .position(position)
                     .child(
                         Toggle::new(format!("bot-capability-{name}-switch"), label, checked)
+                            .fit(Fit::Row)
                             .disabled(disabled)
                             .on_change(move |on, _, cx| {
                                 this.update(cx, |page, cx| {
@@ -552,6 +555,7 @@ impl Render for BotPage {
             let bot_name = bot.clone();
             rows.push(Box::new(move |position| {
                 SettingsRow::new("bot-voice", t("serverSettings.bot.voice"))
+                    .full_measure()
                     .icon(IconName::Lock)
                     .hint(tf("serverSettings.bot.voiceHint", &[("bot", &bot_name)]))
                     .position(position)
@@ -576,6 +580,7 @@ impl Render for BotPage {
                     None => t(key).to_owned(),
                 };
                 let mut row = SettingsRow::new("bot-health", label)
+                    .full_measure()
                     .icon(IconName::Activity)
                     .position(position);
                 if let Some(fingerprint) = &catalog.fingerprint {
@@ -695,6 +700,7 @@ impl BotPage {
                 .filter(|(c, _)| *c == id)
                 .map(|(_, text)| text.clone());
             let mut row = SettingsRow::new(format!("bot-channel-{}", id.hex()), format!("#{name}"))
+                .full_measure()
                 .icon(IconName::Hash)
                 .tag(t("bot.channel.badge"))
                 .position(GroupPosition::of(i, n));
@@ -756,6 +762,7 @@ impl BotPage {
             let busy = self.busy;
             group = group.child(
                 SettingsRow::new(format!("bot-hook-{id_hex}"), hook.name.clone())
+                    .full_measure()
                     .icon(IconName::Link)
                     .hint(tf(
                         "bot.webhooks.posts",
@@ -768,6 +775,7 @@ impl BotPage {
                             t("bot.webhooks.allowEveryone"),
                             hook.allow_everyone,
                         )
+                        .fit(Fit::Row)
                         .on_change(move |on, _, cx| {
                             let Some(admin) = toggle_page.read(cx).admin() else {
                                 return;

@@ -231,7 +231,7 @@ macro_rules! parity {
 
 parity! {
     parity_members_pane => "members/pane";
-    parity_members_pane_b => "members/pane-b", "needs its reference (shoot.mjs)";
+    parity_members_pane_b => "members/pane-b";
     parity_members_profile_card => "members/profile-card", "parity after T6c: chrome 0.2121 % (the card's edge and avatar, 1 css px: re-measured at the T6c merge)";
     parity_members_profile_card_b => "members/profile-card-b", "needs its reference (shoot.mjs)";
     parity_members_context_menu => "members/context-menu", "cannot be shot: shoot.mjs has no shift-f10 (Playwright wants F10) and the chord grammar no contextmenu key (Task 5)";
@@ -244,8 +244,8 @@ parity! {
     parity_server_settings_roles_b => "server-settings/roles-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
     parity_server_settings_self_roles => "server-settings/self-roles", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
     parity_server_settings_self_roles_b => "server-settings/self-roles-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_bans => "server-settings/bans", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_bans_b => "server-settings/bans-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_moderation_log => "server-settings/moderation-log", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
+    parity_server_settings_bans => "server-settings/bans";
+    parity_server_settings_bans_b => "server-settings/bans-b";
+    parity_server_settings_moderation_log => "server-settings/moderation-log";
     parity_server_settings_moderation_log_b => "server-settings/moderation-log-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
 }
