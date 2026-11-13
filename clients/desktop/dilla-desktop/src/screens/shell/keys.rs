@@ -29,6 +29,33 @@ actions!(
 /// The key context of the shell's root.
 pub const CONTEXT: &str = "Shell";
 
+/// Review L m3 (Shell.tsx returns early on `event.repeat`): a chord held down acts once. GPUI hands a binding's action
+/// no `is_held`, so the latch closes when the chord acts and opens on the chord key's release. A release the shell never
+/// sees (the focus left it meanwhile) cannot hold it shut: the latch also opens once no repeat came for [`Self::QUIET`].
+#[derive(Debug, Default)]
+pub struct RepeatLatch {
+    last: Option<std::time::Instant>,
+}
+
+impl RepeatLatch {
+    /// Auto-repeat comes every few tens of ms after a first delay of at most about 0.7 s.
+    pub const QUIET: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// The chord came at `now`: whether it acts (a fresh press) or is a held repeat.
+    pub fn press(&mut self, now: std::time::Instant) -> bool {
+        let repeat = self
+            .last
+            .is_some_and(|t| now.saturating_duration_since(t) < Self::QUIET);
+        self.last = Some(now);
+        !repeat
+    }
+
+    /// The chord's key went up.
+    pub fn release(&mut self) {
+        self.last = None;
+    }
+}
+
 /// Registers the shell's bindings.
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
@@ -45,4 +72,28 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-shift-enter", CallOpenDm, Some(CONTEXT)),
         KeyBinding::new("cmd-shift-enter", CallOpenDm, Some(CONTEXT)),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Review L m3: a held Ctrl+Shift+Enter starts the DM call once; its auto-repeats do nothing until the key goes up.
+    #[test]
+    fn a_held_chord_acts_once() {
+        let mut latch = RepeatLatch::default();
+        let t0 = Instant::now();
+        assert!(latch.press(t0), "the first press acts");
+        for n in 1..40 {
+            assert!(
+                !latch.press(t0 + Duration::from_millis(500 + 33 * n)),
+                "repeat {n}"
+            );
+        }
+        latch.release();
+        assert!(latch.press(t0 + Duration::from_secs(3)), "a new press acts");
+        // A release the shell never saw: the next press after a quiet spell acts.
+        assert!(latch.press(t0 + Duration::from_secs(3) + RepeatLatch::QUIET));
+    }
 }
