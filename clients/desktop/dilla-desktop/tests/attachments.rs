@@ -87,3 +87,164 @@ parity! {
     parity_attachments_media_player => "media-player",
     parity_attachments_media_player_b => "media-player-b",
 }
+
+mod behaviour {
+    //! e2e/voice/media-attachments.spec.ts, "bob plays alice's webm and WAV inline; a truncated file shows the error and
+    //! save" (the brief's `audio_attachment_plays`), against a real dillad and through this app's own audio path
+    //! (symphonia, rodio). The player is rodio's, detached from a device (CI has none): the test pulls its output.
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use dilla_client::Client;
+    use dilla_client::features::attachments::NewFile;
+    use dilla_client::state::attachments::TrayPhase;
+    use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItem, TimelineItemState};
+    use dilla_client::testing::host::{
+        Host, Person, clear_session, community, sign_up, start, start_host, wait_for,
+    };
+    use dilla_desktop::screens::attachments::media::{
+        MediaDecoder, Playback, open_audio, write_for_system_player,
+    };
+
+    const WAIT: Duration = Duration::from_secs(60);
+
+    async fn two_people(tag: &str) -> (Host, Person, Person, [u8; 16]) {
+        let host = tokio::task::spawn_blocking({
+            let tag = tag.to_owned();
+            move || start_host(&tag, "127.0.0.1:0", None)
+        })
+        .await
+        .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let a = sign_up(&host, &invite, "alice", "alice", tag).await;
+        let b = sign_up(&host, &invite, "bob", "bob", tag).await;
+        tokio::task::spawn_blocking(move || {
+            let c = community(&host, &a, "gpui", &[&b]);
+            clear_session(&a);
+            clear_session(&b);
+            (host, a, b, c)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn general(client: &Client, c: [u8; 16]) -> ChannelId {
+        wait_for(client, WAIT, "the channel list", |s| {
+            s.channel_named(CommunityId(c), "general").is_some()
+        })
+        .await
+        .channel_named(CommunityId(c), "general")
+        .unwrap()
+        .id
+    }
+
+    fn row(s: &AppState, channel: ChannelId, body: &str) -> Option<TimelineItem> {
+        s.timelines
+            .get(&channel)?
+            .items
+            .iter()
+            .find(|i| i.body == body && i.state == TimelineItemState::Ok)
+            .cloned()
+    }
+
+    /// One second of a 440 Hz tone, 16-bit mono WAV at 8 kHz.
+    fn wav() -> Vec<u8> {
+        let (rate, n) = (8000u32, 8000u32);
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(36 + n * 2).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(n * 2).to_le_bytes());
+        for i in 0..n {
+            let s =
+                ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 16000.0) as i16;
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+        out
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    async fn audio_attachment_plays() {
+        let (_host, pa, pb, c) = two_people("t12-audio").await;
+        let (alice, bob) = (start(&pa).await, start(&pb).await);
+        let channel = general(&alice, c).await;
+        general(&bob, c).await;
+        alice.open_channel(channel).await.unwrap().unwrap();
+        bob.open_channel(channel).await.unwrap().unwrap();
+
+        let tone = wav();
+        let truncated = tone[..30].to_vec();
+        let webm = b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01webm".to_vec();
+        let tray = alice.attachments().tray(channel);
+        tray.add(vec![
+            NewFile::from_bytes("shanty.wav", "audio/wav", tone),
+            NewFile::from_bytes("cut.wav", "audio/wav", truncated),
+            NewFile::from_bytes("clip.webm", "video/webm", webm.clone()),
+        ])
+        .await
+        .unwrap();
+        assert!(tray.entries().iter().all(|e| e.phase == TrayPhase::Ready));
+        let d = tray.take_all().unwrap();
+        alice
+            .attachments()
+            .send(channel, "the shanty".into(), d)
+            .await
+            .unwrap()
+            .unwrap();
+        let s = wait_for(&bob, WAIT, "alice's three files", |s| {
+            row(s, channel, "the shanty").is_some_and(|r| r.attachments.len() == 3)
+        })
+        .await;
+        let seq = row(&s, channel, "the shanty").unwrap().seq.unwrap();
+
+        // The WAV plays inline: the tone comes out; volume, seek and pause work.
+        let opened = bob
+            .attachments()
+            .open(channel, seq, 0, false)
+            .await
+            .unwrap()
+            .unwrap();
+        let decoder = open_audio(Arc::new(opened.bytes), "audio/wav").expect("the WAV plays");
+        assert_eq!(decoder.duration(), Some(Duration::from_secs(1)));
+        let (player, mut out) = Playback::start_detached(Box::new(decoder)).unwrap();
+        player.play();
+        let first: Vec<f32> = out.by_ref().take(4000).collect();
+        let rms = (first.iter().map(|x| x * x).sum::<f32>() / first.len() as f32).sqrt();
+        assert!(rms > 0.2, "the tone plays (rms {rms})");
+        player.set_volume(0.5);
+        assert_eq!(player.volume(), 0.5);
+        player.pause();
+        assert!(player.is_paused());
+
+        // The truncated WAV cannot play: the card shows the error and save.
+        let cut = bob
+            .attachments()
+            .open(channel, seq, 1, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(open_audio(Arc::new(cut.bytes), "audio/wav").is_err());
+
+        // The webm goes to the system player: a checked file under a random name in the instance's directory.
+        let clip = bob
+            .attachments()
+            .open(channel, seq, 2, false)
+            .await
+            .unwrap()
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("dilla-t12-audio-{}", std::process::id()));
+        let path = write_for_system_player(&dir, "video/webm", &clip.bytes).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), webm);
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("webm"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

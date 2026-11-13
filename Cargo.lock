@@ -2165,6 +2165,7 @@ dependencies = [
  "dilla-media",
  "dilla-parity",
  "dilla-testkit",
+ "getrandom 0.3.4",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",

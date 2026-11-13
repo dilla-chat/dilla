@@ -413,8 +413,8 @@ impl Descriptor {
 
     /// `[blob_id, key, nonce, size, mime, w|null, h|null, thumb|null, name]` (core-port.ts `readDescriptor`).
     pub(crate) fn decode(raw: &[u8]) -> Result<Self, AttachmentError> {
-        let mut tree = value::decode(raw)
-            .map_err(|_| AttachmentError::Other("E_CBOR_SHAPE".to_owned()))?;
+        let mut tree =
+            value::decode(raw).map_err(|_| AttachmentError::Other("E_CBOR_SHAPE".to_owned()))?;
         Self::from_tree(&mut tree)
     }
 
@@ -467,7 +467,6 @@ impl Descriptor {
             name: value::text(&a[8]).map_err(|_| bad())?,
         })
     }
-
 }
 
 /// A CBOR head (major type and argument), in its shortest form, as `Value::encode` writes it.
@@ -517,7 +516,15 @@ fn encode_send(body: &str, attachments: &[Descriptor]) -> (Zeroizing<Vec<u8>>, u
         + body.len()
         + attachments
             .iter()
-            .map(|d| 10 * 9 + 32 + 32 + 12 + d.mime.len() + d.name.len() + d.thumb.as_ref().map_or(0, Vec::len))
+            .map(|d| {
+                10 * 9
+                    + 32
+                    + 32
+                    + 12
+                    + d.mime.len()
+                    + d.name.len()
+                    + d.thumb.as_ref().map_or(0, Vec::len)
+            })
             .sum::<usize>();
     let mut out = Zeroizing::new(Vec::with_capacity(capacity));
     cbor_head(&mut out, 4, 5);
@@ -560,7 +567,9 @@ pub async fn fetch(
         .await
         .map_err(|e| {
             if e.code == "E_BODY_TOO_LARGE" {
-                AttachmentError::BlobOpen("the stored object is larger than its descriptor".to_owned())
+                AttachmentError::BlobOpen(
+                    "the stored object is larger than its descriptor".to_owned(),
+                )
             } else {
                 AttachmentError::from(e)
             }
@@ -657,6 +666,18 @@ impl BlobRoutes for InstanceBlobs {
             .http_route::<r::ConfirmBlob>(&[&channel.hex(), &hex(&blob)], NoBody, true)
             .await
     }
+}
+
+/// Reads a picked or dropped file, at most one byte past [`ATTACHMENT_CAP`] (`File::open(..).take(CAP + 1)`), into a
+/// zeroizing buffer: a device that never ends (`/dev/zero`) or a file that grows while it is read stops there, and its
+/// length says it is over the cap.
+pub fn read_bounded(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    let mut out = Zeroizing::new(Vec::new());
+    std::fs::File::open(path)?
+        .take(ATTACHMENT_CAP + 1)
+        .read_to_end(&mut out)?;
+    Ok(out)
 }
 
 /// A file handed to the tray: picked or dropped from disk (read when its turn comes, never when it is over the cap),
@@ -877,9 +898,7 @@ impl Tray {
         let bytes = match source {
             FileSource::Bytes(b) => b,
             FileSource::Path(p) => {
-                match tokio::task::spawn_blocking(move || std::fs::read(p).map(Zeroizing::new))
-                    .await
-                {
+                match tokio::task::spawn_blocking(move || read_bounded(&p)).await {
                     Ok(Ok(b)) => b,
                     _ => return self.fail(id, "E_ATTACHMENT_READ".to_owned()),
                 }
@@ -1123,9 +1142,11 @@ impl Attachments {
             let g = Self::group_of(&inner, channel).await?;
             // The core's answer holds the file's key: it is wiped when dropped.
             let raw = Zeroizing::new(
-                with_core(inner.engine().core(), move |c| c.attachment_get(&g, seq, index))
-                    .await
-                    .map_err(|e| AttachmentError::Other(e.code.to_owned()))?,
+                with_core(inner.engine().core(), move |c| {
+                    c.attachment_get(&g, seq, index)
+                })
+                .await
+                .map_err(|e| AttachmentError::Other(e.code.to_owned()))?,
             );
             let d = Descriptor::decode(&raw)?;
             drop(raw);
@@ -1467,8 +1488,14 @@ mod tests {
         let mut tree = value::decode(&element(&d).encode()).unwrap();
         let back = Descriptor::from_tree(&mut tree).unwrap();
         assert_eq!(*back.key, [0x11; 32]);
-        let Value::Array(a) = &tree else { panic!("an array") };
-        assert_eq!(a[1].as_bytes(), Some(&[0u8; 32][..]), "the tree's key is zeroed");
+        let Value::Array(a) = &tree else {
+            panic!("an array")
+        };
+        assert_eq!(
+            a[1].as_bytes(),
+            Some(&[0u8; 32][..]),
+            "the tree's key is zeroed"
+        );
     }
 
     /// Fix round 1: the send request is the core's encoding, built in one zeroizing buffer that never grows (a grown
@@ -1501,17 +1528,30 @@ mod tests {
         let (d, stored) = descriptor(b"hello");
         fake.stored.lock().unwrap().insert(d.blob_id, stored);
         let routes: Arc<dyn BlobRoutes> = fake.clone();
-        assert_eq!(&**fetch(&*routes, ChannelId([7; 16]), &d).await.unwrap(), b"hello");
+        assert_eq!(
+            &**fetch(&*routes, ChannelId([7; 16]), &d).await.unwrap(),
+            b"hello"
+        );
         assert_eq!(*fake.caps.lock().unwrap(), [5 + 16]);
         *fake.fail_get.lock().unwrap() = Some(ApiError::local(200, "E_BODY_TOO_LARGE", ""));
         assert_eq!(
-            fetch(&*routes, ChannelId([7; 16]), &d).await.err().map(|e| e.code()),
+            fetch(&*routes, ChannelId([7; 16]), &d)
+                .await
+                .err()
+                .map(|e| e.code()),
             Some("E_BLOB_OPEN".to_owned())
         );
         let mut big = d.clone();
         big.size = ATTACHMENT_CAP + 1;
-        assert_eq!(fetch(&*routes, ChannelId([7; 16]), &big).await.err(), Some(AttachmentError::TooLarge));
-        assert_eq!(fake.caps.lock().unwrap().len(), 2, "no request for a file over the cap");
+        assert_eq!(
+            fetch(&*routes, ChannelId([7; 16]), &big).await.err(),
+            Some(AttachmentError::TooLarge)
+        );
+        assert_eq!(
+            fake.caps.lock().unwrap().len(),
+            2,
+            "no request for a file over the cap"
+        );
     }
 
     #[derive(Default)]
@@ -1609,6 +1649,30 @@ mod tests {
             b"some bytes"
         );
         assert!(t.entries().is_empty());
+    }
+
+    /// Fix round 1: a picked file is read at most one byte past the cap, so `/dev/zero` or a file growing while it is
+    /// read fails as too large instead of filling memory.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_that_never_ends_is_read_at_most_one_byte_past_the_cap() {
+        let fake = Arc::new(FakeBlobs::default());
+        let (t, _) = tray(&fake);
+        let endless = NewFile::from_path(Path::new("/dev/zero")).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(20), t.add(vec![endless]))
+            .await
+            .expect("the read is bounded")
+            .unwrap();
+        let e = &t.entries()[0];
+        assert_eq!(
+            (e.phase, e.reason.as_str()),
+            (TrayPhase::Failed, "E_ATTACHMENT_TOO_LARGE")
+        );
+        assert!(fake.log.lock().unwrap().is_empty(), "nothing uploaded");
+        assert_eq!(
+            read_bounded(Path::new("/dev/zero")).unwrap().len() as u64,
+            ATTACHMENT_CAP + 1
+        );
     }
 
     #[tokio::test]

@@ -311,7 +311,11 @@ pub enum GifScope {
 }
 
 /// use-gif-community.ts's scope: a thread never offers GIFs; a server channel uses its server; a 1:1 DM its peer.
-pub fn gif_scope(community: Option<CommunityId>, dm_peer: Option<UserId>, in_thread: bool) -> GifScope {
+pub fn gif_scope(
+    community: Option<CommunityId>,
+    dm_peer: Option<UserId>,
+    in_thread: bool,
+) -> GifScope {
     match (in_thread, community, dm_peer) {
         (true, _, _) => GifScope::None,
         (false, Some(c), _) => GifScope::Server(c),
@@ -362,7 +366,10 @@ mod tests {
     /// routes.ts `gifMedia`: the request is bounded by the variant's size (the transport stops reading past it).
     #[test]
     fn a_gif_is_fetched_with_its_variant_s_bound() {
-        assert_eq!(media_request(GifVariant::Preview), ("preview", 5 * 1024 * 1024));
+        assert_eq!(
+            media_request(GifVariant::Preview),
+            ("preview", 5 * 1024 * 1024)
+        );
         assert_eq!(media_request(GifVariant::Full), ("full", 25 * 1024 * 1024));
     }
 
@@ -414,9 +421,17 @@ mod tests {
         let peer = UserId([2; 16]);
         assert_eq!(gif_scope(Some(c), None, false), GifScope::Server(c));
         assert_eq!(gif_scope(None, Some(peer), false), GifScope::Direct(peer));
-        assert_eq!(gif_scope(Some(c), None, true), GifScope::None, "a thread composer offers no GIFs");
+        assert_eq!(
+            gif_scope(Some(c), None, true),
+            GifScope::None,
+            "a thread composer offers no GIFs"
+        );
         assert_eq!(gif_scope(None, Some(peer), true), GifScope::None);
-        assert_eq!(gif_scope(None, None, false), GifScope::None, "a group DM offers none");
+        assert_eq!(
+            gif_scope(None, None, false),
+            GifScope::None,
+            "a group DM offers none"
+        );
     }
 
     #[test]
@@ -433,7 +448,11 @@ mod tests {
             bio: String::new(),
         };
         let mut s = AppState::default();
-        for (c, people) in [(5u8, vec![me, peer]), (6, vec![me, other]), (7, vec![peer, me, other])] {
+        for (c, people) in [
+            (5u8, vec![me, peer]),
+            (6, vec![me, other]),
+            (7, vec![peer, me, other]),
+        ] {
             let id = CommunityId([c; 16]);
             s.communities.push(crate::state::Community {
                 id,
@@ -441,9 +460,13 @@ mod tests {
                 owner: me,
                 policy_version: 0,
             });
-            s.members.insert(id, people.into_iter().map(member).collect());
+            s.members
+                .insert(id, people.into_iter().map(member).collect());
         }
-        assert_eq!(dm_gif_candidates(&s, me, peer), [CommunityId([5; 16]), CommunityId([7; 16])]);
+        assert_eq!(
+            dm_gif_candidates(&s, me, peer),
+            [CommunityId([5; 16]), CommunityId([7; 16])]
+        );
     }
 
     /// DmGifPrivacy.test.tsx: consent names the server it was given for; "on" from Privacy alone is not consent for any

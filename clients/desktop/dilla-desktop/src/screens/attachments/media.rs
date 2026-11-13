@@ -231,7 +231,9 @@ impl MediaDecoder for AudioDecoder {
 
     fn seek(&mut self, to: Duration) -> Result<(), MediaError> {
         self.pending = None;
-        self.seek_inner(to)
+        // A demuxer or codec panic while seeking (symphonia's MP3 seek panics on some streams) is a refused seek.
+        guarded(|| self.seek_inner(to))
+            .unwrap_or_else(|| Err(MediaError::Decode("the seek failed".to_owned())))
     }
 }
 
@@ -363,34 +365,58 @@ impl rodio::Source for Feed {
 /// One playing attachment: the device stream and its player. Dropping it stops the sound.
 pub struct Playback {
     // Held for the player's life: dropping the device sink silences it.
-    _sink: rodio::MixerDeviceSink,
+    _sink: Option<rodio::MixerDeviceSink>,
     player: rodio::Player,
     duration: Option<Duration>,
+}
+
+fn feed(decoder: Box<dyn MediaDecoder>) -> Result<Feed, MediaError> {
+    let channels = NonZero::new(decoder.channels())
+        .ok_or_else(|| MediaError::Unsupported("no channels".to_owned()))?;
+    let rate = NonZero::new(decoder.sample_rate())
+        .ok_or_else(|| MediaError::Unsupported("no rate".to_owned()))?;
+    Ok(Feed {
+        decoder,
+        block: Vec::new(),
+        at: 0,
+        channels,
+        rate,
+    })
 }
 
 impl Playback {
     /// Starts `decoder` on the default output device.
     pub fn start(decoder: Box<dyn MediaDecoder>) -> Result<Self, MediaError> {
-        let channels = NonZero::new(decoder.channels())
-            .ok_or_else(|| MediaError::Unsupported("no channels".to_owned()))?;
-        let rate = NonZero::new(decoder.sample_rate())
-            .ok_or_else(|| MediaError::Unsupported("no rate".to_owned()))?;
         let duration = decoder.duration();
+        let source = feed(decoder)?;
         let sink = rodio::DeviceSinkBuilder::open_default_sink()
             .map_err(|e| MediaError::Output(e.to_string()))?;
         let player = rodio::Player::connect_new(sink.mixer());
-        player.append(Feed {
-            decoder,
-            block: Vec::new(),
-            at: 0,
-            channels,
-            rate,
-        });
+        player.append(source);
         Ok(Self {
-            _sink: sink,
+            _sink: Some(sink),
             player,
             duration,
         })
+    }
+
+    /// The same player detached from any device: its output is the answered source, which the caller pulls (a test,
+    /// or a host without an output device).
+    pub fn start_detached(
+        decoder: Box<dyn MediaDecoder>,
+    ) -> Result<(Self, rodio::queue::SourcesQueueOutput), MediaError> {
+        let duration = decoder.duration();
+        let source = feed(decoder)?;
+        let (player, out) = rodio::Player::new();
+        player.append(source);
+        Ok((
+            Self {
+                _sink: None,
+                player,
+                duration,
+            },
+            out,
+        ))
     }
 
     pub fn play(&self) {
@@ -469,19 +495,11 @@ fn video_container(mime: &str) -> Option<Container> {
     }
 }
 
-/// 128 random bits as 32 hex digits, from the OS's random source through std's hasher keys (nothing of the sender's).
-fn random_name() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut out = String::with_capacity(32);
-    for half in 0..2u64 {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(n);
-        h.write_u64(half);
-        out.push_str(&format!("{:016x}", h.finish()));
-    }
-    out
+/// 128 random bits from the OS (`getrandom`) as 32 hex digits: nothing of the sender's.
+fn random_name() -> std::io::Result<String> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// Marks a written file as downloaded from the internet, so the OS asks before running anything from it: the
@@ -537,7 +555,7 @@ pub fn write_for_system_player(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let path = dir.join(format!("{}.{ext}", random_name()));
+    let path = dir.join(format!("{}.{ext}", random_name()?));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -823,6 +841,17 @@ mod tests {
                     let mut blocks = 0;
                     while d.next_block().is_some() && blocks < 10_000 {
                         blocks += 1;
+                    }
+                    // Seeks anywhere, the absurd included, are an answer, never a panic; decoding goes on after.
+                    for to in [
+                        Duration::ZERO,
+                        Duration::from_millis(500),
+                        Duration::from_secs(3600),
+                        Duration::from_secs(u64::MAX),
+                        Duration::MAX,
+                    ] {
+                        let _ = d.seek(to);
+                        let _ = d.next_block();
                     }
                 }
             }

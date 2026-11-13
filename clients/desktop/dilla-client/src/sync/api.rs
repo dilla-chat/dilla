@@ -313,7 +313,8 @@ impl Api {
     where
         R::Request: Clone,
     {
-        self.http_call_bounded::<R>(args, req, idempotent, None).await
+        self.http_call_bounded::<R>(args, req, idempotent, None)
+            .await
     }
 
     /// [`Self::http_call`] with an optional per-call success body bound (client.ts `maxBodyBytes`).
@@ -392,7 +393,8 @@ impl Api {
     where
         R::Request: Clone,
     {
-        self.http_call_bounded::<R>(args, req, idempotent, Some(cap)).await
+        self.http_call_bounded::<R>(args, req, idempotent, Some(cap))
+            .await
     }
 
     /// One gateway row of the route table for an area feature: the accepted answer's status and body.

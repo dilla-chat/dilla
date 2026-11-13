@@ -14,6 +14,7 @@ use std::rc::Rc;
 use dilla_client::features::attachments::{
     ATTACHMENT_CAP, AttachmentKind, GIF_AUTOPLAY_MAX, attachment_kind, safe_name,
 };
+use dilla_client::features::gifs::{GifScope, gif_scope};
 use dilla_client::state::{TimelineItem, attachments::TrayPhase};
 use dilla_desktop_ui::components::attachments::card::{
     self, FILE_W, GIF_W, IMAGE_W, STATE_GAP, file_card, file_card_height, image_tile, state_line,
@@ -371,28 +372,34 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Opti
                 .color(color::FG_3),
         ),
     );
-    if let (Some(community), Some(channel), true) =
-        (ctx.community, ctx.channel, ctx.client.is_some())
-        && ui::gif_on(community, cx)
-    {
+    // use-gif-community.ts: a server channel's own server; a 1:1 DM's shared servers, found only on the press; never
+    // a thread. `SlotCx` does not say yet whether it draws a thread or a DM's peer (the controller's merge item in
+    // Task 12's report): until it does, a DM and a thread pass `None` and `false` here and offer no GIF button.
+    let scope = gif_scope(ctx.community, None, false);
+    let action: Option<OnClick> = match (scope, ctx.channel, ctx.client.is_some()) {
+        (GifScope::Server(community), Some(channel), true) if ui::gif_on(community, cx) => {
+            Some(click(move |_, cx| ui::toggle_gifs(channel, community, cx)))
+        }
+        (GifScope::Direct(peer), Some(channel), true) => {
+            Some(click(move |_, cx| ui::open_dm_gifs(channel, peer, cx)))
+        }
+        _ => None,
+    };
+    if let Some(action) = action {
         let open = ui::ui(cx).gif.is_some();
         row = row.child(
-            tool(
-                "composer-gif",
-                "gif.button",
-                click(move |_, cx| ui::toggle_gifs(channel, community, cx)),
-            )
-            .px(px(6.0))
-            .when_open(open)
-            .child(
-                dilla_desktop_ui::text::line(
-                    "GIF",
-                    text::BTN,
-                    18.0,
-                    if open { color::ACCENT } else { color::FG_3 },
-                )
-                .weight(dilla_desktop_ui::tokens::font::WEIGHT_LABEL),
-            ),
+            tool("composer-gif", "gif.button", action)
+                .px(px(6.0))
+                .when_open(open)
+                .child(
+                    dilla_desktop_ui::text::line(
+                        "GIF",
+                        text::BTN,
+                        18.0,
+                        if open { color::ACCENT } else { color::FG_3 },
+                    )
+                    .weight(dilla_desktop_ui::tokens::font::WEIGHT_LABEL),
+                ),
         );
     }
     for overlay in overlays(window, cx) {
@@ -429,13 +436,9 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .w(viewport.width - left)
             .h(viewport.height - top)
             .on_drop(|paths: &ExternalPaths, _, cx| {
-                let picked: Vec<_> = paths
-                    .paths()
-                    .iter()
-                    .filter_map(|p| ui::file_from_path(p))
-                    .collect();
-                let (files, previews) = picked.into_iter().unzip();
-                ui::attach(files, previews, cx);
+                let paths = paths.paths().to_vec();
+                cx.spawn(async move |cx| ui::attach_paths(paths, cx).await)
+                    .detach();
             })
             .child(drop_overlay::drop_overlay(
                 t("shell.drop.title"),
@@ -456,6 +459,58 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
         out.push(
             deferred(anchored().position(point(px(0.0), px(0.0))).child(full))
                 .with_priority(3)
+                .into_any_element(),
+        );
+    }
+    if let Some(n) = ui::ui(cx).dm_notice.clone() {
+        let notice = div()
+            .id("gif-dm-notice")
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .w(px(gif_picker::WIDTH))
+            .p(px(12.0))
+            .bg(color::SURFACE_2)
+            .border_1()
+            .border_color(color::LINE_STRONG)
+            .rounded(radius::XL)
+            .occlude()
+            .child(dilla_desktop_ui::text::line(
+                t("gif.dm.title"),
+                text::MD,
+                21.0,
+                color::FG,
+            ))
+            .child(
+                div()
+                    .text_size(text::SM)
+                    .text_color(color::FG_2)
+                    .child(tf("gif.dm.notice", &[("server", &n.server)])),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.0))
+                    .child(
+                        dilla_desktop_ui::components::button::Button::new(
+                            "gif-dm-use",
+                            t("gif.dm.use"),
+                        )
+                        .variant(dilla_desktop_ui::components::button::ButtonVariant::Accent)
+                        .on_click(|_, _, cx| ui::accept_dm_notice(cx)),
+                    )
+                    .child(
+                        dilla_desktop_ui::components::button::Button::new(
+                            "gif-dm-not-now",
+                            t("gif.dm.notNow"),
+                        )
+                        .variant(dilla_desktop_ui::components::button::ButtonVariant::Ghost)
+                        .on_click(|_, _, cx| ui::dismiss_dm_notice(cx)),
+                    ),
+            );
+        out.push(
+            deferred(anchored().snap_to_window().child(notice))
+                .with_priority(2)
                 .into_any_element(),
         );
     }
@@ -620,7 +675,12 @@ pub fn dm_gif_privacy(ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Opti
                 on,
             )
             .on_change(move |v, _, cx| {
-                if toggle_client.gifs().set_dm_consent(v).is_err() {
+                // DmGifPrivacySetting.tsx: enabling here is "on", which still asks with the server named on next use.
+                if toggle_client
+                    .gifs()
+                    .set_dm_consent(v.then_some("on"))
+                    .is_err()
+                {
                     dilla_desktop_ui::components::toast::show_toast(
                         t("workspace.preference.error"),
                         cx,

@@ -99,22 +99,39 @@ async fn dm_gif_needs_consent() {
         .user_id
         .unwrap();
     let s = wait_for(&a, WAIT, "the members of the server", |s| {
-        s.members.get(&CommunityId(c)).is_some_and(|m| m.iter().any(|x| x.user_id == peer))
+        s.members
+            .get(&CommunityId(c))
+            .is_some_and(|m| m.iter().any(|x| x.user_id == peer))
     })
     .await;
     let me = s.account.user_id.unwrap();
     assert_eq!(dm_gif_candidates(&s, me, peer), [CommunityId(c)]);
     // No key: no server to proxy through.
-    assert_eq!(a.gifs().find_dm_community(peer).await.unwrap().unwrap(), None);
-    a.gifs().testing_set_key(CommunityId(c), "abcdefgh12345678").await.unwrap().unwrap();
+    assert_eq!(
+        a.gifs().find_dm_community(peer).await.unwrap().unwrap(),
+        None
+    );
+    a.gifs()
+        .testing_set_key(CommunityId(c), "abcdefgh12345678")
+        .await
+        .unwrap()
+        .unwrap();
     let found = a.gifs().find_dm_community(peer).await.unwrap().unwrap();
     assert_eq!(found, Some(CommunityId(c)));
-    assert!(!a.gifs().dm_consent_for(CommunityId(c)), "no consent before the notice");
+    assert!(
+        !a.gifs().dm_consent_for(CommunityId(c)),
+        "no consent before the notice"
+    );
     a.gifs().set_dm_consent(None).unwrap();
     assert!(!a.gifs().dm_consent_for(CommunityId(c)));
     a.gifs().set_dm_consent(Some("on")).unwrap();
-    assert!(!a.gifs().dm_consent_for(CommunityId(c)), "Privacy's on still asks with the server named");
-    a.gifs().set_dm_consent(Some(&CommunityId(c).hex())).unwrap();
+    assert!(
+        !a.gifs().dm_consent_for(CommunityId(c)),
+        "Privacy's on still asks with the server named"
+    );
+    a.gifs()
+        .set_dm_consent(Some(&CommunityId(c).hex()))
+        .unwrap();
     assert!(a.gifs().dm_consent_for(CommunityId(c)));
     a.gifs().set_dm_consent(None).unwrap();
     assert!(!a.gifs().dm_consent_for(CommunityId(c)), "revoked");
@@ -125,10 +142,10 @@ async fn dm_gif_needs_consent() {
 /// refused once the bound is passed, while the instance is still sending, never read to its end.
 #[tokio::test]
 async fn a_blob_one_byte_over_its_sealed_size_is_refused_without_reading_it_all() {
-    use std::io::{Read, Write};
     use dilla_client::http::routes::{GetBlob, NoBody};
     use dilla_client::http::{AuthToken, ReqwestHttp};
     use dilla_client::seams::HttpError;
+    use std::io::{Read, Write};
 
     let size: u64 = 1000;
     let cap = size + 16;
@@ -140,14 +157,17 @@ async fn a_blob_one_byte_over_its_sealed_size_is_refused_without_reading_it_all(
         let _ = s.read(&mut buf);
         s.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
         // One byte over the bound first, then a body that never ends: a client reading to the end waits forever.
-        let _ = s.write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n");
+        let _ = s.write_all(
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+        );
         let first = vec![7u8; (cap + 1) as usize];
         let _ = s.write_all(format!("{:x}\r\n", first.len()).as_bytes());
         let _ = s.write_all(&first);
         let _ = s.write_all(b"\r\n");
         let chunk = vec![7u8; 64 * 1024];
         for _ in 0..64 {
-            if s.write_all(format!("{:x}\r\n", chunk.len()).as_bytes()).is_err()
+            if s.write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                .is_err()
                 || s.write_all(&chunk).is_err()
                 || s.write_all(b"\r\n").is_err()
             {
@@ -159,11 +179,21 @@ async fn a_blob_one_byte_over_its_sealed_size_is_refused_without_reading_it_all(
     let started = std::time::Instant::now();
     let http = ReqwestHttp::new(url, AuthToken::new("t")).unwrap();
     let err = http
-        .call_capped::<GetBlob>(&["0123456789abcdef0123456789abcdef", &"ab".repeat(32)], NoBody, cap)
+        .call_capped::<GetBlob>(
+            &["0123456789abcdef0123456789abcdef", &"ab".repeat(32)],
+            NoBody,
+            cap,
+        )
         .await
         .expect_err("one byte over the sealed size");
-    assert!(matches!(err, HttpError::Status { status: 200, code: Some(ref c) } if c == "E_BODY_TOO_LARGE"), "{err:?}");
-    assert!(started.elapsed() < Duration::from_secs(3), "the client read on to the end of the body");
+    assert!(
+        matches!(err, HttpError::Status { status: 200, code: Some(ref c) } if c == "E_BODY_TOO_LARGE"),
+        "{err:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the client read on to the end of the body"
+    );
     server.join().unwrap();
 }
 

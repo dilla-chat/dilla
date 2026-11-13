@@ -2,6 +2,10 @@
 //! channel, as the worker keeps `trays`), the opened thumbnails and images, the cards' open and save states, the
 //! lightbox, the players, the GIF picker and whether files are dragged over the window.
 //!
+//! Not zeroized (a known limit): the decoded PCM blocks of a player and the copies GPUI keeps of a picture
+//! (`gpui::Image` bytes and its decoded frames) are plain buffers; they are freed, not wiped, when let go. The
+//! decrypted files themselves are `Zeroizing` until they are handed to a decoder or to GPUI.
+//!
 //! Decrypted bytes live only here, in memory, as the decoded images GPUI draws and the players' buffers; they go when
 //! the card, the lightbox or the player lets them go, and with the app. Nothing is written to disk except a file the
 //! person saves (after their choice of path) and a video handed to the system player (`media::write_for_system_player`,
@@ -20,7 +24,6 @@ use dilla_client::features::attachments::{
 use dilla_client::features::gifs::{GifItem, GifVariant};
 use dilla_client::state::{ChannelId, CommunityId};
 use gpui::{App, FocusHandle, Global, Image, ImageFormat, Window};
-use zeroize::Zeroizing;
 
 use super::media::{self, MediaDecoder, Playback};
 use crate::strings::{t, tf};
@@ -108,6 +111,8 @@ pub struct AttachmentsUi {
     pub players: HashMap<CardKey, Player>,
     pub lightbox: Option<LightboxState>,
     pub gif: Option<GifState>,
+    /// The DM GIF notice, while it asks.
+    pub dm_notice: Option<DmNotice>,
     /// `gifStatus` per server: `None` while asked.
     pub gif_on: HashMap<CommunityId, Option<bool>>,
     /// The channel the composer last drew for: where a paste or a drop goes.
@@ -178,14 +183,24 @@ pub fn track(client: Option<Rc<Client>>, channel: Option<ChannelId>, cx: &mut Ap
     if let Some(c) = &client
         && u.instance_dir.is_none()
     {
-        let dir = c.prefs().path().parent().map(PathBuf::from);
-        if let Some(d) = &dir {
-            media::wipe_open_dir(d);
-        }
-        u.instance_dir = dir;
+        u.instance_dir = c.prefs().path().parent().map(PathBuf::from);
     }
     u.client = client;
     u.channel = channel;
+}
+
+/// The instance at `data_dir` opens (its client is about to start): a video an earlier run left for the system
+/// player (a crash, a kill) is wiped. The app calls it from `start_client` (the controller's hook, Task 12's report).
+pub fn instance_opened(data_dir: &std::path::Path, cx: &mut App) {
+    media::wipe_open_dir(data_dir);
+    ui(cx).instance_dir = Some(data_dir.to_owned());
+}
+
+/// The app quits: every video handed to the system player is wiped (the hook in `main.rs`, Task 12's report).
+pub fn on_quit(cx: &mut App) {
+    if let Some(d) = ui(cx).instance_dir.clone() {
+        media::wipe_open_dir(&d);
+    }
 }
 
 /// The tray of `channel`, made on first use.
@@ -239,9 +254,9 @@ pub fn file_from_path(path: &std::path::Path) -> Option<(NewFile, Option<TrayPre
     let preview = match mime {
         "image/gif" => Some(TrayPreview::Gif),
         m if attachment_kind(m) == AttachmentKind::Image && file.size <= ATTACHMENT_CAP => {
-            std::fs::read(path)
+            dilla_client::features::attachments::read_bounded(path)
                 .ok()
-                .map(Zeroizing::new)
+                .filter(|b| b.len() as u64 <= ATTACHMENT_CAP)
                 .and_then(|b| picture(&b))
                 .map(TrayPreview::Image)
         }
@@ -289,13 +304,21 @@ pub fn pick_files(cx: &mut App) {
         let Ok(Ok(Some(paths))) = rx.await else {
             return;
         };
-        let picked: Vec<_> = paths.iter().filter_map(|p| file_from_path(p)).collect();
-        cx.update(|cx| {
-            let (files, previews) = picked.into_iter().unzip();
-            attach(files, previews, cx);
-        });
+        attach_paths(paths, cx).await;
     })
     .detach();
+}
+
+/// Picked or dropped files: their sizes and previews are read off the UI thread, then they join the tray.
+pub async fn attach_paths(paths: Vec<PathBuf>, cx: &mut gpui::AsyncApp) {
+    let picked: Vec<_> = cx
+        .background_executor()
+        .spawn(async move { paths.iter().filter_map(|p| file_from_path(p)).collect() })
+        .await;
+    cx.update(|cx| {
+        let (files, previews) = picked.into_iter().unzip();
+        attach(files, previews, cx);
+    });
 }
 
 /// Removes a tray entry (and its preview).
@@ -427,25 +450,32 @@ pub fn play(key: CardKey, video: bool, mime: String, cx: &mut App) {
                 return;
             }
         };
-        cx.update(|cx| {
-            let state = if video {
-                let dir = ui(cx).instance_dir.clone();
-                match dir.map(|d| media::write_for_system_player(&d, &mime, &opened.bytes)) {
-                    Some(Ok(path)) => {
-                        cx.open_with_system(&path);
-                        None
-                    }
-                    _ => Some(Player::Error),
+        // The file write or the decoder's probe runs off the UI thread; only the device's player starts on it.
+        let dir = cx.update(|cx| ui(cx).instance_dir.clone());
+        let prepared = cx
+            .background_executor()
+        .spawn(async move {
+                if video {
+                    Err(dir.map(|d| media::write_for_system_player(&d, &mime, &opened.bytes)))
+                } else {
+                    Ok(media::open_audio(Arc::new(opened.bytes), &mime))
                 }
-            } else {
-                let bytes = Arc::new(opened.bytes);
-                match media::open_audio(bytes, &mime)
+            })
+            .await;
+        cx.update(|cx| {
+            let state = match prepared {
+                Err(Some(Ok(path))) => {
+                    cx.open_with_system(&path);
+                    None
+                }
+                Err(_) => Some(Player::Error),
+                Ok(decoder) => match decoder
                     .map(|d| Box::new(d) as Box<dyn MediaDecoder>)
                     .and_then(Playback::start)
                 {
                     Ok(p) => Some(Player::Ready(p)),
                     Err(_) => Some(Player::Error),
-                }
+                },
             };
             match state {
                 Some(s) => ui(cx).players.insert(key, s),
@@ -562,6 +592,80 @@ pub fn toggle_gifs(channel: ChannelId, community: CommunityId, cx: &mut App) {
     search_gifs(String::new(), false, cx);
 }
 
+/// The DM GIF notice (DmGifPrivacy.test.tsx): it names the server a 1:1 DM's GIFs would go through; nothing is
+/// searched until the person chooses "Use GIFs".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DmNotice {
+    pub channel: ChannelId,
+    pub community: CommunityId,
+    pub server: String,
+}
+
+/// The GIF button of a 1:1 DM with `peer` (use-gif-community.ts `findCommunity`, only on the press): the shared
+/// servers are asked with `gifStatus` only; none with GIFs on says so; a server this device consented to for DMs
+/// opens the picker; any other opens the notice naming it.
+pub fn open_dm_gifs(channel: ChannelId, peer: dilla_client::state::UserId, cx: &mut App) {
+    if ui(cx).gif.take().is_some() || ui(cx).dm_notice.take().is_some() {
+        cx.refresh_windows();
+        return;
+    }
+    let Some(client) = ui(cx).client.clone() else {
+        return;
+    };
+    let rx = client.gifs().find_dm_community(peer);
+    cx.spawn(async move |cx| {
+        let found = rx.await.ok().and_then(Result::ok).flatten();
+        cx.update(|cx| {
+            match found {
+                None => dilla_desktop_ui::components::toast::show_toast(t("gif.unavailable"), cx),
+                Some(community) if client.gifs().dm_consent_for(community) => {
+                    toggle_gifs(channel, community, cx);
+                }
+                Some(community) => {
+                    let server = client
+                        .state()
+                        .borrow()
+                        .communities
+                        .iter()
+                        .find(|c| c.id == community)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    ui(cx).dm_notice = Some(DmNotice {
+                        channel,
+                        community,
+                        server,
+                    });
+                }
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+/// The notice's "Use GIFs": consent for the named server is saved first; only then does the picker open.
+pub fn accept_dm_notice(cx: &mut App) {
+    let (Some(n), Some(client)) = (ui(cx).dm_notice.take(), ui(cx).client.clone()) else {
+        return;
+    };
+    if client
+        .gifs()
+        .set_dm_consent(Some(&n.community.hex()))
+        .is_err()
+    {
+        dilla_desktop_ui::components::toast::show_toast(t("workspace.preference.error"), cx);
+        cx.refresh_windows();
+        return;
+    }
+    toggle_gifs(n.channel, n.community, cx);
+}
+
+/// The notice's "Not now": nothing is saved or searched.
+pub fn dismiss_dm_notice(cx: &mut App) {
+    ui(cx).dm_notice = None;
+    cx.refresh_windows();
+}
+
 /// Searches (or, with `more`, reads the next page of) the picker's query.
 pub fn search_gifs(query: String, more: bool, cx: &mut App) {
     let Some(client) = ui(cx).client.clone() else {
@@ -670,6 +774,25 @@ pub fn pick_gif(index: usize, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fix round 1: a video left for the system player is wiped when the instance opens and when the app quits, not
+    /// on a composer's first draw; drawing the composer never wipes.
+    #[gpui::test]
+    fn plaintext_videos_go_at_instance_open_and_at_quit(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("dilla-t12-life-{}", std::process::id()));
+        let left = media::open_dir(&dir);
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("a.mp4"), b"x").unwrap();
+        cx.update(|cx| instance_opened(&dir, cx));
+        assert!(!left.exists(), "wiped at open");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("b.mp4"), b"x").unwrap();
+        cx.update(|cx| track(None, None, cx));
+        assert!(left.exists(), "a composer's draw never wipes");
+        cx.update(on_quit);
+        assert!(!left.exists(), "wiped at quit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sizes_read_as_shell_model_ts_formats_them() {
