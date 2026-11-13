@@ -57,6 +57,12 @@ pub trait Running {
     fn latency_ms(&self) -> u32 {
         0
     }
+
+    /// The stream was lost because access was withdrawn (a privacy toggle): no other device would be allowed
+    /// either, so the caller reports the loss without falling back to the default.
+    fn denied(&self) -> bool {
+        false
+    }
 }
 
 /// Receives 48 kHz mono samples as the device delivers them (any chunk size). Runs in the device's
@@ -187,15 +193,38 @@ fn find(host: &cpal::Host, id: &DeviceId) -> Option<cpal::Device> {
 }
 
 /// A failure that means "this device is gone": the device was disconnected, the stream was
-/// invalidated or the host went away. A route change keeps the stream alive, and a transient
-/// xrun, busy or resource error must not move the user's chosen device to the default.
+/// invalidated or the host went away, access was withdrawn (a privacy toggle mid-call), or the
+/// backend reported an unplug it could not classify (ALSA's `ENODEV`, a PipeWire node that went
+/// away). A route change keeps the stream alive, and a transient xrun, busy or resource error must
+/// not move the user's chosen device to the default.
 fn lost(e: &cpal::Error) -> bool {
-    matches!(
-        e.kind(),
+    lost_kind(e.kind(), &e.to_string())
+}
+
+/// [`lost`] by kind and message (tests build no `cpal::Error`).
+pub(crate) fn lost_kind(kind: cpal::ErrorKind, message: &str) -> bool {
+    match kind {
         cpal::ErrorKind::DeviceNotAvailable
-            | cpal::ErrorKind::StreamInvalidated
-            | cpal::ErrorKind::HostUnavailable
-    )
+        | cpal::ErrorKind::StreamInvalidated
+        | cpal::ErrorKind::HostUnavailable
+        | cpal::ErrorKind::PermissionDenied => true,
+        cpal::ErrorKind::BackendError | cpal::ErrorKind::Other => {
+            let m = message.to_ascii_lowercase();
+            [
+                "no such device",
+                "enodev",
+                "device disconnected",
+                "device was disconnected",
+                "device removed",
+                "device not found",
+                "no longer available",
+                "node removed",
+            ]
+            .iter()
+            .any(|w| m.contains(w))
+        }
+        _ => false,
+    }
 }
 
 /// A streaming linear resampler (mono). Voice-grade; the common case (48 kHz devices) bypasses it.
@@ -247,11 +276,16 @@ fn to_i16(x: f32) -> i16 {
 struct Stream {
     _stream: cpal::Stream,
     latency_ms: Arc<AtomicU32>,
+    denied: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Running for Stream {
     fn latency_ms(&self) -> u32 {
         self.latency_ms.load(Ordering::Relaxed)
+    }
+
+    fn denied(&self) -> bool {
+        self.denied.load(Ordering::Acquire)
     }
 }
 
@@ -259,13 +293,19 @@ fn ms(d: Duration) -> u32 {
     d.as_millis().min(u128::from(u32::MAX)) as u32
 }
 
-/// Wraps the one-shot "lost" callback as a cpal error callback.
-fn on_error(on_lost: OnLost) -> impl FnMut(cpal::Error) + Send + 'static {
+/// Wraps the one-shot "lost" callback as a cpal error callback; `denied` records a loss by withdrawn access.
+fn on_error(
+    on_lost: OnLost,
+    denied: Arc<std::sync::atomic::AtomicBool>,
+) -> impl FnMut(cpal::Error) + Send + 'static {
     let mut on_lost = Some(on_lost);
     move |e| {
         if lost(&e)
             && let Some(f) = on_lost.take()
         {
+            if e.kind() == cpal::ErrorKind::PermissionDenied {
+                denied.store(true, Ordering::Release);
+            }
             f();
         }
     }
@@ -309,6 +349,7 @@ impl AudioHost for CpalHost {
         let mut mono: Vec<f32> = Vec::with_capacity(SCRATCH);
         let mut resampled: Vec<f32> = Vec::with_capacity(SCRATCH);
         let mut out: Vec<i16> = Vec::with_capacity(SCRATCH);
+        let denied = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let latency = Arc::new(AtomicU32::new(0));
         let mut deliver = move |samples: &mut dyn Iterator<Item = f32>| {
             mono.clear();
@@ -345,7 +386,7 @@ impl AudioHost for CpalHost {
                         deliver(&mut data.iter().copied());
                     }
                 },
-                on_error(on_lost),
+                on_error(on_lost, denied.clone()),
                 None,
             ),
             cpal::SampleFormat::I16 => dev.build_input_stream::<i16, _, _>(
@@ -358,7 +399,7 @@ impl AudioHost for CpalHost {
                         deliver(&mut data.iter().map(|s| f32::from(*s) / 32768.0));
                     }
                 },
-                on_error(on_lost),
+                on_error(on_lost, denied.clone()),
                 None,
             ),
             other => return Err(audio_err(format!("microphone sample format {other:?}"))),
@@ -368,6 +409,7 @@ impl AudioHost for CpalHost {
         Ok(Box::new(Stream {
             _stream: stream,
             latency_ms: latency,
+            denied,
         }))
     }
 
@@ -393,6 +435,7 @@ impl AudioHost for CpalHost {
         let mut chunk = vec![0i16; FRAME_SAMPLES];
         let mut tmp: Vec<f32> = Vec::with_capacity(SCRATCH);
         let mut resampled: Vec<f32> = Vec::with_capacity(SCRATCH);
+        let denied = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let latency = Arc::new(AtomicU32::new(0));
         // Makes sure `pending` holds `frames` device-rate mono samples.
         let mut produce = move |frames: usize, pending: &mut VecDeque<f32>| {
@@ -424,7 +467,7 @@ impl AudioHost for CpalHost {
                         }
                     }
                 },
-                on_error(on_lost),
+                on_error(on_lost, denied.clone()),
                 None,
             ),
             cpal::SampleFormat::I16 => dev.build_output_stream::<i16, _, _>(
@@ -440,7 +483,7 @@ impl AudioHost for CpalHost {
                         }
                     }
                 },
-                on_error(on_lost),
+                on_error(on_lost, denied.clone()),
                 None,
             ),
             other => return Err(audio_err(format!("speaker sample format {other:?}"))),
@@ -450,6 +493,44 @@ impl AudioHost for CpalHost {
         Ok(Box::new(Stream {
             _stream: stream,
             latency_ms: latency,
+            denied,
         }))
+    }
+}
+
+#[cfg(test)]
+mod lost_tests {
+    use super::lost_kind;
+    use cpal::ErrorKind as K;
+
+    #[test]
+    fn an_unplug_of_any_kind_is_a_loss_and_a_glitch_is_not() {
+        for k in [
+            K::DeviceNotAvailable,
+            K::StreamInvalidated,
+            K::HostUnavailable,
+            K::PermissionDenied,
+        ] {
+            assert!(lost_kind(k, ""), "{k:?}");
+        }
+        assert!(lost_kind(
+            K::BackendError,
+            "snd_pcm_recover: No such device (19)"
+        ));
+        assert!(lost_kind(K::Other, "the device was disconnected"));
+        assert!(!lost_kind(
+            K::BackendError,
+            "the server disconnected the client"
+        ));
+        for k in [
+            K::Xrun,
+            K::DeviceBusy,
+            K::DeviceChanged,
+            K::ResourceExhausted,
+            K::RealtimeDenied,
+        ] {
+            assert!(!lost_kind(k, "No such device"), "{k:?}");
+        }
+        assert!(!lost_kind(K::BackendError, "underrun occurred"));
     }
 }

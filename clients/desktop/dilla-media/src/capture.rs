@@ -201,6 +201,15 @@ impl Worker {
             match rx.recv_timeout(TICK) {
                 Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(Msg::Lost(g))
+                    if g == self.generation && self.stream.as_ref().is_some_and(|s| s.denied()) =>
+                {
+                    // Access to the microphone was withdrawn: no other device is allowed either, so nothing is
+                    // captured and the person is told; the default does not take over.
+                    log::warn!("dilla-media: microphone access was withdrawn");
+                    self.stream = None;
+                    self.event(MediaEvent::MicLost);
+                }
                 Ok(Msg::Lost(g)) if g == self.generation => {
                     // The device is gone: the system default takes over, once.
                     match self.open(None) {

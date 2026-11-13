@@ -33,6 +33,7 @@ struct InputSlot {
 struct OutputSlot {
     id: u64,
     source: Arc<Mutex<OutputSource>>,
+    lost: Option<OnLost>,
 }
 
 struct State {
@@ -43,6 +44,10 @@ struct State {
     next: u64,
     in_latency: u32,
     out_latency: u32,
+    /// No output can be opened (every speaker is gone).
+    no_output: bool,
+    /// Microphone access was withdrawn.
+    denied: bool,
 }
 
 #[derive(Clone)]
@@ -55,6 +60,10 @@ struct Token {
 }
 
 impl Running for Token {
+    fn denied(&self) -> bool {
+        self.input && self.state.lock().unwrap().denied
+    }
+
     fn latency_ms(&self) -> u32 {
         let s = self.state.lock().unwrap();
         if self.input {
@@ -94,6 +103,8 @@ impl Fake {
             next: 1,
             in_latency: 0,
             out_latency: 0,
+            no_output: false,
+            denied: false,
         })))
     }
 
@@ -145,6 +156,30 @@ impl Fake {
             .input
             .as_ref()
             .map(|i| i.device.clone())
+    }
+
+    /// Withdraws microphone access (a privacy toggle): the stream fails as denied.
+    fn deny_input(&self) {
+        let lost = {
+            let mut s = self.0.lock().unwrap();
+            s.denied = true;
+            s.input.as_mut().and_then(|i| i.lost.take())
+        };
+        if let Some(f) = lost {
+            f();
+        }
+    }
+
+    /// Pulls the speaker out; with `none_left` there is no default to take over either.
+    fn unplug_output(&self, none_left: bool) {
+        let lost = {
+            let mut s = self.0.lock().unwrap();
+            s.no_output = none_left;
+            s.output.as_mut().and_then(|o| o.lost.take())
+        };
+        if let Some(f) = lost {
+            f();
+        }
     }
 
     /// Pulls the device out: it leaves the list and a stream on it fails.
@@ -210,14 +245,18 @@ impl AudioHost for Fake {
         &self,
         _device: Option<&DeviceId>,
         source: OutputSource,
-        _on_lost: OnLost,
+        on_lost: OnLost,
     ) -> Result<Box<dyn Running>, MediaError> {
         let mut s = self.0.lock().unwrap();
+        if s.no_output {
+            return Err(MediaError::Audio("speaker not found".into()));
+        }
         let id = s.next;
         s.next += 1;
         s.output = Some(OutputSlot {
             id,
             source: Arc::new(Mutex::new(source)),
+            lost: Some(on_lost),
         });
         Ok(Box::new(Token {
             state: self.0.clone(),
@@ -614,6 +653,104 @@ fn a_mic_with_no_default_to_fall_back_to_says_so() {
         seen = events(&mut ev);
     }
     assert_eq!(seen, vec![MediaEvent::MicLost]);
+}
+
+/// Task 4 ledger (Task 17): a speaker pulled out moves to the default (`DevicesChanged`), and one with no default to
+/// take over says `SpeakerLost`.
+#[test]
+fn a_speaker_unplugged_moves_to_the_default_or_says_it_is_lost() {
+    let host = Fake::new();
+    let (tx, mut ev) = tokio::sync::mpsc::unbounded_channel();
+    let speaker =
+        Speaker::open_with(Arc::new(host.clone()), Apm::default(), Some(tx), None).unwrap();
+    let wait = |ev: &mut UnboundedReceiver<MediaEvent>| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut seen = Vec::new();
+        while seen.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            seen = events(ev);
+        }
+        seen
+    };
+    host.unplug_output(false);
+    assert_eq!(wait(&mut ev), vec![MediaEvent::DevicesChanged]);
+    // The default took over: what is pushed plays again.
+    speaker.sink().push("a", &[1000; 480]);
+    assert!(host.pull(480).iter().any(|s| *s != 0));
+    host.unplug_output(true);
+    assert_eq!(wait(&mut ev), vec![MediaEvent::SpeakerLost]);
+}
+
+/// Task 4 ledger (Task 17): the 17th source is refused (and warned about once), a removed source's slot is free again
+/// once the callback emptied it, and the first samples of the source that takes it are played, not emptied with the
+/// old one's.
+#[test]
+fn slots_are_freed_on_track_end_and_a_new_source_keeps_its_first_samples() {
+    let host = Fake::new();
+    let speaker = Speaker::open_with(Arc::new(host.clone()), Apm::default(), None, None).unwrap();
+    let sink = speaker.sink();
+    for i in 0..16 {
+        sink.push(&format!("s{i}"), &[0; 480]);
+    }
+    assert_eq!(sink.sources(), 16);
+    for _ in 0..100 {
+        sink.push("s16", &[0; 480]);
+    }
+    assert_eq!(sink.sources(), 16, "a 17th source is not played");
+    sink.remove("s0");
+    // Before the callback emptied the freed slot it is not handed out.
+    sink.push("late", &[7000; 480]);
+    assert_eq!(sink.sources(), 15);
+    let _ = host.pull(480);
+    sink.push("late", &[7000; 480]);
+    assert_eq!(sink.sources(), 16);
+    let played = host.pull(480);
+    assert!(
+        played.iter().filter(|s| **s == 7000).count() > 400,
+        "the new source's first samples play"
+    );
+}
+
+/// Deafen plays silence but keeps draining the sources.
+#[test]
+fn deafen_plays_silence_and_queues_nothing() {
+    let host = Fake::new();
+    let speaker = Speaker::open_with(Arc::new(host.clone()), Apm::default(), None, None).unwrap();
+    let sink = speaker.sink();
+    sink.set_deafened(true);
+    sink.push("a", &[5000; 480]);
+    assert!(host.pull(480).iter().all(|s| *s == 0));
+    sink.set_deafened(false);
+    assert!(
+        host.pull(480).iter().all(|s| *s == 0),
+        "nothing queued meanwhile"
+    );
+    sink.push("a", &[5000; 480]);
+    assert!(host.pull(480).contains(&5000));
+}
+
+/// Task 17 fix: withdrawn microphone access is `MicLost`, and the default does not take over (it would be refused
+/// too, and a silent switch would hide that the person's microphone is off).
+#[test]
+fn withdrawn_microphone_access_is_mic_lost_without_a_fallback() {
+    let host = Fake::new();
+    let mut mic = Mic::open_with(
+        config(&host, Apm::default(), embedded()),
+        Some(DeviceId("usb".into())),
+        NoiseMode::Off,
+    )
+    .unwrap();
+    let mut ev = mic.take_events().unwrap();
+    host.deny_input();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = Vec::new();
+    while seen.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        seen = events(&mut ev);
+    }
+    assert_eq!(seen, vec![MediaEvent::MicLost]);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(host.capturing_from(), None, "no fallback to the default");
 }
 
 #[test]

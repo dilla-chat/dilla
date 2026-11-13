@@ -2171,6 +2171,7 @@ dependencies = [
  "gpui-pre-platform",
  "hmac 0.13.0",
  "image",
+ "log",
  "opus-pure",
  "reqwest 0.13.5",
  "rodio",

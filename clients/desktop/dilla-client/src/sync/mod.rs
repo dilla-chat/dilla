@@ -2132,7 +2132,7 @@ impl Engine {
         Ok(msg)
     }
 
-    /// Sends a frame on the current gateway (typing, Task 9). `false`: no connection is ready, nothing was sent.
+    /// Sends a frame on the current gateway (typing, Task 9; voice, Task 17). `false`: no connection is ready, nothing was sent.
     pub fn send_gateway_frame(&self, frame: Vec<u8>) -> bool {
         let gateway = self
             .gateway

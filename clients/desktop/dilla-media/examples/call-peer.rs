@@ -94,6 +94,7 @@ async fn main() {
     let mut token = String::new();
     let mut tone: Option<f64> = None;
     let mut noise = NoiseMode::Off;
+    let mut muted = false;
     let mut args = std::env::args().skip(1);
     while let Some(k) = args.next() {
         let v = args.next().unwrap_or_else(|| panic!("{k} needs a value"));
@@ -101,6 +102,7 @@ async fn main() {
             "--url" => url = v,
             "--token" => token = v,
             "--tone" => tone = Some(v.parse().expect("--tone")),
+            "--muted" => muted = v == "1",
             "--noise" => {
                 noise = match v.as_str() {
                     "off" => NoiseMode::Off,
@@ -173,6 +175,8 @@ async fn main() {
             mic,
             playout: false,
             key_timeout: Duration::from_secs(30),
+            muted,
+            ..CallOptions::default()
         },
     )
     .await
@@ -199,6 +203,53 @@ async fn main() {
                     .err()
                     .map(|e| e.to_string());
                 emit(json!({"event": "mic", "error": error}));
+            }
+            ["share", kind] => {
+                let kind = if *kind == "camera" {
+                    dilla_media::ShareKind::Camera
+                } else {
+                    dilla_media::ShareKind::Screen
+                };
+                let source = dilla_media::TestPattern::new(kind, 320, 180, 15);
+                let error = call
+                    .publish_video(Box::new(source))
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+                emit(json!({"event": "share", "error": error}));
+            }
+            ["unshare", kind] => {
+                let kind = if *kind == "camera" {
+                    dilla_media::ShareKind::Camera
+                } else {
+                    dilla_media::ShareKind::Screen
+                };
+                call.unpublish_video(kind).await;
+                emit(json!({"event": "unshare"}));
+            }
+            ["videos"] => {
+                // Each verified remote stream: its frames so far, and whether its newest frame is the test pattern
+                // (the top row's eight bars, within the codec's error).
+                let videos: serde_json::Map<String, serde_json::Value> = call
+                    .remote_videos()
+                    .borrow()
+                    .iter()
+                    .map(|(k, f)| {
+                        let bars = (0..8u32).all(|i| {
+                            let x = (i * f.width / 8) + f.width / 16;
+                            let y = 2.min(f.height.saturating_sub(1));
+                            let at = ((y * f.width + x) * 4) as usize;
+                            let px = [f.rgba[at], f.rgba[at + 1], f.rgba[at + 2]];
+                            let (bar, d) = dilla_media::capture_source::nearest_bar(px);
+                            bar == i as usize && d < 150
+                        });
+                        (
+                            format!("{}:{:?}", k.device, k.kind),
+                            json!({"frames": f.frames, "width": f.width, "height": f.height, "bars": bars}),
+                        )
+                    })
+                    .collect();
+                emit(json!({"event": "videos", "videos": videos}));
             }
             ["stats"] => {
                 let stats = call.stats();
