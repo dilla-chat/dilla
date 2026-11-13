@@ -3,9 +3,9 @@
 //! Ports packages/web/src/screens/voice/Ring.tsx (`RingFlow`), the DM call and block parts of VoiceView.tsx
 //! (`stageNotice`, `dmCallStart`) and its AFK page (`afkTitle`, `afkExplainer`).
 //!
-//! - [`ring_banner`] (`slots::overlays`): the banner of incoming rings, read from the window's [`RingEnv`]. Answer joins
-//!   the ring's DM call through the ring area's gate (`Client::ring().join`) and hands the join to the voice area
-//!   ([`effects::hand_to_voice`]); Decline posts the decline. Enter answers and Escape declines the ring with focus; when a
+//! - [`ring_banner`] (`slots::overlays`): the banner of incoming rings, read from the window's [`RingEnv`]. Answer leaves
+//!   this device's call and joins the ring's DM call through the voice area (`Voice::join_dm`, gated by
+//!   `Client::ring().join`); Decline posts the decline. Enter answers and Escape declines the ring with focus; when a
 //!   ring arrives while the window is focused, focus moves to it (and never otherwise).
 //! - [`block_notice`]: what the voice stage (Task 17) says about a blocked call, and the comparison it offers.
 //! - [`afk_page`]: the AFK channel's page body; [`afk_moved`] the move's line for the stage of the channel left.
@@ -164,7 +164,9 @@ fn find<'a>(state: &'a AppState, key: &SharedString) -> Option<&'a IncomingRing>
     state.ring.rings.iter().find(|r| ring_key(r) == *key)
 }
 
-/// Answer: the ring's DM call, joined through the ring area's gate; the voice area takes the join.
+/// Answer: the ring's DM call. One call per device: a call another instance window is in is left first, and this
+/// client's own call is left before the ring area's gate posts anything of the new join (`Voice::join_dm` leaves, then
+/// joins through `Ring::join`; calling `Ring::join` here first would start the DM join while the old call is still on).
 fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) {
     let Some(client) = env.ctx.client.clone() else {
         return;
@@ -172,10 +174,8 @@ fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) 
     let Some(ring) = find(&env.ctx.state, key) else {
         return;
     };
-    // One call per device: a call another instance window is in is left first.
     crate::screens::voice::leave_other_calls(crate::screens::voice::wid(window), cx);
-    let joining = client.ring().join(ring.channel, None, String::new());
-    effects::hand_to_voice(client, ring.channel, joining, window, cx);
+    drop(client.voice().join_dm(ring.channel));
 }
 
 /// Decline: only the ring this decline answers (its call and expires_ts); the ring goes here at once.

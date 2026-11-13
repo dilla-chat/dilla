@@ -9,17 +9,11 @@
 
 use std::collections::HashSet;
 
-use std::rc::Rc;
-
 use dilla_client::features::notify::{
     self, Notifier, NotifyContext, Presence, RecordingNotifier, RingInput,
 };
-use dilla_client::features::ring::GatedJoin;
-use dilla_client::state::ChannelId;
-use dilla_client::state::ring::{CallBlock, IncomingRing};
-use dilla_client::{Client, ClientError};
+use dilla_client::state::ring::IncomingRing;
 use gpui::{App, Global, SharedString, Window, WindowId};
-use tokio::sync::oneshot;
 
 use super::ring_key;
 use crate::slots::SlotCx;
@@ -135,21 +129,3 @@ pub fn ring_notification(ring: &IncomingRing, ctx: &SlotCx, cx: &mut App) {
 /// (the e2e's record); a ring's next notification replaces it by its tag, so nothing is closed here until the OS delivery
 /// (the next plan) can withdraw one.
 pub fn close_ring_notification(_key: &SharedString, _cx: &mut App) {}
-
-/// The answered ring's join, handed to the voice area (Task 17: `Voice::join_gated`), which follows it as this device's
-/// call: the phases, the media, the dock and the stage. A block refused before anything was sent is already published
-/// (`RingState::blocked`) for the stage's notice.
-pub fn hand_to_voice(
-    client: Rc<Client>,
-    channel: ChannelId,
-    joining: oneshot::Receiver<Result<Result<GatedJoin, CallBlock>, ClientError>>,
-    _window: &mut Window,
-    cx: &mut App,
-) {
-    cx.spawn(async move |_| {
-        if let Ok(Ok(Ok(join))) = joining.await {
-            let _ = client.voice().join_gated(channel, None, join).await;
-        }
-    })
-    .detach();
-}

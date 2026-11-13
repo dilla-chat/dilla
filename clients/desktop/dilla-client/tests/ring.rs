@@ -1328,3 +1328,51 @@ async fn join_gated_follows_the_handed_join() {
     let devices = p.peer.call_devices(dm).await;
     assert!(devices.contains(&hex(&p.me.device_id)), "{devices:?}");
 }
+
+/// Review M6: answering a ring while this device is in another call (the window's Answer: `Voice::join_dm`) leaves the
+/// old call before the ring area's gate posts anything of the DM's: this device ends in the DM's call only, and the
+/// voice channel's call group no longer lists it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost, the wasi core and dilla-testkit"]
+async fn answering_a_ring_in_a_call_leaves_the_call_first() {
+    let p = pair("t18-answer-in-call", 0x180b).await;
+    p.client
+        .voice()
+        .join(p.voice())
+        .await
+        .expect("client")
+        .expect("in the voice channel's call");
+    wait_for(&p.client, WAIT, "in the voice call", |s| {
+        s.voice.call.phase == dilla_client::calls::CallPhase::In
+            && s.voice.call.channel == Some(p.voice())
+    })
+    .await;
+    let dm = open_dm(&p.peer, p.me()).await;
+    peer_calls(&p.peer, dm).await;
+    wait_for(&p.client, WAIT, "the ring", |s| ringing(s, dm)).await;
+    p.client
+        .voice()
+        .join_dm(dm)
+        .await
+        .expect("client")
+        .expect("the answer joins the DM's call");
+    wait_for(&p.client, WAIT, "in the DM's call", |s| {
+        s.voice.call.phase == dilla_client::calls::CallPhase::In && s.voice.call.channel == Some(dm)
+    })
+    .await;
+    let me = dilla_client::state::DeviceId(p.me.device_id);
+    wait_for(
+        &p.client,
+        WAIT,
+        "the old call's roster without this device",
+        |s| {
+            !s.voice
+                .participants(p.voice())
+                .iter()
+                .any(|x| x.device_id == me)
+        },
+    )
+    .await;
+    let joined = p.peer.call_devices(dm).await;
+    assert!(joined.contains(&hex(&p.me.device_id)), "{joined:?}");
+}
