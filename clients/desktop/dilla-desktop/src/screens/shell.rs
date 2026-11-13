@@ -1327,6 +1327,10 @@ impl Render for ShellView {
         let dm_strip = channel
             .filter(|dm| self.dm_view && !crate::screens::voice::joined(&state, dm.id))
             .and_then(|dm| crate::screens::voice::ring_notice(&state, dm));
+        // While this device is in the DM's call, its box sits over the log, at most 40 % of the conversation (17).
+        let dm_box = channel
+            .filter(|_| self.dm_view)
+            .and_then(|dm| slots::dm_call(dm, window, cx));
 
         let weak = shell.clone();
         let on_toggle: header::OnToggle = Rc::new(move |kind, window, cx| {
@@ -1380,7 +1384,14 @@ impl Render for ShellView {
                         let wrapped = wrapped.child(crate::automation::bounds_probe("log-present"));
                         wrapped
                     });
-                    div().flex_1().min_h_0().relative().child(log).children(bar)
+                    let log = div().flex_1().min_h_0().relative().child(log).children(bar);
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .children(dm_box)
+                        .child(log)
                 })
                 .child(div().flex_none().child(self.composer.clone())),
         };

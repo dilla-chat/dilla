@@ -251,6 +251,11 @@ pub fn main_takeover(channel: &Channel, window: &mut Window, cx: &mut App) -> Op
     voice::stage(channel, window, cx)
 }
 
+/// Over a DM's log while this device is in the DM's call: the DM call box (17, VoiceView.tsx `DmCall`).
+pub fn dm_call(dm: &Channel, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    voice::dm_call_box(dm, window, cx)
+}
+
 /// Over the main column: the offline link banner and the version refusal (24), then the conversation's trust surfaces (13).
 pub fn banners(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     let mut out = diagnostics::banners(ctx, window, cx);
