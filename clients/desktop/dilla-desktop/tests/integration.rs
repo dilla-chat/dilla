@@ -140,7 +140,6 @@ fn window_on<'a>(
 ) -> (Entity<AppView>, &'a mut VisualTestContext) {
     cx.executor().allow_parking();
     cx.update(dilla_desktop::install);
-    cx.update(|cx| dilla_desktop::screens::factor::register_instance(client, p.cfg.clone(), cx));
     let mut launch = Launch::live(Some(root_of(p)), p.kc.clone());
     launch.shipping = false;
     launch.resume = false;
@@ -959,7 +958,7 @@ fn own_devices_fold_everything() {
         .unwrap();
         let d = tray.take_all().unwrap();
         a.attachments()
-            .send(ch, String::new(), d)
+            .send(ch, String::new(), d, None)
             .await
             .unwrap()
             .unwrap()
@@ -1096,7 +1095,6 @@ fn restart_mid_sync_reads_every_group(cx: &mut TestAppContext) {
     let phone = Rc::new(start_device(&w, &cfg, &kc));
     cx.executor().allow_parking();
     cx.update(dilla_desktop::install);
-    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&phone, cfg.clone(), cx));
     let mut launch = Launch::live(Some(root.clone()), kc.clone());
     launch.shipping = false;
     launch.resume = false;

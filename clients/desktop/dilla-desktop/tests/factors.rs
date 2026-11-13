@@ -694,7 +694,6 @@ fn signup_factor_code_backup_code_wrong_code_settings(cx: &mut gpui::TestAppCont
     }));
     cx.executor().allow_parking();
     cx.update(dilla_desktop::install);
-    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
     let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), kc.clone());
     launch.shipping = false;
     launch.resume = false;

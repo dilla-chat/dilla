@@ -280,7 +280,7 @@ mod behaviour {
             let d = tray.take_all().unwrap();
             alice
                 .attachments()
-                .send(channel, "the file".into(), d)
+                .send(channel, "the file".into(), d, None)
                 .await
                 .unwrap()
                 .unwrap();
@@ -298,6 +298,7 @@ mod behaviour {
         cx.update(dilla_desktop::install);
         let bob = std::rc::Rc::new(bob);
         let key = CardKey {
+            client: bob.serial(),
             channel,
             seq,
             index: 0,
