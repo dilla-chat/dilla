@@ -79,6 +79,25 @@ thread_local! {
     /// The focus handles of the elements that registered one through [`focus_probe`], by element id, in the latest
     /// frame. GPUI draws on the thread that drives the session, so the registry is that thread's.
     static FOCUS: RefCell<Vec<(&'static str, FocusHandle)>> = const { RefCell::new(Vec::new()) };
+    /// Every hand-over of the app's client from one window to another ([`handed_over`]), oldest first.
+    static HANDOVERS: RefCell<Vec<(AnyWindowHandle, AnyWindowHandle)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Records that the window `from` handed its client to the window `to` and closes (the compact start or authentication
+/// window opening the workspace window, Task 8's window shapes): a session driving `from` follows to `to`.
+pub fn handed_over(from: AnyWindowHandle, to: AnyWindowHandle) {
+    HANDOVERS.with(|h| h.borrow_mut().push((from, to)));
+}
+
+/// The window the client of `window` ended up in, through every hand-over since: `window` itself when it handed
+/// nothing over.
+pub fn followed(window: AnyWindowHandle) -> AnyWindowHandle {
+    HANDOVERS.with(|h| {
+        h.borrow().iter().fold(
+            window,
+            |now, (from, to)| if *from == now { *to } else { now },
+        )
+    })
 }
 
 fn with_bounds<R>(f: impl FnOnce(&mut HashMap<&'static str, Bounds<Pixels>>) -> R) -> R {
@@ -320,13 +339,19 @@ impl Session {
         session
     }
 
+    /// The window the session drives: the one it opened, or the window that took over its client since.
+    fn window(&mut self) -> AnyWindowHandle {
+        self.window = followed(self.window);
+        self.window
+    }
+
     /// Lets pending work run, then repaints so the registries describe the current frame.
     fn frame(&mut self) {
         self.cx.run_until_parked();
         with_bounds(HashMap::clear);
         TEXT.lock().expect("text registry").clear();
         FOCUS.with(|f| f.borrow_mut().clear());
-        let window = self.window;
+        let window = self.window();
         let _ = self
             .cx
             .update_window(window, |_, window: &mut Window, cx: &mut App| {
@@ -382,7 +407,7 @@ impl Session {
     }
 
     fn event(&mut self, event: PlatformInput) {
-        let window = self.window;
+        let window = self.window();
         let _ = self.cx.update_window(window, |_, window, cx| {
             window.dispatch_event(event, cx);
         });
@@ -451,7 +476,7 @@ impl Session {
         if id != "-" {
             self.click(id)?;
         }
-        let window = self.window;
+        let window = self.window();
         for ch in text.chars() {
             let keystroke = Keystroke {
                 modifiers: Modifiers::default(),
@@ -468,7 +493,7 @@ impl Session {
 
     fn key(&mut self, chord: &str) -> Result<(), String> {
         let keystroke = parse_chord(chord)?;
-        let window = self.window;
+        let window = self.window();
         self.cx
             .update_window(window, |_, window, cx| {
                 window.dispatch_keystroke(keystroke, cx);
@@ -482,7 +507,7 @@ impl Session {
     /// `None` when nothing does.
     fn focused(&mut self) -> Option<&'static str> {
         self.frame();
-        let window = self.window;
+        let window = self.window();
         self.cx
             .update_window(window, |_, window, cx| {
                 FOCUS
@@ -501,7 +526,7 @@ impl Session {
     /// What a person's hands off the screen look like, and what the web shooter does before its frame: the pointer
     /// goes to the window's corner (2 px in, off any content) and the focus is cleared.
     fn rest(&mut self) {
-        let window = self.window;
+        let window = self.window();
         let size = self
             .cx
             .update_window(window, |_, window, _| window.viewport_size())
@@ -519,7 +544,7 @@ impl Session {
     }
 
     fn pointer(&mut self) -> Point<Pixels> {
-        let window = self.window;
+        let window = self.window();
         self.cx
             .update_window(window, |_, window, _| window.mouse_position())
             .expect("the window exists")
@@ -532,9 +557,10 @@ impl Session {
 
     fn screenshot(&mut self, path: &str) -> Result<(u32, u32), String> {
         self.frame();
+        let window = self.window();
         let image = self
             .cx
-            .capture_screenshot(self.window)
+            .capture_screenshot(window)
             .map_err(|error| format!("capture failed: {error}"))?;
         image
             .save_with_format(path, image::ImageFormat::Png)
@@ -764,6 +790,29 @@ mod tests {
         assert_eq!(parse_chord("space").unwrap().key_char.as_deref(), Some(" "));
         assert!(parse_chord("hyper-k").is_err());
         assert!(parse_chord("").is_err());
+    }
+
+    struct Blank;
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// The start window hands its client to the workspace window and closes (`AppView::open_workspace`): the session
+    /// draws, clicks and types into the window the client ends up in, through any number of hand-overs.
+    #[gpui::test]
+    fn the_session_follows_the_window_the_client_is_handed_to(cx: &mut gpui::TestAppContext) {
+        let open = |cx: &mut gpui::TestAppContext| -> AnyWindowHandle {
+            cx.add_window(|_, _| Blank).into()
+        };
+        let (start, workspace, again, other) = (open(cx), open(cx), open(cx), open(cx));
+        assert_eq!(followed(start), start, "no hand-over yet");
+        handed_over(start, workspace);
+        handed_over(workspace, again);
+        assert_eq!(followed(start), again);
+        assert_eq!(followed(workspace), again);
+        assert_eq!(followed(other), other, "another window is not moved");
     }
 
     #[test]

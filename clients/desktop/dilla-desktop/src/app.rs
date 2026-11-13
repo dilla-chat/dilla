@@ -360,6 +360,9 @@ impl AppView {
                 if let Some(id) = self.instance {
                     crate::windows::moved_window(cx, id, handle);
                 }
+                // The automation session follows the client into the new window, as a person's eyes do.
+                #[cfg(feature = "automation")]
+                crate::automation::handed_over(window.window_handle(), handle.into());
                 window.remove_window();
             }
             // The workspace window did not open: this one stays, on the sign-in.
