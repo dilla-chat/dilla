@@ -16,13 +16,15 @@ use crate::tokens::{color, radius, text};
 /// `height: 1.5rem`, `margin-top: 0.25rem`, padding 0 0.5rem, gap 0.375rem, the glyph 12px.
 const HEIGHT: f32 = 24.0;
 const MARGIN_TOP: f32 = 4.0;
+/// The row's main column is a grid with `gap: 1px` (MessageRow.css `.d-message-row__main`), so the chip sits 1px lower.
+const GRID_GAP: f32 = 1.0;
 const PAD_X: f32 = 8.0;
 const GAP: f32 = 6.0;
 const GLYPH: f32 = 12.0;
 
 /// What the chip takes under a row's body: its box and the margin above it.
 pub fn height() -> f32 {
-    MARGIN_TOP + HEIGHT
+    GRID_GAP + MARGIN_TOP + HEIGHT
 }
 
 type Open = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -108,14 +110,14 @@ impl RenderOnce for ThreadChip {
                     }
                 });
         }
-        div().mt(px(MARGIN_TOP)).flex().child(chip)
+        div().mt(px(GRID_GAP + MARGIN_TOP)).flex().child(chip)
     }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_chip_is_24px_under_a_4px_margin() {
-        assert_eq!(super::height(), 28.0);
+    fn the_chip_is_24px_under_a_4px_margin_and_the_grids_1px_gap() {
+        assert_eq!(super::height(), 29.0);
     }
 }

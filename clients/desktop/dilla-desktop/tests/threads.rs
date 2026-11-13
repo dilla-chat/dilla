@@ -37,12 +37,12 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_threads_reply_chip => "reply-chip", "parity after T6c: chrome 0.3709 % over 0.2 %",
-    parity_threads_reply_chip_b => "reply-chip-b", "parity after T6c: chrome 0.3020 % over 0.2 %",
-    parity_threads_pane_open => "pane-open", "parity after T6c: 0.5751 % over 0.5 %",
-    parity_threads_pane_open_b => "pane-open-b", "parity after T6c: 1.1182 % over 0.5 %",
-    parity_threads_count => "count", "parity after T6c: 0.7453 % over 0.5 %",
-    parity_threads_count_b => "count-b", "parity after T6c: 0.6163 % over 0.5 %",
+    parity_threads_reply_chip => "reply-chip", "parity after T6c: chrome 0.3523 % over 0.2 % (shell chrome G2)",
+    parity_threads_reply_chip_b => "reply-chip-b", "parity after T6c: chrome 0.2870 % over 0.2 % (shell chrome G2)",
+    parity_threads_pane_open => "pane-open", "parity after T6c: chrome 0.3051 % over 0.2 % (shell chrome G2; thread root to rule 1 css px high)",
+    parity_threads_pane_open_b => "pane-open-b", "parity after T6c: 0.7978 % over 0.5 % (thread root to rule 1 css px high; shell chrome G2)",
+    parity_threads_count => "count", "parity after T6c: chrome 0.3429 % over 0.2 % (shell chrome G2)",
+    parity_threads_count_b => "count-b", "parity after T6c: chrome 0.2694 % over 0.2 % (shell chrome G2)",
 }
 
 const SOON: Duration = Duration::from_secs(5);
