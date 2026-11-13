@@ -87,6 +87,13 @@ func newDSHarness(t *testing.T) *dsHarness {
 
 func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness {
 	t.Helper()
+	return newDSHarnessWithPool(t, maxFrameBytes, 2)
+}
+
+// newDSHarnessWithPool builds the harness over a wasm pool of poolSize instances; zero is
+// mlswasi's own default, the size a production dillad gets from GOMAXPROCS.
+func newDSHarnessWithPool(t *testing.T, maxFrameBytes uint64, poolSize int) *dsHarness {
+	t.Helper()
 	ctx := context.Background()
 	// The fake clock starts at the wall clock's current second rather than a fixed epoch. The
 	// guest sees this clock (mlswasi.Options.Now) and OpenMLS validates every leaf's KeyPackage
@@ -121,7 +128,7 @@ func newDSHarnessWithFrameBudget(t *testing.T, maxFrameBytes uint64) *dsHarness 
 	}
 
 	wasm, err := mlswasi.New(ctx, loadWasmForDS(t), mlswasi.Options{
-		PoolSize: 2,
+		PoolSize: poolSize,
 		CacheDir: sharedWasmCacheDir(t),
 		Now:      clk.Now,
 		OnCall:   h.countCall,

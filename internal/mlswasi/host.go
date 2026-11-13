@@ -124,7 +124,8 @@ type Options struct {
 	// CacheDir persists wazero's ahead-of-time compilation results between
 	// process restarts. "" disables the cache.
 	CacheDir string
-	// PoolSize is the number of module instances. Zero means GOMAXPROCS.
+	// PoolSize is the number of module instances. Zero means GOMAXPROCS, but never fewer than
+	// MinDefaultPoolSize.
 	PoolSize int
 	// Interpreter selects wazero's interpreter instead of its compiler. Only
 	// the benchmark's comparison arm should set it.
@@ -165,6 +166,12 @@ type Runtime struct {
 	mu     sync.Mutex
 	closed bool
 }
+
+// MinDefaultPoolSize is the smallest pool New builds when Options.PoolSize is
+// zero. internal/ds keeps up to PoolSize-1 instances in its state cache and
+// needs at least one more for the paths that acquire their own, so a default
+// of GOMAXPROCS alone left a 1-vCPU host with a pool the cache could drain.
+const MinDefaultPoolSize = 2
 
 // New compiles wasmBinary once (ahead of time, at startup, as wazero's own
 // guidance requires) and fills the instance pool.
@@ -207,7 +214,7 @@ func New(ctx context.Context, wasmBinary []byte, opts Options) (*Runtime, error)
 
 	size := opts.PoolSize
 	if size <= 0 {
-		size = runtime.GOMAXPROCS(0)
+		size = max(runtime.GOMAXPROCS(0), MinDefaultPoolSize)
 	}
 	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now, onCall: opts.OnCall,
 		priority: opts.Priority, gate: prioritygate.New(size), done: make(chan struct{})}

@@ -740,7 +740,7 @@ func newManagedPostgresDS(t *testing.T, dsn string) (store.Repository, store.Rep
 	t.Cleanup(func() { _ = repo.Close() })
 	clk := clock.NewFake(time.Unix(time.Now().Unix(), 0))
 	keys := testInstanceKeys(t)
-	wasm, err := mlswasi.New(context.Background(), loadWasmForDS(t), mlswasi.Options{PoolSize: 1, CacheDir: sharedWasmCacheDir(t), Now: clk.Now})
+	wasm, err := mlswasi.New(context.Background(), loadWasmForDS(t), mlswasi.Options{PoolSize: 2, CacheDir: sharedWasmCacheDir(t), Now: clk.Now})
 	if err != nil {
 		t.Fatal(err)
 	}

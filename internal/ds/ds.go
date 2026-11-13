@@ -355,6 +355,9 @@ func (d *DS) log() *slog.Logger {
 }
 
 func New(o Options) (*DS, error) {
+	if o.Wasm != nil && o.Wasm.PoolSize() < minPoolSize {
+		return nil, fmt.Errorf("%w: got %d", ErrPoolTooSmall, o.Wasm.PoolSize())
+	}
 	if o.Clock == nil {
 		o.Clock = clock.System()
 	}

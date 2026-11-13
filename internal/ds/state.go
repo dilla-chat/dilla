@@ -24,7 +24,9 @@ import (
 //     an unbounded cache stops serving the moment the number of live groups reaches the pool size
 //     — on a default `PoolSize = GOMAXPROCS` that is a handful of groups. The least recently used
 //     group is closed and its instance released to make room; the next request for it re-imports
-//     its blob, which is exactly what `withGroup` already does on a cold cache.
+//     its blob, which is exactly what `withGroup` already does on a cold cache. The one instance
+//     the cache never takes is what Upload, the proposal paths and `put`'s caller acquire
+//     directly, so the pool must have at least two (`minPoolSize`, enforced by ds.New).
 //  2. A group's slot is RESERVED before the cache mutex is released: `acquire` inserts an entry
 //     whose `ready` channel is still open and imports into it afterwards. Making room and then
 //     acquiring an instance is not one step otherwise — N goroutines first-touching N distinct
@@ -85,16 +87,28 @@ func (l *liveGroup) wait(ctx context.Context) error {
 	}
 }
 
+// ErrPoolTooSmall is ds.New's refusal of a wasm runtime with fewer than minPoolSize instances.
+var ErrPoolTooSmall = errors.New("ds: the wasm pool needs at least two instances")
+
+// minPoolSize is the smallest pool the DS can run on: one instance the cache may hold, and one
+// left free for the paths that acquire their own (rule 1). A pool of one used to clamp the cache
+// to one slot — the ONLY instance — and every direct Acquire then waited on an instance that the
+// cache releases only to another cache request, so a 1-vCPU dillad (PoolSize = GOMAXPROCS = 1)
+// hung on its first Upload after any read. A cache of zero slots would not save a pool of one
+// either: proposeAddLocked holds a direct instance across withGroup, and a cached call's
+// device-list check can acquire one of its own, so those paths need two instances at once.
+const minPoolSize = 2
+
 // errNoSlot cannot happen while `groups` and `lru` agree — it is the assertion that they do.
 var errNoSlot = errors.New("ds: the state cache has no slot to give")
 
+// newStateCache sizes the cache at PoolSize-1. The caller has checked the pool (ds.New refuses one
+// below minPoolSize), so the capacity is at least one and never the whole pool; there is no clamp
+// here, because clamping a pool of one up to one slot is exactly the deadlock above.
 func newStateCache(w *mlswasi.Runtime) *stateCache {
 	capacity := 1
 	if w != nil {
 		capacity = w.PoolSize() - 1
-	}
-	if capacity < 1 {
-		capacity = 1
 	}
 	return &stateCache{wasm: w, capacity: capacity, groups: map[id.ID]*liveGroup{}}
 }
