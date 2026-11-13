@@ -4,10 +4,18 @@
 //! web's. [`snapped`] wraps such a box and moves it, with everything inside it, onto the whole CSS pixel the web paints it
 //! on, rounding halves down the page and to the right, as the web's fractional carry does.
 
+use std::cell::Cell;
+
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Point, Window, px,
+    AnyElement, App, BorderStyle, Bounds, Element, ElementId, GlobalElementId, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Point, Styled, Window, canvas, point, px,
+    quad, transparent_black,
 };
+
+thread_local! {
+    /// The shift the snapped boxes around the one being prepainted applied (logical px).
+    static SHIFT: Cell<(f32, f32)> = const { Cell::new((0.0, 0.0)) };
+}
 
 /// The whole CSS pixel Chromium paints a box edge at `v` (logical px) on: halves go up.
 pub fn css_pixel(v: f32) -> f32 {
@@ -19,6 +27,44 @@ pub fn snapped(child: impl IntoElement) -> Snapped {
     Snapped {
         child: child.into_any_element(),
     }
+}
+
+/// A 1px `edge` box with `radius` over its parent's whole area, drawn between edges each rounded to the CSS pixel the
+/// web paints it on: a card whose height ends on a half pixel (138.5) paints 139 tall, as the web's does. The parent keeps
+/// a transparent 1px border for the layout and puts this first among its children.
+pub fn edge_box(radius: Pixels, edge: Hsla) -> impl IntoElement {
+    canvas(
+        |bounds, _, _| {
+            let carried = SHIFT.with(Cell::get);
+            let snap = |v: Pixels, carry: f32| px(css_pixel(f32::from(v) - carry));
+            Bounds::from_corners(
+                point(
+                    snap(bounds.left(), carried.0),
+                    snap(bounds.top(), carried.1),
+                ),
+                point(
+                    snap(bounds.right(), carried.0),
+                    snap(bounds.bottom(), carried.1),
+                ),
+            )
+        },
+        move |_, snapped, window, _| {
+            window.paint_quad(quad(
+                snapped,
+                radius,
+                transparent_black(),
+                px(1.0),
+                edge,
+                BorderStyle::Solid,
+            ));
+        },
+    )
+    // Over the border box: the parent's own (transparent) border is outside its padding box.
+    .absolute()
+    .top(px(-1.0))
+    .left(px(-1.0))
+    .right(px(-1.0))
+    .bottom(px(-1.0))
 }
 
 pub struct Snapped {
@@ -64,11 +110,18 @@ impl Element for Snapped {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Each box snaps from its own layout position, as Chromium's do: a snapped box inside a snapped one first takes
+        // back the shift its ancestors applied.
         let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-        let delta = Point::new(px(css_pixel(x) - x), px(css_pixel(y) - y));
+        let carried = SHIFT.with(Cell::get);
+        let (lx, ly) = (x - carried.0, y - carried.1);
+        let shift = (css_pixel(lx) - lx, css_pixel(ly) - ly);
+        let delta = Point::new(px(shift.0 - carried.0), px(shift.1 - carried.1));
+        SHIFT.with(|s| s.set(shift));
         window.with_element_offset(delta, |window| {
             self.child.prepaint(window, cx);
         });
+        SHIFT.with(|s| s.set(carried));
     }
 
     fn paint(

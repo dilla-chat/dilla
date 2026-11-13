@@ -53,6 +53,8 @@ parity_tests! {
     parity_server_settings_overview_b => "overview-b",
     parity_server_settings_afk => "afk",
     parity_server_settings_afk_b => "afk-b",
+    parity_server_settings_invites => "invites",
+    parity_server_settings_invites_b => "invites-b",
 }
 
 parity_after_t6c! {
@@ -62,8 +64,6 @@ parity_after_t6c! {
     parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.7017 %",
     parity_server_settings_gifs => "gifs", "parity after T6c: whole frame 1.1892 %",
     parity_server_settings_gifs_b => "gifs-b", "parity after T6c: whole frame 1.2638 %",
-    parity_server_settings_invites => "invites", "parity after T6c: chrome 0.8398 %",
-    parity_server_settings_invites_b => "invites-b", "parity after T6c: whole frame 0.6342 %",
 }
 
 parity_tests! {
