@@ -70,6 +70,75 @@ fn dialog_open(cx: &mut VisualTestContext) -> bool {
     cx.update(|window, cx| create::overlay(window, cx).is_some())
 }
 
+/// A frame whose body is `tall` px of content, with a probe at its foot that keeps where it was painted.
+struct TallFrame {
+    tall: f32,
+    foot: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+}
+
+impl Render for TallFrame {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let foot = self.foot.clone();
+        dilla_desktop_ui::components::onboarding::OnboardingFrame::new("tall", "Tall")
+            .child(div().h(gpui::px(self.tall)))
+            .child(
+                gpui::canvas(move |b, _, _| foot.set(Some(b)), |_, _, _, _| {})
+                    .w(gpui::px(10.0))
+                    .h(gpui::px(10.0)),
+            )
+    }
+}
+
+/// The compact authentication window is fixed (Task 8): a step taller than it scrolls, as the web's sign-up card does,
+/// so its foot (the action, the links) can be reached; a step that fits stays centred.
+#[gpui::test]
+fn a_step_taller_than_the_window_scrolls(cx: &mut TestAppContext) {
+    install(cx);
+    let foot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let probe = foot.clone();
+    let (view, cx) = cx.add_window_view(move |_, _| TallFrame {
+        tall: 900.0,
+        foot: probe,
+    });
+    cx.simulate_resize(gpui::size(gpui::px(400.0), gpui::px(620.0)));
+    cx.run_until_parked();
+    let at = |cx: &mut VisualTestContext, view: &Entity<TallFrame>| {
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        foot.get().expect("the foot was painted")
+    };
+    let before = at(cx, &view);
+    assert!(
+        f32::from(before.origin.y) > 620.0,
+        "the foot starts below the window ({before:?})"
+    );
+    cx.simulate_event(gpui::ScrollEvent {
+        position: gpui::point(gpui::px(200.0), gpui::px(300.0)),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(-2000.0))),
+        ..Default::default()
+    });
+    let after = at(cx, &view);
+    assert!(
+        f32::from(after.origin.y + after.size.height) <= 620.0,
+        "scrolled to the end, the foot is in the window ({after:?})"
+    );
+    // A short step stays centred: the foot's probe sits in the middle third of the window.
+    view.update(cx, |v, cx| {
+        v.tall = 0.0;
+        cx.notify();
+    });
+    let short = at(cx, &view);
+    let y = f32::from(short.origin.y);
+    assert!(
+        (620.0 / 3.0..620.0 * 2.0 / 3.0).contains(&y),
+        "a step that fits is centred ({short:?})"
+    );
+}
+
 /// Keyboard: Escape backs out of every create and join dialog, and the dialog's field holds focus when it opens.
 #[gpui::test]
 fn escape_backs_out_of_create_dialogs(cx: &mut TestAppContext) {
