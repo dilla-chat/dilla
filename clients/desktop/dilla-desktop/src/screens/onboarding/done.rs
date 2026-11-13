@@ -41,6 +41,8 @@ use crate::{tracked, tracked_box, tracked_focus};
 const CODES_FILE: &str = "dilla-backup-codes.txt";
 /// The refusal a failed Save as file shows (the key step's: the web has no `onboarding.keys.saveFailed`).
 const SAVE_FAILED: &str = "settings.editing.saveFailed";
+/// The gap between the summary's actions, and between the count and them (CodeList.css `__actions`, 0.75rem).
+const ACTIONS_GAP: f32 = 12.0;
 /// The gap between the codes' parts (the list, the summary, the tick).
 const CODES_GAP: f32 = 10.0;
 
@@ -234,7 +236,7 @@ impl DoneView {
         let actions = div()
             .flex()
             .flex_wrap()
-            .gap(px(8.0))
+            .gap(px(ACTIONS_GAP))
             .child(tracked_focus(
                 "onboarding-codes-copy",
                 &self.handles.copy,
@@ -263,7 +265,7 @@ impl DoneView {
             .flex_wrap()
             .items_center()
             .justify_between()
-            .gap(px(8.0))
+            .gap(px(ACTIONS_GAP))
             .child(line(
                 count,
                 text::UI,
