@@ -6,6 +6,7 @@ use dilla_client::testing::spec::ScreenFixture;
 
 mod attachments;
 mod calls;
+mod diagnostics;
 mod dms;
 mod members;
 mod messages;
@@ -19,6 +20,7 @@ pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
     let mut out = Vec::new();
     attachments::unseedable(f, &mut out);
     calls::unseedable(f, &mut out);
+    diagnostics::unseedable(f, &mut out);
     dms::unseedable(f, &mut out);
     members::unseedable(f, &mut out);
     messages::unseedable(f, &mut out);
@@ -33,6 +35,7 @@ pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
 pub async fn seed(f: &ScreenFixture, people: &[(String, Person)]) {
     attachments::seed(f, people).await;
     calls::seed(f, people).await;
+    diagnostics::seed(f, people).await;
     dms::seed(f, people).await;
     members::seed(f, people).await;
     messages::seed(f, people).await;
