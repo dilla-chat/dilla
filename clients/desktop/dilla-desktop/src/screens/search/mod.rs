@@ -90,35 +90,49 @@ pub struct SearchEnv {
     pub navigate: OnNavigate,
 }
 
-impl Global for SearchEnv {}
-
-/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the palette's environment goes (the next
-/// render of a host provides a new one).
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): every window's environment of it goes (the
+/// next render of a host provides a new one).
 pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
-    if cx.try_global::<SearchEnv>().is_some_and(|env| {
-        env.ctx
+    crate::per_window::retain::<SearchEnv>(cx, |_, env| {
+        !env.ctx
             .client
             .as_ref()
             .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
-    }) {
-        cx.remove_global::<SearchEnv>();
-    }
+    });
 }
 
-/// The host's current view for the palette, set on each render of the host.
-pub fn provide(env: SearchEnv, cx: &mut App) {
-    cx.set_global(env);
+/// The window's host view for its palette, set on each render of the host. Per window (final review sweep): one window's
+/// palette never searches, or opens a result in, another window's client.
+pub fn provide(window: WindowId, env: SearchEnv, cx: &mut App) {
+    crate::per_window::set(window, Some(env), cx);
 }
 
-/// Ctrl+K asked for the palette: it opens on the next frame.
+fn env_of(window: WindowId, cx: &App) -> Option<SearchEnv> {
+    crate::per_window::get::<SearchEnv>(window, cx).cloned()
+}
+
+/// Ctrl+K asked for the palette of a window: it opens on that window's next frame.
 #[derive(Default)]
 struct OpenRequest(bool);
 
-impl Global for OpenRequest {}
-
-/// Asks for the palette to open (the key binding's action, and any button that opens search).
+/// Asks for the palette to open in the window that has the keyboard (the key binding's action, and any button that opens
+/// search), never in another window.
 pub fn request_open(cx: &mut App) {
-    cx.set_global(OpenRequest(true));
+    // Without an active window (a headless or test platform), the one window that hosts a palette, if only one does.
+    let target = cx.active_window().map(|w| w.window_id()).or_else(|| {
+        let mut hosts = Vec::new();
+        crate::per_window::each_mut::<SearchEnv>(cx, |w, _| hosts.push(w));
+        (hosts.len() == 1).then(|| hosts[0])
+    });
+    if let Some(window) = target {
+        crate::per_window::get_mut::<OpenRequest>(window, cx).0 = true;
+    }
+    cx.refresh_windows();
+}
+
+/// Asks for `window`'s palette to open (a button in that window).
+pub fn request_open_in(window: WindowId, cx: &mut App) {
+    crate::per_window::get_mut::<OpenRequest>(window, cx).0 = true;
     cx.refresh_windows();
 }
 
@@ -193,7 +207,7 @@ impl Palette {
                 self.active = None;
                 self.unavailable = false;
                 let query = input.read(cx).value().to_string();
-                search_messages(&query, cx);
+                search_messages(window.window_handle().window_id(), &query, cx);
                 window.refresh();
             }
             InputEvent::PressEnter { .. } => {
@@ -216,11 +230,8 @@ impl Palette {
 }
 
 /// Starts the message search for `query` on a live client (two or more characters: the palette's own gate).
-fn search_messages(query: &str, cx: &mut App) {
-    let Some(client) = cx
-        .try_global::<SearchEnv>()
-        .and_then(|e| e.ctx.client.clone())
-    else {
+fn search_messages(window: WindowId, query: &str, cx: &mut App) {
+    let Some(client) = env_of(window, cx).and_then(|e| e.ctx.client.clone()) else {
         return;
     };
     let query = query.trim();
@@ -262,9 +273,8 @@ fn close(palette: &Entity<Palette>, keep_focus: bool, window: &mut Window, cx: &
             p.focus = OpenFocus::default();
         }
     });
-    if let Some(client) = cx
-        .try_global::<SearchEnv>()
-        .and_then(|e| e.ctx.client.clone())
+    if let Some(client) =
+        env_of(window.window_handle().window_id(), cx).and_then(|e| e.ctx.client.clone())
     {
         client.search().clear();
     }
@@ -280,7 +290,8 @@ fn pick(palette: &Entity<Palette>, id: &SharedString, window: &mut Window, cx: &
         .iter()
         .find(|r| &r.id == id)
         .map(|r| r.target.clone());
-    let (Some(target), Some(env)) = (target, cx.try_global::<SearchEnv>().cloned()) else {
+    let env = env_of(window.window_handle().window_id(), cx);
+    let (Some(target), Some(env)) = (target, env) else {
         return;
     };
     if (env.navigate)(target, window, cx) {
@@ -369,9 +380,12 @@ pub fn inspect(window: &Window, cx: &App) -> Option<Inspect> {
 
 /// The search palette (`slots::overlays`): `None` while it is closed.
 pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let env = cx.try_global::<SearchEnv>().cloned()?;
+    let wid = window.window_handle().window_id();
+    let env = env_of(wid, cx)?;
     let memory = palette_of(window, cx);
-    if std::mem::take(&mut cx.default_global::<OpenRequest>().0) && !memory.read(cx).open {
+    if std::mem::take(&mut crate::per_window::get_mut::<OpenRequest>(wid, cx).0)
+        && !memory.read(cx).open
+    {
         let input = memory.read(cx).input.clone();
         input.update(cx, |s, cx| s.set_value("", window, cx));
         memory.update(cx, |p, _| {
@@ -689,4 +703,38 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         .with_priority(OVERLAY_PRIORITY)
         .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Final review sweep: each window's palette has its own host environment and open request: window B's host never
+    /// replaces A's (so A never searches on, or opens a result in, B's client), and a request for A opens only A.
+    #[gpui::test]
+    fn each_window_has_its_own_search_host(cx: &mut gpui::TestAppContext) {
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let env = |community: u8| SearchEnv {
+            ctx: SlotCx {
+                community: Some(dilla_client::state::CommunityId([community; 16])),
+                ..SlotCx::default()
+            },
+            navigate: std::rc::Rc::new(|_, _, _| true),
+        };
+        cx.update(|cx| {
+            provide(a, env(1), cx);
+            provide(b, env(2), cx);
+            let of = |w, cx: &App| env_of(w, cx).and_then(|e| e.ctx.community);
+            assert_eq!(of(a, cx), Some(dilla_client::state::CommunityId([1; 16])));
+            assert_eq!(of(b, cx), Some(dilla_client::state::CommunityId([2; 16])));
+            request_open_in(a, cx);
+            assert!(crate::per_window::get::<OpenRequest>(a, cx).is_some_and(|r| r.0));
+            assert!(crate::per_window::get::<OpenRequest>(b, cx).is_none_or(|r| !r.0));
+        });
+    }
 }

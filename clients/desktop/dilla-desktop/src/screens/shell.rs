@@ -1130,6 +1130,7 @@ impl Render for ShellView {
         // What the search palette (23) draws with, and how it opens a result.
         let host = cx.entity().downgrade();
         search::provide(
+            window.window_handle().window_id(),
             SearchEnv {
                 ctx: ctx.clone(),
                 navigate: Rc::new(move |target, _, cx| {
@@ -1332,7 +1333,9 @@ impl Render for ShellView {
                     let _ = weak.update(cx, |shell, cx| shell.navigate(Route::Settings(None), cx));
                 }),
                 // The search field opens the palette (23).
-                on_search: Rc::new(|_, cx| search::request_open(cx)),
+                on_search: Rc::new(|window, cx| {
+                    search::request_open_in(window.window_handle().window_id(), cx)
+                }),
             },
         );
 
