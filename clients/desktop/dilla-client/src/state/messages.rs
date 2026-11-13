@@ -430,4 +430,22 @@ mod tests {
 /// Task 9's slice of [`super::AppState`]: typing (sent and received), pins, slow mode and the announcement rule. Stub from Task 1: Task 9 adds the fields; [`Default`] is the
 /// empty slice.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct MessagesState {}
+pub struct MessagesState {
+    /// Task 2 (removal recovery): the channels whose timeline cannot be shown because their removal feed cannot be
+    /// read, with why (channel.ts `openChannelFlow` rejects the open with the same error). The timeline itself is
+    /// absent: what the store holds is never shown while a removal may be missing from it.
+    pub unavailable: std::collections::HashMap<ChannelId, TimelineUnavailable>,
+}
+
+/// Why a channel's timeline cannot be shown (Task 2). Never carries message content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimelineUnavailable {
+    /// The instance refused the removal feed (its status and code: 403 `E_FORBIDDEN`, 404 `E_NOT_FOUND` after the
+    /// resync a lost leaf gets, ...).
+    FeedRefused { status: u16, code: String },
+    /// The feed does not hold together (`E_REMOVAL_FEED`: a revision gap, a proof for another group, a bad page).
+    FeedInvalid { code: String },
+    /// A removal could not be verified (the core's code: a moderator this device cannot pin, a proof that does not
+    /// check).
+    RemovalUnverified { code: String },
+}

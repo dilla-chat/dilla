@@ -686,10 +686,32 @@ async fn until(at: Option<Instant>) {
     }
 }
 
-/// The shortest heartbeat interval the client accepts. gateway.ts has no explicit floor (a JS timer is clamped to a few
-/// milliseconds by the runtime); this is the same guard made explicit, so a server-sent `heartbeat_ms` of 0 or 1 cannot
-/// make the client send heartbeats in a tight loop.
-const MIN_BEAT_INTERVAL: Duration = Duration::from_millis(10);
+/// The shortest heartbeat interval the client accepts: the Bot's gateway client bound
+/// (internal/bot/gatewayclient: `maxDuration(heartbeat/2, 250ms)`). gateway.ts has no explicit floor (a JS timer is only
+/// clamped to a few milliseconds by the runtime), so a server-sent `heartbeat_ms` of 0 or 1 cannot make the client send
+/// heartbeats in a tight loop.
+const MIN_BEAT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The longest wait a server-sent timing can impose (a `reconnect` frame's `after_ms`, the hello's commit backoff):
+/// the Bot's gateway client bound (internal/bot/gatewayclient `boundedMilliseconds`). gateway.ts takes `after_ms` as
+/// it comes, where a browser timer past 2^31 - 1 ms fires at once; here an unbounded value would overflow the
+/// reconnect deadline (an `Instant` past its range panics) or park the client for good.
+pub const MAX_SERVER_WAIT_MS: u64 = 120_000;
+
+/// A server-sent wait, bounded by [`MAX_SERVER_WAIT_MS`].
+pub fn bounded_server_wait(ms: u64) -> u64 {
+    ms.min(MAX_SERVER_WAIT_MS)
+}
+
+/// gateway.ts `reconnectFrame`'s wait: a `reconnect` frame's `after_ms` (bounded), `invalid_session` none.
+fn reconnect_after_ms(frame: &frames::Frame) -> u64 {
+    match frame.op {
+        Op::RECONNECT => {
+            bounded_server_wait(frame.payload.get(1).and_then(|v| u53(v).ok()).unwrap_or(0))
+        }
+        _ => 0,
+    }
+}
 
 /// `min(heartbeat_ms / 2, heartbeat_max)`, never below [`MIN_BEAT_INTERVAL`].
 fn beat_interval_for(heartbeat_ms: u64, heartbeat_max: Duration) -> Duration {
@@ -1016,11 +1038,7 @@ impl Conn {
 
     /// gateway.ts `reconnectFrame`: `reconnect` names its own wait, `invalid_session` none; close normally, reconnect.
     fn reconnect_frame(&mut self, frame: &frames::Frame, backoff: &mut Backoff) -> Flow {
-        let after = match frame.op {
-            Op::RECONNECT => frame.payload.get(1).and_then(|v| u53(v).ok()).unwrap_or(0),
-            _ => 0,
-        };
-        backoff.set_after(after);
+        backoff.set_after(reconnect_after_ms(frame));
         self.teardown(ClientClose::NORMAL)
     }
 }
@@ -1028,6 +1046,41 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 8 minor (screens plan Task 2): a hello's `heartbeat_ms` of 0 beats at the floor, never in a tight loop,
+    /// and a `reconnect` frame's huge `after_ms` is capped, so the reconnect deadline can neither overflow nor park the
+    /// client for good.
+    #[test]
+    fn server_timings_are_clamped() {
+        let max = Duration::from_millis(15_000);
+        assert_eq!(beat_interval_for(0, max), MIN_BEAT_INTERVAL);
+        assert_eq!(beat_interval_for(u64::MAX, max), max);
+        let reconnect = |after: u64| frames::Frame {
+            op: Op::RECONNECT,
+            n: 0,
+            group_id: None,
+            payload: vec![Value::Text("restart".into()), Value::Uint(after)],
+        };
+        assert_eq!(reconnect_after_ms(&reconnect(2_500)), 2_500);
+        let huge = (1u64 << 53) - 1;
+        assert_eq!(reconnect_after_ms(&reconnect(huge)), MAX_SERVER_WAIT_MS);
+        assert_eq!(
+            reconnect_after_ms(&frames::Frame {
+                op: Op::INVALID_SESSION,
+                n: 0,
+                group_id: None,
+                payload: vec![Value::Uint(huge)],
+            }),
+            0
+        );
+        // The capped wait is a deadline the reconnect loop can compute (an uncapped one panics on `Instant` overflow).
+        let mut backoff = Backoff::new();
+        backoff.set_after(reconnect_after_ms(&reconnect(huge)));
+        let wait = backoff.next_delay(0.0);
+        assert_eq!(wait, Duration::from_millis(MAX_SERVER_WAIT_MS));
+        assert!(Instant::now().checked_add(wait).is_some());
+        assert_eq!(bounded_server_wait(300), 300);
+    }
 
     #[test]
     fn beat_interval_is_clamped() {
@@ -1037,10 +1090,12 @@ mod tests {
             Duration::from_millis(15_000)
         );
         assert_eq!(beat_interval_for(100_000, max), max);
-        assert_eq!(beat_interval_for(100, max), Duration::from_millis(50));
+        assert_eq!(beat_interval_for(600, max), Duration::from_millis(300));
+        assert_eq!(beat_interval_for(500, max), MIN_BEAT_INTERVAL);
+        assert_eq!(beat_interval_for(100, max), MIN_BEAT_INTERVAL);
         assert_eq!(beat_interval_for(0, max), MIN_BEAT_INTERVAL);
         assert_eq!(beat_interval_for(1, max), MIN_BEAT_INTERVAL);
-        assert_eq!(beat_interval_for(15, max), MIN_BEAT_INTERVAL);
+        assert_eq!(MIN_BEAT_INTERVAL, Duration::from_millis(250));
     }
 
     #[test]
