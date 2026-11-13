@@ -529,3 +529,70 @@ async fn opening_a_thread_of_an_unheld_group_publishes_an_empty_thread() {
         })
     );
 }
+
+/// e2e/web/threads.spec.ts, "two people thread in a DM": Ada posts a root in the DM with Björn; Björn answers it in its
+/// thread. Ada's DM shows the root's count, the reply is held out of the DM's timeline, and opening the thread shows the
+/// reply in the pane while the timeline still holds it out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn two_people_thread_in_a_dm() {
+    let (_host, pa, pb, _c) = two_people("thread-dm").await;
+    let a = start(&pa).await;
+    let b = start(&pb).await;
+    a.dms().start();
+    b.dms().start();
+    let dm = a
+        .dms()
+        .open_dm(UserId(pb.user_id))
+        .await
+        .unwrap()
+        .expect("the DM opens");
+    a.dms()
+        .open(dm)
+        .await
+        .unwrap()
+        .expect("a registers the DM's group");
+    wait_for(&b, WAIT, "b to list and join the DM", |s| {
+        s.dms
+            .get(dm)
+            .is_some_and(|d| d.group == dilla_client::state::ChannelGroupState::Active)
+    })
+    .await;
+    a.threads().track(dm);
+    a.dms()
+        .send_text(dm, "dm root".into())
+        .await
+        .unwrap()
+        .expect("queued");
+    let s = wait_for(&a, WAIT, "the root stored", |s| {
+        item_with(s, dm, "dm root")
+            .is_some_and(|i| i.seq.is_some() && i.state == TimelineItemState::Ok)
+    })
+    .await;
+    let root = item_with(&s, dm, "dm root").unwrap().msg_id.unwrap();
+    // Björn holds the root (heard), then answers it in its thread.
+    wait_for(&b, WAIT, "b holds the root", |s| {
+        item_with(s, dm, "dm root").is_some_and(|i| i.seq.is_some())
+    })
+    .await;
+    b.threads()
+        .send_in_thread(dm, root, "dm reply".into())
+        .await
+        .unwrap()
+        .expect("the reply is queued");
+    let s = wait_for(&a, WAIT, "the root's count", |s| count_of(s, dm, root) == 1).await;
+    assert!(
+        !channel_lists(&s, dm, "dm reply"),
+        "the reply is held out of the DM timeline"
+    );
+    a.threads().open(dm, root).await.unwrap().expect("opens");
+    let s = wait_for(&a, WAIT, "the reply in the pane", |s| {
+        thread_bodies(s, root) == ["dm reply"]
+    })
+    .await;
+    assert_eq!(s.threads.open, Some(OpenThread { channel: dm, root }));
+    assert!(
+        !channel_lists(&s, dm, "dm reply"),
+        "still out of the timeline with the pane open"
+    );
+}

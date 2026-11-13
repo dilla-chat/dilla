@@ -504,3 +504,71 @@ async fn mute_before_join_mutes_every_sender() {
     .await
     .unwrap();
 }
+
+/// e2e/voice/realtime-transport.spec.ts, "a live call sends coarse reports over the existing socket and defers an update
+/// until the call ends" (its report half; the update half is the updater's, the next plan's): with alice and bob in a
+/// call, alice's coarse report is one op 58 frame on the open gateway socket (`n` 0, at most 1 KiB even at its largest,
+/// never a request), at most one per 10 s; the instance takes it (the socket and the call stay up).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn coarse_reports_go_over_the_socket_in_a_live_call() {
+    use dilla_client::features::voice::{CallStatsReport, stats_frame};
+    use dilla_client::gateway::frames::{Op, decode};
+    use dilla_client::state::ConnectionStatus;
+    let w = world("voice-reports").await;
+    let a = client(&w.alice).await;
+    let b = client(&w.bob).await;
+    for c in [&a, &b] {
+        listed(c, w.voice).await;
+        c.voice()
+            .join(w.voice)
+            .await
+            .unwrap()
+            .expect("the join succeeds");
+        until(c, "in the call", |s| s.voice.call.phase == CallPhase::In).await;
+    }
+    let call = a
+        .state()
+        .borrow()
+        .voice
+        .call
+        .call_id
+        .expect("the call's id");
+    // The frame: op 58 with no request number, a small fixed shape whatever the counts.
+    let largest = CallStatsReport {
+        candidate_type: u64::MAX,
+        relay_protocol: Some(u64::MAX),
+        rtt_ms: u64::MAX,
+        fraction_lost_permille: u64::MAX,
+        decrypt_failures: u64::MAX,
+        frames_encrypted: u64::MAX,
+    };
+    for report in [CallStatsReport::default(), largest] {
+        let bytes = stats_frame(call, &report).unwrap();
+        assert!(bytes.len() <= 1024, "{} bytes", bytes.len());
+        let frame = decode(&bytes).unwrap();
+        assert_eq!((frame.op, frame.n), (Op::CALL_STATS, 0));
+    }
+    let report = CallStatsReport {
+        candidate_type: 1,
+        rtt_ms: 40,
+        frames_encrypted: 500,
+        ..CallStatsReport::default()
+    };
+    assert!(
+        a.voice().send_stats(report),
+        "a report goes on the open socket"
+    );
+    assert!(!a.voice().send_stats(report), "at most one report per 10 s");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let s = a.state().borrow().clone();
+    assert_eq!(
+        s.connection.status,
+        ConnectionStatus::Online,
+        "the instance took the frame"
+    );
+    assert_eq!(s.voice.call.phase, CallPhase::In, "the call stays");
+    let _ = a.voice().leave().await;
+    assert!(!a.voice().send_stats(report), "no call, no report");
+    drop(b);
+}

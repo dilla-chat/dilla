@@ -193,6 +193,18 @@ impl Focusable for ShellView {
 }
 
 impl ShellView {
+    /// Tests: the composer's field (Task 28's cross-area tests type into it as a person does).
+    #[cfg(feature = "test-hooks")]
+    pub fn composer_focus(&self, cx: &gpui::App) -> FocusHandle {
+        gpui::Focusable::focus_handle(self.composer.read(cx), cx)
+    }
+
+    /// Tests: what the composer's field holds.
+    #[cfg(feature = "test-hooks")]
+    pub fn composer_value(&self, cx: &gpui::App) -> String {
+        self.composer.read(cx).value(cx).to_string()
+    }
+
     pub fn new(
         state: Arc<AppState>,
         client: Option<Rc<Client>>,
@@ -534,7 +546,21 @@ impl ShellView {
         match target {
             Navigate::Channel { community, channel } => open(self, community, channel, cx),
             Navigate::Message(hit) => match hit.community {
-                Some(community) => open(self, community, hit.channel, cx),
+                Some(community) => {
+                    if !open(self, community, hit.channel, cx) {
+                        return false;
+                    }
+                    // A reply is no row of the channel: its hit opens its thread (Shell.tsx, threads.spec.ts test 4).
+                    if let Some(root) = hit.thread_root {
+                        crate::screens::threads::open_thread(
+                            hit.channel,
+                            root,
+                            &self.slot_cx(),
+                            cx,
+                        );
+                    }
+                    true
+                }
                 None => false,
             },
             _ => false,

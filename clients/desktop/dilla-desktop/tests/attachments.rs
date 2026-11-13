@@ -247,6 +247,94 @@ mod behaviour {
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("webm"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// packages/desktop/test/electron/shell.spec.ts, "downloads a decrypted local attachment while refusing blob document
+    /// navigation", for the native shell (it has no document to navigate): the card's Save opens bob's copy of alice's
+    /// file, asks the save dialog for a path, and writes the decrypted bytes there, and nothing before the person picks
+    /// the path. The blob-navigation half has no native counterpart.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn save_writes_the_decrypted_attachment_to_disk(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop::screens::attachments::ui::{self, CardKey};
+        cx.executor().allow_parking();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_host, pa, pb, c) = rt.block_on(two_people("t28-save"));
+        let (alice, bob) = rt.block_on(async { (start(&pa).await, start(&pb).await) });
+        let channel = rt.block_on(general(&alice, c));
+        rt.block_on(general(&bob, c));
+        rt.block_on(alice.open_channel(channel)).unwrap().unwrap();
+        rt.block_on(bob.open_channel(channel)).unwrap().unwrap();
+        let body = b"decrypted local attachment".to_vec();
+        let seq = rt.block_on(async {
+            let tray = alice.attachments().tray(channel);
+            tray.add(vec![NewFile::from_bytes(
+                "attachment.txt",
+                "text/plain",
+                body.clone(),
+            )])
+            .await
+            .unwrap();
+            assert!(tray.entries().iter().all(|e| e.phase == TrayPhase::Ready));
+            let d = tray.take_all().unwrap();
+            alice
+                .attachments()
+                .send(channel, "the file".into(), d)
+                .await
+                .unwrap()
+                .unwrap();
+            let s = wait_for(&bob, WAIT, "alice's file", |s| {
+                row(s, channel, "the file").is_some_and(|r| r.attachments.len() == 1)
+            })
+            .await;
+            row(&s, channel, "the file").unwrap().seq.unwrap()
+        });
+
+        let dir = std::env::temp_dir().join(format!("dilla-t28-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("saved.txt");
+        cx.update(dilla_desktop::install);
+        let bob = std::rc::Rc::new(bob);
+        let key = CardKey {
+            channel,
+            seq,
+            index: 0,
+        };
+        cx.update(|cx| ui::save(&bob, key, cx));
+        // The file opens, then the save dialog asks; nothing is written before the person answers it.
+        let deadline = std::time::Instant::now() + WAIT;
+        while !cx.did_prompt_for_new_path() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the save dialog never asked"
+            );
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "nothing written before the answer"
+        );
+        cx.simulate_new_path_selection(|_| Some(target.clone()));
+        let deadline = std::time::Instant::now() + WAIT;
+        while !target.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the file was never written"
+            );
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        cx.run_until_parked();
+        assert_eq!(std::fs::read(&target).unwrap(), body, "the decrypted bytes");
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(alice);
+    }
 }
 
 mod two_accounts {

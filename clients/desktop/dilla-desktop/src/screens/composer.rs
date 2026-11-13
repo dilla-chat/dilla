@@ -94,6 +94,8 @@ pub struct Composer {
     /// The text `used` was worked out for, and the bytes of it as posted (mentions encoded).
     /// When this composer first drew (unix seconds): only own posts from then on start slow mode's wait.
     opened_s: Option<u64>,
+    /// The message the reply bar aimed this field at when it last drew: a new target takes the keyboard.
+    reply_seen: Option<dilla_client::state::MessageId>,
     used_for: SharedString,
     used: usize,
     save: Option<Task<()>>,
@@ -146,6 +148,7 @@ impl Composer {
             active: 0,
             dismissed: None,
             opened_s: None,
+            reply_seen: None,
             used_for: SharedString::default(),
             used: 0,
             save: None,
@@ -640,6 +643,17 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.switch_channel(window, cx);
+        // ComposerArea.tsx: a reply started (the toolbar's Reply) puts the keyboard in the field.
+        let reply = crate::screens::threads::replying_of(&self.slots, cx)
+            .filter(|r| Some(r.channel) == self.slots.channel)
+            .map(|r| r.msg_id);
+        if reply != self.reply_seen {
+            if reply.is_some() {
+                let field = self.input.read(cx).focus_handle(cx);
+                window.focus(&field, cx);
+            }
+            self.reply_seen = reply;
+        }
         let value = self.input.read(cx).value();
         let empty = value.is_empty();
         let ctx = self.slots.clone();

@@ -525,3 +525,142 @@ async fn back_after_a_wrong_key_lets_another_account_sign_in() {
     let _ = ada;
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The operator's reset of one account's second factors (POST `<control>/debug/reset-factors`, the test host's twin of
+/// `dillad admin user reset-factors`): 204.
+async fn reset_factors(host: &h::Host, username: &str) {
+    let answer = reqwest::Client::new()
+        .post(format!("{}/debug/reset-factors", host.control))
+        .header("content-type", "application/json")
+        .body(format!(r#"{{"username":"{username}"}}"#))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status().as_u16(), 204, "reset-factors");
+}
+
+/// The forced set-up of a client that owes its factor: an authenticator app (its code by the host's clock), the finish,
+/// then ready and online.
+async fn set_up_again(host: &h::Host, client: &dilla_client::Client) {
+    let factors = client.factors();
+    let read = factors
+        .refresh()
+        .await
+        .unwrap()
+        .expect("factor setup holds the factors");
+    assert!(read.owed && !read.holds_factor(), "{read:?}");
+    let key = factors.totp_begin(None).await.unwrap();
+    let code = h::totp_code(&key.secret, h::clock_now(host) / 30);
+    factors.totp_confirm(&code).await.unwrap();
+    factors.setup_done().await.unwrap();
+    client.factor_completed();
+    h::wait_for(client, Duration::from_secs(30), "ready and online", online).await;
+}
+
+/// Sends `body` in #general of `community` and waits until it is stored.
+async fn send_in_general(client: &dilla_client::Client, community: [u8; 16], body: &str) {
+    let c = dilla_client::state::CommunityId(community);
+    let s = h::wait_for(client, Duration::from_secs(30), "#general", |s| {
+        s.channel_named(c, "general").is_some()
+    })
+    .await;
+    let general = s.channel_named(c, "general").unwrap().id;
+    client
+        .open_channel(general)
+        .await
+        .unwrap()
+        .expect("#general opens");
+    client
+        .send_text(general, body.to_owned())
+        .await
+        .unwrap()
+        .expect("queued");
+    h::wait_for(client, Duration::from_secs(30), "the message stored", |s| {
+        s.timelines.get(&general).is_some_and(|t| {
+            t.items.iter().any(|i| {
+                i.body == body
+                    && i.seq.is_some()
+                    && i.state == dilla_client::state::TimelineItemState::Ok
+            })
+        })
+    })
+    .await;
+}
+
+/// Ada signed up on a host of her own, owning "Asgard Crew" with #general, her session cleared.
+async fn ada_with_a_server(tag: &'static str) -> (h::Host, h::Person, [u8; 16]) {
+    let host = tokio::task::spawn_blocking(move || h::start_host(tag, "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let ada = h::sign_up(&host, &invite, "ada", "Ada", tag).await;
+    tokio::task::spawn_blocking(move || {
+        let c = h::community(&host, &ada, "Asgard Crew", &[]);
+        h::clear_session(&ada);
+        (host, ada, c)
+    })
+    .await
+    .unwrap()
+}
+
+/// required-factor.spec.ts, "an operator reset reaches a live page with no reload": Ada is in the shell when the operator
+/// resets her factors; with no restart the gateway closes and the client lands on the forced set-up (phase
+/// `FactorSetup`); she sets an app up again, and the same client goes ready and sends in #general.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn an_operator_reset_reaches_a_live_client_with_no_reload() {
+    let (host, ada, community) = ada_with_a_server("t28-reset-live").await;
+    let client = h::start(&ada).await;
+    h::wait_for(&client, Duration::from_secs(30), "ready and online", online).await;
+    reset_factors(&host, "ada").await;
+    h::wait_for(
+        &client,
+        Duration::from_secs(30),
+        "the forced set-up with no restart",
+        |s| s.account.phase == AccountPhase::FactorSetup,
+    )
+    .await;
+    set_up_again(&host, &client).await;
+    send_in_general(&client, community, "after the set-up").await;
+    world::stop(client).await;
+}
+
+/// required-factor.spec.ts, "after a reset, a fresh browser takes the password and then the set-up, not a code": after the
+/// operator's reset a new device logs in with the password and is asked for no code (the key is its next step), then
+/// owes the set-up; once an app is set up it goes ready, finds the server and sends in #general.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn after_a_reset_a_fresh_device_takes_the_password_then_the_setup() {
+    let (host, ada, community) = ada_with_a_server("t28-reset-fresh").await;
+    reset_factors(&host, "ada").await;
+    let root = h::repo_root().join(format!("target/t28-reset-fresh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let cfg = Instances::load(&root)
+        .unwrap()
+        .add(url::Url::parse(&host.public).unwrap())
+        .unwrap();
+    let kc = Arc::new(MemoryKeychain::new());
+    let mut flow = SignIn::new(cfg.clone(), kc.clone()).unwrap();
+    assert_eq!(
+        flow.login("ada", h::PASSWORD).await.unwrap(),
+        Owed::Nothing,
+        "no code is asked for: the key is the next step"
+    );
+    flow.add_device(&ada.recovery_key).await.unwrap();
+    let client = tokio::task::spawn_blocking(move || {
+        dilla_client::Client::start(cfg, kc).expect("the new device starts")
+    })
+    .await
+    .unwrap();
+    h::wait_for(
+        &client,
+        Duration::from_secs(30),
+        "the set-up is owed",
+        |s| s.account.phase == AccountPhase::FactorSetup,
+    )
+    .await;
+    set_up_again(&host, &client).await;
+    send_in_general(&client, community, "from the new device").await;
+    world::stop(client).await;
+    let _ = std::fs::remove_dir_all(&root);
+}

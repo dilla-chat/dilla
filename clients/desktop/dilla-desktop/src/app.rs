@@ -1020,6 +1020,21 @@ impl AppView {
         }
     }
 
+    /// Tests: the shell this window drew last, with its client (Task 28's cross-area tests drive it).
+    #[cfg(feature = "test-hooks")]
+    pub fn shell(&self) -> Option<Entity<ShellView>> {
+        self.shell.clone()
+    }
+
+    /// Tests: the forced factor screen, while the window shows it.
+    #[cfg(feature = "test-hooks")]
+    pub fn factor(&self) -> Option<Entity<crate::screens::factor::forced::ForcedFactorView>> {
+        match &self.screen {
+            Screen::Factor(view) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
     /// Automation: the open settings host, and how many settings hosts are stacked (one at most).
     #[cfg(feature = "test-hooks")]
     pub fn settings_host(&self) -> Option<(Entity<UserSettingsHost>, usize)> {

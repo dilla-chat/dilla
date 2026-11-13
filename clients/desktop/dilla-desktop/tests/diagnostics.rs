@@ -627,3 +627,105 @@ async fn older_client_refused_banner_no_reconnect_keeps_draft() {
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The diagnostics section alone in a window, drawn from `state`.
+struct CopyHost(Arc<AppState>);
+
+impl gpui::Render for CopyHost {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use dilla_desktop::screens::{FocusNext, FocusPrevious};
+        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _};
+        let ctx = dilla_desktop::slots::SlotCx {
+            state: self.0.clone(),
+            ..dilla_desktop::slots::SlotCx::default()
+        };
+        // Tab moves the focus as the app's root does.
+        gpui::div()
+            .id("host")
+            .size_full()
+            .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
+            .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+            .child(dilla_desktop::screens::diagnostics::section::render(
+                &ctx, window, cx,
+            ))
+    }
+}
+
+/// packages/desktop/test/electron/shell.spec.ts, "focused copy writes text to the system clipboard while clipboard reads
+/// and hidden writes stay denied", for the native shell: drawing the section (its window active or not) writes nothing
+/// to the system clipboard; the person's own action on the focused Copy codes button (Tab to it, Enter) writes exactly
+/// the codes; the copy reads nothing back from the clipboard (a text the person put there stays until that action).
+#[gpui::test]
+fn copy_writes_to_the_system_clipboard_only_from_a_focused_action(cx: &mut gpui::TestAppContext) {
+    use dilla_client::state::diagnostics::ErrorEntry;
+    cx.update(dilla_desktop::install);
+    let mut s = AppState::default();
+    s.diagnostics.errors = vec![
+        ErrorEntry {
+            code: "E_NETWORK".into(),
+            at_ms: 1,
+        },
+        ErrorEntry {
+            code: "E_RATE_LIMITED".into(),
+            at_ms: 2,
+        },
+    ];
+    let (_, vcx) = cx.add_window_view(|_, _| CopyHost(Arc::new(s)));
+    // Something of the person's own is on the clipboard.
+    vcx.write_to_clipboard(gpui::ClipboardItem::new_string("the person's text".into()));
+    for _ in 0..3 {
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+    }
+    vcx.deactivate_window();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let text = |vcx: &mut gpui::VisualTestContext| vcx.read_from_clipboard().and_then(|c| c.text());
+    assert_eq!(
+        text(vcx).as_deref(),
+        Some("the person's text"),
+        "drawing, active or hidden, writes nothing"
+    );
+    vcx.update(|window, _| window.activate_window());
+    vcx.run_until_parked();
+    // The focus moves to the section's one tab stop, Copy codes (what Tab does from the app's root).
+    vcx.update(|window, cx| window.focus_next(cx));
+    vcx.run_until_parked();
+    assert!(
+        vcx.update(|window, cx| window.focused(cx).is_some()),
+        "Copy codes has the focus"
+    );
+    assert_eq!(
+        text(vcx).as_deref(),
+        Some("the person's text"),
+        "focus alone writes nothing"
+    );
+    // Enter pressed and released on the focused button (GPUI clicks on the key's release).
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let enter = gpui::Keystroke::parse("enter").unwrap();
+    vcx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: enter.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: enter }),
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    assert_eq!(
+        text(vcx).as_deref(),
+        Some("E_NETWORK\nE_RATE_LIMITED"),
+        "the focused Copy codes wrote the codes"
+    );
+}

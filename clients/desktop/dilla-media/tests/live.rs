@@ -407,3 +407,99 @@ fn desktop_to_desktop_through_the_sfu_with_client_core_keys_and_an_epoch_change(
     println!("LIVE alice {sa2}");
     println!("LIVE bob {sb2}");
 }
+
+/// e2e/media/canary.spec.ts, "a canary connected straight to the SFU is decoded by nobody (MD-13, SP-13, DEV-63)": two
+/// canaries join the call's room with tokens of their own and publish a tone while the members talk. Neither is in the
+/// call group: one seals under a key and leaf nobody holds, the other forges alice's key id under a wrong key. Bob joins
+/// after they publish (the first subscription fails closed too). Over five seconds and after, no member opens a canary
+/// frame, verifies a canary device or hears a canary tone; the canary frames are refused; the members still hear each
+/// other.
+#[test]
+#[ignore = "needs dilla-testhost (Go) and the WASI core"]
+fn a_canary_connected_straight_to_the_sfu_is_decoded_by_nobody() {
+    let host = start_host();
+    let (_call, alice, bob, _) = call_raw_bob();
+    let (a_dev, b_dev) = (hex(&alice.device), hex(&bob.device));
+    let room = hex(&CALL);
+    let (url, a_token) = token(&host.control, &room, &a_dev);
+    let (_, b_token) = token(&host.control, &room, &b_dev);
+    let e = alice_epoch(&alice);
+    let a_leaf = e.own_leaf;
+    let b_leaf = e.roster.iter().find(|(_, d)| hex(d) == b_dev).unwrap().0;
+    let kid = |leaf: u64| format!("{:x}", (leaf << 8) | (e.epoch & 0xff));
+    let member_kids = [kid(a_leaf), kid(b_leaf)];
+
+    let mut a = Peer::start(&url, &a_token, 440);
+    a.epoch(&e);
+    a.next("connected", Duration::from_secs(30));
+    // The canaries: (device, tone, the leaf its frames claim).
+    let canaries = [([0xc1u8; 16], 700u32, 9u64), ([0xc2u8; 16], 1300, a_leaf)];
+    let mut canary_peers = Vec::new();
+    for (device, tone, leaf) in canaries {
+        let (_, t) = token(&host.control, &room, &hex(&device));
+        let mut c = Peer::start(&url, &t, tone);
+        c.epoch(&Epoch {
+            epoch: e.epoch,
+            key: [0x5a; 16],
+            own_leaf: leaf,
+            roster: vec![(leaf, device)],
+        });
+        c.next("connected", Duration::from_secs(30));
+        canary_peers.push(c);
+    }
+    let mut b = Peer::start(&url, &b_token, 1000);
+    b.epoch(&bob_epoch(&bob));
+    b.next("connected", Duration::from_secs(30));
+    hears(&mut a, &b_dev, 1000.0, Duration::from_secs(20));
+    hears(&mut b, &a_dev, 440.0, Duration::from_secs(20));
+
+    let check = |s: &Value| {
+        for kid in s["media"]["opened"].as_object().unwrap().keys() {
+            assert!(
+                member_kids.contains(kid),
+                "a canary frame was opened under {kid}: {s}"
+            );
+        }
+        for device in s["media"]["verified"].as_object().unwrap().keys() {
+            assert!(
+                *device == a_dev || *device == b_dev,
+                "a canary device was verified: {s}"
+            );
+        }
+        for (device, tone, _) in canaries {
+            let heard = s["peaks"][hex(&device)].as_f64();
+            assert!(
+                heard.is_none_or(|p| (p - f64::from(tone)).abs() > 20.0),
+                "a canary's tone was heard: {s}"
+            );
+        }
+        // A forged frame under alice's key id never decodes as her tone at the canary's pitch.
+        assert!(
+            s["peaks"][a_dev.as_str()]
+                .as_f64()
+                .is_none_or(|p| (p - 1300.0).abs() > 20.0),
+            "{s}"
+        );
+    };
+    // Twenty 250 ms ticks: at least five seconds of the canaries publishing to both members.
+    for _ in 0..20 {
+        check(&a.stats());
+        check(&b.stats());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    for m in [&mut a, &mut b] {
+        let s = m.stats();
+        check(&s);
+        let refused: u64 = s["media"]["failed"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(code, _)| *code != "sif")
+            .filter_map(|(_, n)| n.as_u64())
+            .sum();
+        assert!(refused > 0, "the canary frames were refused: {s}");
+    }
+    hears(&mut a, &b_dev, 1000.0, Duration::from_secs(5));
+    hears(&mut b, &a_dev, 440.0, Duration::from_secs(5));
+    drop(canary_peers);
+}

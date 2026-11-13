@@ -191,7 +191,7 @@ fn open_of(ctx: &SlotCx, cx: &mut App) -> Option<OpenThread> {
 }
 
 /// The reply target: the client's, or a fixture's own.
-fn replying_of(ctx: &SlotCx, cx: &mut App) -> Option<ReplyTarget> {
+pub(crate) fn replying_of(ctx: &SlotCx, cx: &mut App) -> Option<ReplyTarget> {
     if ctx.client.is_some() {
         ctx.state.threads.replying.clone()
     } else {

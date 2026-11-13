@@ -969,29 +969,37 @@ impl Voice {
         if r.last_stats.is_some_and(|t| t.elapsed() < STATS_EVERY) {
             return false;
         }
-        let frame = Frame {
-            op: Op::CALL_STATS,
-            n: 0,
-            group_id: None,
-            payload: vec![
-                Value::Bytes(call.to_vec()),
-                Value::Array(vec![
-                    Value::Uint(report.candidate_type),
-                    report.relay_protocol.map_or(Value::Null, Value::Uint),
-                    Value::Uint(report.rtt_ms),
-                    Value::Uint(report.fraction_lost_permille),
-                    Value::Uint(report.decrypt_failures),
-                    Value::Uint(report.frames_encrypted),
-                ]),
-            ],
-        };
-        let sent = crate::gateway::frames::encode(&frame)
-            .is_ok_and(|b| self.inner.engine().send_gateway_frame(b));
+        let sent =
+            stats_frame(call, &report).is_ok_and(|b| self.inner.engine().send_gateway_frame(b));
         if sent {
             r.last_stats = Some(std::time::Instant::now());
         }
         sent
     }
+}
+
+/// The gateway frame of one coarse report of `call` (op 58, `n` 0: a fire-and-forget frame on the open socket, never a
+/// request and never HTTP).
+pub fn stats_frame(
+    call: [u8; 16],
+    report: &CallStatsReport,
+) -> Result<Vec<u8>, crate::gateway::frames::FrameError> {
+    crate::gateway::frames::encode(&Frame {
+        op: Op::CALL_STATS,
+        n: 0,
+        group_id: None,
+        payload: vec![
+            Value::Bytes(call.to_vec()),
+            Value::Array(vec![
+                Value::Uint(report.candidate_type),
+                report.relay_protocol.map_or(Value::Null, Value::Uint),
+                Value::Uint(report.rtt_ms),
+                Value::Uint(report.fraction_lost_permille),
+                Value::Uint(report.decrypt_failures),
+                Value::Uint(report.frames_encrypted),
+            ]),
+        ],
+    })
 }
 
 fn code_of(e: &crate::seams::HttpError) -> String {

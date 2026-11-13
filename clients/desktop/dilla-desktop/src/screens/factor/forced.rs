@@ -44,6 +44,12 @@ pub struct ForcedFactorView {
 impl EventEmitter<ForcedEvent> for ForcedFactorView {}
 
 impl ForcedFactorView {
+    /// Tests (feature `test-hooks`): the set-up the screen holds.
+    #[cfg(feature = "test-hooks")]
+    pub fn setup(&self) -> Entity<FactorSetupView> {
+        self.setup.clone()
+    }
+
     /// `origin` is [`Origin::Required`] (the forced screen) or [`Origin::SignIn`] (a sign-in that found the factor owed).
     pub fn new(
         client: Rc<Client>,
