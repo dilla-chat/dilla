@@ -484,17 +484,43 @@ pub fn other_calls(window: WindowId, cx: &App) -> Vec<Rc<Client>> {
 /// Leaves the call of every other instance window (one call per device, as the web has one per tab): what a join or an
 /// answered ring in `window` does first.
 pub fn leave_other_calls(window: WindowId, cx: &mut App) {
-    for other in other_calls(window, cx) {
-        drop(other.voice().leave());
+    after_leaving_other_calls(window, cx, || {});
+}
+
+/// Leaves the call of every other instance window, then runs `then` once each leave has answered. A join started while
+/// another instance's leave is still committing races it in the call group (`E_COMMIT_INVALID`), so the join waits.
+/// The leaves answer on their clients' runtimes; the wait runs on a thread of its own, never on the UI's.
+pub fn after_leaving_other_calls(
+    window: WindowId,
+    cx: &mut App,
+    then: impl FnOnce() + Send + 'static,
+) {
+    let leaves: Vec<_> = other_calls(window, cx)
+        .into_iter()
+        .map(|c| c.voice().leave())
+        .collect();
+    if leaves.is_empty() {
+        then();
+        return;
+    }
+    let waited = std::thread::Builder::new()
+        .name("dilla-voice-handover".into())
+        .spawn(move || {
+            for leave in leaves {
+                let _ = leave.blocking_recv();
+            }
+            then();
+        });
+    if let Err(e) = waited {
+        log::warn!("voice: the join after leaving another instance's call did not start: {e}");
     }
 }
 
-/// Joins `channel`'s call through `window`'s own client (the voice row's join, the stage's join), after leaving a call
-/// another instance window is in.
+/// Joins `channel`'s call through `window`'s own client (the voice row's join, the stage's join), once a call another
+/// instance window is in has been left.
 pub fn join(channel: ChannelId, window: WindowId, cx: &mut App) {
     let Some(v) = voice(window, cx) else { return };
-    leave_other_calls(window, cx);
-    drop(v.join(channel));
+    after_leaving_other_calls(window, cx, move || drop(v.join(channel)));
 }
 
 /// Leaves `window`'s call; the focus goes back to the call's voice row (leave-reload.spec.ts).

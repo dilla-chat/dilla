@@ -174,8 +174,12 @@ fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) 
     let Some(ring) = find(&env.ctx.state, key) else {
         return;
     };
-    crate::screens::voice::leave_other_calls(crate::screens::voice::wid(window), cx);
-    drop(client.voice().join_dm(ring.channel));
+    let (voice, channel) = (client.voice(), ring.channel);
+    crate::screens::voice::after_leaving_other_calls(
+        crate::screens::voice::wid(window),
+        cx,
+        move || drop(voice.join_dm(channel)),
+    );
 }
 
 /// Decline: only the ring this decline answers (its call and expires_ts); the ring goes here at once.
