@@ -209,6 +209,14 @@ impl DoneView {
             let Ok(Ok(Some(path))) = chosen.await else {
                 return;
             };
+            // The step was left (Open dilla, the view gone) while the picker was open: its codes are wiped, and so is
+            // this copy, unwritten.
+            if !this
+                .update(cx, |this, _| !this.codes.is_empty())
+                .unwrap_or(false)
+            {
+                return;
+            }
             let written = cx
                 .background_spawn(async move { su::write_key_file(&path, body.as_bytes()) })
                 .await;
@@ -488,6 +496,43 @@ mod tests {
         let unticked = open_at(vcx);
         done.update(vcx, |d, cx| d.toggle_saved(cx));
         assert_eq!(open_at(vcx), unticked, "no hint line above Open dilla");
+    }
+
+    /// Save as file writes the codes where the person chose, but only while the step still holds them: Open dilla
+    /// with the picker still open wipes them, and the later answer writes nothing.
+    #[gpui::test]
+    fn save_writes_only_while_the_step_holds_the_codes(cx: &mut TestAppContext) {
+        cx.update(crate::install);
+        let dir = std::env::temp_dir().join(format!("dilla-done-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (view, vcx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| DoneView::new(result(), Some(ten()), window, cx));
+            Host(view)
+        });
+        let done = view.read_with(vcx, |h, _| h.0.clone());
+        // Saved while the step shows: the file holds the codes.
+        let kept = dir.join("kept.txt");
+        done.update(vcx, |d, cx| d.save(cx));
+        vcx.run_until_parked();
+        let to = kept.clone();
+        vcx.simulate_new_path_selection(move |_| Some(to));
+        vcx.run_until_parked();
+        let body = std::fs::read_to_string(&kept).expect("the file is written");
+        assert!(body.contains(&copy_text(&ten().0)));
+        // Open dilla while the picker is open: the later answer writes nothing.
+        let late = dir.join("late.txt");
+        done.update(vcx, |d, cx| d.save(cx));
+        vcx.run_until_parked();
+        done.update(vcx, |d, cx| {
+            d.toggle_saved(cx);
+            d.open(cx);
+        });
+        let to = late.clone();
+        vcx.simulate_new_path_selection(move |_| Some(to));
+        vcx.run_until_parked();
+        assert!(!late.exists(), "no file after the step was left");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The handover's holder (`AppView::open_workspace`): a launch dropped without a window leaves the codes with the
