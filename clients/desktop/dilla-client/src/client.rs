@@ -236,7 +236,12 @@ pub struct Client {
     inner: Arc<Inner>,
     /// The instance this client serves (its id, address and data directory).
     instance: InstanceConfig,
+    /// This client's number in the process (from 1, never reused).
+    serial: u64,
 }
+
+/// The last [`Client::serial`] handed out.
+static SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Client {
     /// Opens the instance's store, establishes the device session (from the device key; a stored session is used
@@ -472,6 +477,7 @@ impl Client {
             runtime: runtime.0.take(),
             inner,
             instance: cfg,
+            serial: SERIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
         })
     }
 
@@ -479,6 +485,12 @@ impl Client {
     /// read the address here).
     pub fn instance(&self) -> &InstanceConfig {
         &self.instance
+    }
+
+    /// This client's number in the process: unique among every client started in it, never reused (a view keys what a
+    /// client opened by it; a client's address can be reused after it drops).
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
 
     /// The observable state: a new snapshot is published on every change.

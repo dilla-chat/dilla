@@ -1,4 +1,4 @@
-//! The attachments area's view state (one [`AttachmentsUi`] global per app) and its actions: the trays (one per
+//! The attachments area's view state (one [`AttachmentsUi`] global per app) and its actions: the trays (one per client and
 //! channel, as the worker keeps `trays`), the opened thumbnails and images, the cards' open and save states, the
 //! lightbox, the players, the GIF picker and whether files are dragged over the window.
 //!
@@ -28,9 +28,12 @@ use gpui::{App, FocusHandle, Global, Image, ImageFormat, Window, WindowId};
 use super::media::{self, MediaDecoder, Playback};
 use crate::strings::{t, tf};
 
-/// Which opened picture: a message's attachment, its thumbnail or the whole file.
+/// Which opened picture: a message's attachment, its thumbnail or the whole file, as one client opened it (review M2:
+/// two accounts of one server see the same channel and seq; each keeps its own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageKey {
+    /// The opening client's [`Client::serial`].
+    pub client: u64,
     pub channel: ChannelId,
     pub seq: u64,
     pub index: u32,
@@ -45,9 +48,11 @@ pub enum MediaKey {
     Player(CardKey),
 }
 
-/// A card's attachment.
+/// A card's attachment, as one client shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CardKey {
+    /// The client's [`Client::serial`].
+    pub client: u64,
     pub channel: ChannelId,
     pub seq: u64,
     pub index: u32,
@@ -118,21 +123,20 @@ pub enum TrayPreview {
 
 /// The attachments area's state. One per app, and that is safe by construction (final review sweep): what belongs to a
 /// window is keyed by it (`targets`) or carries its owner window and is drawn only there (the lightbox, the GIF picker,
-/// the DM notice); what belongs to a client records its owner client (or is keyed by its channels) and goes
-/// with it in [`release`] (trays by `tray_owners`, images, cards and players by `media_owners`); the
-/// played-video directories are per instance and are wiped at open and at quit.
+/// the DM notice); what belongs to a client is keyed by its [`Client::serial`] (review M2: trays, previews, images,
+/// cards and players) and goes with it in [`release`]; the played-video directories are per instance and are wiped at
+/// open and at quit.
 #[derive(Default)]
 pub struct AttachmentsUi {
-    pub trays: HashMap<ChannelId, Tray>,
-    /// Which client (by the address of its `Client`) made each tray: [`release`] lets go of that client's trays.
-    pub tray_owners: HashMap<ChannelId, usize>,
-    pub tray_previews: HashMap<(ChannelId, String), TrayPreview>,
+    /// Each client's tray of each channel, by `(Client::serial, channel)`.
+    pub trays: HashMap<(u64, ChannelId), Tray>,
+    pub tray_previews: HashMap<(u64, ChannelId, String), TrayPreview>,
     pub images: HashMap<ImageKey, Slot>,
     pub cards: HashMap<CardKey, CardStatus>,
     pub players: HashMap<CardKey, Player>,
-    /// Which client (by the address of its `Client`) opened each image, card and player: [`release`] drops what that
-    /// client opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
-    pub media_owners: HashMap<MediaKey, usize>,
+    /// Which client (its [`Client::serial`]) opened each image, card and player: [`release`] drops what that client
+    /// opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
+    pub media_owners: HashMap<MediaKey, u64>,
     pub lightbox: Option<LightboxState>,
     pub gif: Option<GifState>,
     /// The DM GIF notice, while it asks.
@@ -260,8 +264,8 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     if !cx.has_global::<AttachmentsUi>() {
         return;
     }
+    let owner = owner_of(client);
     let u = ui(cx);
-    let owner = Rc::as_ptr(client) as usize;
     u.targets
         .retain(|_, t| !t.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
     if u.lightbox
@@ -276,17 +280,8 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     {
         u.gif = None;
     }
-    let gone: Vec<ChannelId> = u
-        .tray_owners
-        .iter()
-        .filter(|(_, o)| **o == owner)
-        .map(|(c, _)| *c)
-        .collect();
-    for channel in gone {
-        u.trays.remove(&channel);
-        u.tray_owners.remove(&channel);
-        u.tray_previews.retain(|(c, _), _| *c != channel);
-    }
+    u.trays.retain(|(c, _), _| *c != owner);
+    u.tray_previews.retain(|(c, _, _), _| *c != owner);
     // The decrypted images, the cards' state and the players the client opened go too (re-review N3: by owner, so a
     // DM's, a left channel's and a thread's go as well): a released account's media is not left in the process.
     forget_owner(owner, cx);
@@ -297,8 +292,8 @@ fn owns(client: &Client, key: MediaKey, cx: &mut App) {
     ui(cx).media_owners.insert(key, owner_of(client));
 }
 
-/// Drops the images, cards and players the client `owner` (by the address of its `Client`) opened.
-pub fn forget_owner(owner: usize, cx: &mut App) {
+/// Drops the images, cards and players the client `owner` (its [`Client::serial`]) opened.
+pub fn forget_owner(owner: u64, cx: &mut App) {
     let u = ui(cx);
     let gone: Vec<MediaKey> = u
         .media_owners
@@ -322,15 +317,15 @@ pub fn forget_owner(owner: usize, cx: &mut App) {
     }
 }
 
-/// The address `owns` records for `client`.
-fn owner_of(client: &Client) -> usize {
-    std::ptr::from_ref(client) as usize
+/// What `owns` records for `client`: its serial, never reused within the process.
+pub fn owner_of(client: &Client) -> u64 {
+    client.serial()
 }
 
 /// Whether the open of `key` that `owner` started may still land: its `media_owners` tag is still `owner`'s and the
 /// entry still waits for it. A release ([`forget_owner`]) while the open was in flight drops both, and the completion then
 /// keeps nothing (re-review N3: a late completion never brings plaintext or a player back without an owner).
-fn still_waiting(owner: usize, key: MediaKey, cx: &mut App) -> bool {
+fn still_waiting(owner: u64, key: MediaKey, cx: &mut App) -> bool {
     let u = ui(cx);
     u.media_owners.get(&key) == Some(&owner)
         && match key {
@@ -342,7 +337,7 @@ fn still_waiting(owner: usize, key: MediaKey, cx: &mut App) -> bool {
 
 /// An image's open landed: `slot` is kept only while [`still_waiting`]; otherwise it is dropped. Answers whether it was
 /// kept.
-fn land_image(owner: usize, key: ImageKey, slot: Slot, cx: &mut App) -> bool {
+fn land_image(owner: u64, key: ImageKey, slot: Slot, cx: &mut App) -> bool {
     if !still_waiting(owner, MediaKey::Image(key), cx) {
         return false;
     }
@@ -352,7 +347,7 @@ fn land_image(owner: usize, key: ImageKey, slot: Slot, cx: &mut App) -> bool {
 
 /// A card's save finished: its failure (`Some`) is shown, or the card is done (`None`), only while [`still_waiting`].
 /// Answers whether it landed.
-fn land_card(owner: usize, key: CardKey, status: Option<CardStatus>, cx: &mut App) -> bool {
+fn land_card(owner: u64, key: CardKey, status: Option<CardStatus>, cx: &mut App) -> bool {
     if !still_waiting(owner, MediaKey::Card(key), cx) {
         return false;
     }
@@ -366,7 +361,7 @@ fn land_card(owner: usize, key: CardKey, status: Option<CardStatus>, cx: &mut Ap
 /// A player's open landed: `start` (which starts the device's playback, or opens the system player) runs only while
 /// [`still_waiting`], so a released client's audio never starts; its player, if any, is kept. Answers whether it ran.
 fn land_player(
-    owner: usize,
+    owner: u64,
     key: CardKey,
     start: impl FnOnce(&mut App) -> Option<Player>,
     cx: &mut App,
@@ -381,14 +376,11 @@ fn land_player(
     true
 }
 
-/// The tray of `channel`, made on first use.
+/// `client`'s tray of `channel`, made on first use.
 pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
-    let u = ui(cx);
-    u.tray_owners
-        .entry(channel)
-        .or_insert(std::ptr::from_ref(client) as usize);
-    u.trays
-        .entry(channel)
+    ui(cx)
+        .trays
+        .entry((owner_of(client), channel))
         .or_insert_with(|| client.attachments().tray(channel))
         .clone()
 }
@@ -403,6 +395,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
         return;
     }
     let tray = tray_of(&client, channel, cx);
+    let owner = owner_of(&client);
     let over = files.iter().any(|f| f.size > ATTACHMENT_CAP);
     if over && tray.entries().len() + files.len() <= MAX_ATTACHMENTS {
         dilla_desktop_ui::components::toast::show_toast(t("shell.tray.overLimitToast"), cx);
@@ -412,7 +405,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
             let u = ui(cx);
             for (id, p) in ids.into_iter().zip(previews) {
                 if let Some(p) = p {
-                    u.tray_previews.insert((channel, id), p);
+                    u.tray_previews.insert((owner, channel, id), p);
                 }
             }
         }
@@ -506,25 +499,39 @@ pub async fn attach_paths(to: Target, paths: Vec<PathBuf>, cx: &mut gpui::AsyncA
 /// Removes a tray entry (and its preview).
 pub fn discard(client: &Client, channel: ChannelId, id: String, cx: &mut App) {
     let tray = tray_of(client, channel, cx);
-    ui(cx).tray_previews.remove(&(channel, id.clone()));
+    ui(cx)
+        .tray_previews
+        .remove(&(owner_of(client), channel, id.clone()));
     client.attachments().discard(&tray, id);
     cx.refresh_windows();
 }
 
-/// The descriptors a send carries, taken from the tray of `channel`; `Err` with the toast's text while a file is not
-/// ready (`shell.tray.notReady`). The composer's send calls it (the integration hook named in Task 12's report).
+/// Whether `client`'s tray of `channel` holds a file.
+pub fn has_files(client: &Client, channel: ChannelId, cx: &mut App) -> bool {
+    ui(cx)
+        .trays
+        .get(&(owner_of(client), channel))
+        .is_some_and(|t| !t.entries().is_empty())
+}
+
+/// The descriptors a send carries, taken from `client`'s tray of `channel`; `Err` with the toast's text while a file is
+/// not ready (`shell.tray.notReady`). The composer's send calls it (the integration hook named in Task 12's report).
 pub fn take_for_send(
+    client: &Client,
     channel: ChannelId,
     cx: &mut App,
 ) -> Result<Vec<dilla_client::features::attachments::Descriptor>, &'static str> {
-    let Some(tray) = ui(cx).trays.get(&channel).cloned() else {
+    let owner = owner_of(client);
+    let Some(tray) = ui(cx).trays.get(&(owner, channel)).cloned() else {
         return Ok(Vec::new());
     };
     if !tray.all_ready() {
         return Err(t("shell.tray.notReady"));
     }
     let out = tray.take_all().map_err(|_| t("shell.tray.notReady"))?;
-    ui(cx).tray_previews.retain(|(c, _), _| *c != channel);
+    ui(cx)
+        .tray_previews
+        .retain(|(o, c, _), _| (*o, *c) != (owner, channel));
     Ok(out)
 }
 
@@ -1017,6 +1024,7 @@ mod tests {
     fn a_release_drops_the_media_the_client_opened(cx: &mut gpui::TestAppContext) {
         let (mine, theirs) = (ChannelId([1; 16]), ChannelId([2; 16]));
         let key = |channel| ImageKey {
+            client: 0,
             channel,
             seq: 1,
             index: 0,
@@ -1030,6 +1038,7 @@ mod tests {
             u.media_owners.insert(MediaKey::Image(key(mine)), 1);
             u.media_owners.insert(MediaKey::Image(key(theirs)), 2);
             let card = |channel| CardKey {
+                client: 0,
                 channel,
                 seq: 1,
                 index: 0,
@@ -1051,12 +1060,14 @@ mod tests {
     fn an_open_that_lands_after_the_release_keeps_nothing(cx: &mut gpui::TestAppContext) {
         let channel = ChannelId([3; 16]);
         let image = ImageKey {
+            client: 1,
             channel,
             seq: 1,
             index: 0,
             thumb: false,
         };
         let card = CardKey {
+            client: 1,
             channel,
             seq: 1,
             index: 0,
@@ -1099,12 +1110,14 @@ mod tests {
     fn an_open_that_lands_before_the_release_is_kept(cx: &mut gpui::TestAppContext) {
         let channel = ChannelId([4; 16]);
         let image = ImageKey {
+            client: 1,
             channel,
             seq: 1,
             index: 0,
             thumb: false,
         };
         let card = CardKey {
+            client: 1,
             channel,
             seq: 1,
             index: 0,

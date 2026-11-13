@@ -363,12 +363,11 @@ impl Composer {
         }
         // ComposerArea.tsx `send`: files alone may be sent; nothing typed and no files sends nothing.
         let channel = self.slots.channel;
-        let files = channel.is_some_and(|c| {
-            crate::screens::attachments::ui::ui(cx)
-                .trays
-                .get(&c)
-                .is_some_and(|t| !t.entries().is_empty())
-        });
+        let client = self.slots.client.clone();
+        let files = match (&client, channel) {
+            (Some(k), Some(c)) => crate::screens::attachments::ui::has_files(k, c, cx),
+            _ => false,
+        };
         if raw.trim().is_empty() && !files {
             return;
         }
@@ -399,7 +398,11 @@ impl Composer {
         }
         // The tray's files go with the post (Task 12); while one is not ready, nothing is sent and the text stays.
         let attachments = match channel {
-            Some(c) if files => match crate::screens::attachments::ui::take_for_send(c, cx) {
+            Some(c) if files => match client
+                .as_deref()
+                .map(|k| crate::screens::attachments::ui::take_for_send(k, c, cx))
+                .unwrap_or(Ok(Vec::new()))
+            {
                 Ok(d) => d,
                 Err(text) => {
                     dilla_desktop_ui::components::toast::show_toast(text, cx);
