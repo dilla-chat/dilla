@@ -469,11 +469,17 @@ mod window {
     pub struct Host {
         pub root: FocusHandle,
         pub view: Option<Entity<VoiceSection>>,
+        /// False: the section is not drawn (the person left it).
+        pub show: bool,
         ctx: SlotCx,
     }
 
     impl Render for Host {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if !self.show {
+                self.view = None;
+                return div().id("host").track_focus(&self.root).size_full();
+            }
             let view = section_view(&self.ctx, window, cx);
             self.view = Some(view.clone());
             div()
@@ -496,6 +502,7 @@ mod window {
         let (host, cx) = cx.add_window_view(|_, cx| Host {
             root: cx.focus_handle(),
             view: None,
+            show: true,
             ctx: SlotCx::default(),
         });
         cx.run_until_parked();
@@ -763,4 +770,111 @@ mod parity {
     fn parity_voice_settings_enhanced_unavailable_b() {
         check("enhanced-unavailable-b");
     }
+}
+
+/// R19 fix 1: Let's check does nothing while a call holds the microphone (the call's phase is injected).
+#[gpui::test]
+fn lets_check_does_nothing_while_in_a_call(cx: &mut gpui::TestAppContext) {
+    let _turn = window::SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let (host, cx, fake) = window::open(cx);
+    let section = window::section(&host, cx);
+    section.update(cx, |s, cx| {
+        s.in_call = |_| true;
+        s.toggle_test(cx);
+    });
+    cx.run_until_parked();
+    assert!(!section.read_with(cx, |s, _| s.local.test.testing));
+    assert_eq!(
+        (fake.inputs_opened(), fake.outputs_opened()),
+        (0, 0),
+        "no device was opened"
+    );
+    // Out of the call it starts again.
+    section.update(cx, |s, cx| {
+        s.in_call = |_| false;
+        s.toggle_test(cx);
+    });
+    assert!(section.read_with(cx, |s, _| s.local.test.testing));
+    section.update(cx, |s, _| s.stop_test());
+}
+
+/// R19 fix 3: leaving the section mid-test releases the microphone and the speaker.
+#[gpui::test]
+fn leaving_the_section_mid_test_releases_the_devices(cx: &mut gpui::TestAppContext) {
+    let _turn = window::SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let (host, cx, fake) = window::open(cx);
+    let section = window::section(&host, cx);
+    section.update(cx, |s, cx| s.toggle_test(cx));
+    wait_until("the devices to open", || {
+        fake.inputs_open() == 1 && fake.outputs_open() == 1
+    });
+    drop(section);
+    host.update(cx, |h, cx| {
+        h.show = false;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    wait_until("the devices to be released", || {
+        fake.inputs_open() == 0 && fake.outputs_open() == 0
+    });
+}
+
+/// R19 fix 2: the loopback never plays louder than 100 %, whatever the output volume (the feedback guard).
+#[test]
+fn the_loopback_is_capped_at_100_percent() {
+    // Without gain control and echo cancellation the chain adds no gain of its own (R19's switches), so the levels compare.
+    let mut normal = settings();
+    normal.agc = false;
+    normal.echo = false;
+    normal.output_volume = 100;
+    let mut loud = normal.clone();
+    loud.output_volume = 200;
+    assert_eq!(loud.loopback_gain(), 1.0);
+    assert_eq!(normal.loopback_gain(), 1.0);
+    let mut half = normal.clone();
+    half.output_volume = 50;
+    assert_eq!(half.loopback_gain(), 0.5);
+
+    let played = |s: TestSettings| {
+        let host = FakeHost::new();
+        let events = Events::default();
+        let (loader, _) = no_model();
+        let test = start(&host, s, loader, &events);
+        wait_until("the microphone", || host.inputs_open() == 1);
+        let out = run(&host, &mut Tone(0.0), 1500);
+        test.stop();
+        rms(&out[out.len() / 2..])
+    };
+    let (at_200, at_100) = (played(loud), played(normal));
+    assert!(at_100 > 2000.0, "{at_100}");
+    assert!(
+        (at_200 - at_100).abs() < at_100 * 0.1,
+        "200 % played {at_200}, 100 % played {at_100}"
+    );
+}
+
+/// R19 fix 4: a device that hangs while opening cannot freeze a stop or a drop, and nothing stays open once it answers.
+#[test]
+fn a_hung_device_never_freezes_stop() {
+    let host = FakeHost::new();
+    host.hold_opens();
+    let events = Events::default();
+    let (loader, _) = no_model();
+    let test = start(&host, settings(), loader, &events);
+    std::thread::sleep(Duration::from_millis(200));
+    let t = Instant::now();
+    test.stop();
+    assert!(
+        t.elapsed() < Duration::from_secs(2),
+        "stop waited {:?} for a hung device",
+        t.elapsed()
+    );
+    assert!(events.ended());
+    // The device answers late: what it opened is closed again.
+    host.release_opens();
+    wait_until("the late device to be released", || {
+        host.inputs_open() == 0 && host.outputs_open() == 0
+    });
 }

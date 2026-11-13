@@ -177,6 +177,25 @@ mod tests {
         assert_eq!(code_of_key("f"), None);
     }
 
+    /// X11 and Wayland (xkbcommon) name the keys `Pause` and `Scroll_Lock`; GPUI hands them over lower-cased.
+    #[test]
+    fn linux_keysyms_for_pause_and_scroll_lock_map_to_their_codes() {
+        for (keysym, code) in [
+            ("pause", "Pause"),
+            ("Pause", "Pause"),
+            ("scroll_lock", "ScrollLock"),
+            ("Scroll_Lock", "ScrollLock"),
+        ] {
+            assert_eq!(code_of_key(keysym), Some(code), "{keysym}");
+        }
+        let none = HeldModifiers::default();
+        assert_eq!(
+            capture("scroll_lock", none),
+            Capture::Accepted("ScrollLock")
+        );
+        assert_eq!(capture("pause", none), Capture::Accepted("Pause"));
+    }
+
     #[test]
     fn the_capture_takes_the_next_chord_and_escape_cancels() {
         let none = HeldModifiers::default();

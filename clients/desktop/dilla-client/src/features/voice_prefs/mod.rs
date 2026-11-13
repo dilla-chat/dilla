@@ -22,6 +22,12 @@ pub mod volume;
 
 pub use values::{InputMode, NoisePreference, Setting, VoiceError, VoiceValues};
 
+/// Whether a call holds this device's microphone, so Let's check cannot start. Task 17's `AppState::voice` has no call
+/// phase yet, so this answers false until it adds one (the one place to change then).
+pub fn in_call(_state: &crate::state::AppState) -> bool {
+    false
+}
+
 /// The voice settings area's handle for voice prefs: cheap to clone, no I/O on construction.
 #[derive(Clone)]
 pub struct VoicePrefs {

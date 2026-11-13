@@ -19,12 +19,14 @@ use dilla_client::features::voice_prefs::gate::{
 use dilla_client::features::voice_prefs::{InputMode, NoisePreference, VoiceValues};
 use dilla_client::state::voice_prefs::{AudioNotice, Processor, ProcessorNote, ProcessorStatus};
 use dilla_media::MediaEvent;
-use dilla_media::apm::Apm;
+use dilla_media::apm::{Apm, ApmFlags};
 use dilla_media::capture::{CaptureConfig, Mic};
 use dilla_media::devices::{AudioHost, DeviceId};
 use dilla_media::noise::{FRAME_SAMPLES, ModelLoader, NoiseMode, embedded_model};
 use dilla_media::playout::Speaker;
 
+/// microphone-test.ts `SETUP_TIMEOUT_MS`: how long the microphone and the speaker may take to open.
+pub const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// The loopback's length (microphone-test.ts `LOOPBACK_MS`).
 pub const LOOPBACK: Duration = Duration::from_secs(10);
 /// The level is reported every 5 frames (50 ms), the meter's refresh.
@@ -294,6 +296,48 @@ impl Stage {
     }
 }
 
+type Opened = (
+    Mic,
+    Speaker,
+    tokio::sync::mpsc::UnboundedReceiver<MediaEvent>,
+);
+
+/// Opens the microphone, then the speaker (one echo reference for both ends, as in a call), looking at `cancel` between the
+/// two: a test that was stopped meanwhile opens nothing more.
+fn open_chain(
+    host: Arc<dyn AudioHost>,
+    model: ModelLoader,
+    settings: &TestSettings,
+    cancel: &AtomicBool,
+) -> Result<Opened, ()> {
+    let apm = Apm::default();
+    let config = CaptureConfig {
+        host: host.clone(),
+        apm: apm.clone(),
+        model,
+        flags: ApmFlags {
+            echo: settings.echo,
+            agc: settings.agc,
+        },
+    };
+    let device = settings.input.clone().map(DeviceId);
+    let mic = Mic::open_with(config, device, mode_of(settings.noise)).map_err(|e| {
+        log::warn!("dilla: the microphone test could not open the microphone: {e}");
+    })?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(());
+    }
+    let (events, speaker_rx) = tokio::sync::mpsc::unbounded_channel();
+    let speaker = Speaker::open_with(
+        host,
+        apm,
+        Some(events),
+        settings.output.clone().map(DeviceId),
+    )
+    .map_err(|e| log::warn!("dilla: the microphone test could not open the speaker: {e}"))?;
+    Ok((mic, speaker, speaker_rx))
+}
+
 fn run(
     host: Arc<dyn AudioHost>,
     model: ModelLoader,
@@ -302,36 +346,53 @@ fn run(
     rx: &Receiver<Ctl>,
     length: Duration,
 ) {
-    // One echo reference for both ends, as in a call.
-    let apm = Apm::default();
-    let mode = mode_of(settings.noise);
-    let config = CaptureConfig {
-        host: host.clone(),
-        apm: apm.clone(),
-        model,
+    // The devices open on a thread of their own: a device that hangs blocks that thread, never this one, so a stop (or a
+    // drop) answers at once and the web's 15 s setup limit holds.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (tx, results) = mpsc::channel();
+    let spawned = {
+        let (cancel, settings) = (cancel.clone(), settings.clone());
+        std::thread::Builder::new()
+            .name("dilla-mic-test-open".into())
+            .spawn(move || {
+                // Whatever opened is dropped here when nobody waits for it any more.
+                let _ = tx.send(open_chain(host, model, &settings, &cancel));
+            })
     };
-    let device = settings.input.clone().map(DeviceId);
-    let mut mic = match Mic::open_with(config, device, mode) {
-        Ok(mic) => mic,
-        Err(e) => {
-            log::warn!("dilla: the microphone test could not open the microphone: {e}");
+    if spawned.is_err() {
+        on_event(TestEvent::Failed);
+        return;
+    }
+    let started = Instant::now();
+    let opened = loop {
+        match results.recv_timeout(Duration::from_millis(25)) {
+            Ok(opened) => break opened,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                on_event(TestEvent::Failed);
+                return;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        loop {
+            match rx.try_recv() {
+                Ok(Ctl::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                    cancel.store(true, Ordering::Release);
+                    return;
+                }
+                Ok(Ctl::Update(next)) => settings = next,
+                Err(mpsc::TryRecvError::Empty) => break,
+            }
+        }
+        if started.elapsed() >= SETUP_TIMEOUT {
+            log::warn!("dilla: the microphone test setup timed out");
+            cancel.store(true, Ordering::Release);
             on_event(TestEvent::Failed);
             return;
         }
     };
-    let (speaker_events, mut speaker_rx) = tokio::sync::mpsc::unbounded_channel();
-    let speaker = match Speaker::open_with(
-        host,
-        apm,
-        Some(speaker_events),
-        settings.output.clone().map(DeviceId),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("dilla: the microphone test could not open the speaker: {e}");
-            on_event(TestEvent::Failed);
-            return;
-        }
+    let Ok((mut mic, speaker, mut speaker_rx)) = opened else {
+        on_event(TestEvent::Failed);
+        return;
     };
     let (Some(mut frames), Some(mut mic_events)) = (mic.take_frames(), mic.take_events()) else {
         on_event(TestEvent::Failed);

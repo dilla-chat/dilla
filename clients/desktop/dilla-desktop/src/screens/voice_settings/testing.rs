@@ -33,6 +33,8 @@ struct State {
     next: u64,
     opened_inputs: usize,
     opened_outputs: usize,
+    /// Opening a device blocks while this is set (a device that hangs).
+    hold_opens: bool,
 }
 
 /// The fake host: cheap to clone, every clone is the same machine.
@@ -78,11 +80,27 @@ impl FakeHost {
             next: 1,
             opened_inputs: 0,
             opened_outputs: 0,
+            hold_opens: false,
         })))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// From now on opening a device blocks until [`release_opens`](Self::release_opens): a device that hangs.
+    pub fn hold_opens(&self) {
+        self.lock().hold_opens = true;
+    }
+
+    pub fn release_opens(&self) {
+        self.lock().hold_opens = false;
+    }
+
+    fn wait_while_held(&self) {
+        while self.lock().hold_opens {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// Delivers microphone samples to whoever is capturing (nothing if nobody is).
@@ -185,6 +203,7 @@ impl AudioHost for FakeHost {
         sink: InputSink,
         on_lost: OnLost,
     ) -> Result<Box<dyn Running>, MediaError> {
+        self.wait_while_held();
         let mut s = self.lock();
         let name = match device {
             Some(d) => s.inputs.iter().find(|i| *i == d.as_str()).cloned(),

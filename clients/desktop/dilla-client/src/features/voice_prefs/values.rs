@@ -172,6 +172,9 @@ impl From<PrefsError> for VoiceError {
     }
 }
 
+/// How many people's volumes are kept: more than this in the file are ignored, and a new entry past it is refused.
+pub const MAX_VOLUMES: usize = 512;
+
 /// A device id as the host gave it (cpal's, any printable text up to 256 bytes): the id of a device that is gone is
 /// kept, so the choice comes back when it is plugged in again.
 pub fn is_device_id(id: &str) -> bool {
@@ -195,6 +198,7 @@ impl VoiceValues {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|(user, v)| is_user_id(user) && is_volume(*v))
+                .take(MAX_VOLUMES)
                 .collect()
         };
         Self {
@@ -292,6 +296,8 @@ impl VoiceValues {
                 };
                 if *percent == 100 {
                     map.remove(user);
+                } else if map.len() >= MAX_VOLUMES && !map.contains_key(user) {
+                    return Err(VoiceError::Invalid);
                 } else {
                     map.insert(user.clone(), *percent);
                 }
@@ -493,6 +499,35 @@ mod tests {
             assert!(!crate::prefs::names_a_secret(key), "{key}");
             assert!(key.starts_with("voice."));
         }
+    }
+
+    #[test]
+    fn the_per_person_volumes_are_bounded() {
+        let (dir, prefs) = temp();
+        let many: Volumes = (0..MAX_VOLUMES + 100)
+            .map(|i| (format!("{i:032x}"), 50))
+            .collect();
+        prefs.set(VOLUMES, &many).unwrap();
+        let v = VoiceValues::read(&prefs);
+        assert_eq!(v.volumes.len(), MAX_VOLUMES);
+        // A new person past the bound is refused; one already kept can still change.
+        let new = format!("{:032x}", MAX_VOLUMES + 500);
+        assert_eq!(
+            v.with(&Setting::UserVolume {
+                user: new,
+                percent: 60
+            }),
+            Err(VoiceError::Invalid)
+        );
+        let kept = v.volumes.keys().next().unwrap().clone();
+        assert!(
+            v.with(&Setting::UserVolume {
+                user: kept,
+                percent: 60
+            })
+            .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

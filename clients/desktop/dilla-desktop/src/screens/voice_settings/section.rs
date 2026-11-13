@@ -83,6 +83,8 @@ pub struct VoiceSection {
     inbox: Arc<Mutex<Vec<Inbound>>>,
     _monitor: Option<DeviceMonitor>,
     pub handles: Handles,
+    /// Whether a call holds the microphone ([`dilla_client::features::voice_prefs::in_call`]; a test injects its own).
+    pub in_call: fn(&AppState) -> bool,
 }
 
 fn code_of(e: &VoiceError) -> &'static str {
@@ -143,13 +145,12 @@ impl VoiceSection {
             inbox,
             _monitor: monitor,
             handles,
+            in_call: dilla_client::features::voice_prefs::in_call,
         }
     }
 
-    /// Whether a call holds the microphone, so Let's check cannot start. Task 17's `AppState::voice` has no call phase
-    /// yet; it answers here when it does.
-    fn in_call(_state: &AppState) -> bool {
-        false
+    fn in_call(&self) -> bool {
+        (self.in_call)(&self.ctx.state)
     }
 
     /// Drains what the device threads reported.
@@ -245,7 +246,7 @@ impl VoiceSection {
             cx.notify();
             return;
         }
-        if Self::in_call(&self.ctx.state) {
+        if self.in_call() {
             return;
         }
         self.local
@@ -396,7 +397,7 @@ impl Render for VoiceSection {
         let v = self.local.values.clone();
         let devices = self.local.devices.clone();
         let test = self.local.test.clone();
-        let in_call = Self::in_call(&self.ctx.state);
+        let in_call = self.in_call();
         let width = layout::group_inner();
         let column = layout::column_width();
         let handles = self.handles.clone();
