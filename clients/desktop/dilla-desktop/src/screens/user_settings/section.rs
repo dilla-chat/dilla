@@ -583,6 +583,14 @@ impl UserSettings {
             if let Some(state) = meta.state {
                 row = row.state(state);
             }
+            // The automation build names the row's action (`device-<i>-action`, the fixtures' steps).
+            #[cfg(feature = "automation")]
+            {
+                row = row.action_probe(crate::screens::channel_list::probe_id(
+                    "device",
+                    &format!("{i}-action"),
+                ));
+            }
             if d.own {
                 row = row
                     .platform_label(own_tag())

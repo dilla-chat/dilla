@@ -97,6 +97,7 @@ impl UserSettings {
                     ],
                     state.density.id(),
                 )
+                .option_child(|v| option_probe("appearance-density", v))
                 .on_change({
                     let this = this.clone();
                     move |v, _, cx| {
@@ -117,6 +118,7 @@ impl UserSettings {
                     ],
                     state.reduce_motion.id(),
                 )
+                .option_child(|v| option_probe("appearance-motion", v))
                 .on_change({
                     let this = this.clone();
                     move |v, _, cx| {
@@ -151,6 +153,23 @@ impl UserSettings {
             ));
         }
         col.into_any_element()
+    }
+}
+
+/// The automation build's name of a Segmented option (`<group>-<value>`, the fixtures' `gpui` step ids); none otherwise.
+fn option_probe(group: &str, value: &str) -> Option<gpui::AnyElement> {
+    #[cfg(feature = "automation")]
+    {
+        use gpui::IntoElement as _;
+        Some(
+            crate::automation::bounds_probe(crate::screens::channel_list::probe_id(group, value))
+                .into_any_element(),
+        )
+    }
+    #[cfg(not(feature = "automation"))]
+    {
+        let _ = (group, value);
+        None
     }
 }
 

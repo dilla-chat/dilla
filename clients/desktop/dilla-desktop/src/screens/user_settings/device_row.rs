@@ -61,6 +61,8 @@ pub struct DeviceRow {
     seen: Option<SharedString>,
     position: GroupPosition,
     action: Option<Action>,
+    /// The action button's automation name (`device-<i>-action`, the fixtures' `gpui` step ids).
+    action_probe: Option<&'static str>,
     menu: Option<Menu>,
 }
 
@@ -75,6 +77,7 @@ impl DeviceRow {
             seen: None,
             position: GroupPosition::Only,
             action: None,
+            action_probe: None,
             menu: None,
         }
     }
@@ -103,6 +106,12 @@ impl DeviceRow {
 
     pub fn position(mut self, position: GroupPosition) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Names the action button for the automation build (and window tests).
+    pub fn action_probe(mut self, id: &'static str) -> Self {
+        self.action_probe = Some(id);
         self
     }
 
@@ -261,15 +270,17 @@ impl RenderOnce for DeviceRow {
         let mut actions = div().flex().flex_wrap().justify_end().gap(px(ACTIONS_GAP));
         if let Some(action) = &self.action {
             let press = action.on_press.clone();
-            actions = actions.child(
-                Button::new((self.id.clone(), "action"), action.label.clone())
-                    .variant(if action.danger {
-                        ButtonVariant::Danger
-                    } else {
-                        ButtonVariant::Default
-                    })
-                    .on_click(move |e, window, cx| press(e, window, cx)),
-            );
+            let button = Button::new((self.id.clone(), "action"), action.label.clone())
+                .variant(if action.danger {
+                    ButtonVariant::Danger
+                } else {
+                    ButtonVariant::Default
+                })
+                .on_click(move |e, window, cx| press(e, window, cx));
+            actions = match self.action_probe {
+                Some(id) => actions.child(crate::tracked_box(id, button)),
+                None => actions.child(button),
+            };
         }
 
         let mut row = div()

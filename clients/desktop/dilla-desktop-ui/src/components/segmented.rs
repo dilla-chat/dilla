@@ -21,6 +21,9 @@ pub fn tab_stop(values: &[&str], value: &str) -> usize {
     values.iter().position(|v| *v == value).unwrap_or(0)
 }
 
+/// An extra child of an option, by its value.
+type OptionChild = Rc<dyn Fn(&str) -> Option<gpui::AnyElement>>;
+
 #[derive(IntoElement)]
 pub struct Segmented {
     id: ElementId,
@@ -28,6 +31,8 @@ pub struct Segmented {
     value: SharedString,
     disabled: bool,
     on_change: Option<PickHandler>,
+    /// An extra child of each option, by its value (the app's automation probe; the ui crate has none of its own).
+    option_child: Option<OptionChild>,
 }
 
 impl Segmented {
@@ -51,7 +56,14 @@ impl Segmented {
             value: value.into(),
             disabled: false,
             on_change: None,
+            option_child: None,
         }
+    }
+
+    /// Adds `f(value)` to each option (absolutely placed over it), as the app's automation build names the options.
+    pub fn option_child(mut self, f: impl Fn(&str) -> Option<gpui::AnyElement> + 'static) -> Self {
+        self.option_child = Some(Rc::new(f));
+        self
     }
 
     /// Shown but not changeable.
@@ -125,12 +137,14 @@ impl RenderOnce for Segmented {
                 .rounded(radius::SEG - px(2.0))
                 .bg(bg)
                 .focus_visible(|s| s.shadow(focus_ring()))
+                .relative()
                 .child(line(
                     label.clone(),
                     text::BTN,
                     line_height(text::BTN, 1.5),
                     fg,
-                ));
+                ))
+                .children(self.option_child.as_ref().and_then(|f| f(value)));
             option = if disabled {
                 option.cursor_not_allowed().opacity(OPACITY_MUTED)
             } else if checked {

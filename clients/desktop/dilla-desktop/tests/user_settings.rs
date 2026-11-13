@@ -77,12 +77,13 @@ fn fixtures_are_valid_named_by_their_file_and_paired() {
     assert_ne!(a.world.people[0].bio, b.world.people[0].bio);
 }
 
-/// S4: one parity test per fixture. The settings frame is hosted by the shell (Task 8) and `fixture::screen_of` refuses the
-/// settings routes until it is: these run with the controller's integration of Task 8 and the references shot by `shoot.mjs`.
+/// S4: one parity test per fixture, drawn in the settings host (Task 1b, since integration 3) against the references
+/// `shoot.mjs` shot. Each still waits for the shared-component pass (ruling R22) with its measured numbers; the two
+/// `-b` Profile fixtures have no reference yet: the parity world cannot seed statuses and bios.
 macro_rules! parity {
-    ($($test:ident => $name:literal),* $(,)?) => {$(
+    ($($test:ident => $name:literal, $why:literal),* $(,)?) => {$(
         #[test]
-        #[ignore = "needs the settings frame hosted by Task 8 (fixture::screen_of) and the shot reference (parity/shoot.mjs)"]
+        #[ignore = $why]
         fn $test() {
             let report = dilla_parity::screen::assert_screen(&fixture_path($name))
                 .unwrap_or_else(|e| panic!("{} differs from its web reference: {e}", $name));
@@ -92,18 +93,18 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_user_settings_profile => "profile",
-    parity_user_settings_profile_b => "profile-b",
-    parity_user_settings_profile_short_wide => "profile-short-wide",
-    parity_user_settings_profile_short_wide_b => "profile-short-wide-b",
-    parity_user_settings_devices => "devices",
-    parity_user_settings_devices_b => "devices-b",
-    parity_user_settings_devices_sign_out => "devices-sign-out",
-    parity_user_settings_devices_sign_out_b => "devices-sign-out-b",
-    parity_user_settings_appearance => "appearance",
-    parity_user_settings_appearance_b => "appearance-b",
-    parity_user_settings_keyboard => "keyboard",
-    parity_user_settings_keyboard_b => "keyboard-b",
+    parity_user_settings_profile => "profile", "parity after T6c: whole frame 0.6915 % (the settings host's layout)",
+    parity_user_settings_profile_b => "profile-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)",
+    parity_user_settings_profile_short_wide => "profile-short-wide", "parity after T6c: whole frame 0.6555 % (the settings host's layout)",
+    parity_user_settings_profile_short_wide_b => "profile-short-wide-b", "parity after T6c: n/a (no reference: the parity world cannot seed statuses and bios)",
+    parity_user_settings_devices => "devices", "parity after T6c: whole frame 0.5385 % (device row text and times)",
+    parity_user_settings_devices_b => "devices-b", "parity after T6c: chrome 0.7149 % (device rows)",
+    parity_user_settings_devices_sign_out => "devices-sign-out", "parity after T6c: whole frame 1.6979 % (the key dialog)",
+    parity_user_settings_devices_sign_out_b => "devices-sign-out-b", "parity after T6c: whole frame 1.3327 % (the key dialog)",
+    parity_user_settings_appearance => "appearance", "parity after T6c: whole frame 1.6820 % (the segmented controls)",
+    parity_user_settings_appearance_b => "appearance-b", "parity after T6c: whole frame 1.2783 % (the segmented controls)",
+    parity_user_settings_keyboard => "keyboard", "parity after T6c: chrome 0.5648 % (the shortcuts table)",
+    parity_user_settings_keyboard_b => "keyboard-b", "parity after T6c: chrome 0.3790 % (the shortcuts table)",
 }
 
 /// A window with the Profile section in it and Tab bound to the next focus, as the app's root does.

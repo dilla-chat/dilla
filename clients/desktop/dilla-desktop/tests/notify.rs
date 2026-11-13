@@ -39,14 +39,14 @@ fn parity(name: &str) {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "needs the settings host (Tasks 16 and 8): `fixture::screen_of` refuses /settings routes until then"]
+#[ignore = "parity after T6c: chrome 0.5612 % (drawn in the settings host since integration 3)"]
 fn parity_notify_settings() {
     parity("settings");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "needs the settings host (Tasks 16 and 8): `fixture::screen_of` refuses /settings routes until then"]
+#[ignore = "parity after T6c: chrome 0.6684 % (drawn in the settings host since integration 3)"]
 fn parity_notify_settings_b() {
     parity("settings-b");
 }
