@@ -353,7 +353,7 @@ impl Client {
                     // enrolment), then an enrolled session in place of the pending one it may still hold.
                     check_instance_signer_pin(&core, &instance).await?;
                     if !identity.list_published {
-                        publish_own_list(&api, &core, &user_id).await?;
+                        publish_own_list(&api, &core, &user_id, &device_id).await?;
                     }
                     // controller.ts `enterReady`'s factor gate: an account that owes a second factor stops at
                     // factor setup, with no gateway (the instance refuses it until a factor is added).
@@ -907,26 +907,72 @@ pub(crate) async fn check_instance_signer_pin(
         .map_err(|e| ClientError::Sync(e.code.to_string()))
 }
 
-/// enrol.ts `publishDeviceList` for a store whose own list is not published yet, then session.ts `establish` for the
-/// enrolled session the list makes possible. A 409 is a list race (the sign-in starts over); a 401 is a revoked row.
+/// signup.ts `publishDeviceList`'s 409 branch, before any adoption: what the served list's version says about this
+/// device's unpublished candidate.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ListConflict {
+    /// No list is served, or an older one than the candidate: the 409 stands (a list race).
+    Race,
+    /// The instance serves the candidate's version or a newer one (a PUT whose answer was lost, or a later list): the
+    /// served list is adopted through the core's verified update, and decides whether this device is listed.
+    Adopt,
+}
+
+pub(crate) fn list_conflict(served_version: Option<u64>, candidate_version: u64) -> ListConflict {
+    match served_version {
+        Some(v) if v >= candidate_version => ListConflict::Adopt,
+        _ => ListConflict::Race,
+    }
+}
+
+/// The version of a signed device-list body (`[version, ...]`).
+fn list_body_version(body: &[u8]) -> Option<u64> {
+    let v = crate::sync::value::decode(body).ok()?;
+    crate::sync::value::uint(&crate::sync::value::arr(&v, 4).ok()?[0]).ok()
+}
+
+/// signup.ts `publishDeviceList` for a store whose own list is not published yet, then session.ts `establish` for the
+/// enrolled session the list makes possible. A 409 whose served list is at least the candidate's version is adopted
+/// (verified by the core, a page at a time) and answers `E_DEVICE_UNLISTED` when it leaves this device out; an older
+/// or missing one is a list race. A 401 is a revoked row.
 async fn publish_own_list(
     api: &Api,
     core: &CoreHandle,
     user: &[u8; 16],
+    device: &[u8; 16],
 ) -> Result<(), ClientError> {
     let body = with_core(core, |c| c.device_list_body())
         .await
         .map_err(|e| ClientError::Sync(e.code.to_string()))?;
+    let candidate = list_body_version(&body).ok_or_else(|| ClientError::Sync("E_DECODE".into()))?;
     match api.put_device_list(user, body).await {
         Ok(()) => {}
-        Err(e) if e.status == 409 => return Err(ClientError::Sync("E_LIST_RACE".into())),
+        Err(e) if e.status == 409 => {
+            let served = api
+                .get_device_list(user)
+                .await
+                .map_err(crate::features::profile::refusal)?;
+            if list_conflict(served.map(|s| s.version), candidate) == ListConflict::Race {
+                return Err(ClientError::Sync("E_LIST_RACE".into()));
+            }
+            if !crate::features::devices::adopt_served_list(api, core, user, device).await? {
+                return Err(ClientError::Sync("E_DEVICE_UNLISTED".into()));
+            }
+        }
         Err(e) if e.status == 401 => return Err(ClientError::Revoked),
         Err(e) if e.status == 0 => return Err(ClientError::Network(e.detail)),
         Err(e) => return Err(ClientError::Sync(e.code)),
     }
-    with_core(core, |c| c.device_list_published())
+    let published = with_core(core, |c| c.identity())
         .await
-        .map_err(|e| ClientError::Sync(e.code.to_string()))?;
+        .ok()
+        .and_then(|raw| Identity::decode(&raw))
+        .is_some_and(|i| i.list_published);
+    if !published {
+        with_core(core, |c| c.device_list_published())
+            .await
+            .map_err(|e| ClientError::Sync(e.code.to_string()))?;
+    }
     api.establish().await.map_err(|e| match e {
         SessionError::NoIdentity => ClientError::NoIdentity,
         SessionError::Revoked | SessionError::Scope => ClientError::Revoked,
@@ -1352,8 +1398,6 @@ impl Publisher {
                 self.state.connection.wire_version = Some(info.wire);
                 self.state.connection.readies += 1;
                 self.state.account.phase = phase_on_ready(self.state.account.phase);
-                let engine = self.engine.clone();
-                tokio::spawn(async move { engine.reset_trust_memory().await });
                 self.after_ready(&info);
                 self.removals_due = true;
                 true

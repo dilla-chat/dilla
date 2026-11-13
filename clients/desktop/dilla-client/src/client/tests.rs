@@ -643,3 +643,25 @@ async fn the_start_fails_closed_on_another_instance_signer_key() {
             .is_err()
     );
 }
+
+/// signup.ts `publishDeviceList`'s 409 branch: a served list at the candidate's version (a PUT whose answer was lost) or
+/// newer is adopted; none, or an older one, is the list race the 409 says.
+#[test]
+fn a_409_adopts_a_served_list_at_or_past_the_candidate() {
+    assert_eq!(
+        list_conflict(Some(3), 3),
+        ListConflict::Adopt,
+        "the lost answer"
+    );
+    assert_eq!(
+        list_conflict(Some(4), 3),
+        ListConflict::Adopt,
+        "a later list"
+    );
+    assert_eq!(
+        list_conflict(Some(2), 3),
+        ListConflict::Race,
+        "an older list"
+    );
+    assert_eq!(list_conflict(None, 3), ListConflict::Race, "no list served");
+}

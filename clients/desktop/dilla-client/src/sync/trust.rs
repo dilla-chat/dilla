@@ -307,6 +307,12 @@ impl TrustMemory {
             .retain(|key| key.split(':').nth(2) != Some(hex.as_str()));
     }
 
+    /// controller.ts `onReady`'s `fetchedLeaves.clear()`: every leaf is read again by the next pass. The annotations
+    /// (unlisted, history pending, refused own leaves) are kept: only a pass that reads the user again changes them.
+    pub fn forget_read_leaves(&mut self) {
+        self.fetched.clear();
+    }
+
     /// controller.ts `refreshGroupTrust`'s first half: forgets the leaves of `group` already fetched, so the next pass
     /// reads them again.
     pub fn forget_group(&mut self, group: &[u8; 16]) {
@@ -775,6 +781,28 @@ mod tests {
             !rb.has_changed().unwrap(),
             "one engine's pass does not wake another's watcher"
         );
+    }
+
+    /// controller.ts `onReady` clears only `fetchedLeaves`: a new connection reads every leaf again, and a user an earlier
+    /// pass found unlisted or still pending stays so (no Verify, sends blocked) until a pass reads them again.
+    #[test]
+    fn a_ready_forgets_the_read_leaves_and_keeps_the_annotations() {
+        let (user, other) = ([7u8; 16], [8u8; 16]);
+        let mut m = TrustMemory::default();
+        m.fetched.insert(format!(
+            "{}:1:{}:3:ready-refresh",
+            crate::state::hex(&[1; 16]),
+            crate::state::hex(&user)
+        ));
+        m.unlisted.insert(user);
+        m.pending.insert(other);
+        m.history_failed.insert(other);
+        m.own_refused.insert(([1; 16], 2));
+        let before = m.annotations();
+        m.forget_read_leaves();
+        assert!(m.fetched.is_empty(), "every leaf is read again");
+        assert_eq!(m.annotations(), before, "the annotations are kept");
+        assert!(m.history_failed.contains(&other));
     }
 
     #[test]

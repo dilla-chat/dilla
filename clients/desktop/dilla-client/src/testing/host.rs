@@ -286,6 +286,46 @@ pub async fn sign_up_at(
     username: &str,
     display: &str,
 ) -> Person {
+    sign_up_with(public, control, root, invite, username, display, true).await
+}
+
+/// [`sign_up`], except that the store is never told its device list was published: the PUT landed on the instance but
+/// its answer was lost, as a crash or a dropped connection right after it leaves a device.
+pub async fn sign_up_answer_lost(
+    host: &Host,
+    invite: &str,
+    username: &str,
+    display: &str,
+    tag: &str,
+) -> Person {
+    let root = repo_root().join(format!(
+        "target/testing-client-{tag}-{username}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut person = sign_up_with(
+        &host.public,
+        &host.control,
+        &root,
+        invite,
+        username,
+        display,
+        false,
+    )
+    .await;
+    person.cleanup = Some(root);
+    person
+}
+
+async fn sign_up_with(
+    public: &str,
+    control: &str,
+    root: &Path,
+    invite: &str,
+    username: &str,
+    display: &str,
+    list_answered: bool,
+) -> Person {
     let mut instances = Instances::load(root).unwrap();
     let base = url::Url::parse(public).unwrap();
     let cfg = instances.add(base.clone()).unwrap();
@@ -346,7 +386,9 @@ pub async fn sign_up_at(
         .call::<r::PutDeviceList>(&[&hex(&user_id)], Raw(core.device_list_body().unwrap()))
         .await
         .expect("device list");
-    core.device_list_published().unwrap();
+    if list_answered {
+        core.device_list_published().unwrap();
+    }
     // An authenticator app, confirmed with the host's clock.
     let Raw(enrol) = authed
         .call::<r::TotpEnroll>(

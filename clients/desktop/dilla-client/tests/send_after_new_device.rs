@@ -368,3 +368,49 @@ async fn a_device_enrolled_after_a_self_revocation_is_read_and_sent_to() {
     )
     .await;
 }
+
+/// Whether the store holds its own device list as published (the identity's sixth element).
+fn list_published(p: &Person) -> bool {
+    let core = dilla_client::store::open_store(&p.cfg, p.kc.as_ref()).expect("the store opens");
+    dilla_client::sync::api::Identity::decode(&core.identity().unwrap())
+        .expect("an identity")
+        .list_published
+}
+
+/// signup.ts `publishDeviceList`'s 409 branch at the start: the device's list PUT landed but its answer was lost, so the
+/// store still holds the list as unpublished. The start publishes it again; the instance answers 409 for the version it
+/// already holds, and the start reads the served list, has the core verify and adopt it, finds this device listed and
+/// goes on, never refusing the device as a list race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_start_after_a_lost_list_answer_adopts_the_served_list() {
+    let host = tokio::task::spawn_blocking(|| start_host("lostlist", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let p = dilla_client::testing::host::sign_up_answer_lost(
+        &host, &invite, "alice", "alice", "lostlist",
+    )
+    .await;
+    let p = tokio::task::spawn_blocking(move || {
+        clear_session(&p);
+        p
+    })
+    .await
+    .unwrap();
+    assert!(
+        !list_published(&p),
+        "the lost answer left the list unpublished"
+    );
+    let client = start(&p).await;
+    wait_for(&client, Duration::from_secs(30), "online", |s| {
+        s.connection.status == dilla_client::state::ConnectionStatus::Online
+    })
+    .await;
+    tokio::task::spawn_blocking(move || client.stop())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(list_published(&p), "the adopted list is the published one");
+    drop(host);
+}

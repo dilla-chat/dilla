@@ -19,7 +19,7 @@ use crate::features::profile::text::{profile_text_problem, profile_text_value};
 use crate::signin::{chain_row, normalise_recovery_key};
 use crate::state::DeviceId;
 use crate::state::profile::DeviceEntry;
-use crate::sync::api::try_core;
+use crate::sync::api::{Api, CoreHandle, try_core};
 use crate::sync::value::{self, arr, at_least, bin16, opt, uint};
 
 /// The longest device name the server accepts (protocol/09 Devices).
@@ -285,6 +285,59 @@ fn now_s() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The core's own device list.
+async fn own_list_of(core: &CoreHandle) -> Result<OwnList, ClientError> {
+    let raw = try_core(core, |c| c.own_device_list())
+        .await
+        .map_err(|_| poisoned())?
+        .map_err(|e| core_refusal(&e))?;
+    decode_own_list(&raw)
+}
+
+/// account/signup.ts `adoptServedList` (as `refreshOwnDeviceList` calls it): reads the served list, and when it is newer
+/// than the stored one, has the core verify and adopt the history after it, a page at a time
+/// (`own_device_list_update` checks every row's signature and chain against the stored list). `true` when device `me`
+/// is still listed.
+pub(crate) async fn adopt_served_list(
+    api: &Api,
+    core: &CoreHandle,
+    user: &[u8; 16],
+    me: &[u8; 16],
+) -> Result<bool, ClientError> {
+    let served = api.get_device_list(user).await.map_err(refusal)?;
+    let own = own_list_of(core).await?;
+    let listed = |l: &OwnList| l.live.contains(me);
+    let Some(served) = served else {
+        return Ok(listed(&own));
+    };
+    if served.version <= own.version {
+        return Ok(listed(&own));
+    }
+    let mut after = own.version;
+    let mut result_listed = listed(&own);
+    loop {
+        let (raw, rows) = api
+            .get_device_list_history(user, after)
+            .await
+            .map_err(refusal)?;
+        if rows.is_empty() {
+            return Ok(result_listed);
+        }
+        let status = try_core(core, move |c| c.own_device_list_update(&raw))
+            .await
+            .map_err(|_| poisoned())?
+            .map_err(|e| core_refusal(&e))?;
+        let v = value::decode(&status).map_err(decode_fail)?;
+        let a = arr(&v, 2).map_err(decode_fail)?;
+        let version = uint(&a[0]).map_err(decode_fail)?;
+        result_listed = uint(&a[1]).map_err(decode_fail)? != 0;
+        if rows.len() < DEVICE_LIST_HISTORY_PAGE || version >= served.version || version <= after {
+            return Ok(result_listed);
+        }
+        after = version;
+    }
+}
+
 impl Inner {
     fn own_ids(&self) -> Result<([u8; 16], [u8; 16]), ClientError> {
         let account = self.snapshot().account.clone();
@@ -295,54 +348,12 @@ impl Inner {
     }
 
     async fn own_list(&self) -> Result<OwnList, ClientError> {
-        let raw = try_core(self.engine().core(), |c| c.own_device_list())
-            .await
-            .map_err(|_| poisoned())?
-            .map_err(|e| core_refusal(&e))?;
-        decode_own_list(&raw)
+        own_list_of(self.engine().core()).await
     }
 
-    /// account/signup.ts `adoptServedList` (as `refreshOwnDeviceList` calls it): reads the served list, and when it is newer
-    /// than the stored one, adopts the history after it, a page at a time. `true` when this device is still listed.
+    /// [`adopt_served_list`] on this client's routes and core.
     async fn refresh_own_list(&self, user: &[u8; 16], me: &[u8; 16]) -> Result<bool, ClientError> {
-        let served = self.api().get_device_list(user).await.map_err(refusal)?;
-        let own = self.own_list().await?;
-        let listed = |l: &OwnList| l.live.contains(me);
-        let Some(served) = served else {
-            return Ok(listed(&own));
-        };
-        if served.version <= own.version {
-            return Ok(listed(&own));
-        }
-        let mut after = own.version;
-        let mut result_listed = listed(&own);
-        loop {
-            let (raw, rows) = self
-                .api()
-                .get_device_list_history(user, after)
-                .await
-                .map_err(refusal)?;
-            if rows.is_empty() {
-                return Ok(result_listed);
-            }
-            let status = try_core(self.engine().core(), move |c| {
-                c.own_device_list_update(&raw)
-            })
-            .await
-            .map_err(|_| poisoned())?
-            .map_err(|e| core_refusal(&e))?;
-            let v = value::decode(&status).map_err(decode_fail)?;
-            let a = arr(&v, 2).map_err(decode_fail)?;
-            let version = uint(&a[0]).map_err(decode_fail)?;
-            result_listed = uint(&a[1]).map_err(decode_fail)? != 0;
-            if rows.len() < DEVICE_LIST_HISTORY_PAGE
-                || version >= served.version
-                || version <= after
-            {
-                return Ok(result_listed);
-            }
-            after = version;
-        }
+        adopt_served_list(self.api(), self.engine().core(), user, me).await
     }
 
     /// Requirement 25: the own list first, so a just-enrolled device shows as listed.

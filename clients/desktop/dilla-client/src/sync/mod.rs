@@ -737,6 +737,10 @@ impl Engine {
         }
         let this = Arc::clone(self);
         self.lane_spawn("w", async move {
+            // controller.ts `onReady`: the leaves already read are read again on a new connection; what the passes
+            // concluded about users (unlisted, history pending, an own leaf under another key) stays until a pass
+            // concludes otherwise. Cleared here, in the job whose last step is the refresh.
+            this.trust.lock().await.forget_read_leaves();
             let groups = this.groups().await;
             {
                 let mut st = this.st();
@@ -2509,11 +2513,6 @@ impl Engine {
     pub async fn refresh_group_trust(&self, g: Gid) {
         self.trust.lock().await.forget_group(&g);
         self.refresh_trust().await;
-    }
-
-    /// Forgets which leaves were fetched, so the next refresh reads them all again (a new ready).
-    pub async fn reset_trust_memory(&self) {
-        *self.trust.lock().await = trust::TrustMemory::default();
     }
 }
 

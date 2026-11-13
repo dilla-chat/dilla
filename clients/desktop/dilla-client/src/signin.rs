@@ -145,6 +145,38 @@ impl SignInError {
     }
 }
 
+/// What a key step that wrote the enrolment answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Enrolled {
+    /// Every step ran: the list is published, the session enrolled, the pin and the state backup written (the backup
+    /// left for the ready only when the account owes a factor).
+    Ready,
+    /// The core wrote the enrolment and a later step failed with this code (a list publish, a session, the instance
+    /// read, the signer pin, the state backup): controller.ts `enrolWithKey` goes on to `enterReady`, and so does the
+    /// caller, to `Client::start`, which publishes and uploads what is missing and refuses a changed signer key.
+    FinishAtStart(String),
+}
+
+/// How the key step ends, from `complete`'s result and whether the core wrote the enrolment (controller.ts
+/// `enrolWithKey`).
+#[derive(Debug)]
+pub(crate) enum AfterComplete {
+    Enrolled(Enrolled),
+    /// A list race or an eviction after the write: the store is wiped and the sign-in starts over.
+    Wipe(SignInError),
+    /// The enrolment was not written: the sign-in's own error.
+    Fail(SignInError),
+}
+
+pub(crate) fn after_complete(result: Result<(), SignInError>, written: bool) -> AfterComplete {
+    match result {
+        Ok(()) => AfterComplete::Enrolled(Enrolled::Ready),
+        Err(e) if !written => AfterComplete::Fail(e),
+        Err(e @ (SignInError::ListRace | SignInError::Evicted)) => AfterComplete::Wipe(e),
+        Err(e) => AfterComplete::Enrolled(Enrolled::FinishAtStart(e.code())),
+    }
+}
+
 /// The held server assertion and what it still owes.
 struct Assertion {
     value: Zeroizing<String>,
@@ -453,7 +485,7 @@ impl SignIn {
         &mut self,
         backup_code: &str,
         recovery_key: &str,
-    ) -> Result<(), SignInError> {
+    ) -> Result<Enrolled, SignInError> {
         let key = normalise_recovery_key(recovery_key);
         if key.chars().count() != 52 {
             return Err(SignInError::KeyLength);
@@ -569,8 +601,10 @@ impl SignIn {
 
     /// enrol.ts `register`, `fetch` and `complete`: registers this device with the settled assertion, recovers the
     /// account from its sealed backup with `recovery_key`, publishes the device list that names this device, opens an
-    /// enrolled session and uploads the resealed state. On success the store holds a ready identity.
-    pub async fn add_device(&mut self, recovery_key: &str) -> Result<(), SignInError> {
+    /// enrolled session and uploads the resealed state. On success the store holds a ready identity: either every step
+    /// ran ([`Enrolled::Ready`]), or the core wrote the enrolment and a later step failed ([`Enrolled::FinishAtStart`]),
+    /// which `Client::start` finishes (or refuses, closed, on a changed instance signer key).
+    pub async fn add_device(&mut self, recovery_key: &str) -> Result<Enrolled, SignInError> {
         let key = normalise_recovery_key(recovery_key);
         if key.chars().count() != 52 {
             return Err(SignInError::KeyLength);
@@ -587,34 +621,34 @@ impl SignIn {
             Ok(fetched) => self.complete(&key, &fetched).await,
             Err(e) => Err(e),
         };
-        // controller.ts `enrolWithKey`: a list race or an eviction once the core wrote the enrolment (phase 2, an
-        // identity no list may name) wipes this device's store, so the next attempt starts from nothing. Every other
-        // failure after the write stays the sign-in's error (`complete` tolerates only the state backup an account that
-        // owes a factor is refused); the store keeps the enrolment, and `Client::start` publishes an unpublished list,
-        // checks the instance's signer pin and uploads the backups before anything else runs.
-        if let Err(e) = &result
-            && matches!(e, SignInError::ListRace | SignInError::Evicted)
-            && self.enrolment_written()?
-        {
-            self.auth.clear();
-            self.wipe()?;
-            return result;
-        }
-        if result
-            .as_ref()
-            .is_err_and(|e| !matches!(e, SignInError::WrongKey))
-        {
-            // enrol.ts `reset`: an enrolment cut short starts over on the next attempt.
-            let _ = self.with_core(|c| {
-                let id = c.identity()?;
-                if crate::sync::api::Identity::decode(&id).is_some_and(|i| i.phase == 3) {
-                    c.enrol_reset()?;
+        let written = result.is_err() && self.enrolment_written()?;
+        match after_complete(result, written) {
+            AfterComplete::Enrolled(Enrolled::Ready) => Ok(Enrolled::Ready),
+            AfterComplete::Enrolled(finish) => {
+                // The client's start establishes its own session from the device key.
+                self.auth.clear();
+                Ok(finish)
+            }
+            AfterComplete::Wipe(e) => {
+                self.auth.clear();
+                self.wipe()?;
+                Err(e)
+            }
+            AfterComplete::Fail(e) => {
+                if !matches!(e, SignInError::WrongKey) {
+                    // enrol.ts `reset`: an enrolment cut short starts over on the next attempt.
+                    let _ = self.with_core(|c| {
+                        let id = c.identity()?;
+                        if crate::sync::api::Identity::decode(&id).is_some_and(|i| i.phase == 3) {
+                            c.enrol_reset()?;
+                        }
+                        Ok(())
+                    });
+                    self.auth.clear();
                 }
-                Ok(())
-            });
-            self.auth.clear();
+                Err(e)
+            }
         }
-        result
     }
 
     /// The core holds the enrolled identity (`enrol_complete` ran: phase 2, the ready identity with its user id).
@@ -906,6 +940,43 @@ fn decode_signed_lists(raw: &[u8]) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// controller.ts `enrolWithKey`: before the core wrote the enrolment every failure is the sign-in's; after it a list
+    /// race or an eviction wipes the store, and any other failed step is finished by the client's start, so the same
+    /// screen never retries a key step the core already took.
+    #[test]
+    fn a_failure_after_the_enrolment_write_finishes_at_the_start() {
+        assert!(matches!(
+            after_complete(Ok(()), false),
+            AfterComplete::Enrolled(Enrolled::Ready)
+        ));
+        for e in [
+            SignInError::WrongKey,
+            SignInError::NoBackup,
+            SignInError::ListRace,
+        ] {
+            assert!(
+                matches!(after_complete(Err(e), false), AfterComplete::Fail(_)),
+                "nothing written: the sign-in's own error"
+            );
+        }
+        for e in [SignInError::ListRace, SignInError::Evicted] {
+            assert!(matches!(
+                after_complete(Err(e), true),
+                AfterComplete::Wipe(_)
+            ));
+        }
+        for (e, code) in [
+            (SignInError::Network("reset".into()), "E_NETWORK"),
+            (SignInError::Other("E_CORE_STATE".into()), "E_CORE_STATE"),
+            (SignInError::Other("E_HTTP".into()), "E_HTTP"),
+        ] {
+            match after_complete(Err(e), true) {
+                AfterComplete::Enrolled(Enrolled::FinishAtStart(c)) => assert_eq!(c, code),
+                other => panic!("{code}: expected a finish at the start, got {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn chain_row_cuts_five_and_eight_element_heads() {
