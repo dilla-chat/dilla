@@ -957,6 +957,11 @@ async fn changed_users(inner: &Arc<Inner>) -> Vec<UserId> {
         .unwrap_or_default()
 }
 
+/// What a refused join's owner publishes before the ring area publishes anything of the refusal (the voice area's call
+/// back to idle): called with the refusal's code, its publish is queued ahead of the [`CallBlock`]'s, so no snapshot
+/// shows the block beside a call still joining.
+pub(crate) type OnRefused = Box<dyn FnOnce(&str) + Send>;
+
 /// A join through [`Ring::join`]: the call's [`CallJoin`], whose outcome also ends the channel's ring, starts the
 /// outgoing ring of a DM call this device opened, and publishes a trust refusal as the channel's [`CallBlock`].
 pub struct GatedJoin {
@@ -966,6 +971,7 @@ pub struct GatedJoin {
     channel: ChannelId,
     /// The DM's members; `None` for a voice channel.
     dm: Option<Vec<UserId>>,
+    on_refused: Option<OnRefused>,
 }
 
 impl GatedJoin {
@@ -977,6 +983,11 @@ impl GatedJoin {
         self.join.cancel();
     }
 
+    /// Sets what runs first when the join ends without a call ([`OnRefused`]).
+    pub(crate) fn on_refused(&mut self, f: OnRefused) {
+        self.on_refused = Some(f);
+    }
+
     /// The join's outcome ([`CallJoin::outcome`]); dropping this before it answers cancels the join.
     pub async fn outcome(self) -> Result<Result<Joined, JoinRefused>, ClientError> {
         let GatedJoin {
@@ -985,8 +996,16 @@ impl GatedJoin {
             pc,
             channel,
             dm,
+            on_refused,
         } = self;
         let answer = join.outcome().await;
+        if let Some(f) = on_refused {
+            match &answer {
+                Ok(Ok(_)) => {}
+                Ok(Err(refused)) => f(&refused.code),
+                Err(e) => f(&e.to_string()),
+            }
+        }
         // The bookkeeping runs on the client's runtime (it reads the instance), whatever executor awaits this.
         let then = match &answer {
             Ok(Ok(joined)) => Then::Joined {
@@ -1120,6 +1139,18 @@ impl Ring {
         community: Option<CommunityId>,
         vdec: String,
     ) -> oneshot::Receiver<Result<Result<GatedJoin, CallBlock>, ClientError>> {
+        self.join_then(channel, community, vdec, None)
+    }
+
+    /// [`Ring::join`] with what runs first when it is refused ([`OnRefused`]): before the gate's own block is
+    /// published, or, for a join it lets through, before its outcome's.
+    pub(crate) fn join_then(
+        &self,
+        channel: ChannelId,
+        community: Option<CommunityId>,
+        vdec: String,
+        on_refused: Option<OnRefused>,
+    ) -> oneshot::Receiver<Result<Result<GatedJoin, CallBlock>, ClientError>> {
         let inner = self.inner.clone();
         let calls = self.calls.clone();
         let pc = per_client(&inner);
@@ -1136,6 +1167,9 @@ impl Ring {
                 };
                 // Decision 4: refused while the DM's text group is send-blocked, before anything reaches the instance.
                 if let Some(code) = text_block(&inner, channel).await {
+                    if let Some(f) = on_refused {
+                        f(&code);
+                    }
                     let block =
                         publish_block(&inner, channel, code, BlockWhen::BeforeJoin, &members, None)
                             .await;
@@ -1156,6 +1190,7 @@ impl Ring {
                 pc,
                 channel,
                 dm,
+                on_refused,
             }))
         })
     }

@@ -61,8 +61,11 @@ fn idem() -> Vec<u8> {
     b
 }
 
-/// How often a DM whose text group is unknown is looked up again (`GET /v1/channels/{id}`).
-pub(crate) const LOOKUP_RETRY: std::time::Duration = std::time::Duration::from_secs(120);
+/// How often a DM whose text group is unknown is looked up again (`GET /v1/channels/{id}`). It only spares a burst of
+/// reloads (a ready, `open_dm`, `open`) the same read: it is shorter than the shortest list poll ([`poll_interval`]), so
+/// every poll asks again, as controller.ts `loadDms` does on every load. A DM listed in the moment between its opener's
+/// `POST /v1/dms` and their group's registration answers "no group" once; a longer retry left it unjoined that long.
+pub(crate) const LOOKUP_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The DM list's poll interval after `step` reads without a ready: 15 s, 30 s, then 120 s.
 ///
@@ -368,6 +371,20 @@ mod tests {
         assert!(should_look_up(None, t0));
         assert!(!should_look_up(Some(t0), t0 + LOOKUP_RETRY / 2));
         assert!(should_look_up(Some(t0), t0 + LOOKUP_RETRY));
+    }
+
+    // A DM listed before its opener registered the text group answers "no group" once; the next poll must ask again,
+    // or the DM stays unjoined for a whole retry (the flaky `dm_open_list_send_and_unread`). Every poll, even the
+    // shortest, therefore comes after the retry ran out.
+    #[test]
+    fn every_poll_looks_up_an_unknown_group_again() {
+        let t0 = std::time::Instant::now();
+        for step in 0..5 {
+            assert!(
+                should_look_up(Some(t0), t0 + poll_interval(step)),
+                "poll step {step}"
+            );
+        }
     }
 
     #[test]
