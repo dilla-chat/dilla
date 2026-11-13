@@ -5,7 +5,6 @@
 //! Text wraps at the width of the frame's content column ([`crate::components::settings::frame::section_width`], 720px) less
 //! the group's border and padding, as the web lays it out.
 
-use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Div, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, Styled, div, px,
@@ -14,7 +13,7 @@ use gpui::{
 use super::slider::Slider;
 use crate::components::settings::frame::section_width;
 use crate::metrics::LABEL_TRACKING_WIDE;
-use crate::text::{line, line_height, painted_height, paragraph};
+use crate::text::{line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
 /// A group's inner width: the content column less 2px of border and 2 x 16px of padding.
@@ -97,19 +96,14 @@ pub fn field() -> Div {
         .items_stretch()
 }
 
-/// A field's label (11px `--fg-2`), taking the height the web paints for its 16.5px line (17). The layout snap places the
-/// field under it from its unrounded top, but the line boxes above it on the page are authored lengths GPUI rounds to a
-/// device pixel before layout (the 17.25px description lines to 17, the 14.25px scale to 14), which leaves the fields
-/// half a pixel above the web's layout; at the painted height they land on the web's pixels (section and section-b).
+/// A field's label (11px `--fg-2`, its 16.5px line).
 pub fn label(text_: impl Into<SharedString>) -> Div {
-    div()
-        .h(px(painted_height(line_height(text::XS, 1.5))))
-        .child(line(
-            text_,
-            text::XS,
-            line_height(text::XS, 1.5),
-            color::FG_2,
-        ))
+    div().child(line(
+        text_,
+        text::XS,
+        line_height(text::XS, 1.5),
+        color::FG_2,
+    ))
 }
 
 fn lines(text_: &str, size: gpui::Pixels, height_ratio: f32, colour: Hsla, width: f32) -> Div {
@@ -278,27 +272,12 @@ impl RenderOnce for StatusPill {
             Heard::Heard => (color::OK, color::OK_TINT, color::OK_LINE),
             Heard::Quiet => (color::WARN, color::WARN_FAINT, color::WARN_LINE),
         };
-        // The web paints the pill (its width follows its text) between whole pixels: from its whole-pixel left edge that
-        // is the natural width rounded. The layout snap cannot give it: the text's width is an authored length GPUI rounds
-        // to a device pixel before layout, half a pixel off the web's fraction.
-        let natural = self.text.chars().all(crate::text::mono_covers).then(|| {
-            crate::text::painted_height(
-                2.0 * 10.0
-                    + 2.0
-                    + 6.0
-                    + 7.0
-                    + self.text.chars().count() as f32
-                        * f32::from(text::XS)
-                        * crate::text::MONO_ADVANCE,
-            )
-        });
         div()
             .id(self.id)
             .flex()
             .flex_none()
             .items_center()
             .gap(px(7.0))
-            .when_some(natural, |d, w| d.w(px(w)))
             .h(px(28.0))
             .px(px(10.0))
             .border_1()

@@ -15,7 +15,7 @@ use super::super::action_menu::{ActionMenu, MenuItem, opens_context_menu};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
-use crate::text::{line, line_height, painted_height, paragraph};
+use crate::text::{line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -234,8 +234,9 @@ impl RenderOnce for SettingsRow {
                 ),
             );
         }
-        // The text sizes the row: it takes the height the web paints for it, so the hairline under the row is the web's.
-        text_col = text_col.h(px(painted_height(text_h)));
+        // The text sizes the row (its fractional line boxes, on Chromium's layout unit; the layout snap puts the row's
+        // edges where the web paints them).
+        text_col = text_col.h(px(text_h));
 
         let mut control = div()
             .flex()

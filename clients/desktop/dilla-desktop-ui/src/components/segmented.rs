@@ -17,27 +17,6 @@ use crate::tokens::{color, radius, text};
 
 type PickHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
 
-/// The group's width as the web paints it: its options are as wide as their mono labels (fractional pixels) and the web
-/// paints the group between whole CSS pixels; with one edge on a whole pixel (left- or right-aligned) that is the natural
-/// width rounded. The layout snap cannot give this: each label's width is an authored length GPUI rounds to a device pixel
-/// before layout (62.1 to 62, 20.7 to 20.5), so the summed group drifts up to a pixel off the web's before any edge is
-/// snapped. `None` when a label falls back to another face (then the layout's own width stands).
-pub fn painted_width(labels: &[&str], tall: bool) -> Option<f32> {
-    let pad = if tall { 12.0 } else { 10.0 };
-    let advance = f32::from(text::BTN) * crate::text::MONO_ADVANCE;
-    if !labels
-        .iter()
-        .all(|l| l.chars().all(crate::text::mono_covers))
-    {
-        return None;
-    }
-    let options: f32 = labels
-        .iter()
-        .map(|l| (2.0 * pad + l.chars().count() as f32 * advance).max(24.0))
-        .sum();
-    Some(crate::text::painted_height(options + 2.0 * (2.0 + 1.0)))
-}
-
 /// The index of the option holding the tab stop: the checked one, else the first.
 pub fn tab_stop(values: &[&str], value: &str) -> usize {
     values.iter().position(|v| *v == value).unwrap_or(0)
@@ -118,16 +97,12 @@ impl RenderOnce for Segmented {
         let (disabled, on_change) = (self.disabled, self.on_change);
         let group_values: Vec<SharedString> = self.options.iter().map(|(v, _)| v.clone()).collect();
         let group_handles = handles.clone();
-        let labels: Vec<&str> = self.options.iter().map(|(_, l)| l.as_ref()).collect();
-        let painted = painted_width(&labels, self.tall);
         let mut group = div()
             .id(self.id.clone())
             .flex()
             .flex_none()
-            // At its painted width the options fit on one line by construction (a width rounded down leaves them at most
-            // half a pixel over, which must not wrap); without one they wrap as the web's do.
-            .when_some(painted, |g, w| g.w(px(w)).max_w_full())
-            .when(painted.is_none(), |g| g.flex_wrap())
+            // The options wrap as the web's do when the row is too narrow (`flex-wrap: wrap`).
+            .flex_wrap()
             .p(px(2.0))
             .bg(color::SURFACE_2)
             .border_1()
@@ -198,19 +173,6 @@ impl RenderOnce for Segmented {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_group_paints_whole_pixels() {
-        // Automatic / Lightweight / Off: 224.72px of options and frame, painted 225 wide (the web's 758..983).
-        assert_eq!(
-            painted_width(&["Automatic", "Lightweight", "Off"], false),
-            Some(225.0)
-        );
-        assert_eq!(
-            painted_width(&["Voice activity", "Push to talk"], true),
-            Some(233.0)
-        );
-    }
 
     #[test]
     fn the_checked_option_holds_the_tab_stop() {
