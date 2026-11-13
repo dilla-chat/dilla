@@ -66,9 +66,9 @@ fn fixtures_parse_and_b_varies_a() {
 }
 
 macro_rules! parity {
-    ($($test:ident => $name:literal, $why:literal),* $(,)?) => {$(
+    ($($test:ident => $name:literal $(, $why:literal)?);* $(;)?) => {$(
         #[test]
-        #[ignore = $why]
+        $(#[ignore = $why])?
         fn $test() {
             if let Err(e) = assert_screen(&fixture($name)) {
                 panic!("{e}");
@@ -78,12 +78,12 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_attachments_cards => "cards", "parity after T6c: chrome 0.9573 % (the fixture pictures are 1px checkerboards: GPUI's cover-crop downscale filters them otherwise than Chromium's, so every tile differs over its whole area)",
-    parity_attachments_cards_b => "cards-b", "parity after T6c: chrome 7.0269 % (as cards, over nine tiles)",
-    parity_attachments_lightbox => "lightbox", "parity after T6c: whole frame 14.1674 % (a fixture has no client to open the whole picture with, so the tile opens no lightbox: LightboxState holds the client that reads the file)",
-    parity_attachments_lightbox_b => "lightbox-b", "parity after T6c: whole frame 35.4118 % (as lightbox)",
-    parity_attachments_media_player => "media-player", "parity after T6c: chrome 0.3849 % (the audio card is wider than AttachmentCard.css's, which fits its content, and its play button's label differs)",
-    parity_attachments_media_player_b => "media-player-b", "parity after T6c: whole frame 0.6066 % (as media-player)",
+    parity_attachments_cards => "cards", "parity after T6c: chrome 0.9573 % (the fixture pictures are 1px checkerboards: GPUI's cover-crop downscale filters them otherwise than Chromium's, so every tile differs over its whole area)";
+    parity_attachments_cards_b => "cards-b", "parity after T6c: chrome 7.0269 % (as cards, over nine tiles)";
+    parity_attachments_lightbox => "lightbox";
+    parity_attachments_lightbox_b => "lightbox-b";
+    parity_attachments_media_player => "media-player", "parity after T6c: chrome 0.3849 % (the audio card is wider than AttachmentCard.css's, which fits its content, and its play button's label differs)";
+    parity_attachments_media_player_b => "media-player-b", "parity after T6c: whole frame 0.6066 % (as media-player)";
 }
 
 mod behaviour {
