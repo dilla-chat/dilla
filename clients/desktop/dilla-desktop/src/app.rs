@@ -471,7 +471,11 @@ impl AppView {
             cx.subscribe_in(&view, window, |this, _, e: &ServerEvent, window, cx| {
                 match e {
                     ServerEvent::Announce(message) => {
-                        dilla_desktop_ui::components::toast::show_toast(message.clone(), cx);
+                        dilla_desktop_ui::components::toast::show_toast_in(
+                            Some(window.window_handle().window_id()),
+                            message.clone(),
+                            cx,
+                        );
                         return;
                     }
                     ServerEvent::Close | ServerEvent::OpenUser(_) => {}

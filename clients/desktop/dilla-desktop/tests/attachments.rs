@@ -343,6 +343,7 @@ mod two_accounts {
                 Target {
                     client: Some(w.alice.clone()),
                     channel: Some(channel),
+                    window: None,
                 },
                 vec![file("alice.bin")],
                 vec![None],

@@ -154,11 +154,12 @@ pub struct AttachmentsUi {
     pub instance_dirs: BTreeSet<PathBuf>,
 }
 
-/// A window's composer target: its client and its open channel.
+/// A window's composer target: its client and its open channel, and the window (its toasts show there).
 #[derive(Clone, Default)]
 pub struct Target {
     pub client: Option<Rc<Client>>,
     pub channel: Option<ChannelId>,
+    pub window: Option<WindowId>,
 }
 
 /// The composer target of `window` (empty until its composer draws).
@@ -243,8 +244,15 @@ pub fn track(
         u.instance_dirs.insert(dir);
     }
     u.targets.retain(|w, _| live.contains(w));
-    u.targets
-        .insert(window_id(window), Target { client, channel });
+    let id = window_id(window);
+    u.targets.insert(
+        id,
+        Target {
+            client,
+            channel,
+            window: Some(id),
+        },
+    );
 }
 
 /// The instance at `data_dir` opens (its client is about to start): a video an earlier run left for the system
@@ -434,7 +442,7 @@ pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
 /// Attachments.tsx `attachFiles`: the files join the tray (a toast for a file over 25 MB, the tray's own refusal of
 /// an eleventh file), each picture with its preview.
 pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>>, cx: &mut App) {
-    let (Some(client), Some(channel)) = (to.client, to.channel) else {
+    let (Some(client), Some(channel), shown_in) = (to.client, to.channel, to.window) else {
         return;
     };
     if files.is_empty() {
@@ -444,7 +452,11 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
     let owner = owner_of(&client);
     let over = files.iter().any(|f| f.size > ATTACHMENT_CAP);
     if over && tray.entries().len() + files.len() <= MAX_ATTACHMENTS {
-        dilla_desktop_ui::components::toast::show_toast(t("shell.tray.overLimitToast"), cx);
+        dilla_desktop_ui::components::toast::show_toast_in(
+            shown_in,
+            t("shell.tray.overLimitToast"),
+            cx,
+        );
     }
     match client.attachments().attach(&tray, files) {
         Ok(ids) => {
@@ -461,7 +473,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
             } else {
                 tf("shell.banner.commandError", &[("code", &e.code())])
             };
-            dilla_desktop_ui::components::toast::show_toast(text, cx);
+            dilla_desktop_ui::components::toast::show_toast_in(shown_in, text, cx);
         }
     }
     cx.refresh_windows();
@@ -926,7 +938,11 @@ pub fn open_dm_gifs(
         let found = rx.await.ok().and_then(Result::ok).flatten();
         cx.update(|cx| {
             match found {
-                None => dilla_desktop_ui::components::toast::show_toast(t("gif.unavailable"), cx),
+                None => dilla_desktop_ui::components::toast::show_toast_in(
+                    Some(owner),
+                    t("gif.unavailable"),
+                    cx,
+                ),
                 Some(community) if client.gifs().dm_consent_for(community) => {
                     toggle_gifs(client.clone(), owner, channel, community, cx);
                 }
@@ -964,7 +980,11 @@ pub fn accept_dm_notice(cx: &mut App) {
         .set_dm_consent(Some(&n.community.hex()))
         .is_err()
     {
-        dilla_desktop_ui::components::toast::show_toast(t("workspace.preference.error"), cx);
+        dilla_desktop_ui::components::toast::show_toast_in(
+            Some(n.owner),
+            t("workspace.preference.error"),
+            cx,
+        );
         cx.refresh_windows();
         return;
     }
@@ -1046,12 +1066,14 @@ pub fn pick_gif(index: usize, cx: &mut App) {
     let to = Target {
         client: Some(client.clone()),
         channel: g.channel,
+        window: g.owner,
     };
     let (Some(item), Some(community)) = (g.items.get(index).cloned(), g.community) else {
         return;
     };
     g.picking = Some(item.id.clone());
     cx.refresh_windows();
+    let shown_in = to.window;
     let rx = client
         .gifs()
         .media(community, item.id.clone(), GifVariant::Full);
@@ -1078,7 +1100,11 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                     if let Some(g) = ui(cx).gif.as_mut() {
                         g.picking = None;
                     }
-                    dilla_desktop_ui::components::toast::show_toast(t("gif.pickFailed"), cx);
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        shown_in,
+                        t("gif.pickFailed"),
+                        cx,
+                    );
                 }
             }
             cx.refresh_windows();

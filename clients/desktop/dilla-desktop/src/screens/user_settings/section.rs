@@ -23,7 +23,7 @@ use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::GroupPosition;
 use dilla_desktop_ui::components::text_field::TextField;
-use dilla_desktop_ui::components::toast::show_toast;
+use dilla_desktop_ui::components::toast::show_toast_in;
 use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
@@ -414,8 +414,12 @@ impl UserSettings {
             .map_or_else(|| id.hex().chars().take(8).collect(), title_of)
     }
 
-    fn removed_toast(&self, name: &str, cx: &mut Context<Self>) {
-        show_toast(tf("devices.removed", &[("device", name)]), cx);
+    fn removed_toast(&self, name: &str, window: &Window, cx: &mut Context<Self>) {
+        show_toast_in(
+            Some(window.window_handle().window_id()),
+            tf("devices.removed", &[("device", name)]),
+            cx,
+        );
     }
 
     fn confirm_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -462,7 +466,7 @@ impl UserSettings {
                 match r {
                     Ok(Ok(())) => {
                         if let Some(name) = &name {
-                            this.removed_toast(name, cx);
+                            this.removed_toast(name, window, cx);
                         }
                         this.close_dialog(window, cx);
                     }
@@ -493,7 +497,7 @@ impl UserSettings {
                 this.plain_busy = false;
                 match r {
                     Ok(Ok(())) => {
-                        this.removed_toast(&name, cx);
+                        this.removed_toast(&name, window, cx);
                         this.close_dialog(window, cx);
                     }
                     Ok(Err(e)) => {

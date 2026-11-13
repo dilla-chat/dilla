@@ -405,7 +405,11 @@ impl Composer {
             {
                 Ok(d) => d,
                 Err(text) => {
-                    dilla_desktop_ui::components::toast::show_toast(text, cx);
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        Some(window.window_handle().window_id()),
+                        text,
+                        cx,
+                    );
                     return;
                 }
             },

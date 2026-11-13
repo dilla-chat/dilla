@@ -49,7 +49,7 @@ use dilla_desktop_ui::components::members::{
 };
 use dilla_desktop_ui::components::select::Select;
 use dilla_desktop_ui::components::text_field::TextField;
-use dilla_desktop_ui::components::toast::show_toast;
+use dilla_desktop_ui::components::toast::show_toast_in;
 use dilla_desktop_ui::components::toggle::Toggle;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
@@ -703,7 +703,11 @@ fn menu_overlay(
             } else if id == "copy" {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!("@{username}")));
                 ui(w, cx).menu = None;
-                show_toast(tf("members.menu.copied", &[("name", &username)]), cx);
+                show_toast_in(
+                    Some(w),
+                    tf("members.menu.copied", &[("name", &username)]),
+                    cx,
+                );
             } else {
                 choose(w, community, user, id, cx);
             }
@@ -801,7 +805,7 @@ fn confirm(w: WindowId, cx: &mut App) {
                         ModKind::Warn if pending => tf("mod.warn.evidencePending", &vars),
                         ModKind::Warn => tf("mod.warn.done", &vars),
                     };
-                    show_toast(done, cx);
+                    show_toast_in(Some(w), done, cx);
                 }
                 Err(e) => u.error = Some(refusal_text(d.kind, &e, &d.name, &d.server)),
             }
@@ -1028,8 +1032,9 @@ fn sorted_roles(state: &AppState, community: CommunityId) -> Vec<RoleSummary> {
     roles
 }
 
-/// Runs a roles command and says a refusal by its code.
+/// Runs a roles command and says a refusal by its code, in window `w`.
 fn roles_job(
+    w: WindowId,
     client: &Rc<Client>,
     cx: &mut App,
     job: impl FnOnce(
@@ -1041,7 +1046,13 @@ fn roles_job(
     let fut = client.roles().run(job);
     cx.spawn(async move |cx| {
         if let Err(e) = fut.await {
-            cx.update(|cx| show_toast(tf("roles.assign.error.other", &[("code", &e.code)]), cx));
+            cx.update(|cx| {
+                show_toast_in(
+                    Some(w),
+                    tf("roles.assign.error.other", &[("code", &e.code)]),
+                    cx,
+                )
+            });
         }
     })
     .detach();
@@ -1117,7 +1128,7 @@ fn roles_section(w: WindowId, ctx: &SlotCx, community: CommunityId, cx: &mut App
                 Button::new("role-create", t("roles.new"))
                     .icon(IconName::Plus)
                     .on_click(move |_, _w, cx| {
-                        roles_job(&client, cx, move |r| {
+                        roles_job(w, &client, cx, move |r| {
                             Box::pin(async move {
                                 r.create_role(community, t("roles.new"), 0, false, false, 0)
                                     .await
@@ -1164,7 +1175,7 @@ fn role_editor(
     let id = role.id;
     let patch = move |p: RolePatch, cx: &mut App| {
         if let Some(client) = &client {
-            roles_job(client, cx, move |r| {
+            roles_job(w, client, cx, move |r| {
                 Box::pin(async move { r.update_role(community, id, p).await })
             });
         }
@@ -1297,7 +1308,7 @@ fn role_editor(
                     Button::new("role-up", t("roles.up"))
                         .icon(IconName::ChevronUp)
                         .on_click(move |_, _w, cx| {
-                            roles_job(&client, cx, move |r| {
+                            roles_job(w, &client, cx, move |r| {
                                 Box::pin(
                                     async move { r.move_role(community, id, Direction::Up).await },
                                 )
@@ -1306,7 +1317,7 @@ fn role_editor(
                 )
                 .child(
                     Button::new("role-down", t("roles.down")).on_click(move |_, _w, cx| {
-                        roles_job(&c2, cx, move |r| {
+                        roles_job(w, &c2, cx, move |r| {
                             Box::pin(
                                 async move { r.move_role(community, id, Direction::Down).await },
                             )
@@ -1386,7 +1397,7 @@ fn self_roles_section(
                         next.push(id);
                     }
                     if let Some(client) = &client {
-                        roles_job(client, cx, move |r| {
+                        roles_job(w, client, cx, move |r| {
                             Box::pin(async move { r.configure_self_roles(community, &next).await })
                         });
                     }
@@ -1406,7 +1417,7 @@ fn self_roles_section(
                 )
                 .on_change(move |on, _w, cx| {
                     if let Some(client) = &client {
-                        roles_job(client, cx, move |r| {
+                        roles_job(w, client, cx, move |r| {
                             Box::pin(async move { r.select_self_role(community, id, on).await })
                         });
                     }
@@ -1881,7 +1892,7 @@ fn confirm_role_delete(w: WindowId, cx: &mut App) {
                     if u.role == Some(role) {
                         u.role = None;
                     }
-                    show_toast(tf("roles.deleted", &[("name", &name)]), cx);
+                    show_toast_in(Some(w), tf("roles.deleted", &[("name", &name)]), cx);
                 }
                 Err(e) => {
                     u.role_delete_error = Some(tf(
@@ -1975,7 +1986,7 @@ fn assign_toggle(w: WindowId, role: RoleId, on: bool, cx: &mut App) {
                     } else {
                         "roles.assign.taken"
                     };
-                    show_toast(tf(key, &[("role", &r.name), ("name", &name)]), cx);
+                    show_toast_in(Some(w), tf(key, &[("role", &r.name), ("name", &name)]), cx);
                 }
                 Err(e) => {
                     let listed = ui(w, cx).ctx.as_ref().is_some_and(|c| {
@@ -2024,7 +2035,11 @@ fn assign_dialog(w: WindowId, ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> 
     let Some(items) = assign_items(&ctx.state, community, user) else {
         if ctx.state.members.contains_key(&community) {
             close_assign(w, cx);
-            show_toast(tf("roles.assign.error.gone", &[("name", &name)]), cx);
+            show_toast_in(
+                Some(w),
+                tf("roles.assign.error.gone", &[("name", &name)]),
+                cx,
+            );
         }
         return None;
     };
