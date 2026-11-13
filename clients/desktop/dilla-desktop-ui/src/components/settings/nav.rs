@@ -72,9 +72,17 @@ pub(crate) struct SideScroll(HashMap<WindowId, ScrollHandle>);
 impl Global for SideScroll {}
 
 pub(crate) fn register_side(handle: &ScrollHandle, window: &Window, cx: &mut App) {
-    cx.default_global::<SideScroll>()
-        .0
-        .insert(window.window_handle().window_id(), handle.clone());
+    // Closed windows' handles go (review m7): only the open windows keep an entry.
+    let open: Vec<WindowId> = cx.windows().iter().map(|w| w.window_id()).collect();
+    let sides = &mut cx.default_global::<SideScroll>().0;
+    sides.retain(|id, _| open.contains(id));
+    sides.insert(window.window_handle().window_id(), handle.clone());
+}
+
+/// Asks for another frame from inside a draw: `Window::refresh` is a no-op while the window draws, so it runs once this
+/// frame is done.
+fn redraw(window: &mut Window, cx: &mut App) {
+    window.defer(cx, |window, _| window.refresh());
 }
 
 /// The scroll offset that brings `item` (top, bottom) fully into `port` (top, bottom) by the least movement, from
@@ -133,6 +141,11 @@ impl RenderOnce for SettingsNav {
         let glyphs = self.items.iter().any(|i| i.icon.is_some());
         let headings = group_headings(&self.items);
         let key_handles = handles.clone();
+        // The item the side column last scrolled to: the web scrolls on a route change only, so a column the person
+        // wheels away from the current item stays where they left it (review I1).
+        let scrolled_to = window.use_keyed_state((self.id.clone(), "scrolled-to"), cx, |_, _| {
+            None::<SharedString>
+        });
         let mut list = div()
             .id(self.id.clone())
             .flex()
@@ -170,8 +183,10 @@ impl RenderOnce for SettingsNav {
                 );
             }
             let current = item.id == self.active;
+            let selector = format!("nav-item-{}", item.id);
             let mut row = div()
                 .id((self.id.clone(), format!("item-{}", item.id)))
+                .debug_selector(move || selector.clone())
                 // The handle's own flag decides the tab stop of a tracked element.
                 .track_focus(&handles[i].clone().tab_stop(i == stop))
                 .relative()
@@ -190,10 +205,15 @@ impl RenderOnce for SettingsNav {
                 row.hover(|s| s.bg(color::HOVER))
             };
             if current {
-                // Scrolls the side column the least that shows this item whole (`scrollIntoView({ block: 'nearest' })`).
+                // When it becomes current, scrolls the side column the least that shows this item whole
+                // (`scrollIntoView({ block: 'nearest' })` on the route change); afterwards the column is the person's.
+                let (scrolled_to, current_id) = (scrolled_to.clone(), item.id.clone());
                 row = row.child(
                     canvas(
-                        |bounds, window, cx| {
+                        move |bounds, window, cx| {
+                            if scrolled_to.read(cx).as_ref() == Some(&current_id) {
+                                return;
+                            }
                             let Some(side) = cx
                                 .try_global::<SideScroll>()
                                 .and_then(|s| s.0.get(&window.window_handle().window_id()))
@@ -203,6 +223,8 @@ impl RenderOnce for SettingsNav {
                             };
                             let port = side.bounds();
                             if port.size.height <= px(0.0) {
+                                // The column is not laid out yet (its first frame): try again on the next one.
+                                redraw(window, cx);
                                 return;
                             }
                             let offset = side.offset();
@@ -211,8 +233,13 @@ impl RenderOnce for SettingsNav {
                                 (f32::from(bounds.top()), f32::from(bounds.bottom())),
                                 (f32::from(port.top()), f32::from(port.bottom())),
                             ) {
+                                // The offset lands on a later frame; this item counts as scrolled to once a frame
+                                // finds it in view.
                                 side.set_offset(point(offset.x, px(y)));
-                                window.refresh();
+                                redraw(window, cx);
+                            } else {
+                                let id = current_id.clone();
+                                scrolled_to.update(cx, |s, _| *s = Some(id));
                             }
                         },
                         |_, _, _, _| {},
