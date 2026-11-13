@@ -162,9 +162,10 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyE
         .into_any_element()
 }
 
-/// The popup over the composer: the command picker (20). The mention popup stays the composer's own (9).
+/// The popup over the composer: the command picker (20), else the emoji grid (10). The mention popup stays the
+/// composer's own (9).
 pub fn composer_popup(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    commands::picker(ctx, window, cx)
+    commands::picker(ctx, window, cx).or_else(|| reactions::emoji_popup(ctx, window, cx))
 }
 
 /// Under a channel's row in the list: a voice channel's people (17).
