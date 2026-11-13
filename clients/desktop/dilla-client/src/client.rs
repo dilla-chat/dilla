@@ -513,6 +513,12 @@ impl Client {
         rx
     }
 
+    /// Feature `testing`: how many sends a leaf verdict refused and the trust retry queued again.
+    #[cfg(feature = "testing")]
+    pub fn trust_retries(&self) -> u64 {
+        self.inner.engine.trust_retries()
+    }
+
     /// Queues `text` as a post in `channel` (opening the channel's text group first: a Welcome, a join, or a new group).
     /// Answers the message id once the post is in the outbox; the timeline shows it pending until the instance stored
     /// it.

@@ -304,6 +304,8 @@ pub struct Engine {
     /// The single-flight trust refresh and its revision (Task 13, `trust::TrustPass`).
     trust_pass: trust::TrustPass,
     gateway: Mutex<Option<Arc<WsGateway>>>,
+    /// How many sends a leaf verdict refused and [`Engine::send_with_trust_retry`] queued again (tests read it).
+    trust_retries: std::sync::atomic::AtomicU64,
 }
 
 fn key(g: &Gid) -> String {
@@ -342,6 +344,7 @@ impl Engine {
             stopped: AtomicBool::new(false),
             trust: tokio::sync::Mutex::default(),
             trust_pass: trust::TrustPass::default(),
+            trust_retries: std::sync::atomic::AtomicU64::new(0),
             gateway: Mutex::new(None),
         })
     }
@@ -2124,11 +2127,20 @@ impl Engine {
     ) -> Result<Gid, SyncError> {
         match self.send_prepared(g, request.clone()).await {
             Err(SyncError::Core(e)) if LEAF_VERDICTS.contains(&e.code) => {
+                self.trust_retries
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.refresh_group_trust(g).await;
                 self.send_prepared(g, request).await
             }
             other => other,
         }
+    }
+
+    /// How many sends were queued again after a leaf verdict (feature `testing`: the tests prove the retry ran).
+    #[cfg(feature = "testing")]
+    pub fn trust_retries(&self) -> u64 {
+        self.trust_retries
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// send.ts `sendRequest`'s queueing: the core's refusal is answered at once and nothing else runs.

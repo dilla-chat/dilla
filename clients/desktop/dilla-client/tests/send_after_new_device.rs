@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dilla_client::Client;
-use dilla_client::features::attachments::NewFile;
+use dilla_client::features::attachments::{Descriptor, NewFile};
 use dilla_client::instances::Instances;
 use dilla_client::keychain::MemoryKeychain;
 use dilla_client::signin::{Owed, SignIn};
@@ -159,10 +159,12 @@ async fn a_send_right_after_a_new_device_joined_is_delivered() {
     );
 }
 
-/// Alice and bob in one channel, bob's first device has read alice's "before", then bob's second device joins. Answers
-/// the clients (alice, bob, bob's second device), the channel and alice's "before" message.
+/// Alice and bob in one channel, bob's first device has read alice's "before", then bob's second device joins. With
+/// `file`, alice's tray holds one ready file before the join, so the post that carries it can go at once after it.
+/// Answers the clients (alice, bob, bob's second device), the channel, alice's "before" message and the file.
 async fn after_a_new_device(
     tag: &str,
+    file: bool,
 ) -> (
     Host,
     Person,
@@ -172,6 +174,7 @@ async fn after_a_new_device(
     Arc<MemoryKeychain>,
     ChannelId,
     dilla_client::state::MessageId,
+    Vec<Descriptor>,
 ) {
     let (host, pa, mut pb, c) = two_people(tag).await;
     let a = start(&pa).await;
@@ -207,13 +210,30 @@ async fn after_a_new_device(
         .find(|i| i.body == "before")
         .and_then(|i| i.msg_id)
         .unwrap();
+    let mut descriptors = Vec::new();
+    if file {
+        let tray = a.attachments().tray(channel);
+        tray.add(vec![NewFile::from_bytes(
+            "notes.bin",
+            "application/octet-stream",
+            vec![7u8; 2048],
+        )])
+        .await
+        .expect("the tray takes the file");
+        wait_for(&a, Duration::from_secs(30), "the file is ready", |s| {
+            let t = s.attachments.tray(channel);
+            t.len() == 1 && t.iter().all(|e| e.phase == TrayPhase::Ready)
+        })
+        .await;
+        descriptors = tray.take_all().expect("the file is ready");
+    }
     let (b2, kc) = second_device(&host, &mut pb, tag).await;
     general(&b2, c).await;
     b2.open_channel(channel)
         .await
         .unwrap()
         .expect("bob's second device joins");
-    (host, pa, a, b, b2, kc, channel, before)
+    (host, pa, a, b, b2, kc, channel, before, descriptors)
 }
 
 /// Review I2: a reply sent right after a new device joined goes through the same trust retry as a post (controller.ts
@@ -222,12 +242,19 @@ async fn after_a_new_device(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn a_reply_right_after_a_new_device_joined_is_delivered() {
-    let (_host, pa, a, b, b2, _kc, channel, before) = after_a_new_device("newdevreply").await;
+    let (_host, pa, a, b, b2, _kc, channel, before, _) =
+        after_a_new_device("newdevreply", false).await;
+    let retries = a.trust_retries();
     a.threads()
         .reply(channel, before, "reply after".into())
         .await
         .unwrap()
         .expect("the reply is queued, not refused for the new device");
+    assert_eq!(
+        a.trust_retries(),
+        retries + 1,
+        "the reply was refused for the new device once and queued again"
+    );
     for (who, client) in [("bob", &b), ("bob's second device", &b2)] {
         wait_for(
             client,
@@ -243,26 +270,19 @@ async fn a_reply_right_after_a_new_device_joined_is_delivered() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn a_post_with_a_file_right_after_a_new_device_joined_is_delivered() {
-    let (_host, pa, a, b, b2, _kc, channel, _) = after_a_new_device("newdevfile").await;
-    let tray = a.attachments().tray(channel);
-    tray.add(vec![NewFile::from_bytes(
-        "notes.bin",
-        "application/octet-stream",
-        vec![7u8; 2048],
-    )])
-    .await
-    .expect("the tray takes the file");
-    wait_for(&a, Duration::from_secs(30), "the file is ready", |s| {
-        let t = s.attachments.tray(channel);
-        t.len() == 1 && t.iter().all(|e| e.phase == TrayPhase::Ready)
-    })
-    .await;
-    let descriptors = tray.take_all().expect("the file is ready");
+    let (_host, pa, a, b, b2, _kc, channel, _, descriptors) =
+        after_a_new_device("newdevfile", true).await;
+    let retries = a.trust_retries();
     a.attachments()
         .send(channel, "file after".into(), descriptors)
         .await
         .unwrap()
         .expect("the post with a file is queued, not refused for the new device");
+    assert_eq!(
+        a.trust_retries(),
+        retries + 1,
+        "the post was refused for the new device once and queued again"
+    );
     for (who, client) in [("bob", &b), ("bob's second device", &b2)] {
         wait_for(
             client,
