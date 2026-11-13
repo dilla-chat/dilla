@@ -1449,11 +1449,7 @@ mod tests {
         vcx.run_until_parked();
         // The channel menu is open: Ctrl+K is refused.
         shell.update(vcx, |s, cx| {
-            s.open_menu(
-                ChannelId([3; 16]),
-                gpui::point(gpui::px(10.0), gpui::px(10.0)),
-                cx,
-            )
+            s.open_menu(ChannelId([3; 16]), Point::default(), cx)
         });
         vcx.run_until_parked();
         vcx.update(|window, cx| focus.focus(window, cx));
