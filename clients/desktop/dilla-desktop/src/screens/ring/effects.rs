@@ -88,12 +88,15 @@ pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
     }
 }
 
-/// Task 19's ring sound starts (`screens::voice_settings::sounds::start_ring`). Until Task 19 merges this plays nothing;
-/// the controller replaces the body with `crate::screens::voice_settings::sounds::start_ring(cx)` at merge.
-pub fn start_ring(_cx: &mut App) {}
+/// Task 19's ring sound starts (`screens::voice_settings::sounds::start_ring`: two pings every 2 s, at most 15 times).
+pub fn start_ring(cx: &mut App) {
+    crate::screens::voice_settings::sounds::start_ring(cx);
+}
 
-/// Task 19's ring sound stops (`screens::voice_settings::sounds::stop_ring`). Wired at merge as [`start_ring`] is.
-pub fn stop_ring(_cx: &mut App) {}
+/// Task 19's ring sound stops (`screens::voice_settings::sounds::stop_ring`).
+pub fn stop_ring(cx: &mut App) {
+    crate::screens::voice_settings::sounds::stop_ring(cx);
+}
 
 /// The app's notifier (Task 22's in-app [`RecordingNotifier`]: the OS delivery is the next plan's), one per app.
 #[derive(Default)]

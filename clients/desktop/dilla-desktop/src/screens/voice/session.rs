@@ -9,10 +9,12 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use dilla_client::Client;
 use dilla_client::features::voice::{CallStatsReport, MediaLink, Voice};
+use dilla_client::features::voice_prefs::speaking::SpeakingDetector;
+use dilla_client::features::voice_prefs::values::{InputMode, NoisePreference, VoiceValues};
 use dilla_client::state::voice::{LocalShare, VoiceNotice};
 use dilla_client::state::{AppState, DeviceId};
 use dilla_media::apm::ApmFlags;
@@ -24,30 +26,56 @@ use dilla_media::{
 use tokio::sync::{mpsc, watch};
 use zeroize::Zeroizing;
 
-/// A remote device counts as speaking while its level is over this RMS (speaking.ts's default threshold, about
-/// -34 dBFS), and for [`HANGOVER`] after.
-pub const SPEAKING_RMS: f32 = 0.02;
-/// How long a device stays lit after its level drops (speaking.ts `HOLD_MS`).
-pub const HANGOVER: Duration = Duration::from_millis(300);
-
-/// Turns levels into the set of devices speaking now, with a hangover (Task 19's `SpeakingDetector` replaces the
-/// threshold once it merges).
-#[derive(Default)]
+/// Turns levels into the set of devices speaking now: one Task 19 `SpeakingDetector` per remote device (speaking.ts: on
+/// after `SPEAK_ON_MS` over `SPEAK_RMS`, off after `SPEAK_HOLD_MS` under it). Integration 3: replaces Task 17's
+/// stand-in threshold.
 pub struct Speaking {
-    loud: HashMap<String, Instant>,
+    since: Instant,
+    devices: HashMap<String, SpeakingDetector>,
+}
+
+impl Default for Speaking {
+    fn default() -> Self {
+        Self {
+            since: Instant::now(),
+            devices: HashMap::new(),
+        }
+    }
 }
 
 impl Speaking {
-    /// The devices (hex) speaking at `now`, from the newest levels.
+    /// The devices (hex) speaking at `now`, from the newest levels. A device no longer heard is dropped.
     pub fn update(&mut self, levels: &dilla_media::RemoteLevels, now: Instant) -> BTreeSet<String> {
-        for (device, rms) in levels {
-            if *rms >= SPEAKING_RMS {
-                self.loud.insert(device.clone(), now);
-            }
-        }
-        self.loud
-            .retain(|d, at| levels.contains_key(d) && now.duration_since(*at) < HANGOVER);
-        self.loud.keys().cloned().collect()
+        let ms = now.saturating_duration_since(self.since).as_secs_f64() * 1000.0;
+        self.devices.retain(|d, _| levels.contains_key(d));
+        levels
+            .iter()
+            .filter(|(device, rms)| {
+                self.devices
+                    .entry((*device).clone())
+                    .or_default()
+                    .update(**rms, ms)
+            })
+            .map(|(device, _)| device.clone())
+            .collect()
+    }
+}
+
+/// The call's microphone from Task 19's voice values: the chosen input, its noise choice (Automatic is the enhanced
+/// suppressor where it runs, Lightweight libwebrtc's), and echo cancellation and gain control as set.
+pub fn call_options(v: VoiceValues) -> CallOptions {
+    let noise = match v.noise {
+        NoisePreference::Off => NoiseMode::Off,
+        NoisePreference::Automatic => NoiseMode::Enhanced,
+        NoisePreference::Lightweight => NoiseMode::Standard,
+    };
+    CallOptions {
+        mic: Mic::Device { id: v.input, noise },
+        apm_flags: ApmFlags {
+            echo: v.echo,
+            agc: v.agc,
+        },
+        ..CallOptions::default()
     }
 }
 
@@ -158,27 +186,19 @@ struct Ctx {
 }
 
 impl Ctx {
-    fn ptt_mode(&self) -> bool {
-        self.prefs.get::<String>("voice.mode").as_deref() == Some("ptt")
+    /// Task 19's validated voice settings (`voice.*` in the instance's prefs): what Settings -> Voice wrote.
+    fn values(&self) -> VoiceValues {
+        VoiceValues::read(&self.prefs)
     }
 
+    fn ptt_mode(&self) -> bool {
+        self.values().mode == InputMode::Ptt
+    }
+
+    /// The call's microphone from Settings -> Voice (integration 3: Task 19's values, so its echo and gain control and
+    /// its noise choice reach the call mic): Automatic is the enhanced suppressor where it runs, Lightweight libwebrtc's.
     fn options(&self) -> CallOptions {
-        let noise = match self.prefs.get::<String>("voice.noise").as_deref() {
-            Some("off") => NoiseMode::Off,
-            Some("enhanced") => NoiseMode::Enhanced,
-            _ => NoiseMode::Standard,
-        };
-        CallOptions {
-            mic: Mic::Device {
-                id: self.prefs.get::<String>("voice.input"),
-                noise,
-            },
-            apm_flags: ApmFlags {
-                echo: self.prefs.get::<bool>("voice.echo").unwrap_or(true),
-                agc: self.prefs.get::<bool>("voice.agc").unwrap_or(true),
-            },
-            ..CallOptions::default()
-        }
+        call_options(self.values())
     }
 }
 
@@ -502,23 +522,58 @@ mod tests {
         assert_eq!(media.sending_epoch(), None);
     }
 
+    /// Integration 3: Task 19's detector per device (speaking.ts): lit after 50 ms over the threshold, held 300 ms
+    /// after it drops, and a device no longer heard is gone.
     #[test]
-    fn speaking_lights_over_the_threshold_and_holds_for_the_hangover() {
+    fn speaking_lights_after_its_onset_and_holds_for_the_hangover() {
         let mut s = Speaking::default();
-        let t0 = Instant::now();
+        let t0 = s.since;
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
         let mut levels = dilla_media::RemoteLevels::new();
         levels.insert("aa".into(), 0.05);
         levels.insert("bb".into(), 0.001);
-        assert_eq!(s.update(&levels, t0), BTreeSet::from(["aa".to_owned()]));
+        assert!(s.update(&levels, at(0)).is_empty(), "not yet: the onset");
+        assert_eq!(s.update(&levels, at(60)), BTreeSet::from(["aa".to_owned()]));
         levels.insert("aa".into(), 0.0);
-        assert!(
-            s.update(&levels, t0 + Duration::from_millis(200))
-                .contains("aa")
-        );
-        assert!(
-            s.update(&levels, t0 + Duration::from_millis(400))
-                .is_empty()
-        );
+        assert!(s.update(&levels, at(260)).contains("aa"), "held");
+        assert!(s.update(&levels, at(400)).contains("aa"), "held 300 ms");
+        assert!(s.update(&levels, at(600)).is_empty(), "off after the hold");
+        levels.insert("aa".into(), 0.05);
+        let _ = s.update(&levels, at(700));
+        assert!(s.update(&levels, at(760)).contains("aa"));
+        levels.remove("aa");
+        assert!(s.update(&levels, at(780)).is_empty(), "no longer heard");
+    }
+
+    /// Integration 3: what Settings -> Voice wrote (Task 19's values) is the call's microphone: its device, its noise
+    /// choice, and echo cancellation and gain control switched off reach the call (ApmFlags, one copy in dilla-media).
+    #[test]
+    fn the_voice_settings_reach_the_call_mic() {
+        let v = VoiceValues {
+            input: Some("usb-mic".into()),
+            noise: NoisePreference::Automatic,
+            echo: false,
+            agc: false,
+            ..VoiceValues::default()
+        };
+        let o = call_options(v);
+        match o.mic {
+            Mic::Device { id, noise } => {
+                assert_eq!(id.as_deref(), Some("usb-mic"));
+                assert_eq!(noise, NoiseMode::Enhanced);
+            }
+            _ => panic!("a device microphone"),
+        }
+        assert!(!o.apm_flags.echo && !o.apm_flags.agc);
+        let d = call_options(VoiceValues::default());
+        assert!(d.apm_flags.echo && d.apm_flags.agc, "on by default");
+        assert!(matches!(
+            d.mic,
+            Mic::Device {
+                id: None,
+                noise: NoiseMode::Standard
+            }
+        ));
     }
 
     #[test]

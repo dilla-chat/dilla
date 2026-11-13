@@ -61,6 +61,8 @@ pub struct VoiceUi {
     /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
     told_in_call: Option<Option<String>>,
     told_roster: Option<(ChannelId, Vec<UserId>)>,
+    /// The push-to-talk key (Task 19's `PttHold`): held, or let go less than the release delay ago.
+    ptt: dilla_client::features::voice_prefs::ptt::PttHold,
     /// The AFK page's Come back: the shell's way to a text channel this person can send in ([`set_come_back`]).
     come_back: Option<crate::screens::ring::OnComeBack>,
 }
@@ -658,33 +660,78 @@ pub fn dock(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     Some(tracked_box("voice-dock", card).into_any_element())
 }
 
-/// Push to talk while the window is focused: the person's chord (`voice.pttChord`) held opens the microphone, its
-/// release closes it. Listened for while a call is on (the dock is drawn).
+/// Milliseconds on one clock for the push-to-talk hold (its release delay is measured on it).
+fn ptt_now_ms() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// Push to talk while the window is focused: the person's key (`voice.pttChord`, Task 19's validated values) held opens
+/// the microphone; let go, it keeps sending for the release delay (`voice.pttRelease`, Task 19's `PttHold`); the
+/// window losing the focus closes it at once. Listened for while a call is on (the dock is drawn).
 fn ptt_listener() -> impl IntoElement {
+    use dilla_client::features::voice_prefs::values::VoiceValues;
     canvas(
         |_, _, _| {},
         |_, _, window, cx| {
-            let chord = ui(cx)
+            let values = ui(cx)
                 .and_then(|u| u.client.as_ref())
-                .and_then(|c| c.prefs().get::<String>("voice.pttChord"));
-            let Some(chord) = chord else { return };
+                .map(|c| VoiceValues::read(&c.prefs()));
+            let Some(values) = values else { return };
+            // Focus left the window: nothing is sent from here on, whatever the release delay.
+            if !window.is_window_active()
+                && cx.has_global::<VoiceUi>()
+                && cx
+                    .global::<VoiceUi>()
+                    .ptt
+                    .sending(ptt_now_ms(), values.ptt_release_ms)
+            {
+                cx.global_mut::<VoiceUi>().ptt.release();
+                if let Some(v) = voice(cx) {
+                    v.set_ptt_held(false);
+                }
+            }
+            let Some(chord) = values.ptt_chord else {
+                return;
+            };
             let key = keys::ptt_key(&chord);
             let down = key.clone();
+            let release_ms = values.ptt_release_ms;
             window.on_key_event(move |e: &gpui::KeyDownEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture
                     && !e.is_held
                     && e.keystroke.key.eq_ignore_ascii_case(&down)
-                    && let Some(v) = voice(cx)
+                    && cx.has_global::<VoiceUi>()
                 {
-                    v.set_ptt_held(true);
+                    cx.global_mut::<VoiceUi>().ptt.press();
+                    if let Some(v) = voice(cx) {
+                        v.set_ptt_held(true);
+                    }
                 }
             });
             window.on_key_event(move |e: &gpui::KeyUpEvent, phase, _, cx| {
                 if phase == gpui::DispatchPhase::Capture
                     && e.keystroke.key.eq_ignore_ascii_case(&key)
-                    && let Some(v) = voice(cx)
+                    && cx.has_global::<VoiceUi>()
                 {
-                    v.set_ptt_held(false);
+                    cx.global_mut::<VoiceUi>().ptt.let_go(ptt_now_ms());
+                    cx.spawn(async move |cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(u64::from(release_ms)))
+                            .await;
+                        cx.update(|cx| {
+                            let sending = cx.has_global::<VoiceUi>()
+                                && cx.global::<VoiceUi>().ptt.sending(ptt_now_ms(), release_ms);
+                            if !sending && let Some(v) = voice(cx) {
+                                v.set_ptt_held(false);
+                            }
+                        });
+                    })
+                    .detach();
                 }
             });
         },
