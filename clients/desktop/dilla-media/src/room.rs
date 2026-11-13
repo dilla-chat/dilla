@@ -336,6 +336,7 @@ impl Call {
                         host: self.host.clone(),
                         apm: self.apm.clone(),
                         model: Arc::new(embedded_model),
+                        flags: Default::default(),
                     },
                     id.map(DeviceId),
                     noise,

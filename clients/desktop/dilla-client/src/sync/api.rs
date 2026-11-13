@@ -239,7 +239,7 @@ impl Api {
     // ---- the transports ----
 
     /// One socket route: `R`'s table row names its path, method, accepted statuses and body bound.
-    async fn socket_call<R: Route>(
+    pub(crate) async fn socket_call<R: Route>(
         &self,
         args: &[&str],
         body: Option<Vec<u8>>,
@@ -304,7 +304,7 @@ impl Api {
     }
 
     /// One HTTP route with client.ts's retries and its one re-authentication.
-    async fn http_call<R: Route>(
+    pub(crate) async fn http_call<R: Route>(
         &self,
         args: &[&str],
         req: R::Request,

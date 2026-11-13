@@ -19,6 +19,7 @@ use crate::noise::{FRAME_SAMPLES, RATE};
 struct Inner {
     module: AudioProcessingModule,
     noise_suppression: bool,
+    flags: ApmFlags,
     /// The stream delay last handed to the module (`None`: not yet, or the module was rebuilt).
     applied_delay_ms: Option<u32>,
 }
@@ -34,10 +35,26 @@ struct Shared {
 /// libwebrtc rejects a delay beyond this.
 const MAX_DELAY_MS: u32 = 500;
 
-fn build(noise_suppression: bool) -> AudioProcessingModule {
-    // Echo cancellation, gain control and the high-pass filter always; noise suppression only for
+/// Which of the browser constraints Settings -> Voice switches (`echoCancellation`, `autoGainControl`): both on by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ApmFlags {
+    pub echo: bool,
+    pub agc: bool,
+}
+
+impl Default for ApmFlags {
+    fn default() -> Self {
+        Self {
+            echo: true,
+            agc: true,
+        }
+    }
+}
+
+fn build(noise_suppression: bool, flags: ApmFlags) -> AudioProcessingModule {
+    // Echo cancellation and gain control as `flags` say, the high-pass filter always; noise suppression only for
     // `NoiseMode::Standard` (the web client's `noiseSuppression` constraint).
-    AudioProcessingModule::new(true, true, true, noise_suppression)
+    AudioProcessingModule::new(flags.echo, flags.agc, true, noise_suppression)
 }
 
 #[derive(Clone)]
@@ -56,8 +73,9 @@ impl Apm {
         Self {
             shared: Arc::new(Shared {
                 inner: Mutex::new(Inner {
-                    module: build(noise_suppression),
+                    module: build(noise_suppression, ApmFlags::default()),
                     noise_suppression,
+                    flags: ApmFlags::default(),
                     applied_delay_ms: None,
                 }),
                 capture_ms: AtomicU32::new(0),
@@ -75,8 +93,18 @@ impl Apm {
     pub fn set_noise_suppression(&self, on: bool) {
         let mut inner = self.lock();
         if inner.noise_suppression != on {
-            inner.module = build(on);
+            inner.module = build(on, inner.flags);
             inner.noise_suppression = on;
+            inner.applied_delay_ms = None;
+        }
+    }
+
+    /// Switches echo cancellation and gain control. A change rebuilds the module; the same flags are a no-op.
+    pub fn set_flags(&self, flags: ApmFlags) {
+        let mut inner = self.lock();
+        if inner.flags != flags {
+            inner.module = build(inner.noise_suppression, flags);
+            inner.flags = flags;
             inner.applied_delay_ms = None;
         }
     }

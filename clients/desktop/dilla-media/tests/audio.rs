@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use dilla_media::MediaError;
 use dilla_media::MediaEvent;
-use dilla_media::apm::Apm;
+use dilla_media::apm::{Apm, ApmFlags};
 use dilla_media::capture::{CaptureConfig, Mic};
 use dilla_media::devices::{
     AudioHost, Device, DeviceId, DeviceList, InputSink, OnLost, OutputSource, Running, watch_host,
@@ -234,6 +234,7 @@ fn config(host: &Fake, apm: Apm, model: ModelLoader) -> CaptureConfig {
         host: Arc::new(host.clone()),
         apm,
         model,
+        flags: ApmFlags::default(),
     }
 }
 
@@ -319,12 +320,14 @@ fn events(rx: &mut UnboundedReceiver<MediaEvent>) -> Vec<MediaEvent> {
 
 // ---- tests ---------------------------------------------------------------------------------------
 
-#[test]
-fn aec_removes_playout_echo() {
+/// The playout echo that reaches the microphone's output after 8 s, in dBFS, with these echo and gain switches.
+fn echo_after(flags: ApmFlags) -> (f64, f64) {
     let host = Fake::new();
     let apm = Apm::default();
     let speaker = Speaker::open_with(Arc::new(host.clone()), apm.clone(), None, None).unwrap();
-    let mut mic = Mic::open_with(config(&host, apm, embedded()), None, NoiseMode::Off).unwrap();
+    let mut cfg = config(&host, apm, embedded());
+    cfg.flags = flags;
+    let mut mic = Mic::open_with(cfg, None, NoiseMode::Off).unwrap();
     let mut rx = mic.take_frames().unwrap();
 
     // Far-end speech stands in as broadband noise at -15 dBFS (rms 5800): a pure tone defeats
@@ -359,11 +362,37 @@ fn aec_removes_playout_echo() {
     driver.join().unwrap();
     assert!(all.len() >= 8 * RATE as usize, "the microphone stalled");
     let tail = &all[all.len() - RATE as usize..];
-    let after = dbfs(tail);
+    (echo_dbfs, dbfs(tail))
+}
+
+#[test]
+fn aec_removes_playout_echo() {
+    let (echo_dbfs, after) = echo_after(ApmFlags::default());
     println!("aec: echo {echo_dbfs:.1} dBFS -> {after:.1} dBFS");
     assert!(
         after <= echo_dbfs - 25.0 && after < -30.0,
         "echo {echo_dbfs:.1} dBFS -> {after:.1} dBFS after AEC (need 25 dB lower and below -30)"
+    );
+}
+
+/// R19: with echo cancellation switched off the playout echo stays in the microphone, as the web's switch leaves it.
+#[test]
+fn echo_off_leaves_the_playout_echo_in() {
+    let (echo_dbfs, after) = echo_after(ApmFlags {
+        echo: false,
+        ..ApmFlags::default()
+    });
+    println!("echo off: echo {echo_dbfs:.1} dBFS -> {after:.1} dBFS");
+    assert!(
+        after > echo_dbfs - 6.0,
+        "echo {echo_dbfs:.1} dBFS -> {after:.1} dBFS with the canceller off (it must stay within 6 dB)"
+    );
+    assert_eq!(
+        ApmFlags::default(),
+        ApmFlags {
+            echo: true,
+            agc: true
+        }
     );
 }
 

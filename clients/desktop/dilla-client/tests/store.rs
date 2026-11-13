@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dilla_client::instances::{Instances, MAX_INSTANCES};
 use dilla_client::keychain::MemoryKeychain;
 use dilla_client::seams::{InstanceConfig, InstanceId, Keychain, KeychainError};
-use dilla_client::store::{DB_FILE, StoreError, keychain_account, open_store};
+use dilla_client::store::{
+    DB_FILE, StoreError, keychain_account, open_store, store_keychain_account,
+};
 use zeroize::Zeroizing;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -22,9 +24,10 @@ fn root() -> PathBuf {
     p
 }
 
-/// The keychain account of instance `n` in `instances`' root.
+/// The keychain account that holds instance `n`'s key now in `instances`' root (its generation record read as an
+/// open reads it; the plain account before a first open).
 fn acct(instances: &Instances, n: u8) -> String {
-    keychain_account(instances.install_id(), InstanceId(n))
+    store_keychain_account(instances.get(InstanceId(n)).expect("listed")).unwrap()
 }
 
 fn server() -> url::Url {
@@ -201,9 +204,9 @@ fn thirty_third_instance_refused() {
     core.setting_put("old", "from the removed instance")
         .unwrap();
     drop(core);
+    let old_key = kc.get(&acct(&instances, 7)).unwrap().unwrap();
     assert!(instances.remove(InstanceId(7)).unwrap().is_some());
     assert!(!seven.data_dir.exists());
-    let old_key = kc.get(&acct(&instances, 7)).unwrap().unwrap();
     let again = instances.add(server()).unwrap();
     assert_eq!(again.id, InstanceId(7));
     let core = open_store(&again, &kc).unwrap();
@@ -245,8 +248,10 @@ fn wrong_key_does_not_open() {
 
 #[test]
 fn key_stored_but_database_never_created_gets_a_fresh_key() {
-    // A crash after the key reached the keychain and before the database was published: the old key
-    // protects nothing, so a fresh one replaces it and the store opens.
+    // A key under the plain account with no database and no generation record: a crash cut a first open short,
+    // or another root copied from this one before its first open holds that key. A first open never overwrites
+    // it (Task 2 review fix: no record means a random generation); it creates the store under a fresh key of its
+    // own, and the stale entry protects nothing here.
     let root = root();
     let mut instances = Instances::load(&root).unwrap();
     let cfg = instances.add(server()).unwrap();
@@ -264,7 +269,16 @@ fn key_stored_but_database_never_created_gets_a_fresh_key() {
     let fresh = kc.get(&acct(&instances, 0)).unwrap().unwrap();
     assert_eq!(fresh.len(), 32);
     assert_ne!(fresh.as_slice(), &key);
-    assert_eq!(kc.accounts(), vec![acct(&instances, 0)]);
+    let plain = keychain_account(instances.install_id(), InstanceId(0));
+    assert_ne!(acct(&instances, 0), plain);
+    assert_eq!(
+        kc.get(&plain).unwrap().unwrap().as_slice(),
+        &key,
+        "never overwritten"
+    );
+    let mut both = vec![plain, acct(&instances, 0)];
+    both.sort();
+    assert_eq!(kc.accounts(), both);
     assert_eq!(files_in(&cfg.data_dir), vec![DB_FILE.to_string()]);
     // The fresh key is the one that keeps opening it.
     assert!(settings_contain(&open_store(&cfg, &kc).unwrap(), "v1"));
