@@ -108,6 +108,11 @@ pub enum TrayPreview {
     Gif,
 }
 
+/// The attachments area's state. One per app, and that is safe by construction (final review sweep): what belongs to a
+/// window is keyed by it (`targets`) or carries its owner window and is drawn only there (the lightbox, the GIF picker,
+/// the DM notice); what belongs to a client is keyed by its channels (channel ids are random per instance) and goes
+/// with it in [`release`] (trays by `tray_owners`, images, cards and players by the client's channels); the
+/// played-video directories are per instance and are wiped at open and at quit.
 #[derive(Default)]
 pub struct AttachmentsUi {
     pub trays: HashMap<ChannelId, Tray>,
@@ -271,6 +276,24 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
         u.tray_owners.remove(&channel);
         u.tray_previews.retain(|(c, _), _| *c != channel);
     }
+    // The decrypted images, the cards' state and the players of the client's channels go too (final review sweep): a
+    // released account's media is not left in the process. Another client's channels keep theirs.
+    let channels: HashSet<ChannelId> = client
+        .state()
+        .borrow()
+        .channels
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    forget_channels(&channels, cx);
+}
+
+/// Drops the images, cards and players of `channels` (a released client's).
+pub fn forget_channels(channels: &HashSet<ChannelId>, cx: &mut App) {
+    let u = ui(cx);
+    u.images.retain(|k, _| !channels.contains(&k.channel));
+    u.cards.retain(|k, _| !channels.contains(&k.channel));
+    u.players.retain(|k, _| !channels.contains(&k.channel));
 }
 
 /// The tray of `channel`, made on first use.
@@ -864,6 +887,35 @@ pub fn pick_gif(index: usize, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review sweep: a release drops the decrypted images and the cards of the released client's channels, and
+    /// keeps another client's.
+    #[gpui::test]
+    fn a_release_drops_the_media_of_the_clients_channels(cx: &mut gpui::TestAppContext) {
+        let (mine, theirs) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let key = |channel| ImageKey {
+            channel,
+            seq: 1,
+            index: 0,
+            thumb: true,
+        };
+        cx.update(|cx| {
+            let u = ui(cx);
+            u.images.insert(key(mine), Slot::Failed);
+            u.images.insert(key(theirs), Slot::Failed);
+            let card = |channel| CardKey {
+                channel,
+                seq: 1,
+                index: 0,
+            };
+            u.cards.insert(card(mine), CardStatus::Loading);
+            u.cards.insert(card(theirs), CardStatus::Loading);
+            forget_channels(&HashSet::from([mine]), cx);
+            let u = ui(cx);
+            assert!(!u.images.contains_key(&key(mine)) && u.images.contains_key(&key(theirs)));
+            assert_eq!(u.cards.len(), 1);
+        });
+    }
 
     /// Fix round 1: a video left for the system player is wiped when the instance opens and when the app quits, not
     /// on a composer's first draw; drawing the composer never wipes.
