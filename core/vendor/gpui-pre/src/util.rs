@@ -148,6 +148,29 @@ pub fn snap_layout_edge(device: f32, scale_factor: f32) -> f32 {
     }
 }
 
+/// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): an authored length of `logical` px, in device px. At a whole
+/// scale factor it lies on Chromium's layout unit (1/64 css px, floored as `LayoutUnit` does), so a box's edges keep
+/// the web's fractions until [`snap_layout_edge`]; at a fractional scale it is upstream's whole device px.
+#[inline]
+pub fn layout_length(logical: f32, scale_factor: f32) -> f32 {
+    if scale_factor.fract() == 0.0 {
+        (logical * 64.0).floor() / 64.0 * scale_factor
+    } else {
+        round_to_device_pixel(logical, scale_factor)
+    }
+}
+
+/// DILLA PATCH: a measured size (a text's width) of `logical` px, in device px: ceiled onto Chromium's layout unit at a
+/// whole scale factor (`LayoutUnit::FromFloatCeil`), else upstream's whole device px, ceiled.
+#[inline]
+pub fn measured_length(logical: f32, scale_factor: f32) -> f32 {
+    if scale_factor.fract() == 0.0 {
+        (logical * 64.0).ceil() / 64.0 * scale_factor
+    } else {
+        ceil_to_device_pixel(logical, scale_factor)
+    }
+}
+
 #[inline]
 pub(crate) fn round_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
     round_half_toward_zero(logical * scale_factor)

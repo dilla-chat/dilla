@@ -147,7 +147,7 @@ pub use svg_renderer::*;
 pub use taffy::{AvailableSpace, LayoutId};
 pub use text_system::*;
 // DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): the box-edge snap, for the client's tests.
-pub use util::{FutureExt, Timeout, snap_layout_edge};
+pub use util::{FutureExt, Timeout, layout_length, measured_length, snap_layout_edge};
 pub use view::*;
 pub use window::*;
 

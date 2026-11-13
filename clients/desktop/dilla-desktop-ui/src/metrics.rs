@@ -169,6 +169,21 @@ mod tests {
         assert_eq!(snap(77.6, 1.5), 78.0);
     }
 
+    /// Before the edges snap, the vendored GPUI lays lengths out on Chromium's layout unit (1/64 css px) at a whole scale
+    /// factor: an authored length floored onto it, a measured one (text) ceiled, as LayoutUnit does. A fractional scale
+    /// keeps upstream's whole device px. Logical px in, device px out.
+    #[test]
+    fn lengths_lay_out_on_chromiums_layout_unit() {
+        // 6.6px of mono "3": authored 6.59375, measured 6.609375 (the web's count span); upstream made both 6.5.
+        assert_eq!(gpui::layout_length(6.6, 2.0), 6.59375 * 2.0);
+        assert_eq!(gpui::measured_length(6.6, 2.0), 6.609375 * 2.0);
+        assert_eq!(gpui::layout_length(28.0, 2.0), 56.0);
+        assert_eq!(gpui::measured_length(28.0, 2.0), 56.0);
+        // Scale 1.5: whole device px, as upstream (authored rounded half toward zero, measured ceiled).
+        assert_eq!(gpui::layout_length(6.6, 1.5), 10.0);
+        assert_eq!(gpui::measured_length(6.6, 1.5), 10.0);
+    }
+
     const TOKENS_TS: &str = include_str!("../../../../packages/design-tokens/src/tokens.ts");
 
     /// The number that follows `key` in tokens.ts (`labelTracking: '0.08em'` gives 0.08).

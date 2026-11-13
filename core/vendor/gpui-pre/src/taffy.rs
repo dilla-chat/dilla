@@ -1,10 +1,7 @@
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Edges, GridTemplate, Length, Pixels, Point, Size,
     Style, Window, size,
-    util::{
-        ceil_to_device_pixel, round_stroke_to_device_pixel,
-        round_to_device_pixel,
-    },
+    util::{layout_length, measured_length, round_stroke_to_device_pixel},
 };
 use collections::{FxHashMap, FxHashSet};
 use std::{fmt::Debug, ops::Range};
@@ -127,11 +124,11 @@ impl TaffyLayoutEngine {
         let mut style = style.clone();
         if stretch_width {
             style.size.width =
-                taffy::style::Dimension::length(round_to_device_pixel(size.width.0, scale_factor));
+                taffy::style::Dimension::length(layout_length(size.width.0, scale_factor));
         }
         if stretch_height {
             style.size.height =
-                taffy::style::Dimension::length(round_to_device_pixel(size.height.0, scale_factor));
+                taffy::style::Dimension::length(layout_length(size.height.0, scale_factor));
         }
         self.taffy.set_style(id.0, style).expect(EXPECT_MESSAGE);
     }
@@ -426,7 +423,8 @@ impl From<LayoutId> for NodeId {
 }
 
 fn snap_measured_size_to_device_pixels(size: Size<Pixels>, scale_factor: f32) -> Size<f32> {
-    size.map(|d| ceil_to_device_pixel(d.0.max(0.0), scale_factor))
+    // DILLA PATCH: Chromium's layout unit at a whole scale (`util::measured_length`).
+    size.map(|d| measured_length(d.0.max(0.0), scale_factor))
 }
 
 fn border_widths_to_taffy(
@@ -538,7 +536,8 @@ impl ToTaffy<taffy::style::Style> for Style {
 
 impl ToTaffy<f32> for AbsoluteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> f32 {
-        round_to_device_pixel(self.to_pixels(rem_size).0, scale_factor)
+        // DILLA PATCH: Chromium's layout unit at a whole scale (`util::layout_length`).
+        layout_length(self.to_pixels(rem_size).0, scale_factor)
     }
 }
 
