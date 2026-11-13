@@ -764,7 +764,7 @@ mod parity {
     }
 
     #[test]
-    #[ignore = "parity after T6c: chrome 0.5069 % (the echo-off line's and the scale's fractional line boxes accumulate below the meter: the readout and switch rows sit one device pixel off)"]
+    #[ignore = "parity after T6c: chrome 0.3365 % (the echo-off line's 17.25px and the scale's 14.25px line boxes are authored lengths GPUI rounds to a device pixel before layout: the readout and switch rows sit one device pixel off)"]
     fn parity_voice_settings_enhanced_unavailable_b() {
         check("enhanced-unavailable-b");
     }
