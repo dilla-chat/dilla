@@ -13,8 +13,8 @@ use dilla_client::Client;
 use dilla_client::features::dms::{picker_members, type_ahead};
 use dilla_client::state::{AppState, CommunityId, Member};
 use gpui::{
-    AnyElement, App, AppContext as _, FocusHandle, Global, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Styled, Window, div,
+    AnyElement, App, AppContext as _, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    ParentElement, Styled, Window, WindowId, div,
 };
 
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
@@ -30,7 +30,9 @@ use super::{Nav, navigate};
 /// How long typed letters build one type-ahead prefix.
 const TYPE_AHEAD_RESET: Duration = Duration::from_secs(1);
 
-/// The picker's state. One per app.
+/// The picker's state, one per window (final review sweep: a picker opened in one window never shows in another, or
+/// opens a DM on another window's client).
+#[derive(Default)]
 pub struct PickerModel {
     pub open: bool,
     pub community: Option<CommunityId>,
@@ -43,41 +45,34 @@ pub struct PickerModel {
     list: Option<FocusHandle>,
 }
 
-impl Global for PickerModel {}
-
-fn model(cx: &mut App) -> &mut PickerModel {
-    if !cx.has_global::<PickerModel>() {
-        cx.set_global(PickerModel {
-            open: false,
-            community: None,
-            selected: None,
-            busy: false,
-            error: None,
-            typed: String::new(),
-            typed_at: None,
-            client: None,
-            list: None,
-        });
-    }
-    cx.global_mut::<PickerModel>()
+fn model(window: WindowId, cx: &mut App) -> &mut PickerModel {
+    crate::per_window::get_mut::<PickerModel>(window, cx)
 }
 
-/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the picker closes.
+/// Window `window`'s picker, as the tests read it.
+pub fn model_in(window: WindowId, cx: &mut App) -> &mut PickerModel {
+    model(window, cx)
+}
+
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): every window's picker of it closes.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
-    if !cx.has_global::<PickerModel>() {
-        return;
-    }
-    let m = cx.global_mut::<PickerModel>();
-    if m.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)) {
-        m.client = None;
-        m.open = false;
-        m.busy = false;
-    }
+    crate::per_window::each_mut::<PickerModel>(cx, |_, m| {
+        if m.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)) {
+            m.client = None;
+            m.open = false;
+            m.busy = false;
+        }
+    });
 }
 
-/// Opens the picker over `community`'s members (`None`: every server's).
-pub fn open(community: Option<CommunityId>, client: Option<Rc<Client>>, cx: &mut App) {
-    let m = model(cx);
+/// Opens `window`'s picker over `community`'s members (`None`: every server's).
+pub fn open(
+    window: WindowId,
+    community: Option<CommunityId>,
+    client: Option<Rc<Client>>,
+    cx: &mut App,
+) {
+    let m = model(window, cx);
     m.open = true;
     m.community = community;
     m.selected = Some(0);
@@ -89,8 +84,8 @@ pub fn open(community: Option<CommunityId>, client: Option<Rc<Client>>, cx: &mut
     cx.refresh_windows();
 }
 
-pub fn close(cx: &mut App) {
-    let m = model(cx);
+pub fn close(window: WindowId, cx: &mut App) {
+    let m = model(window, cx);
     m.open = false;
     m.busy = false;
     cx.refresh_windows();
@@ -106,7 +101,8 @@ fn name_of(m: &Member) -> String {
 
 /// Opens the DM with `member`.
 fn pick(member: &Member, window: &mut Window, cx: &mut App) {
-    let m = model(cx);
+    let wid = window.window_handle().window_id();
+    let m = model(wid, cx);
     if m.busy {
         return;
     }
@@ -121,11 +117,11 @@ fn pick(member: &Member, window: &mut Window, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = answer.await;
         let _ = cx.update_window(handle, |_, window, cx| {
-            let m = model(cx);
+            let m = model(wid, cx);
             m.busy = false;
             match result {
                 Ok(Ok(channel)) => {
-                    close(cx);
+                    close(wid, cx);
                     navigate(Nav::Dm(channel), window, cx);
                 }
                 Ok(Err(e)) => {
@@ -183,26 +179,25 @@ pub fn on_key(
 }
 
 /// The picker, drawn over the window (render it last in the window's root); `None` before it was ever opened.
-pub fn picker_overlay(state: &AppState, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    if !cx.has_global::<PickerModel>() {
-        return None;
-    }
-    let list = match model(cx).list.clone() {
+pub fn picker_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let wid = window.window_handle().window_id();
+    crate::per_window::get::<PickerModel>(wid, cx)?;
+    let list = match model(wid, cx).list.clone() {
         Some(h) => h,
         None => {
             let h = cx.focus_handle().tab_stop(true);
-            model(cx).list = Some(h.clone());
+            model(wid, cx).list = Some(h.clone());
             h
         }
     };
-    let m = cx.global::<PickerModel>();
+    let m = crate::per_window::get::<PickerModel>(wid, cx)?;
     let dialog = Dialog::new(
         "dm-picker-dialog",
         t("shell.dms.newTitle"),
         t("dialog.close"),
     )
     .initial_focus(InitialFocus::Handle(list.clone()))
-    .on_close(|_, cx| close(cx));
+    .on_close(move |_, cx| close(wid, cx));
     if !m.open {
         return Some(dialog.open(false).into_any_element());
     }
@@ -255,7 +250,7 @@ pub fn picker_overlay(state: &AppState, _window: &mut Window, cx: &mut App) -> O
                         return;
                     }
                     let now = Instant::now();
-                    let m = model(cx);
+                    let m = model(wid, cx);
                     let (mut typed, mut typed_at) = (std::mem::take(&mut m.typed), m.typed_at);
                     let (selected, enter) = on_key(
                         &names,

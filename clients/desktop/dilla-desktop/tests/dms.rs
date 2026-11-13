@@ -110,12 +110,13 @@ fn keyboard_dms_focus_order(cx: &mut TestAppContext) {
     let mut verified = contact(2, "Bo");
     verified.verified = true;
     let (host, cx) = host(cx, state_with(vec![contact(1, "Ada"), verified]));
+    let w = cx.update(|window, _| window.window_handle().window_id());
     cx.run_until_parked();
     let opener = host.read_with(cx, |h, _| h.opener.clone());
     let (first, second) = cx.update(|_, cx| {
         (
-            privacy::compare_handle(0, cx),
-            privacy::compare_handle(1, cx),
+            privacy::compare_handle(w, 0, cx),
+            privacy::compare_handle(w, 1, cx),
         )
     });
     cx.update(|window, cx| opener.focus(window, cx));
@@ -131,14 +132,15 @@ fn keyboard_dms_focus_order(cx: &mut TestAppContext) {
 #[gpui::test]
 fn compare_dialog_traps_focus_and_escape_returns_it(cx: &mut TestAppContext) {
     let (host, cx) = host(cx, state_with(vec![contact(1, "Ada")]));
+    let w = cx.update(|window, _| window.window_handle().window_id());
     cx.run_until_parked();
     let (opener, compare_button) = (
         host.read_with(cx, |h, _| h.opener.clone()),
-        cx.update(|_, cx| privacy::compare_handle(0, cx)),
+        cx.update(|_, cx| privacy::compare_handle(w, 0, cx)),
     );
     cx.update(|window, cx| compare_button.focus(window, cx));
     press(cx, "enter");
-    let open = cx.update(|_, cx| cx.global::<compare::CompareModel>().open);
+    let open = cx.update(|_, cx| compare::model_in(w, cx).open);
     assert!(open, "Enter on Compare opens the dialog");
     assert!(
         !focused(cx, &compare_button),
@@ -158,7 +160,7 @@ fn compare_dialog_traps_focus_and_escape_returns_it(cx: &mut TestAppContext) {
     }
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
-    assert!(!cx.update(|_, cx| cx.global::<compare::CompareModel>().open));
+    assert!(!cx.update(|_, cx| compare::model_in(w, cx).open));
     assert!(
         focused(cx, &compare_button),
         "Escape returns focus to the Compare that opened it"
@@ -174,38 +176,39 @@ fn copy_alone_does_not_approve(cx: &mut TestAppContext) {
     changed.blocked = Some(dilla_client::state::trust::TrustBlock::UmkChanged);
     let state = state_with(vec![changed.clone()]);
     let (host, cx) = host(cx, state.clone());
+    let w = cx.update(|window, _| window.window_handle().window_id());
     let groups: Vec<String> = (0..12).map(|i| format!("{:05}", i * 7)).collect();
     cx.update(|_, cx| {
-        compare::open(&changed, None, cx);
-        cx.global_mut::<compare::CompareModel>().groups = groups.clone();
+        compare::open(w, &changed, None, cx);
+        compare::model_in(w, cx).groups = groups.clone();
     });
     cx.run_until_parked();
-    let shown = cx.update(|_, cx| cx.global::<compare::CompareModel>().approved_umk.clone());
+    let shown = cx.update(|_, cx| compare::model_in(w, cx).approved_umk.clone());
     assert_eq!(
         shown.as_deref(),
         Some("cc".repeat(32).as_str()),
         "the dialog compares the pending key"
     );
-    cx.update(|_, cx| compare::copy(cx));
+    cx.update(|_, cx| compare::copy(w, cx));
     assert_eq!(
         cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())),
         Some(groups.join(" ")),
         "Copy puts the twelve groups on the clipboard"
     );
     assert!(
-        !cx.update(|_, cx| compare::permitted(&state, cx)),
+        !cx.update(|_, cx| compare::permitted(&state, w, cx)),
         "Copy alone approves nothing"
     );
-    cx.update(|_, cx| compare::toggle_confirm(cx));
+    cx.update(|_, cx| compare::toggle_confirm(w, cx));
     assert!(
-        cx.update(|_, cx| compare::permitted(&state, cx)),
+        cx.update(|_, cx| compare::permitted(&state, w, cx)),
         "the exact comparison, confirmed, may approve"
     );
     // The key moved while the dialog was open: the confirmation was for another key.
     let mut moved = changed.clone();
     moved.changed_umk = Some("dd".repeat(32));
     let moved_state = state_with(vec![moved]);
-    assert!(!cx.update(|_, cx| compare::permitted(&moved_state, cx)));
+    assert!(!cx.update(|_, cx| compare::permitted(&moved_state, w, cx)));
     host.update(cx, |h, cx| {
         h.state = Arc::new(moved_state.clone());
         cx.notify();
@@ -213,28 +216,28 @@ fn copy_alone_does_not_approve(cx: &mut TestAppContext) {
     cx.run_until_parked();
     // Another number for the same key is another comparison: the confirmation does not carry over.
     cx.update(|_, cx| {
-        cx.global_mut::<compare::CompareModel>().groups[0] = "99999".into();
+        compare::model_in(w, cx).groups[0] = "99999".into();
     });
-    assert!(!cx.update(|_, cx| compare::permitted(&state, cx)));
+    assert!(!cx.update(|_, cx| compare::permitted(&state, w, cx)));
     // Review fix 4: while the dialog says the key moved, nothing approves, even confirmed.
     cx.update(|_, cx| {
-        let m = cx.global_mut::<compare::CompareModel>();
+        let m = compare::model_in(w, cx);
         m.groups = groups.clone();
         m.error = Some("privacy.keyMoved");
     });
     cx.update(|_, cx| {
-        if !cx.global::<compare::CompareModel>().confirmed() {
-            compare::toggle_confirm(cx);
+        if !compare::model_in(w, cx).confirmed() {
+            compare::toggle_confirm(w, cx);
         }
     });
-    assert!(cx.update(|_, cx| cx.global::<compare::CompareModel>().confirmed()));
-    assert!(!cx.update(|_, cx| compare::permitted(&state, cx)));
-    cx.update(|_, cx| cx.global_mut::<compare::CompareModel>().error = None);
+    assert!(cx.update(|_, cx| compare::model_in(w, cx).confirmed()));
+    assert!(!cx.update(|_, cx| compare::permitted(&state, w, cx)));
+    cx.update(|_, cx| compare::model_in(w, cx).error = None);
     // An unlisted contact is never verifiable from the dialog.
     let mut unlisted = changed;
     unlisted.unlisted = true;
-    cx.update(|_, cx| compare::toggle_confirm(cx));
-    assert!(!cx.update(|_, cx| compare::permitted(&state_with(vec![unlisted]), cx)));
+    cx.update(|_, cx| compare::toggle_confirm(w, cx));
+    assert!(!cx.update(|_, cx| compare::permitted(&state_with(vec![unlisted]), w, cx)));
 }
 
 /// The DM picker: Up and Down move (wrapping), typing jumps to the next name with that prefix, Escape closes it.
@@ -270,12 +273,12 @@ fn dm_picker_type_ahead_arrows_and_enter(cx: &mut TestAppContext) {
         ],
     );
     let (host, cx) = host(cx, state);
+    let w = cx.update(|window, _| window.window_handle().window_id());
     let opener = host.read_with(cx, |h, _| h.opener.clone());
     cx.update(|window, cx| opener.focus(window, cx));
-    cx.update(|_, cx| picker::open(Some(community), None, cx));
+    cx.update(|_, cx| picker::open(w, Some(community), None, cx));
     cx.run_until_parked();
-    let selected =
-        |cx: &mut VisualTestContext| cx.update(|_, cx| cx.global::<picker::PickerModel>().selected);
+    let selected = |cx: &mut VisualTestContext| cx.update(|_, cx| picker::model_in(w, cx).selected);
     assert_eq!(
         selected(cx),
         Some(0),
@@ -291,10 +294,10 @@ fn dm_picker_type_ahead_arrows_and_enter(cx: &mut TestAppContext) {
     assert_eq!(selected(cx), Some(2), "`be` is Bea");
     // Enter without a client opens nothing and keeps the dialog open.
     cx.simulate_keystrokes("enter");
-    assert!(cx.update(|_, cx| cx.global::<picker::PickerModel>().open));
+    assert!(cx.update(|_, cx| picker::model_in(w, cx).open));
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
-    assert!(!cx.update(|_, cx| cx.global::<picker::PickerModel>().open));
+    assert!(!cx.update(|_, cx| picker::model_in(w, cx).open));
     assert!(focused(cx, &opener), "Escape returns focus to the opener");
 }
 

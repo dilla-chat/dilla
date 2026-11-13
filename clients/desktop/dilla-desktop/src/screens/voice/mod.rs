@@ -361,7 +361,7 @@ fn notice_strip(
             )
             .on_click(move |_, window, cx| {
                 let client = client_of(wid(window), cx);
-                crate::screens::dms::compare::open(&record, client, cx);
+                crate::screens::dms::compare::open(wid(window), &record, client, cx);
             }),
         )
     });

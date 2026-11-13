@@ -23,21 +23,20 @@ use super::compare;
 
 struct Heading(gpui::FocusHandle);
 
-/// The Compare buttons' focus handles, by row (kept across frames so focus survives a redraw).
+/// The Compare buttons' focus handles of one window, by row (kept across frames so focus survives a redraw; per window,
+/// final review sweep: a handle is never another window's).
 #[derive(Default)]
 struct CompareFocus(Vec<gpui::FocusHandle>);
-impl gpui::Global for CompareFocus {}
 
-/// The focus handle of row `i`'s Compare button (its alert's Compare for a changed contact).
-pub fn compare_handle(i: usize, cx: &mut App) -> gpui::FocusHandle {
-    if !cx.has_global::<CompareFocus>() {
-        cx.set_global(CompareFocus::default());
-    }
-    while cx.global::<CompareFocus>().0.len() <= i {
+/// The focus handle of row `i`'s Compare button in window `wid` (its alert's Compare for a changed contact).
+pub fn compare_handle(wid: gpui::WindowId, i: usize, cx: &mut App) -> gpui::FocusHandle {
+    while crate::per_window::get_mut::<CompareFocus>(wid, cx).0.len() <= i {
         let h = cx.focus_handle().tab_stop(true);
-        cx.global_mut::<CompareFocus>().0.push(h);
+        crate::per_window::get_mut::<CompareFocus>(wid, cx)
+            .0
+            .push(h);
     }
-    cx.global::<CompareFocus>().0[i].clone()
+    crate::per_window::get_mut::<CompareFocus>(wid, cx).0[i].clone()
 }
 
 /// The Privacy section.
@@ -49,14 +48,15 @@ pub fn section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
         .read(cx)
         .0
         .clone();
-    compare::set_heading(heading.clone(), cx);
+    let wid = window.window_handle().window_id();
+    compare::set_heading(wid, heading.clone(), cx);
     if let Some(client) = &ctx.client {
         client.trust().start();
     }
     let density = Density::Regular;
     let contacts = ctx.state.trust.contacts.clone();
     let n = contacts.len();
-    let handles: Vec<gpui::FocusHandle> = (0..n).map(|i| compare_handle(i, cx)).collect();
+    let handles: Vec<gpui::FocusHandle> = (0..n).map(|i| compare_handle(wid, i, cx)).collect();
     let rows = contacts.into_iter().enumerate().map(|(i, record)| {
         let handle = handles[i].clone();
         let row = privacy_row(&record);
@@ -64,8 +64,13 @@ pub fn section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
         let mut control = div().flex().flex_col().gap(density.row_gap()).min_w_0();
         let open_compare = {
             let (record, client) = (record.clone(), ctx.client.clone());
-            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
-                compare::open(&record, client.clone(), cx);
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                compare::open(
+                    window.window_handle().window_id(),
+                    &record,
+                    client.clone(),
+                    cx,
+                );
             }
         };
         if let Some(copy) = row.changed {

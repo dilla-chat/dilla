@@ -17,7 +17,7 @@ use dilla_client::state::trust::{
 };
 use dilla_client::state::{AppState, UserId};
 use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, FocusHandle, Global, IntoElement, Window,
+    AnyElement, App, AppContext as _, ClipboardItem, FocusHandle, IntoElement, Window, WindowId,
 };
 
 use dilla_desktop_ui::components::dialog::Dialog;
@@ -27,6 +27,8 @@ use dilla_desktop_ui::components::{Button, ButtonSize, ButtonVariant};
 use crate::strings::{t, tf};
 
 /// What the open comparison holds. One per app: one dialog at a time.
+/// One window's comparison (final review sweep: per window, so a comparison opened in one window never shows in
+/// another, or approves on another window's client).
 #[derive(Default)]
 pub struct CompareModel {
     pub open: bool,
@@ -49,8 +51,6 @@ pub struct CompareModel {
     pub heading: Option<FocusHandle>,
 }
 
-impl Global for CompareModel {}
-
 impl CompareModel {
     fn comparison(&self) -> String {
         format!(
@@ -65,39 +65,39 @@ impl CompareModel {
     }
 }
 
-fn model(cx: &mut App) -> &mut CompareModel {
-    if !cx.has_global::<CompareModel>() {
-        cx.set_global(CompareModel::default());
-    }
-    cx.global_mut::<CompareModel>()
+fn model(wid: WindowId, cx: &mut App) -> &mut CompareModel {
+    crate::per_window::get_mut::<CompareModel>(wid, cx)
 }
 
-/// Remembers the Privacy heading's focus handle (the section calls this as it draws).
-pub fn set_heading(heading: FocusHandle, cx: &mut App) {
-    model(cx).heading = Some(heading);
+/// Window `wid`'s comparison, as the tests and the dialog read it.
+pub fn model_in(wid: WindowId, cx: &mut App) -> &mut CompareModel {
+    model(wid, cx)
 }
 
-/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): its comparison closes.
+/// Remembers the Privacy heading's focus handle of window `wid` (the section calls this as it draws).
+pub fn set_heading(wid: WindowId, heading: FocusHandle, cx: &mut App) {
+    model(wid, cx).heading = Some(heading);
+}
+
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): every window's comparison of it closes.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
-    if !cx.has_global::<CompareModel>() {
-        return;
-    }
-    let m = model(cx);
-    if m.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)) {
-        let heading = m.heading.take();
-        *m = CompareModel {
-            heading,
-            ..CompareModel::default()
-        };
-    }
+    crate::per_window::each_mut::<CompareModel>(cx, |_, m| {
+        if m.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)) {
+            let heading = m.heading.take();
+            *m = CompareModel {
+                heading,
+                ..CompareModel::default()
+            };
+        }
+    });
 }
 
-/// Opens the comparison with `record` and asks the client for the number of its comparison key.
-pub fn open(record: &TrustSummary, client: Option<Rc<Client>>, cx: &mut App) {
+/// Opens window `wid`'s comparison with `record` and asks the client for the number of its comparison key.
+pub fn open(wid: WindowId, record: &TrustSummary, client: Option<Rc<Client>>, cx: &mut App) {
     let key = record.comparison_key().to_owned();
     let user = record.user_id;
-    let heading = model(cx).heading.take();
-    *model(cx) = CompareModel {
+    let heading = model(wid, cx).heading.take();
+    *model(wid, cx) = CompareModel {
         open: true,
         user: Some(user),
         approved_umk: Some(key.clone()),
@@ -114,7 +114,7 @@ pub fn open(record: &TrustSummary, client: Option<Rc<Client>>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = answer.await;
         cx.update(|cx| {
-            let m = model(cx);
+            let m = model(wid, cx);
             // A later comparison replaced this one: its answer is not this dialog's.
             if m.user != Some(user) || m.approved_umk.as_deref() != Some(key.as_str()) || !m.open {
                 return;
@@ -134,16 +134,16 @@ pub fn open(record: &TrustSummary, client: Option<Rc<Client>>, cx: &mut App) {
 }
 
 /// Copy: the twelve groups on the clipboard. It approves nothing and leaves the confirmation as it was.
-pub fn copy(cx: &mut App) {
-    let groups = model(cx).groups.join(" ");
+pub fn copy(wid: WindowId, cx: &mut App) {
+    let groups = model(wid, cx).groups.join(" ");
     if !groups.is_empty() {
         cx.write_to_clipboard(ClipboardItem::new_string(groups));
     }
 }
 
 /// The "all 12 blocks match" checkbox: confirms exactly the comparison shown, or takes the confirmation back.
-pub fn toggle_confirm(cx: &mut App) {
-    let m = model(cx);
+pub fn toggle_confirm(wid: WindowId, cx: &mut App) {
+    let m = model(wid, cx);
     m.confirmed_for = if m.confirmed() {
         None
     } else {
@@ -154,14 +154,14 @@ pub fn toggle_confirm(cx: &mut App) {
 
 /// Whether "All 12 blocks match" would approve now, against the trust slice of `state`: a verifiable contact whose
 /// comparison key is still the one shown, twelve groups, and the person's confirmation of exactly this comparison.
-pub fn permitted(state: &AppState, cx: &App) -> bool {
-    permitted_by(&state.trust, cx)
+pub fn permitted(state: &AppState, wid: WindowId, cx: &App) -> bool {
+    permitted_by(&state.trust, wid, cx)
 }
 
 /// [`permitted`] against the trust slice alone. A dialog that says the key moved approves nothing, whatever was
 /// confirmed.
-fn permitted_by(trust: &TrustState, cx: &App) -> bool {
-    let Some(m) = cx.try_global::<CompareModel>() else {
+fn permitted_by(trust: &TrustState, wid: WindowId, cx: &App) -> bool {
+    let Some(m) = crate::per_window::get::<CompareModel>(wid, cx) else {
         return false;
     };
     let Some(record) = m.user.and_then(|u| trust.contact(u)) else {
@@ -184,8 +184,8 @@ fn key_moved(code: &str) -> bool {
 }
 
 /// Closes the comparison (its Close, Escape, the scrim, or after an approval).
-pub fn close(cx: &mut App) {
-    let m = model(cx);
+pub fn close(wid: WindowId, cx: &mut App) {
+    let m = model(wid, cx);
     m.open = false;
     m.confirmed_for = None;
     m.qr_shown = false;
@@ -194,7 +194,8 @@ pub fn close(cx: &mut App) {
 }
 
 fn approve(window: &mut Window, cx: &mut App) {
-    let m = model(cx);
+    let wid = window.window_handle().window_id();
+    let m = model(wid, cx);
     let (Some(user), Some(key), Some(client)) = (m.user, m.approved_umk.clone(), m.client.clone())
     else {
         return;
@@ -209,12 +210,12 @@ fn approve(window: &mut Window, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = answer.await;
         let _ = cx.update_window(handle, |_, window, cx| {
-            let m = model(cx);
+            let m = model(wid, cx);
             m.busy = false;
             match result {
                 Ok(Ok(())) => {
                     let heading = m.heading.clone();
-                    close(cx);
+                    close(wid, cx);
                     if let Some(h) = heading {
                         window.defer(cx, move |window, cx| h.focus(window, cx));
                     }
@@ -251,10 +252,8 @@ fn dialog() -> Dialog {
 /// The comparison, drawn over the window (render it last in the window's root); `None` before one was ever opened. A
 /// closed one still draws its (empty) dialog for a frame, so the dialog returns focus to its opener.
 pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    if !cx.has_global::<CompareModel>() {
-        return None;
-    }
-    let m = cx.global::<CompareModel>();
+    let wid = window.window_handle().window_id();
+    let m = crate::per_window::get::<CompareModel>(wid, cx)?;
     let Some(user) = m.user.filter(|_| m.open) else {
         return Some(dialog().open(false).into_any_element());
     };
@@ -276,20 +275,20 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
     };
     let confirmed = m.confirmed();
     let qr_value = safety_qr_value(user, &m.groups);
-    let permitted = permitted(state, cx);
+    let permitted = permitted(state, wid, cx);
     let trust = state.trust.clone();
-    let m = cx.global::<CompareModel>();
+    let m = crate::per_window::get::<CompareModel>(wid, cx)?;
     let mut body = SafetyCompareBody::new(
         format!("{name} · {}", state_label(compare_state)),
         t("privacy.instructions"),
         (
             t("privacy.copy").into(),
-            |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| copy(cx),
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| copy(wid, cx),
         ),
         (
             t("privacy.confirm").into(),
             confirmed,
-            |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| toggle_confirm(cx),
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| toggle_confirm(wid, cx),
         ),
     )
     .groups(m.groups.clone())
@@ -298,11 +297,16 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
         body = body.first_seen(tf("privacy.firstSeen", &[("name", &name)]));
     }
     if let Some(key) = m.approved_umk.clone() {
-        body = body.details(t("privacy.keyDetails"), key, m.details_open, |_, _, cx| {
-            let m = model(cx);
-            m.details_open = !m.details_open;
-            cx.refresh_windows();
-        });
+        body = body.details(
+            t("privacy.keyDetails"),
+            key,
+            m.details_open,
+            move |_, _, cx| {
+                let m = model(wid, cx);
+                m.details_open = !m.details_open;
+                cx.refresh_windows();
+            },
+        );
     }
     if let Some(value) = qr_value {
         let shown = m.qr_shown;
@@ -313,8 +317,8 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
                 "privacy.showQr"
             }),
             shown,
-            |_, _, cx| {
-                let m = model(cx);
+            move |_, _, cx| {
+                let m = model(wid, cx);
                 m.qr_shown = !m.qr_shown;
                 cx.refresh_windows();
             },
@@ -326,7 +330,6 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
     if let Some(error) = error {
         body = body.error(t(error));
     }
-    let _ = window;
     Some(
         dialog()
             .open(true)
@@ -338,12 +341,12 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
                     .disabled(!permitted)
                     .on_click(move |_, window, cx| {
                         // Judged again at the click: the model may have moved since this frame was drawn.
-                        if permitted_by(&trust, cx) {
+                        if permitted_by(&trust, wid, cx) {
                             approve(window, cx);
                         }
                     }),
             )
-            .on_close(|_, cx| close(cx))
+            .on_close(move |_, cx| close(wid, cx))
             .into_any_element(),
     )
 }

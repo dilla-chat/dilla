@@ -99,6 +99,13 @@ pub fn sidebar(
             navigate(Nav::Dm(*id), window, cx);
         }
     })
-    .on_new(move |_, _, cx| picker::open(community, client.clone(), cx))
+    .on_new(move |_, window, cx| {
+        picker::open(
+            window.window_handle().window_id(),
+            community,
+            client.clone(),
+            cx,
+        )
+    })
     .into_any_element()
 }

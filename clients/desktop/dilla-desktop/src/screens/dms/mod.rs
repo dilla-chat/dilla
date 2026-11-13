@@ -79,6 +79,40 @@ mod tests {
 
     use super::*;
 
+    /// Final review sweep: the DM picker and the safety-number comparison opened in window A are A's: window B shows
+    /// neither, and B's close leaves A's open.
+    #[gpui::test]
+    fn the_dm_picker_and_the_comparison_stay_in_their_window(cx: &mut gpui::TestAppContext) {
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            picker::open(a, None, None, cx);
+            let record = dilla_client::state::trust::TrustSummary {
+                user_id: dilla_client::state::UserId([1; 16]),
+                name: "Ada".into(),
+                shared: true,
+                umk: "01".repeat(32),
+                first_seen: 1,
+                verified: false,
+                changed_umk: None,
+                unlisted: false,
+                removed_in: Vec::new(),
+                blocked: None,
+            };
+            compare::open(a, &record, None, cx);
+            assert!(picker::model_in(a, cx).open && compare::model_in(a, cx).open);
+            assert!(!picker::model_in(b, cx).open, "B shows no picker");
+            assert!(!compare::model_in(b, cx).open, "B shows no comparison");
+            picker::close(b, cx);
+            compare::close(b, cx);
+            assert!(picker::model_in(a, cx).open && compare::model_in(a, cx).open);
+        });
+    }
+
     /// Final review sweep: each window's shell installs its own navigation: a DM opened in window A moves A's shell,
     /// never B's (the last one drawn).
     #[gpui::test]
