@@ -58,12 +58,29 @@ pub fn provide(env: RingEnv, window: &Window, cx: &mut App) {
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the windows whose banner read it forget
 /// their environment (the next render of a host provides a new one).
 pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
-    cx.default_global::<Windows>().0.retain(|(_, env, _)| {
-        !env.ctx
-            .client
-            .as_ref()
-            .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
-    });
+    let gone: Vec<WindowId> = cx
+        .default_global::<Windows>()
+        .0
+        .iter()
+        .filter(|(_, env, _)| {
+            env.ctx
+                .client
+                .as_ref()
+                .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
+        })
+        .map(|(w, _, _)| *w)
+        .collect();
+    for w in gone {
+        window_closed(w, cx);
+    }
+}
+
+/// `window` closed or let go of its client: its banner's memory and its ring sound go at once (review M2).
+pub fn window_closed(window: WindowId, cx: &mut App) {
+    cx.default_global::<Windows>()
+        .0
+        .retain(|(w, _, _)| *w != window);
+    effects::window_gone(window, cx);
 }
 
 /// A ring's key: its call and the instance's expires_ts (Ring.tsx `key`).

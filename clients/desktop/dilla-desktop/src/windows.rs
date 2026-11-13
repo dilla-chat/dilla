@@ -440,6 +440,7 @@ pub fn release_all(cx: &mut App) {
 pub fn on_closed(cx: &mut App, id: WindowId) {
     crate::screens::voice::window_closed(id, cx);
     crate::screens::threads::window_closed(id, cx);
+    crate::screens::ring::window_closed(id, cx);
 }
 
 fn install_close_hook(cx: &mut App, launch: Launch, allow_loopback: bool) {

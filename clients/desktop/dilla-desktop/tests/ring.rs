@@ -700,3 +700,42 @@ fn answering_a_ring_opens_its_dm(cx: &mut TestAppContext) {
         dilla_desktop::router::Route::Dm(DM)
     );
 }
+
+/// Review M2: the ring sound belongs to the windows that ring: one window going (closed, or its client released) never
+/// silences another window's ring, and the last one going stops it at once.
+#[gpui::test]
+fn the_ring_sound_follows_the_windows_that_ring(cx: &mut TestAppContext) {
+    struct Blank;
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    install(cx);
+    let ringing = {
+        let mut s = AppState::default();
+        s.ring.rings.push(ring(DM, "Bob", false));
+        Arc::new(s)
+    };
+    let ctx = SlotCx {
+        state: ringing,
+        ..SlotCx::default()
+    };
+    let a = cx.add_window(|_, _| Blank);
+    let b = cx.add_window(|_, _| Blank);
+    for w in [a, b] {
+        let ctx = ctx.clone();
+        w.update(cx, |_, window, cx| effects::sync(&ctx, window, cx))
+            .unwrap();
+    }
+    assert!(cx.update(effects::sound_on));
+    let a_id = a.window_id();
+    let b_id = b.window_id();
+    cx.update(|cx| effects::window_gone(a_id, cx));
+    assert!(cx.update(effects::sound_on), "the other window still rings");
+    cx.update(|cx| effects::window_gone(b_id, cx));
+    assert!(
+        !cx.update(effects::sound_on),
+        "the last ringing window went: silent"
+    );
+}

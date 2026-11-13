@@ -38,6 +38,8 @@ pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
     let visible = window.is_window_active();
     let keys: HashSet<SharedString> = rings.iter().map(ring_key).collect();
     let effects = cx.default_global::<Effects>();
+    // One sound for every window that rings (review M2): it starts with the first and stops with the last.
+    let before = effects.0.iter().any(|(_, p, _)| *p);
     let at = match effects.0.iter().position(|(w, _, _)| *w == id) {
         Some(i) => i,
         None => {
@@ -46,8 +48,6 @@ pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
         }
     };
     let (_, playing, noted) = &mut effects.0[at];
-    let start = want_sound && !*playing;
-    let stop = !want_sound && *playing;
     *playing = want_sound;
     // Notifications: those of rings gone (or all, once the window is focused again) are closed; each new ring is decided
     // once.
@@ -68,6 +68,8 @@ pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
             }
         }
     }
+    let after = effects.0.iter().any(|(_, p, _)| *p);
+    let (start, stop) = (after && !before, before && !after);
     if start {
         start_ring(cx);
     }
@@ -79,6 +81,27 @@ pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
     }
     for r in raise {
         ring_notification(&r, ctx, cx);
+    }
+}
+
+/// Whether a ring sound plays now (some window rings audibly).
+pub fn sound_on(cx: &mut App) -> bool {
+    cx.try_global::<Effects>()
+        .is_some_and(|e| e.0.iter().any(|(_, p, _)| *p))
+}
+
+/// `window` no longer rings (it closed, or its client was released): its part goes at once, and the sound stops if no
+/// other window rings (review M2: it played on for up to 15 cycles, and one window's stop silenced another's ring).
+pub fn window_gone(window: WindowId, cx: &mut App) {
+    if !cx.has_global::<Effects>() {
+        return;
+    }
+    let effects = cx.global_mut::<Effects>();
+    let before = effects.0.iter().any(|(_, p, _)| *p);
+    effects.0.retain(|(w, _, _)| *w != window);
+    let after = effects.0.iter().any(|(_, p, _)| *p);
+    if before && !after {
+        stop_ring(cx);
     }
 }
 
