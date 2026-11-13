@@ -49,6 +49,13 @@ impl Script {
         f.payload[3].as_bytes().expect("a body").to_vec()
     }
 
+    /// The route (path and query) of the `n`th request frame written.
+    pub(crate) fn route(&self, n: usize) -> String {
+        let frames = self.frames.lock().unwrap();
+        let f = frames::decode(&frames[n]).expect("a request frame");
+        f.payload[2].as_text().expect("a route").to_owned()
+    }
+
     pub(crate) fn written(&self) -> usize {
         self.frames.lock().unwrap().len()
     }

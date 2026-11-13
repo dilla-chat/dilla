@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use dilla_client::calls::wire::{decode_call_started, decode_channel_call, decode_media_epoch};
 use dilla_client::calls::{
-    CallCore, CallPhase, CallRoutes, CallStarted, ChannelCall, CoreRefusal, GroupSummary,
-    JoinHooks, JoinTarget, REJOIN_STEP, REJOIN_WAIT, RouteError, join_call, leave_call,
-    media_epoch, rotate_call,
+    CallCatchUp, CallCore, CallPhase, CallRoutes, CallStarted, ChannelCall, CoreRefusal,
+    GroupSummary, HandshakePage, JoinHooks, JoinTarget, REJOIN_STEP, REJOIN_WAIT, RouteError,
+    join_call, leave_call, media_epoch, rotate_call,
 };
 use dilla_core::cbor::Encoder;
 use zeroize::Zeroizing;
@@ -224,6 +224,17 @@ fn err(status: u16, code: &str) -> RouteError {
     }
 }
 
+/// A catch-up that is never needed: these rotations are never refused for their epoch after a lost answer (the
+/// scripted-socket tests in `src/calls/tests.rs` cover that reconciliation).
+struct NoCatchUp;
+
+#[async_trait::async_trait]
+impl CallCatchUp for NoCatchUp {
+    async fn catch_up(&self, _group: &[u8; 16]) -> bool {
+        panic!("no catch-up expected")
+    }
+}
+
 #[derive(Default)]
 struct FakeRoutes {
     log: Mutex<Vec<String>>,
@@ -316,6 +327,15 @@ impl CallRoutes for FakeRoutes {
         self.log("post_commit".into());
         self.idems.lock().unwrap().push(idem);
         self.commit.lock().unwrap().pop_front().unwrap_or(Ok(10))
+    }
+    async fn get_handshakes(
+        &self,
+        _g: &[u8; 16],
+        from: u64,
+        _limit: u64,
+    ) -> Result<HandshakePage, RouteError> {
+        self.log(format!("get_handshakes {from}"));
+        Ok(HandshakePage::default())
     }
     async fn post_proposal(&self, _g: &[u8; 16], b: Vec<u8>) -> Result<u64, RouteError> {
         self.log(format!("post_proposal {}", String::from_utf8_lossy(&b)));
@@ -428,6 +448,9 @@ async fn a_gate_refusal_posts_nothing_and_is_a_block() {
         kind: 1,
         target_id: CHANNEL,
         state: 1,
+        epoch: 0,
+        next_seq: 0,
+        pending_commit: false,
     }];
     let routes = FakeRoutes::default();
     let refused = join_call(&core, &routes, &hooks(), &target())
@@ -551,13 +574,22 @@ async fn a_leave_ends_the_call_when_alone_then_proposes_its_remove_and_forgets()
 async fn a_rotation_is_confirmed_when_posted_and_aborted_when_refused() {
     let core = Mutex::new(FakeCore::default());
     let routes = FakeRoutes::default();
-    assert_eq!(rotate_call(&core, &routes, &GROUP).await.unwrap(), 10);
+    assert_eq!(
+        rotate_call(&core, &routes, &NoCatchUp, &GROUP)
+            .await
+            .unwrap(),
+        10
+    );
     routes
         .commit
         .lock()
         .unwrap()
         .push_back(Err(err(409, "E_COMMIT_CONFLICT")));
-    assert!(rotate_call(&core, &routes, &GROUP).await.is_err());
+    assert!(
+        rotate_call(&core, &routes, &NoCatchUp, &GROUP)
+            .await
+            .is_err()
+    );
     assert_eq!(
         core.lock().unwrap().log,
         ["rotate 44", "confirm 44", "rotate 44", "abort 44"]
@@ -584,7 +616,12 @@ async fn a_lost_rotation_answer_is_rewritten_with_its_key_and_confirmed() {
         .lock()
         .unwrap()
         .push_back(Err(outcome_unknown()));
-    assert_eq!(rotate_call(&core, &routes, &GROUP).await.unwrap(), 10);
+    assert_eq!(
+        rotate_call(&core, &routes, &NoCatchUp, &GROUP)
+            .await
+            .unwrap(),
+        10
+    );
     let idems = routes.idems.lock().unwrap().clone();
     assert_eq!(idems.len(), 2);
     assert_eq!(
@@ -594,7 +631,12 @@ async fn a_lost_rotation_answer_is_rewritten_with_its_key_and_confirmed() {
     assert_eq!(core.lock().unwrap().log, ["rotate 44", "confirm 44"]);
 
     // The next rotation succeeds, under a key of its own.
-    assert_eq!(rotate_call(&core, &routes, &GROUP).await.unwrap(), 10);
+    assert_eq!(
+        rotate_call(&core, &routes, &NoCatchUp, &GROUP)
+            .await
+            .unwrap(),
+        10
+    );
     let idems = routes.idems.lock().unwrap().clone();
     assert_ne!(idems[2], idems[0]);
     assert_eq!(
@@ -628,23 +670,42 @@ async fn an_unreconciled_rotation_is_aborted_within_the_bound() {
         .unwrap()
         .extend((0..ROTATE_WRITES).map(|_| Err(outcome_unknown())));
     let began = tokio::time::Instant::now();
-    let e = rotate_call(&core, &routes, &GROUP).await.unwrap_err();
+    let e = rotate_call(&core, &routes, &NoCatchUp, &GROUP)
+        .await
+        .unwrap_err();
     assert!(e.to_string().contains("E_OUTCOME_UNKNOWN"), "{e}");
     assert!(began.elapsed() < ROTATE_RECONCILE, "{:?}", began.elapsed());
     assert_eq!(routes.idems.lock().unwrap().len(), ROTATE_WRITES as usize);
     assert_eq!(core.lock().unwrap().log, ["rotate 44", "abort 44"]);
 
-    // A re-write refused (the commit lost its epoch's race) aborts at once.
+    // A re-write refused by a check that proves it was never applied (past the epoch check: the instance is still at
+    // the commit's epoch) aborts at once, with no catch-up and no read. The epoch's refusal (409 E_COMMIT_CONFLICT)
+    // is reconciled instead: src/calls/tests.rs.
     routes
         .commit
         .lock()
         .unwrap()
-        .extend([Err(outcome_unknown()), Err(err(409, "E_COMMIT_CONFLICT"))]);
-    assert!(rotate_call(&core, &routes, &GROUP).await.is_err());
+        .extend([Err(outcome_unknown()), Err(err(422, "E_COMMIT_INVALID"))]);
+    assert!(
+        rotate_call(&core, &routes, &NoCatchUp, &GROUP)
+            .await
+            .is_err()
+    );
     assert_eq!(core.lock().unwrap().log[2..], ["rotate 44", "abort 44"]);
+    assert!(
+        !routes
+            .posted()
+            .iter()
+            .any(|p| p.starts_with("get_handshakes"))
+    );
 
     // The next rotation succeeds.
-    assert_eq!(rotate_call(&core, &routes, &GROUP).await.unwrap(), 10);
+    assert_eq!(
+        rotate_call(&core, &routes, &NoCatchUp, &GROUP)
+            .await
+            .unwrap(),
+        10
+    );
     assert_eq!(core.lock().unwrap().log[4..], ["rotate 44", "confirm 44"]);
 }
 

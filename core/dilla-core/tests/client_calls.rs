@@ -498,3 +498,98 @@ fn an_old_key_refresh_of_the_same_list_keeps_a_pending_change_in_a_call() {
         .expect("verify the changed key");
     assert_eq!(pin_of(&alice, &bob.user), Some((new_key, 1, None)));
 }
+
+/// The rotation's seq in a `POST /commit` answer `[seq, epoch]`.
+fn seq_of_commit_answer(answer: &[u8]) -> u64 {
+    decode_strict(answer, |d| {
+        d.array(2)?;
+        let seq = d.uint()?;
+        d.uint()?;
+        Ok(seq)
+    })
+    .expect("[seq, epoch]")
+}
+
+/// A raw peer's media key of its current epoch.
+fn base_key_of(peer: &RawPeer) -> [u8; 16] {
+    *peer
+        .group
+        .as_ref()
+        .expect("joined")
+        .media_epoch(&peer.provider)
+        .expect("media epoch")
+        .base_key
+}
+
+/// Screens wave 1 Task 3b, the gap it closes (the recorded result): a rotation the instance applied
+/// while its answer was lost, then aborted by the client (the re-write after an instance restart is
+/// refused 409 `E_COMMIT_CONFLICT`, which the old `rotate_call` took as "not applied"). Catch-up then
+/// serves the client its own commit with no pending commit to match it against: the core cannot
+/// process it, marks the group 3 (needs resync) and stays at the old epoch with its cursor before the
+/// commit. No fork and no wedge (the engine resyncs a state-3 group by external commit), but the call
+/// loses its keys until that rejoin: a degraded path `rotate_call` must not take.
+#[test]
+fn an_aborted_rotation_the_instance_applied_needs_a_resync() {
+    let (mut call, mut alice, mut bob, _) = call_raw_bob();
+    let rotation = alice.core.call_rotate(&CALL).expect("rotate");
+    let seq = seq_of_commit_answer(&call.commit(&rotation).expect("the DS applies it"));
+    bob.apply_commit(&call, seq);
+    alice.core.commit_abort(&CALL).expect("abort");
+    let applied = alice.sync(&call);
+    assert_eq!((applied.state, applied.epoch), (3, 1));
+    let row = alice.group(&CALL).unwrap();
+    assert_eq!(
+        (row.state, row.epoch, row.next_seq, row.pending_commit),
+        (3, 1, seq, 0)
+    );
+    assert_eq!(code(alice.core.call_media_epoch(&CALL)), "E_CORE_STATE");
+    assert_eq!(
+        code(alice.try_sync(&call)),
+        "E_CORE_STATE",
+        "nothing more is applied"
+    );
+}
+
+/// The reconciliation Task 3b's `rotate_call` relies on: with the pending rotation KEPT, catch-up
+/// decides. Its own commit is adopted as the pending commit (confirmed at the new epoch, with the
+/// peer's media key); another member's commit at that epoch clears the pending one and is applied,
+/// and the next rotation builds from the new epoch.
+#[test]
+fn a_kept_rotation_is_settled_by_catch_up_whichever_commit_won() {
+    let (mut call, mut alice, mut bob, _) = call_raw_bob();
+    let rotation = alice.core.call_rotate(&CALL).expect("rotate");
+    let seq = seq_of_commit_answer(&call.commit(&rotation).expect("the DS applies it"));
+    bob.apply_commit(&call, seq);
+    let applied = alice.sync(&call);
+    assert_eq!((applied.state, applied.epoch), (2, 2));
+    let row = alice.group(&CALL).unwrap();
+    assert_eq!(
+        (row.epoch, row.next_seq, row.pending_commit),
+        (2, seq + 1, 0)
+    );
+    let media = decode_media_epoch(&alice.core.call_media_epoch(&CALL).expect("keys"));
+    assert_eq!(media.epoch, 2);
+    assert_eq!(
+        media.base_key,
+        base_key_of(&bob),
+        "the peer's key of epoch 2"
+    );
+
+    // Bob's commit wins epoch 2 while Alice's rotation of epoch 2 is pending (never applied).
+    let _lost = alice.core.call_rotate(&CALL).expect("rotate");
+    bob.self_update(&mut call);
+    let applied = alice.sync(&call);
+    assert_eq!((applied.state, applied.epoch), (2, 3));
+    assert_eq!(alice.group(&CALL).unwrap().pending_commit, 0);
+    let media = decode_media_epoch(&alice.core.call_media_epoch(&CALL).expect("keys"));
+    assert_eq!(
+        media.base_key,
+        base_key_of(&bob),
+        "the peer's key of epoch 3"
+    );
+    let next = alice
+        .core
+        .call_rotate(&CALL)
+        .expect("the next rotation builds");
+    call.commit(&next).expect("from epoch 3");
+}

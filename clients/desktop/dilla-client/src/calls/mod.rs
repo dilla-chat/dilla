@@ -30,7 +30,7 @@ use crate::sync::requests::SocketHttp;
 pub use controller::{Left, RotateError, decline_ring, leave_call, media_epoch, rotate_call};
 pub use join::{JoinHooks, JoinRefused, JoinTarget, Joined, REJOIN_STEP, REJOIN_WAIT, join_call};
 pub use session::{CallJoin, CallTarget, Calls, NoHttp, SocketCallRoutes};
-pub use wire::{CallParticipant, CallStarted, ChannelCall, GroupSummary};
+pub use wire::{CallParticipant, CallStarted, ChannelCall, GroupSummary, HandshakePage};
 
 /// Where a call of this device stands, as the join reports it ([`JoinHooks::phase`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -277,12 +277,31 @@ pub trait CallRoutes: Send + Sync {
     ) -> Result<u64, RouteError>;
     /// `POST /v1/groups/{id}/proposal`: the proposal's `seq`.
     async fn post_proposal(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError>;
+    /// `GET /v1/groups/{id}/handshakes?from=&limit=`: one page of handshake rows, decoded as a
+    /// rotation's reconciliation reads it.
+    async fn get_handshakes(
+        &self,
+        group: &[u8; 16],
+        from: u64,
+        limit: u64,
+    ) -> Result<wire::HandshakePage, RouteError>;
     /// L-HTTP-102 `POST /v1/channels/{id}/calls`.
     async fn start_call(&self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, RouteError>;
     /// `DELETE /v1/calls/{id}?if_alone=1`: true when the call ended, false when others are in it.
     async fn end_call_if_alone(&self, call: &[u8; 16]) -> Result<bool, RouteError>;
     /// L-HTTP-104 `POST /v1/calls/{id}/decline` with the ring's `expires_ts`.
     async fn decline_call(&self, call: &[u8; 16], ring_ts: u64) -> Result<(), RouteError>;
+}
+
+/// The sync engine's catch-up of one group, as a rotation's reconciliation uses it
+/// ([`controller::rotate_call`]).
+#[async_trait::async_trait]
+pub trait CallCatchUp: Send + Sync {
+    /// Reads the group from this device's cursor to the instance's end and applies it (the sync
+    /// engine's catch-up): a pending commit of this device is adopted as its own when it arrives
+    /// (confirmed), and another member's commit of that epoch clears it. True when the read reached
+    /// the instance's end with the group still active.
+    async fn catch_up(&self, group: &[u8; 16]) -> bool;
 }
 
 /// [`CallRoutes`] over the client's gateway socket ([`SocketHttp`]: every call route is a socket
@@ -333,6 +352,22 @@ impl<H: Http> CallRoutes for HttpRoutes<SocketHttp<H>> {
             .call_with_idem::<PostCommit>(&[&hex(group)], Raw(body), Some(idem))
             .await?;
         wire::decode_seq(&raw.0, 0)
+    }
+    async fn get_handshakes(
+        &self,
+        group: &[u8; 16],
+        from: u64,
+        limit: u64,
+    ) -> Result<wire::HandshakePage, RouteError> {
+        use crate::http::routes::{GetHandshakes, NoBody};
+        let raw = self
+            .0
+            .call::<GetHandshakes>(
+                &[&hex(group), &from.to_string(), &limit.to_string()],
+                NoBody,
+            )
+            .await?;
+        wire::decode_handshake_page(&raw.0)
     }
     async fn post_proposal(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError> {
         use crate::http::routes::{PostProposal, Raw};

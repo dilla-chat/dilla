@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::wire::decode_media_epoch;
-use super::{CallCore, CallRoutes, CoreRefusal, MediaEpoch, RouteError, lock};
+use super::wire::{GroupSummary, decode_commit_body, decode_media_epoch};
+use super::{CallCatchUp, CallCore, CallRoutes, CoreRefusal, MediaEpoch, RouteError, lock};
 
 /// The call group's current epoch keys through the core's call gate (`call_media_epoch`): a
 /// refusal (`E_DEVICE_UNLISTED`, `E_UMK_CHANGED`, `E_DEVICE_LIST_STALE`, ...) derives no key. The
@@ -72,13 +72,32 @@ pub enum RotateError {
 /// lost answers.
 pub const ROTATE_WRITES: u32 = 3;
 /// The bound on reconciling a rotation whose answer was lost, from the first loss: past it the
-/// pending commit is aborted. Well inside the instance's 5-minute replay record.
+/// pending commit is aborted. Well inside the instance's 5-minute replay record. The read and the
+/// catch-up after a re-write refused for its epoch ([`rotate_call`]) have bounds of this length of
+/// their own.
 pub const ROTATE_RECONCILE: Duration = Duration::from_secs(60);
 /// The first wait before a re-write; it doubles.
 const ROTATE_BACKOFF: Duration = Duration::from_secs(1);
+/// The handshake rows one read of the reconciliation asks for, and the most pages it reads.
+pub const RECONCILE_PAGE: u64 = 100;
+const RECONCILE_PAGES: u32 = 50;
 
 fn is_outcome_unknown(e: &RouteError) -> bool {
     e.code.as_deref() == Some("E_OUTCOME_UNKNOWN")
+}
+
+/// The DS's one-commit-per-epoch refusal (`commitPreflight` step 2): the instance's epoch has moved
+/// past the one the commit was built for, so SOME commit took that epoch. After a lost answer that
+/// commit may be this one: the instance applied the first write, and the re-write ran the handler
+/// again because the replay record was gone (an instance restart, or a first write minutes old).
+fn is_epoch_taken(e: &RouteError) -> bool {
+    e.is(409, "E_COMMIT_CONFLICT")
+}
+
+/// This device's row of the group.
+fn row_of<C: CallCore>(core: &Mutex<C>, group: &[u8; 16]) -> Option<GroupSummary> {
+    let rows = lock(core).ok()?.groups().ok()?;
+    rows.into_iter().find(|r| r.group_id == *group)
 }
 
 /// The hourly rotation (controller.ts `rotate`): an empty commit with a fresh leaf secret. A
@@ -86,15 +105,27 @@ fn is_outcome_unknown(e: &RouteError) -> bool {
 /// the new epoch's keys ([`media_epoch`]). Must not run once a leave has started.
 ///
 /// A write whose answer was lost (`E_OUTCOME_UNKNOWN`: the instance may or may not have applied
-/// it) is reconciled, never left pending (a pending commit blocks every later one of the group): the
-/// same commit is written again with the same idempotency key, so the instance's replay record
-/// answers with the first write's outcome (applied: its seq) or applies it now; either way it is
-/// confirmed. At most [`ROTATE_WRITES`] writes, backed off, within [`ROTATE_RECONCILE`] of the first
-/// loss; past that, or on any refusal, the pending commit is aborted. controller.ts aborts at once
-/// on any failure.
-pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized>(
+/// it) is reconciled, never left pending blindly (a pending commit blocks every later one of the
+/// group): the same commit is written again with the same idempotency key, so the instance's replay
+/// record answers with the first write's outcome (applied: its seq) or applies it now; either way it
+/// is confirmed. At most [`ROTATE_WRITES`] writes, backed off, within [`ROTATE_RECONCILE`] of the
+/// first loss; past that the pending commit is aborted.
+///
+/// A re-write refused 409 `E_COMMIT_CONFLICT` is NOT proof that the commit was not applied: when the
+/// replay record is gone (an instance restart, or a first write minutes old: exactly when requests
+/// raise `E_OUTCOME_UNKNOWN`) the handler runs again and refuses the epoch the first write took.
+/// Aborting then would leave the instance holding a commit the core has dropped: the core cannot
+/// process its own commit when it arrives and the group needs a resync (dilla-core's
+/// `an_aborted_rotation_the_instance_applied_needs_a_resync`). So the pending commit is kept and the
+/// group is caught up from its cursor ([`CallCatchUp`]), which settles it ([`reconcile`]). Any
+/// other refusal of a re-write aborts at once, as controller.ts does on any failure: the DS's later
+/// checks run only once the epoch check passed (the instance is still at the commit's epoch, so it
+/// never applied it), and its earlier ones find the group gone or this device without a current
+/// leaf in it (nothing left to rotate).
+pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>(
     core: &Mutex<C>,
     routes: &R,
+    sync: &S,
     group: &[u8; 16],
 ) -> Result<u64, RotateError> {
     let mut idem = [0u8; 16];
@@ -106,6 +137,9 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized>(
         }
         .into());
     }
+    // The cursor before the commit is built: every commit of the group before it is applied, so the
+    // first commit the instance holds at or after it is the one that takes this commit's epoch.
+    let cursor = row_of(core, group).map(|r| r.next_seq);
     let body = lock(core)?.call_rotate(group)?;
     let abort = |e: RouteError| {
         let _ = lock(core).map(|mut c| c.commit_abort(group));
@@ -144,10 +178,102 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized>(
                 tokio::time::sleep(backoff).await;
                 backoff *= 2;
             }
+            Err(e) if lost_at.is_some() && is_epoch_taken(&e) => {
+                return reconcile(core, routes, sync, group, &body, cursor, e).await;
+            }
             Err(e) => return abort(e),
         }
     }
     unreachable!("the last write returns")
+}
+
+/// The first commit the instance holds at or after `from` (its seq and blob), read page by page;
+/// `None` when it holds none.
+async fn commit_that_took<R: CallRoutes + ?Sized>(
+    routes: &R,
+    group: &[u8; 16],
+    mut from: u64,
+) -> Result<Option<(u64, Vec<u8>)>, RouteError> {
+    for _ in 0..RECONCILE_PAGES {
+        let page = routes.get_handshakes(group, from, RECONCILE_PAGE).await?;
+        if page.first_commit.is_some() {
+            return Ok(page.first_commit);
+        }
+        match page.last {
+            Some(last) if page.rows as u64 >= RECONCILE_PAGE => from = last + 1,
+            _ => return Ok(None),
+        }
+    }
+    Err(RouteError {
+        status: None,
+        code: Some("E_OUTCOME_UNKNOWN".into()),
+        detail: "no commit within the pages read".into(),
+    })
+}
+
+/// A rotation whose re-write after a lost answer was refused for its epoch ([`is_epoch_taken`]).
+/// The pending commit is kept, the instance's handshakes from the cursor the commit was built at say
+/// whose commit took the epoch, and the group's catch-up settles the core:
+///
+/// - this commit: the catch-up adopts it as the pending commit (or, when the catch-up did not reach
+///   it, it is confirmed: the instance holds it), and the rotation is done at its seq;
+/// - another member's commit: the catch-up applies it, which clears the pending one (or, when the
+///   catch-up did not reach it, the pending commit is aborted: its epoch is taken), and the refusal
+///   is the answer;
+/// - no commit after the cursor: the instance never applied this one, and it is aborted.
+///
+/// When that read fails, the catch-up alone settles it, and the refusal is the answer. A pending
+/// commit the catch-up left too (its read failed as well) stays pending: the refusal proved that a
+/// commit took the epoch, so the engine's next catch-up adopts or clears it; the answer is then
+/// `E_OUTCOME_UNKNOWN`. A group the catch-up left inactive (lost, or needing a resync) has nothing
+/// to rotate: a pending commit of it is aborted.
+async fn reconcile<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>(
+    core: &Mutex<C>,
+    routes: &R,
+    sync: &S,
+    group: &[u8; 16],
+    body: &[u8],
+    cursor: Option<u64>,
+    refused: RouteError,
+) -> Result<u64, RotateError> {
+    let commit = decode_commit_body(body).ok().map(|(_, commit)| commit);
+    let took = match (cursor, commit) {
+        (Some(from), Some(commit)) => {
+            tokio::time::timeout(ROTATE_RECONCILE, commit_that_took(routes, group, from))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|took| took.map(|(seq, blob)| (seq, blob == commit)))
+        }
+        _ => None,
+    };
+    let _ = tokio::time::timeout(ROTATE_RECONCILE, sync.catch_up(group)).await;
+    let row = row_of(core, group);
+    let active = row.as_ref().is_some_and(|r| r.state == 2);
+    let pending = row.as_ref().is_some_and(|r| r.pending_commit);
+    let abort = || {
+        let _ = lock(core).map(|mut c| c.commit_abort(group));
+    };
+    match took {
+        Some(Some((seq, true))) if active => {
+            if pending {
+                lock(core)?.commit_confirm(group)?;
+            }
+            Ok(seq)
+        }
+        None if pending && active => Err(RouteError {
+            status: None,
+            code: Some("E_OUTCOME_UNKNOWN".into()),
+            detail: "the rotation's epoch was taken; the next catch-up settles it".into(),
+        }
+        .into()),
+        _ => {
+            if pending {
+                abort();
+            }
+            Err(refused.into())
+        }
+    }
 }
 
 /// Declines a ring (ring.ts): the body echoes the ring's `expires_ts`, so a late decline never stops
