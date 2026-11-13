@@ -549,6 +549,7 @@ mod tests {
             closed_for: Some("/".into()),
             rows: None,
             picked: None,
+            chips: None,
         };
         // draft_changed's rule, applied without an App.
         let next = "/r";
