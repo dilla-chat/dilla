@@ -19,7 +19,7 @@ use crate::router::{Route, ServerSection, UserSection};
 use crate::screens::shell::Clock;
 use crate::screens::{
     attachments, bot_admin, commands, diagnostics, dms, factor, members, messages, notify,
-    reactions, ring, search, server_settings, threads, user_settings, voice, voice_settings,
+    reactions, search, server_settings, threads, user_settings, voice, voice_settings,
 };
 
 /// What a slot's guests may read about the view they draw in. Cheap to clone.
@@ -212,9 +212,10 @@ pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyEleme
     out
 }
 
-/// The non-modal surfaces over the shell, after [`overlays`]: the ring banner (18). They never block Ctrl+K.
-pub fn non_modal_overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
-    ring::ring_banner(window, cx).into_iter().collect()
+/// What takes over the main column for `channel` in place of its header, log and composer: a voice channel's stage
+/// (17). `None` for a conversation.
+pub fn main_takeover(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    voice::stage(channel, window, cx)
 }
 
 /// Over the main column: the offline link banner and the version refusal (24), then the conversation's trust surfaces (13).

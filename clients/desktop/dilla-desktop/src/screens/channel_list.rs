@@ -54,6 +54,8 @@ mod css {
     pub const HAIRLINE_W: f32 = 1.0;
     /// A voice channel's item is 30px: its 28px button 1px in (VoiceChannelRow.css).
     pub const VOICE_PAD: f32 = 1.0;
+    /// `.d-voice-row__join`: the join icon over the row's slot, 0.5rem from the right edge.
+    pub const JOIN_RIGHT: f32 = 8.0;
 }
 
 /// What the sidebar shows.
@@ -268,6 +270,7 @@ fn row(
     active: bool,
     badge: (u32, u32),
     muted: bool,
+    voice: (usize, bool),
     handlers: &ListHandlers,
     window: &mut Window,
     cx: &mut App,
@@ -276,6 +279,7 @@ fn row(
     let on_select = handlers.on_select.clone();
     let on_click = handlers.on_select.clone();
     let row = Row::new(row_id(&c.name), c.name.clone(), kind_of(c))
+        .voice(voice.0, voice.1)
         .active(active)
         .unread(badge.0)
         .unread_label(tf(
@@ -312,11 +316,37 @@ fn row(
         probe_id("focus-channel", &c.name),
         &focus,
     ));
-    let item = div()
+    let group = SharedString::from(format!("voice-item-{}", c.id.hex()));
+    let mut item = div()
         .relative()
+        .group(group.clone())
         .mt(layout::LIST_GAP)
-        .child(wrapper)
-        .child(crate::slots::channel_row_extras(c, window, cx));
+        .child(wrapper);
+    // A voice row the device is not in offers its join icon over the row's slot while hovered (VoiceChannelRow.css
+    // `.d-voice-row__join`); its click joins (17) and never opens the row.
+    if c.kind == 1 && !voice.1 {
+        item = item.child(
+            div()
+                .absolute()
+                .top_0()
+                .right(Pixels::from(css::JOIN_RIGHT))
+                .h(layout::ROW)
+                .flex()
+                .items_center()
+                .invisible()
+                .group_hover(group, |s| s.visible())
+                .child(
+                    dilla_desktop_ui::components::icon_button::IconButton::new(
+                        SharedString::from(format!("voice-join-{}", c.name)),
+                        IconName::Phone,
+                        crate::strings::t("voice.join"),
+                    )
+                    .size(dilla_desktop_ui::components::icon_button::IconButtonSize::S28)
+                    .on_click(move |_, _, cx| crate::screens::voice::join(id, cx)),
+                ),
+        );
+    }
+    let item = item.child(crate::slots::channel_row_extras(c, window, cx));
     #[cfg(feature = "automation")]
     let item = item.child(crate::automation::bounds_probe(probe_id(
         "channel", &c.name,
@@ -569,6 +599,10 @@ pub fn render(
                 model.selected == Some(ch.id),
                 notify::row_counts(state, model.settings, ch.id),
                 notify::is_muted(model.settings, ch.id, Some(ch.community_id)),
+                (
+                    crate::screens::voice::count(state, ch.id),
+                    crate::screens::voice::joined(state, ch.id),
+                ),
                 handlers,
                 window,
                 cx,

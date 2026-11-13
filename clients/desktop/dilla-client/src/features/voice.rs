@@ -22,8 +22,9 @@ use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 use zeroize::Zeroizing;
 
-use crate::calls::{CallPhase, CallTarget, Calls, MediaEpoch};
+use crate::calls::{CallPhase, Calls, MediaEpoch};
 use crate::client::{Client, ClientError, Inner};
+use crate::features::ring::{GatedJoin, Ring};
 use crate::gateway::frames::{Frame, Op, Value, voice_state_of};
 use crate::seams::Http;
 use crate::state::voice::{LocalShare, OwnCall, VoiceNotice, VoiceParticipant};
@@ -494,7 +495,7 @@ impl Voice {
                 .channel(channel)
                 .map(|c| c.community_id)
                 .ok_or(ClientError::UnknownChannel)?;
-            this.join_inner(channel, Some(community)).await
+            this.join_inner(channel, Some(community), None).await
         })
     }
 
@@ -502,16 +503,39 @@ impl Voice {
     pub fn join_dm(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
         self.inner
-            .spawn(async move { this.join_inner(channel, None).await })
+            .spawn(async move { this.join_inner(channel, None, None).await })
+    }
+
+    /// Takes over a join the ring area's gate already let through (Task 18: an answered ring, `effects::hand_to_voice`):
+    /// this device follows it as its own call, as [`Voice::join`] does (the phases, then the media, the dock and the
+    /// stage).
+    pub fn join_gated(
+        &self,
+        channel: ChannelId,
+        community: Option<CommunityId>,
+        join: GatedJoin,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        let this = self.clone();
+        self.inner
+            .spawn(async move { this.join_inner(channel, community, Some(join)).await })
+    }
+
+    /// The ring area's handle on this client (Task 18): every join goes through its gate, a mid-call block is recorded
+    /// with it.
+    fn ring(&self) -> Ring {
+        Ring::of(self.inner.clone(), self.calls.clone())
     }
 
     async fn join_inner(
         &self,
         channel: ChannelId,
         community: Option<CommunityId>,
+        given: Option<GatedJoin>,
     ) -> Result<(), ClientError> {
         let snap = self.inner.snapshot();
         if snap.voice.call.channel == Some(channel) && snap.voice.in_call() {
+            // Already in it: a handed-over join is dropped, which cancels it.
+            drop(given);
             return Ok(());
         }
         if snap.voice.in_call() {
@@ -534,11 +558,34 @@ impl Voice {
                 ..OwnCall::default()
             };
         });
-        let join = self.calls.join(CallTarget {
-            channel: channel.0,
-            community: community.map(|c| c.0),
-            vdec: String::new(),
-        });
+        let refused = |code: String| {
+            self.inner.publish(move |s| {
+                if s.voice.call.channel == Some(channel) {
+                    s.voice.call = OwnCall {
+                        error: Some(code),
+                        ..OwnCall::default()
+                    };
+                }
+            });
+        };
+        // Every join goes through the ring area's gate (Task 18, decision 4): a DM whose text group is send-blocked is
+        // refused before anything reaches the instance (its block published for the stage), and the outcome ends a ring
+        // of the channel. An answered ring hands its join over already gated.
+        let join = match given {
+            Some(join) => join,
+            None => match self.ring().join(channel, community, String::new()).await {
+                Ok(Ok(Ok(join))) => join,
+                Ok(Ok(Err(block))) => {
+                    refused(block.code.clone());
+                    return Err(ClientError::Sync(block.code));
+                }
+                Ok(Err(e)) => {
+                    refused(e.to_string());
+                    return Err(e);
+                }
+                Err(_) => return Err(ClientError::Stopped),
+            },
+        };
         let mut phase = join.phase();
         let publish_phase = {
             let inner = self.inner.clone();
@@ -571,16 +618,6 @@ impl Voice {
                 r.joining = None;
             }
         }
-        let refused = |code: String| {
-            self.inner.publish(move |s| {
-                if s.voice.call.channel == Some(channel) {
-                    s.voice.call = OwnCall {
-                        error: Some(code),
-                        ..OwnCall::default()
-                    };
-                }
-            });
-        };
         let joined = match outcome {
             // Left (or another join) while joining: dropping the join cancelled it.
             None => return Err(ClientError::Sync("E_CANCELLED".into())),
@@ -703,6 +740,28 @@ impl Voice {
                             epochs.send_replace(None);
                         }
                         let code = e.code;
+                        // controller.ts `rekey`: a changed identity (E_UMK_CHANGED) pauses this device, which stays in the
+                        // call; any other trust block (unlisted, revoked, credential, tier, binding) blocks the call and
+                        // the device leaves, the block recorded for the stage's notice (Task 18, RV-3).
+                        if code != "E_UMK_CHANGED" && crate::calls::join::is_trust_block(&code) {
+                            let participants: Vec<UserId> = this
+                                .inner
+                                .snapshot()
+                                .voice
+                                .participants(live.channel)
+                                .iter()
+                                .map(|p| p.user_id)
+                                .collect();
+                            let recorded = this.ring().record_block(
+                                live.channel,
+                                code,
+                                crate::state::ring::BlockWhen::Left,
+                                participants,
+                            );
+                            let _ = recorded.await;
+                            let _ = this.leave_inner().await;
+                            return Ok(());
+                        }
                         this.inner.publish(move |s| {
                             if s.voice.call.group_id == Some(live.group_id) {
                                 s.voice.call.error = Some(code);

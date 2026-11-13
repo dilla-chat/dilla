@@ -239,12 +239,25 @@ async fn watch_loop(inner: Arc<Inner>, mut state: watch::Receiver<Arc<AppState>>
     let mut last_poll = tokio::time::Instant::now();
     loop {
         let mut polled = false;
+        let mut trust_moved = false;
         let step = area.lock().await.poll_step;
         let due = last_poll + super::dms::poll_interval(step);
         tokio::select! {
             changed = state.changed() => if changed.is_err() { return },
-            _ = revisions.changed() => last_print = None,
+            _ = revisions.changed() => {
+                last_print = None;
+                trust_moved = true;
+            }
             _ = tokio::time::sleep_until(due) => polled = true,
+        }
+        // A trust pass changed what the trust slice shows: the rings and the call block are checked again (Task 18's
+        // onSendBlocks, m8), without a pass of their own.
+        if trust_moved {
+            let checked = inner.clone();
+            inner.spawn(async move {
+                super::ring::recheck_blocks(&checked).await;
+                Ok(())
+            });
         }
         // Coalesce a burst of snapshots.
         tokio::time::sleep(Duration::from_millis(30)).await;

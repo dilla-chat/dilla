@@ -226,6 +226,8 @@ impl ShellView {
             _subscriptions: vec![sent],
         };
         this.settle_selection(cx);
+        // The voice area's hooks read this state and client (17).
+        crate::screens::voice::sync(this.state.clone(), this.client.as_ref(), cx);
         let route = this.current_route();
         this.history = History::new(route);
         this.log.scroll_to_bottom();
@@ -255,6 +257,7 @@ impl ShellView {
             state.timelines.get(&c).map(|t| t.items.len())
                 != self.state.timelines.get(&c).map(|t| t.items.len())
         });
+        crate::screens::voice::sync(state.clone(), self.client.as_ref(), cx);
         self.state = state;
         self.settle_selection(cx);
         if grew {
@@ -731,18 +734,31 @@ impl ShellView {
 
     // ---- the user panel ---------------------------------------------------------------------------------------
 
+    /// The panel's mute and deafen as drawn: the voice slice's own (17) with a client, else the buttons' last press.
+    fn mic_and_deaf(&self) -> (bool, bool) {
+        if self.client.is_some() {
+            let v = &self.state.voice;
+            (v.self_mute || v.self_deaf, v.self_deaf)
+        } else {
+            (self.mic_off, self.deaf)
+        }
+    }
+
     fn set_mic(&mut self, cx: &mut Context<Self>) {
-        self.mic_off = !self.mic_off;
+        let (muted, _) = self.mic_and_deaf();
+        self.mic_off = !muted;
         if let Some(client) = &self.client {
-            client.voice().set_muted(self.mic_off);
+            // session.ts `setMuted`: unmuting a deafened device undeafens it too.
+            client.voice().set_muted(!muted);
         }
         cx.notify();
     }
 
     fn set_deaf(&mut self, cx: &mut Context<Self>) {
-        self.deaf = !self.deaf;
+        let (_, deafened) = self.mic_and_deaf();
+        self.deaf = !deafened;
         if let Some(client) = &self.client {
-            client.voice().set_deafened(self.deaf);
+            client.voice().set_deafened(!deafened);
         }
         cx.notify();
     }
@@ -923,7 +939,15 @@ impl Render for ShellView {
                     community: self.community,
                     selected: self.channel,
                     online,
-                    in_voice: 0,
+                    // People in the server's voice calls (17).
+                    in_voice: self.community.map_or(0, |community| {
+                        state
+                            .channels
+                            .iter()
+                            .filter(|c| c.community_id == community && c.kind == 1)
+                            .map(|c| crate::screens::voice::count(&state, c.id))
+                            .sum()
+                    }),
                     can_add: owner && !has_categories,
                     can_add_in_category: owner && has_categories,
                     collapsed: &self.collapsed,
@@ -937,12 +961,13 @@ impl Render for ShellView {
         };
 
         let (w_mic, w_deaf) = (shell.clone(), shell.clone());
+        let (muted, deafened) = self.mic_and_deaf();
         let panel = user_panel::render(
             &user_panel::PanelModel {
                 name: &me,
                 status,
-                muted: self.mic_off,
-                deafened: self.deaf,
+                muted,
+                deafened,
             },
             &user_panel::PanelHandlers {
                 on_mute: Rc::new(move |_, cx| {
@@ -1061,8 +1086,16 @@ impl Render for ShellView {
         }
         // The open palette is one of these too; a second Ctrl+K over it is ignored either way.
         self.overlay_open = !overlays.is_empty();
-        // A non-modal surface (the ring banner) draws over the shell too, but never blocks Ctrl+K.
-        overlays.extend(slots::non_modal_overlays(window, cx));
+        // The ring banner (18) reads this window's view; it is the first thing in the main column (AppShell's `ring`), not
+        // an overlay, so it never blocks Ctrl+K.
+        crate::screens::ring::provide(
+            crate::screens::ring::RingEnv { ctx: ctx.clone() },
+            window,
+            cx,
+        );
+        let ring = crate::screens::ring::ring_banner(window, cx);
+        // A voice channel's stage takes over the conversation (17): its own header, the tiles and the controls.
+        let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
 
         let weak = shell.clone();
         let on_toggle: header::OnToggle = Rc::new(move |kind, _, cx| {
@@ -1074,20 +1107,25 @@ impl Render for ShellView {
             .h_full()
             .flex()
             .flex_col()
-            .child(header::render(
-                &header::HeaderModel {
-                    channel,
-                    members,
-                    // Members is pressed while the members area's pane is open (Task 14's `is_open`).
-                    aside: self.aside.or_else(|| {
-                        (aside.is_some() && crate::screens::members::is_open(cx))
-                            .then_some(AsideKind::Members)
-                    }),
-                },
-                &on_toggle,
-            ))
-            .child(div().flex_1().min_h_0().child(log))
-            .child(div().flex_none().child(self.composer.clone()));
+            .children(ring.map(|r| div().flex_none().child(r)));
+        let main = match takeover {
+            Some(stage) => main.child(div().flex_1().min_h_0().flex().flex_col().child(stage)),
+            None => main
+                .child(header::render(
+                    &header::HeaderModel {
+                        channel,
+                        members,
+                        // Members is pressed while the members area's pane is open (Task 14's `is_open`).
+                        aside: self.aside.or_else(|| {
+                            (aside.is_some() && crate::screens::members::is_open(cx))
+                                .then_some(AsideKind::Members)
+                        }),
+                    },
+                    &on_toggle,
+                ))
+                .child(div().flex_1().min_h_0().child(log))
+                .child(div().flex_none().child(self.composer.clone())),
+        };
         #[cfg(feature = "automation")]
         let main = main
             .relative()
@@ -1244,7 +1282,7 @@ impl Render for ShellView {
                     .child(sidebar_splitter)
                     .children(aside_splitter),
             )
-            // The search palette, the ring banner (23, 18) and the channel menu, over everything.
+            // The search palette, the dialogs and the channel menu, over everything.
             .children(overlays)
     }
 }

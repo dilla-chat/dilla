@@ -131,6 +131,8 @@ export const EXTRA_JOBS = {
       'cargo build -p dilla-testkit --bin dilla-testkit --locked',
       'cargo test -p dilla-client --test dms --locked -- --ignored',
       'cargo test -p dilla-desktop --test attachments --test diagnostics --test instances --test members --test messages --test notify --test reactions --test search --test shell --test threads --locked -- --ignored --skip parity_ --skip keyboard_diagnostics_focus_order',
+      'cargo test -p dilla-client --test voice --locked -- --ignored',
+      'cargo test -p dilla-client --test ring --locked -- --ignored --skip blocked_dm',
       'cargo test -p dilla-desktop --test slice --locked -- --ignored',
       // The media call tests' prerequisites (desktop-gpui.yml builds packages/media's wasm with clang 23 and installs Chromium).
       'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',

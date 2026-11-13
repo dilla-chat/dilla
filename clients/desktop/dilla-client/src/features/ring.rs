@@ -594,6 +594,13 @@ impl Client {
     }
 }
 
+impl Ring {
+    /// The handle from a client's parts (the voice area joins through this gate, Task 17).
+    pub(crate) fn of(inner: Arc<Inner>, calls: Calls<NoHttp>) -> Self {
+        Self { inner, calls }
+    }
+}
+
 impl AreaFrames for Ring {
     fn on_frame(inner: &Arc<Inner>, f: &Frame) {
         if f.op != Op::CALL_RING && f.op != Op::AFK_AWAY {
@@ -802,10 +809,46 @@ pub fn name_of(state: &AppState, user: UserId) -> String {
 }
 
 /// The DM is muted (`isMuted`, Task 22's `features::notify::is_muted` over the instance prefs): the ring shows as a
-/// banner only. Until Task 22 merges, no DM reads as muted; the controller replaces this body with
-/// `crate::features::notify::is_muted(inner.prefs(), channel, None)` at merge.
-pub(crate) fn dm_muted(_inner: &Arc<Inner>, _channel: ChannelId) -> bool {
-    false
+/// banner only.
+pub(crate) fn dm_muted(inner: &Arc<Inner>, channel: ChannelId) -> bool {
+    crate::features::notify::is_muted(inner.prefs(), channel, None)
+}
+
+/// The rings and the block checked against the trust as it stands now (`refresh_blocks` after its pass; Task 13's trust
+/// watcher after any pass that changed what the trust slice shows): a ring whose DM is send-blocked ends, and a block
+/// whose cause cleared goes.
+pub(crate) async fn recheck_blocks(inner: &Arc<Inner>) {
+    let pc = per_client(inner);
+    let channels: Vec<ChannelId> = guard(&pc.book).list().iter().map(|r| r.channel).collect();
+    let mut blocked = HashSet::new();
+    for c in channels {
+        if channel_blocked(inner, c).await {
+            blocked.insert(c);
+        }
+    }
+    if guard(&pc.book).retain_unblocked(|c| blocked.contains(&c)) {
+        publish_rings(inner, &pc);
+    }
+    let Some(block) = inner.snapshot().ring.blocked.clone() else {
+        return;
+    };
+    let is_dm = guard(&pc.dms).contains_key(&block.channel);
+    let held = if is_dm {
+        text_block(inner, block.channel).await.is_some()
+    } else {
+        block.when == BlockWhen::Left
+    };
+    let contact_held = match block.changed_user {
+        Some(u) => changed_users(inner).await.contains(&u),
+        None => held,
+    };
+    if !(held || contact_held) {
+        inner.publish(move |s| {
+            if s.ring.blocked.as_ref() == Some(&block) {
+                s.ring.blocked = None;
+            }
+        });
+    }
 }
 
 fn socket(inner: &Arc<Inner>) -> SocketHttp<NoHttp> {
@@ -1197,40 +1240,9 @@ impl Ring {
     /// goes, so the join is offered again.
     pub fn refresh_blocks(&self) -> oneshot::Receiver<Result<(), ClientError>> {
         let inner = self.inner.clone();
-        let pc = per_client(&inner);
         self.inner.spawn(async move {
             inner.engine().refresh_trust().await;
-            let channels: Vec<ChannelId> =
-                guard(&pc.book).list().iter().map(|r| r.channel).collect();
-            let mut blocked = HashSet::new();
-            for c in channels {
-                if channel_blocked(&inner, c).await {
-                    blocked.insert(c);
-                }
-            }
-            if guard(&pc.book).retain_unblocked(|c| blocked.contains(&c)) {
-                publish_rings(&inner, &pc);
-            }
-            let Some(block) = inner.snapshot().ring.blocked.clone() else {
-                return Ok(());
-            };
-            let is_dm = guard(&pc.dms).contains_key(&block.channel);
-            let held = if is_dm {
-                text_block(&inner, block.channel).await.is_some()
-            } else {
-                block.when == BlockWhen::Left
-            };
-            let contact_held = match block.changed_user {
-                Some(u) => changed_users(&inner).await.contains(&u),
-                None => held,
-            };
-            if !(held || contact_held) {
-                inner.publish(move |s| {
-                    if s.ring.blocked.as_ref() == Some(&block) {
-                        s.ring.blocked = None;
-                    }
-                });
-            }
+            recheck_blocks(&inner).await;
             Ok(())
         })
     }

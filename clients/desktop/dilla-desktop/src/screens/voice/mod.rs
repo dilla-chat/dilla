@@ -58,6 +58,9 @@ pub struct VoiceUi {
     /// The stream quality the next (or the running) screen share uses.
     pub share_options: ShareOptions,
     video_seq: u64,
+    /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
+    told_in_call: Option<Option<String>>,
+    told_roster: Option<(ChannelId, Vec<UserId>)>,
 }
 
 impl Global for VoiceUi {}
@@ -100,7 +103,12 @@ pub fn sync(state: Arc<AppState>, client: Option<&Rc<Client>>, cx: &mut App) {
         let ui = cx.global_mut::<VoiceUi>();
         ui.client = Some(client.clone());
         ui.session = session;
+        ui.told_in_call = None;
+        ui.told_roster = None;
         repaint_on_video(cx);
+    }
+    if let Some(client) = client {
+        tell_ring(&state, client, cx);
     }
     let ui = cx.global_mut::<VoiceUi>();
     if ui.state.voice.call.phase != CallPhase::Idle && state.voice.call.phase == CallPhase::Idle {
@@ -131,6 +139,56 @@ fn repaint_on_video(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Where this device's call is, for the ring's busy text (`call.ring.busy`'s `{where}`): its channel's or DM's name while
+/// it is joining or in a call, `None` outside one.
+fn call_place(state: &AppState) -> Option<String> {
+    let call = &state.voice.call;
+    if call.phase == CallPhase::Idle {
+        return None;
+    }
+    let channel = call.channel?;
+    Some(
+        state
+            .channel(channel)
+            .map(|c| c.name.clone())
+            .or_else(|| state.dms.get(channel).map(|d| d.name.clone()))
+            .unwrap_or_default(),
+    )
+}
+
+/// The ring area (18) follows this device's call: rings turn busy (or not) when the call's place changes
+/// (`Ring::set_in_call`), and the outgoing ring stops ringing whoever joined its call (`Ring::voice_roster`, op 50). Each
+/// is told only on a change.
+fn tell_ring(state: &AppState, client: &Rc<Client>, cx: &mut App) {
+    let place = call_place(state);
+    let roster = state
+        .ring
+        .outgoing
+        .as_ref()
+        .and_then(|o| o.channel)
+        .map(|channel| {
+            let mut users: Vec<UserId> = state
+                .voice
+                .participants(channel)
+                .iter()
+                .map(|p| p.user_id)
+                .collect();
+            users.dedup();
+            (channel, users)
+        });
+    let ui = cx.global_mut::<VoiceUi>();
+    if ui.told_in_call.as_ref() != Some(&place) {
+        ui.told_in_call = Some(place.clone());
+        client.ring().set_in_call(place);
+    }
+    if roster.is_some() && ui.told_roster != roster {
+        ui.told_roster = roster.clone();
+        if let Some((channel, users)) = roster {
+            client.ring().voice_roster(channel, &users);
+        }
+    }
 }
 
 fn ui(cx: &App) -> Option<&VoiceUi> {

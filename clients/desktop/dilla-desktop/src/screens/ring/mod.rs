@@ -173,7 +173,7 @@ fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) 
         return;
     };
     let joining = client.ring().join(ring.channel, None, String::new());
-    effects::hand_to_voice(ring.channel, joining, window, cx);
+    effects::hand_to_voice(client, ring.channel, joining, window, cx);
 }
 
 /// Decline: only the ring this decline answers (its call and expires_ts); the ring goes here at once.

@@ -9,11 +9,16 @@
 
 use std::collections::HashSet;
 
-use dilla_client::ClientError;
+use std::rc::Rc;
+
+use dilla_client::features::notify::{
+    self, Notifier, NotifyContext, Presence, RecordingNotifier, RingInput,
+};
 use dilla_client::features::ring::GatedJoin;
 use dilla_client::state::ChannelId;
 use dilla_client::state::ring::{CallBlock, IncomingRing};
-use gpui::{App, AppContext, Global, SharedString, Window, WindowId};
+use dilla_client::{Client, ClientError};
+use gpui::{App, Global, SharedString, Window, WindowId};
 use tokio::sync::oneshot;
 
 use super::ring_key;
@@ -90,29 +95,60 @@ pub fn start_ring(_cx: &mut App) {}
 /// Task 19's ring sound stops (`screens::voice_settings::sounds::stop_ring`). Wired at merge as [`start_ring`] is.
 pub fn stop_ring(_cx: &mut App) {}
 
-/// Raises the ring's OS notification through Task 22's notifier: `features::notify::ring_notification(&RingInput { channel,
-/// call_id, ring_ts, caller_name, busy, quiet, kind, community: None }, &notify_ctx, &prefs, &text)` and, when it answers
-/// one, `Notifier::deliver`. Its click opens the DM (`Notification::channel`). Until Task 22 merges nothing is raised;
-/// the controller fills this body at merge (the report lists the exact lines).
-pub fn ring_notification(_ring: &IncomingRing, _ctx: &SlotCx, _cx: &mut App) {}
+/// The app's notifier (Task 22's in-app [`RecordingNotifier`]: the OS delivery is the next plan's), one per app.
+#[derive(Default)]
+pub struct RingNotifier(pub RecordingNotifier);
 
-/// Closes the notification of the ring `key` (tag `dilla-ring-<call>-<ts>`). Wired with [`ring_notification`].
+impl Global for RingNotifier {}
+
+/// Raises the ring's notification through Task 22's notifier: `features::notify::ring_notification` decides (only while
+/// the window is hidden, with the permission granted, never for a busy or quiet ring or a DM whose mode is nothing), and
+/// the notifier shows it. Its click opens the DM (`Notification::channel`). Called only while the window is not focused.
+pub fn ring_notification(ring: &IncomingRing, ctx: &SlotCx, cx: &mut App) {
+    let Some(client) = &ctx.client else { return };
+    let input = RingInput {
+        channel: ring.channel,
+        call_id: ring.call_id.iter().map(|b| format!("{b:02x}")).collect(),
+        ring_ts: ring.ring_ts,
+        caller_name: ring.caller_name.clone(),
+        busy: ring.busy,
+        quiet: ring.quiet,
+        kind: 3,
+        community: None,
+    };
+    let notify_ctx = NotifyContext {
+        permission: ctx.state.notify.permission,
+        // The slice holds no presence choice of its own yet (the account has none here): online.
+        presence: Presence::Online,
+        visible: false,
+        on_screen: ctx.channel,
+        me: ctx.state.account.user_id,
+        roles: None,
+    };
+    let text = crate::screens::notify::text();
+    if let Some(n) = notify::ring_notification(&input, &notify_ctx, &client.prefs(), &text) {
+        cx.default_global::<RingNotifier>().0.deliver(&n);
+    }
+}
+
+/// Closes the notification of the ring `key` (tag `dilla-ring-<call>-<ts>`). The in-app notifier keeps what it showed
+/// (the e2e's record); a ring's next notification replaces it by its tag, so nothing is closed here until the OS delivery
+/// (the next plan) can withdraw one.
 pub fn close_ring_notification(_key: &SharedString, _cx: &mut App) {}
 
-/// The answered ring's join, handed to the voice area (Task 17), which connects the media and shows the dock and the
-/// stage. A block refused before anything was sent is already published (`RingState::blocked`) for the stage's notice.
-/// Until Task 17 merges, the join runs to its end here (the signalling alone: the call group and the room's token), so
-/// the ring ends and the caller sees this device join; the controller replaces the body with Task 17's entry point at
-/// merge.
+/// The answered ring's join, handed to the voice area (Task 17: `Voice::join_gated`), which follows it as this device's
+/// call: the phases, the media, the dock and the stage. A block refused before anything was sent is already published
+/// (`RingState::blocked`) for the stage's notice.
 pub fn hand_to_voice(
-    _channel: ChannelId,
+    client: Rc<Client>,
+    channel: ChannelId,
     joining: oneshot::Receiver<Result<Result<GatedJoin, CallBlock>, ClientError>>,
     _window: &mut Window,
     cx: &mut App,
 ) {
-    cx.background_spawn(async move {
+    cx.spawn(async move |_| {
         if let Ok(Ok(Ok(join))) = joining.await {
-            let _ = join.outcome().await;
+            let _ = client.voice().join_gated(channel, None, join).await;
         }
     })
     .detach();

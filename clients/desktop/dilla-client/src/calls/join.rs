@@ -142,7 +142,7 @@ pub enum Phase {
 }
 
 /// The call gate's hard refusals (core-port.ts `TRUST_BLOCKS`).
-fn is_trust_block(code: &str) -> bool {
+pub(crate) fn is_trust_block(code: &str) -> bool {
     matches!(
         code,
         "E_UMK_CHANGED"

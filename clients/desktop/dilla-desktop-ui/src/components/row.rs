@@ -56,6 +56,9 @@ pub struct Row {
     muted: bool,
     private: bool,
     person: Option<Person>,
+    /// A voice row (VoiceChannelRow.css): the people in its call (the count at the right) and whether this device is in it.
+    voice_count: usize,
+    joined: bool,
     on_click: Option<ClickHandler>,
 }
 
@@ -72,8 +75,18 @@ impl Row {
             muted: false,
             private: false,
             person: None,
+            voice_count: 0,
+            joined: false,
             on_click: None,
         }
+    }
+
+    /// A voice row's call: `count` people in it (shown at the right when any), and whether this device is in it (the
+    /// `--fg` name at 600 and the `--ok` glyph, VoiceChannelRow.css `data-joined`).
+    pub fn voice(mut self, count: usize, joined: bool) -> Self {
+        self.voice_count = count;
+        self.joined = joined;
+        self
     }
 
     /// Draws the row as a person (a DM).
@@ -140,7 +153,7 @@ impl RenderOnce for Row {
         if let Some(person) = self.person.clone() {
             return self.person_row(person, unread).into_any_element();
         }
-        let bright = self.active || unread > 0 || self.mentions > 0;
+        let bright = self.active || unread > 0 || self.mentions > 0 || self.joined;
         let name_colour = if self.muted && !self.active {
             color::FG_3
         } else if bright {
@@ -150,6 +163,8 @@ impl RenderOnce for Row {
         };
         let glyph_colour = if self.active {
             color::ACCENT
+        } else if self.joined {
+            color::OK
         } else {
             color::FG_4
         };
@@ -215,6 +230,19 @@ impl RenderOnce for Row {
             );
         }
         row = row.child(div().flex_1());
+        // A voice row's occupant count: 10.5px, `--fg-3` (`--fg-2` on the selected fill); it is never cut.
+        if self.voice_count > 0 {
+            row = row.child(div().flex_none().child(line(
+                self.voice_count.to_string(),
+                text::META,
+                line_height(text::META, 1.5),
+                if self.active {
+                    color::FG_2
+                } else {
+                    color::FG_3
+                },
+            )));
+        }
         // The trailing slot is always there (ChannelRow.tsx `<TrailingSlot>`): empty it still holds `--slot-w`, so a long
         // name is cut short of it, and a badge sits flush right in it.
         let slot = super::trailing_slot::TrailingSlot::new((id.clone(), "slot")).in_row();
