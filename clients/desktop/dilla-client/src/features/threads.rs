@@ -17,7 +17,9 @@
 //! * **Drafts** are kept per thread in the instance's prefs (`threads.draft.<root>`), apart from the channel's draft.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::time::Duration;
 
 use tokio::sync::{oneshot, watch};
 
@@ -34,27 +36,82 @@ use crate::sync::value::{self, DecodeError, Rows, arr, at_least, bin16, opt, u53
 /// controller.ts `THREAD_PAGE`: the replies read for an open thread, and for each page after it.
 pub const THREAD_PAGE: u32 = 200;
 
-/// This device's own thread replies that the core has not stored yet: message id → (thread root, group). The outbox row
-/// does not name its thread (controller.ts `threadSends`), so the pane and the channel timeline both ask here.
 type Id = [u8; 16];
-static THREAD_SENDS: LazyLock<Mutex<HashMap<Id, (Id, Id)>>> = LazyLock::new(Mutex::default);
 
-/// Whether the outbox row `msg` is a reply in a thread. The channel's timeline leaves such a row out while it is pending
-/// (`state::messages::build_timeline` asks), so a thread reply is never a row of the channel, not even before it is stored.
-pub fn is_thread_send(msg: &[u8; 16]) -> bool {
-    THREAD_SENDS
-        .lock()
-        .is_ok_and(|sends| sends.contains_key(msg))
+/// What one client keeps for this area. It is per client, not per process: two clients in one process (two instances) never
+/// see each other's pending sends or loops.
+#[derive(Default)]
+pub(crate) struct PerClient {
+    /// This device's own thread replies that the core has not stored yet: message id -> (thread root, group). The outbox
+    /// row does not name its thread (controller.ts `threadSends`), so the pane asks here.
+    sends: Mutex<HashMap<Id, (Id, Id)>>,
+    /// The refresh loop runs.
+    watching: AtomicBool,
+    /// What the last refresh saw, so an unrelated publish reads nothing.
+    last: Mutex<Option<Signature>>,
+    /// Heavy reads (a channel timeline, a thread page): the cost the loop is held to.
+    reads: AtomicUsize,
 }
 
-/// The clients whose refresh loop runs (the `Inner`'s address), so the loop starts once per client.
-static WATCHERS: LazyLock<Mutex<HashMap<usize, Weak<Inner>>>> = LazyLock::new(Mutex::default);
+/// What a refresh depends on: the tracked channels' groups (their next seq moves with every row, a thread reply
+/// included) and shown timelines, the open thread, and this client's pending thread sends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Signature {
+    channels: Vec<ChannelLook>,
+    open: Option<OpenThread>,
+    pending: usize,
+}
+
+/// One tracked channel: its group's (next seq, state) and how many rows its timeline shows.
+type ChannelLook = (ChannelId, Option<(u64, u8)>, usize);
+
+impl PerClient {
+    fn has_send(&self, msg: &Id) -> bool {
+        self.sends.lock().is_ok_and(|s| s.contains_key(msg))
+    }
+
+    /// Drops the thread sends of `group` that the outbox no longer holds (stored or discarded).
+    fn settle(&self, group: Id, outbox: &HashSet<Id>) {
+        if let Ok(mut sends) = self.sends.lock() {
+            sends.retain(|msg, (_, g)| *g != group || outbox.contains(msg));
+        }
+    }
+}
+
+type Clients = Vec<(Weak<Inner>, Arc<PerClient>)>;
+static CLIENTS: LazyLock<Mutex<Clients>> = LazyLock::new(Mutex::default);
+
+/// The state of `inner`'s client, made on first use.
+fn per_client(inner: &Arc<Inner>) -> Arc<PerClient> {
+    let mut clients = CLIENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    clients.retain(|(w, _)| w.strong_count() > 0);
+    let mine = Arc::downgrade(inner);
+    if let Some((_, state)) = clients.iter().find(|(w, _)| Weak::ptr_eq(w, &mine)) {
+        return state.clone();
+    }
+    let state = Arc::new(PerClient::default());
+    clients.push((mine, state.clone()));
+    state
+}
+
+/// Whether the outbox row `msg` is a reply in a thread of any client of this process (message ids are random, so no row
+/// of another client can match). The channel's timeline build (`state::messages::build_timeline`, Task 9) should leave
+/// such a row out while it is pending; it does not call this yet (the controller adds the call at merge), so until then
+/// this area's refresh loop takes the row out of the published timeline itself.
+pub fn is_thread_send(msg: &[u8; 16]) -> bool {
+    CLIENTS
+        .lock()
+        .is_ok_and(|c| c.iter().any(|(_, state)| state.has_send(msg)))
+}
 
 /// The threads area's handle for threads: cheap to clone, no I/O on construction.
 #[derive(Clone)]
 pub struct Threads {
     inner: Arc<Inner>,
     state: watch::Receiver<Arc<AppState>>,
+    me: Arc<PerClient>,
 }
 
 impl Client {
@@ -63,6 +120,7 @@ impl Client {
         Threads {
             inner: self.inner().clone(),
             state: self.state(),
+            me: per_client(self.inner()),
         }
     }
 }
@@ -94,9 +152,9 @@ impl Threads {
             });
         }
         self.start_loop();
-        let inner = self.inner.clone();
+        let (inner, me) = (self.inner.clone(), self.me.clone());
         drop(self.inner.spawn(async move {
-            refresh(&inner, Some(channel)).await;
+            refresh(&inner, &me, Some(channel)).await;
             Ok(())
         }));
     }
@@ -124,15 +182,25 @@ impl Threads {
             s.threads.tracked.insert(channel);
         });
         self.start_loop();
-        let inner = self.inner.clone();
+        let (inner, me) = (self.inner.clone(), self.me.clone());
         self.inner.spawn(async move {
-            let data = read_thread(&inner, open, None).await?;
+            // A group this device does not hold (or cannot read) shows an empty thread, whose pane says the root cannot be
+            // shown (`thread.rootMissing`), as the worker's `refreshThread` does for a null group.
+            let read = read_thread(&inner, &me, open, None).await;
+            let failed = read.as_ref().err().cloned();
+            let data = read.unwrap_or(ThreadData {
+                channel,
+                root: None,
+                replies: Vec::new(),
+                has_earlier: false,
+                count: 0,
+            });
             inner.publish(move |s| {
                 if s.threads.open == Some(open) {
                     s.threads.threads.insert(open.root, data);
                 }
             });
-            Ok(())
+            failed.map_or(Ok(()), Err)
         })
     }
 
@@ -161,7 +229,7 @@ impl Threads {
 
     /// The page of replies before the oldest one read of the open thread, prepended to it.
     pub fn load_earlier(&self) -> Done<()> {
-        let inner = self.inner.clone();
+        let (inner, me) = (self.inner.clone(), self.me.clone());
         self.inner.spawn(async move {
             let snap = inner.snapshot();
             let Some(open) = snap.threads.open else {
@@ -173,7 +241,7 @@ impl Threads {
             let Some(oldest) = current.replies.iter().find_map(|r| r.seq) else {
                 return Ok(());
             };
-            let older = read_thread(&inner, open, Some(oldest)).await?;
+            let older = read_thread(&inner, &me, open, Some(oldest)).await?;
             inner.publish(move |s| {
                 if s.threads.open != Some(open) {
                     return;
@@ -191,11 +259,21 @@ impl Threads {
 
     /// Reads the tracked channels' summaries and the open thread again now.
     pub fn refresh(&self) -> Done<()> {
-        let inner = self.inner.clone();
+        let (inner, me) = (self.inner.clone(), self.me.clone());
         self.inner.spawn(async move {
-            refresh(&inner, None).await;
+            refresh(&inner, &me, None).await;
             Ok(())
         })
+    }
+
+    /// Tells the area what the viewer may do in `channel` (the roles area's resolved bits); `None` forgets it (unknown).
+    pub fn set_channel_bits(&self, channel: ChannelId, bits: Option<u64>) {
+        self.inner.publish(move |s| {
+            match bits {
+                Some(bits) => s.threads.channel_bits.insert(channel, bits),
+                None => s.threads.channel_bits.remove(&channel),
+            };
+        });
     }
 
     // ---- replying ----
@@ -252,17 +330,17 @@ impl Threads {
         thread: Option<MessageId>,
         text: String,
     ) -> Done<MessageId> {
-        let inner = self.inner.clone();
+        let (inner, me) = (self.inner.clone(), self.me.clone());
         self.inner.spawn(async move {
             let group = group_of(&inner, channel).await?;
             let request = request_of(0, reply_to, &text, thread);
             let msg = prepare(&inner, group, request).await?;
             if let Some(root) = thread {
-                if let Ok(mut sends) = THREAD_SENDS.lock() {
+                if let Ok(mut sends) = me.sends.lock() {
                     sends.insert(msg, (root.0, group));
                 }
                 // The pending reply shows in the pane now, not when the drain next publishes.
-                refresh(&inner, None).await;
+                refresh(&inner, &me, None).await;
             }
             inner.engine().request_drain(group);
             Ok(MessageId(msg))
@@ -301,29 +379,77 @@ impl Threads {
 
     // ---- the refresh loop ----
 
-    /// Starts this client's loop once: every published state is an occasion to read the threads again (a peer's reply
-    /// changes the group, which publishes), and a read that changed nothing publishes nothing, so the loop settles.
+    /// Starts this client's loop once. A published state is an occasion to look again, after a debounce of
+    /// [`DEBOUNCE`]: one read of the group list says whether a tracked channel's group moved (a thread reply moves it
+    /// without changing any timeline), and only a change in what [`Signature`] holds is read in full, so a publish of
+    /// something else (presence, a draft) reads no timeline and no thread. A read that changed nothing publishes nothing,
+    /// so the loop settles.
     fn start_loop(&self) {
-        let key = Arc::as_ptr(&self.inner) as usize;
-        {
-            let Ok(mut watchers) = WATCHERS.lock() else {
-                return;
-            };
-            watchers.retain(|_, w| w.strong_count() > 0);
-            if watchers.contains_key(&key) {
-                return;
-            }
-            watchers.insert(key, Arc::downgrade(&self.inner));
+        if self.me.watching.swap(true, Ordering::AcqRel) {
+            return;
         }
-        let weak = Arc::downgrade(&self.inner);
+        let (weak, me) = (Arc::downgrade(&self.inner), self.me.clone());
         let mut rx = self.state.clone();
         drop(self.inner.spawn(async move {
             while rx.changed().await.is_ok() {
+                tokio::time::sleep(DEBOUNCE).await;
+                rx.borrow_and_update();
                 let Some(inner) = weak.upgrade() else { break };
-                refresh(&inner, None).await;
+                let now = signature(&inner, &me).await;
+                let changed = me
+                    .last
+                    .lock()
+                    .map_or(true, |last| last.as_ref() != Some(&now));
+                if changed {
+                    if let Ok(mut last) = me.last.lock() {
+                        *last = Some(now);
+                    }
+                    refresh(&inner, &me, None).await;
+                }
             }
             Ok(())
         }));
+    }
+
+    /// How many heavy reads (a channel timeline or a thread page) this client has made: what the loop is held to.
+    pub fn reads(&self) -> usize {
+        self.me.reads.load(Ordering::Acquire)
+    }
+
+    /// How many of this client's own thread replies the core has not stored yet.
+    pub fn pending_sends(&self) -> usize {
+        self.me.sends.lock().map_or(0, |s| s.len())
+    }
+}
+
+/// How long the loop waits after a published state before it looks.
+pub const DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// The cheap look: the group list and the snapshot, no timeline and no thread.
+async fn signature(inner: &Arc<Inner>, me: &PerClient) -> Signature {
+    let snap = inner.snapshot();
+    let groups = inner.engine().groups().await;
+    let mut wanted: Vec<ChannelId> = snap.threads.tracked.iter().copied().collect();
+    wanted.extend(snap.threads.open.map(|o| o.channel));
+    wanted.sort();
+    wanted.dedup();
+    Signature {
+        channels: wanted
+            .into_iter()
+            .map(|c| {
+                let group = groups
+                    .iter()
+                    .find(|g| g.kind == 0 && g.target_id == c.0 && g.state != 4)
+                    .map(|g| (g.next_seq, g.state));
+                (
+                    c,
+                    group,
+                    snap.timelines.get(&c).map_or(0, |t| t.items.len()),
+                )
+            })
+            .collect(),
+        open: snap.threads.open,
+        pending: me.sends.lock().map_or(0, |s| s.len()),
     }
 }
 
@@ -437,12 +563,14 @@ fn decode_summaries(raw: &[u8]) -> Result<HashMap<MessageId, ThreadSummary>, Dec
 /// Reads `open`'s thread: the newest [`THREAD_PAGE`] replies, or the page below `before`.
 async fn read_thread(
     inner: &Inner,
+    client: &PerClient,
     open: OpenThread,
     before: Option<u64>,
 ) -> Result<ThreadData, ClientError> {
     let group = group_of(inner, open.channel).await?;
     let root = open.root.0;
     let before = before.unwrap_or(0);
+    client.reads.fetch_add(1, Ordering::AcqRel);
     let (raw, outbox) = try_core(inner.engine().core(), move |c| {
         (
             c.thread_timeline(&group, &root, before, THREAD_PAGE),
@@ -458,7 +586,7 @@ async fn read_thread(
         .unwrap_or_default();
     // Only this thread's own pending replies (the outbox row names no thread): folds are never items.
     let pending: Vec<_> = {
-        let sends = THREAD_SENDS.lock().map_err(|_| ClientError::Stopped)?;
+        let sends = client.sends.lock().map_err(|_| ClientError::Stopped)?;
         outbox
             .into_iter()
             .filter(|row| sends.get(&row.msg_id) == Some(&(root, group)))
@@ -504,15 +632,8 @@ async fn read_thread(
     })
 }
 
-/// Drops the thread sends of `group` that the outbox no longer holds (stored or discarded).
-fn settle_sends(group: [u8; 16], outbox: &HashSet<[u8; 16]>) {
-    if let Ok(mut sends) = THREAD_SENDS.lock() {
-        sends.retain(|msg, (_, g)| *g != group || outbox.contains(msg));
-    }
-}
-
 /// Reads the summaries of the tracked channels (and `extra`) and the open thread, and publishes what changed.
-async fn refresh(inner: &Arc<Inner>, extra: Option<ChannelId>) {
+async fn refresh(inner: &Arc<Inner>, me: &PerClient, extra: Option<ChannelId>) {
     let snap = inner.snapshot();
     if snap.account.phase != crate::state::AccountPhase::Ready {
         return;
@@ -526,13 +647,14 @@ async fn refresh(inner: &Arc<Inner>, extra: Option<ChannelId>) {
         let Ok(group) = group_of(inner, channel).await else {
             continue;
         };
+        me.reads.fetch_add(1, Ordering::AcqRel);
         let read = try_core(inner.engine().core(), move |c| {
             (c.timeline(&group, 0, TIMELINE_PAGE), c.outbox(&group))
         })
         .await;
         let Ok((raw, outbox)) = read else { continue };
         if let Some(outbox) = outbox.ok().and_then(|raw| decode_outbox(&raw).ok()) {
-            settle_sends(group, &outbox.iter().map(|r| r.msg_id).collect());
+            me.settle(group, &outbox.iter().map(|r| r.msg_id).collect());
         }
         let Some(fresh) = raw.ok().and_then(|raw| decode_summaries(&raw).ok()) else {
             continue;
@@ -542,7 +664,7 @@ async fn refresh(inner: &Arc<Inner>, extra: Option<ChannelId>) {
         if snap.timelines.get(&channel).is_some_and(|t| {
             t.items
                 .iter()
-                .any(|i| i.msg_id.is_some_and(|m| is_thread_send(&m.0)))
+                .any(|i| i.msg_id.is_some_and(|m| me.has_send(&m.0)))
         }) {
             inner.publish(move |s| {
                 if let Some(t) = s.timelines.get_mut(&channel) {
@@ -558,7 +680,7 @@ async fn refresh(inner: &Arc<Inner>, extra: Option<ChannelId>) {
         }
     }
     if let Some(open) = snap.threads.open
-        && let Ok(newest) = read_thread(inner, open, None).await
+        && let Ok(newest) = read_thread(inner, me, open, None).await
     {
         let merged = with_earlier(newest, snap.threads.threads.get(&open.root));
         if snap.threads.threads.get(&open.root) != Some(&merged) {
@@ -681,18 +803,23 @@ mod tests {
         assert_eq!((&a[1], &a[4]), (&Value::Null, &Value::Null));
     }
 
+    /// Two clients in one process: one's settling never drops the other's pending sends.
     #[test]
-    fn a_stored_thread_send_is_forgotten_and_a_pending_one_is_known() {
-        let (msg, other) = ([0xaa; 16], [0xbb; 16]);
-        THREAD_SENDS
+    fn a_clients_thread_sends_are_its_own() {
+        let (a, b) = (PerClient::default(), PerClient::default());
+        let msg = [0xaa; 16];
+        a.sends.lock().unwrap().insert(msg, ([1; 16], [9; 16]));
+        b.sends
             .lock()
             .unwrap()
-            .extend([(msg, ([1; 16], [9; 16])), (other, ([1; 16], [8; 16]))]);
-        assert!(is_thread_send(&msg));
-        settle_sends([9; 16], &HashSet::new());
-        assert!(!is_thread_send(&msg), "the core stored it");
-        assert!(is_thread_send(&other), "another group's send stays");
-        THREAD_SENDS.lock().unwrap().remove(&other);
+            .insert([0xbb; 16], ([1; 16], [9; 16]));
+        assert!(a.has_send(&msg) && !b.has_send(&msg));
+        // b's outbox read (the same group id, say) holds neither: it settles its own and leaves a's alone.
+        b.settle([9; 16], &HashSet::new());
+        assert!(a.has_send(&msg), "a's pending send stays");
+        assert!(!b.has_send(&[0xbb; 16]), "b's stored send is forgotten");
+        a.settle([9; 16], &HashSet::new());
+        assert!(!a.has_send(&msg), "the core stored a's");
     }
 
     #[test]

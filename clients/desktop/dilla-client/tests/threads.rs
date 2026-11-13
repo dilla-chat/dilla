@@ -459,3 +459,73 @@ async fn reply_chip_jumps_to_original() {
     })
     .await;
 }
+
+/// The refresh loop's cost: a publish of something else (a reply target, presence) reads no timeline and no thread; a
+/// peer's thread reply, which moves the group, is read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn an_unrelated_publish_triggers_no_reads() {
+    let (_host, pa, pb, c) = two_people("thread-reads").await;
+    let a = start(&pa).await;
+    let b = start(&pb).await;
+    let general = channel_named(&a, c, "general").await;
+    channel_named(&b, c, "general").await;
+    both_in(&a, &b, general).await;
+    let root = root_by(&a, &b, general, "plan").await;
+    a.threads().track(general);
+    a.threads()
+        .open(general, root)
+        .await
+        .unwrap()
+        .expect("opens");
+    wait_for(&a, WAIT, "the thread", |s| {
+        s.threads.threads.contains_key(&root)
+    })
+    .await;
+    // Let the loop settle: everything the opening published has been looked at.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let before = a.threads().reads();
+    for _ in 0..5 {
+        a.threads().set_replying(None);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    assert_eq!(
+        a.threads().reads(),
+        before,
+        "an unrelated publish read the core"
+    );
+    b.threads()
+        .send_in_thread(general, root, "ok".into())
+        .await
+        .unwrap()
+        .expect("queued");
+    wait_for(&a, WAIT, "the reply", |s| thread_bodies(s, root) == ["ok"]).await;
+    assert!(a.threads().reads() > before, "a thread reply is read");
+    // Two clients in one process: b's sends are its own.
+    assert_eq!(a.threads().pending_sends(), 0);
+}
+
+/// ThreadView's missing root: a thread of a group this device does not hold publishes an empty thread, so the pane says
+/// the root cannot be shown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn opening_a_thread_of_an_unheld_group_publishes_an_empty_thread() {
+    let (_host, pa, _pb, c) = two_people("thread-unheld").await;
+    let a = start(&pa).await;
+    let second = channel_named(&a, c, "general-2").await;
+    let root = MessageId([5; 16]);
+    let _ = a.threads().open(second, root).await.unwrap();
+    let s = wait_for(&a, WAIT, "the empty thread", |s| {
+        s.threads.threads.contains_key(&root)
+    })
+    .await;
+    let data = &s.threads.threads[&root];
+    assert!(data.root.is_none() && data.replies.is_empty() && data.count == 0);
+    assert_eq!(
+        s.threads.open,
+        Some(OpenThread {
+            channel: second,
+            root
+        })
+    );
+}

@@ -8,6 +8,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use super::{ChannelId, MessageId, TimelineItem, UserId};
 
+/// `PERM.sendMessages` (packages/client-core/src/admin/perm.ts): the bit a reply and a thread need.
+pub const SEND_MESSAGES: u64 = 1 << 1;
+
 /// types.ts `ThreadSummary`: what the chip under a thread's root shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThreadSummary {
@@ -63,9 +66,19 @@ pub struct ThreadState {
     pub last_open: Option<OpenThread>,
     /// The reply bar's target.
     pub replying: Option<ReplyTarget>,
+    /// What the viewer may do in a channel (the permission bits the roles area resolved, `useChannelBits`). A channel with
+    /// no entry is unknown, which allows, as the web does (`bits == null`): the instance decides each request again.
+    pub channel_bits: HashMap<ChannelId, u64>,
 }
 
 impl ThreadState {
+    /// Whether the viewer may send in `channel`: MessageItem.tsx `canSend` (`bits == null || bits & sendMessages`).
+    pub fn can_send(&self, channel: ChannelId) -> bool {
+        self.channel_bits
+            .get(&channel)
+            .is_none_or(|bits| bits & SEND_MESSAGES != 0)
+    }
+
     /// The summary of `root` in `channel`.
     pub fn summary(&self, channel: ChannelId, root: MessageId) -> Option<ThreadSummary> {
         self.summaries.get(&channel)?.get(&root).copied()
@@ -74,5 +87,21 @@ impl ThreadState {
     /// The open thread's data, if it has been read.
     pub fn open_data(&self) -> Option<&ThreadData> {
         self.threads.get(&self.open?.root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_channel_without_bits_allows_and_one_without_the_send_bit_does_not() {
+        let mut s = ThreadState::default();
+        let ch = ChannelId([1; 16]);
+        assert!(s.can_send(ch), "unknown allows, as the web does");
+        s.channel_bits.insert(ch, 1);
+        assert!(!s.can_send(ch));
+        s.channel_bits.insert(ch, 1 | SEND_MESSAGES);
+        assert!(s.can_send(ch));
     }
 }

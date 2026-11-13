@@ -43,6 +43,8 @@ pub struct Sent(pub MessageId, pub String);
 pub struct PaneView {
     input: Entity<TextareaState>,
     close_focus: FocusHandle,
+    /// A send is in flight: the field is empty but the draft stays in the prefs until the send succeeds.
+    in_flight: bool,
     /// The root whose draft the field currently holds.
     shown: Option<MessageId>,
     _subscriptions: Vec<Subscription>,
@@ -63,6 +65,7 @@ impl PaneView {
         Self {
             input,
             close_focus: cx.focus_handle().tab_stop(true),
+            in_flight: false,
             shown: None,
             _subscriptions: vec![sub],
         }
@@ -82,7 +85,9 @@ impl PaneView {
         match event {
             InputEvent::Change => {
                 // A thread's draft is its own, apart from the channel's (`threads.draft.<root>`).
-                if let Some(client) = &ctx.client {
+                if !self.in_flight
+                    && let Some(client) = &ctx.client
+                {
                     client
                         .threads()
                         .set_draft(open.root, &input.read(cx).value());
@@ -94,17 +99,34 @@ impl PaneView {
                     .update(cx, |s, cx| s.marked_text_range(window, cx))
                     .is_some();
                 let draft = input.read(cx).value().to_string();
-                if composing || draft.trim().is_empty() {
+                // A reader who cannot send has a disabled composer (ThreadView `blocked`).
+                if composing || draft.trim().is_empty() || !ctx.state.threads.can_send(open.channel)
+                {
                     return;
                 }
+                self.in_flight = true;
                 input.update(cx, |s, cx| s.set_value("", window, cx));
-                if let Some(client) = &ctx.client {
-                    client.threads().set_draft(open.root, "");
-                    drop(
+                if let Some(client) = ctx.client.clone() {
+                    let done =
                         client
                             .threads()
-                            .send_in_thread(open.channel, open.root, draft.clone()),
-                    );
+                            .send_in_thread(open.channel, open.root, draft.clone());
+                    let (root, text) = (open.root, draft.clone());
+                    // The draft is cleared when the send has succeeded; a failed send puts the text back (ThreadView `send`).
+                    cx.spawn_in(window, async move |this, cx| {
+                        let sent = matches!(done.await, Ok(Ok(_)));
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            this.in_flight = false;
+                            if sent {
+                                client.threads().set_draft(root, "");
+                            } else if this.input.read(cx).value().is_empty() {
+                                this.input.update(cx, |s, cx| s.set_value(text, window, cx));
+                            }
+                        });
+                    })
+                    .detach();
+                } else {
+                    self.in_flight = false;
                 }
                 cx.emit(Sent(open.root, draft));
                 cx.notify();
@@ -233,6 +255,20 @@ impl Render for PaneView {
         let focus = self.focus_handle(cx);
         let focused = focus.is_focused(window);
         let value_empty = self.input.read(cx).value().is_empty();
+        let blocked = !ctx.state.threads.can_send(open.channel);
+        let placeholder = if blocked {
+            tf(
+                "chperm.cannotSend",
+                &[(
+                    "name",
+                    ctx.state
+                        .channel(open.channel)
+                        .map_or("", |c| c.name.as_str()),
+                )],
+            )
+        } else {
+            t("thread.composer").to_owned()
+        };
         let field = div()
             .relative()
             .flex_1()
@@ -249,6 +285,7 @@ impl Render for PaneView {
                 div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
                     Textarea::new(&self.input)
                         .appearance(false)
+                        .disabled(blocked)
                         .h(px(rows as f32 * FIELD_LINE)),
                 ),
             ))
@@ -259,15 +296,7 @@ impl Render for PaneView {
                     .top(px(FIELD_PAD))
                     .right_0()
                     .flex()
-                    .child(
-                        line(
-                            t("thread.composer"),
-                            text::INPUT,
-                            FIELD_LINE,
-                            color::FG_FAINT,
-                        )
-                        .ellipsis(),
-                    )
+                    .child(line(placeholder, text::INPUT, FIELD_LINE, color::FG_FAINT).ellipsis())
             }));
         // `.d-thread-pane__composer .d-composer`: 8px 12px 12px around a --bg-3 box in the hairline, 8px corners; the accent
         // line while the field is focused; `.d-composer__row` 4px 4px 4px 10px, the accent `›` and no send button.

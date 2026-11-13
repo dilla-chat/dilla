@@ -9,7 +9,7 @@
 //! and, in a fixture with no client, the open thread and the reply target a running client would keep in
 //! `AppState::threads`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use dilla_client::state::{
@@ -56,8 +56,9 @@ struct Ui {
     pane: Option<Entity<PaneView>>,
     /// A thread chip's focus handle, by root: Enter and Space press it, and a closing pane gives focus back to it.
     chips: HashMap<MessageId, FocusHandle>,
-    /// Channels this client was asked to keep the summaries of.
-    tracked: HashSet<ChannelId>,
+    /// The channel each client (by the address of its `Rc<Client>`) was asked to keep the summaries of: one per client, so
+    /// leaving a channel untracks it, and one client's channel is never another's.
+    tracked: HashMap<usize, ChannelId>,
     /// With no client (a fixture): the open thread and the reply target.
     local_open: Option<OpenThread>,
     local_last: Option<OpenThread>,
@@ -74,19 +75,52 @@ fn ui(cx: &mut App) -> &mut Ui {
 
 /// Remembers `ctx` for the hooks that get none and asks the client to keep `ctx.channel`'s thread summaries.
 fn remember(ctx: &SlotCx, cx: &mut App) {
-    let mut start = None;
+    LAST.with(|last| *last.borrow_mut() = Some(ctx.clone()));
+    let mut change = None;
     {
         let u = ui(cx);
         u.ctx = Some(ctx.clone());
-        if let (Some(client), Some(channel)) = (&ctx.client, ctx.channel)
-            && u.tracked.insert(channel)
-        {
-            start = Some((client.clone(), channel));
+        if let (Some(client), Some(channel)) = (&ctx.client, ctx.channel) {
+            let key = Rc::as_ptr(client) as usize;
+            let old = u.tracked.insert(key, channel);
+            if old != Some(channel) {
+                change = Some((client.clone(), old, channel));
+            }
         }
     }
-    if let Some((client, channel)) = start {
-        client.threads().track(channel);
+    if let Some((client, old, channel)) = change {
+        let threads = client.threads();
+        // The route left the old channel: its summaries are no longer kept.
+        if let Some(old) = old {
+            threads.untrack(old);
+        }
+        threads.track(channel);
     }
+}
+
+thread_local! {
+    /// The last view a hook was drawn for, for the hook that gets no `App` (`message_actions`).
+    static LAST: std::cell::RefCell<Option<SlotCx>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the viewer may send in the channel the log shows: MessageItem.tsx `canSend`.
+fn can_send_here() -> bool {
+    LAST.with(|last| {
+        last.borrow()
+            .as_ref()
+            .and_then(|ctx| ctx.channel.map(|c| ctx.state.threads.can_send(c)))
+            .unwrap_or(true)
+    })
+}
+
+/// Whether the message a reply names is no longer readable here (deleted, removed, cannot be read): the bar must not keep
+/// its excerpt, so the target is dropped.
+fn original_gone(ctx: &SlotCx, target: &ReplyTarget) -> bool {
+    ctx.state
+        .timelines
+        .get(&target.channel)
+        .and_then(|t| t.items.iter().find(|i| i.msg_id == Some(target.msg_id)))
+        .is_some_and(|i| !readable(i))
 }
 
 /// The last [`SlotCx`] a hook was drawn for.
@@ -177,7 +211,8 @@ pub fn set_replying(target: Option<ReplyTarget>, ctx: &SlotCx, cx: &mut App) {
 pub fn take_reply(ctx: &SlotCx, channel: ChannelId, cx: &mut App) -> Option<MessageId> {
     let target = replying_of(ctx, cx).filter(|t| t.channel == channel)?;
     set_replying(None, ctx, cx);
-    Some(target.msg_id)
+    // A reply to a message that has since gone is not sent as one.
+    (!original_gone(ctx, &target)).then_some(target.msg_id)
 }
 
 /// The message a pressed reply line asked to see, once. The log scrolls to it and flashes it (Task 9).
@@ -309,7 +344,13 @@ pub fn thread_count(
 
 /// This area's entries in the message toolbar and context menu: reply, and open the thread (a reply in a thread has none).
 pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
-    let (Some(msg_id), true) = (item.msg_id, readable(item)) else {
+    // MessageItem.tsx: reply and thread lead to the composer, so a reader who cannot send there is not offered them, and
+    // only a stored, readable message (`state ok`, a seq) can be replied to or threaded.
+    let (Some(msg_id), true, true) = (
+        item.msg_id,
+        item.state == TimelineItemState::Ok && item.seq.is_some(),
+        can_send_here(),
+    ) else {
         return Vec::new();
     };
     let target = (item.sender_user, excerpt(&item.body));
@@ -350,6 +391,10 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
 pub fn reply_bar(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     remember(ctx, cx);
     let target = replying_of(ctx, cx).filter(|t| Some(t.channel) == ctx.channel)?;
+    if original_gone(ctx, &target) {
+        set_replying(None, ctx, cx);
+        return None;
+    }
     let name = name_of(&ctx.state, ctx.community, target.sender);
     let label = tf("shell.composer.replying", &[("name", &name)]);
     let cleared = ctx.clone();
@@ -430,9 +475,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(&item(TimelineItemState::Ok, "hi")), ["reply", "thread"]);
-        assert_eq!(
-            ids(&item(TimelineItemState::Pending, "hi")),
-            ["reply", "thread"]
+        assert!(
+            ids(&item(TimelineItemState::Pending, "hi")).is_empty(),
+            "a pending message has no seq to reply to (MessageItem.tsx: ok, a msg id and a seq)"
         );
         assert!(ids(&item(TimelineItemState::Deleted, "")).is_empty());
         assert!(ids(&item(TimelineItemState::CannotRead, "")).is_empty());
@@ -498,6 +543,106 @@ mod tests {
             assert_eq!(
                 name_of(&ctx.state, ctx.community, Some(UserId([2; 16]))),
                 "Björn"
+            );
+        });
+    }
+
+    fn channel_ctx(bits: Option<u64>) -> (SlotCx, ChannelId) {
+        let (community, channel) = (CommunityId([1; 16]), ChannelId([3; 16]));
+        let mut state = AppState::default();
+        state.channels.push(Channel {
+            id: channel,
+            community_id: community,
+            kind: 0,
+            mode: 0,
+            name: "news".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        });
+        if let Some(bits) = bits {
+            state.threads.channel_bits.insert(channel, bits);
+        }
+        let ctx = SlotCx {
+            state: Arc::new(state),
+            community: Some(community),
+            channel: Some(channel),
+            ..SlotCx::default()
+        };
+        (ctx, channel)
+    }
+
+    /// MessageItem.tsx `canSend`: a read-only channel offers neither reply nor thread; unknown bits and the send bit allow.
+    #[gpui::test]
+    fn a_read_only_channel_offers_neither_action(cx: &mut TestAppContext) {
+        use dilla_client::state::threads::SEND_MESSAGES;
+        let window = cx.add_empty_window();
+        window.update(|_, cx| {
+            let ids = || {
+                message_actions(&item(TimelineItemState::Ok, "hi"))
+                    .iter()
+                    .map(|a| a.id.to_string())
+                    .collect::<Vec<_>>()
+            };
+            remember(&channel_ctx(Some(0)).0, cx);
+            assert!(ids().is_empty(), "no send bit: nothing to offer");
+            remember(&channel_ctx(Some(SEND_MESSAGES | 1)).0, cx);
+            assert_eq!(ids(), ["reply", "thread"]);
+            remember(&channel_ctx(None).0, cx);
+            assert_eq!(
+                ids(),
+                ["reply", "thread"],
+                "unknown bits allow, as the web does"
+            );
+        });
+    }
+
+    /// A reply bar over a message that has become unreadable drops its target and blanks the excerpt.
+    #[gpui::test]
+    fn the_reply_bar_drops_a_target_that_was_deleted(cx: &mut TestAppContext) {
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let (ctx, channel) = channel_ctx(None);
+            let mut readable_state = (*ctx.state).clone();
+            readable_state.timelines.insert(
+                channel,
+                dilla_client::state::Timeline {
+                    channel_id: channel,
+                    group: ChannelGroupState::Active,
+                    items: vec![item(TimelineItemState::Ok, "secret words")],
+                    has_earlier: false,
+                },
+            );
+            let ctx = SlotCx {
+                state: Arc::new(readable_state.clone()),
+                ..ctx
+            };
+            let reply = &message_actions(&item(TimelineItemState::Ok, "secret words"))[0];
+            (reply.run)(&ctx, window, cx);
+            assert!(reply_bar(&ctx, window, cx).is_some());
+            // The original is deleted: the bar goes, the target with it, and no send names it.
+            let mut gone = readable_state;
+            gone.timelines.get_mut(&channel).unwrap().items[0].state = TimelineItemState::Deleted;
+            let ctx = SlotCx {
+                state: Arc::new(gone),
+                ..ctx
+            };
+            assert!(reply_bar(&ctx, window, cx).is_none());
+            assert_eq!(replying_of(&ctx, cx), None, "the target was dropped");
+            let target = ReplyTarget {
+                channel,
+                msg_id: MessageId([7; 16]),
+                sender: None,
+                excerpt: "secret words".into(),
+            };
+            set_replying(Some(target), &ctx, cx);
+            assert_eq!(
+                take_reply(&ctx, channel, cx),
+                None,
+                "a send is not a reply to a deleted message"
             );
         });
     }
