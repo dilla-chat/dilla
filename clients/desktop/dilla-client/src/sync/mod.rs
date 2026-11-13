@@ -10,7 +10,8 @@
 //!   every gap, so a device that was away gets exactly what it missed, once, in order.
 //! - **Sends** go through the core's outbox (`send_prepare` → `send_encrypt` → `POST message` → `send_confirm`), one
 //!   at a time per group, with send.ts's answers to a lost response (catch up, then wait for the echo before a resend),
-//!   429 (slow mode), 425 (a commit is due), 422 at a stale epoch (re-frame once), 403 (resync) and 401.
+//!   429 (slow mode), 425 (a commit is due), 422 at a stale epoch (re-frame once), 403 (resync) and 401. A leaf verdict
+//!   (`E_DEVICE_UNLISTED`, ...) at queueing or sealing reads the group's device lists again and tries once more.
 //! - **Membership**: Welcomes (ready, op 20, before every join), external joins of every expected group (join-all) and
 //!   of an opened channel, registration of a channel's first group, resync of a lost group.
 //! - **Commits** of pending proposals on `commit.needed` (op 17) or after the instance's backoff when this device
@@ -305,6 +306,9 @@ pub struct Engine {
     st: Mutex<St>,
     stopped: AtomicBool,
     trust: tokio::sync::Mutex<trust::TrustMemory>,
+    /// One trust pass at a time (controller.ts `refreshTrust` coalesces its triggers into one running pass). A caller
+    /// that waits here gets a pass that starts after it asked, so a leaf it forgot is read again before it returns.
+    trust_pass: tokio::sync::Mutex<()>,
     gateway: Mutex<Option<Arc<WsGateway>>>,
 }
 
@@ -343,6 +347,7 @@ impl Engine {
             }),
             stopped: AtomicBool::new(false),
             trust: tokio::sync::Mutex::default(),
+            trust_pass: tokio::sync::Mutex::default(),
             gateway: Mutex::new(None),
         })
     }
@@ -1145,9 +1150,11 @@ impl Engine {
                     && self.st().removal_trust_tried.insert(g) =>
             {
                 *self.trust.lock().await = trust::TrustMemory::default();
+                let pass = self.trust_pass.lock().await;
                 if trust::refresh_once(&self.api, &self.core, &self.trust, now_s()).await {
                     self.hooks.trust_changed();
                 }
+                drop(pass);
                 removals::recover_group(&self.core, &self.api, g).await
             }
             other => other,
@@ -2081,12 +2088,14 @@ impl Engine {
 
     // ---- sending (send.ts) ----
 
-    /// send.ts `sendMessage`: queues a text post (type 0) in the group's outbox and asks for a drain. The core's refusal
-    /// is answered at once and nothing else runs.
+    /// send.ts `sendMessage` behind controller.ts `sendWithTrustRetry`: queues a text post (type 0) in the group's
+    /// outbox and asks for a drain.
+    ///
+    /// The core refuses to queue into a group holding a failed leaf. A device that joined before the list naming it was
+    /// ingested fails against the cached list (`E_DEVICE_UNLISTED` and the other leaf verdicts) until a refresh ingests
+    /// the newer one, so the group's leaves are read again and the post is queued once more; the core alone decides the
+    /// second answer, which is the caller's. A changed key (`E_UMK_CHANGED`) is not retried.
     pub async fn send_text(self: &Arc<Self>, g: Gid, text: String) -> Result<Gid, SyncError> {
-        if self.stopped() {
-            return Err(SyncError::Stopped);
-        }
         let request = Value::Array(vec![
             Value::Uint(0),
             Value::Null,
@@ -2095,6 +2104,20 @@ impl Engine {
             Value::Null,
         ])
         .encode();
+        match self.send_request(g, request.clone()).await {
+            Err(SyncError::Core(e)) if LEAF_VERDICTS.contains(&e.code) => {
+                self.refresh_group_trust(g).await;
+                self.send_request(g, request).await
+            }
+            other => other,
+        }
+    }
+
+    /// send.ts `sendRequest`: the core's refusal is answered at once and nothing else runs.
+    async fn send_request(self: &Arc<Self>, g: Gid, request: Vec<u8>) -> Result<Gid, SyncError> {
+        if self.stopped() {
+            return Err(SyncError::Stopped);
+        }
         let now = now_s();
         let raw = with_core(&self.core, move |c| c.send_prepare(&g, &request, now)).await?;
         let v = value::decode(&raw)?;
@@ -2237,7 +2260,7 @@ impl Engine {
                 self.st().trust_retried.insert(reframe, true);
                 let this = Arc::clone(&self);
                 self.spawn_watched(async move {
-                    this.refresh_trust().await;
+                    this.refresh_group_trust(g).await;
                     if let Some(p) = this.st().trust_retried.get_mut(&reframe) {
                         *p = false;
                     }
@@ -2429,12 +2452,21 @@ impl Engine {
         if self.stopped() {
             return;
         }
+        let _pass = self.trust_pass.lock().await;
         if trust::refresh_once(&self.api, &self.core, &self.trust, now_s()).await {
             self.hooks.trust_changed();
             for g in self.groups().await.iter().filter(|g| g.state == 2) {
                 self.hooks.group_changed(g.group_id);
             }
         }
+    }
+
+    /// controller.ts `refreshGroupTrust`: forgets which leaves of `g` were already fetched and waits for a trust pass
+    /// that reads them again. A pass already running (it may have taken those leaves and not ingested them yet) is
+    /// waited out first, so this never returns before the group's leaves were read after the call.
+    pub async fn refresh_group_trust(&self, g: Gid) {
+        self.trust.lock().await.forget_group(&g);
+        self.refresh_trust().await;
     }
 
     /// Forgets which leaves were fetched, so the next refresh reads them all again (a new ready).

@@ -218,6 +218,15 @@ pub struct TrustMemory {
     fetched: HashSet<String>,
 }
 
+impl TrustMemory {
+    /// controller.ts `refreshGroupTrust`'s first half: forgets the leaves of `group` already fetched, so the next pass
+    /// reads them again.
+    pub fn forget_group(&mut self, group: &[u8; 16]) {
+        let prefix = format!("{}:", crate::state::hex(group));
+        self.fetched.retain(|k| !k.starts_with(&prefix));
+    }
+}
+
 /// A user's served device-list head and the signed rows read up to it.
 type Signed = (Vec<u8>, Vec<u8>);
 
@@ -323,5 +332,25 @@ mod tests {
             Some(Value::Array(vec![row(2), row(3)]).encode())
         );
         assert_eq!(history_from(&history, 4), None);
+    }
+
+    #[test]
+    fn forgetting_a_group_keeps_the_other_groups_leaves() {
+        let (g, other) = ([1u8; 16], [2u8; 16]);
+        let mut m = TrustMemory::default();
+        for (group, leaf) in [(g, 1), (g, 2), (other, 1)] {
+            m.fetched.insert(format!(
+                "{}:{leaf}:{}:3:unknown",
+                crate::state::hex(&group),
+                crate::state::hex(&[9; 16])
+            ));
+        }
+        m.forget_group(&g);
+        assert_eq!(m.fetched.len(), 1);
+        assert!(
+            m.fetched
+                .iter()
+                .all(|k| k.starts_with(&crate::state::hex(&other)))
+        );
     }
 }
