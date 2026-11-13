@@ -123,62 +123,21 @@ pub enum InviteLinkError {
     Credentials,
 }
 
-/// The desktop's `policy.ts canonicalInstance` and invite route, for a pasted invite link (Task 27's
-/// `address::canonical_instance` is the same rule on its branch: dedup at merge). At most 2048 characters with no white
-/// space, backslash or control character, no `%2f`, `%5c`, `%00` or `%2e`; no user info, query or fragment; https, or
-/// http to `127.0.0.1`, `[::1]` or `localhost` when `allow_loopback` (debug builds); a host not ending in a dot; and
-/// the path exactly `/i/<code>` with the code `[A-Za-z0-9_-]{1,128}`.
+/// The desktop's `policy.ts canonicalInstance` and invite route, for a pasted invite link: one implementation, Task 27's
+/// [`crate::instances::address::invite_link`] (the strictest checks of the two ports: at most 2048 characters with no
+/// white space, backslash or control character, no `%2f`, `%5c`, `%00` or `%2e`; no user info and no `?` or `#`; https,
+/// or http to `127.0.0.1`, `[::1]` or `localhost` when `allow_loopback` (debug builds); a host not ending in a dot; the
+/// path exactly `/i/<code>` with the code `[A-Za-z0-9_-]{1,128}`), its refusals in the sign-up's terms.
 pub fn parse_invite_link(input: &str, allow_loopback: bool) -> Result<InviteLink, InviteLinkError> {
-    let input = input.trim();
-    let lower = input.to_ascii_lowercase();
-    if input.is_empty()
-        || input.len() > 2048
-        || input
-            .chars()
-            .any(|c| c.is_whitespace() || c == '\\' || c.is_control())
-        || ["%2f", "%5c", "%00", "%2e"]
-            .iter()
-            .any(|s| lower.contains(s))
-    {
-        return Err(InviteLinkError::Invalid);
-    }
-    let url = url::Url::parse(input).map_err(|_| InviteLinkError::Invalid)?;
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(InviteLinkError::Credentials);
-    }
-    if url.query().is_some()
-        || url.fragment().is_some()
-        || input.contains('#')
-        || input.contains('?')
-    {
-        return Err(InviteLinkError::Credentials);
-    }
-    let host = url.host_str().ok_or(InviteLinkError::Invalid)?;
-    if host.is_empty() || host.ends_with('.') {
-        return Err(InviteLinkError::Invalid);
-    }
-    let loopback = matches!(host, "127.0.0.1" | "[::1]" | "localhost");
-    match url.scheme() {
-        "https" => {}
-        "http" if allow_loopback && loopback => {}
-        "http" => return Err(InviteLinkError::Insecure),
-        _ => return Err(InviteLinkError::Invalid),
-    }
-    let path = url.path();
-    let code = path
-        .strip_prefix("/i/")
-        .map(|c| c.strip_suffix('/').unwrap_or(c))
-        .filter(|c| {
-            (1..=128).contains(&c.len())
-                && c.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        })
-        .ok_or(InviteLinkError::Invalid)?;
-    let instance = url::Url::parse(&format!("{}/", url.origin().ascii_serialization()))
-        .map_err(|_| InviteLinkError::Invalid)?;
+    use crate::instances::address;
+    let parsed = address::invite_link(input, allow_loopback).map_err(|e| match e.0 {
+        address::CREDENTIALS => InviteLinkError::Credentials,
+        address::INSECURE => InviteLinkError::Insecure,
+        _ => InviteLinkError::Invalid,
+    })?;
     Ok(InviteLink {
-        instance,
-        code: code.to_owned(),
+        instance: parsed.instance,
+        code: parsed.invite.ok_or(InviteLinkError::Invalid)?,
     })
 }
 

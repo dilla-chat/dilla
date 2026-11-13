@@ -30,6 +30,11 @@ pub const REMOVE_CONFIRM: &str = "Remove";
 pub const REMOVE_BUSY: &str = "Removing\u{2026}";
 pub const CANCEL: &str = "Cancel";
 pub const NEW_TITLE: &str = "Connect to a Dilla instance?";
+/// main.ts `confirmInstance` as the sign-up shows it (Task 25): a title naming the host, the instance, the warning.
+pub const CONFIRM_TITLE: &str = "Connect to {host}?";
+pub const CONFIRM_INSTANCE: &str = "Instance: {instance}";
+pub const CONFIRM_DETAIL: &str = "Only continue if you recognize this address.";
+pub const CONFIRM_CONNECT: &str = "Connect";
 pub const NEW_BODY: &str = "Connect to {host}? Only continue if you recognize this address.";
 pub const ERROR_CONNECT: &str =
     "Could not connect. Enter a complete HTTPS instance address, then try again.";

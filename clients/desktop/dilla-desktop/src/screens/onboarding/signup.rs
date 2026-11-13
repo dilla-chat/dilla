@@ -76,13 +76,11 @@ pub enum Step {
     Confirm,
 }
 
-// main.ts `confirmInstance`'s copy. It is the desktop's own (not in the web strings `strings.rs` is generated from), so
-// it lives here until the generator takes desktop copy; the controller decides at merge.
-const CONFIRM_TITLE: &str = "Connect to {host}?";
-const CONFIRM_INSTANCE: &str = "Instance: {instance}";
-const CONFIRM_DETAIL: &str = "Only continue if you recognize this address.";
-const CONFIRM_CONNECT: &str = "Connect";
-const CONFIRM_CANCEL: &str = "Cancel";
+// main.ts `confirmInstance`'s copy: the desktop's own (not in the web strings `strings.rs` is generated from), kept with
+// the instance manager's in one module (Task 27's `instances::copy`).
+use crate::screens::instances::copy::{
+    CANCEL as CONFIRM_CANCEL, CONFIRM_CONNECT, CONFIRM_DETAIL, CONFIRM_INSTANCE, CONFIRM_TITLE,
+};
 
 #[derive(Clone)]
 struct BannerState {

@@ -65,6 +65,9 @@ fn addresses_reject_confusion() {
         "https://a@b/",
         "https://b/?token=x",
         "https://b/#x",
+        // The strictest of the two ports (Task 25's invite links): an empty `?` or `#` refuses too.
+        "https://b/?",
+        "https://b/#",
         " https://b/",
         "https://b/\\evil",
         "https://b/\n",

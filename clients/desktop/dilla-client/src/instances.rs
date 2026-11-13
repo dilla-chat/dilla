@@ -423,6 +423,11 @@ pub mod address {
         pub invite: Option<String>,
     }
 
+    /// The refusals' texts (the sign-up maps them to its own errors).
+    pub const INVALID: &str = "Invalid instance URL";
+    pub const CREDENTIALS: &str = "Instance URLs cannot contain credentials, queries or fragments";
+    pub const INSECURE: &str = "An HTTPS instance is required";
+
     /// `unsafeUrl`: whitespace, a backslash or a control character anywhere.
     fn unsafe_url(input: &str) -> bool {
         input
@@ -509,26 +514,27 @@ pub mod address {
     /// or fragment, ending in `/`. A pasted page of the web app (`/welcome`, `/c/<id>/<id>`, `/i/<code>`) names its
     /// server, so it becomes the server's root.
     pub fn canonical_instance(input: &str, allow_loopback: bool) -> Result<Url, InvalidAddress> {
-        if input.len() > 2048 || unsafe_url(input) || encoded_separator(input) {
-            return Err(InvalidAddress("Invalid instance URL"));
+        if input.is_empty() || input.len() > 2048 || unsafe_url(input) || encoded_separator(input) {
+            return Err(InvalidAddress(INVALID));
         }
-        let mut url = Url::parse(input).map_err(|_| InvalidAddress("Invalid instance URL"))?;
+        let mut url = Url::parse(input).map_err(|_| InvalidAddress(INVALID))?;
+        // The strictest of the desktop's two ports (Task 25's invite links, Task 27's addresses): a `?` or `#` refuses
+        // the address even when empty.
         if !url.username().is_empty()
             || url.password().is_some()
-            || url.query().is_some_and(|q| !q.is_empty())
-            || url.fragment().is_some_and(|f| !f.is_empty())
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || input.contains(['?', '#'])
         {
-            return Err(InvalidAddress(
-                "Instance URLs cannot contain credentials, queries or fragments",
-            ));
+            return Err(InvalidAddress(CREDENTIALS));
         }
-        // `Url::parse` keeps an empty `?` and `#`; JS drops them with the empty search and hash.
+        // Refused above whenever present (even empty).
         url.set_query(None);
         url.set_fragment(None);
         let host = url.host_str().unwrap_or_default();
         let local = allow_loopback && matches!(host, "127.0.0.1" | "[::1]" | "localhost");
         if url.scheme() != "https" && !(local && url.scheme() == "http") {
-            return Err(InvalidAddress("An HTTPS instance is required"));
+            return Err(InvalidAddress(INSECURE));
         }
         if host.is_empty() || host.ends_with('.') {
             return Err(InvalidAddress("Invalid instance host"));
@@ -550,6 +556,26 @@ pub mod address {
             ));
         }
         Ok(url)
+    }
+
+    /// A pasted invite link (the sign-up's step 1, Task 25): exactly `<instance>/i/<code>` on an address
+    /// [`canonical_instance`] takes, answered as the instance (the link's origin, `scheme://host[:port]/`) and its code.
+    /// Anything else (a bare code, another page) is [`INVALID`].
+    pub fn invite_link(input: &str, allow_loopback: bool) -> Result<Input, InvalidAddress> {
+        let input = input.trim();
+        // Not a web address at all (`javascript:`, a bare code) is no link, before any https rule.
+        let url = Url::parse(input).map_err(|_| InvalidAddress(INVALID))?;
+        if !matches!(url.scheme(), "https" | "http") {
+            return Err(InvalidAddress(INVALID));
+        }
+        canonical_instance(input, allow_loopback)?;
+        let code = invite_code(url.path()).ok_or(InvalidAddress(INVALID))?;
+        let instance = Url::parse(&format!("{}/", url.origin().ascii_serialization()))
+            .map_err(|_| InvalidAddress(INVALID))?;
+        Ok(Input {
+            instance,
+            invite: Some(code.to_owned()),
+        })
     }
 
     /// `instanceInput`: the instance, and the invite code when the input was an `/i/<code>` page link.

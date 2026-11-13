@@ -1225,6 +1225,14 @@ impl Publisher {
 
     /// The device is revoked: final for this client (a later ready never says otherwise, see [`phase_on_ready`]).
     fn sign_out(&mut self) {
+        // A sign-up's kept join (Task 25, `signup.pendingJoin`) goes with the session (the web clears it on sign-out).
+        let core = self.core.clone();
+        tokio::spawn(async move {
+            let _ = try_core(&core, |c| {
+                c.setting_delete(crate::features::signup::PENDING_JOIN_KEY)
+            })
+            .await;
+        });
         self.upkeep.stop();
         self.link.disconnect();
         self.state.connection.status = ConnectionStatus::Offline;

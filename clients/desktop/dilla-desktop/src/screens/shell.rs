@@ -876,8 +876,8 @@ impl Render for ShellView {
             &rail::RailHandlers {
                 on_pick,
                 on_home,
-                // The add-a-server dialog is the onboarding area's (Task 25); the controller wires its hook here.
-                on_add: Rc::new(|_, _| {}),
+                // The add-a-server dialog is the onboarding area's (Task 25).
+                on_add: Rc::new(|_, cx| crate::screens::onboarding::open_add_server(cx)),
             },
             window,
             cx,
@@ -1038,6 +1038,10 @@ impl Render for ShellView {
                     cx,
                 )
                 .into_any_element()
+            }
+            // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
+            None if !self.dm_view && state.communities.is_empty() => {
+                crate::screens::create::empty_view(&ctx, window, cx)
             }
             None => div().size_full().bg(color::BG).into_any_element(),
         };
