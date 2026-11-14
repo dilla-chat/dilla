@@ -189,6 +189,17 @@ pub fn window_closed(window: WindowId, cx: &mut App) {
     w.pending.remove(&window);
 }
 
+/// The windows `client` is attached to (each shell window of it), for a release that clears what those windows keep.
+pub fn windows_of(client: &Rc<Client>, cx: &App) -> Vec<WindowId> {
+    cx.try_global::<Windows>().map_or_else(Vec::new, |w| {
+        w.attached
+            .iter()
+            .filter(|(_, (c, _))| Rc::ptr_eq(c, client))
+            .map(|(id, _)| *id)
+            .collect()
+    })
+}
+
 /// The window's flows entity, made on first use.
 fn flows_of(window: &mut Window, cx: &mut App) -> Entity<CreateFlows> {
     let id = window.window_handle().window_id();

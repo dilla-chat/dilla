@@ -675,3 +675,55 @@ fn a_release_drops_an_open_moderation_confirmation(cx: &mut gpui::TestAppContext
     );
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
 }
+
+/// Final review M7: what a window's command picker and reminders popover keep goes with its client's release: a typed
+/// command (a ban reason) does not stay in the picker after Forget or Sign out, and the popover's first read runs again
+/// for the next sign-in.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn a_release_clears_the_windows_command_draft_and_reminders(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_desktop::screens::commands::{self, reminders};
+    use dilla_desktop::screens::create;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("m7-picker", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let alice = rt.block_on(world::sign_up(&host, &invite, "alice", "Alice", "m7"));
+    let client = Rc::new(rt.block_on(world::start(&alice)));
+    cx.update(dilla_desktop::install);
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, cx| {
+        // The shell attaches its client to its window as it starts.
+        create::attach(window, client.clone(), Rc::new(|_, _, _| {}), cx);
+        window.window_handle().window_id()
+    });
+    vcx.update(|_, cx| {
+        commands::draft_changed(window, "/ban bea spam", cx);
+        reminders::toggle(window, cx);
+    });
+    let state = client.state().borrow().clone();
+    assert_eq!(
+        vcx.update(|_, cx| commands::picker_state(window, cx).draft),
+        "/ban bea spam"
+    );
+    assert!(vcx.update(|_, cx| reminders::bell_state(window, &state, cx).1));
+
+    vcx.update(|_, cx| dilla_desktop::release::release_client(&client, cx));
+    assert_eq!(
+        vcx.update(|_, cx| commands::picker_state(window, cx)),
+        commands::PickerState::default(),
+        "the typed command went"
+    );
+    assert!(
+        !vcx.update(|_, cx| reminders::bell_state(window, &state, cx).1),
+        "the popover closed and forgot its reads"
+    );
+    assert_eq!(Rc::strong_count(&client), 1);
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}

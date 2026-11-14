@@ -18,6 +18,8 @@ pub fn release_client(client: &Rc<Client>, cx: &mut App) {
     // The views a window keeps between frames (its keyed state) let go first: without this they would hold the client
     // until the window draws again, which a hidden or minimized window may not do (review M5).
     let key = Rc::as_ptr(client) as usize;
+    // The client's windows, read before the create area forgets them: what they keep of it goes below.
+    let windows = screens::create::windows_of(client, cx);
     if cx.has_global::<Holders>() {
         let (gone, kept): (Vec<Holder>, Vec<Holder>) =
             std::mem::take(&mut cx.global_mut::<Holders>().0)
@@ -46,6 +48,7 @@ pub fn release_client(client: &Rc<Client>, cx: &mut App) {
     screens::factor::release(client, cx);
     screens::commands::confirm::release(client, cx);
     screens::commands::chips::release(client);
+    screens::commands::release_windows(&windows, cx);
 }
 
 /// A view kept between frames that holds a client, and how it lets go of it.

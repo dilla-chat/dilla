@@ -65,6 +65,11 @@ struct Inbox {
     bell: Option<Bounds<Pixels>>,
 }
 
+/// `window`'s popover forgets everything (its client was released): closed, and its first read runs again.
+pub fn forget_window(window: WindowId, cx: &mut App) {
+    crate::per_window::set::<Inbox>(window, None, cx);
+}
+
 fn inbox(window: WindowId, cx: &mut App) -> &mut Inbox {
     crate::per_window::get_mut::<Inbox>(window, cx)
 }

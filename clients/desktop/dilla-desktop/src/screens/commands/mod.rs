@@ -97,6 +97,16 @@ pub fn picker_state_mut(window: gpui::WindowId, cx: &mut App) -> &mut PickerStat
     crate::per_window::get_mut::<PickerState>(window, cx)
 }
 
+/// The client of `windows` was released (Forget, Sign out, an instance's Remove; final review M7): their picker drafts
+/// and chips (a typed ban reason) and their reminders popovers go, so nothing typed stays and the next sign-in reads its
+/// reminders afresh.
+pub fn release_windows(windows: &[gpui::WindowId], cx: &mut App) {
+    for &window in windows {
+        crate::per_window::set::<PickerState>(window, None, cx);
+        reminders::forget_window(window, cx);
+    }
+}
+
 /// The composer of `window` reports its draft on every change. A new draft moves the highlight back to the first row
 /// and opens a list that Escape closed.
 pub fn draft_changed(window: gpui::WindowId, draft: &str, cx: &mut App) {
