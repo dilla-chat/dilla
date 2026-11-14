@@ -52,9 +52,10 @@ pub enum Value {
 }
 
 impl Value {
-    /// The deterministic encoding of this item.
+    /// The deterministic encoding of this item, into a buffer sized for it up front ([`encode`]'s rule): a sealed
+    /// command's plaintext is encoded here, and a buffer that grows would free its old block, unwiped.
     pub fn encode(&self) -> Vec<u8> {
-        let mut e = Encoder::new();
+        let mut e = Encoder::with_capacity(item_bound(self));
         self.write(&mut e);
         e.into_vec()
     }
@@ -1020,6 +1021,34 @@ mod tests {
                 bound,
                 "{size}: the buffer was never reallocated"
             );
+        }
+    }
+
+    /// An item (a sealed command's plaintext) is encoded into a buffer sized for it up front, as a frame is, so a growing
+    /// buffer never frees an unwiped block on the way: for an empty item, a small one and a large nested one.
+    #[test]
+    fn an_item_is_encoded_without_reallocating() {
+        for size in [0, 1, 300, 70_000] {
+            let item = Value::Array(vec![
+                Value::Text("play".into()),
+                Value::Array(vec![
+                    Value::Bytes(vec![0x5a; size]),
+                    Value::Text("x".repeat(size / 2)),
+                    Value::Uint(u64::MAX),
+                    Value::Null,
+                ]),
+            ]);
+            let bound = item_bound(&item);
+            let bytes = item.encode();
+            assert!(bytes.len() <= bound, "{size}: {} > {bound}", bytes.len());
+            assert_eq!(
+                bytes.capacity(),
+                bound,
+                "{size}: the buffer was never reallocated"
+            );
+            let wiped = item.clone().encode_wiped();
+            assert_eq!(wiped.capacity(), bound, "{size}: encode_wiped too");
+            assert_eq!(&wiped[..], &bytes[..]);
         }
     }
 
