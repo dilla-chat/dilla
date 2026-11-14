@@ -1156,7 +1156,8 @@ async fn read_audio(
     let mut window: Vec<f32> = Vec::with_capacity(RATE as usize / 10);
     let mut verified = VerifiedCache::default();
     while let Some(frame) = stream.next().await {
-        // Stamped as the frame leaves the decoder.
+        // Stamped as the frame leaves the decoder. The web's analyser sits on the remote stream, a little later, so this
+        // receive-side measure (the music gates' first audio) is a few ms earlier than the web's (w2-bot-review M-C2).
         let at_ms = wall_ms();
         let edge = edge_of(
             &mut tracker.audible,
