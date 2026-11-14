@@ -19,7 +19,8 @@ pub struct Shortcut {
     pub action: &'static str,
     /// The `strings.rs` key of the chord as the web prints it: `⌘` and `⌥` become Ctrl and Alt off macOS.
     pub chord: &'static str,
-    /// The same chord as a GPUI keystroke (the Ctrl form; the owning area binds Cmd for it on macOS).
+    /// The same chord as a GPUI keystroke (the Ctrl form). For a `⌘` chord the owning area binds Cmd too, so it works as
+    /// printed on macOS; a chord printed with Ctrl (Ctrl+End, Ctrl+/) is Ctrl there as well, as on the web.
     pub keystroke: &'static str,
 }
 

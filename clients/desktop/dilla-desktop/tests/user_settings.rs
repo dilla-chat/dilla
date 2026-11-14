@@ -200,3 +200,56 @@ fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// Final review I3: every chord Settings -> Keyboard prints is bound as printed, on macOS (`⌘` is Cmd, `Ctrl` stays
+/// Ctrl) and off it (`⌘` is Ctrl): a Mac user who presses ⌘⇧M as the table says is muted.
+#[gpui::test]
+fn every_printed_chord_is_bound_on_every_platform(cx: &mut TestAppContext) {
+    use dilla_desktop::screens::user_settings::keyboard::platform_keys;
+    cx.update(dilla_desktop::install);
+    // A printed keycap as a GPUI keystroke part.
+    let part = |cap: &str| -> String {
+        match cap {
+            "⌘" => "cmd".to_owned(),
+            "⇧" => "shift".to_owned(),
+            "⌥" => "alt".to_owned(),
+            "Ctrl" => "ctrl".to_owned(),
+            "Alt" => "alt".to_owned(),
+            "Esc" => "escape".to_owned(),
+            other => other.to_ascii_lowercase(),
+        }
+    };
+    fn action_of(keystroke: &str, cx: &mut TestAppContext) -> Vec<String> {
+        // `Keystroke::parse` takes a static source (its error keeps it): a test may leak a few short strings.
+        let keystroke: &'static str = Box::leak(keystroke.to_owned().into_boxed_str());
+        let input = [gpui::Keystroke::parse(keystroke).unwrap()];
+        cx.update(|cx| {
+            cx.all_bindings_for_input(&input)
+                .iter()
+                .map(|b| b.action().name().to_owned())
+                .collect()
+        })
+    }
+    for s in SHORTCUTS {
+        let want = action_of(s.keystroke, cx);
+        if want.is_empty() {
+            // Escape: the dialogs' own key listeners (see the test above).
+            continue;
+        }
+        let chord = dilla_desktop::strings::t(s.chord);
+        for apple in [true, false] {
+            let keystroke = platform_keys(chord, apple)
+                .iter()
+                .map(|c| part(c))
+                .collect::<Vec<_>>()
+                .join("-");
+            let got = action_of(&keystroke, cx);
+            assert!(
+                want.iter().any(|w| got.contains(w)),
+                "{} prints {chord} ({keystroke} {}), which is not bound to {want:?}: {got:?}",
+                s.action,
+                if apple { "on macOS" } else { "off macOS" },
+            );
+        }
+    }
+}

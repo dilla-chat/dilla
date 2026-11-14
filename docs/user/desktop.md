@@ -85,28 +85,31 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 
 ### Keyboard shortcuts
 
-On macOS, read Control as ⌘ and Alt as ⌥.
+The Windows and Linux keys use Control; on macOS a chord takes ⌘ where the table says so (Control+End and
+Control+/ stay Control there, as in the browser).
 
-| Keys | What it does |
-|---|---|
-| Control+K, Control+/ | Opens search (Escape closes it; the arrows choose, Enter opens) |
-| Control+, | Opens your settings |
-| Alt+Arrow Up, Alt+Arrow Down | Opens the previous or next channel |
-| Alt+Arrow Left, Alt+Arrow Right | Goes back or forward through the places you have been |
-| Control+Shift+M | Mutes or unmutes, in a call or before the next one |
-| Control+Shift+D | Deafens or undeafens, in a call or before the next one |
-| Push-to-talk key (Settings → Voice) | Opens the microphone while held, in a call, when this window has focus and no text field does |
-| Page Up, Page Down | Scrolls the message log |
-| Up, in an empty composer | Edits your newest message |
-| Enter, Shift+Enter | Sends, starts a new line |
-| Tab, Shift+Tab | Next and previous control; a dialog keeps them inside |
-| Escape | Closes the open search, dialog, thread pane, lightbox or GIF picker |
-| Enter, Escape on an incoming ring | Answers, declines |
-| Arrow Up, Arrow Down, Tab, Enter, Escape in the `/` list | Chooses, completes, runs, closes |
+| Windows and Linux | macOS | What it does |
+|---|---|---|
+| Control+K, Control+/ | ⌘+K, Control+/ | Opens search (Escape closes it; the arrows choose, Enter opens) |
+| Control+, | ⌘+, | Opens your settings |
+| Alt+Arrow Up, Alt+Arrow Down | ⌥+Arrow Up, ⌥+Arrow Down | Opens the previous or next channel |
+| Alt+Arrow Left, Alt+Arrow Right | ⌥+Arrow Left, ⌥+Arrow Right | Goes back or forward through the places you have been |
+| Control+Shift+M | ⌘+Shift+M | Mutes or unmutes, in a call or before the next one |
+| Control+Shift+D | ⌘+Shift+D | Deafens or undeafens, in a call or before the next one |
+| Control+End | Control+End | Jumps the open conversation to its newest message |
+| Control+Shift+Enter | ⌘+Shift+Enter | Starts the open direct message's call |
+| Push-to-talk key (Settings → Voice) | the same | Opens the microphone while held, in a call, when this window has focus and no text field does |
+| Page Up, Page Down | the same | Scrolls the message log |
+| Up, in an empty composer | the same | Edits your newest message |
+| Enter, Shift+Enter | the same | Sends, starts a new line |
+| Tab, Shift+Tab | the same | Next and previous control; a dialog keeps them inside |
+| Escape | the same | Closes the open search, dialog, thread pane, lightbox or GIF picker |
+| Enter, Escape on an incoming ring | the same | Answers, declines |
+| Arrow Up, Arrow Down, Tab, Enter, Escape in the `/` list | the same | Chooses, completes, runs, closes |
 
-Settings → Keyboard lists seven shortcuts, among them Control+End (jump to the newest message) and Control+Shift+Enter
-(call the open direct message). As on the web, a direct message's header has no call button: right-click the direct
-message in the list for its menu, which starts (or joins) its call and opens its pinned messages.
+Settings → Keyboard lists seven of these, as the web does. A direct message's header has no call button, as on the
+web: right-click the direct message in the list for its menu, which starts (or joins) its call and opens its pinned
+messages.
 
 ### Known gaps
 

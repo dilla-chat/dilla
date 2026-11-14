@@ -1,5 +1,5 @@
 //! The voice area's key bindings (Task 17; packages/web/src/screens/voice/shortcuts.ts): Ctrl+Shift+M mutes,
-//! Ctrl+Shift+D deafens, in a call or out of one (out of one the next join starts that way). Push to talk is the
+//! Ctrl+Shift+D deafens (Cmd+Shift+M and Cmd+Shift+D too, as the web's `ctrlKey || metaKey`), in a call or out of one (out of one the next join starts that way). Push to talk is the
 //! dock's key listener (`super::dock`); the arrows and Escape are the stage's own (`super::stage`).
 //! `crate::keys::bind_all` calls [`bind`] once per app.
 
@@ -12,6 +12,9 @@ pub fn bind(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-m", ToggleMute, None),
         KeyBinding::new("ctrl-shift-d", ToggleDeafen, None),
+        // Final review I3: Settings -> Keyboard prints ⌘+⇧+M and ⌘+⇧+D on macOS; the web takes either modifier.
+        KeyBinding::new("cmd-shift-m", ToggleMute, None),
+        KeyBinding::new("cmd-shift-d", ToggleDeafen, None),
     ]);
     cx.on_action(|_: &ToggleMute, cx| super::toggle_mute(cx));
     cx.on_action(|_: &ToggleDeafen, cx| super::toggle_deafen(cx));
