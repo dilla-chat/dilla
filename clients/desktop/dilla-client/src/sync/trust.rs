@@ -313,14 +313,14 @@ impl TrustMemory {
         self.fetched.clear();
     }
 
-    /// controller.ts `refreshGroupTrust`'s first half: forgets the leaves of `group` already fetched, so the next pass
-    /// reads them again.
     /// A user an earlier pass found not on their list (the tests seed it).
     #[cfg(test)]
     pub(crate) fn mark_unlisted_for_test(&mut self, user: [u8; 16]) {
         self.unlisted.insert(user);
     }
 
+    /// controller.ts `refreshGroupTrust`'s first half: forgets the leaves of `group` already fetched, so the next pass
+    /// reads them again.
     pub fn forget_group(&mut self, group: &[u8; 16]) {
         let prefix = format!("{}:", crate::state::hex(group));
         self.fetched.retain(|k| !k.starts_with(&prefix));

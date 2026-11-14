@@ -177,7 +177,6 @@ impl Trust {
     }
 }
 
-/// Starts the watcher of `inner`'s client once (the UI calls this on every frame that draws the area).
 /// The clients whose watcher runs ([`start`]).
 static STARTED: Mutex<Vec<Weak<Inner>>> = Mutex::new(Vec::new());
 
@@ -191,6 +190,7 @@ pub(crate) fn started(inner: &Arc<Inner>) -> bool {
         .any(|w| std::ptr::eq(w.as_ptr(), Arc::as_ptr(inner)))
 }
 
+/// Starts the watcher of `inner`'s client once (the UI calls this on every frame that draws the area).
 pub(crate) fn start(inner: &Arc<Inner>, state: &watch::Receiver<Arc<AppState>>) {
     {
         let mut started = STARTED
