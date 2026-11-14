@@ -54,6 +54,10 @@ getrandom = "0.3"
 # const-random-macro (CC0-1.0, allowed for that crate in deny.toml, ruling R20).
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["wayland", "x11"] }
+# Printing (src/print.rs): the XDG desktop portal's print dialog, and the anonymous memory file the document is handed
+# over in. Both already in the lock (ashpd through gpui-pre-linux, rustix through several crates).
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "print"] }
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }

@@ -2161,6 +2161,7 @@ dependencies = [
 name = "dilla-desktop"
 version = "0.1.0"
 dependencies = [
+ "ashpd",
  "chrono",
  "dilla-client",
  "dilla-core",
@@ -2179,6 +2180,7 @@ dependencies = [
  "opus-pure",
  "reqwest 0.13.5",
  "rodio",
+ "rustix",
  "serde",
  "serde_json",
  "sha1 0.11.0",

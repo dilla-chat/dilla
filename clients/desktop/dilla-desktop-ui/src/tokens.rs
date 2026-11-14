@@ -335,6 +335,9 @@ pub mod font {
     pub const MONO: &str = "JetBrains Mono";
     /// The family name the registered DM Serif Display Italic font answers to.
     pub const SERIF_ITALIC: &str = "DM Serif Display";
+    /// The face Chromium falls back to for a symbol the web's JetBrains Mono subset lacks (fontconfig's sans-serif on the
+    /// Linux reference machine).
+    pub const SYMBOL: &str = "DejaVu Sans";
     /// `--weight-display`: 700
     pub const WEIGHT_DISPLAY: FontWeight = FontWeight(700.0);
     /// `--weight-body`: 400

@@ -201,7 +201,6 @@ fn parity_onboarding_keys() {
 }
 
 #[test]
-#[ignore = "parity after T6c: whole frame 1.0549 % (the desktop's backup codes offer Save as file where the web prints, so Copy, Save as file and Show wrap under the count; the web's row fits beside it)"]
 fn parity_onboarding_done() {
     parity("onboarding/done");
 }

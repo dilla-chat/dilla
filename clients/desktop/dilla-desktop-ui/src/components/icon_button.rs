@@ -53,6 +53,7 @@ pub struct IconButton {
     keys: Vec<String>,
     tooltip: bool,
     disabled: bool,
+    danger: bool,
     on_click: Option<ClickHandler>,
 }
 
@@ -67,6 +68,7 @@ impl IconButton {
             keys: Vec::new(),
             tooltip: true,
             disabled: false,
+            danger: false,
             on_click: None,
         }
     }
@@ -94,6 +96,12 @@ impl IconButton {
         self
     }
 
+    /// A leave (VoiceDock.css `.d-voice-dock__leave`): the `--danger` glyph, the `--danger` fill under the pointer.
+    pub fn danger(mut self, danger: bool) -> Self {
+        self.danger = danger;
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -111,7 +119,14 @@ impl IconButton {
 impl RenderOnce for IconButton {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let pressed = self.pressed == Some(true);
-        let fg = if pressed { color::ACCENT } else { color::FG_2 };
+        let danger = self.danger;
+        let fg = if pressed {
+            color::ACCENT
+        } else if self.danger {
+            color::DANGER
+        } else {
+            color::FG_2
+        };
         let mut button = div()
             .id(self.id)
             .relative()
@@ -141,7 +156,13 @@ impl RenderOnce for IconButton {
         let mut button = button
             .cursor_pointer()
             .tab_index(0)
-            .hover(|s| s.bg(color::HOVER).text_color(color::FG))
+            .hover(move |s| {
+                if danger {
+                    s.bg(color::DANGER).text_color(color::DANGER_INK)
+                } else {
+                    s.bg(color::HOVER).text_color(color::FG)
+                }
+            })
             .focus_visible(|s| s.shadow(focus_ring()));
         if self.tooltip {
             button = button

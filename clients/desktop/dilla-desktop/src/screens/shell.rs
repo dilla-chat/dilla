@@ -1021,6 +1021,11 @@ impl Render for ShellView {
             .map_or(0, Vec::len);
         let online = usize::from(state.connection.status == ConnectionStatus::Online);
         let (me, status) = self.me();
+        // UserPanel.tsx: in a call the panel's line says where ("in {channel}"), else the presence.
+        let in_room = crate::screens::voice::in_room(&state)
+            .map(|room| crate::strings::tf("members.inChannel", &[("channel", &room)]));
+        let call_room = crate::screens::voice::call_room(&state);
+        let call_route = crate::screens::voice::call_route(&state);
         let ctx = self.slot_cx();
         // The threads area reads this shell's view (its pane, the header's toggle, the reply keys), and the Threads button
         // is pressed while a thread is open (11).
@@ -1194,6 +1199,7 @@ impl Render for ShellView {
             &user_panel::PanelModel {
                 name: &me,
                 status,
+                in_room: in_room.as_deref(),
                 muted,
                 deafened,
             },
@@ -1207,11 +1213,13 @@ impl Render for ShellView {
             },
         );
         let dock = slots::dock(window, cx);
+        // `.d-app-shell__sidebar` is --bg-2 throughout: the dock's translucent card lies on it too.
         let sidebar = div()
             .relative()
             .flex_none()
             .w(Pixels::from(panes.sidebar))
             .h_full()
+            .bg(color::BG_2)
             .flex()
             .flex_col()
             .child(
@@ -1523,6 +1531,7 @@ impl Render for ShellView {
         let (reminders_due, reminders_open) =
             crate::screens::commands::reminders::bell_state(wid, &state, cx);
         let bell_focus = crate::screens::commands::reminders::bell_focus(wid, cx);
+        let to_call = shell.clone();
         let titlebar = titlebar::render(
             &titlebar::TitlebarModel {
                 controls: self.controls,
@@ -1530,8 +1539,15 @@ impl Render for ShellView {
                 reminders_due,
                 reminders_open,
                 bell_focus: Some(bell_focus),
+                voice: call_room,
             },
             &titlebar::TitlebarHandlers {
+                // TopBar.tsx's voice chip opens the call.
+                on_voice: Rc::new(move |_, cx| {
+                    if let Some(route) = call_route.clone() {
+                        let _ = to_call.update(cx, |shell, cx| shell.navigate(route, cx));
+                    }
+                }),
                 on_settings: Rc::new(move |_, cx| {
                     let _ = weak.update(cx, |shell, cx| shell.navigate(Route::Settings(None), cx));
                 }),

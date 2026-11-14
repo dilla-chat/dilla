@@ -35,6 +35,8 @@ pub struct PanelModel<'a> {
     pub name: &'a str,
     /// `online`, `connecting` or `offline`: the presence line under the name.
     pub status: &'a str,
+    /// UserPanel.tsx `inRoom`: in a call the line under the name says where ("in {channel}") in place of the presence.
+    pub in_room: Option<&'a str>,
     pub muted: bool,
     pub deafened: bool,
 }
@@ -128,12 +130,15 @@ pub fn render(model: &PanelModel<'_>, handlers: &PanelHandlers) -> impl IntoElem
                     .weight(font::WEIGHT_LABEL)
                     .ellipsis(),
                 )
-                .child(line(
-                    model.status.to_owned(),
-                    text::META,
-                    line_height(text::META, 1.3),
-                    color::FG_3,
-                )),
+                .child(
+                    line(
+                        model.in_room.unwrap_or(model.status).to_owned(),
+                        text::META,
+                        line_height(text::META, 1.3),
+                        color::FG_3,
+                    )
+                    .ellipsis(),
+                ),
         );
     let panel = div()
         .id(SharedString::from("user-panel"))

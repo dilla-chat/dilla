@@ -43,7 +43,7 @@ export interface CallDeps {
   clearTimeout(id: number): void;
   randomId(): Id;
   me(): { userId: Id; deviceId: Id } | null;
-  instance(): { policyVersion: bigint; externalSenderPub: Uint8Array } | null;
+  instance(): { policyVersion: bigint; externalSenderPub: Uint8Array; parityFixture?: true } | null;
   settings(): Record<string, string>;
   nameOf(userHex: string): string;
   participant(userHex: string, deviceHex: string, flags: number, channelHex: string): VoiceParticipant;
@@ -298,7 +298,7 @@ export class CallController {
     }
   }
 
-  private async joinOnce(token: JoinToken, core: CorePort, instance: { policyVersion: bigint; externalSenderPub: Uint8Array },
+  private async joinOnce(token: JoinToken, core: CorePort, instance: { policyVersion: bigint; externalSenderPub: Uint8Array; parityFixture?: true },
     target: { communityId: string | null; members: string[] }, channel: string, channelId: Id, vdec: string): Promise<CallJoinResult> {
     const dm = target.communityId === null;
     let joined;
@@ -352,7 +352,8 @@ export class CallController {
     this.armRotation(CALL_ROTATE_MS);
     this.deps.afterJoin(groupId);
     return { callId: toHex(started.callId), groupId: toHex(groupId), livekitUrl: started.livekitUrl, token: started.token,
-      iceServers: started.iceServers, caps: started.caps, epoch: media.epoch.toString() };
+      iceServers: started.iceServers, caps: started.caps, epoch: media.epoch.toString(),
+      ...(instance.parityFixture === true ? { parityFixture: true as const } : {}) };
   }
 
   // ---- step 2: the keys of later epochs ----

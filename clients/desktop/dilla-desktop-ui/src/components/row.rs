@@ -243,6 +243,14 @@ impl RenderOnce for Row {
                 },
             )));
         }
+        // The voice row this device is in has no trailing slot (VoiceChannelRow.tsx: the slot holds the join, which a
+        // joined row does not offer), so its count ends at the row's padding edge.
+        if self.joined {
+            return match self.on_click {
+                Some(handler) => row.on_click(handler).into_any_element(),
+                None => row.into_any_element(),
+            };
+        }
         // The trailing slot is always there (ChannelRow.tsx `<TrailingSlot>`): empty it still holds `--slot-w`, so a long
         // name is cut short of it, and a badge sits flush right in it.
         let slot = super::trailing_slot::TrailingSlot::new((id.clone(), "slot")).in_row();

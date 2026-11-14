@@ -284,6 +284,21 @@ impl AppView {
                     this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
+                crate::fixture::FixtureScreen::ShellDm { dm } => {
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let shell = cx.new(|cx| {
+                        let mut shell =
+                            ShellView::new(Arc::new(fixture.state), None, None, clock, window, cx);
+                        shell.navigate(crate::router::Route::Dm(dm), cx);
+                        shell
+                    });
+                    this.attach_shell(&shell, window, cx);
+                    this.focus_shell(&shell, window, cx);
+                    this.screen = Screen::Shell(shell);
+                }
                 crate::fixture::FixtureScreen::Welcome(start) => {
                     this.show_pre_account(start, &fixture, window, cx)
                 }
@@ -301,21 +316,6 @@ impl AppView {
                     };
                     let shell = cx.new(|cx| {
                         ShellView::new(Arc::new(fixture.state), None, channel, clock, window, cx)
-                    });
-                    this.attach_shell(&shell, window, cx);
-                    this.focus_shell(&shell, window, cx);
-                    this.screen = Screen::Shell(shell);
-                }
-                crate::fixture::FixtureScreen::ShellDm { dm } => {
-                    let clock = Clock::Fixed {
-                        now: fixture.now,
-                        utc: true,
-                    };
-                    let shell = cx.new(|cx| {
-                        let mut shell =
-                            ShellView::new(Arc::new(fixture.state), None, None, clock, window, cx);
-                        shell.navigate(crate::router::Route::Dm(dm), cx);
-                        shell
                     });
                     this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);

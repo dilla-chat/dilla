@@ -51,13 +51,13 @@ pub enum FixtureScreen {
     /// The shell on a server's default channel (`/c/{server}`: the route names no channel, the shell opens the server's
     /// first text channel, as the web client does).
     ShellHome { community: CommunityId },
+    /// The shell on a DM's conversation (`/dm/{dm/<id>}`, lane G: the DM call box).
+    ShellDm { dm: ChannelId },
     /// A device with no account (`/welcome`): the sign-up's first step, as the web draws it, or the pre-account screen
     /// the fixture names ([`pre_account::start`]).
     Welcome(pre_account::PreAccount),
     /// The shell with no route of its own (`/`): the first server, or the empty view of an account in no server.
     Home,
-    /// The shell on a DM's conversation (`/dm/{dm/<id>}`, lane G: the DM call box).
-    ShellDm { dm: ChannelId },
     /// The user settings host, on this section (`/settings/<section>`).
     Settings { section: crate::router::UserSection },
     /// A server's settings (Task 15): `section` is the route's, `None` its first.
@@ -190,11 +190,11 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
         ) => Ok(FixtureScreen::ShellHome {
             community: *community,
         }),
+        (Route::Dm(dm), Phase::Ready) => Ok(FixtureScreen::ShellDm { dm: *dm }),
         (Route::Welcome { .. }, Phase::SignedOut) => {
             Ok(FixtureScreen::Welcome(pre_account::PreAccount::SignUp))
         }
         (Route::Root, Phase::Ready) => Ok(FixtureScreen::Home),
-        (Route::Dm(dm), Phase::Ready) => Ok(FixtureScreen::ShellDm { dm: *dm }),
         (Route::Settings(Some(section)), Phase::Ready) => {
             Ok(FixtureScreen::Settings { section: *section })
         }

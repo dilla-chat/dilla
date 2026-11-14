@@ -37,6 +37,9 @@ mod css {
     pub const END_GAP: f32 = 8.0;
     pub const BUTTON: f32 = 28.0;
     pub const BUTTON_GLYPH: f32 = 15.0;
+    /// `.d-topbar__voice`: 28px, 10px in.
+    pub const VOICE_H: f32 = 28.0;
+    pub const VOICE_PAD_X: f32 = 10.0;
     /// DesktopTitlebar.css: the window buttons are 28px with a 14px glyph; the menu button the same.
     pub const WINDOW_GLYPH: f32 = 14.0;
     /// The macOS traffic lights sit in the bar's left corner: the brand moves right of them.
@@ -68,10 +71,14 @@ pub struct TitlebarModel {
     pub reminders_open: bool,
     /// The bell's focus (the popover's Escape gives it back).
     pub bell_focus: Option<FocusHandle>,
+    /// The voice chip: where this device's call is, while it is joining or in one.
+    pub voice: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct TitlebarHandlers {
+    /// The voice chip was pressed: the call's channel or DM opens.
+    pub on_voice: super::shell::Action,
     /// The settings button was pressed.
     pub on_settings: super::shell::Action,
     /// The search field was pressed: the search palette opens (Task 23).
@@ -303,12 +310,38 @@ pub fn render(
                 ),
         );
     let on_settings = handlers.on_settings.clone();
+    let on_voice = handlers.on_voice.clone();
+    // TopBar.tsx's voice chip, only while in a call: the room (and the link's ping once the client reads one).
+    let voice = model.voice.clone().map(|room| {
+        interactive(div().id("topbar-voice"))
+            .tab_index(0)
+            .cursor_pointer()
+            .flex_none()
+            .flex()
+            .items_center()
+            .h(Pixels::from(css::VOICE_H))
+            .px(Pixels::from(css::VOICE_PAD_X))
+            .bg(color::OK_TINT)
+            .border_1()
+            .border_color(color::OK_BORDER)
+            .rounded(radius::MD)
+            .focus_visible(|s| s.shadow(focus_ring()))
+            .on_click(move |_: &ClickEvent, window, cx| on_voice(window, cx))
+            .child(line(
+                room,
+                text::BTN,
+                line_height(text::BTN, 1.5),
+                color::OK_TEXT,
+            ))
+    });
     let mut end = div()
         .flex_1()
         .min_w_0()
         .flex()
+        .items_center()
         .justify_end()
         .gap(Pixels::from(css::END_GAP))
+        .children(voice)
         .child(bell(model, handlers.on_reminders.clone(), reminders))
         .child(
             interactive(div().id("topbar-settings"))
