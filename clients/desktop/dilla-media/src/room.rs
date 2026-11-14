@@ -254,15 +254,16 @@ pub fn frame_rms(samples: &[i16]) -> f32 {
 }
 
 /// Follows one stream's frames: answers the edge a frame makes (`None`: no change). A frame of an unverified device is
-/// quiet, so a device's first audible edge is never earlier than its first authenticated frame.
+/// quiet, so a device's first audible edge is never earlier than its first authenticated frame. `verified` is asked only
+/// for a loud frame (w2-bot-review I-C1: a quiet frame never touches the call's transform).
 fn edge_of(
     audible: &mut bool,
     (device, stream): (&str, &str),
     samples: &[i16],
-    verified: bool,
+    verified: impl FnOnce() -> bool,
     at_ms: f64,
 ) -> Option<AudioEdge> {
-    let now = verified && frame_rms(samples) > AUDIBLE_RMS;
+    let now = frame_rms(samples) > AUDIBLE_RMS && verified();
     (now != *audible).then(|| {
         *audible = now;
         AudioEdge {
@@ -272,6 +273,28 @@ fn edge_of(
             audible: now,
         }
     })
+}
+
+/// One remote stream's "its device authenticated" (w2-bot-review I-C1), so its reader does not ask the call's transform
+/// (whose lock the SFrame encrypt and decrypt path takes) for every decoded 10 ms frame: asked per loud frame only until
+/// the answer is yes, and again at each 100 ms level window.
+#[derive(Default)]
+struct VerifiedCache {
+    known: bool,
+}
+
+impl VerifiedCache {
+    fn get(&mut self, ask: impl FnOnce() -> bool) -> bool {
+        if !self.known {
+            self.known = ask();
+        }
+        self.known
+    }
+
+    fn refresh(&mut self, ask: impl FnOnce() -> bool) -> bool {
+        self.known = ask();
+        self.known
+    }
 }
 
 /// The newest decoded frame of one remote video stream, as RGBA rows.
@@ -685,7 +708,7 @@ impl Call {
 
     /// The last second of decoded audio from `device` (hex), once it is verified.
     pub fn remote_audio_tail(&self, device: &str) -> Option<Vec<i16>> {
-        if !self.media.verified_devices().contains(device) {
+        if !self.media.is_verified(device) {
             return None;
         }
         let heard = self.tails.lock().unwrap_or_else(|p| p.into_inner());
@@ -1123,6 +1146,7 @@ async fn read_audio(
     };
     let mut stream = NativeAudioStream::new(track, RATE as i32, 1);
     let mut window: Vec<f32> = Vec::with_capacity(RATE as usize / 10);
+    let mut verified = VerifiedCache::default();
     while let Some(frame) = stream.next().await {
         // Stamped as the frame leaves the decoder.
         let at_ms = wall_ms();
@@ -1130,7 +1154,7 @@ async fn read_audio(
             &mut tracker.audible,
             (&device, &tracker.stream),
             &frame.data,
-            media.verified_devices().contains(&device),
+            || verified.get(|| media.is_verified(&device)),
             at_ms,
         );
         {
@@ -1152,7 +1176,7 @@ async fn read_audio(
             let rms = (window.iter().map(|x| x * x).sum::<f32>() / window.len() as f32).sqrt();
             window.clear();
             // Only a device whose frames authenticated has a level (protocol/05 "verified").
-            if media.verified_devices().contains(&device) {
+            if verified.refresh(|| media.is_verified(&device)) {
                 levels.send_modify(|l| {
                     l.insert(device.clone(), rms);
                 });
@@ -1203,7 +1227,7 @@ async fn read_video(
     let mut frames = 0u64;
     let mut warned = false;
     while let Some(frame) = stream.next().await {
-        if !media.verified_devices().contains(&key.device) {
+        if !media.is_verified(&key.device) {
             continue;
         }
         let buffer = frame.buffer.as_ref();
@@ -1299,20 +1323,77 @@ mod edge_tests {
         let faint = tone(0.001);
         assert!(frame_rms(&faint) < AUDIBLE_RMS && frame_rms(&loud) > AUDIBLE_RMS);
         assert_eq!(
-            edge_of(&mut audible, ("d", "d:1"), &silent, true, 1.0),
+            edge_of(&mut audible, ("d", "d:1"), &silent, || true, 1.0),
             None
         );
-        assert_eq!(edge_of(&mut audible, ("d", "d:1"), &faint, true, 2.0), None);
         assert_eq!(
-            edge_of(&mut audible, ("d", "d:1"), &loud, false, 3.0),
+            edge_of(&mut audible, ("d", "d:1"), &faint, || true, 2.0),
+            None
+        );
+        assert_eq!(
+            edge_of(&mut audible, ("d", "d:1"), &loud, || false, 3.0),
             None,
             "unverified audio is not heard"
         );
-        let up = edge_of(&mut audible, ("d", "d:1"), &loud, true, 4.0).expect("audible");
+        let up = edge_of(&mut audible, ("d", "d:1"), &loud, || true, 4.0).expect("audible");
         assert_eq!((up.at_ms, up.audible, up.device.as_str()), (4.0, true, "d"));
-        assert_eq!(edge_of(&mut audible, ("d", "d:1"), &loud, true, 5.0), None);
-        let down = edge_of(&mut audible, ("d", "d:1"), &silent, true, 6.0).expect("quiet");
+        assert_eq!(
+            edge_of(&mut audible, ("d", "d:1"), &loud, || true, 5.0),
+            None
+        );
+        let down = edge_of(&mut audible, ("d", "d:1"), &silent, || true, 6.0).expect("quiet");
         assert_eq!((down.at_ms, down.audible), (6.0, false));
+    }
+
+    /// w2-bot-review I-C1: the reader never asks the call's transform (the lock the SFrame path takes) per decoded frame.
+    /// A quiet frame asks nothing; a stream asks per frame only until it is verified, then once per 100 ms window.
+    #[test]
+    fn the_reader_asks_whether_a_device_is_verified_rarely() {
+        let loud = tone(0.5);
+        let silent = vec![0i16; 480];
+        let asked = std::cell::Cell::new(0u32);
+        let mut cache = VerifiedCache::default();
+        let mut audible = false;
+        // A second of silence: no question at all.
+        for i in 0..100 {
+            let ask = || {
+                asked.set(asked.get() + 1);
+                true
+            };
+            edge_of(
+                &mut audible,
+                ("d", "d:1"),
+                &silent,
+                || cache.get(ask),
+                f64::from(i),
+            );
+        }
+        assert_eq!(asked.get(), 0, "quiet frames never ask");
+        // Unverified and loud: asked per loud frame until the answer is yes, then never per frame.
+        let verified_after = 3;
+        for i in 0..100 {
+            let ask = || {
+                asked.set(asked.get() + 1);
+                asked.get() >= verified_after
+            };
+            edge_of(
+                &mut audible,
+                ("d", "d:1"),
+                &loud,
+                || cache.get(ask),
+                f64::from(i),
+            );
+        }
+        assert_eq!(asked.get(), verified_after, "asked until verified");
+        assert!(audible);
+        // The 100 ms windows refresh it: ten a second.
+        for _ in 0..10 {
+            cache.refresh(|| {
+                asked.set(asked.get() + 1);
+                true
+            });
+        }
+        assert_eq!(asked.get(), verified_after + 10);
     }
 
     fn edge(stream: &str, at_ms: f64, audible: bool) -> AudioEdge {
