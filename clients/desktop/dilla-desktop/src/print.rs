@@ -11,8 +11,9 @@
 //! system then does with the job (a spool file, the printer) is the system's, as for the web's print.
 //!
 //! On macOS the same PDF is printed with AppKit's print operation (`NSPrintOperation`, the system's print panel): an
-//! `NSImage` reads the document from an `NSData` laid over the app's own zeroizing buffer (no copy, nothing on disk),
-//! an `NSImageView` of the page's size draws it, and the operation runs on the main thread, as AppKit requires.
+//! `NSImage` reads the document from an `NSData` that owns one copy of it (nothing on disk), whose deallocator wipes
+//! that copy when AppKit lets the data go, however long it kept it; an `NSImageView` of the page's size draws it, and
+//! the operation runs on the main thread, as AppKit requires, as a sheet on the app's window.
 //!
 //! Windows has no system PDF printing the app can hand a document to without a file, so there the app draws the same
 //! document itself: the system's print dialog (`PrintDlgW`) answers a printer's device context, and each text run of
@@ -263,42 +264,138 @@ pub async fn system(title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, P
     }
 }
 
-/// Prints `pdf` through the system's print panel (see the module's comment): AppKit's print operation on the main
-/// thread, which this (background) task waits for.
+/// Prints `pdf` through the system's print panel (see the module's comment): AppKit's print operation, started on the main
+/// thread as a sheet on the app's window (so the window keeps drawing), whose answer this (background) task awaits.
 #[cfg(target_os = "macos")]
-#[allow(clippy::unused_async)]
 pub async fn system(title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, PrintError> {
-    dispatch2::run_on_main(move |mtm| mac::print(mtm, &title, &pdf))
+    let (answer, answered) = tokio::sync::oneshot::channel();
+    dispatch2::run_on_main(move |mtm| mac::print(mtm, &title, &pdf, answer))?;
+    answered
+        .await
+        .unwrap_or_else(|_| Err(PrintError::Failed("the print panel gave no answer".into())))
+}
+
+/// A copy of the document that a platform's own object owns from here on (macOS: the `NSData` the print operation reads,
+/// which AppKit may keep after the panel has closed): leaked whole, and taken back by that object's deallocator, which
+/// wipes it as it frees it. The caller's own buffer is never lent out, so it is wiped and freed whenever its owner drops it.
+#[cfg(any(target_os = "macos", test))]
+#[allow(unsafe_code)]
+mod handed {
+    use std::ptr::NonNull;
+
+    use zeroize::Zeroizing;
+
+    /// A heap copy of `bytes`, exactly as long (nothing to grow), leaked: the caller hands it to what takes it back.
+    pub(super) fn leak(bytes: &[u8]) -> (NonNull<u8>, usize) {
+        let copy: Box<[u8]> = Box::from(bytes);
+        let len = copy.len();
+        (NonNull::from(Box::leak(copy)).cast::<u8>(), len)
+    }
+
+    /// The copy [`leak`] made, as the zeroizing box it was: dropping it wipes the bytes, then frees them.
+    ///
+    /// # Safety
+    /// `bytes` and `len` are one [`leak`]'s answer, and it is taken back once.
+    pub(super) unsafe fn reclaim(bytes: NonNull<u8>, len: usize) -> Zeroizing<Box<[u8]>> {
+        let slice = std::ptr::slice_from_raw_parts_mut(bytes.as_ptr(), len);
+        // SAFETY: the caller's: this is the box `leak` leaked, whole, and nothing else owns it any more.
+        Zeroizing::new(unsafe { Box::from_raw(slice) })
+    }
 }
 
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 mod mac {
     use std::ffi::c_void;
     use std::ptr::NonNull;
+    use std::sync::OnceLock;
 
-    use objc2::rc::autoreleasepool;
-    use objc2::{AnyThread as _, MainThreadMarker};
+    use block2::RcBlock;
+    use dispatch2::MainThreadBound;
+    use objc2::rc::{Retained, autoreleasepool};
+    use objc2::runtime::{AnyObject, Bool, NSObject};
+    use objc2::{AnyThread as _, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
     use objc2_app_kit::{
-        NSImage, NSImageView, NSPrintInfo, NSPrintOperation, NSPrintingPaginationMode,
+        NSApplication, NSImage, NSImageView, NSPrintInfo, NSPrintOperation,
+        NSPrintingPaginationMode,
     };
-    use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString};
+    use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString, NSUInteger};
 
-    use super::{PAGE_H, PAGE_W, PrintError, Printed};
+    use super::{PAGE_H, PAGE_W, PrintError, Printed, handed};
 
+    /// Where the panel's answer goes once it closes.
+    pub(super) type Answer = tokio::sync::oneshot::Sender<Result<Printed, PrintError>>;
+
+    define_class!(
+        // SAFETY: NSObject has no subclassing requirements, and `PrintDone` implements no `Drop`.
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "DillaPrintDone"]
+        /// The sheet's delegate: AppKit calls it once the panel (and the job) is done, with the [`Answer`] it was given.
+        struct PrintDone;
+
+        impl PrintDone {
+            #[unsafe(method(printOperationDidRun:success:contextInfo:))]
+            fn did_run(&self, _operation: &NSPrintOperation, success: Bool, context: *mut c_void) {
+                if context.is_null() {
+                    return;
+                }
+                // SAFETY: the context is the boxed answer `print` leaked for this one operation, and AppKit calls this
+                // once per operation, so it is taken back once.
+                let answer = unsafe { Box::from_raw(context.cast::<Answer>()) };
+                let _ = answer.send(Ok(if success.as_bool() {
+                    Printed::Sent
+                } else {
+                    Printed::Cancelled
+                }));
+            }
+        }
+    );
+
+    impl PrintDone {
+        /// The app's one delegate (AppKit does not retain a sheet's delegate, so it lives as long as the app).
+        fn shared(mtm: MainThreadMarker) -> &'static PrintDone {
+            static DELEGATE: OnceLock<MainThreadBound<Retained<PrintDone>>> = OnceLock::new();
+            DELEGATE
+                .get_or_init(|| {
+                    let this = PrintDone::alloc(mtm).set_ivars(());
+                    // SAFETY: NSObject's `init`, on a freshly allocated instance.
+                    let this: Retained<PrintDone> = unsafe { msg_send![super(this), init] };
+                    MainThreadBound::new(this, mtm)
+                })
+                .get(mtm)
+        }
+    }
+
+    /// Starts the print operation; its answer goes to `answer` (at once when the app has no window to hang the sheet on).
     pub(super) fn print(
         mtm: MainThreadMarker,
         title: &str,
         pdf: &[u8],
-    ) -> Result<Printed, PrintError> {
-        let Some(bytes) = NonNull::new(pdf.as_ptr().cast_mut().cast::<c_void>()) else {
+        answer: Answer,
+    ) -> Result<(), PrintError> {
+        if pdf.is_empty() {
             return Err(PrintError::Failed("an empty document".into()));
-        };
-        // Every object goes with the pool, before the caller's buffer is zeroized and freed.
+        }
         autoreleasepool(|_| {
-            // SAFETY: the data is read only, and the buffer outlives it and every object made from it (the pool ends
-            // first); `freeWhenDone: false` leaves the buffer to its zeroizing owner.
-            let data =
-                unsafe { NSData::dataWithBytesNoCopy_length_freeWhenDone(bytes, pdf.len(), false) };
+            // P-I1: AppKit may keep the data (in the image, the operation) past this call and past the sheet, so the data
+            // owns its own copy of the document, and its deallocator wipes that copy as it frees it, whenever that is.
+            let (bytes, len) = handed::leak(pdf);
+            let wipe: RcBlock<dyn Fn(NonNull<c_void>, NSUInteger)> =
+                RcBlock::new(|bytes: NonNull<c_void>, len: NSUInteger| {
+                    // SAFETY: NSData calls its deallocator once, with the bytes and the length it was made with: the
+                    // copy `leak` made just above.
+                    drop(unsafe { handed::reclaim(bytes.cast::<u8>(), len) });
+                });
+            // SAFETY: `bytes` is valid for `len` bytes and from here on is the data's alone, freed by `wipe`.
+            let data = unsafe {
+                NSData::initWithBytesNoCopy_length_deallocator(
+                    NSData::alloc(),
+                    bytes.cast::<c_void>(),
+                    len,
+                    Some(&wipe),
+                )
+            };
             let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or_else(|| {
                 PrintError::Failed("the document is not a PDF AppKit reads".into())
             })?;
@@ -322,11 +419,34 @@ mod mac {
             operation.setJobTitle(Some(&NSString::from_str(title)));
             operation.setShowsPrintPanel(true);
             operation.setShowsProgressPanel(true);
-            Ok(if operation.runOperation() {
-                Printed::Sent
-            } else {
-                Printed::Cancelled
-            })
+            let app = NSApplication::sharedApplication(mtm);
+            match app.keyWindow().or_else(|| app.mainWindow()) {
+                // A sheet on the app's window: the main thread (GPUI's) keeps running while the panel is open.
+                Some(window) => {
+                    let delegate: &AnyObject = PrintDone::shared(mtm);
+                    let context = Box::into_raw(Box::new(answer)).cast::<c_void>();
+                    // SAFETY: the delegate answers the selector with its documented signature and lives as long as the
+                    // app; the context is the boxed answer, taken back once by that method.
+                    unsafe {
+                        operation.runOperationModalForWindow_delegate_didRunSelector_contextInfo(
+                            &window,
+                            Some(delegate),
+                            Some(sel!(printOperationDidRun:success:contextInfo:)),
+                            context,
+                        );
+                    }
+                }
+                // No window to hang it on: the application-modal panel.
+                None => {
+                    let sent = operation.runOperation();
+                    let _ = answer.send(Ok(if sent {
+                        Printed::Sent
+                    } else {
+                        Printed::Cancelled
+                    }));
+                }
+            }
+            Ok(())
         })
     }
 }
@@ -684,6 +804,20 @@ mod tests {
     fn the_copy_wraps_between_words() {
         let lines = wrap("one two three four", 9);
         assert_eq!(lines, ["one two", "three", "four"]);
+    }
+
+    /// The copy a platform's own object takes over (macOS: the `NSData` the print operation may keep after the call) is
+    /// the document's bytes, exactly as long, and taking it back hands over that very allocation, a zeroizing one.
+    #[test]
+    #[allow(unsafe_code)]
+    fn a_handed_over_copy_comes_back_whole() {
+        let doc = pdf();
+        let (bytes, len) = handed::leak(&doc);
+        assert_eq!(len, doc.len());
+        // SAFETY: just leaked, and taken back once.
+        let back: Zeroizing<Box<[u8]>> = unsafe { handed::reclaim(bytes, len) };
+        assert_eq!(back.as_ptr(), bytes.as_ptr().cast_const());
+        assert_eq!(&back[..], &doc[..]);
     }
 
     #[test]
