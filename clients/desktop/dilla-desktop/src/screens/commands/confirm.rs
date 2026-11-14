@@ -70,6 +70,14 @@ pub fn answer(window: gpui::WindowId, choice: Option<bool>, cx: &mut App) {
         .moderate(c.conversation, c.moderation, confirmed, texts);
 }
 
+/// Whether the conversation a moderation was typed in is still the window's (the web's `isCurrent`).
+fn still_current(
+    conversation: &Conversation,
+    channel: Option<dilla_client::state::ChannelId>,
+) -> bool {
+    channel == Some(conversation.channel)
+}
+
 /// The member's `@username` the dialog shows under the title.
 pub fn handle(m: &Moderation) -> String {
     format!("@{}", m.username)
@@ -79,6 +87,12 @@ pub fn handle(m: &Moderation) -> String {
 pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let w = window.window_handle().window_id();
     let c = crate::per_window::get::<Open>(w, cx)?.0.clone()?;
+    // w2-bot-review M-B3 (CommandHost.tsx `isCurrent()`, else 'abandon'): the person left the conversation the command
+    // was typed in; the dialog goes and nothing is sent or recorded.
+    if !still_current(&c.conversation, ctx.channel) {
+        answer(w, None, cx);
+        return None;
+    }
     let m = &c.moderation;
     let server = ctx
         .state
@@ -205,5 +219,19 @@ mod tests {
             action: ModAction::Kick,
         };
         assert_eq!(handle(&m), "@troll");
+    }
+
+    /// w2-bot-review M-B3: a confirmation is answered only while its conversation is the window's; after a switch it is
+    /// abandoned (nothing sent, nothing recorded).
+    #[test]
+    fn a_confirmation_is_abandoned_once_its_conversation_is_left() {
+        use dilla_client::state::ChannelId;
+        let here = Conversation {
+            channel: ChannelId([1; 16]),
+            thread: None,
+        };
+        assert!(still_current(&here, Some(ChannelId([1; 16]))));
+        assert!(!still_current(&here, Some(ChannelId([2; 16]))));
+        assert!(!still_current(&here, None));
     }
 }
