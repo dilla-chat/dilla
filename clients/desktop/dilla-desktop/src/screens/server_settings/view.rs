@@ -410,7 +410,7 @@ impl Render for ServerSettingsView {
                 self.workspace.publish(Flags {
                     dirty: d.dirty(),
                     busy: d.busy,
-                    can_save: d.dirty() && !d.busy,
+                    can_save: d.can_save(),
                 });
             }
             _ => {}
