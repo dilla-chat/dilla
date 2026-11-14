@@ -710,15 +710,18 @@ fn hints_for(inner: &Arc<Inner>) -> SharedGate {
     gate
 }
 
+/// Starts a trailing fetch's wait on the client's runtime.
+type Spawn<'a> = &'a dyn Fn(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>);
+
 /// Runs `fetch` for op 63's hint `frame` when the gate says (hints.ts `request`): now, after the coalescing window, or not
 /// at all.
 fn coalesced(
-    inner: &Arc<Inner>,
+    gate: &SharedGate,
     frame: &frames::BotStateChangedFrame,
+    spawn: Spawn<'_>,
     fetch: impl FnOnce() + Send + 'static,
 ) {
     let scope = (frame.scope_kind, frame.scope_id);
-    let gate = hints_for(inner);
     let hint = gate
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -726,14 +729,36 @@ fn coalesced(
     match hint {
         hints::Hint::Drop => {}
         hints::Hint::Now => fetch(),
-        hints::Hint::After(wait) => drop(inner.spawn(async move {
-            tokio::time::sleep(wait).await;
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .due(scope, std::time::Instant::now());
-            fetch();
-            Ok(())
-        })),
+        hints::Hint::After(wait) => {
+            let gate = gate.clone();
+            spawn(Box::pin(async move {
+                tokio::time::sleep(wait).await;
+                gate.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .due(scope, std::time::Instant::now());
+                fetch();
+            }));
+        }
+    }
+}
+
+/// Op 63 (Task 28 item 15, hints.ts): a community's Bot changed state (scope kind 0), so its catalog and status are read
+/// again (`catalog`); the player of this device's call changed (`player`, Task 21's `Music::refresh`; only a shown player
+/// is read, hints.ts `visible`). Each through the client's [`hints::HintGate`]: at most one read per scope per 250 ms.
+fn on_state_changed(
+    gate: &SharedGate,
+    frame: &frames::BotStateChangedFrame,
+    state: &AppState,
+    spawn: Spawn<'_>,
+    catalog: impl FnOnce(CommunityId) + Send + 'static,
+    player: impl FnOnce(crate::state::ChannelId) + Send + 'static,
+) {
+    if frame.scope_kind == 0 {
+        let community = CommunityId(frame.scope_id);
+        coalesced(gate, frame, spawn, move || catalog(community));
+    }
+    if let Some(channel) = music_hint(state, frame) {
+        coalesced(gate, frame, spawn, move || player(channel));
     }
 }
 
@@ -772,28 +797,36 @@ impl AreaFrames for Bot {
                 let Ok(frame) = frames::bot_state_changed_of(f) else {
                     return;
                 };
-                // A community's Bot changed state (scope kind 0): read its catalog and status again, at most once per
-                // 250 ms (Task 28 item 15, hints.ts).
-                if frame.scope_kind == 0 {
-                    let reading = inner.clone();
-                    coalesced(inner, &frame, move || {
-                        drop(reading.spawn(async move {
-                            let _ = sealed.refresh(CommunityId(frame.scope_id)).await;
+                let runtime = inner.clone();
+                let spawn =
+                    move |wait: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>| {
+                        drop(runtime.spawn(async move {
+                            wait.await;
                             Ok(())
                         }));
-                    });
-                }
-                // The player of this device's call changed (Task 21's `Music::refresh`, integration 3 step 5). Only a
-                // shown player is read (hints.ts `visible`).
-                if let Some(channel) = music_hint(&inner.snapshot(), &frame) {
-                    let reading = inner.clone();
-                    coalesced(inner, &frame, move || {
-                        let transport = crate::features::bot_admin::default_transport(&reading);
-                        let admin =
-                            crate::features::bot_admin::BotAdmin::new(reading.clone(), transport);
+                    };
+                let (catalog_reader, player_reader) = (inner.clone(), inner.clone());
+                on_state_changed(
+                    &hints_for(inner),
+                    &frame,
+                    &inner.snapshot(),
+                    &spawn,
+                    move |community| {
+                        drop(catalog_reader.spawn(async move {
+                            let _ = sealed.refresh(community).await;
+                            Ok(())
+                        }));
+                    },
+                    move |channel| {
+                        let transport =
+                            crate::features::bot_admin::default_transport(&player_reader);
+                        let admin = crate::features::bot_admin::BotAdmin::new(
+                            player_reader.clone(),
+                            transport,
+                        );
                         drop(crate::features::music::Music::new(admin).refresh(channel));
-                    });
-                }
+                    },
+                );
             }
             _ => {}
         }
@@ -805,6 +838,51 @@ mod tests {
     use super::*;
     use crate::gateway::frames::Value;
     use crate::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+
+    /// Review HL item 15 (weak test), at the op 63 handler's level: three hints of one community's Bot inside 250 ms read
+    /// its catalog twice (the first at once, one trailing read for the other two), as hints.test.ts expects of
+    /// `BotHints`; an older revision reads nothing; another scope is its own.
+    #[tokio::test(start_paused = true)]
+    async fn three_op_63_hints_in_250_ms_read_the_bot_twice() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let gate: SharedGate = Arc::default();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let spawn = |wait: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>| {
+            drop(tokio::spawn(wait));
+        };
+        let state = AppState::default();
+        let hint = |id: u8, revision: u64| frames::BotStateChangedFrame {
+            scope_kind: 0,
+            scope_id: [id; 16],
+            revision,
+        };
+        let deliver = |frame: frames::BotStateChangedFrame| {
+            let r = reads.clone();
+            on_state_changed(
+                &gate,
+                &frame,
+                &state,
+                &spawn,
+                move |c| {
+                    assert_eq!(c, CommunityId([1; 16]));
+                    r.fetch_add(1, Ordering::SeqCst);
+                },
+                |_| panic!("no call: no player read"),
+            );
+        };
+        deliver(hint(1, 1));
+        deliver(hint(1, 2));
+        deliver(hint(1, 3));
+        deliver(hint(1, 2));
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the first at once");
+        tokio::time::sleep(hints::HINT_COALESCE * 2).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "one trailing read for the rest"
+        );
+    }
 
     /// Task 28 item 15 (routes.ts `getWebhookAvatar`): only a 64-digit lower-case hex id is ever put in the path.
     #[test]
