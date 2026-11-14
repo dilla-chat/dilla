@@ -123,7 +123,15 @@ pub struct JoinRoleDraft {
     pub save_requested: bool,
     /// This person may read and save the page ([`join_role_permitted`]), as of the last frame.
     pub permitted: bool,
+    /// A read is in flight.
+    pub reading: bool,
+    /// The last read answered with the permissions (it read the join role, or was refused doing so).
+    pub read_permitted: bool,
 }
+
+/// What the Join roles read answered: `None` without the permissions (nothing read), else the join role read, or `None`
+/// in it for a community with no Bot installation.
+pub type JoinRoleRead = Result<Option<Option<(Option<RoleId>, [u8; 16])>>, ApiError>;
 
 /// w2-bot-review I-D1: BotSection.tsx reads and saves Join roles only with Manage Server and Manage Roles both
 /// (`manageCommunity && manageRoles`, `canSavePage`), once the permissions are read.
@@ -132,6 +140,38 @@ pub fn join_role_permitted(access: &dilla_client::state::server_admin::Access) -
 }
 
 impl JoinRoleDraft {
+    /// w2-fix1 re-review (BotSection.tsx's join role effect, run again on every change of `access.loaded`,
+    /// `manageCommunity` or `manageRoles`): whether the page reads again now, with `access` as it now is: permitted, no
+    /// read in flight, and no read made with the permissions yet.
+    pub fn needs_read(&self, access: &dilla_client::state::server_admin::Access) -> bool {
+        join_role_permitted(access) && !self.reading && !self.read_permitted
+    }
+
+    /// The read answered. Without the permissions nothing was read: the page stays unread (the web's `joinRoleLoadedFor`
+    /// unset), so it says nothing of a read, not "requires a Bot"; the permissions arriving read it again.
+    pub fn answer(&mut self, result: JoinRoleRead) {
+        self.reading = false;
+        match result {
+            Ok(None) => {
+                self.permitted = false;
+                self.read_permitted = false;
+                self.loaded = None;
+            }
+            Ok(Some(found)) => {
+                self.read_permitted = true;
+                let setting =
+                    found.map(|(role, installation)| JoinRoleSetting { role, installation });
+                self.value = setting.and_then(|s| s.role);
+                self.loaded = Some(setting);
+            }
+            Err(e) => {
+                self.read_permitted = true;
+                self.error = Some(bot_error(&e));
+                self.loaded = Some(None);
+            }
+        }
+    }
+
     /// The read setting, once it is there.
     pub fn setting(&self) -> Option<JoinRoleSetting> {
         self.loaded.flatten()
@@ -388,6 +428,10 @@ impl Body {
             self.client = client;
             self.load_access(cx);
         }
+        // The permissions came while Join roles is open (w2-fix1 re-review): it reads again, as the web's effect does.
+        if self.section == ServerSection::JoinRoles && self.join_role.borrow().needs_read(&access) {
+            self.load_join_role(cx);
+        }
         let mut d = self.overview.borrow_mut();
         d.can_rename = access.loaded && access.manage_community;
         if d.name_base != new_name {
@@ -509,14 +553,14 @@ impl Body {
                 let reply = admin.load_access(community);
                 self.run(reply, window, cx, |_, _, _, cx| cx.notify());
             }
-            ServerSection::JoinRoles => self.load_join_role(window, cx),
+            ServerSection::JoinRoles => self.load_join_role(cx),
             _ => {}
         }
     }
 
     /// BotSection.tsx's two reads for Join roles: the installation (`getBotInstallation`, which the page's readiness and its
     /// Bot setup button follow) and the join role (`getBotJoinRole`), with the roles the select offers.
-    fn load_join_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn load_join_role(&mut self, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -525,6 +569,7 @@ impl Body {
             let mut d = self.join_role.borrow_mut();
             d.loaded = None;
             d.error = None;
+            d.reading = true;
         }
         drop(client.bot_admin().refresh_installation(community));
         // w2-bot-review I-D1: read only with Manage Server and Manage Roles, as the permissions just read say.
@@ -538,27 +583,10 @@ impl Body {
             r.bot_join_role(community).await.map(Some)
         });
         let draft = self.join_role.clone();
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = read.await;
-            let _ = this.update_in(cx, |_, _, cx| {
-                let mut d = draft.borrow_mut();
-                match result {
-                    // Not permitted: nothing read, nothing to save; the page says what it requires.
-                    Ok(None) => {
-                        d.permitted = false;
-                        d.loaded = Some(None);
-                    }
-                    Ok(Some(found)) => {
-                        let setting = found
-                            .map(|(role, installation)| JoinRoleSetting { role, installation });
-                        d.value = setting.and_then(|s| s.role);
-                        d.loaded = Some(setting);
-                    }
-                    Err(e) => {
-                        d.error = Some(bot_error(&e));
-                        d.loaded = Some(None);
-                    }
-                }
+            let _ = this.update(cx, |_, cx| {
+                draft.borrow_mut().answer(result);
                 cx.notify();
             });
         })
@@ -1611,6 +1639,46 @@ mod tests {
         assert!(!d.can_save());
         d.installation_changed();
         assert_eq!(d.error.as_deref(), Some(t("admin.bot.error.conflict")));
+    }
+
+    /// w2-fix1 re-review (BotSection.tsx's join role effect runs again whenever `access.loaded`, `manageCommunity` or
+    /// `manageRoles` change): a read made without the permissions (or with no access read at all) reads nothing and
+    /// leaves the page unread, so it says neither "requires a Bot" nor anything else of a read; once the permissions are
+    /// there, the page reads again, once.
+    #[test]
+    fn join_roles_are_read_again_once_the_permissions_come() {
+        use dilla_client::state::server_admin::Access;
+        let permitted = Access {
+            loaded: true,
+            manage_community: true,
+            manage_roles: true,
+            ..Access::default()
+        };
+        let mut d = JoinRoleDraft::default();
+        d.reading = true;
+        assert!(!d.needs_read(&permitted), "a read in flight");
+        d.answer(Ok(None));
+        assert_eq!(d.loaded, None, "nothing read: no 'requires a Bot' note");
+        assert!(!d.reading);
+        assert!(!d.needs_read(&Access::default()), "still not permitted");
+        assert!(d.needs_read(&permitted), "permitted now: read again");
+        d.reading = true;
+        d.answer(Ok(Some(Some(([7; 16].into(), [1; 16])))));
+        assert_eq!(
+            d.setting(),
+            Some(JoinRoleSetting {
+                role: Some([7; 16]),
+                installation: [1; 16]
+            })
+        );
+        assert!(!d.needs_read(&permitted), "read with the permissions");
+        d.answer(Err(refusal(500, "E_BOOM")));
+        assert_eq!(d.loaded, Some(None));
+        assert!(d.error.is_some());
+        assert!(
+            !d.needs_read(&permitted),
+            "a refused read is not retried by itself"
+        );
     }
 
     /// BotSection.tsx `errorMessage`.
