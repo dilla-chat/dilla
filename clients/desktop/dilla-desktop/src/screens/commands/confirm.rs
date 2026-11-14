@@ -17,11 +17,18 @@ use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize};
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::components::dialog::{Dialog, DialogKind, InitialFocus};
 use dilla_desktop_ui::text::{line, line_height, paragraph};
-use dilla_desktop_ui::tokens::{color, text};
+use dilla_desktop_ui::tokens::{color, radius, text};
 
 use super::copy;
 use crate::slots::SlotCx;
 use crate::strings::{t, tf};
+
+/// CommandHost.css `.dw-command-confirm`.
+const CONFIRM_PAD_Y: f32 = 10.0;
+const CONFIRM_PAD_X: f32 = 12.0;
+const CONFIRM_ROWS_GAP: f32 = 4.0;
+const CONFIRM_ROW_GAP: f32 = 10.0;
+const CONFIRM_LABEL_W: f32 = 64.0;
 
 /// A moderation command waiting for its answer, in one window.
 #[derive(Clone)]
@@ -97,23 +104,34 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
         color::FG_2,
         440.0 - 36.0 - 54.0,
     ));
-    // CommandHost.tsx `.dw-command-confirm`: label and value rows.
+    // CommandHost.css `.dw-command-confirm`: a hairline box, `padding: 10px 12px`, rows 4px apart in `--text-btn`, each
+    // a 64px `--fg-3` label 10px before its value.
     let row = |label: &str, value: String| {
         div()
             .flex()
-            .gap(px(8.0))
-            .child(div().w(px(72.0)).flex_none().child(line(
+            .gap(px(CONFIRM_ROW_GAP))
+            .child(div().w(px(CONFIRM_LABEL_W)).flex_none().child(line(
                 label.to_owned(),
-                text::UI,
-                line_height(text::UI, 1.5),
+                text::BTN,
+                line_height(text::BTN, 1.5),
                 color::FG_3,
             )))
-            .child(line(value, text::UI, line_height(text::UI, 1.5), color::FG))
+            .child(line(
+                value,
+                text::BTN,
+                line_height(text::BTN, 1.5),
+                color::FG,
+            ))
     };
     let mut rows = div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(px(CONFIRM_ROWS_GAP))
+        .py(px(CONFIRM_PAD_Y))
+        .px(px(CONFIRM_PAD_X))
+        .border_1()
+        .border_color(color::HAIRLINE)
+        .rounded(radius::LG)
         .child(row(copy::DURATION, duration));
     if let Some(reason) = reason {
         rows = rows.child(row(copy::REASON, reason));

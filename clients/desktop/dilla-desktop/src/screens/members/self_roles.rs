@@ -43,6 +43,14 @@ const FIELDSET_MARGIN_X: f32 = 2.0;
 const FIELDSET_EDGE: f32 = 2.0;
 const LEGEND_PAD_X: f32 = 2.0;
 const CHECKBOX: f32 = 13.0;
+const CHECKBOX_MARGIN: f32 = 3.0;
+const CHECKBOX_MARGIN_START: f32 = 4.0;
+/// The tick inside a checked box.
+const CHECK_ICON: f32 = 11.0;
+/// The section header's own 22px is replaced by the siblings' gaps below.
+const NO_GAP: f32 = 0.0;
+/// The emoji `<input maxlength=32>`'s box (a native text input is 20 characters at the UA's 13.33px sans, ~120px).
+const EMOJI_FIELD_W: f32 = 120.0;
 /// `.d-root`'s `line-height: var(--line-height)` (1.5).
 const NORMAL_LINE: f32 = 1.5;
 /// `.d-settings-frame__body > section > * + *`.
@@ -137,9 +145,9 @@ fn checkbox(
 ) -> AnyElement {
     let mut boxed = div()
         .size(px(CHECKBOX))
-        .ml(px(4.0))
-        .mr(px(3.0))
-        .my(px(3.0))
+        .ml(px(CHECKBOX_MARGIN_START))
+        .mr(px(CHECKBOX_MARGIN))
+        .my(px(CHECKBOX_MARGIN))
         .flex_none()
         .rounded(radius::SM)
         .border_1()
@@ -152,7 +160,7 @@ fn checkbox(
     if checked {
         boxed = boxed.child(
             dilla_desktop_ui::icon::Icon::new(dilla_desktop_ui::IconName::Check)
-                .size(px(11.0))
+                .size(px(CHECK_ICON))
                 .color(color::ACCENT_INK),
         );
     }
@@ -160,9 +168,9 @@ fn checkbox(
         .id(SharedString::from(id))
         .flex()
         .items_center()
-        .gap(px(4.0))
         .child(boxed)
-        .child(body_line(label.to_owned(), color::FG));
+        // `<input> {name}`: the space before the name is text.
+        .child(body_line(format!(" {label}"), color::FG));
     if !disabled {
         el = el
             .cursor_pointer()
@@ -237,7 +245,7 @@ pub fn section(
         .flex()
         .flex_col()
         .w(px(measure))
-        .child(section_header(t("admin.bot.selfRoles.title"), None).pb(px(0.0)));
+        .child(section_header(t("admin.bot.selfRoles.title"), None).pb(px(NO_GAP)));
     let gap = |first: bool| px(if first { AFTER_TITLE } else { SIBLING_GAP });
     let mut first = true;
     let Some(list) = state.roles.self_roles.get(&community).cloned() else {
@@ -393,7 +401,7 @@ fn panel_form(
             )
             .child(
                 div()
-                    .w(px(120.0))
+                    .w(px(EMOJI_FIELD_W))
                     .child(Input::new(&input).disabled(locked)),
             ),
         );
