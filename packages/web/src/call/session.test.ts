@@ -107,7 +107,7 @@ interface Options {
   getUserMedia?: () => Promise<MediaStream>;
   devices?: MediaDeviceInfo[];
   statsError?: Error;
-  /** Lane P: the worker's join answer carries the parity-fixture marker. */
+  /** Lane P: the join answer from the worker carries the parity-fixture marker. */
   parityFixture?: boolean;
 }
 
@@ -786,7 +786,7 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.link).toBeUndefined();
   });
 
-  // Lane P: under dilla-testhost's parity-fixture marker the link is never read, so the dock, the call bar and the top bar's
+  // Lane P: under dilla-testhost's parity-fixture marker the link is never read, so the dock, the call bar and the top bar
   // chip say "— ms" in a reference shot, and no RTT is reported.
   it('lane P: a join marked as a parity fixture reads no link and reports no RTT', async () => {
     const f = fakes({ parityFixture: true });

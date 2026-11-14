@@ -5591,7 +5591,7 @@ export class Controller {
           const target = targetTimeline?.items.find(item => item.msgId === toHex(posted.replyTo!));
           // w2-bot-review I-B2 (Jonas: "Bot messages only"): only the community's Bot posts role panels, so only a
           // reaction on a message with a Bot credential whose sender is the Bot user this device pinned is offered to the
-          // instance in plaintext. Every other reaction stays inside its MLS group.
+          // instance in plaintext. Every other reaction stays inside its group.
           let pinnedBot: string | null = null;
           if (target?.bot === true) {
             try { const pinned = core.botUserPinned(fromHex(channel.communityId)); pinnedBot = pinned === null ? null : toHex(pinned); }
