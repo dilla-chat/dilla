@@ -856,7 +856,7 @@ mod tests {
         }
         // w2-bot-review M-B4: a refusal of this device's own (no answer from the instance) is kept, never deleted or
         // retried; the instance's answers are retried or deleted.
-        assert_eq!(on_refusal(&ApiError::local(0, "E_ROUTE_INPUT", "")), None);
+        assert_eq!(on_refusal(&refusal(LOCAL_REFUSAL, "")), None);
         assert_eq!(on_refusal(&e(503)), Some(true));
         assert_eq!(on_refusal(&e(0)), Some(true));
         assert_eq!(on_refusal(&e(404)), Some(false));
