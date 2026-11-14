@@ -90,32 +90,41 @@ pub fn message_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<MessageAct
             label: "shell.message.moderateRemove",
             icon: IconName::Trash2,
             area: Area::Messages,
-            run: Rc::new(move |ctx, window, cx| {
-                let Some(h) = ui::handle(window, cx) else {
-                    return;
-                };
-                let state = &ctx.state;
-                let members = ctx
-                    .channel
-                    .and_then(|c| state.channel(c))
-                    .and_then(|c| state.members.get(&c.community_id))
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
-                let me = state.account.user_id.map(|u| u.hex());
-                // The community's roles whose names are read (shell-model.ts `withRoles`), for the role mentions.
-                let (_, roles) = crate::screens::composer::mention_rights(state, ctx.channel);
-                let plain = Zeroizing::new(plain_body(
-                    &item.body,
-                    members,
-                    me.as_deref()
-                        .map(|id| (id, state.account.username.as_str())),
-                    &roles,
-                ));
-                h.update(cx, |ui, cx| ui.ask_moderate(ctx, &item, &plain, window, cx));
-            }),
+            run: Rc::new(move |ctx, window, cx| ask_moderate_remove(ctx, &item, window, cx)),
         });
     }
     out
+}
+
+/// Remove for everyone on `item` of `ctx`'s channel (the channel's log, or the thread pane's): the messages area's
+/// dialog opens with the message's plain text (its mentions as the log's labels) for the excerpt.
+pub fn ask_moderate_remove(
+    ctx: &crate::slots::SlotCx,
+    item: &TimelineItem,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    let Some(h) = ui::handle(window, cx) else {
+        return;
+    };
+    let state = &ctx.state;
+    let members = ctx
+        .channel
+        .and_then(|c| state.channel(c))
+        .and_then(|c| state.members.get(&c.community_id))
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let me = state.account.user_id.map(|u| u.hex());
+    // The community's roles whose names are read (shell-model.ts `withRoles`), for the role mentions.
+    let (_, roles) = crate::screens::composer::mention_rights(state, ctx.channel);
+    let plain = Zeroizing::new(plain_body(
+        &item.body,
+        members,
+        me.as_deref()
+            .map(|id| (id, state.account.username.as_str())),
+        &roles,
+    ));
+    h.update(cx, |ui, cx| ui.ask_moderate(ctx, item, &plain, window, cx));
 }
 
 /// The moderated removal's action id (a danger entry of the menu, as delete is).

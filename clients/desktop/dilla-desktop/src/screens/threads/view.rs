@@ -42,17 +42,29 @@ fn max_rows() -> usize {
 }
 
 /// Task 28 item 12 (ThreadView.tsx's MessageItem rows): what a thread message offers: Edit and Delete for the own message
-/// once it is stored (an id and a seq, read as sent).
-pub fn row_actions(item: &TimelineItem) -> Vec<&'static str> {
-    if item.own
-        && item.state == TimelineItemState::Ok
-        && item.msg_id.is_some()
-        && item.seq.is_some()
-    {
+/// once it is stored (an id and a seq, read as sent); and (review A M4) Remove for everyone on another person's stored
+/// message, for a reader whose channel `bits` are known and hold manage_messages (`may_remove_for_everyone`).
+pub fn row_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<&'static str> {
+    let stored = item.state == TimelineItemState::Ok && item.msg_id.is_some() && item.seq.is_some();
+    if !stored {
+        return Vec::new();
+    }
+    if item.own {
         vec!["edit", "delete"]
+    } else if dilla_client::features::moderation::may_remove_for_everyone(false, true, bits) {
+        vec![crate::screens::messages::actions::MODERATE_REMOVE]
     } else {
         Vec::new()
     }
+}
+
+/// One button of a row's hover toolbar, findable by `selector` (a test drives it as a person does: hover, then click).
+fn tool(selector: String, button: IconButton) -> impl IntoElement {
+    let id = SharedString::from(format!("{selector}-box"));
+    div()
+        .id(id)
+        .debug_selector(move || selector.clone())
+        .child(button)
 }
 
 /// The thread pane's Edit on `item`: the messages area's editor opens on it (one editor per window), in its place.
@@ -265,41 +277,76 @@ impl PaneView {
                 &input, used, ui, width, window, cx,
             ));
         }
-        let actions = row_actions(item);
+        let bits = ctx
+            .channel
+            .and_then(|c| dilla_client::features::roles::viewer_channel_bits(&ctx.state, c));
+        let actions = row_actions(item, bits);
         let open_channel = ctx.channel;
         let (Some(channel), false) = (open_channel, actions.is_empty()) else {
             return row.into_any_element();
         };
-        // MessageRow's hover toolbar, at the row's top right: Edit and Delete of the own message.
+        // MessageRow's hover toolbar, at the row's top right: Edit and Delete of the own message, or Remove for everyone
+        // of another person's.
         let group = SharedString::from(format!("thread-row-group-{}", item.key));
-        let (edit_item, delete_item, edit_ctx) = (item.clone(), item.clone(), ctx.clone());
-        let toolbar = div()
+        let mut toolbar = div()
             .absolute()
             .top_0()
             .right_0()
             .flex()
             .gap(px(TOOL_GAP))
             .invisible()
-            .group_hover(group.clone(), |s| s.visible())
-            .child(
+            .group_hover(group.clone(), |s| s.visible());
+        if actions.contains(&"edit") {
+            let (edit_item, delete_item, edit_ctx) = (item.clone(), item.clone(), ctx.clone());
+            let edit = format!("thread-edit-{}", item.key);
+            let delete = format!("thread-delete-{}", item.key);
+            toolbar = toolbar
+                .child(tool(
+                    edit.clone(),
+                    IconButton::new(
+                        SharedString::from(edit),
+                        IconName::Pencil,
+                        t("shell.message.edit"),
+                    )
+                    .size(IconButtonSize::S28)
+                    .on_click(move |_, window, cx| edit_row(&edit_ctx, &edit_item, window, cx)),
+                ))
+                .child(tool(
+                    delete.clone(),
+                    IconButton::new(
+                        SharedString::from(delete),
+                        IconName::Trash2,
+                        t("shell.message.delete"),
+                    )
+                    .size(IconButtonSize::S28)
+                    .on_click(move |_, window, cx| delete_row(channel, &delete_item, window, cx)),
+                ));
+        }
+        if actions.contains(&crate::screens::messages::actions::MODERATE_REMOVE) {
+            let (moderate_item, moderate_ctx) = (item.clone(), ctx.clone());
+            let moderate = format!("thread-moderate-{}", item.key);
+            toolbar = toolbar.child(tool(
+                moderate.clone(),
                 IconButton::new(
-                    SharedString::from(format!("thread-edit-{}", item.key)),
-                    IconName::Pencil,
-                    t("shell.message.edit"),
-                )
-                .size(IconButtonSize::S28)
-                .on_click(move |_, window, cx| edit_row(&edit_ctx, &edit_item, window, cx)),
-            )
-            .child(
-                IconButton::new(
-                    SharedString::from(format!("thread-delete-{}", item.key)),
+                    SharedString::from(moderate),
                     IconName::Trash2,
-                    t("shell.message.delete"),
+                    t("shell.message.moderateRemove"),
                 )
                 .size(IconButtonSize::S28)
-                .on_click(move |_, window, cx| delete_row(channel, &delete_item, window, cx)),
-            );
+                .on_click(move |_, window, cx| {
+                    crate::screens::messages::actions::ask_moderate_remove(
+                        &moderate_ctx,
+                        &moderate_item,
+                        window,
+                        cx,
+                    )
+                }),
+            ));
+        }
+        let selector = format!("thread-row-{}", item.key);
         div()
+            .id(SharedString::from(format!("{selector}-hover")))
+            .debug_selector(move || selector.clone())
             .group(group)
             .relative()
             .child(row)
