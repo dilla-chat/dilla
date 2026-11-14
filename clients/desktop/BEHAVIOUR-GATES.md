@@ -192,6 +192,11 @@ Totals: 233 e2e tests; 169 with a Rust test, 42 n/a (browser/phone only), 22 nex
 | `e2e/voice/stage.spec.ts` | the stage shows a tile per camera and screen, focuses a shared screen, and keeps every stream running | dilla-desktop::tests/voice::stage_tile_per_stream_focuses_share; dilla-desktop::src/screens/voice/mod::the_stage_has_a_tile_per_device_and_one_per_screen_share |
 | `e2e/voice/stage.spec.ts` | a DM call box keeps compact tiles when the other person shares their screen | dilla-desktop::tests/voice::a_dm_call_box_keeps_compact_tiles_when_the_other_person_shares_their_screen |
 
+The Bot music timing rows (`e2e/voice/bot-music.spec.ts`: G3, the gap and the repeat start) measure the first audio a
+listener hears from the moment its frame leaves the decoder (`dilla-media` `src/room.rs`, the audible edge). The web's
+analyser sits on the remote stream, a little later, so the native measure is a few ms earlier than the web's under the
+same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
+
 ## e2e/media
 
 | File | Test title | Held by |
