@@ -166,10 +166,12 @@ pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> 
     out
 }
 
-/// Over the composer's field: the reply bar (11), then the attachment tray (12). The composer places it in normal flow,
-/// so a non-empty guest makes the composer taller and the log above it shorter.
+/// Over the composer's field: a moderated removal's unsettled status line (9), the reply bar (11), then the attachment
+/// tray (12). The composer places it in normal flow, so a non-empty guest makes the composer taller and the log above it
+/// shorter.
 pub fn composer_leading(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
     column([
+        messages::moderation_status(ctx, window, cx),
         threads::reply_bar(ctx, window, cx),
         attachments::tray(ctx, window, cx),
     ])

@@ -179,6 +179,8 @@ mod driven {
         parity_messages_mention_b => "mention-b";
         parity_messages_code_block => "code-block";
         parity_messages_code_block_b => "code-block-b";
+        parity_messages_moderate_remove => "moderate-remove";
+        parity_messages_moderate_remove_b => "moderate-remove-b";
         parity_messages_slow_mode => "slow-mode";
         parity_messages_slow_mode_b => "slow-mode-b";
     }

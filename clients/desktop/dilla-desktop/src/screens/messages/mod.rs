@@ -14,6 +14,7 @@ pub mod highlight;
 pub mod keys;
 pub mod markdown;
 pub mod mentions;
+pub mod moderation;
 pub mod slow;
 pub mod toolbar;
 pub mod typing;
@@ -100,7 +101,22 @@ pub fn message_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<MessageAct
     actions::message_actions(item, bits)
 }
 
-/// The delete confirmation and the pins dialog, over the whole window. `slots::overlays` adds them to the shell's other
+/// A moderated removal's result that the dialog was closed on before it settled, with its retry (the composer's leading
+/// slot, under the log); `None` otherwise.
+pub fn moderation_status(
+    ctx: &crate::slots::SlotCx,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    let ui = ui::handle(window, cx)?;
+    let channel = ui.read(cx).moderating.as_ref().map(|m| m.channel);
+    if channel.is_none() || channel != ctx.channel {
+        return None;
+    }
+    moderation::status_line(&ui, cx)
+}
+
+/// The delete confirmation, the moderated removal and the pins dialog, over the whole window. `slots::overlays` adds them to the shell's other
 /// overlays.
 pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     dialogs::overlays(window, cx)

@@ -385,6 +385,40 @@ pub fn editable_text(
         .collect()
 }
 
+/// shell-model.ts `plainBody`: the text a row shows, each mention token as the label the log draws for it (`@everyone`,
+/// a member's display name else username, the reader's own username, else the unknown-mention label). `self_user` is the
+/// reader's `(user id hex, username)`.
+pub fn plain_body(body: &str, members: &[Member], self_user: Option<(&str, &str)>) -> String {
+    split_mentions(body)
+        .into_iter()
+        .map(|part| match part {
+            Part::Text(text) => text,
+            Part::Mention(target) if target == "everyone" || target == "here" => {
+                format!("@{target}")
+            }
+            Part::Mention(target) => {
+                if let Some(m) = members.iter().find(|m| m.user_id.hex() == target) {
+                    let name = if m.display.is_empty() {
+                        &m.username
+                    } else {
+                        &m.display
+                    };
+                    return format!("@{name}");
+                }
+                if let Some((id, name)) = self_user
+                    && id == target
+                {
+                    return format!("@{name}");
+                }
+                crate::strings::tf(
+                    "shell.message.mentionUnknown",
+                    &[("id", &target[..target.len().min(8)])],
+                )
+            }
+        })
+        .collect()
+}
+
 /// The first `max` characters of `value`, line breaks as spaces (`excerpt`).
 pub fn excerpt(value: &str, max: usize) -> String {
     value
@@ -607,5 +641,21 @@ mod tests {
     #[test]
     fn excerpts_flatten_lines() {
         assert_eq!(excerpt("a\nb\r\nc", 4), "a b ");
+    }
+
+    /// shell-model.ts `plainBody` (the moderated removal's excerpt): mention tokens read as the log's labels.
+    #[test]
+    fn a_plain_body_reads_mentions_as_their_labels() {
+        let people = [member(7, "ada", "Ada L"), member(8, "bjorn", "")];
+        let (ada, bjorn) = (UserId([7; 16]).hex(), UserId([8; 16]).hex());
+        let body = format!("hi <@{ada}> and <@{bjorn}>, <@everyone> <@{ID}>");
+        assert_eq!(
+            plain_body(&body, &people, None),
+            "hi @Ada L and @bjorn, @everyone @01234567"
+        );
+        assert_eq!(
+            plain_body(&format!("<@{ID}>"), &[], Some((ID, "me"))),
+            "@me"
+        );
     }
 }

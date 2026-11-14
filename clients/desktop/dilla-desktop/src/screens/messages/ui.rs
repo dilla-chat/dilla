@@ -6,12 +6,16 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use dilla_client::Client;
-use dilla_client::state::{ChannelId, MessageId, TimelineItem};
+use dilla_client::features::moderation::{
+    Evidence, REMOVAL_EXCERPT_CHARS, Removal, RemovalOutcome, removal_reason_ok,
+};
+use dilla_client::state::{ChannelId, CommunityId, MessageId, TimelineItem};
 use gpui::{
     App, AppContext as _, Context, Entity, EntityInputHandler as _, Focusable as _, Subscription,
     Window,
 };
 use gpui_component::input::{InputEvent, TextareaState};
+use zeroize::Zeroizing;
 
 use super::mentions::{
     MentionMember, MentionRole, RoleInfo, edit_roles, editable_text, encode_mentions, mention_roles,
@@ -63,10 +67,87 @@ pub struct Deleting {
     pub msg: MessageId,
 }
 
+/// Where a moderated removal is (manual-removal.ts `ManualRemovalPhase`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModPhase {
+    /// The reason is asked for.
+    Confirm,
+    Sending,
+    /// The removal's and its evidence's outcome is shown, with a retry while either is not settled.
+    Result,
+}
+
+/// A moderated removal of another person's message (Conversation.tsx `moderateFor`): the dialog while `open`, then, once
+/// closed on an unsettled result, the status line with its retry. The excerpt and the reason as sent are plaintext of a
+/// message, held in [`Zeroizing`] buffers; the field's own text goes with the entity when the removal is let go.
+pub struct Moderating {
+    pub channel: ChannelId,
+    pub community: CommunityId,
+    pub msg: MessageId,
+    pub seq: u64,
+    pub excerpt: Zeroizing<String>,
+    /// The reason as sent (kept for "Retry evidence"); empty until the removal is sent.
+    pub sent_reason: Zeroizing<String>,
+    pub reason: Entity<TextareaState>,
+    pub phase: ModPhase,
+    pub removal: Option<Removal>,
+    pub proof: Option<[u8; 16]>,
+    pub evidence: Option<Evidence>,
+    /// The dialog is open (`moderateDialogOpen`); closed on an unsettled result, the status line shows instead.
+    pub open: bool,
+    client: Option<Rc<Client>>,
+}
+
+impl Moderating {
+    /// The reason typed so far.
+    pub fn reason_text(&self, cx: &App) -> Zeroizing<String> {
+        Zeroizing::new(self.reason.read(cx).value().to_string())
+    }
+
+    /// Conversation.tsx: Remove acts on a non-blank reason of at most 1024 bytes.
+    pub fn can_remove(&self, cx: &App) -> bool {
+        removal_reason_ok(&self.reason_text(cx))
+    }
+
+    /// What the result says: the outcome's strings key (Conversation.tsx's chain).
+    pub fn result_key(&self) -> &'static str {
+        match self.evidence {
+            Some(Evidence::Accepted) => "shell.moderation.evidenceSent",
+            Some(Evidence::Pending) => "shell.moderation.evidencePending",
+            Some(Evidence::Rejected) => "shell.moderation.evidenceRejected",
+            _ if self.removal == Some(Removal::Unknown) => "shell.moderation.removalUnknown",
+            _ => "shell.moderation.evidenceUnknown",
+        }
+    }
+
+    /// The result's action: Done once the evidence is stored, else the retry that fits.
+    pub fn retry_key(&self) -> &'static str {
+        if self.removal == Some(Removal::Unknown) {
+            "shell.moderation.retryRemoval"
+        } else {
+            "shell.moderation.retryEvidence"
+        }
+    }
+
+    pub fn settled(&self) -> bool {
+        self.evidence == Some(Evidence::Accepted)
+    }
+
+    /// An accepted or unknown outcome: the result is shown.
+    fn take(&mut self, outcome: RemovalOutcome) {
+        self.phase = ModPhase::Result;
+        self.removal = Some(outcome.removal);
+        self.proof = Some(outcome.proof_request_id);
+        self.evidence = Some(outcome.evidence);
+    }
+}
+
 #[derive(Default)]
 pub struct MessageUi {
     pub editing: Option<Editing>,
     pub deleting: Option<Deleting>,
+    /// The moderated removal asked for, being sent, or with its result.
+    pub moderating: Option<Moderating>,
     /// The row whose "more" menu is open.
     pub menu: Option<String>,
     /// The channel whose pins dialog is open.
@@ -119,6 +200,9 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
                 ui.pins = None;
                 ui.deleting = None;
                 ui.menu = None;
+            }
+            if ui.moderating.as_ref().is_some_and(|m| holds(&m.client)) {
+                ui.moderating = None;
             }
             if ui.editing.as_ref().is_some_and(|e| holds(&e.client)) {
                 ui.editing = None;
@@ -268,6 +352,178 @@ impl MessageUi {
 
     pub fn cancel_delete(&mut self, cx: &mut Context<Self>) {
         self.deleting = None;
+        cx.notify();
+    }
+
+    /// Conversation.tsx `onRowEvent` `moderateRemove`: the dialog opens on `item` with an empty reason and the message's
+    /// excerpt (its readable text, first 120 characters, `plain` being what the row shows).
+    pub fn ask_moderate(
+        &mut self,
+        ctx: &SlotCx,
+        item: &TimelineItem,
+        plain: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(channel), Some(msg), Some(seq)) = (ctx.channel, item.msg_id, item.seq) else {
+            return;
+        };
+        let Some(community) = ctx.state.channel(channel).map(|c| c.community_id) else {
+            return;
+        };
+        // The dialog takes the focus when it opens (Dialog.tsx), not the field.
+        let reason = cx.new(|cx| TextareaState::new(window, cx));
+        self.menu = None;
+        self.moderating = Some(Moderating {
+            channel,
+            community,
+            msg,
+            seq,
+            excerpt: Zeroizing::new(super::mentions::excerpt(plain, REMOVAL_EXCERPT_CHARS)),
+            sent_reason: Zeroizing::new(String::new()),
+            reason,
+            phase: ModPhase::Confirm,
+            removal: None,
+            proof: None,
+            evidence: None,
+            open: true,
+            client: ctx.client.clone(),
+        });
+        cx.notify();
+    }
+
+    /// Conversation.tsx `closeModerateDialog`: the dialog closes; what is still unsettled stays as the status line.
+    /// Nothing closes while the removal is being sent.
+    pub fn close_moderate(&mut self, cx: &mut Context<Self>) {
+        let Some(m) = self.moderating.as_mut() else {
+            return;
+        };
+        if m.phase == ModPhase::Sending {
+            return;
+        }
+        m.open = false;
+        if m.phase == ModPhase::Confirm || m.settled() {
+            self.moderating = None;
+        }
+        cx.notify();
+    }
+
+    /// Conversation.tsx `removeForEveryone`: sends the removal with the typed reason. A refused removal goes back to the
+    /// reason; a failure goes back to it too and is shown (the shell's command error).
+    pub fn remove_for_everyone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.moderating.as_mut() else {
+            return;
+        };
+        let reason = m.reason_text(cx);
+        if m.phase != ModPhase::Confirm || !removal_reason_ok(&reason) {
+            return;
+        }
+        m.phase = ModPhase::Sending;
+        m.sent_reason = reason.clone();
+        let (channel, msg, seq) = (m.channel, m.msg, m.seq);
+        let excerpt = m.excerpt.clone();
+        let Some(client) = m.client.clone() else {
+            // A fixture: nothing is sent.
+            m.phase = ModPhase::Confirm;
+            cx.notify();
+            return;
+        };
+        let job = client.moderation().run(move |mo| async move {
+            mo.remove_message(channel, msg, seq, &reason, &excerpt)
+                .await
+        });
+        let shown_in = Some(window.window_handle().window_id());
+        cx.spawn(async move |this, cx| {
+            let answer = job.await;
+            let _ = this.update(cx, |ui, cx| {
+                let Some(m) = ui.moderating.as_mut().filter(|m| m.msg == msg) else {
+                    return;
+                };
+                match answer {
+                    Ok(outcome) if outcome.removal == Removal::Rejected => {
+                        m.phase = ModPhase::Confirm;
+                        m.removal = None;
+                        m.proof = None;
+                        m.evidence = None;
+                    }
+                    Ok(outcome) => m.take(outcome),
+                    Err(e) => {
+                        m.phase = ModPhase::Confirm;
+                        let text = crate::strings::tf(
+                            "shell.banner.commandError",
+                            &[("code", e.code.as_str())],
+                        );
+                        dilla_desktop_ui::components::toast::show_toast_in(shown_in, text, cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Conversation.tsx `retryModerationEvidence`: an unknown removal is checked or posted again with the same proof; an
+    /// accepted one has its evidence sent again. The dialog opens again for it.
+    pub fn retry_moderation(&mut self, cx: &mut Context<Self>) {
+        let Some(m) = self.moderating.as_mut() else {
+            return;
+        };
+        let (Some(proof), Some(client)) = (m.proof, m.client.clone()) else {
+            return;
+        };
+        if m.phase == ModPhase::Sending {
+            return;
+        }
+        m.open = true;
+        m.phase = ModPhase::Sending;
+        let msg = m.msg;
+        let unknown = m.removal == Some(Removal::Unknown);
+        let (community, reason, excerpt) = (m.community, m.sent_reason.clone(), m.excerpt.clone());
+        let job = client.moderation().run(move |mo| async move {
+            if unknown {
+                // manual-removal.ts `resolveManualRemoval`: any failure is an unknown outcome.
+                Ok(mo.resolve_removal(proof).await.unwrap_or(RemovalOutcome {
+                    removal: Removal::Unknown,
+                    proof_request_id: proof,
+                    evidence_request_id: None,
+                    evidence: Evidence::Unknown,
+                }))
+            } else {
+                let (request, evidence) = mo
+                    .send_removal_evidence(community, proof, &reason, &excerpt)
+                    .await;
+                Ok(RemovalOutcome {
+                    removal: Removal::Accepted,
+                    proof_request_id: proof,
+                    evidence_request_id: Some(request),
+                    evidence,
+                })
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let answer = job.await;
+            let _ = this.update(cx, |ui, cx| {
+                let Some(m) = ui.moderating.as_mut().filter(|m| m.msg == msg) else {
+                    return;
+                };
+                match answer {
+                    Ok(outcome) if outcome.removal == Removal::Rejected => {
+                        m.phase = ModPhase::Confirm;
+                        m.removal = None;
+                        m.proof = None;
+                        m.evidence = None;
+                    }
+                    Ok(outcome) => m.take(outcome),
+                    Err(_) => {
+                        m.phase = ModPhase::Result;
+                        m.evidence = Some(Evidence::Unknown);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 

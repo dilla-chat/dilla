@@ -1570,6 +1570,13 @@ impl Publisher {
         crate::account::refill_key_packages(&inner, remaining);
         // controller.ts `retryPendingRolePanelActions`: every stored role panel action of this device, sent again.
         crate::features::role_panels::on_ready(&inner);
+        // controller.ts `onReady`: a moderated removal the core still holds is settled and its evidence sent
+        // (`resumeManualRemovalEvidence`); nothing waits for it.
+        let resume = inner.clone();
+        drop(inner.spawn(async move {
+            crate::features::moderation::resume_removal_evidence(resume).await;
+            Ok(())
+        }));
         let backups = inner.clone();
         let updates = self.updates.clone();
         drop(inner.spawn(async move {
