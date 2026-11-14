@@ -42,6 +42,8 @@ pub const COMMUNITY_CALLS_MAX: usize = 4096;
 pub const STATS_EVERY: Duration = Duration::from_secs(10);
 /// How often a joined call's epoch keys are read again from the core (the engine applies the group's commits).
 pub const EPOCH_POLL: Duration = Duration::from_millis(250);
+/// routes.ts `postCallRtt`: the most an RTT report says, in ms (the instance refuses more).
+pub const RTT_MAX_MS: u32 = 5000;
 
 /// What a joined call hands the media layer. The token and the keys are zeroized when the last holder drops them; none
 /// of it is ever in a slice, a log or a `Debug`.
@@ -1110,6 +1112,40 @@ impl Voice {
             }
             this.inner.publish(move |s| s.voice.share = share);
             Ok(())
+        })
+    }
+
+    /// controller.ts `rtt` (Signal task 8c): this device's RTT to the SFU in ms (0..=5000, clamped), or `None` to clear it,
+    /// for the others' per-person ping: `POST /v1/calls/{id}/rtt` `[ms]` or `[]`, which the instance writes as this
+    /// device's `dilla.rtt` attribute (no call token may write its own attributes). `true` once stored; `false` when the
+    /// instance refused it by rate (429) or by room (404, a reconnect not landed yet), so the caller does not count it as
+    /// sent and its next sample tries again. `E_NO_CALL` with no call.
+    pub fn report_rtt(&self, ms: Option<u32>) -> oneshot::Receiver<Result<bool, ClientError>> {
+        let this = self.clone();
+        self.inner.spawn(async move {
+            use crate::http::routes::{PostCallRtt, Raw};
+            let call = lock(&this.rt()).live.as_ref().map(|l| l.call_id);
+            let Some(call) = call else {
+                return Err(ClientError::Sync("E_NO_CALL".into()));
+            };
+            let body = match ms {
+                Some(ms) => Value::Array(vec![Value::Uint(u64::from(ms.min(RTT_MAX_MS)))]).encode(),
+                None => vec![0x80],
+            };
+            let hex = crate::state::hex(&call);
+            match this
+                .calls
+                .routes()
+                .0
+                .call::<PostCallRtt>(&[&hex], Raw(body))
+                .await
+            {
+                Ok(()) => Ok(true),
+                Err(crate::seams::HttpError::Status {
+                    status: 429 | 404, ..
+                }) => Ok(false),
+                Err(e) => Err(ClientError::Sync(code_of(&e))),
+            }
         })
     }
 

@@ -291,6 +291,30 @@ async fn voice_roster_follows_join_and_leave() {
     .await;
 }
 
+/// session.ts `reportRtt` → controller.ts `rtt` (Signal task 8c, ported in the final cleanup): this device's RTT to the
+/// SFU goes to the instance (`POST /v1/calls/{id}/rtt`), which stores it as the device's `dilla.rtt` attribute; a clear
+/// goes the same way. Stored: `true`. With no call there is nothing to report on (`E_NO_CALL`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn the_rtt_is_reported_to_the_instance() {
+    let w = world("voice-rtt").await;
+    let a = client(&w.alice).await;
+    let refused = a.voice().report_rtt(Some(42)).await.unwrap();
+    assert!(
+        matches!(&refused, Err(dilla_client::ClientError::Sync(code)) if code == "E_NO_CALL"),
+        "{refused:?}"
+    );
+    let a_media = join_with_media(&w.host, &a, w.voice, 440).await;
+    let stored = a.voice().report_rtt(Some(42)).await.unwrap();
+    assert!(stored.expect("the report is taken"), "stored");
+    let cleared = a.voice().report_rtt(None).await.unwrap();
+    assert!(cleared.is_ok(), "a clear is taken too: {cleared:?}");
+    a.voice().leave().await.unwrap().expect("alice leaves");
+    tokio::task::spawn_blocking(move || a_media.quit())
+        .await
+        .unwrap();
+}
+
 /// e2e/voice/share.spec.ts (the media half): a screen share and a camera, published under the call's keys, reach the
 /// other device verified (its decoded frames are the test pattern), the roster shows the device's `screen` and `video`
 /// bits, and both stop.

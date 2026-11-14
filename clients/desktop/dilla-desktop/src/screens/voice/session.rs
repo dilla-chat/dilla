@@ -134,6 +134,47 @@ impl<'a> PingRead<'a> {
     }
 }
 
+/// session.ts `RTT_STEP_MS`: a ping is reported to the instance again once it moved this much.
+const RTT_STEP_MS: u32 = 5;
+
+/// session.ts `publishRtt` / `reportRtt` (Signal task 8c): what of this device's ping goes to the instance, for the
+/// others' per-person ping ([`Voice::report_rtt`]): a sample that moved by [`RTT_STEP_MS`] or more since the last one
+/// stored, one report in flight at most; a refused report is not counted as sent, so the next sample tries again.
+#[derive(Default)]
+struct RttReport {
+    sent: Option<u32>,
+    busy: bool,
+}
+
+impl RttReport {
+    /// The report to send for the sample `ms`, if any (clamped to what the instance takes); it is then in flight.
+    fn want(&mut self, ms: u32) -> Option<u32> {
+        let ms = ms.min(dilla_client::features::voice::RTT_MAX_MS);
+        if self.busy
+            || self
+                .sent
+                .is_some_and(|sent| sent.abs_diff(ms) < RTT_STEP_MS)
+        {
+            return None;
+        }
+        self.busy = true;
+        Some(ms)
+    }
+
+    /// The report of `ms` answered: `stored` when the instance took it.
+    fn answered(&mut self, ms: u32, stored: bool) {
+        self.busy = false;
+        if stored {
+            self.sent = Some(ms);
+        }
+    }
+}
+
+fn lock_rtt(rtt: &Mutex<RttReport>) -> std::sync::MutexGuard<'_, RttReport> {
+    rtt.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The running session (see the module docs). Dropping it leaves the call's media.
 pub struct MediaSession {
     _runtime: tokio::runtime::Runtime,
@@ -383,6 +424,7 @@ async fn in_call(
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
     let mut link_read = tokio::time::interval(LINK_EVERY);
     let mut ping = PingRead::default();
+    let rtt = Arc::new(Mutex::new(RttReport::default()));
     let own = ctx.states.borrow().account.device_id;
     let mut applied: Option<(bool, bool)> = None;
     loop {
@@ -446,7 +488,18 @@ async fn in_call(
             // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
             // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
             _ = link_read.tick() => ping.start(call.rtt_ms()),
-            ms = ping.answer() => ctx.voice.set_ping(link.call_id, ms),
+            ms = ping.answer() => {
+                ctx.voice.set_ping(link.call_id, ms);
+                // session.ts `publishRtt`: the others see this device's ping through the instance.
+                let send = ms.and_then(|ms| lock_rtt(&rtt).want(ms));
+                if let Some(send) = send {
+                    let (answer, rtt) = (ctx.voice.report_rtt(Some(send)), rtt.clone());
+                    tokio::spawn(async move {
+                        let stored = matches!(answer.await, Ok(Ok(true)));
+                        lock_rtt(&rtt).answered(send, stored);
+                    });
+                }
+            }
             _ = stats.tick() => {
                 let st = call.stats();
                 ctx.voice.send_stats(CallStatsReport {
@@ -551,6 +604,23 @@ mod tests {
             roster: vec![(0, [1; 16], [2; 16]), (1, [3; 16], [4; 16])],
             code: String::new(),
         }
+    }
+
+    /// session.ts `publishRtt` / `reportRtt`: a sample goes to the instance when it moved by [`RTT_STEP_MS`] or more
+    /// since the last stored one (the first always), one report in flight at most; a refused one (429, 404) is not
+    /// counted as sent, so the next sample tries again; clamped to 0..=5000.
+    #[test]
+    fn the_rtt_is_reported_when_it_moved_one_at_a_time() {
+        let mut r = RttReport::default();
+        assert_eq!(r.want(40), Some(40), "the first sample");
+        assert_eq!(r.want(80), None, "one in flight");
+        r.answered(40, true);
+        assert_eq!(r.want(44), None, "moved less than the step");
+        assert_eq!(r.want(45), Some(45));
+        r.answered(45, false);
+        assert_eq!(r.want(46), Some(46), "a refused report was not sent");
+        r.answered(46, true);
+        assert_eq!(r.want(9_999), Some(5000), "clamped");
     }
 
     /// w2-fix2 re-review: the ping read is polled beside the call loop's other arms, never awaited in one: a stalled
