@@ -30,7 +30,7 @@ use dilla_desktop_ui::components::settings::row::SettingsRow;
 use dilla_desktop_ui::text::{line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
-use super::{ensure_loaded, hex, roles_job, sorted_roles};
+use super::{ensure_loaded, hex, sorted_roles};
 use crate::slots::SlotCx;
 use crate::strings::{t, tf};
 
@@ -79,11 +79,68 @@ struct PanelUi {
     notice: Option<String>,
     error: Option<String>,
     busy: bool,
+    /// A configure or select is in flight (w2-bot-review I-B3): both boxes are disabled until it answers, as
+    /// SelfRolesSection.tsx's `busy` disables both fieldsets, so no click is built from a list that is about to change.
+    roles_busy: bool,
     installation_asked: bool,
 }
 
 fn ui(w: WindowId, cx: &mut App) -> &mut PanelUi {
     crate::per_window::get_mut::<PanelUi>(w, cx)
+}
+
+/// Whether the self-role checkboxes take clicks in `w`: neither a panel publish nor a configure or select in flight.
+fn boxes_disabled(w: WindowId, cx: &mut App) -> bool {
+    let u = ui(w, cx);
+    u.busy || u.roles_busy
+}
+
+/// Starts a configure or select in `w`: `false` while one is in flight (the click is dropped).
+fn begin_roles(w: WindowId, cx: &mut App) -> bool {
+    let u = ui(w, cx);
+    if u.roles_busy {
+        return false;
+    }
+    u.roles_busy = true;
+    true
+}
+
+/// A configure or select of `w` answered (or failed): the boxes take clicks again.
+fn end_roles(w: WindowId, cx: &mut App) {
+    ui(w, cx).roles_busy = false;
+    cx.refresh_windows();
+}
+
+/// A configure or select (`roles_job`), with both boxes disabled until it answers (w2-bot-review I-B3).
+fn self_roles_job(
+    w: WindowId,
+    client: &Rc<Client>,
+    cx: &mut App,
+    job: impl FnOnce(
+        dilla_client::features::roles::Roles,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), dilla_client::sync::api::ApiError>> + Send>,
+    > + 'static,
+) {
+    if !begin_roles(w, cx) {
+        return;
+    }
+    cx.refresh_windows();
+    let fut = client.roles().run(job);
+    cx.spawn(async move |cx| {
+        let answer = fut.await;
+        cx.update(|cx| {
+            end_roles(w, cx);
+            if let Err(e) = answer {
+                dilla_desktop_ui::components::toast::show_toast_in(
+                    Some(w),
+                    tf("roles.assign.error.other", &[("code", &e.code)]),
+                    cx,
+                );
+            }
+        });
+    })
+    .detach();
 }
 
 /// SelfRolesSection.tsx `panelEnabled`: a ready installation (state 3) with the Roles capability (4).
@@ -257,7 +314,7 @@ pub fn section(
             )
             .into_any_element();
     };
-    let busy = ui(w, cx).busy;
+    let busy = boxes_disabled(w, cx);
     let manages = access.loaded && access.manage_roles;
     let approved: Vec<RoleId> = list.iter().map(|r| r.id).collect();
     if manages {
@@ -282,7 +339,7 @@ pub fn section(
                             next.push(id);
                         }
                         if let Some(client) = &client {
-                            roles_job(w, client, cx, move |r| {
+                            self_roles_job(w, client, cx, move |r| {
                                 Box::pin(
                                     async move { r.configure_self_roles(community, &next).await },
                                 )
@@ -311,7 +368,7 @@ pub fn section(
                     busy,
                     move |on, _w, cx| {
                         if let Some(client) = &client {
-                            roles_job(w, client, cx, move |r| {
+                            self_roles_job(w, client, cx, move |r| {
                                 Box::pin(async move { r.select_self_role(community, id, on).await })
                             });
                         }
@@ -569,4 +626,28 @@ fn publish(
         });
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// w2-bot-review I-B3: while a configure or select is in flight both boxes are disabled and a second one is
+    /// dropped, so no click is built from the approved list the first one is changing; its answer enables them again.
+    #[gpui::test]
+    fn the_boxes_are_disabled_while_a_save_is_in_flight(cx: &mut gpui::TestAppContext) {
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            assert!(!boxes_disabled(w, cx));
+            assert!(begin_roles(w, cx));
+            assert!(boxes_disabled(w, cx), "in flight");
+            assert!(!begin_roles(w, cx), "a second save waits for the first");
+            end_roles(w, cx);
+            assert!(!boxes_disabled(w, cx), "answered");
+            ui(w, cx).busy = true;
+            assert!(boxes_disabled(w, cx), "a panel publish");
+        });
+    }
 }
