@@ -144,7 +144,8 @@ pub struct AttachmentsUi {
     pub lightbox: Option<LightboxState>,
     pub gif: Option<GifState>,
     /// The clients released so far (by `Client::serial`, never reused): a DM GIF notice whose read answers after its
-    /// client was released is not shown (final review I5).
+    /// client was released is not shown (final review I5). Never pruned: one serial per released client for the
+    /// process's life, like the lazily pruned per-client registries of final review M9 (ids only, no client).
     pub released: BTreeSet<u64>,
     /// `gifStatus` per server: `None` while asked.
     pub gif_on: HashMap<CommunityId, Option<bool>>,

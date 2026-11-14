@@ -3113,7 +3113,7 @@ impl Window {
         self.rendered_frame.scene.quads.clone()
     }
 
-    /// DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): the scale factor the most recently rendered
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the fourth change): the scale factor the most recently rendered
     /// frame's scene says it was painted at (what the wgpu renderer sizes thin dashes by).
     #[cfg(any(test, feature = "test-support"))]
     pub fn painted_scale_factor(&self) -> f32 {
@@ -3760,7 +3760,7 @@ impl Window {
 
         self.layout_engine.as_mut().unwrap().clear();
         self.text_system().finish_frame();
-        // DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): the scene says the scale it was painted at.
+        // DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the fourth change): the scene says its scale.
         self.next_frame.scene.scale_factor = self.scale_factor;
         self.next_frame.finish(&mut self.rendered_frame);
 

@@ -1503,7 +1503,8 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   not base64url, not protobuf, or larger than 1 MiB raw or once decompressed — is
   `400 E_INVALID_REQUEST`. A join the checks above admit must also name signalling protocol 17
   (the web client and the Go SDK) or 18 (the desktop client's LiveKit Rust SDK) — the `protocol`
-  query parameter without `join_request`, the `JoinRequest`'s `client_info.protocol` with it — and, with `join_request`, a `client_info.sdk` the SFU's enum names; any other value,
+  query parameter without `join_request`, the `JoinRequest`'s `client_info.protocol` with it —
+  and, with `join_request`, a `client_info.sdk` the SFU's enum names; any other value,
   including none, is `400 E_INVALID_REQUEST`, because the SFU labels its metrics with both. The
   paths are metered per client address on the `unauth` bucket of
   `[limits.rate]` (`429 E_RATE_LIMITED` with `retry_after_ms`). The instance removes a `publish`

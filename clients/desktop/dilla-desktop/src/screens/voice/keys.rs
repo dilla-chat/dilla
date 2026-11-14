@@ -1,6 +1,7 @@
 //! The voice area's key bindings (Task 17; packages/web/src/screens/voice/shortcuts.ts): Ctrl+Shift+M mutes,
-//! Ctrl+Shift+D deafens (Cmd+Shift+M and Cmd+Shift+D too, as the web's `ctrlKey || metaKey`), in a call or out of one (out of one the next join starts that way). Push to talk is the
-//! dock's key listener (`super::dock`); the arrows and Escape are the stage's own (`super::stage`).
+//! Ctrl+Shift+D deafens (Cmd+Shift+M and Cmd+Shift+D too, as the web's `ctrlKey || metaKey`), in a call or out of one
+//! (out of one the next join starts that way). Push to talk is the dock's key listener (`super::dock`); the arrows and
+//! Escape are the stage's own (`super::stage`).
 //! `crate::keys::bind_all` calls [`bind`] once per app.
 
 use gpui::{App, KeyBinding, actions};
