@@ -861,6 +861,23 @@ impl ShellView {
         cx.notify();
     }
 
+    /// The DM list head's menu (Shell.tsx `dmsMenu`): the device-wide default, which governs direct messages.
+    fn choose_dm_default(&mut self, item: &str, cx: &mut Context<Self>) {
+        let Some(choice) = notify::DefaultChoice::parse(item) else {
+            return;
+        };
+        if let Some(client) = &self.client {
+            warn("the notify default", client.notify().set_default(choice));
+        } else if let Some(prefs) = &self.prefs {
+            warn(
+                "the notify default",
+                prefs.set(notify::KEY_DEFAULT, &choice.as_str().to_owned()),
+            );
+        }
+        self.server_menu_open = false;
+        cx.notify();
+    }
+
     /// Mute server and the server's notify mode (Shell.tsx `serverMenu`): the account settings Settings → Notifications
     /// writes (Task 22's `set_community_muted` and `set_community_mode`; `default` deletes the stored mode).
     fn choose_server_item(&mut self, community: CommunityId, item: &str, cx: &mut Context<Self>) {
@@ -1072,7 +1089,8 @@ impl Render for ShellView {
         let rail_view = rail::render(
             &rail::RailModel {
                 state: &state,
-                selected: self.community,
+                // On Home no server is selected (Shell.tsx: the rail's current is the `@` tile).
+                selected: self.community(),
                 home_selected: self.home_shown(),
                 muted: &muted,
             },
@@ -1168,7 +1186,28 @@ impl Render for ShellView {
         );
         let list = if self.home_shown() {
             // Home: the DM list in place of a server's channels (13).
-            dms::home::sidebar(&ctx, self.channel, online, window, cx)
+            dms::home::sidebar(
+                &ctx,
+                self.channel,
+                dms::home::DmsMenu {
+                    open: self.server_menu_open,
+                    current: settings.get(notify::KEY_DEFAULT),
+                    on_open: {
+                        let w = shell.clone();
+                        Rc::new(move |open, _, cx| {
+                            let _ = w.update(cx, |shell, cx| shell.set_server_menu_open(open, cx));
+                        })
+                    },
+                    on_pick: {
+                        let w = shell.clone();
+                        Rc::new(move |item, _, cx| {
+                            let _ = w.update(cx, |shell, cx| shell.choose_dm_default(item, cx));
+                        })
+                    },
+                },
+                window,
+                cx,
+            )
         } else {
             channel_list::render(
                 &channel_list::ListModel {
@@ -1287,9 +1326,7 @@ impl Render for ShellView {
                 .into_any_element()
             }
             // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
-            None if no_server(&state) => {
-                crate::screens::create::empty_view(&ctx, window, cx)
-            }
+            None if no_server(&state) => crate::screens::create::empty_view(&ctx, window, cx),
             None => div().size_full().bg(color::BG).into_any_element(),
         };
         let banners = slots::banners(&ctx, window, cx);
@@ -1411,6 +1448,11 @@ impl Render for ShellView {
                             .then_some(AsideKind::Members)
                         }),
                         call: dm_call,
+                        dm: self.dm_view.then(|| {
+                            channel
+                                .and_then(|c| state.dms.get(c.id))
+                                .and_then(|d| dms::home::dm_topic(&state, d))
+                        }),
                     },
                     &on_toggle,
                 ))

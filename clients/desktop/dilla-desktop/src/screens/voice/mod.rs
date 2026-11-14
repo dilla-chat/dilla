@@ -30,7 +30,7 @@ use gpui::{
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
 use dilla_desktop_ui::metrics::focus_ring;
-use dilla_desktop_ui::text::{Face, line, line_height};
+use dilla_desktop_ui::text::{Face, chromium_baseline, line, line_height};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
@@ -1247,7 +1247,6 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         .flex_col()
         .gap(px(m::DOCK_GAP))
         .mx(px(m::DOCK_INSET))
-        .mb(px(m::DOCK_INSET))
         .p(px(m::DOCK_PAD))
         .min_w_0()
         .bg(color::OK_SOFT)
@@ -1263,7 +1262,16 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
                 .child(status)
                 .child(controls),
         );
-    Some(tracked_box("voice-dock", card).into_any_element())
+    // `.d-voice-dock`'s 8px bottom margin collapses through `.dw-voice-dock` (no padding or border below): the band under
+    // the card is the shell's `--bg`, not the wrapper's `--bg-2`.
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .child(tracked_box("voice-dock", card))
+            .child(div().h(px(m::DOCK_INSET)).bg(color::BG))
+            .into_any_element(),
+    )
 }
 
 /// Milliseconds on one clock for the push-to-talk hold (its release delay is measured on it).
@@ -1939,7 +1947,13 @@ pub fn outgoing_line(
     others: bool,
     name: &dyn Fn(UserId) -> String,
 ) -> Option<String> {
-    let names = |users: &[UserId]| users.iter().map(|u| name(*u)).collect::<Vec<_>>().join(", ");
+    let names = |users: &[UserId]| {
+        users
+            .iter()
+            .map(|u| name(*u))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let mut parts = Vec::new();
     if !out.ringing.is_empty() && !out.expired {
         parts.push(tf(
@@ -2012,18 +2026,43 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
         .code
         .clone()
         .map(|code| code_disclosure(w, &code, cx));
+    // `.d-call-stage__head` aligns its parts on their first baselines (`align-items: baseline`): each part stands as far
+    // below the head's top as its baseline is above the lowest one. The call code's baseline is its summary's text,
+    // centred in the 28px summary.
+    let name_lh = line_height(text::MD, 1.3);
+    let ring_lh = line_height(text::UI, 1.3);
+    let code_lh = line_height(text::META, 1.3);
+    let name_base = chromium_baseline(Face::Mono, f32::from(text::MD), name_lh);
+    let ring_base = chromium_baseline(Face::Mono, f32::from(text::UI), ring_lh);
+    let code_base =
+        (m::CODE_H - code_lh) / 2.0 + chromium_baseline(Face::Mono, f32::from(text::META), code_lh);
+    let ring = outgoing_text(&state, channel.id);
+    let lowest = [
+        Some(name_base),
+        ring.as_ref().map(|_| ring_base),
+        code.as_ref().map(|_| code_base),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0.0_f32, f32::max);
     let head = div()
         .flex()
         .flex_wrap()
-        .items_baseline()
+        .items_start()
         .gap_x(px(m::HEAD_GAP_X))
         .gap_y(px(m::HEAD_GAP_Y))
         .min_w_0()
         .px(px(m::STAGE_PAD))
         .pt(px(m::STAGE_PAD))
-        .child(line(channel.name.clone(), text::MD, 18.2, color::FG).weight(font::WEIGHT_LABEL))
-        .children(outgoing_text(&state, channel.id).map(|s| line(s, text::UI, 15.6, color::FG_2)))
-        .children(code);
+        .child(div().mt(px(lowest - name_base)).child(
+            line(channel.name.clone(), text::MD, name_lh, color::FG).weight(font::WEIGHT_LABEL),
+        ))
+        .children(ring.map(|s| {
+            div()
+                .mt(px(lowest - ring_base))
+                .child(line(s, text::UI, ring_lh, color::FG_2))
+        }))
+        .children(code.map(|c| div().ml_auto().mt(px(lowest - code_base)).child(c)));
     let body = div()
         .p(px(m::STAGE_PAD))
         .child(div().relative().w_full().child(grid).child(measure));
@@ -2122,38 +2161,37 @@ fn code_disclosure(w: WindowId, code: &str, cx: &mut App) -> AnyElement {
             ui.code_open = !ui.code_open;
             cx.refresh_windows();
         });
-    let body = open.then(|| {
-        div()
-            .debug_selector(|| "dm-call-code-digits".to_owned())
-            .w_full()
-            .max_w(px(m::CODE_BODY_MAX_W))
-            .mt(px(m::CODE_BODY_GAP))
-            .py(px(m::CODE_BODY_PAD_Y))
-            .px(px(m::CODE_BODY_PAD_X))
-            .bg(color::SURFACE_2)
-            .border_1()
-            .border_color(color::LINE_STRONG)
-            .rounded(radius::MD)
-            .child(
-                line(
-                    group_code(code),
-                    text::MD,
-                    line_height(text::MD, 1.3),
-                    color::FG,
+    let body =
+        open.then(|| {
+            div()
+                .debug_selector(|| "dm-call-code-digits".to_owned())
+                .w_full()
+                .max_w(px(m::CODE_BODY_MAX_W))
+                .mt(px(m::CODE_BODY_GAP))
+                .py(px(m::CODE_BODY_PAD_Y))
+                .px(px(m::CODE_BODY_PAD_X))
+                .bg(color::SURFACE_2)
+                .border_1()
+                .border_color(color::LINE_STRONG)
+                .rounded(radius::MD)
+                .child(
+                    line(
+                        group_code(code),
+                        text::MD,
+                        line_height(text::MD, 1.3),
+                        color::FG,
+                    )
+                    .tracking(dilla_desktop_ui::metrics::LABEL_TRACKING),
                 )
-                .tracking(dilla_desktop_ui::metrics::LABEL_TRACKING),
-            )
-            .child(
-                div()
-                    .mt(px(m::CODE_HELP_GAP))
-                    .child(dilla_desktop_ui::text::flow_paragraph(
+                .child(div().mt(px(m::CODE_HELP_GAP)).child(
+                    dilla_desktop_ui::text::flow_paragraph(
                         t("voice.codeHelp"),
                         text::XS,
                         line_height(text::XS, 1.3),
                         color::FG_2,
-                    )),
-            )
-    });
+                    ),
+                ))
+        });
     div()
         .ml_auto()
         .flex()
@@ -2241,6 +2279,11 @@ fn card(
         .collect()
     };
     let speaking = p.is_some_and(|p| state.voice.speaking.contains(&p.device_id));
+    let edge = if speaking {
+        m::TILE_EDGE_STRONG
+    } else {
+        m::TILE_EDGE
+    };
     let caption = div()
         .flex()
         .items_center()
@@ -2277,14 +2320,11 @@ fn card(
         .items_center()
         .justify_center()
         .gap(px(m::CARD_GAP))
-        .p(px(m::DM_TILE_PAD))
+        // The web's edge is an inset shadow, which takes no room: the border here stands inside the padding.
+        .p(px(m::DM_TILE_PAD - edge))
         .bg(color::STAGE_TILE)
         .rounded(radius::XL)
-        .border(px(if speaking {
-            m::TILE_EDGE_STRONG
-        } else {
-            m::TILE_EDGE
-        }))
+        .border(px(edge))
         .border_color(if speaking { color::OK } else { color::HAIRLINE })
         .children(video.map(|image| {
             div()
@@ -3091,7 +3131,13 @@ mod tests {
     fn the_outgoing_line_follows_the_ring_clock() {
         use dilla_client::state::ring::Outgoing;
         let (bob, cy) = (UserId([2; 16]), UserId([3; 16]));
-        let name = |u: UserId| if u == bob { "bob".to_owned() } else { "cy".to_owned() };
+        let name = |u: UserId| {
+            if u == bob {
+                "bob".to_owned()
+            } else {
+                "cy".to_owned()
+            }
+        };
         let line = |out: &Outgoing, others: bool| outgoing_line(out, others, &name);
         let ringing = Outgoing {
             ringing: vec![bob],

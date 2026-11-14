@@ -308,8 +308,13 @@ fn the_dm_call_code_opens_on_its_grouped_digits(cx: &mut TestAppContext) {
         window.refresh();
     });
     cx.run_until_parked();
-    let summary = cx.debug_bounds("dm-call-code").expect("the call code's summary");
-    assert!(cx.debug_bounds("dm-call-code-digits").is_none(), "closed at first");
+    let summary = cx
+        .debug_bounds("dm-call-code")
+        .expect("the call code's summary");
+    assert!(
+        cx.debug_bounds("dm-call-code-digits").is_none(),
+        "closed at first"
+    );
     cx.simulate_click(summary.center(), gpui::Modifiers::none());
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
@@ -322,7 +327,11 @@ fn the_dm_call_code_opens_on_its_grouped_digits(cx: &mut TestAppContext) {
         voice::group_code("123451234512345123451234512345"),
         "12345 12345 12345 12345 12345 12345"
     );
-    assert_eq!(voice::group_code("12345 6"), "12345 6", "not 30 digits: as given");
+    assert_eq!(
+        voice::group_code("12345 6"),
+        "12345 6",
+        "not 30 digits: as given"
+    );
     // A second click closes it.
     cx.simulate_click(summary.center(), gpui::Modifiers::none());
     cx.update(|window, _| window.refresh());
@@ -1504,5 +1513,5 @@ macro_rules! parity {
 parity! {
     parity_voice_stage => "stage",
     parity_voice_stage_b => "stage-b",
-    parity_voice_dm_call => "dm-call"; "parity after T6c: whole frame 0.8443 % (R22, lane P: the call box matches; the DM conversation around it is not the web's yet: the header draws a channel's (# Mira, Threads, members) where the web draws @ Mira @mira · offline (shell.dm.topic is unported), the rail keeps the server selected, the list head, the empty state and the composer's GIF differ, and the call code disclosure is not drawn)",
+    parity_voice_dm_call => "dm-call",
 }

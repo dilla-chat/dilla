@@ -25,6 +25,8 @@ mod css {
     pub const TITLE_GAP: f32 = 6.0;
     pub const ACTIONS_GAP: f32 = 2.0;
     pub const GLYPH: f32 = 14.0;
+    /// `.d-channel-header`'s own gap: 10px between the title and the topic.
+    pub const TOPIC_GAP: f32 = 10.0;
 }
 
 /// Which aside a header button opens.
@@ -42,6 +44,9 @@ pub struct HeaderModel<'a> {
     /// A DM's call button (VoiceView.tsx `dmCallStart`, an icon in the DM header): its label (`call.start` or
     /// `call.join`) and what it does; `None` where there is nothing to start.
     pub call: Option<(&'static str, OnCall)>,
+    /// A DM's header (Ruling Z): the at-sign, the name and this topic (Shell.tsx `dmTopic`, `None` when the other
+    /// person is unknown), and no Threads or Members.
+    pub dm: Option<Option<String>>,
 }
 
 /// Tooltip.tsx's 400 ms. The automation build shows the tooltip at once: its frames settle within a few frames and do not
@@ -56,7 +61,7 @@ pub type OnToggle = Rc<dyn Fn(AsideKind, &mut Window, &mut App)>;
 /// The DM call button's press.
 pub type OnCall = Rc<dyn Fn(&mut Window, &mut App)>;
 
-pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> impl IntoElement + use<> {
+pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement {
     let name = model.channel.map_or_else(String::new, |c| c.name.clone());
     let threads = on_toggle.clone();
     let members = on_toggle.clone();
@@ -85,6 +90,9 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> impl IntoElement
         .relative()
         .child(members_button)
         .child(crate::automation::bounds_probe("header-members"));
+    if let Some(topic) = model.dm.clone() {
+        return dm_bar(name, topic, call).into_any_element();
+    }
     let bar = div()
         .flex_none()
         .relative()
@@ -135,6 +143,59 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> impl IntoElement
                 )
                 .child(members_button),
         );
+    #[cfg(feature = "automation")]
+    let bar = bar.child(crate::automation::bounds_probe("shell-header"));
+    bar.into_any_element()
+}
+
+/// ChannelHeader.tsx with `kind="dm"` (Ruling Z): the at-sign glyph and the name (the title keeps up to 8rem, its name
+/// cut first by the topic), then the topic in 12px `--fg-2`, cut with an ellipsis; the DM call's button at the end.
+fn dm_bar(name: String, topic: Option<String>, call: Option<impl IntoElement>) -> impl IntoElement {
+    let bar = div()
+        .flex_none()
+        .relative()
+        .h(layout::CHANNEL_HEADER_H)
+        .bg(color::BG)
+        .border_b_1()
+        .border_color(color::HAIRLINE)
+        .flex()
+        .items_center()
+        .pl(Pixels::from(css::LEFT))
+        .pr(Pixels::from(css::RIGHT))
+        .gap(Pixels::from(css::TOPIC_GAP))
+        .child(
+            div()
+                .flex_initial()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(Pixels::from(css::TITLE_GAP))
+                .child(
+                    Icon::new(IconName::AtSign)
+                        .size(Pixels::from(css::GLYPH))
+                        .color(color::FG_3),
+                )
+                .child(
+                    line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
+                        .weight(font::WEIGHT_DISPLAY)
+                        .ellipsis(),
+                ),
+        )
+        .children(topic.map(|topic| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(line(topic, text::UI, line_height(text::UI, 1.5), color::FG_2).ellipsis())
+        }))
+        .children(call.map(|c| {
+            div()
+                .ml_auto()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(Pixels::from(css::ACTIONS_GAP))
+                .child(c)
+        }));
     #[cfg(feature = "automation")]
     let bar = bar.child(crate::automation::bounds_probe("shell-header"));
     bar

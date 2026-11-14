@@ -85,6 +85,9 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state:
                     channel: Some(channel),
                     community: state.channel(channel).map(|c| c.community_id),
                     call_id: Some(channel.0),
+                    // The web's call reads its epoch's safety code from the core, so its DM box draws the closed "call
+                    // code" disclosure; the closed summary shows no digits, so the fixture's are a stand-in.
+                    code: dm.is_some().then(|| "0".repeat(30)),
                     ..OwnCall::default()
                 };
             }

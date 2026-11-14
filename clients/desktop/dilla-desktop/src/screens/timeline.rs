@@ -406,11 +406,20 @@ fn row_height(grouped: bool, marks: bool, last: bool, before: f32, body: f32, ex
     }
 }
 
-/// The welcome's lines, wrapped to the log's width less its padding.
-fn welcome_lines(channel: &str, width: f32) -> (Vec<Line>, Vec<Line>) {
+/// The welcome's lines, wrapped to the log's width less its padding (Shell.tsx `welcome`): a channel's "Welcome to
+/// #name" over "This is the start of #name.", a DM's name over "This is the start of your conversation.".
+fn welcome_lines(channel: &str, dm: bool, width: f32) -> (Vec<Line>, Vec<Line>) {
     let inner = width - 2.0 * WELCOME_X;
+    let (title, body) = if dm {
+        (channel.to_owned(), t("shell.log.welcomeDmBody").to_owned())
+    } else {
+        (
+            tf("shell.log.welcome", &[("channel", channel)]),
+            tf("shell.log.welcomeBody", &[("channel", channel)]),
+        )
+    };
     let title = paragraph(
-        &format!("Welcome to #{channel}"),
+        &title,
         text::WELCOME,
         line_height(text::WELCOME, 1.5),
         color::FG,
@@ -420,7 +429,7 @@ fn welcome_lines(channel: &str, width: f32) -> (Vec<Line>, Vec<Line>) {
     .map(|l| l.weight(font::WEIGHT_DISPLAY))
     .collect();
     let body = paragraph(
-        &format!("This is the start of #{channel}."),
+        &body,
         text::UI,
         line_height(text::UI, 1.5),
         color::FG_2,
@@ -461,7 +470,7 @@ impl Placer {
     }
 
     /// The welcome at `top`; answers its height.
-    fn welcome(&mut self, top: f32, title: Vec<Line>, body: Vec<Line>) -> f32 {
+    fn welcome(&mut self, top: f32, glyph: IconName, title: Vec<Line>, body: Vec<Line>) -> f32 {
         self.block(
             WELCOME_X,
             top + WELCOME_TOP,
@@ -474,11 +483,7 @@ impl Placer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(
-                    Icon::new(IconName::Hash)
-                        .size(len(20.))
-                        .color(color::ACCENT),
-                ),
+                .child(Icon::new(glyph).size(len(20.)).color(color::ACCENT)),
         );
         let height = welcome_height(title.len(), body.len());
         let mut y = top + WELCOME_TOP + WELCOME_TILE + WELCOME_TITLE_GAP;
@@ -924,7 +929,9 @@ pub fn render(
             index: n,
         });
     }
-    let (title, body_lines) = welcome_lines(&channel.name, width);
+    // A DM's log: its channel record is the DM's (Shell.tsx: the at-sign and the DM's name).
+    let dm = state.dms.get(channel.id).is_some();
+    let (title, body_lines) = welcome_lines(&channel.name, dm, width);
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
     let (_, rows_end) = row_tops(0.0, &shapes);
     // Task 20's private results: the rows only this device shows, after the conversation's last message.
@@ -947,7 +954,8 @@ pub fn render(
     let inner = if lift > 0.0 { viewport } else { height };
     let mut placer = Placer { out: Vec::new() };
     let mut y = lift + LOG_TOP;
-    y += placer.welcome(y, title, body_lines);
+    let glyph = if dm { IconName::AtSign } else { IconName::Hash };
+    y += placer.welcome(y, glyph, title, body_lines);
     let (tops, rows_bottom) = row_tops(y, &shapes);
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
     // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.

@@ -58,6 +58,20 @@ pub struct RailHandlers {
     pub on_add: super::shell::Action,
 }
 
+/// The selected tile's ring (`0 0 0 2px bg-2, 0 0 0 3.5px accent`), outside its box: a box-shadow takes no room in the
+/// rail.
+fn selected_ring() -> gpui::Div {
+    let out = css::RING_GAP + css::RING;
+    div()
+        .absolute()
+        .left(Pixels::from(-out))
+        .top(Pixels::from(-out))
+        .size(layout::RAIL_TILE + Pixels::from(2.0 * out))
+        .rounded(radius::XL + Pixels::from(out))
+        .border(Pixels::from(css::RING))
+        .border_color(color::ACCENT)
+}
+
 /// Mentions (and unread) summed over a server's channels (`sumBadges`; a muted channel hides its unread).
 pub fn counts(state: &AppState, community: CommunityId, muted: &HashSet<String>) -> (u32, u32) {
     state
@@ -174,7 +188,12 @@ pub fn render(
                     }),
             ));
         if model.home_selected {
-            tile = tile.bg(color::SURFACE_HI);
+            // CommunityRail.css: the selected `@` is a selected tile (the 10px square with its ring) on
+            // `--surface-hi`, its glyph in the accent.
+            tile = tile
+                .bg(color::SURFACE_HI)
+                .rounded(radius::XL)
+                .child(selected_ring());
         }
         #[cfg(feature = "automation")]
         let tile = tile.child(crate::automation::focus_probe("rail-home", &tab_stop(0)));
@@ -221,18 +240,7 @@ pub fn render(
                 .weight(font::WEIGHT_DISPLAY),
             );
         if picked {
-            // The ring around the tile, outside its box (a box-shadow takes no room in the rail).
-            let out = css::RING_GAP + css::RING;
-            tile = tile.child(
-                div()
-                    .absolute()
-                    .left(Pixels::from(-out))
-                    .top(Pixels::from(-out))
-                    .size(layout::RAIL_TILE + Pixels::from(2.0 * out))
-                    .rounded(radius::XL + Pixels::from(out))
-                    .border(Pixels::from(css::RING))
-                    .border_color(color::ACCENT),
-            );
+            tile = tile.child(selected_ring());
         }
         #[cfg(feature = "automation")]
         let mut tile = tile.child(crate::automation::focus_probe(

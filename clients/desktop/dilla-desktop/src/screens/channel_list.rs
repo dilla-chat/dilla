@@ -25,7 +25,7 @@ use crate::screens::{LABEL_TRACKING_WIDE, centred};
 use crate::strings::{t, tf};
 
 /// ChannelList.css and ChannelHead: the lengths of the list's own boxes.
-mod css {
+pub(crate) mod css {
     /// `.d-channel-list__head`: padding 14px 12px 8px 14px, gap 8px.
     pub const HEAD_TOP: f32 = 14.0;
     pub const HEAD_BOTTOM: f32 = 8.0;

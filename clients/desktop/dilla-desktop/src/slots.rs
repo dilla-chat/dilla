@@ -195,7 +195,7 @@ pub fn composer_leading(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyE
     ])
 }
 
-/// The composer's tool buttons: attach and GIF (12), then emoji (10).
+/// The composer's tool buttons, in Composer.tsx's foot order: attach (12), emoji (10), then GIF (12).
 pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
     div()
         .flex()
@@ -206,6 +206,7 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyE
             [
                 attachments::composer_buttons(ctx, window, cx),
                 reactions::emoji_button(ctx, window, cx),
+                attachments::gif_button(ctx, window, cx),
             ]
             .into_iter()
             .flatten(),
