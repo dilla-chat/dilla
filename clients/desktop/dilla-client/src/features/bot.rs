@@ -15,6 +15,7 @@ pub mod catalog;
 mod io;
 pub mod private;
 pub mod registry;
+pub mod room;
 pub mod run;
 pub mod sealed;
 

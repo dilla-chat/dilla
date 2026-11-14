@@ -81,7 +81,9 @@ jobs:
         run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       # GPUI's Linux build and the libwebrtc behind LiveKit need the X11, Wayland, xkbcommon, font, Vulkan and GBM
       # development packages and libclang (bindgen). mesa-vulkan-drivers is lavapipe, the software Vulkan adapter
-      # dilla-parity's headless screenshot test renders on. Retried only on mirror and DNS failures.
+      # dilla-parity's headless screenshot test renders on. ffmpeg (with libopus) makes the Bot's music fixtures and plays
+      # them for dilla-media's Bot music timing tests (testing::host::music, as e2e/media/support/fixtures.ts does).
+      # Retried only on mirror and DNS failures.
       # LiveKit's prebuilt libwebrtc on Windows links the static MSVC runtime (/MT); a dynamic-CRT Rust build gets
       # LNK2005/LNK1169 duplicate std symbols. .cargo/config.toml may not carry rustflags (workspace_policy), so the
       # Windows leg sets it here; local Windows builds need the same (documented in clients/desktop/README).
@@ -110,7 +112,7 @@ jobs:
           libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
           libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
-          libxfixes-dev libxcomposite-dev libxrandr-dev
+          libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg
       - run: rustup show active-toolchain
       - id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -215,7 +217,8 @@ jobs:
           cargo test -p dilla-desktop --features automation --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test user_settings --test voice_settings --locked -- --ignored --skip parity_
           cargo test -p dilla-desktop --test integration --locked -- --ignored
           cargo test -p dilla-desktop --test slice --locked -- --ignored
-      # Its own step, run even when the one above failed, so one red suite does not hide the other's result.
+      # Its own step, run even when the one above failed, so one red suite does not hide the other's result. tests/call
+      # includes the Bot music timing tests (G3): they start the Bot built above with its SFU and the ffmpeg fixtures.
       - name: Run the media call tests (Linux)
         if: runner.os == 'Linux' && !cancelled()
         shell: bash

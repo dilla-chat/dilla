@@ -9,7 +9,7 @@ Every test title in `e2e/web`, `e2e/voice`, `e2e/media` and `packages/desktop/te
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of those directories and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 8 TODO only (8 TODO tests proposed in all).
+Totals: 233 e2e tests; 166 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 2 TODO only (2 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -154,12 +154,12 @@ Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 nex
 | `e2e/voice/blocked.spec.ts` | (b) a device that fails the signed-list check joins mid-call: alice leaves, her dock goes and so does her leaf | dilla-client::src/features/voice::a_refused_epoch_pauses_on_a_changed_identity_and_leaves_on_any_other_trust_block |
 | `e2e/voice/blocked.spec.ts` | (c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3) | dilla-client::src/features/voice::a_refused_epoch_pauses_on_a_changed_identity_and_leaves_on_any_other_trust_block |
 | `e2e/voice/blocked.spec.ts` | DM: a blocked DM call leaves the DM composer enabled | dilla-desktop::tests/ring::a_held_dm_block_hides_the_call_button_and_says_why |
-| `e2e/voice/bot-music.spec.ts` | play from Enter to first audio frame meets G3 | TODO: dilla-media::tests/call::bot_play_from_enter_to_first_audio_frame_meets_g3 |
-| `e2e/voice/bot-music.spec.ts` | next queued track gap is under 150 ms | TODO: dilla-media::tests/call::bot_next_queued_track_gap_is_under_150_ms |
-| `e2e/voice/bot-music.spec.ts` | a repeated track starts within 500 ms at p95 | TODO: dilla-media::tests/call::bot_repeated_track_starts_within_500_ms_at_p95 |
-| `e2e/voice/bot-music.spec.ts` | a Bot restart mid-queue resumes | TODO: dilla-desktop::tests/bot_admin::the_player_resumes_after_a_bot_restart_mid_queue |
-| `e2e/voice/bot-music.spec.ts` | a device that joins while the Bot plays hears it | TODO: dilla-media::tests/call::a_device_joining_while_the_bot_plays_hears_it |
-| `e2e/voice/bot-music.spec.ts` | a new device uses /play within its first session | TODO: dilla-desktop::tests/bot::a_new_device_uses_play_within_its_first_session |
+| `e2e/voice/bot-music.spec.ts` | play from Enter to first audio frame meets G3 | dilla-media::tests/call::bot_play_from_enter_to_first_audio_frame_meets_g3 |
+| `e2e/voice/bot-music.spec.ts` | next queued track gap is under 150 ms | dilla-media::tests/call::bot_next_queued_track_gap_is_under_150_ms |
+| `e2e/voice/bot-music.spec.ts` | a repeated track starts within 500 ms at p95 | dilla-media::tests/call::bot_repeated_track_starts_within_500_ms_at_p95 |
+| `e2e/voice/bot-music.spec.ts` | a Bot restart mid-queue resumes | dilla-media::tests/call::the_player_resumes_after_a_bot_restart_mid_queue |
+| `e2e/voice/bot-music.spec.ts` | a device that joins while the Bot plays hears it | dilla-media::tests/call::a_device_joining_while_the_bot_plays_hears_it |
+| `e2e/voice/bot-music.spec.ts` | a new device uses /play within its first session | dilla-media::tests/call::a_new_device_uses_play_within_its_first_session |
 | `e2e/voice/controls.spec.ts` | Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; push to talk sends only while held | dilla-desktop::tests/voice::push_to_talk_opens_the_mic_outside_text_fields; dilla-desktop::tests/voice::push_to_talk_is_off_in_a_text_field; dilla-desktop::tests/voice::control_shift_m_and_d_show_muted_and_deafened_to_the_peer |
 | `e2e/voice/csp-axe.spec.ts` | the ring, the call, a player and Settings → Voice pass axe in three themes and at 360×740, with no CSP violation | next plan (native): axe and CSP checks of the browser DOM, so native screen readers (AccessKit) come after the switch |
 | `e2e/voice/enhanced-fallback.spec.ts` | a missing enhanced model visibly falls back; Off avoids all enhancement assets | dilla-desktop::tests/voice_settings::missing_model_falls_back_visibly_off_loads_nothing; dilla-media::tests/audio::missing_model_falls_back_visibly |

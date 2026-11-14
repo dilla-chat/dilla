@@ -220,6 +220,10 @@ fn list_items(rows: &[picker::Row]) -> Vec<ListItem> {
 pub fn picker(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
     let state = crate::per_window::get::<PickerState>(wid, cx)?.clone();
+    // A picked command's chips: the popup is the active chip's suggestions instead of the list.
+    if let Some(chips) = &state.chips {
+        return chips::popup(ctx, chips, wid);
+    }
     let (zone, _) = zone_of(ctx.clock);
     let rows = picker::list(&ctx.state, ctx.community, &state.draft, &zone)
         .filter(|_| state.closed_for.as_deref() != Some(state.draft.as_str()));
@@ -304,14 +308,16 @@ pub fn on_send(ctx: &SlotCx, draft: &str, window: gpui::WindowId, cx: &mut App) 
             let Some(community) = ctx.community else {
                 return SendDecision::Keep;
             };
-            // Music has no text channel and is Task 21's; every other Bot command is sent from this channel.
+            // bot-run.ts: music has no text channel, so a music command goes with the voice room this device is in (when
+            // it is in one); every other Bot command is sent from this channel. Its answer still shows here.
+            let send = bot::room::send_channel(&ctx.state, &definition.id, channel);
             client.bot().run_command(
                 Conversation {
                     channel,
                     thread: None,
                 },
                 community,
-                Some(channel),
+                Some(send),
                 definition,
                 args,
                 &local_zone(),

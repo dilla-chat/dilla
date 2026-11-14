@@ -20,7 +20,7 @@
 //! the microphone switches the device under the same track ([`Call::set_mic`]), and muting disables
 //! the track ([`Call::set_muted`]); neither touches the sender.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -125,8 +125,154 @@ impl Default for CallOptions {
 /// id (hex). A device appears only once one of its frames has authenticated.
 pub type RemoteLevels = BTreeMap<String, f32>;
 
-/// The last second of decoded audio of each remote device (tests and diagnostics).
-type Tails = Arc<Mutex<HashMap<String, VecDeque<i16>>>>;
+/// The decoded volume of a remote device that counts as heard: an RMS over one 10 ms frame above this (the web call
+/// tests' `AUDIBLE_RMS`, e2e/voice/support/voice.ts).
+pub const AUDIBLE_RMS: f32 = 0.005;
+
+/// The most [`AudioEdge`]s a call keeps (the oldest go first).
+const MAX_EDGES: usize = 4096;
+
+/// One change of a verified remote audio stream's decoded audio between quiet and audible (the receive side's
+/// first-audio measurement, as the web music tests sample their call audio graph): each decoded 10 ms frame is compared
+/// with [`AUDIBLE_RMS`], and a change is stamped with the wall clock as the frame comes out of the decoder. A stream that
+/// ends (unsubscribed) while audible ends with a quiet edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioEdge {
+    /// The device (hex).
+    pub device: String,
+    /// The stream (`<device>:<track sid>`): a device publishes a new track for each music item, say.
+    pub stream: String,
+    /// When, in milliseconds since the Unix epoch (fractional): comparable with another process's on one machine.
+    pub at_ms: f64,
+    /// Audible from here on (else quiet).
+    pub audible: bool,
+}
+
+/// The call's audio as a whole, as the web specs hear it (the loudest of every remote analyser): audible while any
+/// stream is. Answers each change `(at_ms, audible)` of `edges` (oldest first); a stream's quiet edge with no audible
+/// one before it changes nothing.
+pub fn heard(edges: &[AudioEdge]) -> Vec<(f64, bool)> {
+    let mut on: BTreeSet<&str> = BTreeSet::new();
+    let mut out = Vec::new();
+    for e in edges {
+        let before = !on.is_empty();
+        if e.audible {
+            on.insert(&e.stream);
+        } else {
+            on.remove(e.stream.as_str());
+        }
+        if !on.is_empty() != before {
+            out.push((e.at_ms, !on.is_empty()));
+        }
+    }
+    out
+}
+
+/// What a call keeps of the audio it decoded: the last second of each remote device (tests and diagnostics), the
+/// quiet/audible edges ([`Call::remote_audio_edges`]) and the streams audible now.
+#[derive(Default)]
+struct Heard {
+    tails: HashMap<String, VecDeque<i16>>,
+    edges: VecDeque<AudioEdge>,
+    audible: BTreeMap<String, String>,
+}
+
+impl Heard {
+    fn record(&mut self, edge: AudioEdge) {
+        if edge.audible {
+            self.audible
+                .insert(edge.stream.clone(), edge.device.clone());
+        } else {
+            self.audible.remove(&edge.stream);
+        }
+        if self.edges.len() == MAX_EDGES {
+            self.edges.pop_front();
+        }
+        self.edges.push_back(edge);
+    }
+
+    /// Forgets the edges; each stream audible now starts the new record with an audible edge at `at_ms`.
+    fn restart(&mut self, at_ms: f64) {
+        self.edges = self
+            .audible
+            .iter()
+            .map(|(stream, device)| AudioEdge {
+                device: device.clone(),
+                stream: stream.clone(),
+                at_ms,
+                audible: true,
+            })
+            .collect();
+    }
+}
+
+type Tails = Arc<Mutex<Heard>>;
+
+/// Follows one remote audio stream's audibility; when its reader ends (the track ended or was unsubscribed, or the
+/// reader was aborted) while audible, the stream's record ends with a quiet edge.
+struct EdgeTracker {
+    heard: Tails,
+    device: String,
+    stream: String,
+    audible: bool,
+}
+
+impl Drop for EdgeTracker {
+    fn drop(&mut self) {
+        if self.audible {
+            let mut heard = self.heard.lock().unwrap_or_else(|p| p.into_inner());
+            heard.record(AudioEdge {
+                device: self.device.clone(),
+                stream: self.stream.clone(),
+                at_ms: wall_ms(),
+                audible: false,
+            });
+        }
+    }
+}
+
+/// The wall clock in milliseconds since the Unix epoch.
+fn wall_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+}
+
+/// The RMS of one frame of samples, 0 to 1.
+pub fn frame_rms(samples: &[i16]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f32 = samples
+        .iter()
+        .map(|s| {
+            let x = f32::from(*s) / 32768.0;
+            x * x
+        })
+        .sum();
+    (sum / samples.len() as f32).sqrt()
+}
+
+/// Follows one stream's frames: answers the edge a frame makes (`None`: no change). A frame of an unverified device is
+/// quiet, so a device's first audible edge is never earlier than its first authenticated frame.
+fn edge_of(
+    audible: &mut bool,
+    (device, stream): (&str, &str),
+    samples: &[i16],
+    verified: bool,
+    at_ms: f64,
+) -> Option<AudioEdge> {
+    let now = verified && frame_rms(samples) > AUDIBLE_RMS;
+    (now != *audible).then(|| {
+        *audible = now;
+        AudioEdge {
+            device: device.to_owned(),
+            stream: stream.to_owned(),
+            at_ms,
+            audible: now,
+        }
+    })
+}
 
 /// The newest decoded frame of one remote video stream, as RGBA rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -542,8 +688,22 @@ impl Call {
         if !self.media.verified_devices().contains(device) {
             return None;
         }
-        let tails = self.tails.lock().unwrap_or_else(|p| p.into_inner());
-        tails.get(device).map(|t| t.iter().copied().collect())
+        let heard = self.tails.lock().unwrap_or_else(|p| p.into_inner());
+        heard.tails.get(device).map(|t| t.iter().copied().collect())
+    }
+
+    /// Every quiet/audible edge of the verified remote devices' decoded audio since the call joined or the last
+    /// [`Call::clear_audio_edges`], oldest first (at most the last 4096).
+    pub fn remote_audio_edges(&self) -> Vec<AudioEdge> {
+        let heard = self.tails.lock().unwrap_or_else(|p| p.into_inner());
+        heard.edges.iter().cloned().collect()
+    }
+
+    /// Forgets the edges seen so far (a measurement starts over): each stream audible now starts the new record with an
+    /// audible edge at this moment, so the record says what is heard from here on.
+    pub fn clear_audio_edges(&self) {
+        let mut heard = self.tails.lock().unwrap_or_else(|p| p.into_inner());
+        heard.restart(wall_ms());
     }
 
     /// What this call's transform counted.
@@ -888,7 +1048,7 @@ async fn remote_tracks(
                     let key = format!("{}:{}", hex(&device), publication.sid().as_str());
                     let reader = tokio::spawn(read_audio(
                         t.rtc_track(),
-                        hex(&device),
+                        (hex(&device), key.clone()),
                         media.clone(),
                         levels.clone(),
                         tails.clone(),
@@ -942,7 +1102,7 @@ async fn remote_tracks(
 
 async fn read_audio(
     track: livekit::webrtc::prelude::RtcAudioTrack,
-    device: String,
+    (device, key): (String, String),
     media: Arc<CallMedia>,
     levels: watch::Sender<RemoteLevels>,
     tails: Tails,
@@ -954,15 +1114,34 @@ async fn read_audio(
         sink: sink.clone(),
         key: key.clone(),
     });
+    // The stream's audibility; it ends quiet with the reader, however the reader ends.
+    let mut tracker = EdgeTracker {
+        heard: tails.clone(),
+        device: device.clone(),
+        stream: key,
+        audible: false,
+    };
     let mut stream = NativeAudioStream::new(track, RATE as i32, 1);
     let mut window: Vec<f32> = Vec::with_capacity(RATE as usize / 10);
     while let Some(frame) = stream.next().await {
+        // Stamped as the frame leaves the decoder.
+        let at_ms = wall_ms();
+        let edge = edge_of(
+            &mut tracker.audible,
+            (&device, &tracker.stream),
+            &frame.data,
+            media.verified_devices().contains(&device),
+            at_ms,
+        );
         {
-            let mut t = tails.lock().unwrap_or_else(|p| p.into_inner());
-            let tail = t.entry(device.clone()).or_default();
+            let mut heard = tails.lock().unwrap_or_else(|p| p.into_inner());
+            let tail = heard.tails.entry(device.clone()).or_default();
             tail.extend(frame.data.iter().copied());
             while tail.len() > RATE as usize {
                 tail.pop_front();
+            }
+            if let Some(edge) = edge {
+                heard.record(edge);
             }
         }
         if let Some((sink, key)) = &playout {
@@ -1094,5 +1273,98 @@ mod retry_tests {
             retry_safe(MediaError::NoEpoch, true),
             MediaError::NoEpoch
         ));
+    }
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    fn tone(amplitude: f32) -> Vec<i16> {
+        (0..480)
+            .map(|i| {
+                let t = i as f32 / RATE as f32;
+                ((std::f32::consts::TAU * 440.0 * t).sin() * amplitude * 32767.0) as i16
+            })
+            .collect()
+    }
+
+    /// The receive-side first-audio measurement: an edge at each change between quiet and audible frames, none while a
+    /// state holds, and never an audible edge for a device whose frames have not authenticated.
+    #[test]
+    fn decoded_frames_make_an_edge_at_each_change_of_audibility() {
+        let mut audible = false;
+        let loud = tone(0.5);
+        let silent = vec![0i16; 480];
+        let faint = tone(0.001);
+        assert!(frame_rms(&faint) < AUDIBLE_RMS && frame_rms(&loud) > AUDIBLE_RMS);
+        assert_eq!(
+            edge_of(&mut audible, ("d", "d:1"), &silent, true, 1.0),
+            None
+        );
+        assert_eq!(edge_of(&mut audible, ("d", "d:1"), &faint, true, 2.0), None);
+        assert_eq!(
+            edge_of(&mut audible, ("d", "d:1"), &loud, false, 3.0),
+            None,
+            "unverified audio is not heard"
+        );
+        let up = edge_of(&mut audible, ("d", "d:1"), &loud, true, 4.0).expect("audible");
+        assert_eq!((up.at_ms, up.audible, up.device.as_str()), (4.0, true, "d"));
+        assert_eq!(edge_of(&mut audible, ("d", "d:1"), &loud, true, 5.0), None);
+        let down = edge_of(&mut audible, ("d", "d:1"), &silent, true, 6.0).expect("quiet");
+        assert_eq!((down.at_ms, down.audible), (6.0, false));
+    }
+
+    fn edge(stream: &str, at_ms: f64, audible: bool) -> AudioEdge {
+        AudioEdge {
+            device: "d".into(),
+            stream: stream.into(),
+            at_ms,
+            audible,
+        }
+    }
+
+    /// The call as a whole is audible while any stream is: a device's next track overlapping its last one makes no
+    /// gap, and only the last quiet stream makes the call quiet.
+    #[test]
+    fn the_call_is_heard_while_any_stream_is_audible() {
+        let edges = [
+            edge("d:1", 1.0, true),
+            edge("d:2", 2.0, true),
+            edge("d:1", 3.0, false),
+            edge("d:2", 4.0, false),
+            edge("d:3", 5.0, false),
+            edge("d:3", 6.0, true),
+        ];
+        assert_eq!(heard(&edges), [(1.0, true), (4.0, false), (6.0, true)]);
+    }
+
+    /// A stream whose reader ends while audible ends quiet, and a new record starts with what is audible now.
+    #[test]
+    fn an_ended_stream_ends_quiet_and_a_restart_keeps_what_is_audible() {
+        let tails: Tails = Arc::default();
+        let tracker = EdgeTracker {
+            heard: tails.clone(),
+            device: "d".into(),
+            stream: "d:1".into(),
+            audible: false,
+        };
+        tails.lock().unwrap().record(edge("d:1", 1.0, true));
+        tails.lock().unwrap().record(edge("d:2", 2.0, true));
+        tails.lock().unwrap().restart(3.0);
+        let kept: Vec<(String, f64)> = tails
+            .lock()
+            .unwrap()
+            .edges
+            .iter()
+            .map(|e| (e.stream.clone(), e.at_ms))
+            .collect();
+        assert_eq!(kept, [("d:1".to_owned(), 3.0), ("d:2".to_owned(), 3.0)]);
+        let mut tracker = tracker;
+        tracker.audible = true;
+        drop(tracker);
+        let last = tails.lock().unwrap().edges.back().cloned().unwrap();
+        assert_eq!((last.stream.as_str(), last.audible), ("d:1", false));
+        assert!(!tails.lock().unwrap().audible.contains_key("d:1"));
     }
 }

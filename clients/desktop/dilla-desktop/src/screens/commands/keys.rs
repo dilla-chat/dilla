@@ -104,6 +104,10 @@ pub fn chips_key(window: gpui::WindowId, stroke: &gpui::Keystroke, cx: &mut App)
     let Some(chips) = s.chips.as_mut() else {
         return false;
     };
+    // The active chip's suggestions take ↑↓, and Tab or Enter while one can go in the field.
+    if chips.suggestion_key(&stroke.key, stroke.modifiers.shift) {
+        return true;
+    }
     match stroke.key.as_str() {
         "enter" => return false,
         "escape" => {
