@@ -5589,7 +5589,16 @@ export class Controller {
         if (channel?.communityId !== null && channel?.communityId !== undefined) {
           const targetTimeline = this.slices.get(`timeline:${channelId}`);
           const target = targetTimeline?.items.find(item => item.msgId === toHex(posted.replyTo!));
-          if (confirmedSeq !== undefined && target?.state === 'ok' && target.seq !== null) {
+          // w2-bot-review I-B2 (Jonas: "Bot messages only"): only the community's Bot posts role panels, so only a
+          // reaction on a message with a Bot credential whose sender is the Bot user this device pinned is offered to the
+          // instance in plaintext. Every other reaction stays inside its MLS group.
+          let pinnedBot: string | null = null;
+          if (target?.bot === true) {
+            try { const pinned = core.botUserPinned(fromHex(channel.communityId)); pinnedBot = pinned === null ? null : toHex(pinned); }
+            catch { pinnedBot = null; }
+          }
+          if (confirmedSeq !== undefined && target?.state === 'ok' && target.seq !== null
+            && pinnedBot !== null && target.senderUser === pinnedBot) {
             const key = PENDING_ROLE_PANEL_ACTION_PREFIX + toHex(posted.msgId);
             const action: PendingRolePanelAction = {
               communityId: channel.communityId, channelId, messageSeq: target.seq, groupId: toHex(g), eventSeq: confirmedSeq.toString(),
