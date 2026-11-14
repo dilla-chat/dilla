@@ -208,6 +208,10 @@ pub struct HealState {
 /// What the client needs to know about a refusal right away (http client.ts `onRefusal`).
 pub type RefusalHook = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Called when a session established again over HTTP meets an instance that fails the signer pin (final review I1): the
+/// client stops its gateway and fails the account closed, as controller.ts `failInstanceSignerPin` does.
+pub type PinRefusedHook = Arc<dyn Fn() + Send + Sync>;
+
 /// Why a session could not be established.
 #[derive(Debug, Clone)]
 pub enum SessionError {
@@ -228,6 +232,8 @@ pub struct Api {
     auth: AuthToken,
     core: CoreHandle,
     on_refusal: RefusalHook,
+    /// Set once by the client ([`Api::on_pin_refused`]).
+    pin_refused: std::sync::OnceLock<PinRefusedHook>,
     /// One session establishment at a time (session.ts `inflight`).
     establishing: tokio::sync::Mutex<()>,
 }
@@ -266,8 +272,32 @@ impl Api {
             auth,
             core,
             on_refusal,
+            pin_refused: std::sync::OnceLock::new(),
             establishing: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// What runs when a session established again over HTTP fails the instance signer pin (set once; a later call is
+    /// ignored).
+    pub fn on_pin_refused(&self, hook: PinRefusedHook) {
+        let _ = self.pin_refused.set(hook);
+    }
+
+    /// controller.ts `failInstanceSignerPin`, the HTTP half: the new session goes (every later call asks for one again
+    /// and meets the same check), the refusal is recorded, and the client is told, so it stops the gateway and fails the
+    /// account closed. Answers the refusal to return.
+    pub(crate) fn refuse_pin(&self, code: &str) -> ApiError {
+        self.auth.clear();
+        let refused = ApiError::local(
+            0,
+            code,
+            "authenticated instance discovery does not match the pinned identity",
+        );
+        (self.on_refusal)(&refused.code);
+        if let Some(hook) = self.pin_refused.get() {
+            hook();
+        }
+        refused
     }
 
     pub fn socket(&self) -> &Arc<SocketRequests> {
@@ -587,8 +617,8 @@ impl Api {
 
     /// controller.ts `reauthenticate` → `checkInstanceSignerPin` (review HL m2): after a session was established again
     /// over HTTP, the instance's signer key is read over it (once, straight: no retry and no second re-establish) and held
-    /// to the pin ([`pin_after_establish`]). A refusal closes: the new session is dropped, so every later call asks for
-    /// one again and meets the same check.
+    /// to the pin ([`pin_after_establish`]). A refusal closes ([`Api::refuse_pin`]): the new session is dropped, and the
+    /// client stops its gateway and fails the account.
     async fn pin_checked(&self) -> Result<(), ApiError> {
         let read = match self.http.call::<r::GetInstance>(&[], NoBody).await {
             Ok(Raw(raw)) => decode_instance(&raw),
@@ -611,16 +641,7 @@ impl Api {
             PinAfter::Fail(code) => Err(read
                 .err()
                 .unwrap_or_else(|| ApiError::local(0, &code, "the instance signer pin"))),
-            PinAfter::Refuse(code) => {
-                self.auth.clear();
-                let refused = ApiError::local(
-                    0,
-                    &code,
-                    "authenticated instance discovery does not match the pinned identity",
-                );
-                (self.on_refusal)(&refused.code);
-                Err(refused)
-            }
+            PinAfter::Refuse(code) => Err(self.refuse_pin(&code)),
         }
     }
 

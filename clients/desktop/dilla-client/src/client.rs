@@ -125,6 +125,15 @@ enum Update {
     },
     /// The refreshed own device list leaves this device out (controller.ts `refreshOwnDeviceList` `!listed`): revoked.
     Unlisted,
+    /// A session established again over HTTP met an instance that fails the signer pin ([`Api::on_pin_refused`]).
+    SignerPinRefused,
+}
+
+/// The hook the client gives its Api for an HTTP signer-pin refusal: the publisher fails the account closed.
+fn pin_refusal_hook(updates: mpsc::UnboundedSender<Update>) -> crate::sync::api::PinRefusedHook {
+    Arc::new(move || {
+        let _ = updates.send(Update::SignerPinRefused);
+    })
 }
 
 struct Loaded {
@@ -372,6 +381,7 @@ impl Client {
                 }
             }),
         ));
+        api.on_pin_refused(pin_refusal_hook(updates.clone()));
         // On a thread of its own, outside any runtime context the caller may be in (see `start`).
         let instance = std::thread::scope(|s| {
             s.spawn(|| {
@@ -1407,6 +1417,7 @@ impl Publisher {
                     Update::FactorChecked(owed) => self.factor_completed(owed),
                     Update::Panicked => panicked = true,
                     Update::Unlisted => self.sign_out(),
+                    Update::SignerPinRefused => self.signer_pin_refused(),
                     Update::RemovalsRead {
                         generation,
                         answers,
@@ -1504,7 +1515,12 @@ impl Publisher {
                 true
             }
             ConnectionEvent::Down => {
-                self.state.connection.status = ConnectionStatus::Connecting;
+                // A failed account's gateway was stopped for good (the late Down of that stop): it stays offline.
+                self.state.connection.status = if self.state.account.phase == AccountPhase::Failed {
+                    ConnectionStatus::Offline
+                } else {
+                    ConnectionStatus::Connecting
+                };
                 self.state.connection.wire_version = None;
                 false
             }
@@ -1602,6 +1618,19 @@ impl Publisher {
             }
             Ok(())
         }));
+    }
+
+    /// controller.ts `failInstanceSignerPin` on the HTTP path (final review I1): a session established again over HTTP met
+    /// an instance whose signer key is no longer the pinned one (or another instance). As for the gateway's own
+    /// pre-connect refusal: the gateway stops, the upkeep with it, and the account fails closed (a revoked one stays
+    /// revoked).
+    fn signer_pin_refused(&mut self) {
+        self.upkeep.stop();
+        self.link.disconnect();
+        self.state.connection.status = ConnectionStatus::Offline;
+        if self.state.account.phase != AccountPhase::Revoked {
+            self.state.account.phase = AccountPhase::Failed;
+        }
     }
 
     /// controller.ts `onFactorRequired`: the account owes a second factor (a refusal named `E_FACTOR_REQUIRED`, the

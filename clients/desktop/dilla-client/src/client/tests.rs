@@ -291,6 +291,36 @@ async fn an_unlisted_device_is_signed_out() {
     assert!(!has_gateway(&link), "the gateway is down");
 }
 
+/// Final review I1 (controller.ts `failInstanceSignerPin`): a session established again over HTTP whose instance fails
+/// the signer pin stops the gateway and fails the account closed, as the gateway's own pre-connect refusal does. Through
+/// the Api's refusal and the hook the client wires to it.
+#[tokio::test]
+async fn an_http_pin_refusal_stops_the_gateway_and_fails_the_account() {
+    let (publisher, rx, mut state_rx, _core, _engine) = offline_publisher();
+    let (api, link) = (publisher.api.clone(), publisher.link.clone());
+    api.on_pin_refused(pin_refusal_hook(publisher.updates.clone()));
+    link.connect();
+    assert!(has_gateway(&link));
+    tokio::spawn(publisher.run(rx));
+    let refused = api.refuse_pin("E_CORE_STATE");
+    assert_eq!(refused.code, "E_CORE_STATE");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state_rx.borrow_and_update().account.phase == AccountPhase::Failed {
+                return;
+            }
+            state_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the account is reported Failed");
+    assert_eq!(
+        state_rx.borrow().connection.status,
+        ConnectionStatus::Offline
+    );
+    assert!(!has_gateway(&link), "the gateway is down");
+}
+
 /// A panic in an engine job that does not poison the core (a bug in the engine, not the store): the engine stops and
 /// the client reports `Failed`, as for a poisoned core, instead of answering `Stopped` with the account still `Ready`.
 #[tokio::test]
