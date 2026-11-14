@@ -70,6 +70,11 @@ pub fn answer(window: gpui::WindowId, choice: Option<bool>, cx: &mut App) {
         .moderate(c.conversation, c.moderation, confirmed, texts);
 }
 
+/// The member's `@username` the dialog shows under the title.
+pub fn handle(m: &Moderation) -> String {
+    format!("@{}", m.username)
+}
+
 /// The dialog over the window (`slots::overlays`), while one is asked for.
 pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let w = window.window_handle().window_id();
@@ -96,14 +101,24 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
             }),
         ),
     };
-    // The body is the head's 12px --fg-2 line, beside the avatar (ConfirmDialog's measure).
-    let description = div().flex().flex_col().children(paragraph(
-        &body,
-        text::UI,
-        line_height(text::UI, 1.5),
-        color::FG_2,
-        440.0 - 36.0 - 54.0,
-    ));
+    // The body is the head's 12px --fg-2 line, beside the avatar (ConfirmDialog's measure). Above it the member's
+    // `@username`, so two members with one name are told apart (w2-bot-review I-B1).
+    let description = div()
+        .flex()
+        .flex_col()
+        .child(line(
+            handle(m),
+            text::UI,
+            line_height(text::UI, 1.5),
+            color::FG_3,
+        ))
+        .children(paragraph(
+            &body,
+            text::UI,
+            line_height(text::UI, 1.5),
+            color::FG_2,
+            440.0 - 36.0 - 54.0,
+        ));
     // CommandHost.css `.dw-command-confirm`: a hairline box, `padding: 10px 12px`, rows 4px apart in `--text-btn`, each
     // a 64px `--fg-3` label 10px before its value.
     let row = |label: &str, value: String| {
@@ -171,4 +186,23 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
         })
         .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dilla_client::state::{CommunityId, UserId};
+
+    /// w2-bot-review I-B1: the dialog names the member by `@username` too, so two members called "Alex" are told apart.
+    #[test]
+    fn the_dialog_names_the_member_by_username() {
+        let m = Moderation {
+            community: CommunityId([7; 16]),
+            user: UserId([3; 16]),
+            name: "Alex".into(),
+            username: "troll".into(),
+            action: ModAction::Kick,
+        };
+        assert_eq!(handle(&m), "@troll");
+    }
 }

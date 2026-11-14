@@ -289,12 +289,14 @@ pub enum Plan {
     Incomplete,
 }
 
-/// A checked moderation command (builtin.ts `kick`, `ban`): its member, the name the dialog shows, and what it does.
+/// A checked moderation command (builtin.ts `kick`, `ban`): its member, the name and `@username` the dialog shows, and
+/// what it does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Moderation {
     pub community: CommunityId,
     pub user: crate::state::UserId,
     pub name: String,
+    pub username: String,
     pub action: ModAction,
 }
 
@@ -320,14 +322,23 @@ impl ModAction {
     }
 }
 
-/// builtin.ts `eligibleModerationTarget`: the member `who` names (a user id, else a username or display name) when this
-/// account holds the action's permission and outranks them; their id and the name to show.
+/// A member [`moderation_target`] names: their id, the name to show and their username.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub user: crate::state::UserId,
+    pub name: String,
+    pub username: String,
+}
+
+/// builtin.ts `eligibleModerationTarget`: the member whose user id is `who` when this account holds the action's
+/// permission and outranks them. A name is never resolved here, as names are not unique (w2-bot-review I-B1): the
+/// picker's member chip puts the id of the member picked.
 pub fn moderation_target(
     state: &AppState,
     community: CommunityId,
     who: &str,
     kick: bool,
-) -> Option<(crate::state::UserId, String)> {
+) -> Option<Target> {
     use crate::features::roles::rank;
     let access = state.roles.access_of(community);
     let owner = state.communities.iter().find(|c| c.id == community)?.owner;
@@ -335,16 +346,7 @@ pub fn moderation_target(
     let members = state.members.get(&community)?;
     let me = state.account.user_id?;
     let who = who.trim();
-    let lower = who.trim_start_matches('@').to_lowercase();
-    let target = members
-        .iter()
-        .find(|m| m.user_id.hex() == who)
-        .or_else(|| members.iter().find(|m| m.username.to_lowercase() == lower))
-        .or_else(|| {
-            members
-                .iter()
-                .find(|m| !m.display.is_empty() && m.display.to_lowercase() == lower)
-        })?;
+    let target = members.iter().find(|m| m.user_id.hex() == who)?;
     let mine = members.iter().find(|m| m.user_id == me)?;
     let permitted = if kick {
         access.kick_members
@@ -361,13 +363,14 @@ pub fn moderation_target(
         rank::top_of(&mine.role_ids, roles),
         rank::top_of(&target.role_ids, roles),
     )
-    .then(|| {
-        let name = if target.display.is_empty() {
+    .then(|| Target {
+        user: target.user_id,
+        name: if target.display.is_empty() {
             target.username.clone()
         } else {
             target.display.clone()
-        };
-        (target.user_id, name)
+        },
+        username: target.username.clone(),
     })
 }
 
@@ -397,7 +400,12 @@ fn moderation_plan(
     };
     let kick = command_id == "kick";
     let who = args.get("user").map_or("", String::as_str);
-    let Some((user, name)) = moderation_target(state, community, who, kick) else {
+    let Some(Target {
+        user,
+        name,
+        username,
+    }) = moderation_target(state, community, who, kick)
+    else {
         return failed(if kick {
             "This member cannot be kicked with your current permissions and rank."
         } else {
@@ -437,6 +445,7 @@ fn moderation_plan(
         community,
         user,
         name,
+        username,
         action,
     })
 }
@@ -494,7 +503,7 @@ impl Bot {
                 &m.user.hex(),
                 m.action == ModAction::Kick,
             )
-            .is_some_and(|(u, _)| u == m.user);
+            .is_some_and(|t| t.user == m.user);
             let outcome = if still {
                 let moderation = crate::features::moderation::Moderation::of(&inner);
                 let done = match &m.action {
@@ -916,9 +925,9 @@ mod tests {
         assert_eq!(plan(&s, Some(c), "/code"), Plan::Incomplete);
     }
 
-    /// builtin.ts `kick`/`ban`: a joined member this account outranks, named by username or id, is a moderation to
-    /// confirm; without the permission, against the owner, oneself or an unknown name it fails privately; a ban checks
-    /// its length and reason first.
+    /// builtin.ts `kick`/`ban`: a joined member this account outranks, named by user id, is a moderation to confirm (a
+    /// name is never resolved, w2-bot-review I-B1: two members may share one); without the permission, against the
+    /// owner, oneself or an unknown id it fails privately; a ban checks its length and reason first.
     #[test]
     fn kick_and_ban_ask_first_only_for_a_member_this_account_may_moderate() {
         use crate::state::members::Member;
@@ -956,20 +965,30 @@ mod tests {
             community: c,
             user: bea,
             name: "bea".into(),
+            username: "bea".into(),
             action: ModAction::Kick,
         });
-        assert_eq!(plan(&s, Some(c), "/kick user:bea"), kick);
-        assert_eq!(
-            plan(&s, Some(c), &format!("/kick user:{}", bea.hex())),
-            kick
-        );
+        let (bea_id, me_id) = (bea.hex(), me.hex());
+        assert_eq!(plan(&s, Some(c), &format!("/kick user:{bea_id}")), kick);
         let refused =
             |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
         let cannot_kick =
             refused("This member cannot be kicked with your current permissions and rank.");
-        assert_eq!(plan(&s, Some(c), "/kick user:ada"), cannot_kick, "oneself");
+        assert_eq!(
+            plan(&s, Some(c), &format!("/kick user:{me_id}")),
+            cannot_kick,
+            "oneself"
+        );
         assert_eq!(plan(&s, Some(c), "/kick user:nobody"), cannot_kick);
-        match plan(&s, Some(c), "/ban user:bea duration:2d reason:spam") {
+        // w2-bot-review I-B1: a name is never resolved, not even a unique one; the picker's member chip puts the id.
+        assert_eq!(plan(&s, Some(c), "/kick user:bea"), cannot_kick);
+        assert_eq!(plan(&s, Some(c), "/kick user:@bea"), cannot_kick);
+        let bea_id = bea_id.as_str();
+        match plan(
+            &s,
+            Some(c),
+            &format!("/ban user:{bea_id} duration:2d reason:spam"),
+        ) {
             Plan::Moderate(Moderation {
                 action: ModAction::Ban {
                     seconds, reason, ..
@@ -979,14 +998,18 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(
-            plan(&s, Some(c), "/ban user:bea duration:permanent"),
+            plan(
+                &s,
+                Some(c),
+                &format!("/ban user:{bea_id} duration:permanent")
+            ),
             Plan::Moderate(Moderation {
                 action: ModAction::Ban { seconds: None, .. },
                 ..
             })
         ));
         assert_eq!(
-            plan(&s, Some(c), "/ban user:bea duration:10m"),
+            plan(&s, Some(c), &format!("/ban user:{bea_id} duration:10m")),
             refused("Ban duration must be from 1h to 100y.")
         );
         // Not the owner and without Kick Members: nobody can be kicked.
@@ -994,7 +1017,10 @@ mod tests {
         access.owner = false;
         access.kick_members = false;
         s.roles.access.insert(c, access);
-        assert_eq!(plan(&s, Some(c), "/kick user:bea"), cannot_kick);
+        assert_eq!(
+            plan(&s, Some(c), &format!("/kick user:{bea_id}")),
+            cannot_kick
+        );
     }
 
     #[test]
