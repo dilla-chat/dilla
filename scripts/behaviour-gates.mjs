@@ -68,7 +68,7 @@ export const cell = (text) => text.replaceAll('|', '\\|').replace(/\s+/g, ' ');
  */
 export function tableRows(markdown) {
   const rows = [];
-  for (const line of markdown.split('\n')) {
+  for (const line of markdown.split(/\r?\n/)) {
     if (!line.startsWith('| `')) continue;
     const parts = line.slice(1, line.endsWith('|') ? -1 : undefined).split(/(?<!\\)\|/).map((s) => s.trim());
     if (parts.length !== 3) throw new Error(`a table row needs three cells (file, title, gate): ${line.slice(0, 120)}`);

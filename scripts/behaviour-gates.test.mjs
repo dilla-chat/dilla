@@ -58,3 +58,8 @@ test('the e2e title parser reads literals, escapes and modifiers, and refuses a 
   assert.equal(unescapeTitle('it\\u2019s a\\\'b'), 'it’s a\'b');
   assert.throws(() => titlesOf("test('a' + 'b', f);"), /not one string literal/);
 });
+
+test('the table reads the same from a CRLF checkout (the Windows runner) as from LF', () => {
+  const lf = readFileSync(join(ROOT, TABLE), 'utf8').replaceAll('\r\n', '\n');
+  assert.deepEqual(tableRows(lf.replaceAll('\n', '\r\n')), tableRows(lf));
+});
