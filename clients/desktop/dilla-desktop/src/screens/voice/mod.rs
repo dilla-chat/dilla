@@ -806,6 +806,8 @@ pub fn count(state: &AppState, channel: ChannelId) -> usize {
         .iter()
         .map(|p| p.user_id)
         .collect();
+    // A person on two devices counts once, wherever the roster lists the second.
+    users.sort_unstable();
     users.dedup();
     users.len()
 }
@@ -1240,8 +1242,16 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         .flex_col()
         .flex_1()
         .min_w_0()
-        .child(line(name, text::UI, 15.6, color::OK_TEXT).weight(font::WEIGHT_LABEL))
-        .child(line(where_, text::META, 13.65, color::FG_3));
+        .child(
+            line(name, text::UI, line_height(text::UI, 1.3), color::OK_TEXT)
+                .weight(font::WEIGHT_LABEL),
+        )
+        .child(line(
+            where_,
+            text::META,
+            line_height(text::META, 1.3),
+            color::FG_3,
+        ));
     let card = div()
         .flex()
         .flex_col()
@@ -1516,7 +1526,12 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             .flex()
             .items_center()
             .justify_center()
-            .child(line(t("voice.empty"), text::UI, 15.6, color::FG_2))
+            .child(line(
+                t("voice.empty"),
+                text::UI,
+                line_height(text::UI, 1.3),
+                color::FG_2,
+            ))
             .into_any_element()
     } else if let Some(f) = &focused {
         let at = keys.iter().position(|k| k == f).unwrap_or(0);
@@ -1569,12 +1584,11 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             }))
             .into_any_element()
     };
-    // Ruling Z: the voice header's topic is "{n} in voice" once joined, else "voice channel".
+    // Ruling Z: the voice header's topic is "{n} in voice" once joined, else "voice channel". Shell.tsx counts the
+    // call's participants (devices), so a person on two devices counts twice there.
     let topic = if joined {
-        tf(
-            "voice.count",
-            &[("n", count(&state, channel.id).to_string().as_str())],
-        )
+        let devices = state.voice.participants(channel.id).len();
+        tf("voice.count", &[("n", devices.to_string().as_str())])
     } else {
         t("voice.header.idle").to_owned()
     };
@@ -1995,7 +2009,15 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
         return None;
     }
     let images = refresh_images(window, cx);
-    let grid_w = ui_of(w, cx).map_or(0.0, |u| u.dm_grid_w);
+    // Before the grid's first layout its width is not measured yet: the window's width less the rail, the default
+    // sidebar and the stage's padding stands in, so the first frame does not draw one tall column (review minor).
+    let grid_w = match ui_of(w, cx).map_or(0.0, |u| u.dm_grid_w) {
+        measured if measured > 0.0 => measured,
+        _ => {
+            f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR)
+                - 2.0 * m::STAGE_PAD
+        }
+    };
     let keys = dm_tiles(&state, channel.id);
     let cards: Vec<AnyElement> = keys.iter().map(|k| card(&state, k, &images)).collect();
     let measure = gpui::canvas(
@@ -2294,7 +2316,7 @@ fn card(
         .min_w_0()
         .child(
             div().min_w_0().overflow_hidden().child(
-                line(title, text::XS, 14.3, color::FG)
+                line(title, text::XS, line_height(text::XS, 1.3), color::FG)
                     .weight(font::WEIGHT_LABEL)
                     .ellipsis(),
             ),
@@ -2511,7 +2533,11 @@ fn notice_box(text: String) -> Div {
                 .size(px(m::NOTICE_GLYPH))
                 .color(color::WARN),
         )
-        .child(div().flex_1().child(line(text, text::UI, 15.6, color::FG)))
+        .child(
+            div()
+                .flex_1()
+                .child(line(text, text::UI, line_height(text::UI, 1.3), color::FG)),
+        )
 }
 
 /// The media notice over the tiles, until dismissed.
@@ -3041,7 +3067,7 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                     "callStage.share.title"
                 }),
                 text::UI,
-                15.6,
+                line_height(text::UI, 1.3),
                 color::FG,
             )
             .weight(font::WEIGHT_LABEL),

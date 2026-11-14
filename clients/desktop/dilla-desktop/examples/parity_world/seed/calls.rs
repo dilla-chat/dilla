@@ -99,6 +99,9 @@ pub(super) async fn seed(f: &ScreenFixture, host: &Host, ids: &BTreeMap<String, 
             && !viewer_in
             && let Some(caller) = others.first()
         {
+            // `expires` is on the host's clock, which the world then lifts by minutes to the frame's time: harmless, as
+            // ring.ts ends a ring by its own 30 s timer and keeps `expires` only as the ring's identity (review minor).
+            // Frames go to live connections only, so a browser reconnecting at this instant would miss the ring.
             let now = tokio::task::block_in_place(|| world::clock_now(host));
             post(
                 host,

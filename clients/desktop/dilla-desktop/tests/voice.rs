@@ -294,6 +294,48 @@ fn a_dm_call_box_keeps_compact_tiles_when_the_other_person_shares_their_screen(
     );
 }
 
+/// Wave 2 review, lane G minor: in a narrow conversation (360x700, one column of cards) the DM call box stays compact:
+/// the box and each card are at most 40 % of the conversation's height.
+#[gpui::test]
+fn a_dm_call_box_stays_compact_in_a_narrow_conversation(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let (_, cx) = cx.add_window_view(|_, _| DmHost);
+    cx.simulate_resize(gpui::size(gpui::px(360.0), gpui::px(700.0)));
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), dm_state(), None, cx);
+        window.refresh();
+    });
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+    }
+    let main_h = f32::from(
+        cx.debug_bounds("dm-main")
+            .expect("the conversation")
+            .size
+            .height,
+    );
+    let boxed = cx.debug_bounds("dm-call-box").expect("the box shows");
+    assert!(
+        f32::from(boxed.size.height) <= main_h * 0.4 + 0.5,
+        "the box {:?} against 40 % of {main_h}",
+        boxed.size
+    );
+    let own = DeviceId([100; 16]).hex();
+    let card = cx
+        .debug_bounds(selector(format!("dm-tile-{own}")))
+        .expect("the own card");
+    assert!(f32::from(card.size.height) <= main_h * 0.4);
+    // One column: the card takes the grid's width.
+    let bob = cx
+        .debug_bounds(selector(format!("dm-tile-{}", DeviceId([101; 16]).hex())))
+        .expect("Bob's card");
+    assert!(
+        bob.origin.y > card.origin.y,
+        "one column at 360px: {card:?} {bob:?}"
+    );
+}
+
 /// Wave 2 review I-G2 (CallStage.tsx's `<details>`): the DM box's "call code" is a disclosure. A click opens it on the
 /// grouped safety-code digits (six groups of five), a second click closes it; Escape closes it too.
 #[gpui::test]
