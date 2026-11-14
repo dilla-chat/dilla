@@ -52,6 +52,8 @@ export interface HarnessOptions {
   extraDms?: number;
   /** v0.1.0-web3.1: no seeded server; the model lists what a test creates through the create commands. */
   created?: boolean;
+  /** Lane P: the instance carries dilla-testhost's parity-fixture marker (`Instance.parityFixture`). */
+  parityFixture?: boolean;
   /** web3.7 3a-client: runs before the worker starts (a leftover call group seeded, a boot read held or refused). */
   before?: (w: { ds: ModelDs; model: ModelCore; server: { hold(label: string): { release: () => void; reached: Promise<void> };
     refuseAll(label: string, status: number, code: string): void } }) => Promise<void> | void;
@@ -106,7 +108,7 @@ export async function harness(opts: HarnessOptions = {}) {
       listCommunities: () => Promise.resolve(LISTED.value ? [{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }] : []),
       listChannels: () => Promise.resolve(opts.voiceChannel === true ? channelRows : []),
     }),
-    getInstance: () => Promise.resolve(INSTANCE),
+    getInstance: () => Promise.resolve(opts.parityFixture === true ? { ...INSTANCE, parityFixture: true as const } : INSTANCE),
     getLimits: () => Promise.resolve({ maxCiphertextBytes: 131_072, keypackagesPerDevice: 32, keypackageRefillThreshold: 0, heartbeatMs: 30_000, maxFrameBytes: 131_584 }),
     listMembers: () => Promise.resolve([ME, PEER, THIRD, FOURTH, ...LATE].map((p) => ({ userId: p.user, username: NAMES.get(toHex(p.user)) ?? '',
       display: NAMES.get(toHex(p.user)) ?? '', kind: 0 as const, nick: '', roleIds: [] }))),
@@ -458,6 +460,15 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(keys).toMatchObject({ groupId: toHex(w.callGroup), epoch: r.epoch, selfLeaf: 1 });
     expect(keys.roster.map((x) => x.userId)).toEqual([toHex(PEER.user), toHex(ME.user)]);
     expect(r).toMatchObject({ groupId: toHex(w.callGroup), callId: w.voice, token: expect.any(String) as string });
+  });
+
+  // Lane P: only under dilla-testhost's parity-fixture marker (never from dillad) does the join tell the page so; the page
+  // then reads no live link, so a parity reference shows no live ping or rate.
+  it('marks the join only when the instance carries the parity-fixture marker', async () => {
+    const plain = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    expect((await plain.call(JOIN(plain)) as CallJoinResult).parityFixture).toBeUndefined();
+    const marked = await harness({ voiceChannel: true, callGroupBy: 'peer', parityFixture: true });
+    expect((await marked.call(JOIN(marked)) as CallJoinResult).parityFixture).toBe(true);
   });
 
   // RV-1 (progress note of task 5): the core cannot stop a worker that posts a staged join without call_join_check, so the

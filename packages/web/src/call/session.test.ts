@@ -107,6 +107,8 @@ interface Options {
   getUserMedia?: () => Promise<MediaStream>;
   devices?: MediaDeviceInfo[];
   statsError?: Error;
+  /** Lane P: the worker's join answer carries the parity-fixture marker. */
+  parityFixture?: boolean;
 }
 
 function fakes(o: Options = {}) {
@@ -197,7 +199,7 @@ function fakes(o: Options = {}) {
   const join: CallJoinResult = {
     callId, groupId: GROUP, livekitUrl: 'wss://sfu.example/rtc', token: 'tok',
     iceServers: [[['turn:sfu.example:3478'], o.iceUsername ?? '1700003600:dev:1700000000', 'cred']],
-    caps: [64_000, 2_500_000, 0], epoch: joinEpoch.toString(),
+    caps: [64_000, 2_500_000, 0], epoch: joinEpoch.toString(), ...(o.parityFixture === true ? { parityFixture: true as const } : {}),
   };
   let refreshAnswer = { token: 'tok2', iceServers: [[['turn:sfu.example:3478'], '1700007200:dev:1700003300', 'cred2']] };
   const bridge = {
@@ -782,6 +784,20 @@ describe('the page call session (L-WEB-50)', () => {
     expect(call.state.link).toMatchObject({ rttMs: 24, upKbps: 0, downKbps: 0 });
     await call.leave('user');
     expect(call.state.link).toBeUndefined();
+  });
+
+  // Lane P: under dilla-testhost's parity-fixture marker the link is never read, so the dock, the call bar and the top bar's
+  // chip say "— ms" in a reference shot, and no RTT is reported.
+  it('lane P: a join marked as a parity fixture reads no link and reports no RTT', async () => {
+    const f = fakes({ parityFixture: true });
+    const pc = f.room.engine.pcManager as unknown as { publisher: { getStats: () => Promise<Map<string, unknown>> } };
+    let reads = 0;
+    pc.publisher.getStats = () => { reads += 1; return Promise.resolve(new Map<string, unknown>()); };
+    const call = await start(f);
+    for (let i = 0; i < 4; i += 1) await f.advance(2_000);
+    expect(reads).toBe(0);
+    expect(call.state.link).toBeUndefined();
+    expect(f.calls.filter((c) => c.m === 'callRtt')).toHaveLength(0);
   });
 
   // Task 8c fix round 2: this device's own RTT goes to the instance (callRtt), only when it moved by RTT_STEP_MS or more, and

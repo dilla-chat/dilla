@@ -1554,6 +1554,9 @@ export async function startPageCall(deps: PageCallDeps, target: { channelId: str
     const sameLink = (a: LinkSample | undefined, b: LinkSample | undefined): boolean =>
       a === b || (a !== undefined && b !== undefined && a.rttMs === b.rttMs && a.upKbps === b.upKbps && a.downKbps === b.downKbps && a.lossPct === b.lossPct);
     const readLink = async (): Promise<void> => {
+      // Lane P: under dilla-testhost's parity-fixture marker (never from dillad) the link is not read, so the dock and the
+      // call bar say "— ms" in a reference shot instead of a live ping and rate, and no RTT is reported.
+      if (join.parityFixture === true) return;
       const pcs = (room.engine as unknown as { pcManager?: Record<string, { getStats?: () => Promise<RTCStatsReport> | undefined } | undefined> } | undefined)?.pcManager;
       // No subscriber connection (LiveKit's default single-peer-connection mode never makes one) means nothing to read there:
       // an empty report, so down is 0. Only a getStats that rejects is "no read" (undefined), which the dock shows as a dash.
