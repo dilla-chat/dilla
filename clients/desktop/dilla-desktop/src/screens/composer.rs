@@ -100,6 +100,8 @@ pub struct Composer {
     used: usize,
     save: Option<Task<()>>,
     tick: Option<Task<()>>,
+    /// The window the field is drawn in ([`Composer::let_go`] empties it there).
+    window: gpui::AnyWindowHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -211,6 +213,7 @@ impl Composer {
             used: 0,
             save: None,
             tick: None,
+            window: window.window_handle(),
             _subscriptions: vec![sub],
         }
     }
@@ -218,6 +221,24 @@ impl Composer {
     /// The view the composer's slots draw for (the shell's state and selection).
     pub fn set_slots(&mut self, slots: SlotCx) {
         self.slots = slots;
+    }
+
+    /// The client this composer drew for is let go (`release::release_client`, a sign-out): nothing is kept of it. Its
+    /// draft leaves the field (the next account never sees it), with no write of it: the pending write is dropped and
+    /// the field is no channel's any more, so emptying it writes nothing either.
+    pub fn let_go(&mut self, cx: &mut Context<Self>) {
+        self.set_slots(SlotCx::default());
+        self.save = None;
+        self.loaded = None;
+        self.dismissed = None;
+        self.active = 0;
+        let (input, window) = (self.input.clone(), self.window);
+        // The field is the window's: emptied once the update that released the client is done.
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                input.update(cx, |s, cx| s.set_value("", window, cx));
+            });
+        });
     }
 
     /// The channel the draft goes to (`#general`).
@@ -1031,5 +1052,24 @@ mod tests {
     #[test]
     fn the_field_grows_to_the_css_cap() {
         assert_eq!(max_rows(), 10);
+    }
+
+    /// Task 28 item 13 (Task 9's listing): a sign-out lets go of the composer's draft. The field it shows empties (the
+    /// next account never sees it), with no write of it anywhere.
+    #[gpui::test]
+    fn a_release_empties_the_draft_in_the_field(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let (composer, vcx) = cx.add_window_view(|window, cx| Composer::new(window, cx));
+        vcx.update(|window, cx| {
+            let input = composer.read(cx).input.clone();
+            input.update(cx, |s, cx| s.set_value("half a secret", window, cx));
+        });
+        composer.update(vcx, |c, cx| c.let_go(cx));
+        vcx.run_until_parked();
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "",
+            "the draft left the field"
+        );
     }
 }

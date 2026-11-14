@@ -963,12 +963,7 @@ impl Render for ShellView {
         // their client at once (review M5).
         if let Some(client) = self.client.clone() {
             crate::release::hold(&client, &cx.entity(), |s: &mut Self, _| s.client = None, cx);
-            crate::release::hold(
-                &client,
-                &self.composer,
-                |c, _| c.set_slots(SlotCx::default()),
-                cx,
-            );
+            crate::release::hold(&client, &self.composer, |c, cx| c.let_go(cx), cx);
         }
         let state = self.state.clone();
         // An open DM is drawn with the channel's log, header and composer (Task 9's views on the DM's id, 13): a channel
