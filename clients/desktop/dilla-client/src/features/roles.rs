@@ -1123,7 +1123,18 @@ impl Roles {
             return Err(refusal("E_BAD_INPUT", &p));
         }
         self.listed(community)?;
-        let (rows, access, _) = self.access(community).await?;
+        // The rows the instance holds now, from the read's own answer: the snapshot trails a create that just answered
+        // (its read publishes a moment later), and placing from it gave two roles one position (wave 2 review I-E1).
+        // roles.ts awaits `loadAccess` before its next create, so its rows are never stale.
+        let (rows, access) = match load_access(&self.inner, community).await? {
+            Some(read) if read.1.loaded => read,
+            _ => {
+                return Err(refusal(
+                    "E_BAD_INPUT",
+                    "the roles of this server are not loaded",
+                ));
+            }
+        };
         let position = create_position(&rows, access.owner, access.top)
             .ok_or_else(|| refusal("E_BAD_INPUT", "no room below your highest role"))?;
         let body = Value::Array(vec![
