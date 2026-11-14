@@ -145,6 +145,155 @@ fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     assert_eq!(area(cx, |ui| ui.focused.clone()), None);
 }
 
+const DM: ChannelId = ChannelId([7; 16]);
+
+/// The DM between the viewer (user 0, "Alice") and Bob (user 1), as the shell hands it to the voice area.
+fn dm_channel() -> Channel {
+    Channel {
+        id: DM,
+        community_id: CommunityId([0; 16]),
+        kind: 0,
+        name: "Bob".into(),
+        ..channel()
+    }
+}
+
+/// Alice and Bob in their DM's call; Bob shares his screen.
+fn dm_state() -> Arc<AppState> {
+    let mut s = (*state(2)).clone();
+    s.voice.place(
+        DM,
+        Some(DM.0),
+        vec![
+            VoiceParticipant {
+                user_id: UserId([0; 16]),
+                device_id: DeviceId([100; 16]),
+                flags: flags::IN_CALL,
+                own: true,
+            },
+            VoiceParticipant {
+                user_id: UserId([1; 16]),
+                device_id: DeviceId([101; 16]),
+                flags: flags::IN_CALL | flags::SCREEN,
+                own: false,
+            },
+        ],
+    );
+    s.voice.speaking.clear();
+    s.voice.call = OwnCall {
+        phase: CallPhase::In,
+        channel: Some(DM),
+        community: None,
+        call_id: Some(DM.0),
+        ..OwnCall::default()
+    };
+    Arc::new(s)
+}
+
+/// A debug selector built at run time (GPUI looks selectors up by `&'static str`); a test leaks a few bytes.
+fn selector(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// A DM conversation's column: the call box over the log.
+struct DmHost;
+
+impl Render for DmHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dm = dm_channel();
+        div().size_full().flex().flex_col().child(
+            div()
+                .debug_selector(|| "dm-main".to_owned())
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .children(voice::dm_call_box(&dm, window, cx))
+                .child(div().flex_1().min_h_0()),
+        )
+    }
+}
+
+/// e2e/voice/stage.spec.ts "a DM call box keeps compact tiles when the other person shares their screen": the DM call
+/// box is not the channel stage. With Bob's shared screen showing (its first frame has come), the box keeps its compact
+/// grid: no stage, no focused tile and no full-screen button; the share's picture is more than a line, the share leads,
+/// and every card is at most 40 % of the conversation's height.
+#[gpui::test]
+fn a_dm_call_box_keeps_compact_tiles_when_the_other_person_shares_their_screen(
+    cx: &mut TestAppContext,
+) {
+    cx.update(dilla_desktop::install);
+    let (_, cx) = cx.add_window_view(|_, _| DmHost);
+    let frame = image::RgbaImage::from_pixel(1920, 1080, image::Rgba([40, 90, 160, 255]));
+    let picture = Arc::new(gpui::RenderImage::new(vec![image::Frame::new(frame)]));
+    cx.update(|window, cx| {
+        let w = voice::wid(window);
+        voice::sync(w, dm_state(), None, cx);
+        voice::ui_mut(w, cx).put_test_frame(
+            dilla_media::StreamKey {
+                device: DeviceId([101; 16]).hex(),
+                kind: dilla_media::ShareKind::Screen,
+            },
+            picture,
+        );
+        window.refresh();
+    });
+    // The first frame measures the grid; the next lays its columns out.
+    cx.run_until_parked();
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    let main = cx.debug_bounds("dm-main").expect("the conversation");
+    let main_h = f32::from(main.size.height);
+    assert!(main_h > 0.0);
+    assert!(cx.debug_bounds("dm-call-box").is_some(), "the box shows");
+    assert!(
+        cx.debug_bounds("voice-stage-root").is_none(),
+        "the DM call is never the channel stage (no stage mode, no focus, no full screen)"
+    );
+    let own = DeviceId([100; 16]).hex();
+    let bob = DeviceId([101; 16]).hex();
+    let screen = cx
+        .debug_bounds(selector(format!("dm-tile-{bob}-screen")))
+        .expect("Bob's screen's card");
+    let cards = [
+        screen,
+        cx.debug_bounds(selector(format!("dm-tile-{own}")))
+            .expect("the own card"),
+        cx.debug_bounds(selector(format!("dm-tile-{bob}")))
+            .expect("Bob's card"),
+    ];
+    for card in cards {
+        let h = f32::from(card.size.height);
+        assert!(h > 20.0, "a card is more than a line: {h}");
+        assert!(
+            h <= main_h * 0.4,
+            "a DM box card's height {h} against 40 % of the pane ({main_h})"
+        );
+    }
+    let picture = cx
+        .debug_bounds(selector(format!("dm-tile-{bob}-screen-media")))
+        .expect("the shared screen's picture");
+    assert!(
+        f32::from(picture.size.height) > 20.0,
+        "the shared screen's picture height: {:?}",
+        picture.size
+    );
+    let ordered = cards.iter().all(|c| c.origin.y >= screen.origin.y)
+        && cards[1..]
+            .iter()
+            .all(|c| c.origin.y > screen.origin.y || c.origin.x > screen.origin.x);
+    assert!(ordered, "the share leads the grid: {cards:?}");
+    let tiles = area(cx, |ui| voice::dm_tiles(&ui.state, DM));
+    assert_eq!(tiles.len(), 3);
+    assert!(tiles[0].screen && !tiles[1].screen && !tiles[2].screen);
+    assert_eq!(
+        area(cx, |ui| ui.focused.clone()),
+        None,
+        "nothing is focused"
+    );
+}
+
 /// Twelve people with long names (the -b fixtures' world) draw without a panic, and the people group per user.
 #[gpui::test]
 fn twelve_people_with_long_names_draw(cx: &mut TestAppContext) {
@@ -1283,4 +1432,31 @@ fn a_join_failure_maps_as_the_web_s() {
         Some("voice.failed")
     );
     assert_eq!(key(ClientError::UnknownChannel), Some("voice.failed"));
+}
+
+// ---- parity (S4, lane G): the app's frame of each fixture against the web client's (parity/references/linux/voice/) ----
+
+fn parity_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/voice")
+        .join(format!("{name}.json"))
+}
+
+macro_rules! parity {
+    ($($test:ident => $name:literal $(; $why:literal)?),* $(,)?) => {$(
+        #[test]
+        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+        $(#[ignore = $why])?
+        fn $test() {
+            let report = dilla_parity::screen::assert_screen(&parity_fixture($name))
+                .unwrap_or_else(|e| panic!("voice/{} differs from its web reference: {e}", $name));
+            println!("SCREEN voice/{}: {} text lines, chrome {:.4} %", $name, report.text_lines, report.chrome_pct);
+        }
+    )*};
+}
+
+parity! {
+    parity_voice_stage => "stage"; "parity after T6c: whole frame 0.9412 % (R22, lane G: the joined stage's call bar is the web's 64px bar with the room, its stats and worded controls, the tile grid's band and the dock's stats line; the web's live ping and kb/s)",
+    parity_voice_stage_b => "stage-b"; "parity after T6c: whole frame 1.5143 % (R22, lane G: the not-joined preview, overlapping faces, the room and Join voice, is not ported; the app draws the tile grid and a join button)",
+    parity_voice_dm_call => "dm-call"; "parity after T6c: no reference (R22, lane G): the browser, a device added after the parity world opened the DM, stays at 'joining this channel' in it, so the DM's call button never shows and shoot.mjs times out on the join step",
 }

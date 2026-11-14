@@ -9,7 +9,7 @@ Every test title in `e2e/web`, `e2e/voice`, `e2e/media` and `packages/desktop/te
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of those directories and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 168 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 0 TODO only (0 TODO tests proposed in all).
+Totals: 233 e2e tests; 169 with a Rust test, 42 n/a (browser/phone only), 22 next plan (native), 0 TODO only (0 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -190,7 +190,7 @@ Totals: 233 e2e tests; 168 with a Rust test, 42 n/a (browser/phone only), 23 nex
 | `e2e/voice/share.spec.ts` | a shared tab’s sound is heard by the other browser | n/a (browser/phone only): a browser tab's audio through getDisplayMedia |
 | `e2e/voice/speaking.spec.ts` | alice speaking lights her tile and bob's tile for her within a beat, and a mute puts it out | dilla-desktop::src/screens/voice/session::speaking_lights_after_its_onset_and_holds_for_the_hangover |
 | `e2e/voice/stage.spec.ts` | the stage shows a tile per camera and screen, focuses a shared screen, and keeps every stream running | dilla-desktop::tests/voice::stage_tile_per_stream_focuses_share; dilla-desktop::src/screens/voice/mod::the_stage_has_a_tile_per_device_and_one_per_screen_share |
-| `e2e/voice/stage.spec.ts` | a DM call box keeps compact tiles when the other person shares their screen | next plan (native): a shared screen in a DM call box needs native capture (Capture), and the DM call box's stage that draws it is not built yet |
+| `e2e/voice/stage.spec.ts` | a DM call box keeps compact tiles when the other person shares their screen | dilla-desktop::tests/voice::a_dm_call_box_keeps_compact_tiles_when_the_other_person_shares_their_screen |
 
 ## e2e/media
 

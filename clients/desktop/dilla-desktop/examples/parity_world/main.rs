@@ -95,10 +95,17 @@ async fn main() {
         web.join("index.html").exists(),
         "build the web client first: npm run build -w @dilla/web"
     );
-    let host =
-        tokio::task::spawn_blocking(move || world::start_host("parity", "127.0.0.1:0", Some(&web)))
-            .await
-            .unwrap();
+    // A fixture whose viewer joins a call in the browser needs the host's LiveKit (seed/calls.rs).
+    let sfu = seed::needs_sfu(&f);
+    let host = tokio::task::spawn_blocking(move || {
+        if sfu {
+            world::start_host_with_sfu("parity", Some(&web))
+        } else {
+            world::start_host("parity", "127.0.0.1:0", Some(&web))
+        }
+    })
+    .await
+    .unwrap();
     let invite = host.invites.last().unwrap().clone();
     let mut people: Vec<(String, world::Person)> = Vec::new();
     for p in &f.world.people {
@@ -158,6 +165,8 @@ async fn main() {
             ids.insert(format!("channel:{server}/{}", c.id), real.hex());
         }
     }
+    // What the browser must find made before it signs in, with the ids its route names (the DMs, seed/dms.rs).
+    seed::before_browser(&f, &clients, &mut ids).await;
     let channel_real = |path: &str| -> ChannelId {
         ChannelId(spec::unhex16(&ids[&format!("channel:{path}")]).expect("hex"))
     };
@@ -265,7 +274,7 @@ async fn main() {
             .await;
         }
     }
-    seed::seed(&f, &people, &clients).await;
+    seed::seed(&f, &people, &clients, &host, &ids).await;
     // The clock at the frame: the fixture's, lifted.
     let target = f.clock + shift;
     let now = read_clock(&host);
@@ -283,11 +292,21 @@ async fn main() {
         serde_json::to_string_pretty(&sidecar).unwrap(),
     )
     .unwrap();
-    for (_, client) in clients {
-        client.stop();
+    // A client the browser still needs stays online until the end (seed/dms.rs: the browser joins a DM's group when it
+    // opens the DM, and a member device online admits it); every other one stops.
+    let mut online = Vec::new();
+    for (id, client) in clients {
+        if seed::keep_online(&f, id) {
+            online.push(client);
+        } else {
+            client.stop();
+        }
     }
     println!("READY {}", out.display());
     let mut sink = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut sink);
+    for client in online {
+        client.stop();
+    }
     drop((host, people));
 }

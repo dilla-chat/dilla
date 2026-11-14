@@ -777,3 +777,29 @@ fn the_ring_takes_the_focus_and_gives_it_back(cx: &mut TestAppContext) {
         "the focus came back"
     );
 }
+
+// ---- parity (S4, lane G): the app's frame of each fixture against the web client's (parity/references/linux/ring/) ----
+
+fn parity_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/ring")
+        .join(format!("{name}.json"))
+}
+
+macro_rules! parity {
+    ($($test:ident => $name:literal $(; $why:literal)?),* $(,)?) => {$(
+        #[test]
+        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+        $(#[ignore = $why])?
+        fn $test() {
+            let report = dilla_parity::screen::assert_screen(&parity_fixture($name))
+                .unwrap_or_else(|e| panic!("ring/{} differs from its web reference: {e}", $name));
+            println!("SCREEN ring/{}: {} text lines, chrome {:.4} %", $name, report.text_lines, report.chrome_pct);
+        }
+    )*};
+}
+
+parity! {
+    parity_ring_banner => "banner"; "parity after T6c: chrome 0.3675 % (R22, lane G: the web's new-device note under the empty channel, 'Messages sent before this browser joined are not shown', which the fixture's device has no counterpart of)",
+    parity_ring_afk => "afk",
+}

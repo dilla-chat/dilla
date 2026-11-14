@@ -56,6 +56,8 @@ pub enum FixtureScreen {
     Welcome(pre_account::PreAccount),
     /// The shell with no route of its own (`/`): the first server, or the empty view of an account in no server.
     Home,
+    /// The shell on a DM's conversation (`/dm/{dm/<id>}`, lane G: the DM call box).
+    ShellDm { dm: ChannelId },
     /// The user settings host, on this section (`/settings/<section>`).
     Settings { section: crate::router::UserSection },
     /// A server's settings (Task 15): `section` is the route's, `None` its first.
@@ -192,6 +194,7 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             Ok(FixtureScreen::Welcome(pre_account::PreAccount::SignUp))
         }
         (Route::Root, Phase::Ready) => Ok(FixtureScreen::Home),
+        (Route::Dm(dm), Phase::Ready) => Ok(FixtureScreen::ShellDm { dm: *dm }),
         (Route::Settings(Some(section)), Phase::Ready) => {
             Ok(FixtureScreen::Settings { section: *section })
         }
@@ -308,10 +311,11 @@ pub fn build_state(
         ..AppState::default()
     };
     attachments::apply(world, viewer, &mut state);
-    calls::apply(world, viewer, &mut state);
     devices::apply(world, viewer, &mut state);
     diagnostics::apply(world, viewer, &mut state);
-    dms::apply(world, viewer, &mut state);
+    dms::apply(world, viewer, ids, &mut state);
+    // After the DMs: a DM's call is placed in the DM the dms facet made.
+    calls::apply(world, viewer, ids, &mut state);
     members::apply(world, viewer, &mut state);
     messages::apply(world, viewer, &mut state);
     notify::apply(fixture, ids, &mut state);

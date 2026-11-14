@@ -2,7 +2,7 @@
 //!
 //! The viewer's DMs, named as the client names them (the other members' display names), each with its text group active,
 //! and each DM's messages as its timeline (`AppState::timelines` under the DM's id), oldest first. The ids are the world's
-//! derived ones. The world names no trust state yet (the spec has no key rotation), so the trust slice is the core's
+//! world's (derived, or the sidecar's). The world names no trust state yet (the spec has no key rotation), so the trust slice is the core's
 //! answer for a world where every contact is first seen: loaded, nothing blocked.
 
 use dilla_client::state::dms::{DM_KIND_GROUP, DM_KIND_PAIR, DmSummary, dm_name};
@@ -13,13 +13,13 @@ use dilla_client::state::{
 use dilla_client::testing::spec::WorldSpec;
 
 /// Maps the facet into `state`.
-pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
+pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state: &mut AppState) {
     state.trust.loaded = true;
     if world.dms.is_empty() {
         return;
     }
-    let ids = world.ids();
-    let id = |kind: &str, local: &str| ids.get(&format!("{kind}:{local}")).copied();
+    // The world's ids: derived, or the ones a real dillad handed out (the reference's sidecar names the DM's own).
+    let id = |kind: &str, local: &str| ids.map.get(&format!("{kind}:{local}")).copied();
     let own = id("person", viewer).map(UserId);
     let name_of = |user: UserId| {
         world

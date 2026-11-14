@@ -230,6 +230,13 @@ func run(o options) error {
 		mux.Handle("/", control)
 		control = mux
 	}
+	if o.parityFixture {
+		// The parity world's call and ring seeding (parity_calls.go): this host's control listener only.
+		mux := http.NewServeMux()
+		mux.Handle("/debug/parity/", parityCalls(func() parityDeliverer { return host.Server().Gateway() }))
+		mux.Handle("/", control)
+		control = mux
+	}
 	controlSrv := &http.Server{
 		Handler:           requestDiagnostics.control(control),
 		ReadHeaderTimeout: 10 * time.Second,

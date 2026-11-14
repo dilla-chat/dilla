@@ -84,6 +84,35 @@ mod m {
     pub const MENU_W: f32 = 320.0;
     pub const MENU_PAD: f32 = 12.0;
     pub const MENU_GAP: f32 = 8.0;
+    /// ChannelHeader.css: the bar 20px in on the left and 10px on the right, 10px between title and topic, the 14px
+    /// glyph 6px before the name.
+    pub const HEADER_LEFT: f32 = 20.0;
+    pub const HEADER_RIGHT: f32 = 10.0;
+    pub const HEADER_GAP: f32 = 10.0;
+    pub const HEADER_TITLE_GAP: f32 = 6.0;
+    pub const HEADER_GLYPH: f32 = 14.0;
+    /// app.css `.dw-dm-call`: the DM call box is at most 40 % of the conversation's height; its grid's columns are at
+    /// least 11rem wide (`minmax(min(100%, 11rem), 1fr)`), its cards 8px in with no least height.
+    pub const DM_BOX_SHARE: f32 = 0.4;
+    pub const DM_TILE_MIN: f32 = 176.0;
+    pub const DM_TILE_PAD: f32 = 8.0;
+    /// CallTile.css, the compact card: 6px between the media and the caption, the caption at least 1.25rem high.
+    pub const CARD_GAP: f32 = 6.0;
+    pub const CAPTION_MIN_H: f32 = 20.0;
+    /// CallStage.css `.d-call-stage__head`: 8px between its rows, 16px between its parts.
+    pub const HEAD_GAP_Y: f32 = 8.0;
+    pub const HEAD_GAP_X: f32 = 16.0;
+    /// `.d-call-stage__summary`: the call code's 28px disclosure, 8px in, its chevron 0.875em, 6px before the word.
+    pub const CODE_H: f32 = 28.0;
+    pub const CODE_PAD_X: f32 = 8.0;
+    pub const CODE_GLYPH_EM: f32 = 0.875;
+    pub const CODE_GLYPH_GAP: f32 = 6.0;
+    /// app.css: the DM box's controls stand 8px above and below; CallControls.css: 2px between the toolbar's buttons,
+    /// and the hairline before leave 8px high in and 4px aside.
+    pub const DM_CONTROLS_PAD_Y: f32 = 8.0;
+    pub const TOOLBAR_GAP: f32 = 2.0;
+    pub const DIVIDER_INSET_Y: f32 = 8.0;
+    pub const DIVIDER_INSET_X: f32 = 4.0;
 }
 
 /// What one window's voice hooks draw from: the newest state of its instance, its running client and that client's
@@ -118,6 +147,11 @@ pub struct VoiceUi {
     ptt: dilla_client::features::voice_prefs::ptt::PttHold,
     /// Push to talk's key (as GPUI names it) and release delay, from the settings ([`set_ptt_key`]).
     ptt_key: Option<(String, u32)>,
+    /// The DM call box's tile grid's width, logical px, as last laid out ([`dm_call_box`]): its column count follows it.
+    dm_grid_w: f32,
+    /// A test's remote frames, drawn while there is no media session (feature `test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    test_frames: HashMap<StreamKey, Arc<RenderImage>>,
 }
 
 /// Every instance window's voice area, by window. A window that closes is let go at once (`windows::on_closed`: its
@@ -286,28 +320,67 @@ fn afk_stage(channel: &Channel, w: WindowId, cx: &mut App) -> Option<AnyElement>
         .flex()
         .flex_col()
         .bg(color::BG)
-        .child(stage_title(channel))
+        .child(stage_title(
+            channel,
+            IconName::Moon,
+            t("voice.header.afk").to_owned(),
+        ))
         .children(ring_notice(&ctx.state, channel))
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .child(tracked("voice-afk-page", page)),
-        );
+        .child(div().flex_1().min_h_0().child(tracked(
+            "voice-afk-page",
+            // `.d-call-stage__afk` fills the stage and centres its column.
+            div().size_full().flex().flex_col().child(page),
+        )));
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
 
-/// The stage's title bar: the channel's name.
-fn stage_title(channel: &Channel) -> Div {
+/// The stage's title bar (VoiceView.tsx: the voice channel's `ChannelHeader`, no controls): the 14px glyph, the name in
+/// 13.5px/700 and the topic in 12px --fg-2, on the 44px bar with its hairline.
+fn stage_title(channel: &Channel, glyph: IconName, topic: String) -> Div {
     div()
         .flex_none()
-        .h(layout::BAR)
-        .px(px(m::STAGE_PAD))
+        .h(layout::CHANNEL_HEADER_H)
+        .pl(px(m::HEADER_LEFT))
+        .pr(px(m::HEADER_RIGHT))
         .flex()
         .items_center()
+        .gap(px(m::HEADER_GAP))
+        .bg(color::BG)
         .border_b_1()
         .border_color(color::HAIRLINE)
-        .child(line(channel.name.clone(), text::MD, 18.0, color::FG).weight(font::WEIGHT_LABEL))
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(m::HEADER_TITLE_GAP))
+                .child(
+                    Icon::new(glyph)
+                        .size(px(m::HEADER_GLYPH))
+                        .color(color::FG_3),
+                )
+                .child(
+                    line(
+                        channel.name.clone(),
+                        text::BASE,
+                        dilla_desktop_ui::text::line_height(text::BASE, 1.5),
+                        color::FG,
+                    )
+                    .weight(font::WEIGHT_DISPLAY)
+                    .ellipsis(),
+                ),
+        )
+        .child(
+            div().flex_1().min_w_0().overflow_hidden().child(
+                line(
+                    topic,
+                    text::UI,
+                    dilla_desktop_ui::text::line_height(text::UI, 1.5),
+                    color::FG_2,
+                )
+                .ellipsis(),
+            ),
+        )
 }
 
 /// The ring area's stage notice for `channel` (VoiceView.tsx `stageNotice`): a block (Task 18's
@@ -375,6 +448,12 @@ impl VoiceUi {
     /// The stage's focus handle, once the stage has drawn (the arrows and Escape act while it holds the focus).
     pub fn stage_focus_handle(&self) -> Option<FocusHandle> {
         self.stage_focus.clone()
+    }
+
+    /// Test hook: `image` is the newest frame of `stream`, drawn while this window has no media session.
+    #[cfg(feature = "test-hooks")]
+    pub fn put_test_frame(&mut self, stream: StreamKey, image: Arc<RenderImage>) {
+        self.test_frames.insert(stream, image);
     }
 }
 
@@ -1398,7 +1477,16 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             }))
             .into_any_element()
     };
-    let title = stage_title(channel);
+    // Ruling Z: the voice header's topic is "{n} in voice" once joined, else "voice channel".
+    let topic = if joined {
+        tf(
+            "voice.count",
+            &[("n", count(&state, channel.id).to_string().as_str())],
+        )
+    } else {
+        t("voice.header.idle").to_owned()
+    };
+    let title = stage_title(channel, IconName::Volume2, topic);
     let n = keys.len();
     let stage = div()
         .id("voice-stage")
@@ -1462,6 +1550,12 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
         .and_then(|u| u.session.as_ref())
         .map(|s| s.videos())
     else {
+        // No media session: only a test's frames ([`VoiceUi::put_test_frame`]).
+        #[cfg(feature = "test-hooks")]
+        return ui_of(w, cx)
+            .map(|u| u.test_frames.clone())
+            .unwrap_or_default();
+        #[cfg(not(feature = "test-hooks"))]
         return HashMap::new();
     };
     let mut stale: Vec<Arc<RenderImage>> = Vec::new();
@@ -1660,6 +1754,398 @@ fn tile(
                     .child(line(stat, text::MICRO, 14.0, color::FG_2)),
             )
         })
+        .into_any_element()
+}
+
+// ---- the DM call box ----------------------------------------------------------------------------------------------
+
+/// The name a person shows in a DM call (VoiceView.tsx `userName`): their display name in any server this device
+/// knows, else the account's own name, else the short id.
+fn dm_name_of(state: &AppState, user: UserId) -> String {
+    state
+        .members
+        .values()
+        .flatten()
+        .find(|m| m.user_id == user)
+        .map(|m| {
+            if m.display.is_empty() {
+                m.username.clone()
+            } else {
+                m.display.clone()
+            }
+        })
+        .or_else(|| (state.account.user_id == Some(user)).then(|| state.account.username.clone()))
+        .unwrap_or_else(|| user.hex()[..8].to_owned())
+}
+
+/// The DM call box's tiles (VoiceView.tsx `callTiles`): each device's person tile and, while it shares, its screen tile,
+/// the shared screens first, then the people in the roster's order.
+pub fn dm_tiles(state: &AppState, channel: ChannelId) -> Vec<TileKey> {
+    let mut out = tiles(state, channel);
+    out.sort_by_key(|k| !k.screen);
+    out
+}
+
+/// The grid's columns (`repeat(auto-fill, minmax(min(100%, 11rem), 1fr))` with the stage's 10px gap) across `width`.
+pub fn dm_columns(width: f32) -> usize {
+    (((width + m::TILE_GAP) / (m::DM_TILE_MIN + m::TILE_GAP)).floor() as usize).max(1)
+}
+
+/// The outgoing ring's line over the tiles (useCall.tsx `outgoingText`), while this device's DM call rings someone.
+fn outgoing_text(state: &AppState, channel: ChannelId) -> Option<String> {
+    let out = state.ring.outgoing.as_ref()?;
+    if out.channel != Some(channel) {
+        return None;
+    }
+    let others = state.voice.participants(channel).iter().any(|p| !p.own);
+    let names = |users: &[UserId]| {
+        users
+            .iter()
+            .map(|u| dm_name_of(state, *u))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !out.ringing.is_empty() {
+        parts.push(tf(
+            "call.outgoing.ringing",
+            &[("names", names(&out.ringing).as_str())],
+        ));
+    }
+    if !out.not_rung.is_empty() && !others {
+        parts.push(tf(
+            "call.outgoing.notRung",
+            &[("names", names(&out.not_rung).as_str())],
+        ));
+    }
+    for u in &out.declined {
+        parts.push(tf(
+            "call.outgoing.declined",
+            &[("name", dm_name_of(state, *u).as_str())],
+        ));
+    }
+    if !others && out.ringing.is_empty() && out.not_rung.is_empty() && out.declined.is_empty() {
+        parts.push(t("call.outgoing.noAnswer").to_owned());
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// The DM call (VoiceView.tsx `DmCall`, flow 06): while this device is in the DM's call, its box over the log, at most
+/// 40 % of the conversation. It is the compact grid, never the channel stage: no focus layout, no film strip and no full
+/// screen, so a shared screen shows at a card's size (e2e/voice/stage.spec.ts, WS7 review critical 1). Its head names
+/// the DM, says the outgoing ring and holds the call code; the icon toolbar stays under the tiles while they scroll.
+/// `None` while this device is not in the DM's call.
+pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let w = wid(window);
+    let state = ui_of(w, cx)?.state.clone();
+    if !joined(&state, channel.id) {
+        return None;
+    }
+    let images = refresh_images(window, cx);
+    let grid_w = ui_of(w, cx).map_or(0.0, |u| u.dm_grid_w);
+    let keys = dm_tiles(&state, channel.id);
+    let cards: Vec<AnyElement> = keys.iter().map(|k| card(&state, k, &images)).collect();
+    let measure = gpui::canvas(
+        move |bounds, window, cx| {
+            let width = f32::from(bounds.size.width);
+            if let Some(ui) = cx.global_mut::<VoiceAreas>().windows.get_mut(&w)
+                && (ui.dm_grid_w - width).abs() > 0.5
+            {
+                ui.dm_grid_w = width;
+                window.request_animation_frame();
+            }
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    let grid = div()
+        .w_full()
+        .grid()
+        .grid_cols(u16::try_from(dm_columns(grid_w)).unwrap_or(1))
+        .gap(px(m::TILE_GAP))
+        .children(cards);
+    let code = state.voice.call.code.clone().map(|_| {
+        div()
+            .ml_auto()
+            .h(px(m::CODE_H))
+            .px(px(m::CODE_PAD_X))
+            .flex()
+            .items_center()
+            .gap(px(m::CODE_GLYPH_GAP))
+            .rounded(radius::MD)
+            .child(
+                Icon::new(IconName::ChevronRight)
+                    .size(px(f32::from(text::META) * m::CODE_GLYPH_EM))
+                    .color(color::FG_2),
+            )
+            .child(line(t("voice.code"), text::META, 13.65, color::FG_2))
+    });
+    let head = div()
+        .flex()
+        .flex_wrap()
+        .items_baseline()
+        .gap_x(px(m::HEAD_GAP_X))
+        .gap_y(px(m::HEAD_GAP_Y))
+        .min_w_0()
+        .px(px(m::STAGE_PAD))
+        .pt(px(m::STAGE_PAD))
+        .child(line(channel.name.clone(), text::MD, 18.2, color::FG).weight(font::WEIGHT_LABEL))
+        .children(outgoing_text(&state, channel.id).map(|s| line(s, text::UI, 15.6, color::FG_2)))
+        .children(code);
+    let body = div()
+        .p(px(m::STAGE_PAD))
+        .child(div().relative().w_full().child(grid).child(measure));
+    let scroll = div()
+        .id("dm-call-tiles")
+        .flex_shrink(1.0)
+        .min_h_0()
+        .overflow_y_scroll()
+        .child(head)
+        .children(notice_or_none(&state))
+        .child(body);
+    Some(
+        div()
+            .id("dm-call-box")
+            .debug_selector(|| "dm-call-box".to_owned())
+            .flex_none()
+            .max_h(relative(m::DM_BOX_SHARE))
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .bg(color::BG)
+            .border_b_1()
+            .border_color(color::HAIRLINE)
+            .child(scroll)
+            .child(dm_controls(&state))
+            .into_any_element(),
+    )
+}
+
+/// The media notice over the tiles, or nothing while there is none.
+fn notice_or_none(state: &AppState) -> Option<AnyElement> {
+    state.voice.notice.is_some().then(|| notice(state))
+}
+
+/// One compact card of the DM call box (CallTile.tsx without `onFocusTile`): the media when a frame has come (16:9 at
+/// the card's width), then the caption: the name and its glyph-only states. A person with no camera is the caption alone.
+fn card(
+    state: &AppState,
+    k: &TileKey,
+    images: &HashMap<StreamKey, Arc<RenderImage>>,
+) -> AnyElement {
+    let channel = state.voice.call.channel;
+    let p = channel.and_then(|c| {
+        state
+            .voice
+            .participants(c)
+            .iter()
+            .find(|p| p.device_id == k.device)
+    });
+    let own = p.is_some_and(|p| p.own);
+    let name = dm_name_of(state, k.user);
+    let title = if k.screen {
+        tf("stage.screen", &[("name", name.as_str())])
+    } else if own {
+        tf("callStage.tile.you", &[("name", name.as_str())])
+    } else {
+        name
+    };
+    let stream = StreamKey {
+        device: k.device.hex(),
+        kind: if k.screen {
+            ShareKind::Screen
+        } else {
+            ShareKind::Camera
+        },
+    };
+    let video = images.get(&stream).cloned();
+    let (muted, deafened) = if own {
+        (state.voice.self_mute, state.voice.self_deaf)
+    } else {
+        (
+            p.is_some_and(VoiceParticipant::muted),
+            p.is_some_and(VoiceParticipant::deafened),
+        )
+    };
+    // A screen's caption carries no person states (only a share's no-sound mark, which comes with capture).
+    let glyphs: Vec<(IconName, gpui::Hsla)> = if k.screen {
+        Vec::new()
+    } else {
+        [
+            (muted, IconName::MicOff, color::DANGER),
+            (deafened, IconName::HeadphoneOff, color::DANGER),
+            (
+                p.is_some_and(VoiceParticipant::video),
+                IconName::Video,
+                color::FG_2,
+            ),
+            (
+                p.is_some_and(VoiceParticipant::screen),
+                IconName::MonitorUp,
+                color::FG_2,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(on, icon, tone)| on.then_some((icon, tone)))
+        .collect()
+    };
+    let speaking = p.is_some_and(|p| state.voice.speaking.contains(&p.device_id));
+    let caption = div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(m::CAPTION_GAP))
+        .min_h(px(m::CAPTION_MIN_H))
+        .max_w_full()
+        .min_w_0()
+        .child(
+            div().min_w_0().overflow_hidden().child(
+                line(title, text::XS, 14.3, color::FG)
+                    .weight(font::WEIGHT_LABEL)
+                    .ellipsis(),
+            ),
+        )
+        .children(
+            glyphs
+                .into_iter()
+                .map(|(icon, tone)| Icon::new(icon).size(px(m::GLYPH)).color(tone)),
+        );
+    let id = format!(
+        "dm-tile-{}{}",
+        k.device.hex(),
+        if k.screen { "-screen" } else { "" }
+    );
+    let selector = id.clone();
+    let media_selector = format!("{id}-media");
+    div()
+        .id(ElementId::Name(id.into()))
+        .debug_selector(move || selector.clone())
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(m::CARD_GAP))
+        .p(px(m::DM_TILE_PAD))
+        .bg(color::STAGE_TILE)
+        .rounded(radius::XL)
+        .border(px(if speaking {
+            m::TILE_EDGE_STRONG
+        } else {
+            m::TILE_EDGE
+        }))
+        .border_color(if speaking { color::OK } else { color::HAIRLINE })
+        .children(video.map(|image| {
+            div()
+                .debug_selector(move || media_selector.clone())
+                .w_full()
+                .aspect_ratio(16.0 / 9.0)
+                .rounded(radius::MD)
+                .overflow_hidden()
+                .bg(color::BG)
+                .child(
+                    img(ImageSource::Render(image))
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Contain),
+                )
+        }))
+        .child(caption)
+        .into_any_element()
+}
+
+/// The DM call box's controls (CallControls without the call bar's words): mute, deafen, camera, share, then leave set
+/// off by a hairline, 8px above and below.
+fn dm_controls(state: &AppState) -> AnyElement {
+    let v = &state.voice;
+    let muted = v.self_mute || v.self_deaf;
+    let button = |id: &'static str, b: IconButton| tracked_box(id, b.size(IconButtonSize::S40));
+    div()
+        .flex_none()
+        .flex()
+        .justify_center()
+        .px(px(m::STAGE_PAD))
+        .py(px(m::DM_CONTROLS_PAD_Y))
+        .bg(color::BG)
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_stretch()
+                .gap(px(m::TOOLBAR_GAP))
+                .child(button(
+                    "dm-call-mute",
+                    IconButton::new(
+                        "dm-call-mute-b",
+                        if muted {
+                            IconName::MicOff
+                        } else {
+                            IconName::Mic
+                        },
+                        t("voice.mute"),
+                    )
+                    .pressed(muted)
+                    .on_click(|_, window, cx| toggle_mute_in(wid(window), cx)),
+                ))
+                .child(button(
+                    "dm-call-deafen",
+                    IconButton::new(
+                        "dm-call-deafen-b",
+                        if v.self_deaf {
+                            IconName::HeadphoneOff
+                        } else {
+                            IconName::Headphones
+                        },
+                        t("voice.deafen"),
+                    )
+                    .pressed(v.self_deaf)
+                    .on_click(|_, window, cx| toggle_deafen_in(wid(window), cx)),
+                ))
+                .child(button(
+                    "dm-call-camera",
+                    IconButton::new(
+                        "dm-call-camera-b",
+                        if v.share.camera {
+                            IconName::VideoOff
+                        } else {
+                            IconName::Video
+                        },
+                        t("callStage.bar.camera"),
+                    )
+                    .pressed(v.share.camera)
+                    .on_click(|_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx)),
+                ))
+                .child(button(
+                    "dm-call-share",
+                    IconButton::new(
+                        "dm-call-share-b",
+                        if v.share.screen {
+                            IconName::MonitorX
+                        } else {
+                            IconName::MonitorUp
+                        },
+                        t("callStage.bar.share"),
+                    )
+                    .pressed(v.share.screen)
+                    .on_click(|_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx)),
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .w_0()
+                        .my(px(m::DIVIDER_INSET_Y))
+                        .mx(px(m::DIVIDER_INSET_X))
+                        .border_l_1()
+                        .border_color(color::HAIRLINE_2),
+                )
+                .child(button(
+                    "dm-call-leave",
+                    IconButton::new("dm-call-leave-b", IconName::PhoneOff, t("voice.leave"))
+                        .on_click(|_, window, cx| leave(wid(window), cx)),
+                )),
+        )
         .into_any_element()
 }
 
