@@ -108,8 +108,10 @@ fn no_toast_is_shown_in_every_window() {
 #[test]
 fn the_every_window_guard_reads_the_argument() {
     let one_line = "    show_toast_in(None, t(\"x\"), cx);";
-    let two_lines = "    toast::show_toast_in(\n        None,\n        t(\"x\"),\n        cx,\n    );";
-    let named = "    toast::show_toast_in(\n        Some(window),\n        t(\"x\"),\n        cx,\n    );";
+    let two_lines =
+        "    toast::show_toast_in(\n        None,\n        t(\"x\"),\n        cx,\n    );";
+    let named =
+        "    toast::show_toast_in(\n        Some(window),\n        t(\"x\"),\n        cx,\n    );";
     let commented = "    // show_toast_in(None, ..) would show it everywhere";
     assert_eq!(every_window_calls("src/a.rs", one_line).len(), 1);
     assert_eq!(every_window_calls("src/a.rs", two_lines).len(), 1);

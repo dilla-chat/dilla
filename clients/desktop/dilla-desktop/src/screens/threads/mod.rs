@@ -874,10 +874,13 @@ mod tests {
             ui.read_with(cx, |u, _| u.editing.as_ref().map(|e| e.key.clone())),
             Some(own.key.clone())
         );
-        w.update(cx, |_, window, cx| view::delete_row(channel, &own, window, cx))
-            .unwrap();
-        assert!(ui.read_with(cx, |u, _| u
-            .deleting
-            .is_some_and(|d| d.channel == channel && Some(d.msg) == own.msg_id)));
+        w.update(cx, |_, window, cx| {
+            view::delete_row(channel, &own, window, cx)
+        })
+        .unwrap();
+        assert!(ui.read_with(cx, |u, _| {
+            u.deleting
+                .is_some_and(|d| d.channel == channel && Some(d.msg) == own.msg_id)
+        }));
     }
 }

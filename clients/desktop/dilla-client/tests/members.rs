@@ -1425,20 +1425,32 @@ mod live {
             .await
             .unwrap();
         // The instance holds the timeout (it refuses her posts from here on, as the test above shows).
-        assert!(owner.moderation().timeout_of(c, ada_id).await.unwrap().is_some());
+        assert!(
+            owner
+                .moderation()
+                .timeout_of(c, ada_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         ada.messages()
             .delete(ch, msg)
             .await
             .unwrap()
             .expect("a timed-out member's own delete is not refused");
-        wait_for(&owner, Duration::from_secs(30), "the delete at the owner", |s| {
-            s.timelines.get(&ch).is_some_and(|t| {
-                t.items
-                    .iter()
-                    .any(|i| i.msg_id == Some(msg) && i.state == TimelineItemState::Deleted)
-            })
-        })
+        wait_for(
+            &owner,
+            Duration::from_secs(30),
+            "the delete at the owner",
+            |s| {
+                s.timelines.get(&ch).is_some_and(|t| {
+                    t.items
+                        .iter()
+                        .any(|i| i.msg_id == Some(msg) && i.state == TimelineItemState::Deleted)
+                })
+            },
+        )
         .await;
     }
 

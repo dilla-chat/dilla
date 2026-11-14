@@ -195,7 +195,8 @@ fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {
         assert!(
             names.iter().any(|n| n == want),
             "{} ({}) is listed in Settings -> Keyboard but {want} is not bound to it: {names:?}",
-            s.action, s.keystroke
+            s.action,
+            s.keystroke
         );
     }
 }

@@ -170,9 +170,7 @@ fn the_gif_settings_column_shrinks_in_a_narrow_body() {
     );
     // Review L m8: the column's widest part (the key field, its 20rem basis) shrinks with it; a part that kept its width
     // would overflow the column, clipped, while the column itself ends inside the window.
-    let field = driver
-        .element("gif-key-field")
-        .expect("the key field drew");
+    let field = driver.element("gif-key-field").expect("the key field drew");
     assert!(
         field.x + field.width <= column.x + column.width,
         "the key field ends at {} past the column's {}",

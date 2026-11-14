@@ -1256,7 +1256,12 @@ mod tests {
     }
 
     /// An open that answers whatever the test sends, and says whether it was asked for.
-    fn recorded(rx: OpenAnswer) -> (Rc<std::cell::Cell<bool>>, impl FnOnce() -> OpenAnswer + 'static) {
+    fn recorded(
+        rx: OpenAnswer,
+    ) -> (
+        Rc<std::cell::Cell<bool>>,
+        impl FnOnce() -> OpenAnswer + 'static,
+    ) {
         let asked = Rc::new(std::cell::Cell::new(false));
         let a = asked.clone();
         (asked, move || {

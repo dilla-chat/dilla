@@ -113,15 +113,22 @@ pub fn notice(
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> Option<gpui::AnyElement> {
-    use gpui::IntoElement as _;
     use dilla_desktop_ui::components::banner::{Banner, BannerTone};
+    use gpui::IntoElement as _;
     let handle = ui::handle(window, cx)?;
     let key = handle.read(cx).notice_in(channel?)?;
     Some(
-        Banner::new("conversation-notice", BannerTone::Info, crate::strings::t(key))
-            .action(crate::strings::t("shell.banner.dismiss"), move |_, _, cx| {
+        Banner::new(
+            "conversation-notice",
+            BannerTone::Info,
+            crate::strings::t(key),
+        )
+        .action(
+            crate::strings::t("shell.banner.dismiss"),
+            move |_, _, cx| {
                 handle.update(cx, |u, cx| u.dismiss_notice(cx));
-            })
-            .into_any_element(),
+            },
+        )
+        .into_any_element(),
     )
 }

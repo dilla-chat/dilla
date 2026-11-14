@@ -6,12 +6,12 @@
 use std::rc::Rc;
 
 use dilla_client::state::{MessageId, TimelineItem, TimelineItemState};
+use dilla_desktop_ui::IconName;
+use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::threads::{
     PaneParts, ThreadRow, ThreadRowKind, pane, thread_row,
 };
-use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::text::{line, line_height};
-use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 use gpui::{
     AppContext as _, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
@@ -56,15 +56,28 @@ pub fn row_actions(item: &TimelineItem) -> Vec<&'static str> {
 }
 
 /// The thread pane's Edit on `item`: the messages area's editor opens on it (one editor per window), in its place.
-pub fn edit_row(ctx: &crate::slots::SlotCx, item: &TimelineItem, window: &mut Window, cx: &mut gpui::App) {
+pub fn edit_row(
+    ctx: &crate::slots::SlotCx,
+    item: &TimelineItem,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
     if let Some(ui) = crate::screens::messages::ui::handle(window, cx) {
         ui.update(cx, |ui, cx| ui.begin_edit(ctx, item, window, cx));
     }
 }
 
 /// The thread pane's Delete on `item` of `channel`: the messages area's delete dialog asks first.
-pub fn delete_row(channel: dilla_client::state::ChannelId, item: &TimelineItem, window: &mut Window, cx: &mut gpui::App) {
-    let (Some(msg), Some(ui)) = (item.msg_id, crate::screens::messages::ui::handle(window, cx)) else {
+pub fn delete_row(
+    channel: dilla_client::state::ChannelId,
+    item: &TimelineItem,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let (Some(msg), Some(ui)) = (
+        item.msg_id,
+        crate::screens::messages::ui::handle(window, cx),
+    ) else {
         return;
     };
     ui.update(cx, |ui, cx| ui.ask_delete(channel, msg, cx));

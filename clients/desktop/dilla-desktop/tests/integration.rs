@@ -1392,7 +1392,10 @@ fn the_dm_list_is_read_without_opening_the_dms(cx: &mut TestAppContext) {
     w.general(&bjorn);
     cx.executor().allow_parking();
     cx.update(dilla_desktop::install);
-    assert!(!ada.dms().started(), "nothing started the DM area before the shell");
+    assert!(
+        !ada.dms().started(),
+        "nothing started the DM area before the shell"
+    );
     // The shell as it first shows a person with no server yet (a fresh account, its server list still loading): no
     // conversation is drawn, so nothing but the shell's own start reads the DMs.
     let mut first = (*ada.state().borrow().clone()).clone();

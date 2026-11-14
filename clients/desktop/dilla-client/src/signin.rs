@@ -836,7 +836,9 @@ impl SignIn {
         let list = self.with_core(|c| c.device_list_body())?;
         #[cfg(feature = "testing")]
         if self.list_put_fault == Some(ListPutFault::NeverSent) {
-            return Err(SignInError::Network("the list PUT was never sent (test)".into()));
+            return Err(SignInError::Network(
+                "the list PUT was never sent (test)".into(),
+            ));
         }
         let put = self
             .http
@@ -844,7 +846,9 @@ impl SignIn {
             .await;
         #[cfg(feature = "testing")]
         if put.is_ok() && self.list_put_fault == Some(ListPutFault::AnswerLost) {
-            return Err(SignInError::Network("the list PUT's answer was lost (test)".into()));
+            return Err(SignInError::Network(
+                "the list PUT's answer was lost (test)".into(),
+            ));
         }
         match put {
             Ok(()) => {}

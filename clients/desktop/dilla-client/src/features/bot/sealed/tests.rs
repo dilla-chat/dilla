@@ -462,7 +462,11 @@ async fn an_attestation_the_trust_refresh_brings_pins_the_waiting_bot() {
     // The trust refresh ingested the Bot's attestation (from a leaf).
     lock(&fake.attested).push(BOT);
     sealed.attestations_changed().await;
-    assert_eq!(*lock(&fake.pinned), Some(BOT), "the waiting pin is tried again");
+    assert_eq!(
+        *lock(&fake.pinned),
+        Some(BOT),
+        "the waiting pin is tried again"
+    );
     assert_eq!(
         sealed.view(COMMUNITY).unwrap().status.state,
         BotStatusState::Ready

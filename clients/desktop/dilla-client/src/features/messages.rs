@@ -120,13 +120,14 @@ impl Messages {
             // remove their own message. The instance refuses every upload of theirs while the timeout lasts, a delete
             // fold included, so the message is deleted from the group through the instance instead.
             let s = inner.snapshot();
-            if let (Some(community), Some(me)) =
-                (s.channel(channel).map(|c| c.community_id), s.account.user_id)
-                && crate::features::moderation::Moderation::of(&inner)
-                    .timeout_of(community, me)
-                    .await
-                    .map_err(crate::features::profile::refusal)?
-                    .is_some()
+            if let (Some(community), Some(me)) = (
+                s.channel(channel).map(|c| c.community_id),
+                s.account.user_id,
+            ) && crate::features::moderation::Moderation::of(&inner)
+                .timeout_of(community, me)
+                .await
+                .map_err(crate::features::profile::refusal)?
+                .is_some()
             {
                 let seq = s
                     .timelines

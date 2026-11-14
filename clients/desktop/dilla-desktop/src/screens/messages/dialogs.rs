@@ -303,7 +303,9 @@ pub fn pins_gate(bits: Option<u64>) -> (bool, Option<&'static str>) {
 
 /// [`pins_gate`] for the reader of `channel` (the one resolver, `roles::viewer_channel_bits`).
 fn pins_gate_of(state: &AppState, channel: ChannelId) -> (bool, Option<&'static str>) {
-    pins_gate(dilla_client::features::roles::viewer_channel_bits(state, channel))
+    pins_gate(dilla_client::features::roles::viewer_channel_bits(
+        state, channel,
+    ))
 }
 
 /// A pin row's top rule: every row but the first has a 1px hairline above it.

@@ -76,10 +76,7 @@ mod tests {
         assert_eq!(g.on_hint(S, 1, t0), Hint::Now);
         assert_eq!(g.on_hint(S, 1, t0), Hint::Drop, "the same revision");
         let at = t0 + Duration::from_millis(100);
-        assert_eq!(
-            g.on_hint(S, 2, at),
-            Hint::After(Duration::from_millis(150))
-        );
+        assert_eq!(g.on_hint(S, 2, at), Hint::After(Duration::from_millis(150)));
         assert_eq!(
             g.on_hint(S, 3, at + Duration::from_millis(10)),
             Hint::Drop,

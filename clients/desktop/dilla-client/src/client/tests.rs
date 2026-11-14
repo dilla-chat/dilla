@@ -659,10 +659,7 @@ fn the_pre_connect_pin_check_fails_closed() {
     assert_eq!(pin_verdict(Err(&garbled), None), V::Refuse);
     assert_eq!(pin_verdict(Ok(()), Some(Ok(()))), V::Go);
     assert_eq!(
-        pin_verdict(
-            Ok(()),
-            Some(Err(ClientError::Sync("E_CORE_STATE".into())))
-        ),
+        pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_CORE_STATE".into())))),
         V::Refuse
     );
 }

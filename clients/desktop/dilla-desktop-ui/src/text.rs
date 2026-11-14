@@ -248,8 +248,8 @@ impl Line {
 /// device px, so the box may be up to one device px off the web's: that much slack.
 pub fn fits_laid_out(natural: f32, laid_out: f32, scale: f32) -> bool {
     if scale.fract() == 0.0 {
-        let text = gpui::whole_layout_units(natural)
-            .unwrap_or_else(|| (f64::from(natural) * 64.0).ceil());
+        let text =
+            gpui::whole_layout_units(natural).unwrap_or_else(|| (f64::from(natural) * 64.0).ceil());
         let room = gpui::whole_layout_units(laid_out)
             .unwrap_or_else(|| (f64::from(laid_out) * 64.0).floor());
         text <= room
