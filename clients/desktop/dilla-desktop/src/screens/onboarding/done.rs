@@ -16,19 +16,20 @@ use dilla_client::state::{AppState, Channel, CommunityId};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AppContext as _, ClipboardItem, Context, EventEmitter, FocusHandle, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px,
 };
 use zeroize::Zeroizing;
 
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
-use dilla_desktop_ui::components::button::Button;
 use dilla_desktop_ui::components::factor::{CodeList, code_list_columns, copy_text};
 use dilla_desktop_ui::components::onboarding::frame::CARD_INNER_W;
 use dilla_desktop_ui::components::onboarding::{
     KeyAck, OnboardingFrame, PrimaryAction, ReadyPanel, frame,
 };
+use dilla_desktop_ui::metrics::focus_ring;
 use dilla_desktop_ui::text::{line, line_height, paragraph};
-use dilla_desktop_ui::tokens::{color, text};
+use dilla_desktop_ui::tokens::{color, radius, text};
 
 use super::keys::Submit;
 use super::signup::TOTAL;
@@ -39,10 +40,26 @@ use crate::{tracked, tracked_box, tracked_focus};
 /// The refusal a print that could not start shows, with its code (the web's print cannot fail, so it has no copy of
 /// its own: the factor area's generic one).
 const PRINT_FAILED: &str = "factor.error.other";
-/// The gap between the summary's actions, and between the count and them (CodeList.css `__actions`, 0.75rem).
-const ACTIONS_GAP: f32 = 12.0;
+/// app.css `.dw-signup-codes .d-code-list__summary`: 8px between the count and the actions and between the actions,
+/// each 32px high and 4px in.
+const SUMMARY_GAP: f32 = 8.0;
+const ACTION_H: f32 = 32.0;
+const ACTION_PAD_X: f32 = 4.0;
+/// RecoveryKey.css `.d-recovery-key__ack`: its `margin-bottom`.
+const ACK_MARGIN: f32 = 8.0;
 /// The gap between the codes' parts (the list, the summary, the tick).
 const CODES_GAP: f32 = 10.0;
+
+/// A cell of the codes' actions (`flex: 1 1 0`): they share the row equally.
+fn share(child: impl IntoElement) -> gpui::Div {
+    div()
+        .flex_1()
+        .flex_basis(gpui::Pixels::ZERO)
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(child)
+}
 
 /// "Open dilla": the shell opens on the joined server.
 pub struct OpenDilla {
@@ -236,45 +253,75 @@ impl DoneView {
         } else {
             t("onboarding.done.codesShow")
         };
+        // app.css `.dw-signup-codes`: the count (11.5px --fg-3) and the three actions sharing the rest of the row, 8px
+        // apart, each the key step's action (32px, 4px in, the --control-edge-field edge, radius 7, 12px --fg).
+        let action = |id: &'static str, label: &str, handle: &FocusHandle| {
+            div()
+                .id(id)
+                .track_focus(handle)
+                .tab_stop(true)
+                .w_full()
+                .h(px(ACTION_H))
+                .px(px(ACTION_PAD_X))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(color::CONTROL_EDGE_FIELD)
+                .rounded(radius::SEG)
+                .cursor_pointer()
+                .hover(|s| s.border_color(color::ACCENT))
+                .focus_visible(|s| s.shadow(focus_ring()))
+                .child(line(
+                    label.to_owned(),
+                    text::UI,
+                    line_height(text::UI, 1.5),
+                    color::FG,
+                ))
+        };
         let actions = div()
+            .flex_1()
+            .min_w_0()
             .flex()
-            .flex_wrap()
-            .gap(px(ACTIONS_GAP))
-            .child(tracked_focus(
+            .gap(px(SUMMARY_GAP))
+            .child(share(tracked_focus(
                 "onboarding-codes-copy",
                 &self.handles.copy,
-                Button::new("onboarding-codes-copy", t("factor.codes.copy"))
-                    .focus_handle(&self.handles.copy)
-                    .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
-            ))
-            .child(tracked_focus(
+                action(
+                    "onboarding-codes-copy",
+                    t("factor.codes.copy"),
+                    &self.handles.copy,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
+            )))
+            .child(share(tracked_focus(
                 "onboarding-codes-print",
                 &self.handles.print,
-                Button::new("onboarding-codes-print", t("factor.codes.print"))
-                    .focus_handle(&self.handles.print)
-                    .on_click(cx.listener(|this, _, _, cx| this.print(cx))),
-            ))
-            .child(tracked_focus(
+                action(
+                    "onboarding-codes-print",
+                    t("factor.codes.print"),
+                    &self.handles.print,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.print(cx))),
+            )))
+            .child(share(tracked_focus(
                 "onboarding-codes-show",
                 &self.handles.show,
-                // CodeList.tsx: a disclosure (`aria-expanded`), not a toggle: no `[x]` mark.
-                Button::new("onboarding-codes-show", toggle)
-                    .focus_handle(&self.handles.show)
+                // CodeList.tsx: a disclosure (`aria-expanded`), not a toggle: no pressed look.
+                action("onboarding-codes-show", toggle, &self.handles.show)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_shown(cx))),
-            ));
+            )));
         let summary = div()
             .w(px(CARD_INNER_W))
             .flex()
-            .flex_wrap()
             .items_center()
-            .justify_between()
-            .gap(px(ACTIONS_GAP))
-            .child(line(
+            .gap(px(SUMMARY_GAP))
+            .child(div().flex_none().child(line(
                 count,
-                text::UI,
-                line_height(text::UI, 1.5),
-                color::FG_STRONG,
-            ))
+                text::BTN,
+                line_height(text::BTN, 1.5),
+                color::FG_3,
+            )))
             .child(actions);
         let list = self.expanded.then(|| {
             tracked_box(
@@ -312,7 +359,8 @@ impl DoneView {
             .children(list)
             // The web's hint ("Tick the box to continue.") is `d-sr-only`, for screen readers only: not drawn here; it
             // comes with the accessibility work after the switch.
-            .child(ack)
+            // RecoveryKey.css `.d-recovery-key__ack`: 8px under the row.
+            .child(div().pb(px(ACK_MARGIN)).child(ack))
             .into_any_element()
     }
 }
