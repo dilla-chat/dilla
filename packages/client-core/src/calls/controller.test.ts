@@ -805,6 +805,29 @@ describe('keys after the join (L-TS-56 step 2)', () => {
     expect(w.server.routes()).not.toContain('POST proposal');
   });
 
+  // w2-fix2 re-review: a refresh that rejects (its contract is a Promise, whatever the worker's never-throws today) must
+  // not leave the call held until some later trust refresh: the gate judges again at once on what it has, and the leaf
+  // it still refuses blocks and leaves.
+  it('a leaf verdict whose leaves read rejects judges again at once and leaves', async () => {
+    const w = await joined();
+    let fail = (): void => {};
+    const worker = w.controller as unknown as { refreshCallLeaves: (g: Id) => Promise<void>; calls: { onTrust: () => void } };
+    worker.refreshCallLeaves = () => {
+      // From the verdict on, the only way back to the gate is the read's own answer (no other trust refresh re-judges).
+      worker.calls.onTrust = () => {};
+      return new Promise<void>((_resolve, reject) => { fail = () => { reject(new Error('the read failed')); }; });
+    };
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    fail();
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', changedUser: null });
+    expect(lastCallRoute(w)).toBe('POST proposal');
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+
   it('an unlisted leaf mid-call still leaves (only an identity change pauses)', async () => {
     const w = await joined();
     w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');

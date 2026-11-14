@@ -478,9 +478,9 @@ export class CallController {
         live.verdictRefreshed = epoch;
         live.keysDropped = true;
         this.setState({ ...this.state, phase: 'paused', error: this.deps.errorOf(e), changedUser: null });
-        this.deps.track(this.deps.refreshLeaves(live.groupId).then(() => {
-          if (this.live === live && !live.leaving) this.rekey(fromEpoch);
-        }));
+        // Answered or refused, the gate judges again: a read that failed leaves the cached list, which still refuses.
+        const judgeAgain = (): void => { if (this.live === live && !live.leaving) this.rekey(fromEpoch); };
+        this.deps.track(this.deps.refreshLeaves(live.groupId).then(judgeAgain, judgeAgain));
         return;
       }
       // Any other gate refusal (unlisted, credential, tier, binding): blocked, and the device leaves.
