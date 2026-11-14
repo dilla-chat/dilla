@@ -268,10 +268,10 @@ fn eligible_members<'a>(
 
 /// CommandHost.tsx `suggest` for `/unban`'s user: the community's banned members as `loadBans` read them (none until
 /// read), in the instance's order.
-fn banned_members<'a>(
-    state: &'a AppState,
+fn banned_members(
+    state: &AppState,
     community: Option<CommunityId>,
-) -> &'a [dilla_client::state::members::BanSummary] {
+) -> &[dilla_client::state::members::BanSummary] {
     community
         .and_then(|c| state.people.bans.get(&c))
         .map_or(&[], Vec::as_slice)

@@ -1654,8 +1654,10 @@ mod tests {
             manage_roles: true,
             ..Access::default()
         };
-        let mut d = JoinRoleDraft::default();
-        d.reading = true;
+        let mut d = JoinRoleDraft {
+            reading: true,
+            ..JoinRoleDraft::default()
+        };
         assert!(!d.needs_read(&permitted), "a read in flight");
         d.answer(Ok(None));
         assert_eq!(d.loaded, None, "nothing read: no 'requires a Bot' note");
