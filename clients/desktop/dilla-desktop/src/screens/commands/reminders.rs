@@ -148,6 +148,30 @@ fn close(window: WindowId, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// `fetchInbox`'s wait before server `index` (w2-bot-review M-D2): `min(index·120, 900)` ms, none before the first, so
+/// a member of many servers does not burst their Bots.
+fn stagger(index: usize) -> Option<std::time::Duration> {
+    (index > 0).then(|| {
+        std::time::Duration::from_millis(
+            u64::try_from(index)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(120)
+                .min(900),
+        )
+    })
+}
+
+/// What one server's read does to the list (`fetchInbox`): `(forget its reminders, the read failed)`. A server whose
+/// Bot is disabled or inaccessible, and one whose read failed (w2-bot-review M-D1), drops out of the list: its rows never
+/// stay on screen, stale, under "Some reminders could not be loaded".
+fn outcome(answer: &Result<(), UtilityError>) -> (bool, bool) {
+    match answer {
+        Ok(()) => (false, false),
+        Err(UtilityError::Unavailable(_) | UtilityError::Status(2 | 3)) => (true, false),
+        Err(_) => (true, true),
+    }
+}
+
 /// Reads every server's reminders again (`fetchInbox`), one server after another; a server whose Bot cannot answer
 /// drops out of the list. `show_loading`: the list is hidden behind the loading line until the read lands.
 fn read(window: WindowId, client: &Rc<Client>, state: &AppState, show_loading: bool, cx: &mut App) {
@@ -160,15 +184,16 @@ fn read(window: WindowId, client: &Rc<Client>, state: &AppState, show_loading: b
     }
     let job = client.utilities().run(move |u| async move {
         let mut failed = false;
-        for community in communities {
-            match u.refresh_reminders(community).await {
-                Ok(_) => {}
-                // Disabled or inaccessible: this server's reminders never stay visible.
-                Err(UtilityError::Unavailable(_) | UtilityError::Status(2 | 3)) => {
-                    u.hold_reminders(community, Vec::new())
-                }
-                Err(_) => failed = true,
+        for (index, community) in communities.into_iter().enumerate() {
+            if let Some(wait) = stagger(index) {
+                tokio::time::sleep(wait).await;
             }
+            let answer = u.refresh_reminders(community).await.map(|_| ());
+            let (forget, fails) = outcome(&answer);
+            if forget {
+                u.hold_reminders(community, Vec::new());
+            }
+            failed |= fails;
         }
         Ok(failed)
     });
@@ -449,6 +474,26 @@ mod tests {
     use super::*;
     use dilla_client::state::Community;
     use dilla_client::state::bot::ReminderView;
+
+    /// w2-bot-review M-D1 and M-D2 (`fetchInbox`): a failed server drops out of the list as an unavailable one does, and
+    /// the reads wait `min(index·120, 900)` ms between servers.
+    #[test]
+    fn a_failed_server_drops_out_and_the_reads_are_staggered() {
+        assert_eq!(outcome(&Ok(())), (false, false));
+        assert_eq!(
+            outcome(&Err(UtilityError::Unavailable("x".into()))),
+            (true, false)
+        );
+        assert_eq!(outcome(&Err(UtilityError::Status(3))), (true, false));
+        assert_eq!(outcome(&Err(UtilityError::Invalid)), (true, true));
+        assert_eq!(outcome(&Err(UtilityError::Status(4))), (true, true));
+        let ms = |i| stagger(i).map(|d| d.as_millis());
+        assert_eq!(ms(0), None);
+        assert_eq!(ms(1), Some(120));
+        assert_eq!(ms(7), Some(840));
+        assert_eq!(ms(8), Some(900));
+        assert_eq!(ms(100), Some(900));
+    }
 
     fn reminder(id: u8, due: u64, state: ReminderStatus) -> ReminderView {
         ReminderView {
