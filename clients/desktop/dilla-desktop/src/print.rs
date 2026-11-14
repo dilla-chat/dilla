@@ -467,17 +467,24 @@ mod win {
     use std::mem::{size_of, zeroed};
     use std::ptr::null;
 
-    use super::{PAGE_H, PrintError, Printed, Run, utf16};
-    use windows_sys::Win32::Foundation::GlobalFree;
+    use super::{PAGE_H, PrintError, Printed, Run, copies_to_draw, utf16};
+    use windows_sys::Win32::Foundation::{GlobalFree, HWND};
     use windows_sys::Win32::Graphics::Gdi::{
         CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DEFAULT_QUALITY, DeleteDC, DeleteObject,
         FF_MODERN, FF_SWISS, FIXED_PITCH, FW_BOLD, FW_NORMAL, GetDeviceCaps, HDC, LOGPIXELSX,
         LOGPIXELSY, OUT_DEFAULT_PRECIS, PHYSICALOFFSETX, PHYSICALOFFSETY, SelectObject, SetBkMode,
         SetTextAlign, TA_BASELINE, TA_LEFT, TRANSPARENT, TextOutW, VARIABLE_PITCH,
     };
-    use windows_sys::Win32::Storage::Xps::{DOCINFOW, EndDoc, EndPage, StartDocW, StartPage};
+    use windows_sys::Win32::Storage::Xps::{
+        AbortDoc, DOCINFOW, EndDoc, EndPage, StartDocW, StartPage,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::UI::Controls::Dialogs::{
-        CommDlgExtendedError, PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC, PRINTDLGW, PrintDlgW,
+        CommDlgExtendedError, PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC,
+        PD_USEDEVMODECOPIESANDCOLLATE, PRINTDLGW, PrintDlgW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
     };
 
     /// A device context the dialog answered, deleted when dropped.
@@ -494,11 +501,39 @@ mod win {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    /// The dialog's owner: the app's own window in front (the one Print was pressed in), so the dialog is modal to it;
+    /// none when another program's window is in front.
+    fn owner() -> HWND {
+        // SAFETY: no arguments; the answer is a window handle or null.
+        let front = unsafe { GetForegroundWindow() };
+        if front.is_null() {
+            return front;
+        }
+        let mut pid = 0u32;
+        // SAFETY: `front` is a window handle and `pid` outlives the call.
+        unsafe { GetWindowThreadProcessId(front, &mut pid) };
+        // SAFETY: no arguments.
+        if pid == unsafe { GetCurrentProcessId() } {
+            front
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+
+    /// The job, given up: nothing of it is printed.
+    fn abort(dc: &Dc, why: &str) -> PrintError {
+        // SAFETY: the context is valid until `dc` drops, and a job is open on it.
+        unsafe { AbortDoc(dc.0) };
+        PrintError::Failed(why.into())
+    }
+
     pub(super) fn print(title: &str, runs: &[Run]) -> Result<Printed, PrintError> {
-        // SAFETY: a zeroed PRINTDLGW is its documented empty state; only the size and the flags are set.
+        // SAFETY: a zeroed PRINTDLGW is its documented empty state; only the size, the owner and the flags are set.
         let mut dialog: PRINTDLGW = unsafe { zeroed() };
         dialog.lStructSize = size_of::<PRINTDLGW>() as u32;
-        dialog.Flags = PD_RETURNDC | PD_NOPAGENUMS | PD_NOSELECTION;
+        dialog.hwndOwner = owner();
+        // The driver makes the copies when it can; when it cannot, `nCopies` says how many to draw.
+        dialog.Flags = PD_RETURNDC | PD_NOPAGENUMS | PD_NOSELECTION | PD_USEDEVMODECOPIESANDCOLLATE;
         // SAFETY: the struct is initialised as above and outlives the call.
         let chosen = unsafe { PrintDlgW(&mut dialog) };
         // SAFETY: the dialog's global handles are freed once (null ones are skipped).
@@ -534,10 +569,6 @@ mod win {
             if StartDocW(dc.0, &job) <= 0 {
                 return Err(PrintError::Failed("the printer refused the job".into()));
             }
-            if StartPage(dc.0) <= 0 {
-                EndDoc(dc.0);
-                return Err(PrintError::Failed("the printer refused the page".into()));
-            }
             let (dpi_x, dpi_y) = (
                 GetDeviceCaps(dc.0, LOGPIXELSX as i32) as f32,
                 GetDeviceCaps(dc.0, LOGPIXELSY as i32) as f32,
@@ -547,46 +578,67 @@ mod win {
                 GetDeviceCaps(dc.0, PHYSICALOFFSETX as i32) as f32,
                 GetDeviceCaps(dc.0, PHYSICALOFFSETY as i32) as f32,
             );
-            SetBkMode(dc.0, TRANSPARENT as i32);
-            SetTextAlign(dc.0, TA_BASELINE | TA_LEFT);
-            for run in runs {
-                let (face, weight, family) = match run.font {
-                    2 => ("Arial", FW_BOLD, VARIABLE_PITCH | FF_SWISS),
-                    3 => ("Courier New", FW_NORMAL, FIXED_PITCH | FF_MODERN),
-                    _ => ("Arial", FW_NORMAL, VARIABLE_PITCH | FF_SWISS),
-                };
-                let face = wide(face);
-                // A negative height is the em size; points to device pixels at the printer's resolution.
-                let font = CreateFontW(
-                    -(run.size / 72.0 * dpi_y).round() as i32,
-                    0,
-                    0,
-                    0,
-                    weight as i32,
-                    0,
-                    0,
-                    0,
-                    u32::from(DEFAULT_CHARSET),
-                    u32::from(OUT_DEFAULT_PRECIS),
-                    u32::from(CLIP_DEFAULT_PRECIS),
-                    u32::from(DEFAULT_QUALITY),
-                    u32::from(family),
-                    face.as_ptr(),
-                );
-                let previous = SelectObject(dc.0, font);
-                // The PDF's baseline from the page's bottom, in points; the context's from its top, in pixels.
-                let x = (run.x / 72.0 * dpi_x - off_x).round() as i32;
-                let y = ((PAGE_H - run.y) / 72.0 * dpi_y - off_y).round() as i32;
-                let text = utf16(&run.text);
-                TextOutW(dc.0, x, y, text.as_ptr(), text.len() as i32);
-                SelectObject(dc.0, previous);
-                DeleteObject(font);
+            for _ in 0..copies_to_draw(dialog.nCopies) {
+                if StartPage(dc.0) <= 0 {
+                    return Err(abort(&dc, "the printer refused the page"));
+                }
+                SetBkMode(dc.0, TRANSPARENT as i32);
+                SetTextAlign(dc.0, TA_BASELINE | TA_LEFT);
+                for run in runs {
+                    let (face, weight, family) = match run.font {
+                        2 => ("Arial", FW_BOLD, VARIABLE_PITCH | FF_SWISS),
+                        3 => ("Courier New", FW_NORMAL, FIXED_PITCH | FF_MODERN),
+                        _ => ("Arial", FW_NORMAL, VARIABLE_PITCH | FF_SWISS),
+                    };
+                    let face = wide(face);
+                    // A negative height is the em size; points to device pixels at the printer's resolution.
+                    let font = CreateFontW(
+                        -(run.size / 72.0 * dpi_y).round() as i32,
+                        0,
+                        0,
+                        0,
+                        weight as i32,
+                        0,
+                        0,
+                        0,
+                        u32::from(DEFAULT_CHARSET),
+                        u32::from(OUT_DEFAULT_PRECIS),
+                        u32::from(CLIP_DEFAULT_PRECIS),
+                        u32::from(DEFAULT_QUALITY),
+                        u32::from(family),
+                        face.as_ptr(),
+                    );
+                    if font.is_null() {
+                        return Err(abort(&dc, "no font for the document"));
+                    }
+                    let previous = SelectObject(dc.0, font);
+                    // The PDF's baseline from the page's bottom, in points; the context's from its top, in pixels.
+                    let x = (run.x / 72.0 * dpi_x - off_x).round() as i32;
+                    let y = ((PAGE_H - run.y) / 72.0 * dpi_y - off_y).round() as i32;
+                    let text = utf16(&run.text);
+                    TextOutW(dc.0, x, y, text.as_ptr(), text.len() as i32);
+                    SelectObject(dc.0, previous);
+                    DeleteObject(font);
+                }
+                if EndPage(dc.0) <= 0 {
+                    return Err(abort(&dc, "the printer refused the page"));
+                }
             }
-            EndPage(dc.0);
-            EndDoc(dc.0);
+            if EndDoc(dc.0) <= 0 {
+                return Err(PrintError::Failed(
+                    "the printer did not take the job".into(),
+                ));
+            }
         }
         Ok(Printed::Sent)
     }
+}
+
+/// The copies a platform that draws the document itself (Windows) draws: the dialog's `nCopies` when the driver leaves
+/// the copies to the app (`PD_USEDEVMODECOPIESANDCOLLATE`), at least one.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) fn copies_to_draw(asked: u16) -> u16 {
+    asked.max(1)
 }
 
 /// Any other platform has no print path.
@@ -816,6 +868,15 @@ mod tests {
 
     /// The copy a platform's own object takes over (macOS: the `NSData` the print operation may keep after the call) is
     /// the document's bytes, exactly as long, and taking it back hands over that very allocation, a zeroizing one.
+    /// The copies a platform that draws the document itself (Windows) draws: as many as the dialog's `nCopies` asked when
+    /// the driver cannot make them (`PD_USEDEVMODECOPIESANDCOLLATE` leaves them to the app), at least one.
+    #[test]
+    fn the_copies_drawn_are_the_ones_asked_for() {
+        assert_eq!(copies_to_draw(0), 1);
+        assert_eq!(copies_to_draw(1), 1);
+        assert_eq!(copies_to_draw(3), 3);
+    }
+
     /// A run's UTF-16 text (Windows draws it with TextOutW) is written into a buffer sized for it up front: it never
     /// grows, so no unwiped block of a code is freed on the way (UTF-16 never has more units than UTF-8 has bytes).
     #[test]
