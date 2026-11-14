@@ -670,6 +670,20 @@ fn the_pre_connect_pin_check_fails_closed() {
         pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_CORE_STATE".into())))),
         V::Refuse
     );
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_CORE_INPUT".into())))),
+        V::Refuse
+    );
+    // Review HL m1 (controller.ts `checkInstanceSignerPin` rethrows every other error to the gateway's retry): a
+    // transient core error during the pin write (a busy store) is tried again, never a failed account.
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_STORE".into())))),
+        V::Retry
+    );
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Stopped))),
+        V::Retry
+    );
 }
 
 /// signup.ts `publishDeviceList`'s 409 branch: a served list at the candidate's version (a PUT whose answer was lost) or

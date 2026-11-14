@@ -994,7 +994,15 @@ pub(crate) fn pin_verdict(
         (Err(e), _) if e.status == 401 => V::Revoked,
         (Err(_), _) => V::Retry,
         (Ok(()), Some(Ok(()))) => V::Go,
-        (Ok(()), _) => V::Refuse,
+        // Review HL m1: only the core's pin refusals (a changed key, another instance) fail closed, as
+        // controller.ts `checkInstanceSignerPin` does; any other error (a busy store) is tried again.
+        (Ok(()), Some(Err(ClientError::Sync(code))))
+            if code == "E_CORE_STATE" || code == "E_CORE_INPUT" =>
+        {
+            V::Refuse
+        }
+        (Ok(()), Some(Err(_))) => V::Retry,
+        (Ok(()), None) => V::Refuse,
     }
 }
 
