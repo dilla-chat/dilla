@@ -424,9 +424,23 @@ impl Seat {
             .unwrap_or(0.0)
     }
 
-    /// bot-music.spec.ts `quiet`: waits until this device hears nothing.
+    /// bot-music.spec.ts `quiet`: waits until this device hears nothing, read from the decoded frames themselves (the
+    /// call audio's newest edge is a quiet one, or there is none), not from the 100 ms level, which lags a stop that the
+    /// next track follows within one window.
     pub async fn quiet(&self) {
-        self.level_until("quiet", |l| l < AUDIBLE_RMS).await;
+        self.listen().await;
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let edges = self.edges().await;
+            if edges.last().is_none_or(|e| !e.audible) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never quiet within {WAIT:?}: edges {edges:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Waits until this device hears something.
