@@ -242,23 +242,26 @@ fn eligible_members<'a>(
     community: Option<CommunityId>,
     command: &str,
 ) -> Vec<&'a dilla_client::state::members::Member> {
-    use dilla_client::features::bot::moderation_target;
+    use dilla_client::features::bot::moderation_gate;
     let Some(community) = community.filter(|_| command != "unban") else {
         return Vec::new();
     };
     let Some(members) = state.members.get(&community) else {
         return Vec::new();
     };
+    // One gate for the whole list (w2-fix1 re-review): no per-member search, no id spelled out per member and frame.
+    let gate = match command {
+        "kick" | "ban" => match moderation_gate(state, community, command == "kick") {
+            Some(gate) => Some(gate),
+            None => return Vec::new(),
+        },
+        _ => None,
+    };
     let me = state.account.user_id;
     members
         .iter()
         .filter(|m| Some(m.user_id) != me && m.kind != 1)
-        .filter(|m| match command {
-            "kick" | "ban" => {
-                moderation_target(state, community, &m.user_id.hex(), command == "kick").is_some()
-            }
-            _ => true,
-        })
+        .filter(|m| gate.as_ref().is_none_or(|g| g.allows(m)))
         .collect()
 }
 
@@ -272,6 +275,7 @@ pub fn member_suggestions(
 ) -> Vec<Suggestion> {
     let needle = query.to_lowercase();
     let needle = needle.trim_start_matches('@');
+    let as_id = dilla_client::features::server_admin::unhex_id(query);
     eligible_members(state, community, command)
         .into_iter()
         .filter(|m| {
@@ -280,7 +284,7 @@ pub fn member_suggestions(
             } else {
                 &m.display
             };
-            m.user_id.hex() == query
+            as_id == Some(m.user_id.0)
                 || name.to_lowercase().contains(needle)
                 || m.username.to_lowercase().contains(needle)
         })
@@ -310,9 +314,10 @@ pub fn resolve_member(
     let text = text.trim();
     let username = text.strip_prefix('@').map(str::to_lowercase);
     let eligible = eligible_members(state, community, command);
+    let as_id = dilla_client::features::server_admin::unhex_id(text);
     eligible
         .iter()
-        .find(|m| m.user_id.hex() == text)
+        .find(|m| as_id == Some(m.user_id.0))
         .or_else(|| {
             let username = username.as_deref().filter(|u| !u.is_empty())?;
             eligible
@@ -1181,6 +1186,32 @@ mod tests {
             &|_| None,
         );
         assert!(!picked.can_accept, "a pick is: Enter runs");
+    }
+
+    /// w2-fix1 re-review: a `/kick` or `/ban` member list is judged through one moderation gate read once for the list
+    /// (this account's rank and permission), never a search of the members for each member with its id spelled out; for
+    /// every member the gate agrees with `moderation_target`, and without the permission there is no gate.
+    #[test]
+    fn the_moderation_gate_agrees_with_the_target_check() {
+        use dilla_client::features::bot::{moderation_gate, moderation_target};
+        let (s, c) = alexes();
+        for kick in [true, false] {
+            let gate = moderation_gate(&s, c, kick).expect("permitted");
+            for m in &s.members[&c] {
+                assert_eq!(
+                    gate.allows(m),
+                    moderation_target(&s, c, &m.user_id.hex(), kick).is_some(),
+                    "{} kick={kick}",
+                    m.username
+                );
+            }
+        }
+        let mut no_ban = s.clone();
+        let mut access = no_ban.roles.access_of(c);
+        access.owner = false;
+        access.ban_members = false;
+        no_ban.roles.access.insert(c, access);
+        assert!(moderation_gate(&no_ban, c, false).is_none());
     }
 
     /// w2-bot-review I-B1, coordinator's ruling: only a literal user id or an `@username` names a member; a display name

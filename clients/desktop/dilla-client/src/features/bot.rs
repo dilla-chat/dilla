@@ -330,6 +330,62 @@ pub struct Target {
     pub username: String,
 }
 
+/// builtin.ts `eligibleModerationTarget` read once for a community: this account's permission for the action and its
+/// rank, so a whole member list is judged in one pass ([`ModerationGate::allows`]), as [`moderation_target`] judges one.
+pub struct ModerationGate<'a> {
+    me: crate::state::UserId,
+    owner: crate::state::UserId,
+    my_top: u32,
+    roles: &'a [crate::state::roles::RoleSummary],
+}
+
+impl ModerationGate<'_> {
+    /// Whether this account may moderate `target` (rank.ts `canModerate`).
+    pub fn allows(&self, target: &crate::state::members::Member) -> bool {
+        use crate::features::roles::rank;
+        rank::can_moderate(
+            self.me.0,
+            target.user_id.0,
+            self.owner.0,
+            self.my_top,
+            rank::top_of(&target.role_ids, self.roles),
+        )
+    }
+}
+
+/// The [`ModerationGate`] of `community` for a kick (`kick`) or a ban: `None` when the access is not loaded, the
+/// permission is not held, or this account is not a member there.
+pub fn moderation_gate(
+    state: &AppState,
+    community: CommunityId,
+    kick: bool,
+) -> Option<ModerationGate<'_>> {
+    use crate::features::roles::rank;
+    let access = state.roles.access_of(community);
+    let permitted = if kick {
+        access.kick_members
+    } else {
+        access.ban_members
+    };
+    if !access.loaded || !permitted {
+        return None;
+    }
+    let owner = state.communities.iter().find(|c| c.id == community)?.owner;
+    let roles = state.roles.roles_of(community);
+    let me = state.account.user_id?;
+    let mine = state
+        .members
+        .get(&community)?
+        .iter()
+        .find(|m| m.user_id == me)?;
+    Some(ModerationGate {
+        me,
+        owner,
+        my_top: rank::top_of(&mine.role_ids, roles),
+        roles,
+    })
+}
+
 /// builtin.ts `eligibleModerationTarget`: the member whose user id is `who` when this account holds the action's
 /// permission and outranks them. A name is never resolved here, as names are not unique (w2-bot-review I-B1): the
 /// picker's member chip puts the id of the member picked.
@@ -339,31 +395,14 @@ pub fn moderation_target(
     who: &str,
     kick: bool,
 ) -> Option<Target> {
-    use crate::features::roles::rank;
-    let access = state.roles.access_of(community);
-    let owner = state.communities.iter().find(|c| c.id == community)?.owner;
-    let roles = state.roles.roles_of(community);
-    let members = state.members.get(&community)?;
-    let me = state.account.user_id?;
-    let who = who.trim();
-    let target = members.iter().find(|m| m.user_id.hex() == who)?;
-    let mine = members.iter().find(|m| m.user_id == me)?;
-    let permitted = if kick {
-        access.kick_members
-    } else {
-        access.ban_members
-    };
-    if !access.loaded || !permitted {
-        return None;
-    }
-    rank::can_moderate(
-        me.0,
-        target.user_id.0,
-        owner.0,
-        rank::top_of(&mine.role_ids, roles),
-        rank::top_of(&target.role_ids, roles),
-    )
-    .then(|| Target {
+    let who = crate::state::UserId(crate::features::server_admin::unhex_id(who.trim())?);
+    let gate = moderation_gate(state, community, kick)?;
+    let target = state
+        .members
+        .get(&community)?
+        .iter()
+        .find(|m| m.user_id == who)?;
+    gate.allows(target).then(|| Target {
         user: target.user_id,
         name: if target.display.is_empty() {
             target.username.clone()
