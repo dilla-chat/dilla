@@ -50,6 +50,11 @@ concurrency:
   cancel-in-progress: true
 env:
   GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity
+  # The test binaries of five crates (libwebrtc, GPUI, wasmtime) with full debug info filled the Linux runner's disk
+  # ("No space left on device" in cargo test). Line tables are enough for a panic's backtrace location.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: 0
 jobs:
   gpui:
     name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
@@ -68,6 +73,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # The hosted Linux image ships toolchains this job never uses; the GPUI build and its test binaries need the room.
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h /
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
