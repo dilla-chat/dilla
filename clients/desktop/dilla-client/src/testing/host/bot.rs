@@ -292,10 +292,10 @@ impl Host {
             !b.running.load(Ordering::SeqCst),
             "the host's Bot is already running"
         );
-        let token = b.state_dir.join("runtime.token");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let token = b.state_dir.join("runtime.token");
             let mode = |p: &std::path::Path, m: u32| {
                 std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
             };

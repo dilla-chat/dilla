@@ -1536,6 +1536,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // its one caller is the Unix key-file test
     fn scratch(tag: &str) -> std::path::PathBuf {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
             "../../../target/t25-unit-{tag}-{}",
