@@ -159,6 +159,18 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     }
 }
 
+/// `window` closed: its flows, its pending open and its client go (final review C1: an instance's Remove closes the
+/// window, and the attachment must not keep the client alive).
+pub fn window_closed(window: WindowId, cx: &mut App) {
+    if !cx.has_global::<Windows>() {
+        return;
+    }
+    let w = windows(cx);
+    w.attached.remove(&window);
+    w.flows.remove(&window);
+    w.pending.remove(&window);
+}
+
 /// The window's flows entity, made on first use.
 fn flows_of(window: &mut Window, cx: &mut App) -> Entity<CreateFlows> {
     let id = window.window_handle().window_id();

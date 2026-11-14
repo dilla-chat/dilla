@@ -50,6 +50,21 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
         .retain(|(_, c), _| *c != k);
 }
 
+/// `window` closed: its pending step-up, its client and its Sign-in sections go (final review C1).
+pub fn window_closed(window: gpui::WindowId, cx: &mut App) {
+    if cx.has_global::<PendingStepUps>() {
+        cx.global_mut::<PendingStepUps>().0.remove(&window);
+    }
+    if cx.has_global::<WindowClients>() {
+        cx.global_mut::<WindowClients>().0.remove(&window);
+    }
+    if cx.has_global::<SignInSections>() {
+        cx.global_mut::<SignInSections>()
+            .0
+            .retain(|(w, _), _| *w != window);
+    }
+}
+
 /// The instance `client` serves.
 pub fn instance_of(client: &Rc<Client>) -> dilla_client::seams::InstanceConfig {
     client.instance().clone()

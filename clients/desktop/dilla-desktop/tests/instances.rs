@@ -903,3 +903,110 @@ fn removal_during_a_start_completes_and_frees_the_hold(cx: &mut TestAppContext) 
         .hold(cfg.id)
         .expect("the hold was released");
 }
+
+/// Final review C1: the manager's Remove of an open instance runs the full release path. Its client lets go everywhere
+/// (the create flows' attachment, the Sign-in section, every area), stops syncing and drops, so the removal finishes:
+/// the data dir and the keychain entry are gone and nothing still holds the client. Against a real dillad.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn removing_an_open_instance_releases_its_client(cx: &mut TestAppContext) {
+    use dilla_desktop::{AppView, Launch, windows};
+    use std::time::{Duration, Instant};
+
+    use support::world;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("c1-remove", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let alice = rt.block_on(world::sign_up(&host, &invite, "alice", "Alice", "c1"));
+    world::clear_session(&alice);
+    let root = alice
+        .cfg
+        .data_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let launch = Launch::live(Some(root.clone()), alice.kc.clone());
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+
+    cx.update(|cx| windows::open_instance(cx, &launch, alice.cfg.clone(), None, false))
+        .expect("the instance window opens");
+    let id = alice.cfg.id;
+    // The shell shows: every area that keeps the window's client (the create flows among them) has it.
+    let started = Instant::now();
+    let client = loop {
+        cx.run_until_parked();
+        // The compact start window hands its client to a workspace window: whichever instance window is open now.
+        let screen = cx
+            .windows()
+            .iter()
+            .filter_map(|w| w.downcast::<AppView>())
+            .find_map(|w| w.read_with(cx, |v, _| v.screen_name()).ok())
+            .unwrap_or("closed");
+        if screen == "shell"
+            && let Some(c) = cx.update(|cx| windows::running_client(cx, id))
+        {
+            break c;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the shell showed (the window shows {screen})"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let weak = Rc::downgrade(&client);
+    drop(client);
+    let account = store_keychain_account(&alice.cfg).unwrap();
+    assert!(alice.kc.get(&account).unwrap().is_some());
+
+    let manager = cx
+        .update(|cx| windows::open_manager(cx, &launch, false))
+        .expect("the manager opens");
+    let index = manager
+        .read_with(cx, |v, _| v.entries().iter().position(|e| e.id == id))
+        .unwrap()
+        .expect("the instance is listed");
+    manager
+        .update(cx, |view, _, cx| view.ask_remove(index, cx))
+        .unwrap();
+    manager
+        .update(cx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        let (listed, error) = manager
+            .read_with(cx, |v, _| {
+                (
+                    v.entries().iter().any(|e| e.id == id),
+                    v.error().map(str::to_owned),
+                )
+            })
+            .unwrap();
+        assert_eq!(error, None, "the removal did not give up");
+        if !listed {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the removal finished"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(weak.strong_count(), 0, "nothing still holds the client");
+    assert!(!alice.cfg.data_dir.exists(), "its store is gone");
+    assert!(
+        alice.kc.get(&account).unwrap().is_none(),
+        "its keychain entry is gone"
+    );
+    assert!(!cx.update(|cx| windows::held_here(cx, id)));
+    cx.update(windows::release_all);
+}

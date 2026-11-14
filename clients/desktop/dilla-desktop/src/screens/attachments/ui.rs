@@ -299,6 +299,25 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     forget_owner(owner, cx);
 }
 
+/// `window` closed: its composer target, and the lightbox, GIF picker and DM GIF notice drawn in it, go with their
+/// client (final review C1).
+pub fn window_closed(window: WindowId, cx: &mut App) {
+    if !cx.has_global::<AttachmentsUi>() {
+        return;
+    }
+    let u = ui(cx);
+    u.targets.remove(&window);
+    if u.lightbox.as_ref().is_some_and(|l| l.owner == window) {
+        u.lightbox = None;
+    }
+    if u.gif.as_ref().is_some_and(|g| g.owner == Some(window)) {
+        u.gif = None;
+    }
+    if u.dm_notice.as_ref().is_some_and(|n| n.owner == window) {
+        u.dm_notice = None;
+    }
+}
+
 /// An open of `key` starts: it gets the next generation, which [`still_waiting`] compares (an older open's completion
 /// never lands on a newer one's entry).
 fn owns(key: MediaKey, cx: &mut App) -> u64 {

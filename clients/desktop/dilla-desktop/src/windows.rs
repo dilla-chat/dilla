@@ -463,6 +463,13 @@ pub fn release_instance(cx: &mut App, id: InstanceId) {
         (None, None) => Weak::<()>::new(),
     };
     retire_hold(cx, id, guard, alive);
+    // Final review C1: the full release path, as Forget and Sign out take it. The client stops syncing now (its key is
+    // already erased), and every app-wide area lets go of it and clears what it decrypted, so its last handle goes with
+    // its window and the removal can delete its data.
+    if let Some(client) = &client {
+        client.halt();
+        crate::release::release_client(client, cx);
+    }
     if let Some(window) = window {
         window
             .update(cx, |_, window, _| window.remove_window())
@@ -487,11 +494,15 @@ pub fn release_all(cx: &mut App) {
 
 /// What the areas keep per window, let go the moment `id` closes (the close hook's fan-out): its voice area leaves the
 /// window's call at once (media cut, Idle published, the Remove sent) and drops its media session; its threads area
-/// drops the pane and the view it held.
+/// drops the pane and the view it held; the create flows, the factor area (step-ups, the Sign-in section) and the
+/// attachments area (the composer target, the lightbox, the GIF picker and notice) drop the window's client.
 pub fn on_closed(cx: &mut App, id: WindowId) {
     crate::screens::voice::window_closed(id, cx);
     crate::screens::threads::window_closed(id, cx);
     crate::screens::ring::window_closed(id, cx);
+    crate::screens::create::window_closed(id, cx);
+    crate::screens::factor::window_closed(id, cx);
+    crate::screens::attachments::ui::window_closed(id, cx);
     crate::per_window::window_closed(id, cx);
 }
 
