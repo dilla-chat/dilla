@@ -1157,6 +1157,25 @@ mod tests {
         (s, channel, everyone)
     }
 
+    /// Review IJ m2: an edit's rights are read from the state at its save: bits that load after the editor opened (and
+    /// deny @everyone) take the broadcast away; a role the message already names stays encodable.
+    #[test]
+    fn an_edit_s_rights_follow_the_state_it_is_saved_in() {
+        use crate::screens::messages::ui::edit_rights;
+        use dilla_client::features::roles::perm;
+        let (unread, channel, _) = world(0, false);
+        let body = format!("hi <@{}>", "05".repeat(16));
+        let (broadcast, roles) = edit_rights(&unread, channel, &body, &[]);
+        assert!(broadcast, "bits unknown: the shell's rule offers it");
+        assert_eq!(roles.len(), 1);
+        let (read, channel, _) = world(0, true);
+        let (broadcast, roles) = edit_rights(&read, channel, &body, &[]);
+        assert!(!broadcast, "the bits loaded and deny it");
+        assert_eq!(roles.len(), 1, "the role the message names stays");
+        let (allowed, channel, _) = world(perm::MENTION_EVERYONE, true);
+        assert!(edit_rights(&allowed, channel, &body, &[]).0);
+    }
+
     #[test]
     fn a_picked_everyone_and_role_are_posted_as_mentions() {
         use dilla_client::features::roles::perm;

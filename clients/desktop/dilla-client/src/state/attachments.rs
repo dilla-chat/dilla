@@ -55,7 +55,7 @@ pub struct AttachmentState {
     pub fixture_thumbs: HashMap<(String, u64), Vec<u8>>,
     /// The whole pictures of a drawn fixture's images (what its lightbox shows), by attachment name and size: set only
     /// by the same fixture facet. Empty otherwise.
-    pub fixture_pictures: HashMap<(String, u64), Vec<u8>>,
+    pub fixture_pictures: HashMap<(String, u64), std::sync::Arc<[u8]>>,
 }
 
 impl AttachmentState {

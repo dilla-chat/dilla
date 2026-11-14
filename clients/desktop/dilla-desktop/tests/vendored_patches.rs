@@ -411,5 +411,71 @@ fn the_line_height_lies_on_the_layout_unit(cx: &mut TestAppContext) {
     let (_, vcx) = cx.add_window_view(move |_, _| LineHeight { seen: s });
     vcx.update(|window, _| window.refresh());
     vcx.run_until_parked();
+    // The test window is at scale 2 (the reference's scale).
+    assert_eq!(vcx.update(|window, _| window.scale_factor()), 2.0);
     assert_eq!(seen.get(), 19.5);
+    // Wave 2 review IJ m1: at a whole scale 1 too; at a fractional scale upstream's rounding stays (1.5 keeps 20).
+    vcx.simulate_scale_factor_change(1.0);
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert_eq!(seen.get(), 19.5, "scale 1");
+    vcx.simulate_scale_factor_change(1.5);
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert_eq!(
+        seen.get(),
+        20.0,
+        "a fractional scale keeps upstream's whole px"
+    );
+}
+
+/// An element whose key-down only prevents the default (no stop of propagation) is not clicked by the key-up either: the
+/// README's activation rule counts both (wave 2 review IJ m1).
+struct PreventDefault {
+    clicks: Rc<Cell<u32>>,
+    keys: Rc<Cell<u32>>,
+    focus: gpui::FocusHandle,
+}
+
+impl Render for PreventDefault {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui::InteractiveElement as _;
+        use gpui::StatefulInteractiveElement as _;
+        let (clicks, keys) = (self.clicks.clone(), self.keys.clone());
+        div().size_full().child(
+            div()
+                .id("prevented")
+                .size(px(20.0))
+                .track_focus(&self.focus)
+                .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+                .on_key_down(move |e: &gpui::KeyDownEvent, window, _| {
+                    if e.keystroke.key == "enter" {
+                        keys.set(keys.get() + 1);
+                        window.prevent_default();
+                    }
+                }),
+        )
+    }
+}
+
+#[gpui::test]
+fn a_key_down_that_prevents_the_default_does_not_also_click(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let keys = Rc::new(Cell::new(0));
+    let (c, k) = (clicks.clone(), keys.clone());
+    let (view, vcx) = cx.add_window_view(move |_, cx| PreventDefault {
+        clicks: c,
+        keys: k,
+        focus: cx.focus_handle(),
+    });
+    vcx.update(|window, cx| {
+        let focus = view.read(cx).focus.clone();
+        window.focus(&focus, cx);
+    });
+    vcx.run_until_parked();
+    press_and_release(vcx, "enter");
+    assert_eq!(keys.get(), 1, "the element's own key-down ran");
+    assert_eq!(clicks.get(), 0, "and the key-up did not click it");
+    press_and_release(vcx, "space");
+    assert_eq!(clicks.get(), 1, "Space, not prevented, still clicks");
 }

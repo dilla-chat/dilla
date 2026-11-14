@@ -263,8 +263,10 @@ click listener arms its keyboard click (Enter or Space key-down, fired on the ma
 upstream registers it before them, in `paint_mouse_listeners`. A key-down the element handles itself (it stops propagation
 or prevents the default) therefore no longer also clicks it on key-up, as a browser runs a button's activation behaviour
 only for a keydown whose default was not prevented. Upstream, Enter on a member row opened its card on key-down and the
-key-up click closed it again; every row, chip and menu item that handles Enter itself did the same. Tests:
-`a_key_down_the_element_handles_does_not_also_click` and `enter_on_a_member_row_leaves_its_card_open` in
+key-up click closed it again; every row, chip and menu item that handles Enter on the focused element itself did the
+same. A key-down handler on an ancestor of the focused clickable still runs after the recorder, so that pattern would
+still click as well (none is used today). Tests: `a_key_down_the_element_handles_does_not_also_click`,
+`a_key_down_that_prevents_the_default_does_not_also_click` and `enter_on_a_member_row_leaves_its_card_open` in
 `clients/desktop/dilla-desktop/tests/vendored_patches.rs`. Keep it until upstream checks the key-down's handling before
 arming the click.
 

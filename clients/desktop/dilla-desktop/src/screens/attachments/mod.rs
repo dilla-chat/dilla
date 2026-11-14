@@ -163,21 +163,23 @@ pub fn attachment_cards(
             )
         })
         .collect();
-    // A drawn fixture's whole pictures of this message's images, by index (empty with a client).
-    let fixture_pictures: std::rc::Rc<Vec<(u32, Vec<u8>)>> = std::rc::Rc::new(if live {
-        Vec::new()
-    } else {
-        item.attachments
-            .iter()
-            .filter_map(|a| {
-                ctx.state
-                    .attachments
-                    .fixture_pictures
-                    .get(&(a.name.clone(), a.size))
-                    .map(|b| (a.index, b.clone()))
-            })
-            .collect()
-    });
+    // A drawn fixture's whole pictures of this message's images, by index (empty with a client): shared, not copied, on
+    // each render (review IJ m4).
+    let fixture_pictures: std::rc::Rc<Vec<(u32, std::sync::Arc<[u8]>)>> =
+        std::rc::Rc::new(if live {
+            Vec::new()
+        } else {
+            item.attachments
+                .iter()
+                .filter_map(|a| {
+                    ctx.state
+                        .attachments
+                        .fixture_pictures
+                        .get(&(a.name.clone(), a.size))
+                        .map(|b| (a.index, b.clone()))
+                })
+                .collect()
+        });
     let mut cards = Vec::new();
     for a in &item.attachments {
         let name = safe_name(&a.name, t("shell.attachment.unnamed"));
