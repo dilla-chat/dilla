@@ -596,7 +596,10 @@ const BASELINE_TOTAL_MAX: usize = 114;
 // ---- Step 6: both shooters read the same fixture ----------------------------------------------------------------
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "the fixtures load as Linux (Os::Linux) and the references are Linux only")]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the fixtures load as Linux (Os::Linux) and the references are Linux only"
+)]
 fn shooters_agree_on_fixture() {
     for name in ["shell/channel-view", "shell/channel-view-b"] {
         let path = fixture_path(name);
