@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use super::{accent_bar, shadow_2};
+use crate::components::avatar::{Avatar, AvatarSize};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::LABEL_TRACKING_WIDE;
@@ -33,6 +34,8 @@ pub struct SuggestionItem {
     pub label: SharedString,
     /// The second line (a reminder's preview); empty: none.
     pub sub: SharedString,
+    /// A member's name: the row draws that member's avatar (initials, `AvatarSize::Sug`) in place of the icon tile.
+    pub avatar: Option<SharedString>,
 }
 
 type OnIndex = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -88,7 +91,35 @@ impl CommandSuggestions {
     }
 }
 
-fn row(item: &SuggestionItem, active: bool) -> impl IntoElement {
+/// The row's leading slot: a member's avatar, else the icon tile.
+fn lead(item: &SuggestionItem, index: usize) -> AnyElement {
+    match &item.avatar {
+        Some(name) => div()
+            .flex_none()
+            // Recorded in test builds only (gpui `test-support`): the render test in dilla-desktop looks the avatar up.
+            .debug_selector(move || format!("command-suggestion-avatar-{index}"))
+            .child(
+                Avatar::new(
+                    ElementId::Name(format!("command-suggestion-avatar-{index}").into()),
+                    name.clone(),
+                )
+                .size(AvatarSize::Sug),
+            )
+            .into_any_element(),
+        None => div()
+            .flex_none()
+            .size(px(ICON_BOX))
+            .rounded(radius::ROW)
+            .bg(color::HOVER)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(Icon::new(item.icon).size(px(12.0)).color(color::FG_2))
+            .into_any_element(),
+    }
+}
+
+fn row(item: &SuggestionItem, index: usize, active: bool) -> impl IntoElement {
     let sub = (!item.sub.is_empty()).then(|| {
         line(
             item.sub.clone(),
@@ -108,17 +139,7 @@ fn row(item: &SuggestionItem, active: bool) -> impl IntoElement {
         .px(px(8.0))
         .rounded(radius::MD)
         .overflow_hidden()
-        .child(
-            div()
-                .flex_none()
-                .size(px(ICON_BOX))
-                .rounded(radius::ROW)
-                .bg(color::HOVER)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(Icon::new(item.icon).size(px(12.0)).color(color::FG_2)),
-        )
+        .child(lead(item, index))
         .child(
             div()
                 .flex_1()
@@ -177,7 +198,7 @@ impl RenderOnce for CommandSuggestions {
                             f(i, window, cx);
                         }
                     })
-                    .child(row(item, self.active == Some(i)))
+                    .child(row(item, i, self.active == Some(i)))
                     .into_any_element()
             })
             .collect();

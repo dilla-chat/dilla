@@ -209,6 +209,8 @@ pub struct Suggestion {
     pub value: String,
     pub sub: String,
     pub icon: IconName,
+    /// A member suggestion's name: its row draws that member's avatar.
+    pub avatar: Option<String>,
 }
 
 /// The suggestions of the active field.
@@ -298,6 +300,7 @@ pub fn member_suggestions(
                 value: b.user_id.hex(),
                 sub: copy::BANNED_MEMBER.to_owned(),
                 icon: IconName::User,
+                avatar: Some(b.name.clone()),
             })
             .collect();
     }
@@ -325,6 +328,11 @@ pub fn member_suggestions(
             value: m.user_id.hex(),
             sub: format!("@{}", m.username),
             icon: IconName::User,
+            avatar: Some(if m.display.is_empty() {
+                m.username.clone()
+            } else {
+                m.display.clone()
+            }),
         })
         .collect()
 }
@@ -380,6 +388,7 @@ pub fn offered_with(
         value: label.to_owned(),
         sub,
         icon,
+        avatar: None,
     };
     let (title, items): (&'static str, Vec<Suggestion>) = match kind {
         Suggest::Duration => (
@@ -890,6 +899,7 @@ pub fn popup(ctx: &SlotCx, chips: &Chips, window: gpui::WindowId) -> Option<AnyE
             icon: s.icon,
             label: s.label.clone().into(),
             sub: s.sub.clone().into(),
+            avatar: s.avatar.clone().map(Into::into),
         })
         .collect();
     let active = chips.sug.min(offer.items.len() - 1);
@@ -1199,6 +1209,8 @@ mod tests {
             [("Alex", "@alex"), ("Alex", "@troll"), ("bea", "@bea")]
         );
         assert_eq!(all[1].value, dilla_client::state::UserId([3; 16]).hex());
+        let avatars: Vec<_> = all.iter().map(|m| m.avatar.as_deref()).collect();
+        assert_eq!(avatars, [Some("Alex"), Some("Alex"), Some("bea")]);
         let troll = member_suggestions(&s, Some(c), "ban", "@trol");
         assert_eq!(troll.len(), 1, "@trol matches a username: {troll:?}");
         assert_eq!(troll[0].sub, "@troll");
@@ -1281,6 +1293,7 @@ mod tests {
             [("Loki", "Banned member"), ("Fenrir", "Banned member")]
         );
         assert_eq!(all[1].value, UserId([9; 16]).hex());
+        assert_eq!(all[0].avatar.as_deref(), Some("Loki"));
         let fen = member_suggestions(&s, Some(c), "unban", "fen");
         assert_eq!(fen.len(), 1);
         assert_eq!(fen[0].label, "Fenrir");
@@ -1746,5 +1759,42 @@ mod tests {
         assert_eq!(c.active, 1);
         c.active_value().push('x');
         assert_eq!(c.values, ["", "x"]);
+    }
+
+    /// Jonas's ruling: a member suggestion draws the member's avatar (as the web does), a command suggestion keeps
+    /// its icon tile.
+    #[gpui::test]
+    fn a_member_suggestion_draws_an_avatar(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop_ui::components::commands::suggestions::{
+            CommandSuggestions, SuggestionItem,
+        };
+        use gpui::{Context, IntoElement, Render, Window};
+        struct Host;
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let item = |label: &str, avatar: Option<&str>| SuggestionItem {
+                    icon: IconName::User,
+                    label: label.to_owned().into(),
+                    sub: "".into(),
+                    avatar: avatar.map(|a| a.to_owned().into()),
+                };
+                CommandSuggestions::new(
+                    "sugs",
+                    "Members",
+                    vec![item("Alex", Some("Alex")), item("/help", None)],
+                )
+            }
+        }
+        let (_, vcx) = cx.add_window_view(|_, _| Host);
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("command-suggestion-avatar-0").is_some(),
+            "the member's row draws an avatar"
+        );
+        assert!(
+            vcx.debug_bounds("command-suggestion-avatar-1").is_none(),
+            "a command's row keeps its icon"
+        );
     }
 }
