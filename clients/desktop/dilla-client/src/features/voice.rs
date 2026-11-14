@@ -659,6 +659,8 @@ impl Voice {
             let mut r = lock(&rt);
             if r.generation == generation {
                 r.joining = None;
+                // Settled: a later leave has nothing of this join to wait for.
+                r.join_done = None;
             }
         }
         let joined = match outcome {
