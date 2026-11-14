@@ -9,7 +9,9 @@ use dilla_client::state::{MessageId, TimelineItem, TimelineItemState};
 use dilla_desktop_ui::components::threads::{
     PaneParts, ThreadRow, ThreadRowKind, pane, thread_row,
 };
+use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 use gpui::{
     AppContext as _, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
@@ -32,9 +34,40 @@ const COMPOSER_BOTTOM: f32 = 12.0;
 const ROW_GAP: f32 = 8.0;
 const ROW_LEFT: f32 = 10.0;
 const ROW_PAD: f32 = 4.0;
+/// The hover toolbar's gap between its buttons (MessageRow.css `__toolbar` gap 2px).
+const TOOL_GAP: f32 = 2.0;
 
 fn max_rows() -> usize {
     ((FIELD_MAX - 2.0 * FIELD_PAD) / FIELD_LINE).floor() as usize
+}
+
+/// Task 28 item 12 (ThreadView.tsx's MessageItem rows): what a thread message offers: Edit and Delete for the own message
+/// once it is stored (an id and a seq, read as sent).
+pub fn row_actions(item: &TimelineItem) -> Vec<&'static str> {
+    if item.own
+        && item.state == TimelineItemState::Ok
+        && item.msg_id.is_some()
+        && item.seq.is_some()
+    {
+        vec!["edit", "delete"]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The thread pane's Edit on `item`: the messages area's editor opens on it (one editor per window), in its place.
+pub fn edit_row(ctx: &crate::slots::SlotCx, item: &TimelineItem, window: &mut Window, cx: &mut gpui::App) {
+    if let Some(ui) = crate::screens::messages::ui::handle(window, cx) {
+        ui.update(cx, |ui, cx| ui.begin_edit(ctx, item, window, cx));
+    }
+}
+
+/// The thread pane's Delete on `item` of `channel`: the messages area's delete dialog asks first.
+pub fn delete_row(channel: dilla_client::state::ChannelId, item: &TimelineItem, window: &mut Window, cx: &mut gpui::App) {
+    let (Some(msg), Some(ui)) = (item.msg_id, crate::screens::messages::ui::handle(window, cx)) else {
+        return;
+    };
+    ui.update(cx, |ui, cx| ui.ask_delete(channel, msg, cx));
 }
 
 /// Emitted when the thread composer sends: the thread's root and the text.
@@ -165,6 +198,8 @@ impl PaneView {
 
         spaced: bool,
         ctx: &crate::slots::SlotCx,
+        window: &mut Window,
+        cx: &mut gpui::App,
     ) -> gpui::AnyElement {
         let author = name_of(&ctx.state, ctx.community, item.sender_user);
         let bot = ctx
@@ -190,18 +225,73 @@ impl PaneView {
                 (ThreadRowKind::Note, t("shell.message.deleted").to_owned())
             }
         };
-        ThreadRow::new(
+        let pane_width = f32::from(dilla_desktop_ui::tokens::layout::THREAD);
+        let mut row = ThreadRow::new(
             SharedString::from(format!("thread-row-{}", item.key)),
             author,
             time_of(item.ts, ctx.clock),
             body,
-            f32::from(dilla_desktop_ui::tokens::layout::THREAD),
+            pane_width,
         )
         // ThreadView.tsx passes no `grouped` to MessageItem: every thread message keeps its avatar and head.
         .spaced(spaced)
         .kind(kind)
-        .bot(bot)
-        .into_any_element()
+        .bot(bot);
+        // Task 28 item 12: the message being edited shows the messages area's editor in its body's place.
+        let ui = crate::screens::messages::ui::handle(window, cx);
+        let editing = ui.as_ref().and_then(|ui| {
+            ui.read(cx)
+                .editing
+                .as_ref()
+                .filter(|e| e.key == item.key)
+                .map(|e| (e.input.clone(), e.used(cx)))
+        });
+        if let (Some((input, used)), Some(ui)) = (editing, &ui) {
+            let width = dilla_desktop_ui::components::threads::thread_row::body_width(pane_width);
+            row = row.replace_body(crate::screens::messages::editor::editor(
+                &input, used, ui, width, window, cx,
+            ));
+        }
+        let actions = row_actions(item);
+        let open_channel = ctx.channel;
+        let (Some(channel), false) = (open_channel, actions.is_empty()) else {
+            return row.into_any_element();
+        };
+        // MessageRow's hover toolbar, at the row's top right: Edit and Delete of the own message.
+        let group = SharedString::from(format!("thread-row-group-{}", item.key));
+        let (edit_item, delete_item, edit_ctx) = (item.clone(), item.clone(), ctx.clone());
+        let toolbar = div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .flex()
+            .gap(px(TOOL_GAP))
+            .invisible()
+            .group_hover(group.clone(), |s| s.visible())
+            .child(
+                IconButton::new(
+                    SharedString::from(format!("thread-edit-{}", item.key)),
+                    IconName::Pencil,
+                    t("shell.message.edit"),
+                )
+                .size(IconButtonSize::S28)
+                .on_click(move |_, window, cx| edit_row(&edit_ctx, &edit_item, window, cx)),
+            )
+            .child(
+                IconButton::new(
+                    SharedString::from(format!("thread-delete-{}", item.key)),
+                    IconName::Trash2,
+                    t("shell.message.delete"),
+                )
+                .size(IconButtonSize::S28)
+                .on_click(move |_, window, cx| delete_row(channel, &delete_item, window, cx)),
+            );
+        div()
+            .group(group)
+            .relative()
+            .child(row)
+            .child(toolbar)
+            .into_any_element()
     }
 }
 
@@ -214,6 +304,11 @@ impl Render for PaneView {
             return div().into_any_element();
         };
         self.settle_draft(open.root, window, cx);
+        // The rows' actions act on the thread's channel (the shell's view may show another one).
+        let ctx = crate::slots::SlotCx {
+            channel: Some(open.channel),
+            ..ctx
+        };
         let data = ctx
             .state
             .threads
@@ -225,7 +320,7 @@ impl Render for PaneView {
             .channel(open.channel)
             .map(|c| format!("#{}", c.name));
         let root = data.map(|d| match &d.root {
-            Some(root) => self.row(root, false, &ctx),
+            Some(root) => self.row(root, false, &ctx, window, cx),
             None => line(
                 t("thread.rootMissing"),
                 text::SM,
@@ -239,7 +334,7 @@ impl Render for PaneView {
                 d.replies
                     .iter()
                     .enumerate()
-                    .map(|(n, item)| self.row(item, n > 0, &ctx))
+                    .map(|(n, item)| self.row(item, n > 0, &ctx, window, cx))
                     .collect()
             })
             .unwrap_or_default();
