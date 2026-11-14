@@ -19,10 +19,21 @@ use crate::strings::t;
 
 /// The reason's `<textarea>` as Chromium lays out one no stylesheet touches (`rows=2`, `cols=20`, the UA's 13.333px
 /// monospace, its scrollbar gutter, 2px padding in a 1px edge): a 201 x 42 box, filled `#3b3b3b` in a `#858585` edge (the
-/// UA's dark form colours), its text white. These are the engine's own box, not the app's CSS.
+/// UA's dark form colours), its text white. These are the engine's own box, not the app's CSS (no rule styles the
+/// web's `<textarea>`), so they are the UA's numbers, each derived below (review A M3).
 mod textarea {
-    pub const WIDTH: f32 = 201.0;
-    pub const HEIGHT: f32 = 42.0;
+    /// The UA's `<textarea>` attributes the web leaves at their defaults.
+    pub const ROWS: f32 = 2.0;
+    /// `padding: 2px` on each side, in a `1px` edge.
+    pub const PADDING: f32 = 2.0;
+    pub const BORDER: f32 = 1.0;
+    /// The content width Chromium gives `cols=20` (`LayoutTextControlMultiLine`: 20 × the UA monospace face's average
+    /// advance at 13.333px, plus the scrollbar gutter it reserves), read from the reference's box: the face's metrics are
+    /// the engine's, not a length any stylesheet names.
+    pub const CONTENT_WIDTH: f32 = 195.0;
+    pub const WIDTH: f32 = CONTENT_WIDTH + 2.0 * (PADDING + BORDER);
+    /// rows × the line, 2 × 2px padding, 2 × 1px edge: 2 × 18 + 4 + 2.
+    pub const HEIGHT: f32 = ROWS * LINE + 2.0 * (PADDING + BORDER);
     pub const SIZE: f32 = 13.333;
     /// The UA's `line-height: normal` for its monospace face.
     pub const LINE: f32 = 18.0;
@@ -218,19 +229,18 @@ pub fn status_line(ui: &Entity<MessageUi>, cx: &App) -> Option<AnyElement> {
         Button::new("moderation-status-action", t(m.retry_key()))
             .on_click(move |_, _, cx| ui.update(cx, |ui, cx| ui.retry_moderation(cx)))
     };
+    // Review A M2: `.d-moderation-evidence-status` has no rule, so it is the UA's block `div` (no padding) holding a `<p>`
+    // with its 1em block margins (`text::UI`), then the Button on its own line.
     Some(
         div()
             .flex()
             .flex_col()
-            .gap(len(4.))
-            .px(len(16.))
-            .py(len(4.))
-            .child(line(
+            .child(div().my(text::UI).child(line(
                 t(m.result_key()),
                 text::UI,
                 line_height(text::UI, 1.5),
                 color::FG_2,
-            ))
+            )))
             .child(div().flex().child(action))
             .into_any_element(),
     )
