@@ -142,6 +142,9 @@ pub struct AppState {
     pub account: AccountState,
     pub connection: ConnectionState,
     pub communities: Vec<Community>,
+    /// The community list has been read at least once (Shell.tsx `communities !== undefined`): until then an empty
+    /// `communities` is "not read yet", not "in no server".
+    pub communities_loaded: bool,
     /// Every channel of every community, by community then position.
     pub channels: Vec<Channel>,
     /// `timeline:<channel>`: the channels whose text group this device holds.

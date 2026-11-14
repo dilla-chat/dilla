@@ -1754,6 +1754,7 @@ impl Publisher {
             }
         }
         self.state.communities = loaded.communities;
+        self.state.communities_loaded = true;
         self.state.channels = loaded.channels;
         self.state.members = loaded.members;
         self.engine.set_expected(expected);

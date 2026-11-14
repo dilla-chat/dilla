@@ -417,9 +417,14 @@ impl ShellView {
 
     /// Home (the `@` tile, the DM list) is shown: a DM route, or an account in no server on any route but a channel's
     /// (Shell.tsx `homeSelected`: `noServer && base.name !== 'channel'`; flow 07, the sidebar stands on the DMs tab).
-    fn home_shown(&self) -> bool {
-        self.dm_view
-            || (self.state.communities.is_empty() && !matches!(self.route(), Route::Channel { .. }))
+    pub fn home_shown(&self) -> bool {
+        self.dm_view || (no_server(&self.state) && !matches!(self.route(), Route::Channel { .. }))
+    }
+
+    /// The account is in no server: the list was read and is empty (Shell.tsx `noServer`). Until the first read lands
+    /// the shell draws nothing special, so an account with servers never flashes the empty view (review I-F1).
+    pub fn in_no_server(&self) -> bool {
+        no_server(&self.state)
     }
 
     /// The route the shell shows (the head of its history).
@@ -1282,7 +1287,7 @@ impl Render for ShellView {
                 .into_any_element()
             }
             // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
-            None if state.communities.is_empty() => {
+            None if no_server(&state) => {
                 crate::screens::create::empty_view(&ctx, window, cx)
             }
             None => div().size_full().bg(color::BG).into_any_element(),
@@ -1387,7 +1392,7 @@ impl Render for ShellView {
             .children(ring.map(|r| div().flex_none().child(r)));
         // An account in no server with no conversation open: the main column is the empty view alone (Shell.tsx `main =
         // noServerState`: no channel header, no composer).
-        let no_server = takeover.is_none() && channel.is_none() && state.communities.is_empty();
+        let no_server = takeover.is_none() && channel.is_none() && no_server(&state);
         let main = match takeover {
             Some(stage) => main.child(div().flex_1().min_h_0().flex().flex_col().child(stage)),
             None if no_server => main.child(div().flex_1().min_h_0().relative().child(log)),
@@ -1704,6 +1709,11 @@ fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
     );
 }
 
+/// Shell.tsx `noServer`: `communities !== undefined && communities.length === 0`.
+pub(crate) fn no_server(state: &AppState) -> bool {
+    state.communities_loaded && state.communities.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1836,6 +1846,40 @@ mod tests {
         });
         assert_eq!(LayoutPrefs::read(&Prefs::instance(&dir)).sidebar, None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review I-F1: a ready account whose server list has not been read yet is not "in no server": the shell selects
+    /// no home and draws no empty view until the list lands (Shell.tsx `communities !== undefined`). Once it is read
+    /// and empty, home is shown.
+    #[gpui::test]
+    fn the_no_server_view_waits_for_the_server_list(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let mut s = AppState::default();
+        s.account.phase = dilla_client::state::AccountPhase::Ready;
+        let unread = Arc::new(s.clone());
+        s.communities_loaded = true;
+        let read = Arc::new(s);
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                unread,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        shell.read_with(vcx, |s, _| {
+            assert!(!s.in_no_server(), "not read yet");
+            assert!(!s.home_shown(), "no home before the list is read");
+        });
+        shell.update(vcx, |s, cx| s.set_state(read, cx));
+        vcx.run_until_parked();
+        shell.read_with(vcx, |s, _| {
+            assert!(s.in_no_server());
+            assert!(s.home_shown());
+        });
     }
 
     /// Integration 3, step 1: Ctrl+, in the shell asks the app for the user settings host (`OpenSettings`).
