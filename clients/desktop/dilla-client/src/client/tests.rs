@@ -657,6 +657,14 @@ fn the_pre_connect_pin_check_fails_closed() {
     assert_eq!(pin_verdict(Err(&network), None), V::Retry);
     assert_eq!(pin_verdict(Err(&unavailable), None), V::Retry);
     assert_eq!(pin_verdict(Err(&garbled), None), V::Refuse);
+    // Review HL I1: the read is an authenticated route; a 401 after `http_call`'s own re-establish failed is a device
+    // the instance no longer knows (revoked while asleep). It ends the gateway as revoked, so the renewal and sign-out
+    // path runs (controller.ts: a refused `establish` enters Revoked) instead of retrying forever.
+    let revoked = ApiError::local(401, "E_UNAUTHENTICATED", "revoked");
+    assert_eq!(pin_verdict(Err(&revoked), None), V::Revoked);
+    // A second factor owed stays a retry: `Update::FactorRequired` moves the phase already.
+    let factor = ApiError::local(403, "E_FACTOR_REQUIRED", "");
+    assert_eq!(pin_verdict(Err(&factor), None), V::Retry);
     assert_eq!(pin_verdict(Ok(()), Some(Ok(()))), V::Go);
     assert_eq!(
         pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_CORE_STATE".into())))),

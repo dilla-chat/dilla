@@ -135,6 +135,10 @@ pub enum PreConnectVerdict {
     Retry,
     /// The check failed: the gateway stops for good with [`Refusal::InstanceSignerChanged`].
     Refuse,
+    /// The instance refused the device's session (a 401 after the re-establish failed: the device was revoked while
+    /// its socket was down): the gateway ends with [`Refusal::Revoked`], as an upgrade's 401 does, so the client's
+    /// renewal and sign-out path runs.
+    Revoked,
 }
 
 /// A check run before every connection attempt, the reconnects included (controller.ts `mintTicket`: the instance
@@ -615,6 +619,12 @@ impl Driver {
                     return End::Refused {
                         refusal: Refusal::InstanceSignerChanged,
                         code: 0,
+                    };
+                }
+                PreConnectVerdict::Revoked => {
+                    return End::Refused {
+                        refusal: Refusal::Revoked,
+                        code: 401,
                     };
                 }
             }
