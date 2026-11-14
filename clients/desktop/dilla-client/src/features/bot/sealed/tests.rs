@@ -450,6 +450,26 @@ async fn a_held_key_change_of_the_bots_device_list_is_changed_and_refused() {
     assert!(lock(&fake.posted).is_empty());
 }
 
+/// Task 28 item 21 (catalog.ts `attestationsChanged`, review M6): a first pin refused for want of the Bot's attestation
+/// is tried again once the trust refresh ingested attestations, not only on the next catalog read.
+#[tokio::test]
+async fn an_attestation_the_trust_refresh_brings_pins_the_waiting_bot() {
+    let fake = ready_fake();
+    lock(&fake.attested).clear();
+    let sealed = ready(&fake).await;
+    assert_eq!(*lock(&fake.pinned), None, "no attestation yet: no pin");
+    let reads = *lock(&fake.catalog_reads);
+    // The trust refresh ingested the Bot's attestation (from a leaf).
+    lock(&fake.attested).push(BOT);
+    sealed.attestations_changed().await;
+    assert_eq!(*lock(&fake.pinned), Some(BOT), "the waiting pin is tried again");
+    assert_eq!(
+        sealed.view(COMMUNITY).unwrap().status.state,
+        BotStatusState::Ready
+    );
+    assert_eq!(*lock(&fake.catalog_reads), reads, "no catalog read for it");
+}
+
 #[tokio::test]
 async fn a_human_named_as_the_bot_is_never_pinned() {
     let fake = ready_fake();

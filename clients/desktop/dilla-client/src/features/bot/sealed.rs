@@ -398,6 +398,26 @@ impl Sealed {
         self.notify(community);
     }
 
+    /// catalog.ts `attestationsChanged` (review M6): the trust refresh ingested account-kind attestations, so every held
+    /// community whose Bot is not pinned yet (its first pin refused for want of the attestation) is resolved again at
+    /// once and its key checked, with no catalog read.
+    pub async fn attestations_changed(&self) {
+        let waiting: Vec<CommunityId> = lock(&self.store)
+            .entries
+            .iter()
+            .filter(|(_, e)| e.publication.is_some())
+            .map(|(c, _)| *c)
+            .collect();
+        for community in waiting {
+            if self.load_pin(community).await.is_some() {
+                continue;
+            }
+            self.resolve_bot(community).await;
+            self.verify_entry(community).await;
+            self.notify(community);
+        }
+    }
+
     /// Reads the catalog and the Bot channels now (a sync, a state change, a stale key). A failure keeps what is held.
     pub async fn refresh(&self, community: CommunityId) -> Result<(), Refusal> {
         let gate = lock(&self.reads).entry(community).or_default().clone();

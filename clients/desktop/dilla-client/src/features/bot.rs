@@ -324,6 +324,18 @@ pub(crate) fn on_connection_of(
         return;
     }
     sealed.new_connection();
+    // controller.ts (review M6): once the ready's trust refresh has settled, a community whose first pin was refused for
+    // want of the Bot's attestation is resolved again (Task 28 item 21, `attestationsChanged`).
+    let (after, refreshing) = (sealed.clone(), inner.clone());
+    sealed.spawn(Box::pin(async move {
+        let Some(engine) = refreshing.upgrade().map(|i| i.engine().clone()) else {
+            return;
+        };
+        engine.refresh_trust().await;
+        if after.connection_generation() == generation {
+            after.attestations_changed().await;
+        }
+    }));
     let weak = inner;
     let waiting = sealed.clone();
     sealed.spawn(Box::pin(async move {
