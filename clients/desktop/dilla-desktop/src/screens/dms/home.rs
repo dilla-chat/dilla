@@ -196,9 +196,14 @@ pub const DM_DEFAULTS: [(&str, &str); 3] = [
 pub struct DmsMenu {
     pub open: bool,
     pub current: Option<String>,
-    pub on_open: Rc<dyn Fn(bool, &mut Window, &mut App)>,
-    pub on_pick: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+    pub on_open: OnMenuOpen,
+    pub on_pick: OnMenuPick,
 }
+
+/// The DM list head's menu opened or closed.
+pub type OnMenuOpen = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+/// The DM list head's menu picked a default (its `DM_DEFAULTS` value).
+pub type OnMenuPick = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
 /// The menu's items, the stored default checked.
 pub fn dms_menu_items(current: Option<&str>) -> Vec<MenuItem> {
