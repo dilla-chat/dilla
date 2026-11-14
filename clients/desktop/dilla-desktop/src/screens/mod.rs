@@ -28,6 +28,7 @@ pub mod threads;
 pub mod user_settings;
 pub mod voice;
 pub mod voice_settings;
+pub mod webhook_avatar;
 // Task 24 (diagnostics).
 pub mod boot;
 pub mod diagnostics;

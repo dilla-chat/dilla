@@ -46,6 +46,45 @@ impl Client {
     }
 }
 
+/// A webhook avatar id as the instance names one: 64 lower-case hex digits (routes.ts `getWebhookAvatar`).
+pub fn is_webhook_avatar_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+impl Bot {
+    /// routes.ts `getWebhookAvatar` (Task 28 item 15): `GET …/bot/webhook-avatars/{avatar}`, the instance's re-encoded
+    /// PNG of a webhook post's avatar (at most 1 MiB), the only place one is ever loaded from. `None` on 404 (the
+    /// instance keeps avatars in memory: gone after its restart). An id that is not one is refused before any request.
+    pub fn webhook_avatar(
+        &self,
+        community: CommunityId,
+        avatar: String,
+    ) -> tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, crate::ClientError>> {
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            if !is_webhook_avatar_id(&avatar) {
+                return Err(crate::ClientError::Sync("E_CBOR_SHAPE".into()));
+            }
+            let reply = inner
+                .api()
+                .http_call::<crate::http::routes::GetWebhookAvatar>(
+                    &[&community.hex(), &avatar],
+                    crate::http::routes::NoBody,
+                    true,
+                )
+                .await
+                .map_err(|e| {
+                    if e.status == 0 && e.code == "E_NETWORK" {
+                        crate::ClientError::Network(e.detail)
+                    } else {
+                        crate::ClientError::Sync(e.code)
+                    }
+                })?;
+            Ok((reply.status == 200 && !reply.body.is_empty()).then_some(reply.body))
+        })
+    }
+}
+
 /// What running a draft did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunOutcome {
@@ -504,6 +543,15 @@ mod tests {
     use super::*;
     use crate::gateway::frames::Value;
     use crate::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+
+    /// Task 28 item 15 (routes.ts `getWebhookAvatar`): only a 64-digit lower-case hex id is ever put in the path.
+    #[test]
+    fn a_webhook_avatar_id_is_64_lower_hex() {
+        assert!(is_webhook_avatar_id(&"ab".repeat(32)));
+        assert!(!is_webhook_avatar_id(&"AB".repeat(32)));
+        assert!(!is_webhook_avatar_id(&"ab".repeat(31)));
+        assert!(!is_webhook_avatar_id(&format!("{}/x", "a".repeat(62))));
+    }
 
     /// Integration 3, step 5: op 63's call scope (kind 2, its id the voice channel) reads the player again while this
     /// device is in that call (the dock shows it, music.tsx's `watchBotHint`); another call, another kind or no call

@@ -660,15 +660,36 @@ fn draw_row(
             GUTTER - time_width,
             row_top + GUTTER_TOP,
         );
-        placer.block(
-            GUTTER + COLUMN_GAP,
-            row_top,
-            Avatar::new(
-                gpui::SharedString::from(format!("avatar-{}", item.key)),
-                name.clone(),
-            )
-            .size(AvatarSize::Msg),
-        );
+        // MessageRow.tsx `avatarSrc`: a webhook post shows its avatar, read only from the instance (Task 28 item 15),
+        // once it is in; the placeholder meanwhile and on a miss.
+        let webhook_avatar = webhook_of(cx_row.state, cx_row.community, item)
+            .and_then(|w| w.avatar_id)
+            .zip(ctx.client.as_ref())
+            .and_then(|(avatar, client)| {
+                crate::screens::webhook_avatar::image(client, cx_row.community, &avatar, cx)
+            });
+        match webhook_avatar {
+            // `.d-message-row__avatar-img`: the 30px msg avatar's box, `object-fit: cover`, the Bot's 6px corners.
+            Some(image) => placer.block(
+                GUTTER + COLUMN_GAP,
+                row_top,
+                gpui::StyledImage::object_fit(
+                    gpui::img(image)
+                        .size(px(AVATAR))
+                        .rounded(dilla_desktop_ui::tokens::radius::BOT),
+                    gpui::ObjectFit::Cover,
+                ),
+            ),
+            None => placer.block(
+                GUTTER + COLUMN_GAP,
+                row_top,
+                Avatar::new(
+                    gpui::SharedString::from(format!("avatar-{}", item.key)),
+                    name.clone(),
+                )
+                .size(AvatarSize::Msg),
+            ),
+        }
         let name_width = name.chars().count() as f32 * f32::from(text::SM) * MONO_ADVANCE;
         let bot = item.bot
             && cx_row
