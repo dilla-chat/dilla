@@ -386,9 +386,15 @@ pub fn editable_text(
 }
 
 /// shell-model.ts `plainBody`: the text a row shows, each mention token as the label the log draws for it (`@everyone`,
-/// a member's display name else username, the reader's own username, else the unknown-mention label). `self_user` is the
-/// reader's `(user id hex, username)`.
-pub fn plain_body(body: &str, members: &[Member], self_user: Option<(&str, &str)>) -> String {
+/// a member's display name else username, the reader's own username, a known role as "@{name}", a role a member holds as
+/// "@role", else the unknown-mention label). `self_user` is the reader's `(user id hex, username)`; `roles` the
+/// community's roles whose names are read.
+pub fn plain_body(
+    body: &str,
+    members: &[Member],
+    self_user: Option<(&str, &str)>,
+    roles: &[RoleInfo],
+) -> String {
     split_mentions(body)
         .into_iter()
         .map(|part| match part {
@@ -409,6 +415,16 @@ pub fn plain_body(body: &str, members: &[Member], self_user: Option<(&str, &str)
                     && id == target
                 {
                     return format!("@{name}");
+                }
+                if let Some(r) = roles.iter().find(|r| r.id == target) {
+                    return crate::strings::tf("mention.role", &[("name", &r.name)]);
+                }
+                if members.iter().any(|m| {
+                    m.role_ids
+                        .iter()
+                        .any(|r| dilla_client::features::server_admin::hex_id(r) == target)
+                }) {
+                    return t("shell.message.mentionRole").to_owned();
                 }
                 crate::strings::tf(
                     "shell.message.mentionUnknown",
@@ -650,12 +666,37 @@ mod tests {
         let (ada, bjorn) = (UserId([7; 16]).hex(), UserId([8; 16]).hex());
         let body = format!("hi <@{ada}> and <@{bjorn}>, <@everyone> <@{ID}>");
         assert_eq!(
-            plain_body(&body, &people, None),
+            plain_body(&body, &people, None, &[]),
             "hi @Ada L and @bjorn, @everyone @01234567"
         );
         assert_eq!(
-            plain_body(&format!("<@{ID}>"), &[], Some((ID, "me"))),
+            plain_body(&format!("<@{ID}>"), &[], Some((ID, "me")), &[]),
             "@me"
+        );
+    }
+
+    /// Review A I2 (shell-model.ts `mentionPill`'s role arms): a known role reads as "@{name}", a role only a member
+    /// holds (its name not read) as "@role", and only then is a token unknown, so the removal's excerpt is the web's.
+    #[test]
+    fn a_plain_body_reads_role_mentions_as_the_web_does() {
+        let known = "aa".repeat(16);
+        let held = "bb".repeat(16);
+        let mut holder = member(9, "cato", "");
+        holder.role_ids = vec![[0xbb; 16]];
+        let roles = [RoleInfo {
+            id: known.clone(),
+            name: "Moderators".into(),
+            position: 1,
+            mentionable: true,
+        }];
+        assert_eq!(
+            plain_body(
+                &format!("ping <@{known}> <@{held}> <@{ID}> spam"),
+                &[holder],
+                None,
+                &roles
+            ),
+            "ping @Moderators @role @01234567 spam"
         );
     }
 }

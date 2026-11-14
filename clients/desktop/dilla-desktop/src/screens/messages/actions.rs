@@ -102,11 +102,14 @@ pub fn message_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<MessageAct
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 let me = state.account.user_id.map(|u| u.hex());
+                // The community's roles whose names are read (shell-model.ts `withRoles`), for the role mentions.
+                let (_, roles) = crate::screens::composer::mention_rights(state, ctx.channel);
                 let plain = Zeroizing::new(plain_body(
                     &item.body,
                     members,
                     me.as_deref()
                         .map(|id| (id, state.account.username.as_str())),
+                    &roles,
                 ));
                 h.update(cx, |ui, cx| ui.ask_moderate(ctx, &item, &plain, window, cx));
             }),
