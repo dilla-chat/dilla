@@ -755,26 +755,77 @@ pub fn music_bar(description: &str, room: Option<&str>) -> String {
 }
 
 /// CommandHost.tsx `suggest` for `/unban` (`loadBans`): the conversation's server's bans are read once its user field is
-/// offered and none are held yet, once per server while the app runs (a ban or unban reads them again).
+/// offered and none are held yet, once per client and server (a ban or unban reads them again). Final review I6: keyed by
+/// the client's serial, so another account on the same server reads its own; a failed read is tried again on an offer
+/// [`BANS_RETRY`] or more later (the field is offered on every frame); a released client's marks go ([`release`]).
 fn read_bans(ctx: &SlotCx) {
-    thread_local! {
-        static ASKED: std::cell::RefCell<std::collections::HashSet<CommunityId>> =
-            std::cell::RefCell::default();
-    }
     let (Some(client), Some(community)) = (&ctx.client, ctx.community) else {
         return;
     };
+    let serial = client.serial();
     if ctx.state.people.bans.contains_key(&community)
-        || !ASKED.with(|a| a.borrow_mut().insert(community))
+        || !bans_asked().ask(serial, community, std::time::Instant::now())
     {
         return;
     }
     // The read runs on the client's runtime; its answer is published as `PeopleState::bans`.
-    drop(
-        client
-            .moderation()
-            .run(move |m| async move { m.load_bans(community).await.map(|_| ()) }),
-    );
+    drop(client.moderation().run(move |m| async move {
+        let read = m.load_bans(community).await.map(|_| ());
+        if read.is_err() {
+            bans_asked().failed(serial, community, std::time::Instant::now());
+        }
+        read
+    }));
+}
+
+/// Lets go of what was asked for `client` (`crate::release::release_client`): a later client of the same account asks
+/// again.
+pub fn release(client: &std::rc::Rc<dilla_client::Client>) {
+    bans_asked().forget(client.serial());
+}
+
+/// How long after a failed bans read the next offer reads again.
+const BANS_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The servers whose bans each client asked for (its `Client::serial`, never reused, and the server), with when the last
+/// read failed (`None`: asked, not failed).
+#[derive(Debug, Default)]
+struct BansAsked(std::collections::HashMap<(u64, CommunityId), Option<std::time::Instant>>);
+
+impl BansAsked {
+    /// Whether `client` should read `community`'s bans at `now` (not asked yet, or the last read failed at least
+    /// [`BANS_RETRY`] ago); marks it asked.
+    fn ask(&mut self, client: u64, community: CommunityId, now: std::time::Instant) -> bool {
+        let key = (client, community);
+        let due = match self.0.get(&key) {
+            None => true,
+            Some(None) => false,
+            Some(Some(at)) => now.saturating_duration_since(*at) >= BANS_RETRY,
+        };
+        if due {
+            self.0.insert(key, None);
+        }
+        due
+    }
+
+    /// The read failed at `at`: a later offer asks again.
+    fn failed(&mut self, client: u64, community: CommunityId, at: std::time::Instant) {
+        self.0.insert((client, community), Some(at));
+    }
+
+    /// `client` was released.
+    fn forget(&mut self, client: u64) {
+        self.0.retain(|(c, _), _| *c != client);
+    }
+}
+
+/// The process's marks: a read's failure lands on the client's runtime, off the UI thread.
+fn bans_asked() -> std::sync::MutexGuard<'static, BansAsked> {
+    static ASKED: std::sync::LazyLock<std::sync::Mutex<BansAsked>> =
+        std::sync::LazyLock::new(Default::default);
+    ASKED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The suggestions of `chips`' active field in the conversation of `ctx` (`None`: the command has no field, or went).
@@ -1065,6 +1116,35 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review I6: the bans read is asked once per client and server; another client (another account on the same
+    /// server, or a sign-in after a sign-out) asks for itself; a failed read and a release let it ask again.
+    #[test]
+    fn the_bans_read_is_asked_per_client_and_server_and_again_after_a_failure() {
+        let (one, two) = (CommunityId([1; 16]), CommunityId([2; 16]));
+        let t0 = std::time::Instant::now();
+        let mut asked = BansAsked::default();
+        assert!(asked.ask(7, one, t0));
+        assert!(!asked.ask(7, one, t0 + BANS_RETRY * 9), "asked once");
+        assert!(asked.ask(8, one, t0), "another client asks for itself");
+        assert!(asked.ask(7, two, t0), "another server");
+        asked.failed(7, one, t0);
+        assert!(
+            !asked.ask(7, one, t0 + BANS_RETRY / 2),
+            "not on every frame after a failure"
+        );
+        assert!(
+            asked.ask(7, one, t0 + BANS_RETRY),
+            "a failed read is tried again"
+        );
+        assert!(!asked.ask(7, one, t0 + BANS_RETRY * 2), "once");
+        asked.forget(7);
+        assert!(
+            asked.ask(7, one, t0) && asked.ask(7, two, t0),
+            "a released client's marks go"
+        );
+        assert!(!asked.ask(8, one, t0), "another client's stay");
+    }
 
     fn utc(_: i64) -> i32 {
         0
