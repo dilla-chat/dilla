@@ -243,6 +243,9 @@ pub trait SyncHooks: Send + Sync {
     /// A community group's removal feed was read to its end (the core holds every tombstone the instance has): its
     /// timeline may be published again ([`Engine::recover_removals_all`] lists those whose read failed).
     fn removals_read(&self, _group: Gid) {}
+    /// engine.ts `onUnexpectedWelcome`: a Welcome for a group this device does not expect was kept (a DM another person
+    /// just opened). Once per group until the expected set changes; the client reads its DM list again.
+    fn unexpected_welcome(&self, _group: Gid) {}
 }
 
 /// The gateway's lifecycle as the model sees it.
@@ -285,6 +288,8 @@ struct St {
     recovery_generation: HashMap<Gid, u64>,
     quiet: HashSet<Gid>,
     lost_reported: HashSet<Gid>,
+    /// Unexpected groups already reported ([`SyncHooks::unexpected_welcome`]); cleared when the expected set changes.
+    unexpected_reported: HashSet<Gid>,
     volunteer: HashMap<Gid, AbortHandle>,
     cursor_timer: HashMap<Gid, AbortHandle>,
     timers: Vec<AbortHandle>,
@@ -533,6 +538,11 @@ impl Engine {
             let mut st = self.st();
             let before: HashSet<Gid> = st.expected.iter().map(|g| g.group_id).collect();
             let gained = groups.iter().any(|g| !before.contains(&g.group_id));
+            let after: HashSet<Gid> = groups.iter().map(|g| g.group_id).collect();
+            // engine.ts `setExpected`: any change lets a kept unexpected Welcome be reported once more.
+            if before != after {
+                st.unexpected_reported.clear();
+            }
             st.expected = groups;
             gained && st.ready.is_some()
         };
@@ -1718,7 +1728,11 @@ impl Engine {
                 continue;
             };
             if outcome == 3 {
-                // Kept for a group this device does not expect (a DM it has not listed yet).
+                // Kept for a group this device does not expect (a DM it has not listed yet): reported once (channel.ts
+                // `reportUnexpected`), so the DM list is read and the group expected.
+                if self.st().unexpected_reported.insert(g) {
+                    self.hooks.unexpected_welcome(g);
+                }
                 continue;
             }
             if outcome == 1 && self.state_of(g).await != Some(2) {

@@ -169,6 +169,14 @@ impl SyncHooks for Hooks {
     fn removals_read(&self, group: [u8; 16]) {
         let _ = self.tx.send(Update::RemovalsCleared(group));
     }
+    /// controller.ts `onUnexpectedWelcome`: the DM list is read again, so a DM another person opened is listed and its
+    /// group joined at once rather than on the list's next poll.
+    fn unexpected_welcome(&self, _group: [u8; 16]) {
+        if let Some(inner) = self.inner.get().and_then(Weak::upgrade) {
+            let reading = inner.clone();
+            drop(inner.spawn(async move { crate::features::dms::reload(&reading).await }));
+        }
+    }
 }
 
 /// The gateway connection's owner: the one place a gateway is started, replaced or stopped.

@@ -67,11 +67,9 @@ fn idem() -> Vec<u8> {
 /// `POST /v1/dms` and their group's registration answers "no group" once; a longer retry left it unjoined that long.
 pub(crate) const LOOKUP_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The DM list's poll interval after `step` reads without a ready: 15 s, 30 s, then 120 s.
-///
-/// TODO(Task 2, engine): the engine keeps a Welcome for a group it does not expect (welcome outcome 3) without telling
-/// anyone; engine.ts calls `onUnexpectedWelcome` there and controller.ts reloads its DMs on it. Once `SyncHooks` has that
-/// hook, reload the DM list on it and drop this poll.
+/// The DM list's poll interval after `step` reads without a ready: 15 s, 30 s, then 120 s. A DM another person opens is
+/// read at once on its Welcome (`SyncHooks::unexpected_welcome`, Task 28 item 17); the poll stays as the fallback for a
+/// list change no Welcome announces (a DM left or renamed by its other members).
 pub(crate) fn poll_interval(step: u32) -> std::time::Duration {
     std::time::Duration::from_secs(match step {
         0 => 15,
