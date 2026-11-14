@@ -50,6 +50,10 @@ pub struct Scene {
     pub subpixel_sprites: Vec<SubpixelSprite>,
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): the window's scale factor (device px per logical px)
+    /// the scene was painted at, so a renderer can size a pattern in logical px (the wgpu renderer's thin dashes). 0
+    /// until the window's first frame.
+    pub scale_factor: f32,
 }
 
 #[expect(missing_docs)]

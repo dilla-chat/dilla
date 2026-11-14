@@ -61,7 +61,9 @@ fn least_common_multiple(left: u64, right: u64) -> u64 {
 struct GlobalParams {
     viewport_size: [f32; 2],
     premultiplied_alpha: u32,
-    pad: u32,
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): upstream's padding word carries the scene's scale
+    /// factor, so the quad shader can tell a thin dashed border in logical px (the struct's size is unchanged).
+    scale_factor: f32,
 }
 
 #[repr(C)]
@@ -1471,7 +1473,12 @@ impl WgpuRendererCore {
         let globals = GlobalParams {
             viewport_size: [size.width.0 as f32, size.height.0 as f32],
             premultiplied_alpha: premultiplied_alpha as u32,
-            pad: 0,
+            // DILLA PATCH: 1 before a window's first frame (or for a scene built by hand).
+            scale_factor: if scene.scale_factor > 0.0 {
+                scene.scale_factor
+            } else {
+                1.0
+            },
         };
         let path_globals = GlobalParams {
             premultiplied_alpha: 0,

@@ -208,32 +208,47 @@ fn hit_bounds_are_the_painted_bounds(cx: &mut TestAppContext) {
     assert!(!lands(120.0, 31.25), "below the painted edge");
 }
 
-/// Task 28 (T6c review m5): the dashed-border patch of the vendored wgpu shader (core/vendor/README.md, "gpui-pre-wgpu
-/// 0.3.12") is in place: a thin border (under 3 device px, the web's 1px at scale 2) dashes 3 widths on and 2 off, as
-/// Blink's StrokeData does; a thicker one keeps upstream's 2 on, 1 off. The shader runs on the GPU only (the parity
-/// screens that draw a dashed edge pin its pixels); this pins the pattern the shader computes, and mirrors it.
+/// Task 28 (T6c review m5; final review I7): the dashed-border patch of the vendored wgpu shader (core/vendor/README.md,
+/// "gpui-pre-wgpu 0.3.12") is in place: a thin border (under 3 CSS px, Blink's threshold, so the device width over the
+/// scene's scale factor) dashes 3 widths on and 2 off, as Blink's StrokeData does; a thicker one keeps upstream's 2 on, 1
+/// off. The shader runs on the GPU only (the parity screens that draw a dashed edge pin its pixels); this pins the
+/// pattern the shader computes, and mirrors it.
 #[test]
 fn the_dashed_border_follows_blink_s_pattern() {
     let shader = include_str!("../../../../core/vendor/gpui-pre-wgpu/src/shaders.wgsl");
     let wgsl: String = shader.split_whitespace().collect::<Vec<_>>().join(" ");
     for line in [
-        "max(max(quad.border_widths.top, quad.border_widths.bottom), max(quad.border_widths.left, quad.border_widths.right)) < 3.0;",
+        "scale_factor: f32,",
+        "max(max(quad.border_widths.top, quad.border_widths.bottom), max(quad.border_widths.left, quad.border_widths.right)) / max(globals.scale_factor, 1e-3) < 3.0;",
         "let dash_length_per_width = select(2.0, 3.0, thin);",
         "let dash_gap_per_width = select(1.0, 2.0, thin);",
         "let dash_period_per_width = dash_length_per_width + dash_gap_per_width;",
     ] {
         assert!(wgsl.contains(line), "the shader computes: {line}");
     }
-    // The pattern (dash, gap) in device px for a border `w` device px wide, as the shader selects it.
-    let pattern = |w: f32| {
-        let thin = w < 3.0;
+    let renderer = include_str!("../../../../core/vendor/gpui-pre-wgpu/src/wgpu_renderer.rs");
+    assert!(
+        renderer.contains("scene.scale_factor"),
+        "the renderer hands the shader the scene's scale"
+    );
+    // The pattern (dash, gap) in device px for a border `w` device px wide at `scale`, as the shader selects it.
+    let pattern = |w: f32, scale: f32| {
+        let thin = w / scale < 3.0;
         let (on, off) = if thin { (3.0, 2.0) } else { (2.0, 1.0) };
         (on * w, off * w)
     };
     // The web's 1px dashed border at scale 2: 6 device px on, 4 off (Blink: 3 css px on, 2 off).
-    assert_eq!(pattern(2.0), (6.0, 4.0));
-    assert_eq!(pattern(1.0), (3.0, 2.0));
-    assert_eq!(pattern(4.0), (8.0, 4.0), "a thick border keeps upstream's");
+    assert_eq!(pattern(2.0, 2.0), (6.0, 4.0));
+    assert_eq!(pattern(1.0, 1.0), (3.0, 2.0));
+    // A 2px border (the drop overlay's) and a 1.5px one at scale 2, and a 1px one at scale 3: still thin in CSS px.
+    assert_eq!(pattern(4.0, 2.0), (12.0, 8.0));
+    assert_eq!(pattern(3.0, 2.0), (9.0, 6.0));
+    assert_eq!(pattern(3.0, 3.0), (9.0, 6.0));
+    assert_eq!(
+        pattern(6.0, 2.0),
+        (12.0, 6.0),
+        "a 3px border keeps upstream's"
+    );
 }
 
 /// Two focusable boxes with clicks: `own` also handles Enter and Space on key-down itself (stopping propagation, as the
@@ -478,4 +493,21 @@ fn a_key_down_that_prevents_the_default_does_not_also_click(cx: &mut TestAppCont
     assert_eq!(clicks.get(), 0, "and the key-up did not click it");
     press_and_release(vcx, "space");
     assert_eq!(clicks.get(), 1, "Space, not prevented, still clicks");
+}
+
+/// Final review I7: the scene says the scale it was painted at, so the wgpu renderer measures a dashed border's width in
+/// logical (CSS) px, Blink's unit for its thin-stroke dash ratio, whatever the scale.
+#[gpui::test]
+fn the_scene_carries_the_scale_it_was_painted_at(cx: &mut TestAppContext) {
+    let seen = Rc::new(Cell::new(None));
+    let (_, vcx) = cx.add_window_view(move |_, _| Host {
+        seen,
+        in_paint: false,
+    });
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let (painted, scale) =
+        vcx.update(|window, _| (window.painted_scale_factor(), window.scale_factor()));
+    assert!(scale > 0.0);
+    assert_eq!(painted, scale);
 }

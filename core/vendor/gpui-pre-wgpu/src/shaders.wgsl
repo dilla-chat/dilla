@@ -80,7 +80,8 @@ fn apply_contrast_and_gamma_correction3(sample: vec3<f32>, color: vec3<f32>, enh
 struct GlobalParams {
     viewport_size: vec2<f32>,
     premultiplied_alpha: u32,
-    pad: u32,
+    // DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): upstream's `pad`, now the scene's scale factor.
+    scale_factor: f32,
 }
 
 struct GammaParams {
@@ -693,10 +694,12 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
             // overlapping when dash size is smaller than the border width.
             //
             // Dash pattern: (2 * border width) dash, (1 * border width) gap
-            // DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): a thin border (under 3 device px: the web's
-            // 1px at scale 2) dashes as Chromium's (Blink StrokeData: 3 * width dash, 2 * width gap).
+            // DILLA PATCH (core/vendor/README.md, "gpui-pre-wgpu 0.3.12"): a thin border (under 3 CSS px, Blink's
+            // threshold, measured in logical px: the device width over the scale factor) dashes as Chromium's (Blink
+            // StrokeData: 3 * width dash, 2 * width gap).
             let thin = max(max(quad.border_widths.top, quad.border_widths.bottom),
-                           max(quad.border_widths.left, quad.border_widths.right)) < 3.0;
+                           max(quad.border_widths.left, quad.border_widths.right))
+                       / max(globals.scale_factor, 1e-3) < 3.0;
             let dash_length_per_width = select(2.0, 3.0, thin);
             let dash_gap_per_width = select(1.0, 2.0, thin);
             let dash_period_per_width = dash_length_per_width + dash_gap_per_width;

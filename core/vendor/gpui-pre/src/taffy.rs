@@ -122,6 +122,8 @@ impl TaffyLayoutEngine {
             return;
         }
         let mut style = style.clone();
+        // DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): a stretched size lies on Chromium's layout unit at a
+        // whole scale factor (`layout_length`), as every authored length does; upstream rounded it to device px.
         if stretch_width {
             style.size.width =
                 taffy::style::Dimension::length(layout_length(size.width.0, scale_factor));
@@ -276,6 +278,11 @@ impl TaffyLayoutEngine {
     }
 
     // Pixel snapping
+    //
+    // DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): at a whole scale factor the rules below are not
+    // upstream's any more: lengths lie on Chromium's layout unit (1/64 px, `layout_length`, measured sizes ceiled onto
+    // it by `measured_length`) instead of whole device px, and outer edges snap to whole logical px, half up
+    // (`snap_layout_edge`). A fractional scale keeps the device-pixel rules this comment describes.
     //
     // Painting primitives at non-integer pixel coordinates produces blurry
     // output. Pixel snapping converts layout coordinates into integer

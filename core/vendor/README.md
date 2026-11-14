@@ -188,6 +188,12 @@ Remove this copy when upstream makes the handle public or the webrtc-sys hook is
 Upstream: <https://crates.io/crates/gpui-pre-wgpu> (Zed's GPUI, wgpu renderer and cosmic-text system). Apache-2.0. The
 copy is the published crate minus `.cargo-ok` and `Cargo.lock`.
 
+**Platform coverage: Linux only.** `gpui-pre-platform` pulls this crate in only under `cfg(target_os = "linux")`. Windows
+renders with GPUI's DirectX renderer (`directx_renderer.rs`, `shaders.hlsl`) and lays text out with DirectWrite; macOS
+renders with Metal and Core Text. Every patch below therefore changes Linux only; on Windows and macOS the client draws
+upstream's colour-emoji fallback, dash pattern and gradient geometry until the matching follow-ups land (a DirectX/HLSL
+port next to the Metal one, each with its own tolerances measured), a known parity gap there, not a crash.
+
 One change (Task 10, ruling R20, 2026-11-13), marked `DILLA PATCH`: in `src/cosmic_text_system.rs`, `load_family`'s
 `allowed_bad_font_names` gains `"NotoColorEmoji"`. `load_family` skips every face whose cmap has no `'m'` (the editor measures
 with its width), and Noto Color Emoji has none, so `font_family("Noto Color Emoji")` loaded nothing and cosmic-text's unix
@@ -198,19 +204,23 @@ installed).
 
 Keep this patch until upstream lets a colour emoji face load as a named family.
 
-A second change (Task 6c, 2026-11-13), marked `DILLA PATCH`: in `src/shaders.wgsl`, a dashed border thinner than 3 device
-px dashes 3 widths on and 2 off (Blink's `StrokeData` ratios for thin strokes) instead of upstream's 2 on and 1 off, so the
-rail's 1px dashed "+" circle has the web's dash count (about 23 at scale 2, upstream drew about 39). Thicker borders keep
-upstream's pattern.
+A second change (Task 6c, 2026-11-13; final review I7, 2026-11-14), marked `DILLA PATCH`: in `src/shaders.wgsl`, a dashed
+border thinner than 3 CSS px dashes 3 widths on and 2 off (Blink's `StrokeData` ratios for thin strokes) instead of
+upstream's 2 on and 1 off, so the rail's 1px dashed "+" circle has the web's dash count (about 23 at scale 2, upstream drew
+about 39). Thicker borders keep upstream's pattern. Blink's threshold is in CSS px, so the shader divides the device width
+by the scene's scale factor: `GlobalParams`' padding word (`src/wgpu_renderer.rs`, same size) carries
+`Scene::scale_factor` (a gpui-pre patch, below). Until 2026-11-14 it compared device px, so at scale 2 a 2px border (the
+drop overlay) or a 1.5px one fell back to 2:1, and at scale 3 every 1px dash did. Test:
+`the_dashed_border_follows_blink_s_pattern` and `the_scene_carries_the_scale_it_was_painted_at` in
+`clients/desktop/dilla-desktop/tests/vendored_patches.rs`. Linux only (see above).
 
 A third change (Task 28 parity lane, 2026-11-13), marked `DILLA PATCH`: in `src/shaders.wgsl`, `gradient_color`'s linear
 gradient follows CSS (`linear-gradient(135deg, ...)`): the angle is a true angle and the gradient line, through the centre,
 is `|w sin a| + |h cos a|` long. Upstream stretched the direction to the box's aspect and measured `t` along the longer
 side, so a 135deg band on a 258 x 52 box ran almost left to right (the profile preview's band: 5-6 levels off at its right
 end; the colour gate failed at 0.63 %). Test: `parity_user_settings_profile` in `clients/desktop/dilla-desktop/tests/
-user_settings.rs` (the band against the web's). Only the wgpu
-renderer (Linux, Windows) carries it; the Metal renderer of macOS keeps upstream's geometry until its tolerances are
-measured.
+user_settings.rs` (the band against the web's). Linux only (see above): the DirectX renderer of Windows and the Metal
+renderer of macOS keep upstream's stretched geometry until their ports' tolerances are measured.
 
 ## Retired: sqlite-wasm-vfs 0.2.0
 
@@ -231,6 +241,10 @@ written by the 0.5.5 build is played back by the current one).
 
 Upstream: <https://crates.io/crates/gpui-pre> (Zed's GPUI). Apache-2.0. The copy is the published crate minus `.cargo-ok`,
 `.cargo_vcs_info.json`, `Cargo.lock` and `examples/` (with their `[[example]]` targets dropped from `Cargo.toml`).
+
+**Platform coverage: every platform.** This crate is GPUI's platform-neutral core (layout, elements, the window), so its
+patches below apply on Linux, Windows and macOS alike; none has a `cfg(target_os)`. The fourth only carries a value that
+just the Linux renderer reads.
 
 One change (Task 6c, 2026-11-13), marked `DILLA PATCH`: in `src/taffy.rs`, `layout_bounds` snaps a box's outer edges to
 whole logical px, half up, when the scale factor is whole; upstream rounds them to device px, midpoints toward zero. The web
@@ -275,3 +289,21 @@ line height on Chromium's layout unit (`util::layout_length`) at a whole scale f
 px. gpui-component's inputs and textareas lay their lines out by it, so a 13px textarea at 1.5 drew its lines 20px apart
 where the web's are 19.5px. `TextStyle::line_height_in_pixels` (the text elements' own path) keeps upstream's rounding;
 a fractional scale keeps it too. Test: `the_line_height_lies_on_the_layout_unit` in the same file.
+
+So there are two line heights at a whole scale (final review M3): `Window::line_height` in 1/64 units and
+`TextStyle::line_height_in_pixels` in whole px. Upstream's `TextView` `max_lines` (`text_view.rs`) and inline flow mix the
+two, so a clamp can show a sliver (about 5 device px at scale 2) of the line after the last; dilla's client uses neither
+today. A client change that does must take one of them for both the clamp and the lines.
+
+The first change also rounds a stretched size onto the layout unit in `TaffyLayoutEngine` (`src/taffy.rs`, the size of an
+`auto` box handed in from outside; marked since final review M4), and the long upstream comment on pixel snapping there
+now carries a note that its device-pixel rules hold only at a fractional scale. `util::measured_length` ceils a measured
+size onto the layout unit, but a size that is a whole unit but for f32 noise is kept whole, which may round it down by up
+to about 0.03 units: a latent wrap or ellipsis risk for a text measured exactly at a unit boundary, not seen in the parity
+screens.
+
+A fourth change (final review I7, 2026-11-14), marked `DILLA PATCH`: `Scene` gains `scale_factor`, set by
+`Window::draw` from the window's scale before the frame finishes (`src/scene.rs`, `src/window.rs`), and
+`Window::painted_scale_factor` (test support) reads it back. The wgpu renderer (gpui-pre-wgpu, above) hands it to its
+shader to measure dashed borders in CSS px; the Metal and DirectX renderers ignore it. Test:
+`the_scene_carries_the_scale_it_was_painted_at` in `clients/desktop/dilla-desktop/tests/vendored_patches.rs`.
