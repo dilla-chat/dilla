@@ -319,6 +319,13 @@ impl RecoveryKey {
         Ok(Self(text))
     }
 
+    /// A key of 52 ASCII characters for a screen fixture (the automation build draws the key step offline; the web's own
+    /// key is a fresh one, and both are masked as text in the comparison). Never in a shipping build.
+    #[cfg(feature = "testing")]
+    pub fn for_fixture(text: &str) -> Option<Self> {
+        Self::new(Zeroizing::new(text.to_owned())).ok()
+    }
+
     /// signup.ts `begin`: the key's 13 groups of 4.
     pub fn groups(&self) -> impl Iterator<Item = &str> {
         (0..13).map(move |i| &self.0[i * 4..i * 4 + 4])

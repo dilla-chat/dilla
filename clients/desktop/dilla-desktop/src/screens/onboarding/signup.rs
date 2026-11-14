@@ -299,6 +299,45 @@ impl SignupView {
         self.step
     }
 
+    /// `/welcome?signin=race|evicted` (Onboarding.tsx `RACE_BANNER`, `EVICTED_BANNER`): the welcome shown again after a
+    /// sign-in's list race or eviction says why.
+    pub fn set_notice(
+        &mut self,
+        notice: Option<crate::router::SignInNotice>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::router::SignInNotice;
+        self.banner = notice.map(|n| match n {
+            SignInNotice::Race => BannerState {
+                tone: BannerTone::Warn,
+                text: t("signin.error.listRace").into(),
+                reload: false,
+            },
+            SignInNotice::Evicted => BannerState {
+                tone: BannerTone::Danger,
+                text: t("signin.error.evicted").into(),
+                reload: false,
+            },
+        });
+        cx.notify();
+    }
+
+    /// Automation (parity fixtures, `fixture::pre_account`): the step the instance's answers left the web on, drawn
+    /// offline: `instance` is what step 1's instance read returned, `key` the keys Create account made.
+    #[cfg(feature = "automation")]
+    pub fn fixture_at(
+        &mut self,
+        step: Step,
+        instance: InstanceInfo,
+        key: Option<RecoveryKey>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.instance = Some(instance);
+        self.key = key;
+        self.go(step, window, cx);
+    }
+
     fn instance_name(&self) -> String {
         self.instance
             .as_ref()
@@ -748,6 +787,16 @@ impl SignupView {
     }
 }
 
+/// Automation: `id` is there while its field shows a refusal (a probe over the field); nothing otherwise.
+fn error_probe(id: &'static str, refused: bool) -> Option<AnyElement> {
+    #[cfg(feature = "automation")]
+    if refused {
+        return Some(crate::automation::bounds_probe(id).into_any_element());
+    }
+    let _ = (id, refused);
+    None
+}
+
 /// The refusal a failed "Save as file" shows. The web has no `onboarding.keys.saveFailed` (its download cannot fail
 /// in the page), so the generated strings carry none yet: the settings' save failure says it until one is added.
 const SAVE_FAILED: &str = "settings.editing.saveFailed";
@@ -871,8 +920,16 @@ impl Render for SignupView {
                 f.child(tracked_focus(
                     "onboarding-invite",
                     &self.invite.focus_handle(cx),
-                    OnboardingField::new("onboarding-invite-field", t(label), &self.invite)
-                        .error(self.errors.invite.clone()),
+                    div()
+                        .relative()
+                        .child(
+                            OnboardingField::new("onboarding-invite-field", t(label), &self.invite)
+                                .error(self.errors.invite.clone()),
+                        )
+                        .children(error_probe(
+                            "onboarding-invite-error",
+                            self.errors.invite.is_some(),
+                        )),
                 ))
                 .primary(primary)
                 .nav(None, sign_in)
@@ -893,23 +950,39 @@ impl Render for SignupView {
                 f = f.child(tracked_focus(
                     "onboarding-username",
                     &self.username.focus_handle(cx),
-                    OnboardingField::new(
-                        "onboarding-username-field",
-                        t("onboarding.identity.username"),
-                        &self.username,
-                    )
-                    .error(self.errors.username.clone()),
+                    div()
+                        .relative()
+                        .child(
+                            OnboardingField::new(
+                                "onboarding-username-field",
+                                t("onboarding.identity.username"),
+                                &self.username,
+                            )
+                            .error(self.errors.username.clone()),
+                        )
+                        .children(error_probe(
+                            "onboarding-username-error",
+                            self.errors.username.is_some(),
+                        )),
                 ));
                 if password_signup {
                     f = f.child(tracked_focus(
                         "onboarding-password",
                         &self.password.focus_handle(cx),
-                        OnboardingField::new(
-                            "onboarding-password-field",
-                            t("onboarding.identity.password"),
-                            &self.password,
-                        )
-                        .error(self.errors.password.clone()),
+                        div()
+                            .relative()
+                            .child(
+                                OnboardingField::new(
+                                    "onboarding-password-field",
+                                    t("onboarding.identity.password"),
+                                    &self.password,
+                                )
+                                .error(self.errors.password.clone()),
+                            )
+                            .children(error_probe(
+                                "onboarding-password-error",
+                                self.errors.password.is_some(),
+                            )),
                     ));
                 }
                 f.primary(primary).nav(back, sign_in).into_any_element()

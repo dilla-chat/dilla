@@ -82,6 +82,14 @@ pub fn open(which: Open, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Opens `which` in `window` (on its next frame), whichever window is active: a press in a window opens its own flow.
+pub fn open_in(window: &Window, which: Open, cx: &mut App) {
+    windows(cx)
+        .pending
+        .insert(window.window_handle().window_id(), which);
+    cx.refresh_windows();
+}
+
 /// Opens the create-channel flow for `community`. The channel list's "+" (Task 8) calls it. Fixed signature.
 pub fn open_create_channel(community: CommunityId, cx: &mut App) {
     open(
@@ -224,17 +232,28 @@ pub fn empty_view(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> AnyElem
             t("shell.noServer.title"),
             t("shell.noServer.body"),
         )
-        .action(t("shell.noServer.create"), |_, _, cx| {
-            open(Open::CreateServer, cx)
+        // The press opens the flow in its own window (a window that is not the active one, a headless one, still opens).
+        .action(t("shell.noServer.create"), |_, window, cx| {
+            open_in(window, Open::CreateServer, cx)
         })
-        .secondary(t("shell.noServer.action"), |_, _, cx| {
-            open(
+        .secondary(t("shell.noServer.action"), |_, window, cx| {
+            open_in(
+                window,
                 Open::Join {
                     invite: None,
                     refusal: None,
                 },
                 cx,
             )
+        })
+        // Automation probes: "Start a server" and "Join a server".
+        .wrap_actions(|part, el| {
+            let id = if part == "action" {
+                "create-empty-start"
+            } else {
+                "create-empty-join"
+            };
+            crate::tracked_box(id, el).into_any_element()
         }),
     )
     .into_any_element()

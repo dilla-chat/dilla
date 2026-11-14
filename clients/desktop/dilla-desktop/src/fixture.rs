@@ -37,6 +37,7 @@ mod members;
 mod messages;
 mod notify;
 mod polls;
+pub mod pre_account;
 mod reactions;
 mod roles;
 mod server_admin;
@@ -52,8 +53,11 @@ pub enum FixtureScreen {
     ShellHome { community: CommunityId },
     /// The shell on a DM's conversation (`/dm/{dm/<id>}`, lane G: the DM call box).
     ShellDm { dm: ChannelId },
-    /// The welcome and sign-in screen of a device with no account.
-    SignIn,
+    /// A device with no account (`/welcome`): the sign-up's first step, as the web draws it, or the pre-account screen
+    /// the fixture names ([`pre_account::start`]).
+    Welcome(pre_account::PreAccount),
+    /// The shell with no route of its own (`/`): the first server, or the empty view of an account in no server.
+    Home,
     /// The user settings host, on this section (`/settings/<section>`).
     Settings { section: crate::router::UserSection },
     /// A server's settings (Task 15): `section` is the route's, `None` its first.
@@ -143,7 +147,10 @@ impl Fixture {
                 .resolved_route_with(|kind, local| ids.of(kind, local))
                 .map_err(|e| e.to_string())?,
         );
-        let screen = screen_of(&route, fixture.phase)?;
+        let screen = match screen_of(&route, fixture.phase)? {
+            FixtureScreen::Welcome(_) => FixtureScreen::Welcome(pre_account::start(&fixture)),
+            other => other,
+        };
         let state = build_state(&fixture, shift, ids, screen);
         Ok(Self {
             state,
@@ -184,7 +191,10 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             community: *community,
         }),
         (Route::Dm(dm), Phase::Ready) => Ok(FixtureScreen::ShellDm { dm: *dm }),
-        (Route::Welcome { .. }, Phase::SignedOut) => Ok(FixtureScreen::SignIn),
+        (Route::Welcome { .. }, Phase::SignedOut) => {
+            Ok(FixtureScreen::Welcome(pre_account::PreAccount::SignUp))
+        }
+        (Route::Root, Phase::Ready) => Ok(FixtureScreen::Home),
         (Route::Settings(Some(section)), Phase::Ready) => {
             Ok(FixtureScreen::Settings { section: *section })
         }
@@ -209,7 +219,7 @@ pub fn build_state(
     ids: Ids<'_>,
     screen: FixtureScreen,
 ) -> AppState {
-    if screen == FixtureScreen::SignIn {
+    if matches!(screen, FixtureScreen::Welcome(_)) {
         return AppState::default();
     }
     let (world, viewer) = (&fixture.world, fixture.viewer.as_str());
@@ -497,9 +507,12 @@ mod tests {
     }
 
     #[test]
-    fn the_welcome_route_draws_the_sign_in_screen_with_no_account() {
+    fn the_welcome_route_draws_the_sign_up_first_step_with_no_account() {
         let f = Fixture::parse(&with_route("/welcome", "signed_out"), None).unwrap();
-        assert_eq!(f.screen, FixtureScreen::SignIn);
+        assert_eq!(
+            f.screen,
+            FixtureScreen::Welcome(pre_account::PreAccount::SignUp)
+        );
         assert!(f.state.communities.is_empty());
         assert_ne!(f.state.account.phase, AccountPhase::Ready);
     }
@@ -514,6 +527,7 @@ mod tests {
     fn a_route_the_app_cannot_draw_is_refused() {
         for (route, phase) in [
             ("/settings", "ready"),
+            ("/", "signed_out"),
             ("/activity", "ready"),
             ("/welcome", "ready"),
             ("/c/{midgard}/{midgard/general}", "signed_out"),

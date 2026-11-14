@@ -27,7 +27,7 @@ use dilla_desktop_ui::components::onboarding::frame::CARD_INNER_W;
 use dilla_desktop_ui::components::onboarding::{
     KeyAck, OnboardingFrame, PrimaryAction, ReadyPanel, frame,
 };
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::{line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::keys::Submit;
@@ -257,9 +257,9 @@ impl DoneView {
             .child(tracked_focus(
                 "onboarding-codes-show",
                 &self.handles.show,
+                // CodeList.tsx: a disclosure (`aria-expanded`), not a toggle: no `[x]` mark.
                 Button::new("onboarding-codes-show", toggle)
                     .focus_handle(&self.handles.show)
-                    .pressed(self.expanded)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_shown(cx))),
             ));
         let summary = div()
@@ -365,10 +365,14 @@ impl Render for DoneView {
                 &[("server", server), ("channel", channel)],
             )));
         }
-        f = f.child(frame::body_paragraph(
+        // `.d-onboarding-frame__note`: the small print, `--text-btn` in `--fg-3`.
+        f = f.child(div().flex().flex_col().children(paragraph(
             t("onboarding.done.note"),
+            text::BTN,
+            line_height(text::BTN, 1.5),
             color::FG_3,
-        ));
+            CARD_INNER_W,
+        )));
         if !self.codes.is_empty() {
             f = f.child(self.codes_block(cx));
         }
