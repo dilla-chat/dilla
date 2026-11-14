@@ -143,6 +143,33 @@ pub fn bell_focus(window: WindowId, cx: &mut App) -> FocusHandle {
     f
 }
 
+/// The bell was pressed in `window` ([`toggle`]); a close gives the bell the focus back if the popover held it (w2-bot-review
+/// M-D3: the tab that had it is no longer drawn, so nothing would hold it).
+pub fn bell_pressed(window: &mut Window, cx: &mut App) {
+    let wid = window.window_handle().window_id();
+    let open = inbox(wid, cx).open;
+    if open {
+        focus_bell_if_inside(wid, window, cx);
+    }
+    toggle(wid, cx);
+}
+
+/// Whether the popover's tabs hold `window`'s focus.
+fn focus_inside(wid: WindowId, window: &Window, cx: &mut App) -> bool {
+    inbox(wid, cx)
+        .tabs
+        .as_ref()
+        .is_some_and(|(a, b)| a.is_focused(window) || b.is_focused(window))
+}
+
+/// Gives the bell the focus when the popover, about to close, holds it (as Escape does).
+fn focus_bell_if_inside(wid: WindowId, window: &mut Window, cx: &mut App) {
+    if focus_inside(wid, window, cx) {
+        let bell = bell_focus(wid, cx);
+        window.focus(&bell, cx);
+    }
+}
+
 fn close(window: WindowId, cx: &mut App) {
     inbox(window, cx).open = false;
     cx.refresh_windows();
@@ -391,12 +418,14 @@ pub fn popover(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
                 window.focus(&bell, cx);
             }
         })
-        .on_mouse_down_out(move |e: &MouseDownEvent, _, cx| {
+        .on_mouse_down_out(move |e: &MouseDownEvent, window, cx| {
             if e.button != MouseButton::Left && e.button != MouseButton::Right {
                 return;
             }
             let on_bell = inbox(wid, cx).bell.is_some_and(|b| b.contains(&e.position));
             if !on_bell {
+                // w2-bot-review M-D3: the focus goes back to the bell (what was pressed may take it after).
+                focus_bell_if_inside(wid, window, cx);
                 close(wid, cx);
             }
         })
@@ -474,6 +503,27 @@ mod tests {
     use super::*;
     use dilla_client::state::Community;
     use dilla_client::state::bot::ReminderView;
+
+    /// w2-bot-review M-D3: closing with the bell while a tab holds the focus gives the bell the focus back; with the focus
+    /// elsewhere it stays where it is.
+    #[gpui::test]
+    fn closing_with_the_bell_gives_it_the_focus_back(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            let (due, upcoming, other) = (cx.focus_handle(), cx.focus_handle(), cx.focus_handle());
+            toggle(w, cx);
+            inbox(w, cx).tabs = Some((due.clone(), upcoming));
+            window.focus(&due, cx);
+            bell_pressed(window, cx);
+            assert!(!inbox(w, cx).open);
+            assert!(bell_focus(w, cx).is_focused(window), "the bell has it back");
+            toggle(w, cx);
+            window.focus(&other, cx);
+            bell_pressed(window, cx);
+            assert!(other.is_focused(window), "a focus outside stays");
+        });
+    }
 
     /// w2-bot-review M-D1 and M-D2 (`fetchInbox`): a failed server drops out of the list as an unavailable one does, and
     /// the reads wait `min(index·120, 900)` ms between servers.

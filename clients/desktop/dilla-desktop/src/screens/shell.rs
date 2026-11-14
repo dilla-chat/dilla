@@ -1556,10 +1556,7 @@ impl Render for ShellView {
                     search::request_open_in(window.window_handle().window_id(), cx)
                 }),
                 on_reminders: Rc::new(|window, cx| {
-                    crate::screens::commands::reminders::toggle(
-                        window.window_handle().window_id(),
-                        cx,
-                    )
+                    crate::screens::commands::reminders::bell_pressed(window, cx)
                 }),
             },
             reminders,
