@@ -642,6 +642,20 @@ fn a_deferred_ring_is_checked_once_only_while_no_later_frame_of_its_channel_came
     assert_eq!(d.defer(b), None, "bounded");
 }
 
+/// w2-bot-review M-B1: a deferred ring's early check does not take it, so an end (state 0) that arrives while its
+/// DM's block is read still makes it stale; it is taken only at the moment it enters the book.
+#[test]
+fn a_deferred_ring_ended_while_it_is_checked_never_enters_the_book() {
+    let a = ChannelId([1; 16]);
+    let mut d = DeferredRings::default();
+    let token = d.defer(a).expect("room");
+    assert!(d.is_current(a, token), "the DM list read: check it");
+    assert!(d.is_current(a, token), "asking does not take it");
+    // The worker handles the caller's hang-up while the check awaits the DM's block.
+    d.frame(a);
+    assert!(!d.take(a, token), "ended meanwhile: it never rings");
+}
+
 #[test]
 fn the_builtin_afk_channel_is_found_by_id_else_by_the_reservation() {
     let afk = ChannelId([7; 16]);
