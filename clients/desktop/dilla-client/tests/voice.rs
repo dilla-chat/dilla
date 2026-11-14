@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use dilla_client::Client;
 use dilla_client::calls::CallPhase;
+use dilla_client::calls::CallRoutes as _;
 use dilla_client::features::voice::MediaLink;
 use dilla_client::state::voice::flags;
 use dilla_client::state::{AppState, ChannelId, DeviceId};
@@ -651,4 +652,170 @@ async fn a_known_contacts_new_device_joining_keeps_the_call() {
     assert_eq!(s.voice.call.error, None);
     drop((a, b, d));
     let _ = std::fs::remove_dir_all(data);
+}
+
+/// Alice's call routes, with one step in: her call's start waits until the test lets it go, and says when it got there
+/// (the join has registered and joined the call group by then: something to tear down).
+struct HoldStart {
+    inner: Arc<dilla_client::calls::SocketCallRoutes<dilla_client::calls::NoHttp>>,
+    reached: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+#[async_trait::async_trait]
+impl dilla_client::calls::CallRoutes for HoldStart {
+    async fn get_channel_call(
+        &self,
+        c: &[u8; 16],
+    ) -> Result<dilla_client::calls::ChannelCall, dilla_client::calls::RouteError> {
+        self.inner.get_channel_call(c).await
+    }
+    async fn post_group(&self, b: Vec<u8>) -> Result<u64, dilla_client::calls::RouteError> {
+        self.inner.post_group(b).await
+    }
+    async fn get_group_info(
+        &self,
+        g: &[u8; 16],
+    ) -> Result<Vec<u8>, dilla_client::calls::RouteError> {
+        self.inner.get_group_info(g).await
+    }
+    async fn get_group_tree(
+        &self,
+        g: &[u8; 16],
+    ) -> Result<Vec<u8>, dilla_client::calls::RouteError> {
+        self.inner.get_group_tree(g).await
+    }
+    async fn post_resync(
+        &self,
+        g: &[u8; 16],
+        b: Vec<u8>,
+    ) -> Result<u64, dilla_client::calls::RouteError> {
+        self.inner.post_resync(g, b).await
+    }
+    async fn post_commit(
+        &self,
+        g: &[u8; 16],
+        b: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, dilla_client::calls::RouteError> {
+        self.inner.post_commit(g, b, idem).await
+    }
+    async fn post_proposal(
+        &self,
+        g: &[u8; 16],
+        b: Vec<u8>,
+    ) -> Result<u64, dilla_client::calls::RouteError> {
+        self.inner.post_proposal(g, b).await
+    }
+    async fn get_handshakes(
+        &self,
+        g: &[u8; 16],
+        from: u64,
+        limit: u64,
+    ) -> Result<dilla_client::calls::HandshakePage, dilla_client::calls::RouteError> {
+        self.inner.get_handshakes(g, from, limit).await
+    }
+    async fn start_call(
+        &self,
+        c: &[u8; 16],
+        v: &str,
+    ) -> Result<dilla_client::calls::CallStarted, dilla_client::calls::RouteError> {
+        let reached = self.reached.lock().unwrap().take();
+        if let Some(reached) = reached {
+            let _ = reached.send(());
+            if let Some(release) = self.release.lock().await.take() {
+                let _ = release.await;
+            }
+        }
+        self.inner.start_call(c, v).await
+    }
+    async fn end_call_if_alone(
+        &self,
+        c: &[u8; 16],
+    ) -> Result<bool, dilla_client::calls::RouteError> {
+        self.inner.end_call_if_alone(c).await
+    }
+    async fn decline_call(
+        &self,
+        c: &[u8; 16],
+        t: u64,
+    ) -> Result<(), dilla_client::calls::RouteError> {
+        self.inner.decline_call(c, t).await
+    }
+}
+
+/// w2-fix2 re-review (controller.ts `leave`: `await joining.done`): a leave while the join is in flight answers only once
+/// the join has torn down what it holds. Alice's join has registered and joined the call group and its start is in
+/// flight when she leaves; the leave does not answer while the start is held, and once it answers, her cancelled join
+/// has answered and left the call it started (alone: the call is ended), so nothing of it is left at the instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_leave_while_joining_answers_after_the_joins_teardown() {
+    use dilla_client::state::CommunityId;
+    let tag = "voice-leave-joining";
+    let host = tokio::task::spawn_blocking(move || world::start_host(tag))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let alice = world::sign_up(&host, &invite, "alice", tag).await;
+    let (host, alice, community, voice) = tokio::task::spawn_blocking(move || {
+        let (c, v) = world::voice_community(&host, &alice, &[]);
+        world::clear_session(&alice);
+        (host, alice, c, ChannelId(v))
+    })
+    .await
+    .unwrap();
+    let a = client(&alice).await;
+    listed(&a, voice).await;
+
+    let (reached_tx, reached) = tokio::sync::oneshot::channel();
+    let (release, release_rx) = tokio::sync::oneshot::channel();
+    let gated = a
+        .ring()
+        .join_through(voice, CommunityId(community), move |inner| HoldStart {
+            inner,
+            reached: std::sync::Mutex::new(Some(reached_tx)),
+            release: tokio::sync::Mutex::new(Some(release_rx)),
+        });
+    let mut joined = a
+        .voice()
+        .join_gated(voice, Some(CommunityId(community)), gated);
+    tokio::time::timeout(WAIT, reached)
+        .await
+        .expect("the join reaches its start")
+        .unwrap();
+
+    let mut left = a.voice().leave();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), &mut left)
+            .await
+            .is_err(),
+        "the leave waits for the join's teardown, which waits for the held start"
+    );
+    let _ = release.send(());
+    tokio::time::timeout(WAIT, &mut left)
+        .await
+        .expect("the leave answers once the join tore down")
+        .unwrap()
+        .expect("the leave is acknowledged");
+    let answer = joined
+        .try_recv()
+        .expect("the join answered before the leave did");
+    assert!(answer.is_err(), "the join was cancelled");
+
+    // The started call was left (alone, so ended) before the leave answered.
+    let read = a
+        .calls()
+        .routes()
+        .get_channel_call(&voice.0)
+        .await
+        .expect("the call read");
+    assert!(
+        read.participants.is_empty(),
+        "nobody is in the call: {:?}",
+        read.call_id
+    );
+    assert_eq!(a.state().borrow().voice.call.phase, CallPhase::Idle);
+    drop(a);
+    drop(host);
 }

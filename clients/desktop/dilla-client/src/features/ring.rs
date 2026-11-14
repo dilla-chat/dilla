@@ -1123,6 +1123,11 @@ impl GatedJoin {
         self.join.cancel();
     }
 
+    /// [`GatedJoin::cancel`] that outlives the handle, for a holder awaiting [`GatedJoin::outcome`].
+    pub(crate) fn cancel_handle(&self) -> impl Fn() + Send + Sync + 'static {
+        self.join.cancel_handle()
+    }
+
     /// Sets what runs first when the join ends without a call ([`OnRefused`]).
     pub(crate) fn on_refused(&mut self, f: OnRefused) {
         self.on_refused = Some(f);
@@ -1334,6 +1339,30 @@ impl Ring {
                 on_refused,
             }))
         })
+    }
+
+    /// [`Ring::join`] of a voice channel's call over `wrap` of the call routes ([`Calls::join_through`]): a test steps in
+    /// at a chosen request. Never in a shipping build.
+    #[cfg(feature = "testing")]
+    pub fn join_through<R: crate::calls::CallRoutes + 'static>(
+        &self,
+        channel: ChannelId,
+        community: CommunityId,
+        wrap: impl FnOnce(Arc<crate::calls::SocketCallRoutes<NoHttp>>) -> R,
+    ) -> GatedJoin {
+        let target = CallTarget {
+            channel: channel.0,
+            community: Some(community.0),
+            vdec: String::new(),
+        };
+        GatedJoin {
+            join: self.calls.join_through(target, wrap),
+            inner: self.inner.clone(),
+            pc: per_client(&self.inner),
+            channel,
+            dm: None,
+            on_refused: None,
+        }
     }
 
     /// callDecline: the ring goes here whatever the instance answers (a 404 is expected after the ring ended); only the

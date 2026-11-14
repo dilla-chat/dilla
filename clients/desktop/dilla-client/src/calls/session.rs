@@ -128,6 +128,12 @@ impl CallJoin {
         self.cancel.store(true, Ordering::Release);
     }
 
+    /// [`CallJoin::cancel`] for a holder that hands this join's outcome future on (it still awaits the teardown).
+    pub(crate) fn cancel_handle(&self) -> impl Fn() + Send + Sync + 'static {
+        let cancel = self.cancel.clone();
+        move || cancel.store(true, Ordering::Release)
+    }
+
     /// The join's outcome. A client that stopped meanwhile is the outer error.
     /// The join's outcome. A client that stopped meanwhile is the outer error. `self` is held across the wait, so
     /// dropping this future before the outcome arrives cancels the join.

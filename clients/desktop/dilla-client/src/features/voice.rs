@@ -101,6 +101,8 @@ struct Runtime {
     generation: u64,
     /// The join in flight: dropping it cancels the join.
     joining: Option<oneshot::Sender<()>>,
+    /// Closes once the join in flight has returned, its teardown done (controller.ts `joining.done`).
+    join_done: Option<oneshot::Receiver<()>>,
     live: Option<Live>,
     link: watch::Sender<Option<Arc<MediaLink>>>,
     /// The last `voice_self` sent: `(call, flags)`.
@@ -120,6 +122,7 @@ impl Default for Runtime {
             started: false,
             generation: 0,
             joining: None,
+            join_done: None,
             live: None,
             link: watch::channel(None).0,
             last_self: None,
@@ -544,10 +547,14 @@ impl Voice {
         }
         let rt = self.rt();
         let (abort_tx, abort_rx) = oneshot::channel::<()>();
+        // Held until this join returns: a leave meanwhile waits for it to close (controller.ts `joining.done`).
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        let _done = done_tx;
         let generation = {
             let mut r = lock(&rt);
             r.generation += 1;
             r.joining = Some(abort_tx);
+            r.join_done = Some(done_rx);
             r.last_self = None;
             r.generation
         };
@@ -560,7 +567,12 @@ impl Voice {
             };
         });
         let refusal = |inner: Arc<Inner>| -> OnRefused {
+            let rt = rt.clone();
             Box::new(move |code: &str| {
+                // A leave or a newer join came first: a cancelled join's end publishes nothing over theirs.
+                if lock(&rt).generation != generation {
+                    return;
+                }
                 let code = code.to_owned();
                 inner.publish(move |s| {
                     if s.voice.call.channel == Some(channel) {
@@ -626,11 +638,21 @@ impl Voice {
                 std::future::pending::<()>().await;
             }
         };
+        let cancel = join.cancel_handle();
+        let answer = join.outcome();
+        tokio::pin!(answer);
         let outcome = tokio::select! {
-            o = join.outcome() => Some(o),
+            o = &mut answer => Some(o),
             _ = abort_rx => None,
             () = publish_phase => None,
         };
+        if outcome.is_none() {
+            // Left (or another join) while joining: the join is cancelled, and its own task leaves what it holds (a
+            // call it started, its group: `leave_if_cancelled`) before it answers. That answer is awaited, so a leave
+            // waiting on this join answers only after the teardown (controller.ts `leave`: `await joining.done`).
+            cancel();
+            let _ = answer.await;
+        }
         {
             let mut r = lock(&rt);
             if r.generation == generation {
@@ -638,7 +660,7 @@ impl Voice {
             }
         }
         let joined = match outcome {
-            // Left (or another join) while joining: dropping the join cancelled it.
+            // Left (or another join) while joining: cancelled and torn down above.
             None => return Err(ClientError::Sync("E_CANCELLED".into())),
             Some(Err(e)) => {
                 refused(e.to_string());
@@ -862,8 +884,9 @@ impl Voice {
             r.self_offline = None;
             r.resends = None;
             r.own_in_call.clear();
-            (r.live.take(), r.joining.take())
+            (r.live.take(), (r.joining.take(), r.join_done.take()))
         };
+        let (joining, join_done) = joining;
         drop(joining);
         let own = self.inner.snapshot().account.device_id;
         let snap = self.inner.snapshot();
@@ -875,6 +898,11 @@ impl Voice {
             s.voice.speaking.clear();
             s.voice.share = LocalShare::default();
         });
+        // A join in flight was cancelled just above: this answers once it has torn down (its self-Remove posted, a call
+        // it started left), as controller.ts `leave` awaits `joining.done`.
+        if let Some(done) = join_done {
+            let _ = done.await;
+        }
         let Some(live) = live else {
             return Ok(true);
         };
