@@ -112,16 +112,37 @@ pub fn chips_key(window: gpui::WindowId, stroke: &gpui::Keystroke, cx: &mut App)
     if state.chips.is_none() {
         return false;
     }
+    // w2-bot-review M-B2: a paste (Cmd+V, Ctrl+V) would land in the hidden field and drop the chips with every value; the
+    // clipboard's first line goes in the active chip instead.
+    let m = stroke.modifiers;
+    if stroke.key == "v" && !m.shift && (m.platform || (m.control && !m.alt)) {
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap_or_default();
+        let line: String = text
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        if let Some(chips) = super::picker_state_mut(window, cx).chips.as_mut() {
+            chips.active_value().push_str(&line);
+        }
+        return true;
+    }
     let s = super::picker_state_mut(window, cx);
     let Some(chips) = s.chips.as_mut() else {
         return false;
     };
-    let m = stroke.modifiers;
     // A shortcut (Cmd, or Ctrl without Alt) is the app's; AltGr (Ctrl+Alt on Linux and Windows) and Option (macOS)
     // type characters (t28-bot-review I2).
     let shortcut = m.platform || (m.control && !m.alt);
-    // The active chip's suggestions take ↑↓, and Tab or Enter while one can go in the field.
-    if !shortcut && chips.suggestion_key(&stroke.key, m.shift) {
+    // The active chip's suggestions take ↑↓, and Tab or Enter while one can go in the field: plain keys only, Shift aside
+    // (w2-bot-review M-C1: Ctrl+Enter, Cmd+Tab and AltGr or Option with an arrow are never the suggestions').
+    let plain = !m.control && !m.alt && !m.platform;
+    if plain && chips.suggestion_key(&stroke.key, m.shift) {
         return true;
     }
     match stroke.key.as_str() {
@@ -188,15 +209,87 @@ mod tests {
             assert!(chips_key(w, &stroke("2", Some("@"), altgr), cx));
             assert!(chips_key(w, &stroke("8", Some("["), option), cx));
             assert!(chips_key(w, &stroke("enter", None, Modifiers::shift()), cx));
-            assert!(!chips_key(w, &stroke("v", None, Modifiers::control()), cx));
+            assert!(!chips_key(w, &stroke("c", None, Modifiers::control()), cx));
             assert!(!chips_key(
                 w,
-                &stroke("v", Some("v"), Modifiers::command()),
+                &stroke("c", Some("c"), Modifiers::command()),
                 cx
             ));
             assert!(!chips_key(w, &stroke("enter", None, Modifiers::none()), cx));
             let s = super::super::picker_state(w, cx);
             assert_eq!(s.chips.expect("chips kept").values, ["@["]);
+        });
+    }
+
+    /// w2-bot-review M-B2: Ctrl+V and Cmd+V put the clipboard's first line in the active chip (the chips stay); a paste
+    /// never reaches the hidden field.
+    #[gpui::test]
+    fn a_paste_goes_in_the_active_chip(cx: &mut gpui::TestAppContext) {
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            chipped(w, cx);
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                "tomorrow\tnine\nsecond line".into(),
+            ));
+            assert!(chips_key(w, &stroke("v", None, Modifiers::control()), cx));
+            assert!(chips_key(
+                w,
+                &stroke("v", Some("v"), Modifiers::command()),
+                cx
+            ));
+            let s = super::super::picker_state(w, cx);
+            assert_eq!(
+                s.chips.expect("chips kept").values,
+                ["tomorrowninetomorrownine"]
+            );
+        });
+    }
+
+    /// w2-bot-review M-C1: the suggestions take only plain keys (Shift aside). Ctrl+Enter, Cmd+Tab, and AltGr or Option
+    /// with an arrow never move or accept a suggestion.
+    #[gpui::test]
+    fn modified_keys_never_act_on_the_suggestions(cx: &mut gpui::TestAppContext) {
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            chipped(w, cx);
+            {
+                let s = super::super::picker_state_mut(w, cx);
+                let c = s.chips.as_mut().unwrap();
+                c.shown = vec!["1 day".into(), "7 days".into()];
+                c.can_accept = true;
+                c.enter_accepts = true;
+            }
+            let altgr = Modifiers {
+                control: true,
+                alt: true,
+                ..Default::default()
+            };
+            let option = Modifiers {
+                alt: true,
+                ..Default::default()
+            };
+            for (key, m) in [
+                ("down", altgr),
+                ("down", option),
+                ("enter", Modifiers::control()),
+                ("tab", Modifiers::command()),
+                ("enter", Modifiers::command()),
+            ] {
+                let _ = chips_key(w, &stroke(key, None, m), cx);
+                let c = super::super::picker_state(w, cx).chips.expect("chips kept");
+                assert_eq!(c.sug, 0, "{key} {m:?} moved the highlight");
+                assert!(
+                    c.values.iter().all(String::is_empty),
+                    "{key} {m:?} accepted: {:?}",
+                    c.values
+                );
+            }
+            assert!(chips_key(w, &stroke("down", None, Modifiers::none()), cx));
+            assert_eq!(super::super::picker_state(w, cx).chips.unwrap().sug, 1);
         });
     }
 

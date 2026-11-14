@@ -121,6 +121,14 @@ pub struct JoinRoleDraft {
     pub error: Option<String>,
     /// Set by the workspace's `save`; [`Body::flush_save`] sends it.
     pub save_requested: bool,
+    /// This person may read and save the page ([`join_role_permitted`]), as of the last frame.
+    pub permitted: bool,
+}
+
+/// w2-bot-review I-D1: BotSection.tsx reads and saves Join roles only with Manage Server and Manage Roles both
+/// (`manageCommunity && manageRoles`, `canSavePage`), once the permissions are read.
+pub fn join_role_permitted(access: &dilla_client::state::server_admin::Access) -> bool {
+    access.loaded && access.manage_community && access.manage_roles
 }
 
 impl JoinRoleDraft {
@@ -132,6 +140,17 @@ impl JoinRoleDraft {
     /// `joinRoleDirty`: the select differs from the saved role.
     pub fn dirty(&self) -> bool {
         self.setting().is_some_and(|s| s.role != self.value)
+    }
+
+    /// `canSavePage`: a pick that differs, no save in flight, and the permissions to save it.
+    pub fn can_save(&self) -> bool {
+        self.dirty() && !self.busy && self.permitted
+    }
+
+    /// w2-bot-review M-D4: Save found the installation changed since the page read it: nothing is sent, and the page
+    /// says so (`admin.bot.error.conflict`) rather than staying dirty in silence.
+    pub fn installation_changed(&mut self) {
+        self.error = Some(t("admin.bot.error.conflict").to_owned());
     }
 
     /// Throws the pick away (`reset`: the saved role again).
@@ -508,9 +527,15 @@ impl Body {
             d.error = None;
         }
         drop(client.bot_admin().refresh_installation(community));
+        // w2-bot-review I-D1: read only with Manage Server and Manage Roles, as the permissions just read say.
+        let state = client.state();
         let read = client.roles().run(move |r| async move {
             let _ = r.load_access(community).await;
-            r.bot_join_role(community).await
+            let access = dilla_client::state::server_admin::access_in(&state.borrow(), community);
+            if !join_role_permitted(&access) {
+                return Ok(None);
+            }
+            r.bot_join_role(community).await.map(Some)
         });
         let draft = self.join_role.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -518,7 +543,12 @@ impl Body {
             let _ = this.update_in(cx, |_, _, cx| {
                 let mut d = draft.borrow_mut();
                 match result {
-                    Ok(found) => {
+                    // Not permitted: nothing read, nothing to save; the page says what it requires.
+                    Ok(None) => {
+                        d.permitted = false;
+                        d.loaded = Some(None);
+                    }
+                    Ok(Some(found)) => {
                         let setting = found
                             .map(|(role, installation)| JoinRoleSetting { role, installation });
                         d.value = setting.and_then(|s| s.role);
@@ -547,7 +577,22 @@ impl Body {
             let Some(setting) = d.setting() else {
                 return;
             };
-            if d.busy || !d.dirty() || !self.join_role_ready(&setting) {
+            if d.busy || !d.dirty() {
+                return;
+            }
+            if !self.join_role_ready(&setting) {
+                d.installation_changed();
+                cx.notify();
+                return;
+            }
+            // w2-bot-review I-D1: the permissions are checked again at save, as the web's `saveJoinRole` does; they may
+            // have been taken while the page was open.
+            let fresh = self.client.as_ref().map(|c| {
+                dilla_client::state::server_admin::access_in(&c.state().borrow(), self.community)
+            });
+            if !fresh.is_some_and(|a| join_role_permitted(&a)) {
+                d.permitted = false;
+                d.error = Some(t("admin.bot.error.forbidden").to_owned());
                 return;
             }
             d.busy = true;
@@ -1530,6 +1575,42 @@ mod tests {
         d.reset();
         assert_eq!((d.value, d.error.as_deref()), (None, None));
         assert!(!d.dirty());
+    }
+
+    /// w2-bot-review I-D1 (BotSection.tsx: the read with `manageCommunity && manageRoles`, `canSavePage`): the Join roles
+    /// page needs both Manage Roles and Manage Server; Manage Roles alone neither reads nor saves.
+    #[test]
+    fn join_roles_need_manage_roles_and_manage_server() {
+        use dilla_client::state::server_admin::Access;
+        let access = |loaded, manage_community, manage_roles| Access {
+            loaded,
+            manage_community,
+            manage_roles,
+            ..Access::default()
+        };
+        assert!(join_role_permitted(&access(true, true, true)));
+        assert!(
+            !join_role_permitted(&access(true, false, true)),
+            "a role manager"
+        );
+        assert!(!join_role_permitted(&access(true, true, false)));
+        assert!(!join_role_permitted(&access(false, true, true)), "not read");
+        let mut d = JoinRoleDraft {
+            loaded: Some(Some(JoinRoleSetting {
+                role: None,
+                installation: [1; 16],
+            })),
+            value: Some([7; 16]),
+            ..JoinRoleDraft::default()
+        };
+        assert!(d.dirty());
+        assert!(!d.can_save(), "not permitted");
+        d.permitted = true;
+        assert!(d.can_save());
+        d.busy = true;
+        assert!(!d.can_save());
+        d.installation_changed();
+        assert_eq!(d.error.as_deref(), Some(t("admin.bot.error.conflict")));
     }
 
     /// BotSection.tsx `errorMessage`.

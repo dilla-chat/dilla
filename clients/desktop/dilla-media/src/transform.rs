@@ -320,6 +320,12 @@ impl CallMedia {
         self.lock().stats.verified.keys().cloned().collect()
     }
 
+    /// Whether at least one of `device`'s (hex) frames authenticated: [`Self::verified_devices`] without cloning the set
+    /// under the lock the SFrame path takes (w2-bot-review I-C1).
+    pub fn is_verified(&self, device: &str) -> bool {
+        self.lock().stats.verified.contains_key(device)
+    }
+
     /// Ends the call's media: the keys are dropped (the sender's key is zeroized by dilla-core's
     /// `SframeSender`; the ring with them) and every later frame is dropped.
     pub fn close(&self) {

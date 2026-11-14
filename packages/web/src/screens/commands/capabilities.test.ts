@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { commandBotOf } from './capabilities.ts';
-import { botSince } from './bot-run.ts';
+import { botSince, musicChannel } from './bot-run.ts';
 import { FIXTURE_BOT_USER, fixtureCatalog } from './bot-catalog.fixture.ts';
 
 const COMMUNITY = '55'.repeat(16);
@@ -36,5 +36,18 @@ describe('the picker’s Bot commands (Bot v2)', () => {
     const bot = commandBotOf(fixtureCatalog({ botChannels: [] }), COMMUNITY);
     expect(bot.greyed.get('poll create')).toBe('Mark a channel as a Bot channel first');
     expect(bot.greyed.get('remind')).toBeUndefined();
+  });
+});
+
+// w2-bot-review M-C5: a music command goes with the call's voice room only when that room is one of the community's.
+describe('the voice room a music command goes with', () => {
+  const VOICE = '33'.repeat(16); const ELSEWHERE = '34'.repeat(16);
+  const channels = [{ id: '22'.repeat(16) }, { id: VOICE }];
+  it('is the call’s room in this community, and nothing for a call elsewhere or another command', () => {
+    expect(musicChannel('play', VOICE, channels)).toBe(VOICE);
+    expect(musicChannel('play', ELSEWHERE, channels)).toBeNull();
+    expect(musicChannel('play', VOICE, undefined)).toBeNull();
+    expect(musicChannel('play', null, channels)).toBeNull();
+    expect(musicChannel('remind', VOICE, channels)).toBeNull();
   });
 });

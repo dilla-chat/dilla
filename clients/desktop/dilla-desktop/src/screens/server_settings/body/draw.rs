@@ -1625,8 +1625,10 @@ impl Body {
                 .weight(font::WEIGHT_DISPLAY),
             )
             .child(para("admin.bot.joinRole.honest"));
-        let permitted = access.manage_community && access.manage_roles;
-        if d.loaded == Some(None) && d.error.is_none() {
+        // w2-bot-review I-D1: Manage Server and Manage Roles both, to read, pick and save.
+        let permitted = super::join_role_permitted(&access);
+        self.join_role.borrow_mut().permitted = permitted;
+        if d.loaded == Some(None) && d.error.is_none() && permitted {
             panel = panel.child(para("admin.bot.joinRole.requiresBot"));
         }
         if access.loaded && !permitted {
@@ -1640,7 +1642,7 @@ impl Body {
         }
         if let Some(setting) = d.setting()
             && self.join_role_ready(&setting)
-            && access.manage_roles
+            && permitted
         {
             // `joinRoleCandidates`: every role above @everyone this person may hand out (the owner any, else below their
             // top role).

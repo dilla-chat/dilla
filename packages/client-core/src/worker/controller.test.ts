@@ -6654,6 +6654,52 @@ describe('slow mode slices (CB2)', () => {
 describe('pending role-panel actions', () => {
   afterEach(() => { vi.useRealTimers(); });
 
+  // w2-bot-review I-B2 (Jonas: "Bot messages only"): a confirmed own reaction is offered to the instance in plaintext
+  // (emoji and target seq) only when its message is the community's Bot's, i.e. a role panel.
+  describe('only reactions on the Bot\'s messages (I-B2)', () => {
+    const BOT = new Uint8Array(16).fill(0xb0);
+    const FRIEND = new Uint8Array(16).fill(0x22);
+    const TARGET = new Uint8Array(16).fill(0x70);
+    const REACTION = new Uint8Array(16).fill(0x71);
+    async function reacted(sender: Uint8Array, bot: boolean, pinned: Uint8Array | null): Promise<World> {
+      const w = world();
+      w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '',
+        position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
+      await toReady(w);
+      await vi.waitFor(() => expect(w.channels()?.some((c) => c.id === toHex(CHANNEL))).toBe(true));
+      Object.assign(w.core, {
+        groupRow: () => ({ groupId: GROUP, targetId: CHANNEL }),
+        botUserPinned: () => pinned,
+      });
+      const store = (w.controller as unknown as { slices: { set(name: string, value: unknown): void } }).slices;
+      store.set(`timeline:${toHex(CHANNEL)}`, { channelId: toHex(CHANNEL), items: [{
+        key: 's7', state: 'ok', reason: '', senderUser: toHex(sender), senderDevice: null, own: false, web: false, bot,
+        ts: 1, body: 'React with the matching emoji to choose a role:', msgId: toHex(TARGET), seq: '7', edited: false,
+        reply: null, reactions: [], pinned: false, attachments: [], mention: false,
+      }] });
+      w.routes.applyRolePanelReaction.mockResolvedValue();
+      w.sync.deps!.onPosted(GROUP, 3, { msgId: REACTION, state: 1, error: '', created: 1n, body: '🍆', type: 3, replyTo: TARGET,
+        attachments: [] }, 9n);
+      return w;
+    }
+    const pendingKeys = (w: World) => Object.keys(w.state.settings).filter((k) => k.startsWith('rolePanel.pending.'));
+
+    it('a reaction on the pinned Bot\'s message is sent', async () => {
+      const w = await reacted(BOT, true, BOT);
+      await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+      expect(w.routes.applyRolePanelReaction.mock.calls[0]).toContain('🍆');
+    });
+
+    it('a reaction on a friend\'s message sends nothing in plaintext', async () => {
+      for (const w of [await reacted(FRIEND, false, BOT), await reacted(FRIEND, true, BOT), await reacted(BOT, false, BOT),
+        await reacted(BOT, true, null)]) {
+        await Promise.resolve();
+        expect(w.routes.applyRolePanelReaction).not.toHaveBeenCalled();
+        expect(pendingKeys(w)).toEqual([]);
+      }
+    });
+  });
+
   it('retries a transient accepted-action failure online with backoff, then clears the journal', async () => {
     const w = world();
     await toReady(w);

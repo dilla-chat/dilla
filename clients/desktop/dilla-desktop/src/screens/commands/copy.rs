@@ -21,6 +21,7 @@ pub const JOIN_VOICE_FIRST: &str = "join voice first";
 /// `commandPickerCopy.separator`.
 pub const SEPARATOR: &str = " · ";
 /// `commandPickerCopy.sugTitle`: the suggestions' title, by what they suggest.
+pub const SUG_MEMBERS: &str = "Members";
 pub const SUG_DURATIONS: &str = "Durations";
 pub const SUG_WHEN: &str = "When";
 pub const SUG_SUGGESTIONS: &str = "Suggestions";

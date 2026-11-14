@@ -1,7 +1,8 @@
 //! Self-service role panels (Task 28 wave 2, lane B): a member with Manage Roles has the community's Bot post a panel
 //! (sealed app operation 31, SelfRolesSection.tsx `publishPanel`), registers its mappings (`register_role_panel`), and
-//! every member's confirmed reaction on any community message is offered to the instance as a panel action
-//! (controller.ts `onPosted` → `applyRolePanelReaction`); the instance grants or revokes only for a registered panel.
+//! every member's confirmed reaction on a message the community's Bot authored is offered to the instance as a panel
+//! action (controller.ts `onPosted` → `applyRolePanelReaction`); the instance grants or revokes only for a registered
+//! panel. A reaction on any other message is never sent outside its MLS group (w2-bot-review I-B2, "Bot messages only").
 //!
 //! The action is durable, as the web's: written to the store's settings (`rolePanel.pending.<event msg id>`) before it
 //! is sent, deleted once the instance answers it definitively, retried with a backoff while the answer may still
@@ -101,8 +102,13 @@ impl PendingAction {
 }
 
 /// controller.ts `onPosted`: the action a confirmed own fold makes, or `None` for anything but a reaction (kind 3 or 4)
-/// on a stored message (`target`, its seq known) of a community channel. `group` is the channel's text group, `event_seq`
-/// the seq the instance gave the reaction.
+/// on a stored message (`target`, its seq known) of a community channel that the community's Bot authored. `group` is
+/// the channel's text group, `event_seq` the seq the instance gave the reaction, `bot_user` the Bot user this device
+/// pinned for the community.
+///
+/// w2-bot-review I-B2 (Jonas: "Bot messages only"): only the Bot posts role panels, so only a reaction on a message
+/// whose sender credential is a Bot's and whose sender is the pinned Bot user is sent in plaintext (emoji and target
+/// seq). Every other reaction stays inside the MLS group.
 #[allow(clippy::too_many_arguments)]
 pub fn action_of(
     state: &AppState,
@@ -112,6 +118,7 @@ pub fn action_of(
     target: Option<[u8; 16]>,
     emoji: &str,
     event_seq: u64,
+    bot_user: Option<[u8; 16]>,
 ) -> Option<PendingAction> {
     if kind != REACT_ON && kind != REACT_OFF {
         return None;
@@ -124,7 +131,11 @@ pub fn action_of(
         .items
         .iter()
         .find(|i| i.msg_id.is_some_and(|m| m.0 == target))?;
-    if item.state != TimelineItemState::Ok {
+    if item.state != TimelineItemState::Ok
+        || !item.bot
+        || bot_user.is_none()
+        || item.sender_user.map(|u| u.0) != bot_user
+    {
         return None;
     }
     let message_seq = item.seq?;
@@ -180,6 +191,19 @@ pub fn retryable(e: &ApiError) -> bool {
     e.status == 0 || e.status == 408 || e.status == 425 || e.status == 429 || e.status >= 500
 }
 
+/// This device refused to build the request (`apply`'s `E_ROUTE_INPUT`): no answer from the instance, so the stored
+/// action is neither retried nor deleted (w2-bot-review M-B4: controller.ts deletes only on a `DillaHttpError`).
+const LOCAL_REFUSAL: &str = "E_ROUTE_INPUT";
+
+/// What an answer does to a stored action: `Some(true)` retry, `Some(false)` delete, `None` keep as it is.
+pub fn on_refusal(e: &ApiError) -> Option<bool> {
+    if e.code == LOCAL_REFUSAL {
+        None
+    } else {
+        Some(retryable(e))
+    }
+}
+
 // ---- the running client ----
 
 #[derive(Default)]
@@ -232,14 +256,20 @@ pub(crate) fn on_posted(
             return Ok(());
         };
         let channel = ChannelId(row.target_id);
+        let state = inner.snapshot();
+        let Some(community) = state.channel(channel).map(|c| c.community_id) else {
+            return Ok(());
+        };
+        // The Bot user this device pinned for the community (the web's `core.botUserPinned`): only its messages are
+        // role panels (w2-bot-review I-B2).
+        let core = inner.engine().core().clone();
+        let bot_user = try_core(&core, move |c| c.bot_user_pinned(&community.0))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten();
         let Some(action) = action_of(
-            &inner.snapshot(),
-            channel,
-            group,
-            kind,
-            target,
-            &body,
-            event_seq,
+            &state, channel, group, kind, target, &body, event_seq, bot_user,
         ) else {
             return Ok(());
         };
@@ -308,11 +338,14 @@ async fn submit(inner: &Arc<Inner>, key: String, action: PendingAction, attempt:
                 let _ = reload_members(inner, CommunityId(c)).await;
             }
         }
-        Err(e) if retryable(&e) => schedule(inner, &pc, key.clone(), action, attempt + 1),
-        Err(_) => {
-            let k = key.clone();
-            let _ = try_core(&core, move |c| c.setting_delete(&k)).await;
-        }
+        Err(e) => match on_refusal(&e) {
+            Some(true) => schedule(inner, &pc, key.clone(), action, attempt + 1),
+            Some(false) => {
+                let k = key.clone();
+                let _ = try_core(&core, move |c| c.setting_delete(&k)).await;
+            }
+            None => {}
+        },
     }
     lock(&pc.jobs).remove(&key);
 }
@@ -603,6 +636,8 @@ mod tests {
     const PANEL: [u8; 16] = [0x70; 16];
     const ME: UserId = UserId([0x11; 16]);
     const DEVICE: DeviceId = DeviceId([0x12; 16]);
+    /// The community's Bot user, the panel's author.
+    const BOT: [u8; 16] = [0xb0; 16];
 
     fn world(panel_state: TimelineItemState, seq: Option<u64>) -> AppState {
         let mut s = AppState::default();
@@ -653,7 +688,8 @@ mod tests {
     #[test]
     fn a_confirmed_reaction_on_a_stored_message_is_an_action_and_nothing_else_is() {
         let s = world(TimelineItemState::Ok, Some(7));
-        let on = action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "👍", 9).expect("a reaction");
+        let on =
+            action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, Some(BOT)).expect("a reaction");
         assert_eq!(
             on,
             PendingAction {
@@ -669,45 +705,110 @@ mod tests {
             }
         );
         assert!(
-            !action_of(&s, GENERAL, GROUP, 4, Some(PANEL), "👍", 10)
+            !action_of(&s, GENERAL, GROUP, 4, Some(PANEL), "👍", 10, Some(BOT))
                 .unwrap()
                 .enabled
         );
         // A post, a pin, an edit: not reactions.
         for kind in [0, 1, 2, 5, 6] {
             assert_eq!(
-                action_of(&s, GENERAL, GROUP, kind, Some(PANEL), "👍", 9),
+                action_of(&s, GENERAL, GROUP, kind, Some(PANEL), "👍", 9, Some(BOT)),
                 None
             );
         }
-        assert_eq!(action_of(&s, GENERAL, GROUP, 3, None, "👍", 9), None);
         assert_eq!(
-            action_of(&s, GENERAL, GROUP, 3, Some([1; 16]), "👍", 9),
+            action_of(&s, GENERAL, GROUP, 3, None, "👍", 9, Some(BOT)),
+            None
+        );
+        assert_eq!(
+            action_of(&s, GENERAL, GROUP, 3, Some([1; 16]), "👍", 9, Some(BOT)),
             None,
             "not loaded"
         );
         assert_eq!(
-            action_of(&s, ChannelId([9; 16]), GROUP, 3, Some(PANEL), "👍", 9),
+            action_of(
+                &s,
+                ChannelId([9; 16]),
+                GROUP,
+                3,
+                Some(PANEL),
+                "👍",
+                9,
+                Some(BOT)
+            ),
             None,
             "a DM"
         );
-        assert_eq!(action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "", 9), None);
+        assert_eq!(
+            action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "", 9, Some(BOT)),
+            None
+        );
         let unread = world(TimelineItemState::CannotRead, Some(7));
         assert_eq!(
-            action_of(&unread, GENERAL, GROUP, 3, Some(PANEL), "👍", 9),
+            action_of(&unread, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, Some(BOT)),
             None
         );
         let pending = world(TimelineItemState::Ok, None);
         assert_eq!(
-            action_of(&pending, GENERAL, GROUP, 3, Some(PANEL), "👍", 9),
+            action_of(&pending, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, Some(BOT)),
             None
+        );
+    }
+
+    /// w2-bot-review I-B2 (Jonas: "Bot messages only"): only a reaction on a message the community's Bot authored (a
+    /// role panel) is offered to the instance in plaintext; one on anybody else's message stays E2EE-only.
+    #[test]
+    fn only_a_reaction_on_the_communitys_bot_message_is_an_action() {
+        let s = world(TimelineItemState::Ok, Some(7));
+        assert!(action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, Some(BOT)).is_some());
+        assert_eq!(
+            action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, None),
+            None,
+            "no Bot pinned for the community"
+        );
+        assert_eq!(
+            action_of(
+                &s,
+                GENERAL,
+                GROUP,
+                3,
+                Some(PANEL),
+                "👍",
+                9,
+                Some([0x55; 16])
+            ),
+            None,
+            "another Bot user than the community's"
+        );
+        let mut friend = s.clone();
+        let item = &mut friend.timelines.get_mut(&GENERAL).unwrap().items[0];
+        item.bot = false;
+        item.sender_user = Some(UserId([0x22; 16]));
+        assert_eq!(
+            action_of(&friend, GENERAL, GROUP, 3, Some(PANEL), "🍆", 9, Some(BOT)),
+            None,
+            "a friend's message"
+        );
+        let mut claims = s.clone();
+        claims.timelines.get_mut(&GENERAL).unwrap().items[0].bot = false;
+        assert_eq!(
+            action_of(&claims, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, Some(BOT)),
+            None,
+            "the Bot user's message without a Bot credential"
+        );
+        let mut posing = s.clone();
+        posing.timelines.get_mut(&GENERAL).unwrap().items[0].sender_user = Some(UserId([0x22; 16]));
+        assert_eq!(
+            action_of(&posing, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, Some(BOT)),
+            None,
+            "a Bot credential of another user"
         );
     }
 
     #[test]
     fn stored_actions_read_back_and_only_this_devices_own_are_valid() {
         let s = world(TimelineItemState::Ok, Some(7));
-        let a = action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "👍", 9).unwrap();
+        let a = action_of(&s, GENERAL, GROUP, 3, Some(PANEL), "👍", 9, Some(BOT)).unwrap();
         let json = serde_json::to_string(&a).unwrap();
         assert!(
             json.contains("\"communityId\"") && json.contains("\"eventSeq\":\"9\""),
@@ -753,6 +854,12 @@ mod tests {
         for s in [400, 403, 404, 409] {
             assert!(!retryable(&e(s)), "{s}");
         }
+        // w2-bot-review M-B4: a refusal of this device's own (no answer from the instance) is kept, never deleted or
+        // retried; the instance's answers are retried or deleted.
+        assert_eq!(on_refusal(&refusal(LOCAL_REFUSAL, "")), None);
+        assert_eq!(on_refusal(&e(503)), Some(true));
+        assert_eq!(on_refusal(&e(0)), Some(true));
+        assert_eq!(on_refusal(&e(404)), Some(false));
     }
 
     #[test]

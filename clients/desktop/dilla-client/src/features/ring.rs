@@ -589,6 +589,11 @@ impl DeferredRings {
         Some(self.next)
     }
 
+    /// Whether the deferred ring `token` of `channel` is still current, without taking it (the check before the awaits).
+    pub fn is_current(&self, channel: ChannelId, token: u64) -> bool {
+        self.pending.get(&channel) == Some(&token)
+    }
+
     /// Whether the deferred ring `token` of `channel` is still current; if so it is taken (checked once).
     pub fn take(&mut self, channel: ChannelId, token: u64) -> bool {
         if self.pending.get(&channel) == Some(&token) {
@@ -749,22 +754,26 @@ async fn on_ring(inner: &Arc<Inner>, pc: &Arc<PerClient>, f: &CallRingFrame) {
         let (inner, pc, f) = (inner.clone(), pc.clone(), f.clone());
         drop(inner.clone().spawn(async move {
             load_dms(&inner, &pc).await;
-            if guard(&pc.deferred).take(channel, token) {
-                check_ring(&inner, &pc, &f, own).await;
+            if guard(&pc.deferred).is_current(channel, token) {
+                check_ring(&inner, &pc, &f, own, Some(token)).await;
             }
             Ok::<(), ClientError>(())
         }));
         return;
     }
-    check_ring(inner, pc, f, own).await;
+    check_ring(inner, pc, f, own, None).await;
 }
 
 /// The ring frame `f` (state 0 or 1) against the book; a ring (state 1) is checked against the DM list as it is held.
+/// A deferred ring (`deferred`: its token) enters the book only if no later frame of its channel came while it was
+/// checked: it is taken under the book's lock, so an end the worker handles meanwhile either made it stale first or
+/// enters the book after it and ends it (w2-bot-review M-B1).
 async fn check_ring(
     inner: &Arc<Inner>,
     pc: &Arc<PerClient>,
     f: &CallRingFrame,
     own: Option<UserId>,
+    deferred: Option<u64>,
 ) {
     let channel = ChannelId(f.channel_id);
     let step = if f.state == 1 {
@@ -784,7 +793,13 @@ async fn check_ring(
             busy: guard(&pc.in_call).is_some(),
             quiet: dm_muted(inner, channel),
         };
-        guard(&pc.book).frame(f, Instant::now(), &answers)
+        let mut book = guard(&pc.book);
+        if let Some(token) = deferred
+            && !guard(&pc.deferred).take(channel, token)
+        {
+            return;
+        }
+        book.frame(f, Instant::now(), &answers)
     } else {
         guard(&pc.book).frame(f, Instant::now(), &NoDeps)
     };

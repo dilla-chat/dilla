@@ -9,8 +9,11 @@
 //! `when` phrases with their previews, an option's fixed choices, `/help`'s commands; ↑↓ move, Tab and Enter accept,
 //! as `chipKeyDown`), and the music commands' bar naming the voice room this device is in ([`music_bar`]).
 //!
-//! Not ported yet: entity suggestions (members, and what the Bot or the instance looks up: channels, roles, queue items,
-//! search results) and a DST fold's two `when` candidates.
+//! w2-bot-review I-B1: a member field lists the community's members ([`member_suggestions`]); a pick keeps the member's
+//! id, which is what the command sends, so `/kick` and `/ban` never act on a name.
+//!
+//! Not ported yet: the other entity suggestions (what the Bot or the instance looks up: channels, roles, queue items,
+//! search results, `/unban`'s banned members) and a DST fold's two `when` candidates.
 
 use dilla_client::features::bot::registry::{ArgKind, CommandDefinition, CommandOption};
 use dilla_client::features::bot::room;
@@ -60,6 +63,12 @@ pub struct Chips {
     /// (CommandPicker.tsx `canAccept`, `noAccept`).
     pub can_accept: bool,
     pub enter_accepts: bool,
+    /// What the shown suggestions' rows say (a member's name), beside their values in `shown` (the member's id).
+    pub labels: Vec<String>,
+    /// The active field suggests members: a pick shows the member's name and keeps their id ([`Chips::picked`]).
+    pub member: bool,
+    /// Each field's picked member id (CommandPicker.tsx `field.selected`), until its text changes.
+    pub picked: Vec<Option<String>>,
 }
 
 impl Chips {
@@ -70,10 +79,14 @@ impl Chips {
         }
     }
 
-    /// The active field's text, made if the frame has not drawn it yet.
+    /// The active field's text, made if the frame has not drawn it yet. Its text is about to change, so a member picked
+    /// in it is forgotten (CommandPicker.tsx `setField`).
     pub fn active_value(&mut self) -> &mut String {
         if self.values.len() <= self.active {
             self.values.resize(self.active + 1, String::new());
+        }
+        if let Some(p) = self.picked.get_mut(self.active) {
+            *p = None;
         }
         &mut self.values[self.active]
     }
@@ -89,11 +102,21 @@ impl Chips {
     }
 
     /// CommandPicker.tsx `accept`: suggestion `i`'s value goes in the active field, and the next field becomes active.
+    /// A member's name goes in the field and their id is kept as the field's pick.
     pub fn accept(&mut self, i: usize) {
-        let Some(label) = self.shown.get(i).cloned() else {
+        let Some(value) = self.shown.get(i).cloned() else {
             return;
         };
-        *self.active_value() = label;
+        if self.member {
+            let label = self.labels.get(i).cloned().unwrap_or_else(|| value.clone());
+            *self.active_value() = label;
+            if self.picked.len() <= self.active {
+                self.picked.resize(self.active + 1, None);
+            }
+            self.picked[self.active] = Some(value);
+        } else {
+            *self.active_value() = value;
+        }
         self.active = (self.active + 1).min(self.fields.saturating_sub(1));
         self.sug = 0;
         self.can_accept = false;
@@ -207,6 +230,109 @@ pub fn offered(
     listed: &[(String, Entry)],
     preview: &dyn Fn(&str) -> Option<String>,
 ) -> Offered {
+    offered_with(definition, option, text, listed, &[], false, preview)
+}
+
+/// The members a member field may name (CommandHost.tsx `suggest` for a `user` option): the community's people but this
+/// account and the Bot, and for `/kick` and `/ban` only those this account may moderate (`eligibleModerationTarget`).
+/// All of them, never a truncated list. Nothing outside a community, and nothing for `/unban` (its banned members are
+/// not ported yet).
+fn eligible_members<'a>(
+    state: &'a AppState,
+    community: Option<CommunityId>,
+    command: &str,
+) -> Vec<&'a dilla_client::state::members::Member> {
+    use dilla_client::features::bot::moderation_target;
+    let Some(community) = community.filter(|_| command != "unban") else {
+        return Vec::new();
+    };
+    let Some(members) = state.members.get(&community) else {
+        return Vec::new();
+    };
+    let me = state.account.user_id;
+    members
+        .iter()
+        .filter(|m| Some(m.user_id) != me && m.kind != 1)
+        .filter(|m| match command {
+            "kick" | "ban" => {
+                moderation_target(state, community, &m.user_id.hex(), command == "kick").is_some()
+            }
+            _ => true,
+        })
+        .collect()
+}
+
+/// The members a member field offers for `query` ([`eligible_members`] matching the id, the name or the username, at
+/// most 20). Each value is the member's user id, its label the name and its second line the `@username`.
+pub fn member_suggestions(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command: &str,
+    query: &str,
+) -> Vec<Suggestion> {
+    let needle = query.to_lowercase();
+    let needle = needle.trim_start_matches('@');
+    eligible_members(state, community, command)
+        .into_iter()
+        .filter(|m| {
+            let name = if m.display.is_empty() {
+                &m.username
+            } else {
+                &m.display
+            };
+            m.user_id.hex() == query
+                || name.to_lowercase().contains(needle)
+                || m.username.to_lowercase().contains(needle)
+        })
+        .take(20)
+        .map(|m| Suggestion {
+            label: if m.display.is_empty() {
+                m.username.clone()
+            } else {
+                m.display.clone()
+            },
+            value: m.user_id.hex(),
+            sub: format!("@{}", m.username),
+            icon: IconName::User,
+        })
+        .collect()
+}
+
+/// The member a member field's typed `text` names when none was picked: a literal user id, or an `@username`, each
+/// unique by definition, among all [`eligible_members`]. A display name is never resolved, not even one that looks
+/// unique (w2-bot-review I-B1 and the coordinator's ruling, as the web): the person picks a member from the list.
+pub fn resolve_member(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command: &str,
+    text: &str,
+) -> Option<String> {
+    let text = text.trim();
+    let username = text.strip_prefix('@').map(str::to_lowercase);
+    let eligible = eligible_members(state, community, command);
+    eligible
+        .iter()
+        .find(|m| m.user_id.hex() == text)
+        .or_else(|| {
+            let username = username.as_deref().filter(|u| !u.is_empty())?;
+            eligible
+                .iter()
+                .find(|m| m.username.to_lowercase() == username)
+        })
+        .map(|m| m.user_id.hex())
+}
+
+/// [`offered`], with the members a member field offers ([`member_suggestions`]) and whether its member was `picked`:
+/// only a pick is an exact match there (a typed name never is, so Tab or Enter picks from the list).
+pub fn offered_with(
+    definition: &CommandDefinition,
+    option: &CommandOption,
+    text: &str,
+    listed: &[(String, Entry)],
+    members: &[Suggestion],
+    picked: bool,
+    preview: &dyn Fn(&str) -> Option<String>,
+) -> Offered {
     let kind = suggest_for(definition, option);
     let needle = text.trim().to_lowercase();
     let has = |v: &str| needle.is_empty() || v.to_lowercase().contains(&needle);
@@ -256,13 +382,18 @@ pub fn offered(
                 })
                 .collect(),
         ),
-        Suggest::Member | Suggest::Provider | Suggest::None => (copy::SUG_SUGGESTIONS, Vec::new()),
+        Suggest::Member => (copy::SUG_MEMBERS, members.to_vec()),
+        Suggest::Provider | Suggest::None => (copy::SUG_SUGGESTIONS, Vec::new()),
     };
     let items: Vec<Suggestion> = items.into_iter().take(MAX_SUGGESTIONS).collect();
     let typed = text.to_lowercase();
-    let exact = items
-        .iter()
-        .any(|s| s.label.to_lowercase() == typed || s.value.to_lowercase() == typed);
+    let exact = if kind == Suggest::Member {
+        picked
+    } else {
+        items
+            .iter()
+            .any(|s| s.label.to_lowercase() == typed || s.value.to_lowercase() == typed)
+    };
     let can_accept = !items.is_empty() && !exact && !text.is_empty();
     let no_accept =
         kind == Suggest::None || definition.id == "play" || option.kind == ArgKind::Number;
@@ -361,6 +492,44 @@ pub fn registry_when(text: &str, now: i64, offset_at: &dyn Fn(i64) -> i32) -> Op
     None
 }
 
+/// picker-catalog.ts `registryDuration`: the registry's form of a typed duration (`1 day` is `1d`, `1h30m` stays), or
+/// `None` for one it does not read (w2-bot-review I-C2: the chips' "1 day" made a command that never ran).
+pub fn registry_duration(value: &str) -> Option<String> {
+    let text = value.trim().to_lowercase();
+    if is_short_duration(&text) {
+        return Some(text);
+    }
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let (n, unit) = text.split_at(digits);
+    const UNITS: [&str; 18] = [
+        "second", "seconds", "sec", "secs", "minute", "minutes", "min", "mins", "hour", "hours",
+        "hr", "hrs", "day", "days", "week", "weeks", "wk", "wks",
+    ];
+    let unit = unit.trim_start();
+    if !UNITS.contains(&unit) {
+        return None;
+    }
+    let letter = match unit.as_bytes()[0] {
+        b's' => 's',
+        b'm' => 'm',
+        b'h' => 'h',
+        b'd' => 'd',
+        _ => 'w',
+    };
+    Some(format!("{n}{letter}"))
+}
+
+/// CommandHost.tsx: the duration a dialog shows for a registry `value`, as the chips suggested it (`1d` is "1 day").
+pub fn suggestion_of(value: &str) -> String {
+    DURATION_SUGGESTIONS
+        .iter()
+        .find(|s| registry_duration(s).as_deref() == Some(value))
+        .map_or_else(|| value.to_owned(), |s| (*s).to_owned())
+}
+
 /// `(?:\d+(?:\.\d+)?(?:ms|s|m|h|d|w))+`.
 fn is_short_duration(s: &str) -> bool {
     let b = s.as_bytes();
@@ -441,20 +610,38 @@ fn quoted(value: &str) -> String {
 }
 
 /// The typed form of the chips (`/name option:"value" …`, empty fields left out): what Enter sends through the composer.
-/// `/remind`'s `when` goes in the registry's form.
+/// `/remind`'s `when` goes in the registry's form. A member field sends the picked member's id (`picked`), else the id
+/// `member` resolves its text to ([`resolve_member`]), else its text, which names nobody (CommandPicker.tsx: "No member
+/// called …"; a moderation never acts on a name, w2-bot-review I-B1).
 pub fn typed(
     definition: &CommandDefinition,
     values: &[String],
+    picked: &[Option<String>],
+    member: &dyn Fn(&str) -> Option<String>,
     now: i64,
     offset_at: &dyn Fn(i64) -> i32,
 ) -> String {
     let mut out = format!("/{}", definition.id);
-    for (option, value) in definition.options.iter().zip(values) {
+    for (i, (option, value)) in definition.options.iter().zip(values).enumerate() {
         if value.trim().is_empty() {
             continue;
         }
         let value = if option.kind == ArgKind::Time && definition.id == "remind" {
             registry_when(value, now, offset_at).unwrap_or_else(|| value.clone())
+        } else if suggest_for(definition, option) == Suggest::Duration {
+            // CommandPicker.tsx `validate`: `/ban`'s "permanent" as is, else `registryDuration(text) ?? text`.
+            if definition.id == "ban" && value.trim().eq_ignore_ascii_case(PERMANENT) {
+                PERMANENT.to_owned()
+            } else {
+                registry_duration(value).unwrap_or_else(|| value.clone())
+            }
+        } else if suggest_for(definition, option) == Suggest::Member {
+            picked
+                .get(i)
+                .cloned()
+                .flatten()
+                .or_else(|| member(value))
+                .unwrap_or_else(|| value.clone())
         } else {
             value.clone()
         };
@@ -498,7 +685,15 @@ fn zone_name() -> String {
 pub fn draft(ctx: &SlotCx, window: gpui::WindowId, cx: &App) -> Option<String> {
     let chips = super::picker_state(window, cx).chips?;
     let definition = definition(&ctx.state, ctx.community, &chips.command)?;
-    Some(typed(&definition, &chips.values, now_s(), &offset_at))
+    let member = |text: &str| resolve_member(&ctx.state, ctx.community, &chips.command, text);
+    Some(typed(
+        &definition,
+        &chips.values,
+        &chips.picked,
+        &member,
+        now_s(),
+        &offset_at,
+    ))
 }
 
 /// A music command's bar (CommandPicker.tsx): its description, then the voice room this device is in, else "join voice
@@ -545,7 +740,63 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         )
         .and_then(Result::ok)
     };
-    Some(offered(&definition, option, &text, &listed, &preview))
+    let members = if suggest_for(&definition, option) == Suggest::Member {
+        member_suggestions(&ctx.state, ctx.community, &definition.id, &text)
+    } else {
+        Vec::new()
+    };
+    Some(offered_with(
+        &definition,
+        option,
+        &text,
+        &listed,
+        &members,
+        chips
+            .picked
+            .get(chips.active.min(last))
+            .is_some_and(Option::is_some),
+        &preview,
+    ))
+}
+
+/// The first member field of `chips` that names nobody: typed, no member picked, and not a user id or `@username`
+/// ([`resolve_member`]).
+pub fn unnamed_member(
+    state: &AppState,
+    community: Option<CommunityId>,
+    definition: &CommandDefinition,
+    chips: &Chips,
+) -> Option<usize> {
+    definition
+        .options
+        .iter()
+        .enumerate()
+        .position(|(i, option)| {
+            let text = chips.values.get(i).map_or("", String::as_str);
+            suggest_for(definition, option) == Suggest::Member
+                && !text.trim().is_empty()
+                && chips.picked.get(i).is_none_or(Option::is_none)
+                && resolve_member(state, community, &chips.command, text).is_none()
+        })
+}
+
+/// Enter while `window`'s chips hold a member field that names nobody (a display name typed, no member picked): nothing
+/// runs; that field becomes the active one, so its members are listed to pick from (coordinator's ruling on I-B1, as the
+/// web's "No member called …"). `true`: held.
+pub fn hold_unnamed_member(ctx: &SlotCx, window: gpui::WindowId, cx: &mut App) -> bool {
+    let Some(chips) = super::picker_state(window, cx).chips else {
+        return false;
+    };
+    let Some(definition) = definition(&ctx.state, ctx.community, &chips.command) else {
+        return false;
+    };
+    let Some(i) = unnamed_member(&ctx.state, ctx.community, &definition, &chips) else {
+        return false;
+    };
+    if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
+        c.active = i;
+    }
+    true
 }
 
 /// The automation ids of the suggestion rows (at most [`MAX_SUGGESTIONS`]).
@@ -684,6 +935,14 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
             .as_ref()
             .map(|o| o.items.iter().map(|s| s.value.clone()).collect())
             .unwrap_or_default();
+        c.labels = offer
+            .as_ref()
+            .map(|o| o.items.iter().map(|s| s.label.clone()).collect())
+            .unwrap_or_default();
+        c.member = definition
+            .options
+            .get(c.active)
+            .is_some_and(|o| suggest_for(&definition, o) == Suggest::Member);
         c.sug = c.sug.min(c.shown.len().saturating_sub(1));
         c.can_accept = offer.as_ref().is_some_and(|o| o.can_accept);
         c.enter_accepts = offer.as_ref().is_some_and(|o| o.enter_accepts);
@@ -801,13 +1060,290 @@ mod tests {
             options: vec![opt("when", ArgKind::Time), opt("text", ArgKind::Text)],
             bot: None,
         };
+        let nobody = |_: &str| None;
         assert_eq!(
-            typed(&remind, &["in 1 hour".into(), "say \"hi\"".into()], 0, &utc),
+            typed(
+                &remind,
+                &["in 1 hour".into(), "say \"hi\"".into()],
+                &[],
+                &nobody,
+                0,
+                &utc
+            ),
             r#"/remind when:"1h" text:"say \"hi\"""#
         );
         assert_eq!(
-            typed(&remind, &[String::new(), "x".into()], 0, &utc),
+            typed(&remind, &[String::new(), "x".into()], &[], &nobody, 0, &utc),
             r#"/remind text:"x""#
+        );
+    }
+
+    /// A community of Ada (this account, the owner), two members both called "Alex", Bea and the Bot.
+    fn alexes() -> (AppState, CommunityId) {
+        use dilla_client::state::members::Member;
+        use dilla_client::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let member = |n: u8, username: &str, display: &str, kind: u8| Member {
+            user_id: UserId([n; 16]),
+            username: username.into(),
+            display: display.into(),
+            kind,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(UserId([1; 16]));
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: UserId([1; 16]),
+            policy_version: 1,
+        });
+        s.members.insert(
+            c,
+            vec![
+                member(1, "ada", "Ada", 0),
+                member(2, "alex", "Alex", 0),
+                member(3, "troll", "Alex", 0),
+                member(4, "bea", "", 0),
+                member(5, "glenn", "Glenn", 1),
+            ],
+        );
+        let mut access = s.roles.access_of(c);
+        access.loaded = true;
+        access.owner = true;
+        access.kick_members = true;
+        access.ban_members = true;
+        s.roles.access.insert(c, access);
+        (s, c)
+    }
+
+    /// w2-bot-review I-B1 (CommandHost.tsx `suggest` for a `user` option): a member field lists the people but this
+    /// account and the Bot, each by name with their `@username` and their id as the value.
+    #[test]
+    fn a_member_field_lists_the_people_by_name_and_username_with_their_id() {
+        let (s, c) = alexes();
+        let all = member_suggestions(&s, Some(c), "kick", "");
+        let rows: Vec<(&str, &str)> = all
+            .iter()
+            .map(|m| (m.label.as_str(), m.sub.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [("Alex", "@alex"), ("Alex", "@troll"), ("bea", "@bea")]
+        );
+        assert_eq!(all[1].value, dilla_client::state::UserId([3; 16]).hex());
+        let troll = member_suggestions(&s, Some(c), "ban", "@trol");
+        assert_eq!(troll.len(), 1, "@trol matches a username: {troll:?}");
+        assert_eq!(troll[0].sub, "@troll");
+        assert!(member_suggestions(&s, None, "kick", "").is_empty(), "a DM");
+        // Without Kick Members nobody can be kicked, so nobody is offered.
+        let mut no_kick = s.clone();
+        let mut access = no_kick.roles.access_of(c);
+        access.owner = false;
+        access.kick_members = false;
+        no_kick.roles.access.insert(c, access);
+        no_kick.communities[0].owner = dilla_client::state::UserId([9; 16]);
+        assert!(member_suggestions(&no_kick, Some(c), "kick", "").is_empty());
+        let o = offered_with(
+            &command("kick", vec![]),
+            &option("user", ArgKind::User, None),
+            "",
+            &[],
+            &all,
+            false,
+            &|_| None,
+        );
+        assert_eq!(o.title, "Members");
+        assert_eq!(labels(&o), ["Alex", "Alex", "bea"]);
+        let user = option("user", ArgKind::User, None);
+        let typed_name = offered_with(
+            &command("kick", vec![]),
+            &user,
+            "bea",
+            &[],
+            &all,
+            false,
+            &|_| None,
+        );
+        assert!(
+            typed_name.can_accept,
+            "a typed name is never exact: Tab or Enter picks from the list"
+        );
+        let picked = offered_with(
+            &command("kick", vec![]),
+            &user,
+            "bea",
+            &[],
+            &all,
+            true,
+            &|_| None,
+        );
+        assert!(!picked.can_accept, "a pick is: Enter runs");
+    }
+
+    /// w2-bot-review I-B1, coordinator's ruling: only a literal user id or an `@username` names a member; a display name
+    /// never does, not even one only one member seems to have.
+    #[test]
+    fn only_an_id_or_username_names_a_member() {
+        let (s, c) = alexes();
+        let resolve = |text: &str| resolve_member(&s, Some(c), "ban", text);
+        let id = |n: u8| dilla_client::state::UserId([n; 16]).hex();
+        assert_eq!(resolve("Alex"), None, "a display name");
+        assert_eq!(resolve("@troll"), Some(id(3)));
+        assert_eq!(resolve("@TROLL"), Some(id(3)));
+        assert_eq!(resolve("troll"), None, "without @ it could be a name");
+        assert_eq!(resolve("bea"), None);
+        assert_eq!(resolve(&id(2)), Some(id(2)));
+        assert_eq!(resolve("@glenn"), None, "the Bot");
+        assert_eq!(resolve("@ada"), None, "oneself");
+        assert_eq!(resolve(""), None);
+        assert_eq!(resolve("@"), None);
+    }
+
+    /// w2-bot-review I-C2: picker-catalog.ts `registryDuration`, the registry's form of a typed duration.
+    #[test]
+    fn spoken_durations_take_the_registry_form() {
+        assert_eq!(registry_duration("1 day").as_deref(), Some("1d"));
+        assert_eq!(registry_duration("10 Minutes").as_deref(), Some("10m"));
+        assert_eq!(registry_duration("7 days").as_deref(), Some("7d"));
+        assert_eq!(registry_duration("1 hour").as_deref(), Some("1h"));
+        assert_eq!(registry_duration("2 wks").as_deref(), Some("2w"));
+        assert_eq!(registry_duration("30 secs").as_deref(), Some("30s"));
+        assert_eq!(registry_duration("1h30m").as_deref(), Some("1h30m"));
+        assert_eq!(registry_duration("soon"), None);
+        assert_eq!(registry_duration("1 fortnight"), None);
+        assert_eq!(suggestion_of("1d"), "1 day");
+        assert_eq!(suggestion_of("3d"), "3d");
+    }
+
+    /// w2-bot-review I-C2: every duration the chips suggest, picked for `/ban`, makes a command that runs (the
+    /// moderation dialog), with the length in the registry's form; "permanent" stays.
+    #[test]
+    fn ban_runs_with_each_suggested_duration() {
+        use dilla_client::features::bot::{ModAction, Plan, plan};
+        let (s, c) = alexes();
+        let ban = definition(&s, Some(c), "ban").expect("/ban is offered to its owner");
+        let bea = dilla_client::state::UserId([4; 16]).hex();
+        let user = ban.options.iter().position(|o| o.name == "user").unwrap();
+        let duration = ban
+            .options
+            .iter()
+            .position(|o| o.name == "duration")
+            .unwrap();
+        let nobody = |_: &str| None;
+        for (picked, want) in DURATION_SUGGESTIONS
+            .iter()
+            .zip(["10m", "1h", "1d", "7d"])
+            .chain([(&PERMANENT, "permanent")])
+        {
+            let mut values = vec![String::new(); ban.options.len()];
+            values[user] = bea.clone();
+            values[duration] = (*picked).to_owned();
+            let draft = typed(&ban, &values, &[], &nobody, 0, &utc);
+            match plan(&s, Some(c), &draft) {
+                // "10 minutes" is shorter than a ban may be: refused, but by the ban's own rule, not as incomplete.
+                Plan::Private(_, text, _) if want == "10m" => {
+                    assert_eq!(text, "Ban duration must be from 1h to 100y.", "{draft}")
+                }
+                Plan::Moderate(m) => match m.action {
+                    ModAction::Ban { duration, .. } => assert_eq!(duration, want, "{draft}"),
+                    other => panic!("{other:?}"),
+                },
+                other => panic!("{draft}: {other:?}"),
+            }
+        }
+    }
+
+    /// The coordinator's ruling: two members share a display name, one of them ranked past the 20 suggestions; typing
+    /// that name names neither, and the chips hold Enter on that field.
+    #[test]
+    fn a_shared_name_past_the_suggestion_cut_names_neither() {
+        use dilla_client::state::UserId;
+        use dilla_client::state::members::Member;
+        let (mut s, c) = alexes();
+        let rows = s.members.get_mut(&c).unwrap();
+        rows.retain(|m| m.username != "troll" && m.username != "alex");
+        rows.push(Member {
+            user_id: UserId([0x20; 16]),
+            username: "sam".into(),
+            display: "Sam".into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        });
+        for n in 0..25u8 {
+            rows.push(Member {
+                user_id: UserId([0x40 + n; 16]),
+                username: format!("samfan{n}"),
+                display: format!("Samfan {n}"),
+                kind: 0,
+                role_ids: Vec::new(),
+                status_msg: String::new(),
+                bio: String::new(),
+            });
+        }
+        rows.push(Member {
+            user_id: UserId([0x7f; 16]),
+            username: "impostor".into(),
+            display: "Sam".into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        });
+        let listed = member_suggestions(&s, Some(c), "ban", "Sam");
+        assert_eq!(listed.len(), 20);
+        assert!(
+            !listed.iter().any(|m| m.sub == "@impostor"),
+            "the second Sam is past the cut"
+        );
+        assert_eq!(resolve_member(&s, Some(c), "ban", "Sam"), None);
+        assert_eq!(
+            resolve_member(&s, Some(c), "ban", "@impostor"),
+            Some(UserId([0x7f; 16]).hex())
+        );
+        let ban = command("ban", vec![option("user", ArgKind::User, None)]);
+        let mut chips = Chips::new("ban".into());
+        chips.values = vec!["Sam".into()];
+        assert_eq!(unnamed_member(&s, Some(c), &ban, &chips), Some(0));
+        chips.values = vec!["@sam".into()];
+        assert_eq!(unnamed_member(&s, Some(c), &ban, &chips), None);
+        chips.values = vec!["Sam".into()];
+        chips.picked = vec![Some(UserId([0x20; 16]).hex())];
+        assert_eq!(unnamed_member(&s, Some(c), &ban, &chips), None, "picked");
+    }
+
+    /// w2-bot-review I-B1: picking a member puts their name in the chip and keeps their id, which the typed form sends;
+    /// typing in the chip forgets the pick.
+    #[test]
+    fn a_picked_member_is_sent_by_id_until_the_chip_is_typed_in() {
+        let (s, c) = alexes();
+        let kick = command("kick", vec![option("user", ArgKind::User, None)]);
+        let all = member_suggestions(&s, Some(c), "kick", "");
+        let mut chips = Chips::new("kick".into());
+        chips.fields = 1;
+        chips.member = true;
+        chips.shown = all.iter().map(|m| m.value.clone()).collect();
+        chips.labels = all.iter().map(|m| m.label.clone()).collect();
+        chips.accept(1);
+        assert_eq!(chips.values, ["Alex"]);
+        let troll = dilla_client::state::UserId([3; 16]).hex();
+        assert_eq!(chips.picked, [Some(troll.clone())]);
+        let member = |text: &str| resolve_member(&s, Some(c), "kick", text);
+        assert_eq!(
+            typed(&kick, &chips.values, &chips.picked, &member, 0, &utc),
+            format!("/kick user:\"{troll}\"")
+        );
+        chips.active_value().push('!');
+        chips.active_value().pop();
+        assert_eq!(chips.picked, [None]);
+        assert_eq!(
+            typed(&kick, &chips.values, &chips.picked, &member, 0, &utc),
+            "/kick user:\"Alex\"",
+            "an unpicked Alex names nobody"
         );
     }
 

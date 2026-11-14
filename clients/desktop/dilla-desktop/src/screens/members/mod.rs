@@ -1058,32 +1058,6 @@ fn sorted_roles(state: &AppState, community: CommunityId) -> Vec<RoleSummary> {
     roles
 }
 
-/// Runs a roles command and says a refusal by its code, in window `w`.
-fn roles_job(
-    w: WindowId,
-    client: &Rc<Client>,
-    cx: &mut App,
-    job: impl FnOnce(
-        dilla_client::features::roles::Roles,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), ApiError>> + Send>,
-    > + 'static,
-) {
-    let fut = client.roles().run(job);
-    cx.spawn(async move |cx| {
-        if let Err(e) = fut.await {
-            cx.update(|cx| {
-                show_toast_in(
-                    Some(w),
-                    tf("roles.assign.error.other", &[("code", &e.code)]),
-                    cx,
-                )
-            });
-        }
-    })
-    .detach();
-}
-
 fn bans_section(
     ctx: &SlotCx,
     community: CommunityId,

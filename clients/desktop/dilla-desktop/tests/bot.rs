@@ -538,7 +538,11 @@ fn run_kick(app: &mut Driver, who: &str) {
     app.wait_for("command-active-ready", Duration::from_secs(60));
     app.press("tab");
     app.wait_for("command-chips", Duration::from_secs(5));
-    app.type_focused(who);
+    // w2 I-B1: the member is picked from the chip's list (Tab), so the command carries their id.
+    app.type_focused(&format!("@{who}"));
+    app.wait_for("command-suggestions", Duration::from_secs(10));
+    app.press("tab");
+    app.wait_idle();
     app.press("enter");
     app.wait_idle();
 }
