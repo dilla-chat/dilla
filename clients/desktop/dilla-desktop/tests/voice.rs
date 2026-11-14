@@ -294,6 +294,103 @@ fn a_dm_call_box_keeps_compact_tiles_when_the_other_person_shares_their_screen(
     );
 }
 
+/// Wave 2 review, lane G minor: in a narrow conversation (360x700, one column of cards) the DM call box stays compact:
+/// the box and each card are at most 40 % of the conversation's height.
+#[gpui::test]
+fn a_dm_call_box_stays_compact_in_a_narrow_conversation(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let (_, cx) = cx.add_window_view(|_, _| DmHost);
+    cx.simulate_resize(gpui::size(gpui::px(360.0), gpui::px(700.0)));
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), dm_state(), None, cx);
+        window.refresh();
+    });
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+    }
+    let main_h = f32::from(
+        cx.debug_bounds("dm-main")
+            .expect("the conversation")
+            .size
+            .height,
+    );
+    let boxed = cx.debug_bounds("dm-call-box").expect("the box shows");
+    assert!(
+        f32::from(boxed.size.height) <= main_h * 0.4 + 0.5,
+        "the box {:?} against 40 % of {main_h}",
+        boxed.size
+    );
+    let own = DeviceId([100; 16]).hex();
+    let card = cx
+        .debug_bounds(selector(format!("dm-tile-{own}")))
+        .expect("the own card");
+    assert!(f32::from(card.size.height) <= main_h * 0.4);
+    // One column: the card takes the grid's width.
+    let bob = cx
+        .debug_bounds(selector(format!("dm-tile-{}", DeviceId([101; 16]).hex())))
+        .expect("Bob's card");
+    assert!(
+        bob.origin.y > card.origin.y,
+        "one column at 360px: {card:?} {bob:?}"
+    );
+}
+
+/// Wave 2 review I-G2 (CallStage.tsx's `<details>`): the DM box's "call code" is a disclosure. A click opens it on the
+/// grouped safety-code digits (six groups of five), a second click closes it; Escape closes it too.
+#[gpui::test]
+fn the_dm_call_code_opens_on_its_grouped_digits(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let (_, cx) = cx.add_window_view(|_, _| DmHost);
+    let mut s = (*dm_state()).clone();
+    s.voice.call.code = Some("123451234512345123451234512345".into());
+    let s = Arc::new(s);
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), s.clone(), None, cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    let summary = cx
+        .debug_bounds("dm-call-code")
+        .expect("the call code's summary");
+    assert!(
+        cx.debug_bounds("dm-call-code-digits").is_none(),
+        "closed at first"
+    );
+    cx.simulate_click(summary.center(), gpui::Modifiers::none());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-open").is_some());
+    let digits = cx
+        .debug_bounds("dm-call-code-digits")
+        .expect("the digits show");
+    assert!(digits.origin.y >= summary.origin.y + summary.size.height);
+    assert_eq!(
+        voice::group_code("123451234512345123451234512345"),
+        "12345 12345 12345 12345 12345 12345"
+    );
+    assert_eq!(
+        voice::group_code("12345 6"),
+        "12345 6",
+        "not 30 digits: as given"
+    );
+    // A second click closes it.
+    cx.simulate_click(summary.center(), gpui::Modifiers::none());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-digits").is_none());
+    // Opened again, Escape closes it.
+    cx.simulate_click(summary.center(), gpui::Modifiers::none());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-digits").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-digits").is_none());
+    assert!(cx.debug_bounds("dm-call-code").is_some());
+}
+
 /// Twelve people with long names (the -b fixtures' world) draw without a panic, and the people group per user.
 #[gpui::test]
 fn twelve_people_with_long_names_draw(cx: &mut TestAppContext) {
@@ -1498,5 +1595,5 @@ macro_rules! parity {
 parity! {
     parity_voice_stage => "stage",
     parity_voice_stage_b => "stage-b",
-    parity_voice_dm_call => "dm-call"; "parity after T6c: whole frame 0.8443 % (R22, lane P: the call box matches; the DM conversation around it is not the web's yet: the header draws a channel's (# Mira, Threads, members) where the web draws @ Mira @mira · offline (shell.dm.topic is unported), the rail keeps the server selected, the list head, the empty state and the composer's GIF differ, and the call code disclosure is not drawn)",
+    parity_voice_dm_call => "dm-call",
 }

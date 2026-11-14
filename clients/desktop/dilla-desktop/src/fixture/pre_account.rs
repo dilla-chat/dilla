@@ -29,7 +29,7 @@ pub enum PreAccount {
     SignInError,
 }
 
-/// The instance the web shooter's browser is served by: dilla-testhost's name (`dilladtest`), which the web's pre-account
+/// The instance the web shooter's browser is served by: dilla-testhost's name (`dilla.test`), which the web's pre-account
 /// screens name in their headings.
 pub const INSTANCE_NAME: &str = "dilla.test";
 

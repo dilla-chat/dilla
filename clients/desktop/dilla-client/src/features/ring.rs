@@ -230,6 +230,7 @@ pub fn outgoing_start(
             .collect(),
         declined: Vec::new(),
         not_rung: Vec::new(),
+        expired: false,
     }
 }
 
@@ -551,6 +552,8 @@ struct PerClient {
     dms_reading: tokio::sync::Mutex<()>,
     /// Each channel's ring timer: re-arming aborts the one before.
     timers: Mutex<HashMap<ChannelId, tokio::task::AbortHandle>>,
+    /// The outgoing ring's 30 s timer (useCall.tsx `ringExpired`): a new outgoing ring or the call's end aborts it.
+    outgoing_timer: Mutex<Option<tokio::task::AbortHandle>>,
     /// Rings for a DM this device does not list yet, waiting for the list's re-read off the worker.
     deferred: Mutex<DeferredRings>,
 }
@@ -862,6 +865,40 @@ fn publish_outgoing(inner: &Arc<Inner>, out: Outgoing) {
     inner.publish(move |s| s.ring.outgoing = Some(out));
 }
 
+/// useCall.tsx's `ringExpired` clock: [`RING`] after the outgoing ring of `channel` starts, it is marked expired. A new
+/// outgoing ring re-arms it; the call's end stops it ([`stop_outgoing_timer`]).
+fn arm_outgoing(inner: &Arc<Inner>, pc: &Arc<PerClient>, channel: ChannelId) {
+    let (weak, weak_pc) = (Arc::downgrade(inner), Arc::downgrade(pc));
+    let sleeper = tokio::spawn(async move {
+        tokio::time::sleep(RING).await;
+        let (Some(inner), Some(pc)) = (weak.upgrade(), weak_pc.upgrade()) else {
+            return;
+        };
+        let expired = {
+            let mut out = guard(&pc.outgoing);
+            match out.as_mut() {
+                Some(o) if o.channel == Some(channel) && !o.expired => {
+                    o.expired = true;
+                    Some(o.clone())
+                }
+                _ => None,
+            }
+        };
+        if let Some(o) = expired {
+            publish_outgoing(&inner, o);
+        }
+    });
+    if let Some(previous) = guard(&pc.outgoing_timer).replace(sleeper.abort_handle()) {
+        previous.abort();
+    }
+}
+
+fn stop_outgoing_timer(pc: &PerClient) {
+    if let Some(timer) = guard(&pc.outgoing_timer).take() {
+        timer.abort();
+    }
+}
+
 fn on_afk_away(inner: &Arc<Inner>, pc: &Arc<PerClient>, f: &AfkAwayFrame) {
     let community = CommunityId(f.community_id);
     let held = inner.snapshot().ring.afk.get(&community).cloned();
@@ -1170,6 +1207,7 @@ async fn bookkeeping(
                     *guard(&pc.live) = Some(Live { channel, members });
                     *guard(&pc.outgoing) = Some(out.clone());
                     publish_outgoing(inner, out);
+                    arm_outgoing(inner, pc, channel);
                 }
                 inner.publish(move |s| {
                     if s.ring
@@ -1333,6 +1371,7 @@ impl Ring {
         if !busy {
             *guard(&pc.live) = None;
             *guard(&pc.outgoing) = None;
+            stop_outgoing_timer(&pc);
         }
         self.inner.publish(move |s| {
             if busy {
@@ -1481,6 +1520,7 @@ impl Ring {
         let pc = per_client(&self.inner);
         guard(&pc.book).clear();
         *guard(&pc.outgoing) = None;
+        stop_outgoing_timer(&pc);
         *guard(&pc.live) = None;
         self.inner.publish(|s| {
             s.ring = RingState {

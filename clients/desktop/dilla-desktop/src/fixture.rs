@@ -304,6 +304,7 @@ pub fn build_state(
             ..ConnectionState::default()
         },
         communities,
+        communities_loaded: true,
         channels,
         timelines,
         members,

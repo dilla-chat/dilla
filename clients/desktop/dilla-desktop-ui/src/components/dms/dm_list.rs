@@ -1,5 +1,6 @@
-//! The Home sidebar's DM list (packages/ui ChannelList on `/dm`, ChannelList.css): the plain mono title, the
-//! square-pen "message someone" button in the head, the stats line (online, conversations), the section label in tracked
+//! The Home sidebar's DM list (packages/ui ChannelList on `/dm`, ChannelList.css): the title in the server head's
+//! display serif (Shell.tsx passes `titleKind="server"`), the square-pen "message someone" button and the host's menu
+//! (the DM defaults' ⌄) in the head, the stats line (online, conversations), the section label in tracked
 //! capitals over a hairline, and the DMs as person rows (Row with `person`, 42px). Automation ids: `dm-list`,
 //! `dm-new`, `dm-<i>` (a row).
 
@@ -13,8 +14,8 @@ use gpui::{
 use crate::components::icon_button::{IconButton, IconButtonSize};
 use crate::components::row::{Person, Row, RowKind};
 use crate::icon_names::IconName;
-use crate::metrics::{LABEL_TRACKING, LABEL_TRACKING_WIDE};
-use crate::text::{line, line_height};
+use crate::metrics::LABEL_TRACKING_WIDE;
+use crate::text::{Face, line, line_height};
 use crate::tokens::{color, font, layout, text};
 
 /// One DM as the list draws it.
@@ -26,6 +27,10 @@ pub struct DmItem {
     pub unread: u32,
     pub mentions: u32,
 }
+
+/// `.d-channel-list__section`: 14px above its label box, and the 1px hairline over it.
+const SECTION_PAD_TOP: f32 = 14.0;
+const HAIRLINE: f32 = 1.0;
 
 type Select = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 type Click = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -40,6 +45,7 @@ pub struct DmList {
     items: Vec<DmItem>,
     on_select: Select,
     on_new: Click,
+    menu: Option<gpui::AnyElement>,
 }
 
 impl DmList {
@@ -63,7 +69,14 @@ impl DmList {
             items,
             on_select: Rc::new(|_, _, _| {}),
             on_new: Rc::new(|_, _, _| {}),
+            menu: None,
         }
+    }
+
+    /// The head's menu after the "message someone" button (Shell.tsx `dmsMenu`, the host's own `ActionMenu`).
+    pub fn menu(mut self, menu: impl IntoElement) -> Self {
+        self.menu = Some(menu.into_any_element());
+        self
     }
 
     /// A row was chosen (its index in the items).
@@ -95,18 +108,23 @@ impl RenderOnce for DmList {
             .pl(px(14.0))
             .pr(px(12.0))
             .child(
-                div().flex_1().min_w_0().child(
-                    line(self.title, text::MD, line_height(text::MD, 1.5), color::FG)
-                        .weight(font::WEIGHT_DISPLAY)
-                        .tracking(LABEL_TRACKING)
-                        .clip(),
+                div().flex_1().min_w_0().flex().child(
+                    line(
+                        self.title,
+                        text::TITLE,
+                        line_height(text::TITLE, 1.5),
+                        color::FG,
+                    )
+                    .face(Face::SerifItalic)
+                    .clip(),
                 ),
             )
             .child(
                 IconButton::new("dm-new", IconName::SquarePen, self.new_label)
                     .size(IconButtonSize::S28)
                     .on_click(move |e, w, cx| on_new(e, w, cx)),
-            );
+            )
+            .children(self.menu);
         let meta = |s: SharedString| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
         let mut stats = div()
             .flex_none()
@@ -128,12 +146,13 @@ impl RenderOnce for DmList {
                 stats = stats.child(meta("·".into())).child(meta(s));
             }
         }
+        // `.d-channel-list__section` is content-box: its 1.625rem label box under 14px of padding and the hairline.
         let section = div()
             .flex_none()
             .flex()
             .items_center()
-            .h(layout::ROW_H_SUB)
-            .pt(px(14.0))
+            .h(layout::ROW_H_SUB + px(SECTION_PAD_TOP + HAIRLINE))
+            .pt(px(SECTION_PAD_TOP))
             .px(px(16.0))
             .border_t_1()
             .border_color(color::HAIRLINE)
@@ -192,7 +211,7 @@ impl RenderOnce for DmList {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .pt(px(4.0))
+                    // `.d-channel-list__section + .d-channel-list__list`: no top padding under the label.
                     .px(px(8.0))
                     .flex()
                     .flex_col()

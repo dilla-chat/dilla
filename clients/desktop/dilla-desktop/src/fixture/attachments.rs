@@ -29,7 +29,7 @@ pub(super) fn apply(world: &WorldSpec, _viewer: &str, state: &mut AppState) {
             state
                 .attachments
                 .fixture_pictures
-                .insert((a.name.clone(), a.size), picture);
+                .insert((a.name.clone(), a.size), picture.into());
         }
     }
 }

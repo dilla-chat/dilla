@@ -38,19 +38,45 @@ pub struct Editing {
     /// `None` while a fixture is drawn: saving then only closes the editor.
     client: Option<Rc<Client>>,
     members: Vec<MentionMember>,
+    /// The members' usernames, which a role's name may not shadow (`mention_roles`).
+    usernames: Vec<String>,
+    /// The message's text as the editor opened it: a role it already names stays encodable (`editRoles`).
+    body: String,
     roles: Vec<MentionRole>,
     broadcast: bool,
     _subscription: Subscription,
 }
 
+/// Conversation.tsx's edit rule, from `state` now: the composer's broadcast right in `channel` and the roles offered plus
+/// every role `body` already names.
+pub(crate) fn edit_rights(
+    state: &dilla_client::state::AppState,
+    channel: ChannelId,
+    body: &str,
+    usernames: &[&str],
+) -> (bool, Vec<MentionRole>) {
+    let (broadcast, roles) = crate::screens::composer::mention_rights(state, Some(channel));
+    let offered = edit_roles(&roles, broadcast, body);
+    (broadcast, mention_roles(&offered, usernames))
+}
+
 impl Editing {
-    /// The text as it will be sent: names encoded back to their tokens.
+    /// The text as it will be sent: names encoded back to their tokens. The rights are the conversation's now, as the web
+    /// recomputes them on every render (review IJ m2): bits read after the editor opened apply to its save.
     pub fn encoded(&self, cx: &App) -> String {
+        let (broadcast, roles) = match &self.client {
+            Some(client) => {
+                let state = client.state().borrow().clone();
+                let names: Vec<&str> = self.usernames.iter().map(String::as_str).collect();
+                edit_rights(&state, self.channel, &self.body, &names)
+            }
+            None => (self.broadcast, self.roles.clone()),
+        };
         encode_mentions(
             &self.input.read(cx).value(),
             &self.members,
-            self.broadcast,
-            &self.roles,
+            broadcast,
+            &roles,
         )
     }
 
@@ -249,7 +275,7 @@ impl MessageUi {
             .unwrap_or_default();
         // Conversation.tsx: an edit is encoded with the composer's rule (the channel's bits, the shell's rule while
         // unknown) and with the offered roles plus every role the message already names (`editRoles`).
-        let (broadcast, roles) = crate::screens::composer::mention_rights(state, Some(channel));
+        let (_, all_roles) = crate::screens::composer::mention_rights(state, Some(channel));
         let self_user = state.account.user_id.map(|u| u.hex());
         let text = editable_text(
             &item.body,
@@ -257,10 +283,10 @@ impl MessageUi {
             self_user
                 .as_deref()
                 .map(|id| (id, state.account.username.as_str())),
-            &roles,
+            &all_roles,
         );
         let usernames: Vec<&str> = members.iter().map(|m| m.username.as_str()).collect();
-        let offered = edit_roles(&roles, broadcast, &item.body);
+        let (broadcast, roles) = edit_rights(state, channel, &item.body, &usernames);
         let input = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
         input.update(cx, |s, cx| s.set_value(text, window, cx));
         let focus = input.read(cx).focus_handle(cx);
@@ -282,7 +308,9 @@ impl MessageUi {
                     username: m.username.clone(),
                 })
                 .collect(),
-            roles: mention_roles(&offered, &usernames),
+            usernames: usernames.iter().map(|u| (*u).to_owned()).collect(),
+            body: item.body.clone(),
+            roles,
             broadcast,
             _subscription: sub,
         });

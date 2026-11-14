@@ -1109,6 +1109,52 @@ async fn decline() {
         .expect("the instance answered the decline");
 }
 
+/// Wave 2 review I-G1 (useCall.tsx `ringExpired`): this device calls the peer, who never answers. The outgoing ring
+/// still rings at first; 30 s after the call's start it is marked expired (the box then says "No answer."), and the
+/// call's end takes the outgoing ring with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost, the wasi core and dilla-testkit"]
+async fn an_unanswered_outgoing_ring_expires_after_30_s() {
+    let p = pair("w2f3-ring-expiry", 0x1812).await;
+    let dm = open_dm(&p.peer, p.me()).await;
+    let started = std::time::Instant::now();
+    let joined = join(&p.client, dm, None)
+        .await
+        .expect("not blocked")
+        .expect("joined");
+    let s = wait_for(&p.client, WAIT, "the outgoing ring", |s| {
+        s.ring.outgoing.is_some()
+    })
+    .await;
+    let out = s.ring.outgoing.clone().unwrap();
+    assert_eq!(out.ringing, vec![p.peer_user()]);
+    assert!(!out.expired, "it rings at first");
+    let s = wait_for(&p.client, Duration::from_secs(45), "the ring's 30 s", |s| {
+        s.ring.outgoing.as_ref().is_some_and(|o| o.expired)
+    })
+    .await;
+    assert!(
+        started.elapsed() >= dilla_client::state::ring::RING,
+        "not before 30 s ({:?})",
+        started.elapsed()
+    );
+    assert_eq!(
+        s.ring.outgoing.as_ref().unwrap().ringing,
+        vec![p.peer_user()]
+    );
+    p.client
+        .calls()
+        .leave(joined.group_id, joined.started.call_id, true)
+        .await
+        .unwrap()
+        .expect("left");
+    p.client.ring().set_in_call(None);
+    wait_for(&p.client, WAIT, "the outgoing ring gone", |s| {
+        s.ring.outgoing.is_none()
+    })
+    .await;
+}
+
 /// e2e/voice/ring.spec.ts "busy": while this device is in a call, a ring shows busy and names where; once the call is
 /// left it no longer is (WB client m6).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

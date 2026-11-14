@@ -9,8 +9,8 @@
 //! [`ReadyPanel`] (the done step's panel).
 //!
 //! The brand glow (`radial-gradient(900px 420px at 50% -10%, --brand-glow, transparent 70%)`) is drawn by
-//! [`brand_glow`]: GPUI has no radial gradient, so the ramp is painted in cells small enough that a cell's step of it is
-//! under half a colour level.
+//! [`brand_glow`]: GPUI has no radial gradient, so the ramp is painted in 4px cells. A cell's step of it is about 0.27
+//! of a colour level across (the ramp runs over 630px) and about 0.58 of one down (over 294px).
 
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, Entity, Focusable, InteractiveElement, IntoElement,
@@ -322,8 +322,9 @@ const GLOW_RX: f32 = 900.0;
 const GLOW_RY: f32 = 420.0;
 const GLOW_AT_Y: f32 = -0.10;
 const GLOW_END: f32 = 0.70;
-/// The cell the ramp is painted in: over the ramp's 630px the glow's 0.28 alpha of its blue (153) changes by under
-/// 0.3 of a level across 4px.
+/// The cell the ramp is painted in. The glow's 0.28 alpha of its blue (153) falls to nothing over the ramp's 630px
+/// across (0.28 x 153 x 4 / 630, about 0.27 of a level per cell) and its 294px down (about 0.58 of a level per cell);
+/// a resolution choice from the ramp's slope, not a fit to a reference.
 const GLOW_CELL: f32 = 4.0;
 
 /// OnboardingFrame.css's page background `radial-gradient(900px 420px at 50% -10%, var(--brand-glow), transparent 70%)`

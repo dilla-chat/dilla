@@ -30,7 +30,7 @@ use gpui::{
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
 use dilla_desktop_ui::metrics::focus_ring;
-use dilla_desktop_ui::text::{Face, line, line_height};
+use dilla_desktop_ui::text::{Face, chromium_baseline, line, line_height};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
@@ -162,6 +162,12 @@ mod m {
     pub const CODE_PAD_X: f32 = 8.0;
     pub const CODE_GLYPH_EM: f32 = 0.875;
     pub const CODE_GLYPH_GAP: f32 = 6.0;
+    /// `.d-call-stage__code-body`: at most 26rem, 6px under the summary, 8px by 12px in; its help 6px under the digits.
+    pub const CODE_BODY_MAX_W: f32 = 416.0;
+    pub const CODE_BODY_GAP: f32 = 6.0;
+    pub const CODE_BODY_PAD_Y: f32 = 8.0;
+    pub const CODE_BODY_PAD_X: f32 = 12.0;
+    pub const CODE_HELP_GAP: f32 = 6.0;
     /// app.css: the DM box's controls stand 8px above and below; CallControls.css: 2px between the toolbar's buttons,
     /// and the hairline before leave 8px high in and 4px aside.
     pub const DM_CONTROLS_PAD_Y: f32 = 8.0;
@@ -207,6 +213,9 @@ pub struct VoiceUi {
     ptt_key: Option<(String, u32)>,
     /// The DM call box's tile grid's width, logical px, as last laid out ([`dm_call_box`]): its column count follows it.
     dm_grid_w: f32,
+    /// The DM box's call code disclosure is open (CallStage.tsx's `<details>`), and its summary's focus.
+    pub code_open: bool,
+    code_focus: Option<FocusHandle>,
     /// A test's remote frames, drawn while there is no media session (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     test_frames: HashMap<StreamKey, Arc<RenderImage>>,
@@ -797,6 +806,8 @@ pub fn count(state: &AppState, channel: ChannelId) -> usize {
         .iter()
         .map(|p| p.user_id)
         .collect();
+    // A person on two devices counts once, wherever the roster lists the second.
+    users.sort_unstable();
     users.dedup();
     users.len()
 }
@@ -1241,14 +1252,21 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         .flex_col()
         .flex_1()
         .min_w_0()
-        .child(line(name, text::UI, 15.6, color::OK_TEXT).weight(font::WEIGHT_LABEL))
-        .child(line(where_, text::META, 13.65, color::FG_3));
+        .child(
+            line(name, text::UI, line_height(text::UI, 1.3), color::OK_TEXT)
+                .weight(font::WEIGHT_LABEL),
+        )
+        .child(line(
+            where_,
+            text::META,
+            line_height(text::META, 1.3),
+            color::FG_3,
+        ));
     let card = div()
         .flex()
         .flex_col()
         .gap(px(m::DOCK_GAP))
         .mx(px(m::DOCK_INSET))
-        .mb(px(m::DOCK_INSET))
         .p(px(m::DOCK_PAD))
         .min_w_0()
         .bg(color::OK_SOFT)
@@ -1264,7 +1282,16 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
                 .child(status)
                 .child(controls),
         );
-    Some(tracked_box("voice-dock", card).into_any_element())
+    // `.d-voice-dock`'s 8px bottom margin collapses through `.dw-voice-dock` (no padding or border below): the band under
+    // the card is the shell's `--bg`, not the wrapper's `--bg-2`.
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .child(tracked_box("voice-dock", card))
+            .child(div().h(px(m::DOCK_INSET)).bg(color::BG))
+            .into_any_element(),
+    )
 }
 
 /// Milliseconds on one clock for the push-to-talk hold (its release delay is measured on it).
@@ -1509,7 +1536,12 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             .flex()
             .items_center()
             .justify_center()
-            .child(line(t("voice.empty"), text::UI, 15.6, color::FG_2))
+            .child(line(
+                t("voice.empty"),
+                text::UI,
+                line_height(text::UI, 1.3),
+                color::FG_2,
+            ))
             .into_any_element()
     } else if let Some(f) = &focused {
         let at = keys.iter().position(|k| k == f).unwrap_or(0);
@@ -1562,12 +1594,11 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             }))
             .into_any_element()
     };
-    // Ruling Z: the voice header's topic is "{n} in voice" once joined, else "voice channel".
+    // Ruling Z: the voice header's topic is "{n} in voice" once joined, else "voice channel". Shell.tsx counts the
+    // call's participants (devices), so a person on two devices counts twice there.
     let topic = if joined {
-        tf(
-            "voice.count",
-            &[("n", count(&state, channel.id).to_string().as_str())],
-        )
+        let devices = state.voice.participants(channel.id).len();
+        tf("voice.count", &[("n", devices.to_string().as_str())])
     } else {
         t("voice.header.idle").to_owned()
     };
@@ -1915,22 +1946,40 @@ pub fn dm_columns(width: f32) -> usize {
     (((width + m::TILE_GAP) / (m::DM_TILE_MIN + m::TILE_GAP)).floor() as usize).max(1)
 }
 
-/// The outgoing ring's line over the tiles (useCall.tsx `outgoingText`), while this device's DM call rings someone.
+/// The outgoing ring's line over the tiles (VoiceView.tsx `DmCall`), while this device's DM call rings someone. Someone
+/// else is in the call when a participant is another person (`userId !== self`).
 fn outgoing_text(state: &AppState, channel: ChannelId) -> Option<String> {
     let out = state.ring.outgoing.as_ref()?;
     if out.channel != Some(channel) {
         return None;
     }
-    let others = state.voice.participants(channel).iter().any(|p| !p.own);
+    let me = state.account.user_id;
+    let others = state
+        .voice
+        .participants(channel)
+        .iter()
+        .any(|p| Some(p.user_id) != me);
+    outgoing_line(out, others, &|u| dm_name_of(state, u))
+}
+
+/// useCall.tsx `outgoingText`: `ringing {names}` while it rings and the ring has not run its 30 s, `{names} not rung`
+/// for the participants the instance did not ring (with nobody else in the call), `{name} declined.` per decline, and
+/// `No answer.` once every ring ended (30 s, or nobody left ringing or waiting) with nobody else in the call and nobody
+/// declined; `None` when there is nothing to say.
+pub fn outgoing_line(
+    out: &dilla_client::state::ring::Outgoing,
+    others: bool,
+    name: &dyn Fn(UserId) -> String,
+) -> Option<String> {
     let names = |users: &[UserId]| {
         users
             .iter()
-            .map(|u| dm_name_of(state, *u))
+            .map(|u| name(*u))
             .collect::<Vec<_>>()
             .join(", ")
     };
     let mut parts = Vec::new();
-    if !out.ringing.is_empty() {
+    if !out.ringing.is_empty() && !out.expired {
         parts.push(tf(
             "call.outgoing.ringing",
             &[("names", names(&out.ringing).as_str())],
@@ -1943,12 +1992,12 @@ fn outgoing_text(state: &AppState, channel: ChannelId) -> Option<String> {
         ));
     }
     for u in &out.declined {
-        parts.push(tf(
-            "call.outgoing.declined",
-            &[("name", dm_name_of(state, *u).as_str())],
-        ));
+        parts.push(tf("call.outgoing.declined", &[("name", name(*u).as_str())]));
     }
-    if !others && out.ringing.is_empty() && out.not_rung.is_empty() && out.declined.is_empty() {
+    // useCall.tsx `unanswered`.
+    let unanswered =
+        !others && (out.expired || (out.ringing.is_empty() && out.not_rung.is_empty()));
+    if unanswered && out.declined.is_empty() {
         parts.push(t("call.outgoing.noAnswer").to_owned());
     }
     (!parts.is_empty()).then(|| parts.join(" "))
@@ -1963,10 +2012,22 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
     let w = wid(window);
     let state = ui_of(w, cx)?.state.clone();
     if !joined(&state, channel.id) {
+        // CallStage.tsx's `<details>` goes with the box: the next call's code starts closed.
+        if ui_of(w, cx).is_some_and(|u| u.code_open) {
+            ui_mut(w, cx).code_open = false;
+        }
         return None;
     }
     let images = refresh_images(window, cx);
-    let grid_w = ui_of(w, cx).map_or(0.0, |u| u.dm_grid_w);
+    // Before the grid's first layout its width is not measured yet: the window's width less the rail, the default
+    // sidebar and the stage's padding stands in, so the first frame does not draw one tall column (review minor).
+    let grid_w = match ui_of(w, cx).map_or(0.0, |u| u.dm_grid_w) {
+        measured if measured > 0.0 => measured,
+        _ => {
+            f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR)
+                - 2.0 * m::STAGE_PAD
+        }
+    };
     let keys = dm_tiles(&state, channel.id);
     let cards: Vec<AnyElement> = keys.iter().map(|k| card(&state, k, &images)).collect();
     let measure = gpui::canvas(
@@ -1991,34 +2052,49 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
         .grid_cols(u16::try_from(dm_columns(grid_w)).unwrap_or(1))
         .gap(px(m::TILE_GAP))
         .children(cards);
-    let code = state.voice.call.code.clone().map(|_| {
-        div()
-            .ml_auto()
-            .h(px(m::CODE_H))
-            .px(px(m::CODE_PAD_X))
-            .flex()
-            .items_center()
-            .gap(px(m::CODE_GLYPH_GAP))
-            .rounded(radius::MD)
-            .child(
-                Icon::new(IconName::ChevronRight)
-                    .size(px(f32::from(text::META) * m::CODE_GLYPH_EM))
-                    .color(color::FG_2),
-            )
-            .child(line(t("voice.code"), text::META, 13.65, color::FG_2))
-    });
+    let code = state
+        .voice
+        .call
+        .code
+        .clone()
+        .map(|code| code_disclosure(w, &code, cx));
+    // `.d-call-stage__head` aligns its parts on their first baselines (`align-items: baseline`): each part stands as far
+    // below the head's top as its baseline is above the lowest one. The call code's baseline is its summary's text,
+    // centred in the 28px summary.
+    let name_lh = line_height(text::MD, 1.3);
+    let ring_lh = line_height(text::UI, 1.3);
+    let code_lh = line_height(text::META, 1.3);
+    let name_base = chromium_baseline(Face::Mono, f32::from(text::MD), name_lh);
+    let ring_base = chromium_baseline(Face::Mono, f32::from(text::UI), ring_lh);
+    let code_base =
+        (m::CODE_H - code_lh) / 2.0 + chromium_baseline(Face::Mono, f32::from(text::META), code_lh);
+    let ring = outgoing_text(&state, channel.id);
+    let lowest = [
+        Some(name_base),
+        ring.as_ref().map(|_| ring_base),
+        code.as_ref().map(|_| code_base),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0.0_f32, f32::max);
     let head = div()
         .flex()
         .flex_wrap()
-        .items_baseline()
+        .items_start()
         .gap_x(px(m::HEAD_GAP_X))
         .gap_y(px(m::HEAD_GAP_Y))
         .min_w_0()
         .px(px(m::STAGE_PAD))
         .pt(px(m::STAGE_PAD))
-        .child(line(channel.name.clone(), text::MD, 18.2, color::FG).weight(font::WEIGHT_LABEL))
-        .children(outgoing_text(&state, channel.id).map(|s| line(s, text::UI, 15.6, color::FG_2)))
-        .children(code);
+        .child(div().mt(px(lowest - name_base)).child(
+            line(channel.name.clone(), text::MD, name_lh, color::FG).weight(font::WEIGHT_LABEL),
+        ))
+        .children(ring.map(|s| {
+            div()
+                .mt(px(lowest - ring_base))
+                .child(line(s, text::UI, ring_lh, color::FG_2))
+        }))
+        .children(code.map(|c| div().ml_auto().mt(px(lowest - code_base)).child(c)));
     let body = div()
         .p(px(m::STAGE_PAD))
         .child(div().relative().w_full().child(grid).child(measure));
@@ -2046,6 +2122,124 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
             .child(dm_controls(&state))
             .into_any_element(),
     )
+}
+
+/// CallStage.tsx `groupCode`: six groups of five digits; anything that is not 30 digits is shown as given.
+pub fn group_code(code: &str) -> String {
+    let digits: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    if digits.len() == 30 && digits.bytes().all(|b| b.is_ascii_digit()) {
+        digits
+            .as_bytes()
+            .chunks(5)
+            .map(|c| std::str::from_utf8(c).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        code.to_owned()
+    }
+}
+
+/// The DM box's call code (CallStage.tsx's `<details>`): its summary toggles on a click, Enter or Space; opened, its body
+/// under the summary holds the grouped safety-code digits and the help. Escape closes it and keeps the focus on the
+/// summary.
+fn code_disclosure(w: WindowId, code: &str, cx: &mut App) -> AnyElement {
+    let focus = {
+        let have = ui_mut(w, cx).code_focus.clone();
+        match have {
+            Some(h) => h,
+            None => {
+                let h = cx.focus_handle();
+                ui_mut(w, cx).code_focus = Some(h.clone());
+                h
+            }
+        }
+    };
+    let open = ui_of(w, cx).is_some_and(|u| u.code_open);
+    let summary = div()
+        .id("dm-call-code")
+        .debug_selector(move || {
+            if open {
+                "dm-call-code-open".to_owned()
+            } else {
+                "dm-call-code".to_owned()
+            }
+        })
+        .track_focus(&focus.clone().tab_stop(true))
+        .h(px(m::CODE_H))
+        .px(px(m::CODE_PAD_X))
+        .flex()
+        .items_center()
+        .gap(px(m::CODE_GLYPH_GAP))
+        .rounded(radius::MD)
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .child(
+            Icon::new(if open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size(px(f32::from(text::META) * m::CODE_GLYPH_EM))
+            .color(color::FG_2),
+        )
+        .child(line(
+            t("voice.code"),
+            text::META,
+            line_height(text::META, 1.3),
+            color::FG_2,
+        ))
+        .on_click(move |_, _, cx| {
+            let ui = ui_mut(w, cx);
+            ui.code_open = !ui.code_open;
+            cx.refresh_windows();
+        });
+    let body =
+        open.then(|| {
+            div()
+                .debug_selector(|| "dm-call-code-digits".to_owned())
+                .w_full()
+                .max_w(px(m::CODE_BODY_MAX_W))
+                .mt(px(m::CODE_BODY_GAP))
+                .py(px(m::CODE_BODY_PAD_Y))
+                .px(px(m::CODE_BODY_PAD_X))
+                .bg(color::SURFACE_2)
+                .border_1()
+                .border_color(color::LINE_STRONG)
+                .rounded(radius::MD)
+                .child(
+                    line(
+                        group_code(code),
+                        text::MD,
+                        line_height(text::MD, 1.3),
+                        color::FG,
+                    )
+                    .tracking(dilla_desktop_ui::metrics::LABEL_TRACKING),
+                )
+                .child(div().mt(px(m::CODE_HELP_GAP)).child(
+                    dilla_desktop_ui::text::flow_paragraph(
+                        t("voice.codeHelp"),
+                        text::XS,
+                        line_height(text::XS, 1.3),
+                        color::FG_2,
+                    ),
+                ))
+        });
+    div()
+        .ml_auto()
+        .flex()
+        .flex_col()
+        .items_end()
+        .on_key_down(move |e: &gpui::KeyDownEvent, window, cx| {
+            if e.keystroke.key == "escape" && ui_of(w, cx).is_some_and(|u| u.code_open) {
+                ui_mut(w, cx).code_open = false;
+                focus.focus(window, cx);
+                cx.stop_propagation();
+                cx.refresh_windows();
+            }
+        })
+        .child(summary)
+        .children(body)
+        .into_any_element()
 }
 
 /// The media notice over the tiles, or nothing while there is none.
@@ -2117,6 +2311,11 @@ fn card(
         .collect()
     };
     let speaking = p.is_some_and(|p| state.voice.speaking.contains(&p.device_id));
+    let edge = if speaking {
+        m::TILE_EDGE_STRONG
+    } else {
+        m::TILE_EDGE
+    };
     let caption = div()
         .flex()
         .items_center()
@@ -2127,7 +2326,7 @@ fn card(
         .min_w_0()
         .child(
             div().min_w_0().overflow_hidden().child(
-                line(title, text::XS, 14.3, color::FG)
+                line(title, text::XS, line_height(text::XS, 1.3), color::FG)
                     .weight(font::WEIGHT_LABEL)
                     .ellipsis(),
             ),
@@ -2153,14 +2352,11 @@ fn card(
         .items_center()
         .justify_center()
         .gap(px(m::CARD_GAP))
-        .p(px(m::DM_TILE_PAD))
+        // The web's edge is an inset shadow, which takes no room: the border here stands inside the padding.
+        .p(px(m::DM_TILE_PAD - edge))
         .bg(color::STAGE_TILE)
         .rounded(radius::XL)
-        .border(px(if speaking {
-            m::TILE_EDGE_STRONG
-        } else {
-            m::TILE_EDGE
-        }))
+        .border(px(edge))
         .border_color(if speaking { color::OK } else { color::HAIRLINE })
         .children(video.map(|image| {
             div()
@@ -2347,7 +2543,11 @@ fn notice_box(text: String) -> Div {
                 .size(px(m::NOTICE_GLYPH))
                 .color(color::WARN),
         )
-        .child(div().flex_1().child(line(text, text::UI, 15.6, color::FG)))
+        .child(
+            div()
+                .flex_1()
+                .child(line(text, text::UI, line_height(text::UI, 1.3), color::FG)),
+        )
 }
 
 /// The media notice over the tiles, until dismissed.
@@ -2877,7 +3077,7 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                     "callStage.share.title"
                 }),
                 text::UI,
-                15.6,
+                line_height(text::UI, 1.3),
                 color::FG,
             )
             .weight(font::WEIGHT_LABEL),
@@ -2961,6 +3161,59 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Wave 2 review I-G1, useCall.tsx `outgoingText` (VoiceView.wb2.test.tsx's cases): the ring's line before and after
+    /// its 30 s, with and without someone else in the call, declined and not rung.
+    #[test]
+    fn the_outgoing_line_follows_the_ring_clock() {
+        use dilla_client::state::ring::Outgoing;
+        let (bob, cy) = (UserId([2; 16]), UserId([3; 16]));
+        let name = |u: UserId| {
+            if u == bob {
+                "bob".to_owned()
+            } else {
+                "cy".to_owned()
+            }
+        };
+        let line = |out: &Outgoing, others: bool| outgoing_line(out, others, &name);
+        let ringing = Outgoing {
+            ringing: vec![bob],
+            ..Outgoing::default()
+        };
+        assert_eq!(line(&ringing, false).as_deref(), Some("ringing bob"));
+        // 30 s on with nobody answering: no longer ringing, "No answer.".
+        let expired = Outgoing {
+            expired: true,
+            ..ringing.clone()
+        };
+        assert_eq!(line(&expired, false).as_deref(), Some("No answer."));
+        // Someone else is in the call: nothing to say once expired.
+        assert_eq!(line(&expired, true), None);
+        // Not rung: said, and "No answer." waits for the ring time.
+        let not_rung = Outgoing {
+            not_rung: vec![bob],
+            ..Outgoing::default()
+        };
+        let said = line(&not_rung, false).unwrap();
+        assert!(!said.contains("No answer."), "{said}");
+        assert!(!said.contains("ringing"), "{said}");
+        let said = line(
+            &Outgoing {
+                expired: true,
+                ..not_rung
+            },
+            false,
+        )
+        .unwrap();
+        assert!(said.ends_with("No answer."), "{said}");
+        // A decline is said, and no "No answer." after it, expired or not.
+        let declined = Outgoing {
+            declined: vec![cy],
+            expired: true,
+            ..Outgoing::default()
+        };
+        assert_eq!(line(&declined, false).as_deref(), Some("cy declined."));
+    }
+
     use super::*;
     use dilla_client::state::voice::flags;
 

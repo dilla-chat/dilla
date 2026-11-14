@@ -163,8 +163,9 @@ pub fn attachment_cards(
             )
         })
         .collect();
-    // A drawn fixture's whole pictures of this message's images, by index (empty with a client).
-    let fixture_pictures: std::rc::Rc<Vec<(u32, Vec<u8>)>> = std::rc::Rc::new(if live {
+    // A drawn fixture's whole pictures of this message's images, by index (empty with a client): shared, not copied, on
+    // each render (review IJ m4).
+    let fixture_pictures: FixturePictures = std::rc::Rc::new(if live {
         Vec::new()
     } else {
         item.attachments
@@ -461,7 +462,40 @@ fn tool(id: &'static str, label: &'static str, f: OnClick) -> gpui::Stateful<gpu
         .on_click(move |e, w, cx| f(e, w, cx))
 }
 
-/// The composer's attach and GIF buttons (`slots::composer_buttons`, first), and the area's overlays.
+/// A drawn fixture's whole pictures of one message, by attachment index.
+type FixturePictures = std::rc::Rc<Vec<(u32, std::sync::Arc<[u8]>)>>;
+
+/// use-gif-community.ts `peer`: the other member of an active two-person DM this account is in.
+fn dm_gif_peer(
+    state: &dilla_client::state::AppState,
+    channel: dilla_client::state::ChannelId,
+) -> Option<dilla_client::state::UserId> {
+    let own = state.account.user_id?;
+    let dm = state.dms.get(channel)?;
+    (dm.kind == dilla_client::state::dms::DM_KIND_PAIR
+        && dm.group == dilla_client::state::ChannelGroupState::Active
+        && dm.members.len() == 2
+        && dm.members.contains(&own))
+    .then(|| dm.peer(Some(own)))
+    .flatten()
+}
+
+/// use-gif-community.ts `available` for a DM: some server's member list is not read yet, or a server holds both.
+fn dm_gifs_available(
+    state: &dilla_client::state::AppState,
+    peer: dilla_client::state::UserId,
+) -> bool {
+    let Some(own) = state.account.user_id else {
+        return false;
+    };
+    state
+        .communities
+        .iter()
+        .any(|c| !state.members.contains_key(&c.id))
+        || !dilla_client::features::gifs::dm_gif_candidates(state, own, peer).is_empty()
+}
+
+/// The composer's attach button (`slots::composer_buttons`, first), and the area's overlays.
 pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     ui::track(window, ctx.client.clone(), ctx.channel, cx);
     let mut row = div().flex().items_center().gap(px(m::TOOL_GAP)).child(
@@ -476,10 +510,22 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Opti
                 .color(color::FG_3),
         ),
     );
+    for overlay in overlays(window, cx) {
+        row = row.child(overlay);
+    }
+    Some(row.into_any_element())
+}
+
+/// The composer's GIF button (`slots::composer_buttons`, after the emoji button as Composer.tsx's foot orders them), or
+/// nothing where GIFs are not offered.
+pub fn gif_button(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     // use-gif-community.ts: a server channel's own server; a 1:1 DM's shared servers, found only on the press; never
-    // a thread. `SlotCx` does not say yet whether it draws a thread or a DM's peer (the controller's merge item in
-    // Task 12's report): until it does, a DM and a thread pass `None` and `false` here and offer no GIF button.
-    let scope = gif_scope(ctx.community, None, false);
+    // a thread (the thread pane's composer has no tools slot).
+    let peer = ctx.channel.and_then(|c| dm_gif_peer(&ctx.state, c));
+    let scope = match peer {
+        Some(peer) => gif_scope(None, Some(peer), false),
+        None => gif_scope(ctx.community, None, false),
+    };
     let action: Option<OnClick> = match (scope, ctx.channel, ctx.client.clone()) {
         (GifScope::Server(community), Some(channel), Some(client))
             if ui::gif_on(&client, community, cx) =>
@@ -489,19 +535,26 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Opti
                 ui::toggle_gifs(client.clone(), owner, channel, community, cx)
             }))
         }
-        (GifScope::Direct(peer), Some(channel), Some(client)) => Some(click(move |w, cx| {
-            let owner = ui::window_id(w);
-            ui::open_dm_gifs(client.clone(), owner, channel, peer, cx)
-        })),
+        // use-gif-community.ts `available` for a DM: a member list not read yet, or a server shared with the peer;
+        // nothing is asked of the instance until the press.
+        (GifScope::Direct(peer), Some(channel), client) if dm_gifs_available(&ctx.state, peer) => {
+            Some(click(move |w, cx| {
+                if let Some(client) = &client {
+                    let owner = ui::window_id(w);
+                    ui::open_dm_gifs(client.clone(), owner, channel, peer, cx)
+                }
+            }))
+        }
         _ => None,
     };
-    if let Some(action) = action {
+    let action = action?;
+    {
         let here = ui::window_id(window);
         let open = ui::ui(cx)
             .gif
             .as_ref()
             .is_some_and(|g| g.owner == Some(here));
-        row = row.child(
+        Some(
             tool("composer-gif", "gif.button", action)
                 .px(px(m::GIF_PAD_X))
                 .when_open(open)
@@ -513,13 +566,10 @@ pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Opti
                         if open { color::ACCENT } else { color::FG_3 },
                     )
                     .weight(dilla_desktop_ui::tokens::font::WEIGHT_LABEL),
-                ),
-        );
+                )
+                .into_any_element(),
+        )
     }
-    for overlay in overlays(window, cx) {
-        row = row.child(overlay);
-    }
-    Some(row.into_any_element())
 }
 
 trait OpenTool {

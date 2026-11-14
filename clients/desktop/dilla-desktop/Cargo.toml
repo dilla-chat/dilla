@@ -59,6 +59,18 @@ gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features =
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "print"] }
 rustix = { version = "1", features = ["fs"] }
 
+# Printing on macOS (src/print.rs): AppKit's print operation, run on the main thread. All already in the lock (through
+# GPUI's macOS platform and cpal).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSControl", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView"] }
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
+
+# Printing on Windows (src/print.rs): the system's print dialog and GDI. Already in the lock.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_UI_Controls_Dialogs"] }
+
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
 # The slice test and the parity world (tests/support/world.rs) run a real dillad and headless clients, made the way

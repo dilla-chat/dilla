@@ -353,7 +353,7 @@ fn the_roles_section_locks_at_or_above_my_rank_and_the_bits_i_lack() {
 }
 
 /// RolesSection.tsx in the shipping window (the roles-b fixture): the top role opens first, every switch locked; a click
-/// on role 01 opens it, where a bit ada holds may change and one she lacks stays locked; the arrows walk the list.
+/// on role 01 opens it, where a bit ada holds may change and one she lacks stays locked; Up walks the list.
 #[test]
 fn the_roles_section_selects_a_role_and_locks_by_rank_in_the_window() {
     let f = load("server-settings/roles-b");
@@ -376,7 +376,7 @@ fn the_roles_section_selects_a_role_and_locks_by_rank_in_the_window() {
     assert!(app.element("perm-kick-locked").is_none(), "she holds kick");
     assert!(app.element("perm-view-on").is_some());
     assert!(app.element("perm-manageChannels-locked").is_some());
-    // Up from role 01 reaches role 02; Down wraps past "New role" to @everyone.
+    // Up from role 01 reaches role 02.
     app.press("up");
     app.wait_idle();
     assert_eq!(
@@ -591,6 +591,248 @@ async fn the_roles_section_edits_below_my_rank_and_is_refused_above_it() {
     olof.stop();
     ada_client.stop();
     drop(host);
+}
+
+/// Wave 2 review I-E1 and I-E2, through the shipping window against a real dillad (e2e/web/roles.spec.ts toggles
+/// through the UI): a manager whose role holds manage roles and kick opens Server settings > Roles. Two clicks on New
+/// role in a row make one role (the second waits for the first), and it opens. A click on its Kick switch turns it on,
+/// the status line says it saved, and the owner sees the bit. A click on Manage channels, a bit she lacks, stays locked
+/// and sends nothing.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn the_roles_section_saves_through_the_window_and_makes_one_role_per_click(
+    cx: &mut gpui::TestAppContext,
+) {
+    use dilla_client::features::roles::perm;
+    use dilla_desktop::router::{Route, ServerSection};
+    use dilla_desktop::screens::members::roles::status;
+    use dilla_desktop::strings::{t, tf};
+    use std::rc::Rc;
+    use support::world;
+
+    cx.executor().allow_parking();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let within = Duration::from_secs(30);
+    let host = world::start_host("w2f3-roles-ui", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let (olof, ada) = rt.block_on(async {
+        let olof = world::sign_up(&host, &invite, "olof", "Olof", "w2f3-roles-ui").await;
+        let ada = world::sign_up(&host, &invite, "ada", "Ada", "w2f3-roles-ui").await;
+        (olof, ada)
+    });
+    let c = CommunityId(world::community(&host, &olof, "crew", &[&ada]));
+    world::clear_session(&olof);
+    world::clear_session(&ada);
+    let owner = rt.block_on(world::start(&olof));
+    let client = rt.block_on(world::start(&ada));
+    rt.block_on(async {
+        world::wait_for(&owner, within, "the member list", |s| {
+            s.members.get(&c).is_some_and(|m| m.len() == 2)
+        })
+        .await;
+        owner.roles().load_access(c).await.unwrap();
+        // Her role ranks fourth, with the three positions below it free: room for the roles she makes.
+        let mut fillers = Vec::new();
+        for name in ["f1", "f2", "f3"] {
+            fillers.push(
+                owner
+                    .roles()
+                    .create_role(c, name, 0, false, false, 0)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let mods = owner
+            .roles()
+            .create_role(
+                c,
+                "mods",
+                0x5A_A8E6,
+                false,
+                false,
+                perm::VIEW_CHANNEL | perm::MANAGE_ROLES | perm::KICK_MEMBERS,
+            )
+            .await
+            .unwrap();
+        owner
+            .roles()
+            .grant_role(c, UserId(ada.user_id), mods)
+            .await
+            .unwrap();
+        for f in fillers {
+            owner.roles().delete_role(c, f).await.unwrap();
+        }
+        for _ in 0..40 {
+            let _ = client.members().open(c).await;
+            let _ = client.roles().load_access(c).await;
+            let a = client.state().borrow().roles.access_of(c);
+            if a.loaded && a.manage_roles && a.kick_members && a.top == 4 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("ada's access with her role");
+    });
+
+    let cfg = ada.cfg.clone();
+    let root = cfg
+        .data_dir
+        .parent()
+        .and_then(|d| d.parent())
+        .unwrap()
+        .to_path_buf();
+    cx.update(dilla_desktop::install);
+    let mut launch = dilla_desktop::app::Launch::live(Some(root), ada.kc.clone());
+    launch.shipping = false;
+    launch.resume = false;
+    launch.handoff = Some(Rc::new(client));
+    let (app, vcx) =
+        cx.add_window_view(move |window, cx| dilla_desktop::app::AppView::new(launch, window, cx));
+    let w = gpui::VisualContext::window_handle(vcx).window_id();
+    let pump = |vcx: &mut gpui::VisualTestContext| {
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    for _ in 0..5 {
+        pump(vcx);
+    }
+    app.update_in(vcx, |a, window, cx| {
+        a.open_route(
+            &Route::ServerSettings {
+                community: c,
+                section: Some(ServerSection::Roles),
+            },
+            window,
+            cx,
+        );
+    });
+    let until = |vcx: &mut gpui::VisualTestContext,
+                 what: &str,
+                 done: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            pump(vcx);
+            if done(vcx) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} (status {:?}, kick {:?}/{:?})",
+                vcx.update(|_, cx| status(w, cx)),
+                vcx.debug_bounds("perm-kick"),
+                vcx.debug_bounds("perm-kick-on")
+            );
+        }
+    };
+    let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+        let at = vcx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"));
+        vcx.simulate_click(at.center(), gpui::Modifiers::none());
+    };
+    until(vcx, "the roles section with New role", &|vcx| {
+        vcx.debug_bounds("role-new").is_some()
+    });
+
+    // I-E1: two clicks in a row (the second before the first answered: no task runs between them) make one role.
+    let at = vcx.debug_bounds("role-new").unwrap().center();
+    vcx.update(|window, cx| {
+        for _ in 0..2 {
+            let (button, modifiers) = (gpui::MouseButton::Left, gpui::Modifiers::none());
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    position: at,
+                    modifiers,
+                    button,
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: at,
+                    modifiers,
+                    button,
+                    click_count: 1,
+                }),
+                cx,
+            );
+        }
+    });
+    let name = t("serverSettings.roles.newName");
+    let created = tf("roles.editor.created", &[("name", name)]);
+    until(vcx, "the role is created and opened", &|vcx| {
+        vcx.update(|_, cx| status(w, cx)) == Some((created.clone(), false))
+            && vcx.debug_bounds("perm-kick").is_some()
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    let made = rt.block_on(async {
+        owner.roles().load_access(c).await.unwrap();
+        world::wait_for(&owner, within, "the new role", |s| {
+            s.roles.roles_of(c).iter().any(|r| r.name == name)
+        })
+        .await
+    });
+    let new_roles: Vec<_> = made
+        .roles
+        .roles_of(c)
+        .iter()
+        .filter(|r| r.name == name)
+        .cloned()
+        .collect();
+    assert_eq!(new_roles.len(), 1, "one click, one role: {new_roles:?}");
+    let new_id = new_roles[0].id;
+
+    // I-E2: Kick (she holds it) switches on and saves through the section's queue.
+    click(vcx, "perm-kick");
+    let saved = tf("roles.editor.saved", &[("name", name)]);
+    until(vcx, "Kick on and the saved line", &|vcx| {
+        vcx.debug_bounds("perm-kick-on").is_some()
+            && vcx.update(|_, cx| status(w, cx)) == Some((saved.clone(), false))
+    });
+    rt.block_on(async {
+        for _ in 0..40 {
+            owner.roles().load_access(c).await.unwrap();
+            let s = owner.state().borrow().clone();
+            if s.roles
+                .roles_of(c)
+                .iter()
+                .any(|r| r.id == new_id && r.allow & perm::KICK_MEMBERS != 0)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("the owner sees the new role given kick");
+    });
+
+    // A bit she lacks stays locked: the click sends nothing and the line still says saved.
+    click(vcx, "perm-manageChannels");
+    for _ in 0..10 {
+        pump(vcx);
+    }
+    assert!(vcx.debug_bounds("perm-manageChannels").is_some());
+    assert!(vcx.debug_bounds("perm-manageChannels-on").is_none());
+    assert_eq!(vcx.update(|_, cx| status(w, cx)), Some((saved, false)));
+    rt.block_on(async {
+        owner.roles().load_access(c).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    });
+    let s = owner.state().borrow().clone();
+    let role = s.roles.roles_of(c).iter().find(|r| r.id == new_id).cloned();
+    assert!(
+        role.is_some_and(|r| r.allow & perm::MANAGE_CHANNELS == 0),
+        "nothing was sent for a locked bit"
+    );
+    owner.stop();
+    drop(app);
 }
 
 /// T28 parity review I3: every server-settings fixture's viewer is offered the route's section (registry.ts

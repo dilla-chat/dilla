@@ -373,6 +373,7 @@ impl RenderOnce for RoleEditor {
             let i = self.roles.len();
             let mut row = div()
                 .id(SharedString::from(format!("{id_text}-new")))
+                .debug_selector(|| "role-new".to_owned())
                 .h(ROW_H)
                 .px(ROW_PAD_X)
                 .flex()
@@ -606,6 +607,16 @@ fn perm_row(
                     div()
                         .flex_none()
                         .relative()
+                        .debug_selector({
+                            let (key, on) = (row.id.clone(), row.on);
+                            move || {
+                                if on {
+                                    format!("perm-{key}-on")
+                                } else {
+                                    format!("perm-{key}")
+                                }
+                            }
+                        })
                         .child(toggle)
                         .children(probe.as_ref().map(|p| p(&format!("perm-{}", row.id))))
                         // The switch's state, for the automation build: on, and disabled.

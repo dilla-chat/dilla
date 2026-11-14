@@ -203,7 +203,7 @@ pub fn picker_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> Op
     }
     let members = picker_members(state, m.community);
     let names: Vec<String> = members.iter().map(name_of).collect();
-    let no_server = state.communities.is_empty();
+    let no_server = crate::screens::shell::no_server(state);
     let body_key = if no_server {
         "shell.dms.noServer"
     } else if members.is_empty() {

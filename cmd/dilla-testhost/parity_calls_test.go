@@ -64,8 +64,20 @@ func TestParityCallsDeliverVoiceStateAndRingFrames(t *testing.T) {
 	if code := post(t, h, "/debug/parity/ring", ring); code != http.StatusNoContent {
 		t.Fatalf("ring: %d", code)
 	}
-	if last := d.frames[len(d.frames)-1]; last.Op != gateway.OpCallRing {
+	last := d.frames[len(d.frames)-1]
+	if last.Op != gateway.OpCallRing {
 		t.Fatalf("ring frame %+v", last)
+	}
+	// Wave 2 review, lane G minor: the ring goes to its one recipient, scoped to its DM, with dillad's own payload.
+	if to := d.to[len(d.to)-1]; to != rep(1) {
+		t.Fatalf("ring recipient %v", to)
+	}
+	if got := last.Scope.Channels; len(got) != 1 || got[0] != rep(7) {
+		t.Fatalf("ring scope %v", got)
+	}
+	wantRing, err := gateway.CallRingPayload(rep(7), rep(7), rep(3), 1, 1800000000)
+	if err != nil || string(last.Payload) != string(wantRing) {
+		t.Fatalf("ring payload %x, want %x (%v)", last.Payload, wantRing, err)
 	}
 }
 
@@ -79,6 +91,15 @@ func TestParityCallsRefuseBadInput(t *testing.T) {
 	} {
 		if code := post(t, h, "/debug/parity/voice", body); code != http.StatusBadRequest {
 			t.Fatalf("%s: %d", body, code)
+		}
+	}
+	for _, body := range []string{
+		`{"to":"xyz","call":"` + hexID(7) + `","channel":"` + hexID(7) + `","caller":"` + hexID(3) + `","expires":1}`,
+		`{"to":"` + hexID(1) + `","call":"` + hexID(7) + `","channel":"short","caller":"` + hexID(3) + `","expires":1}`,
+		`not json`,
+	} {
+		if code := post(t, h, "/debug/parity/ring", body); code != http.StatusBadRequest {
+			t.Fatalf("ring %s: %d", body, code)
 		}
 	}
 	if len(d.frames) != 0 {

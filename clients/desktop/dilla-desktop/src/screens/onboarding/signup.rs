@@ -300,7 +300,9 @@ impl SignupView {
     }
 
     /// `/welcome?signin=race|evicted` (Onboarding.tsx `RACE_BANNER`, `EVICTED_BANNER`): the welcome shown again after a
-    /// sign-in's list race or eviction says why.
+    /// sign-in's list race or eviction says why. No shipping path opens `/welcome?signin=` yet, so only the automation
+    /// build's pre-account fixtures set it (wave 2 review, lane F minor).
+    #[cfg(feature = "automation")]
     pub fn set_notice(
         &mut self,
         notice: Option<crate::router::SignInNotice>,

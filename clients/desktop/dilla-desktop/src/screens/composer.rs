@@ -58,6 +58,19 @@ pub(crate) fn typed_text(field: gpui::Div, value: &str, line: f32) -> gpui::Div 
     let _ = (value, line);
     field
 }
+/// [`typed_text`] for a one-line input's editor: its value is one line box (it scrolls, never wraps).
+pub(crate) fn typed_line(field: gpui::Div, value: &str, line: f32) -> gpui::Div {
+    #[cfg(feature = "automation")]
+    let field = field.child(crate::automation::typed_line_probe(
+        value.to_owned(),
+        text::INPUT,
+        line,
+    ));
+    #[cfg(not(feature = "automation"))]
+    let _ = (value, line);
+    field
+}
+
 /// The face Chromium falls back to for the ⇧ and ↵ JetBrains Mono lacks (fontconfig's sans-serif on the reference
 /// machine).
 const SYMBOL_FALLBACK: &str = "DejaVu Sans";
@@ -1151,6 +1164,25 @@ mod tests {
             s.roles.overwrites.entry(community).or_default();
         }
         (s, channel, everyone)
+    }
+
+    /// Review IJ m2: an edit's rights are read from the state at its save: bits that load after the editor opened (and
+    /// deny @everyone) take the broadcast away; a role the message already names stays encodable.
+    #[test]
+    fn an_edit_s_rights_follow_the_state_it_is_saved_in() {
+        use crate::screens::messages::ui::edit_rights;
+        use dilla_client::features::roles::perm;
+        let (unread, channel, _) = world(0, false);
+        let body = format!("hi <@{}>", "05".repeat(16));
+        let (broadcast, roles) = edit_rights(&unread, channel, &body, &[]);
+        assert!(broadcast, "bits unknown: the shell's rule offers it");
+        assert_eq!(roles.len(), 1);
+        let (read, channel, _) = world(0, true);
+        let (broadcast, roles) = edit_rights(&read, channel, &body, &[]);
+        assert!(!broadcast, "the bits loaded and deny it");
+        assert_eq!(roles.len(), 1, "the role the message names stays");
+        let (allowed, channel, _) = world(perm::MENTION_EVERYONE, true);
+        assert!(edit_rights(&allowed, channel, &body, &[]).0);
     }
 
     #[test]

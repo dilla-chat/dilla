@@ -275,11 +275,19 @@ pub struct RolesUi {
     menu: Option<(CommunityId, RoleId, Point<Pixels>)>,
     queue: VecDeque<Save>,
     saving: bool,
+    /// A New role is on its way: another click is ignored until it answers, so one click makes one role (review I-E1).
+    creating: bool,
     focus: Vec<FocusHandle>,
 }
 
 fn roles_ui(w: WindowId, cx: &mut App) -> &mut RolesUi {
     crate::per_window::get_mut::<RolesUi>(w, cx)
+}
+
+/// The section's status line in window `w` (its text, and whether it is a refusal): what the editor draws under the
+/// permissions.
+pub fn status(w: WindowId, cx: &App) -> Option<(String, bool)> {
+    crate::per_window::get::<RolesUi>(w, cx).and_then(|r| r.status.clone())
 }
 
 /// The role open in window `w` (the members area's own choice).
@@ -436,6 +444,9 @@ fn new_role(w: WindowId, community: CommunityId, cx: &mut App) {
     let Some((client, _)) = client_of(w, cx) else {
         return;
     };
+    if std::mem::replace(&mut roles_ui(w, cx).creating, true) {
+        return;
+    }
     say(w, t("serverSettings.roles.saving").to_owned(), false, cx);
     let name = t("serverSettings.roles.newName");
     let job = client.roles().run(move |h| async move {
@@ -451,6 +462,7 @@ fn new_role(w: WindowId, community: CommunityId, cx: &mut App) {
     });
     cx.spawn(async move |cx| {
         let answer = job.await;
+        cx.update(|cx| roles_ui(w, cx).creating = false);
         cx.update(|cx| match answer {
             Ok(id) => {
                 roles_ui(w, cx).awaiting = Some(id);

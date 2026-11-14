@@ -181,6 +181,34 @@ pub fn typed_text_probe(text: String, size: Pixels, line: f32) -> impl gpui::Int
     .size_full()
 }
 
+/// [`typed_text_probe`] for a one-line input: its `text` is one line box whatever its length (the editor scrolls it, it
+/// never wraps), its advance wide and clipped to the box.
+pub fn typed_line_probe(text: String, size: Pixels, line: f32) -> impl gpui::IntoElement {
+    canvas(
+        move |bounds, window, _cx| {
+            let chars = text.trim_end().chars().count();
+            if chars == 0 {
+                return;
+            }
+            let advance = f32::from(size) * dilla_desktop_ui::text::MONO_ADVANCE;
+            let w = ((chars as f32 * advance) * 64.0 - 1e-3).ceil() / 64.0;
+            let b = Bounds::new(
+                bounds.origin,
+                gpui::size(px(w.min(f32::from(bounds.size.width))), px(line)),
+            );
+            let visible = window.content_mask().bounds.intersect(&b);
+            if visible.size.width > px(0.) && visible.size.height > px(0.) {
+                TEXT.lock().expect("text registry").push(visible);
+            }
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
 /// The line boxes of typed `text` in a box `width` wide (relative to the box): one per wrapped line that has glyphs, its
 /// mono advance wide (ceiled onto Chromium's layout unit, as a `Line`'s natural width is) and `line` tall.
 pub fn typed_line_boxes(text: &str, size: Pixels, line: f32, width: f32) -> Vec<Bounds<Pixels>> {

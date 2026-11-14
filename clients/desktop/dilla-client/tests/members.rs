@@ -1570,6 +1570,44 @@ mod live {
         })
         .await;
     }
+
+    /// Wave 2 review I-E1: a create placed right after the one before it answered takes the next free position, not
+    /// the same one (roles.ts `createRole` awaits `loadAccess`, so its next create reads the new row). The client must
+    /// not place it from a snapshot that still trails the first create.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+    async fn back_to_back_creates_take_distinct_positions() {
+        let (_host, ps, c) = people("w2f3-create", 1).await;
+        let c = CommunityId(c);
+        let owner = start(&ps[0]).await;
+        listed(&owner, c, 1).await;
+        owner.roles().load_access(c).await.unwrap();
+        until(&owner, "the access read", |s| s.roles.access_of(c).loaded).await;
+        let mut ids = Vec::new();
+        for name in ["one", "two", "three"] {
+            ids.push(
+                owner
+                    .roles()
+                    .create_role(c, name, 0, false, false, perm::VIEW_CHANNEL)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let s = until(&owner, "the three roles", |s| {
+            ids.iter()
+                .all(|id| s.roles.roles_of(c).iter().any(|r| r.id == *id))
+        })
+        .await;
+        let mut positions: Vec<u32> = s
+            .roles
+            .roles_of(c)
+            .iter()
+            .filter(|r| ids.contains(&r.id))
+            .map(|r| r.position)
+            .collect();
+        positions.sort_unstable();
+        assert_eq!(positions, [1, 2, 3], "each create takes its own position");
+    }
 }
 
 // ---- Task 28 wave 2 (lane A): moderated removal with evidence, against a real dillad and its Bot ----
