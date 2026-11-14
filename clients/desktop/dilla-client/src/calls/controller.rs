@@ -108,6 +108,13 @@ fn row_of<C: CallCore>(core: &Mutex<C>, group: &[u8; 16]) -> Option<GroupSummary
     rows.into_iter().find(|r| r.group_id == *group)
 }
 
+/// controller.ts `onGroupChanged`: whether this device's own leaf is gone from the call group (state 4: another member
+/// committed its Remove, as after a voice takeover) or the group's state is lost (3: a call group is never resynced).
+/// Either ends the call as removed, with no self-Remove. A group this core does not hold is not.
+pub fn own_leaf_gone<C: CallCore>(core: &Mutex<C>, group: &[u8; 16]) -> bool {
+    row_of(core, group).is_some_and(|r| r.state == 3 || r.state == 4)
+}
+
 /// The hourly rotation (controller.ts `rotate`): an empty commit with a fresh leaf secret. A
 /// refused post aborts the pending commit; an accepted one is confirmed, and the caller then reads
 /// the new epoch's keys ([`media_epoch`]). Must not run once a leave has started.

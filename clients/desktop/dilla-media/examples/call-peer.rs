@@ -18,7 +18,7 @@
 //!                                             stream audible), and each stream's own changes
 //!                                             ({"device","stream","t","audible"}), t in Unix ms
 //!   quit
-//! stdout: one JSON object per line ({"event": ...}).
+//! stdout: one JSON object per line ({"event": ...}); {"event":"ended","code":...} once the room ends on its own.
 
 use std::f64::consts::TAU;
 use std::sync::Arc;
@@ -193,6 +193,19 @@ async fn main() {
         }
     };
     emit(json!({"event": "connected", "identity": call.identity()}));
+
+    // The room's end on its own (a voice takeover's removal, the room closed) is passed on once, as
+    // {"event":"ended","code":"E_REMOVED"|"E_CALL_ENDED"|"E_DISCONNECTED"}: the driver ends its call ("lost").
+    {
+        let mut ended = call.ended();
+        tokio::spawn(async move {
+            if let Ok(end) = ended.wait_for(Option::is_some).await
+                && let Some(end) = *end
+            {
+                emit(json!({"event": "ended", "code": end.code()}));
+            }
+        });
+    }
 
     while let Some(line) = lines.recv().await {
         let parts: Vec<&str> = line.split_whitespace().collect();

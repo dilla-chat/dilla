@@ -342,6 +342,7 @@ async fn in_call(
     let mut videos = call.remote_videos();
     let mut events = call.events();
     let mut ended = call.shares_ended();
+    let mut room_end = call.ended();
     let mut speaking = Speaking::default();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
     let own = ctx.states.borrow().account.device_id;
@@ -362,6 +363,17 @@ async fn in_call(
                 }
             }
             r = states.changed() => if r.is_err() { break },
+            // session.ts `onRoomEnd` → `leave('lost')`: the room ended on its own (a newer device took voice over,
+            // the room closed, the connection gave up). The call ends, saying why, and the takeover notice shows.
+            r = room_end.changed() => {
+                let end = *room_end.borrow_and_update();
+                if r.is_err() || end.is_some() {
+                    let code = end.map_or("E_DISCONNECTED", dilla_media::RoomEnd::code);
+                    log::warn!("voice: the call's room ended on its own ({code})");
+                    drop(ctx.voice.lost(link.call_id, code));
+                    break;
+                }
+            }
             r = levels.changed() => {
                 if r.is_ok() {
                     let now = speaking.update(&levels.borrow_and_update(), Instant::now());
