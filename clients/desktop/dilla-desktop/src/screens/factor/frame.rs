@@ -240,6 +240,8 @@ impl AuthFrame {
     }
 
     pub fn render(self) -> AnyElement {
+        let banner = self.banner.clone();
+        let has_banner = banner.is_some();
         let head = (self.step.is_some() || self.progress.is_some()).then(|| {
             div()
                 .flex()
@@ -334,14 +336,16 @@ impl AuthFrame {
                     .gap(px(BODY_GAP))
                     .mt(px(-BODY_GAP))
                     .min_w_0()
-                    .when_some(self.banner, |d, (tone, t)| {
+                    .when_some(banner, |d, (tone, t)| {
                         d.child(tracked_box(
                             "auth-banner",
                             Banner::new("auth-banner", tone, t),
                         ))
                     })
+                    // `.d-onboarding-frame__body > p:first-child`: a banner drawn first in the body takes the place
+                    // of the first child, and the paragraph after it keeps no 6px.
                     .children(self.body.into_iter().enumerate().map(|(i, part)| {
-                        if i == 0 {
+                        if i == 0 && !has_banner {
                             div().mb(px(FIRST_PARA_GAP)).child(part).into_any_element()
                         } else {
                             part
