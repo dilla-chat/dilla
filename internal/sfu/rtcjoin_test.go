@@ -12,9 +12,6 @@ import (
 // 2.22.3 and server-sdk-go) and 18 (the desktop's livekit 0.10.1 Rust SDK, livekit-signaling 0.1.9).
 // A neighbour of either, and a value that does not parse, is refused before LiveKit labels a metric.
 func TestCheckClientAdmitsExactlyTheProtocolsDillaClientsSpeak(t *testing.T) {
-	// The list is a copy each time: a caller that changes its copy changes nothing.
-	got := ClientProtocols()
-	got[0] = 99
 	if ClientProtocols() != [2]int32{17, 18} {
 		t.Fatalf("ClientProtocols() = %v, want [17 18]", ClientProtocols())
 	}

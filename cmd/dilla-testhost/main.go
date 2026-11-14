@@ -217,7 +217,7 @@ func run(o options) error {
 	}
 
 	var requestDiagnostics instanceRequestDiagnostics
-	var public http.Handler = host.Handler()
+	public := host.Handler()
 	if o.parityFixture {
 		public = parityFixture(public)
 	}
