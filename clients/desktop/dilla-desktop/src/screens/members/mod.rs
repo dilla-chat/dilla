@@ -12,6 +12,7 @@
 pub mod keys;
 pub mod modlog;
 mod self_roles;
+pub mod roles;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -24,36 +25,34 @@ use dilla_client::features::moderation::{BanLength, ReasonProblem, TimeoutLength
 use dilla_client::features::roles::perm::{PermKey, ROLE_PERM_GROUPS};
 use dilla_client::features::roles::rank;
 use dilla_client::features::roles::{
-    AssignLock, AssignRefusal, Direction, PermLock, RolePatch, assign_lock, assign_refusal,
-    assignable, held_bits, permission_lock, request_id,
+    AssignLock, AssignRefusal, PermLock, assign_lock, assign_refusal, assignable, held_bits,
+    permission_lock, request_id,
 };
 use dilla_client::state::members::Presence as Wire;
 use dilla_client::state::roles::{RoleId, RoleSummary};
 use dilla_client::state::{AppState, CommunityId, UserId};
 use dilla_client::sync::api::ApiError;
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Entity, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window,
-    WindowId, anchored, deferred, div, point,
+    AnyElement, App, AppContext, Entity, InteractiveElement, IntoElement, ParentElement, Pixels,
+    Point, SharedString, Styled, Window, WindowId, anchored, deferred, div, point,
 };
 use gpui_component::input::InputState;
 
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, Presence, colour_of};
-use dilla_desktop_ui::components::button::{Button, ButtonVariant};
+use dilla_desktop_ui::components::button::Button;
 use dilla_desktop_ui::components::check_list::{CheckList, CheckListItem};
 use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
 use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::members::{
-    CardAction, GroupKind, ListGroup, ListMember, MemberList, ProfileCard, role_chip, space,
+    CardAction, GroupKind, ListGroup, ListMember, MemberList, ProfileCard, space,
 };
 use dilla_desktop_ui::components::select::Select;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toast::show_toast_in;
-use dilla_desktop_ui::components::toggle::Toggle;
 use dilla_desktop_ui::text::{line, line_height};
-use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
+use dilla_desktop_ui::tokens::{color, font, layout, text};
 
 use crate::router::{Route, ServerSection};
 use crate::slots::{SectionId, SlotCx};
@@ -1085,299 +1084,6 @@ fn roles_job(
     .detach();
 }
 
-fn roles_section(w: WindowId, ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyElement {
-    ensure_loaded(w, "people", community, ctx.client.as_ref(), cx);
-    let state = ctx.state.clone();
-    let access = state.roles.access_of(community);
-    let roles = sorted_roles(&state, community);
-    let can = access.loaded && access.manage_roles;
-    // A role at or above my rank is locked (the instance refuses it): the owner ranks above every role.
-    let locked = |r: &RoleSummary| !role_editable(&state, community, r);
-    let open = ui(w, cx)
-        .role
-        .filter(|id| roles.iter().any(|r| r.id == *id));
-    let list = div()
-        .flex()
-        .flex_col()
-        .gap(space::S2)
-        .children(roles.iter().map(|r| {
-            let id = r.id;
-            let tint = if r.color == 0 {
-                color::FG_2
-            } else {
-                gpui::rgb(r.color).into()
-            };
-            div()
-                .id(SharedString::from(format!("role-{}", hex(&r.id))))
-                .h(layout::ROW_H_2)
-                .px(space::S10)
-                .flex()
-                .items_center()
-                .gap(space::S10)
-                .rounded(radius::MD)
-                .when_some_bg(open == Some(id))
-                .hover(|s| s.bg(color::HOVER))
-                .cursor_pointer()
-                .child(div().size(space::ROLE_DOT).rounded(radius::PILL).bg(tint))
-                .child(
-                    div().flex_1().min_w_0().flex().child(
-                        line(
-                            r.name.clone(),
-                            text::SM,
-                            line_height(text::SM, 1.5),
-                            color::FG,
-                        )
-                        .ellipsis(),
-                    ),
-                )
-                .child(line(
-                    r.members.to_string(),
-                    text::META,
-                    line_height(text::META, 1.5),
-                    color::FG_3,
-                ))
-                .on_click(move |_: &ClickEvent, _w, cx| {
-                    ui(w, cx).role = Some(id);
-                    cx.refresh_windows();
-                })
-        }));
-    let mut root = div()
-        .id("settings-roles")
-        .flex()
-        .flex_col()
-        .child(section_head(
-            t("roles.title"),
-            Some(t("roles.body").to_owned()),
-        ));
-    if can && let Some(client) = ctx.client.clone() {
-        root = root.child(
-            div().mb(space::S12).child(
-                Button::new("role-create", t("roles.new"))
-                    .icon(IconName::Plus)
-                    .on_click(move |_, _w, cx| {
-                        roles_job(w, &client, cx, move |r| {
-                            Box::pin(async move {
-                                r.create_role(community, t("roles.new"), 0, false, false, 0)
-                                    .await
-                                    .map(|_| ())
-                            })
-                        });
-                    }),
-            ),
-        );
-    }
-    root = root.child(list);
-    if let Some(role) = open.and_then(|id| roles.iter().find(|r| r.id == id)) {
-        let locks = permission_locks(&state, community, role);
-        root = root.child(role_editor(w, ctx, community, role, locked(role), locks));
-    }
-    if let Some(dialog) = role_delete_dialog(w, cx) {
-        root = root.child(dialog);
-    }
-    root.into_any_element()
-}
-
-trait OpenBg {
-    fn when_some_bg(self, on: bool) -> Self;
-}
-
-impl OpenBg for gpui::Stateful<gpui::Div> {
-    fn when_some_bg(self, on: bool) -> Self {
-        if on { self.bg(color::HOVER) } else { self }
-    }
-}
-
-/// The role editor (RoleEditor + PermissionGrid): the six swatches, hoist and mentionable, then every permission under
-/// the prototype's four headings. A locked role (at or above my rank, or without manage_roles) is read-only.
-fn role_editor(
-    w: WindowId,
-    ctx: &SlotCx,
-    community: CommunityId,
-    role: &RoleSummary,
-    locked: bool,
-    locks: Vec<(PermKey, Option<PermLock>)>,
-) -> AnyElement {
-    let lock_of = |k: PermKey| locks.iter().find(|(x, _)| *x == k).and_then(|(_, l)| *l);
-    let client = ctx.client.clone();
-    let id = role.id;
-    let patch = move |p: RolePatch, cx: &mut App| {
-        if let Some(client) = &client {
-            roles_job(w, client, cx, move |r| {
-                Box::pin(async move { r.update_role(community, id, p).await })
-            });
-        }
-    };
-    let patch = Rc::new(patch);
-    let swatches = div().flex().gap(space::S8).children(
-        dilla_client::features::members::signal_palette(role.color)
-            .into_iter()
-            .map(|(value, key)| {
-                let patch = patch.clone();
-                let chosen = value == role.color;
-                div()
-                    .id(SharedString::from(format!("role-colour-{key}")))
-                    .size(space::SWATCH)
-                    .rounded(radius::PILL)
-                    .bg(gpui::rgb(value))
-                    .when_chosen(chosen)
-                    .cursor_pointer()
-                    .on_click(move |_: &ClickEvent, _w, cx| {
-                        if !locked {
-                            patch(
-                                RolePatch {
-                                    color: Some(value),
-                                    ..RolePatch::default()
-                                },
-                                cx,
-                            );
-                        }
-                    })
-            }),
-    );
-    let flag = |key: &'static str, label: &'static str, on: bool, which: fn(bool) -> RolePatch| {
-        let patch = patch.clone();
-        Toggle::new(SharedString::from(format!("role-{key}")), t(label), on)
-            .disabled(locked || role.position == 0)
-            .on_change(move |v, _w, cx| patch(which(v), cx))
-    };
-    let allow = role.allow;
-    let grid = div()
-        .flex()
-        .flex_col()
-        .gap(space::S14)
-        .children(ROLE_PERM_GROUPS.iter().map(|(group, keys)| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::S6)
-                .child(
-                    line(
-                        t(&format!("perm.group.{group}")).to_uppercase(),
-                        text::MICRO,
-                        line_height(text::MICRO, 1.5),
-                        color::FG_3,
-                    )
-                    .weight(font::WEIGHT_LABEL)
-                    .tracking(dilla_desktop_ui::metrics::LABEL_TRACKING_WIDE),
-                )
-                .children(keys.iter().map(|k| {
-                    let patch = patch.clone();
-                    let bit = k.bit();
-                    // RolesSection.tsx: a role I may not edit, or a bit I do not hold, cannot be given or taken.
-                    let lock = lock_of(*k);
-                    let toggle = Toggle::new(
-                        SharedString::from(format!("perm-{}", k.key())),
-                        t(&format!("perm.{}", k.key())),
-                        allow & bit != 0,
-                    )
-                    .disabled(lock.is_some());
-                    let toggle = match lock {
-                        Some(PermLock::NotHeld) => toggle.hint(t("roles.editor.notHeld")),
-                        _ => toggle,
-                    };
-                    toggle.on_change(move |on, _w, cx| {
-                        if lock.is_some() {
-                            return;
-                        }
-                        let next = if on { allow | bit } else { allow & !bit };
-                        patch(
-                            RolePatch {
-                                allow: Some(next),
-                                ..RolePatch::default()
-                            },
-                            cx,
-                        );
-                    })
-                }))
-        }));
-    let mut editor = div()
-        .id("role-editor")
-        .mt(space::S16)
-        .p(space::S16)
-        .flex()
-        .flex_col()
-        .gap(space::S14)
-        .border_1()
-        .border_color(color::CARD_EDGE)
-        .rounded(radius::XL)
-        .child(role_chip(role.name.clone(), role.color));
-    if role.position != 0 {
-        editor = editor
-            .child(swatches)
-            .child(flag("hoist", "roles.editor.hoist", role.hoist, |v| {
-                RolePatch {
-                    hoist: Some(v),
-                    ..RolePatch::default()
-                }
-            }))
-            .child(flag(
-                "mentionable",
-                "roles.editor.mentionable",
-                role.mentionable,
-                |v| RolePatch {
-                    mentionable: Some(v),
-                    ..RolePatch::default()
-                },
-            ));
-    }
-    editor = editor.child(grid);
-    if !locked
-        && role.position != 0
-        && let Some(client) = ctx.client.clone()
-    {
-        let c2 = client.clone();
-        let name = role.name.clone();
-        editor = editor.child(
-            div()
-                .flex()
-                .gap(space::S8)
-                .child(
-                    Button::new("role-up", t("roles.up"))
-                        .icon(IconName::ChevronUp)
-                        .on_click(move |_, _w, cx| {
-                            roles_job(w, &client, cx, move |r| {
-                                Box::pin(
-                                    async move { r.move_role(community, id, Direction::Up).await },
-                                )
-                            });
-                        }),
-                )
-                .child(
-                    Button::new("role-down", t("roles.down")).on_click(move |_, _w, cx| {
-                        roles_job(w, &c2, cx, move |r| {
-                            Box::pin(
-                                async move { r.move_role(community, id, Direction::Down).await },
-                            )
-                        });
-                    }),
-                )
-                .child(
-                    Button::new("role-delete", t("roles.delete"))
-                        .variant(ButtonVariant::Danger)
-                        .icon(IconName::Trash2)
-                        .on_click(move |_, _w, cx| {
-                            request_role_delete(w, community, id, name.clone(), cx);
-                        }),
-                ),
-        );
-    }
-    editor.into_any_element()
-}
-
-trait Chosen {
-    fn when_chosen(self, on: bool) -> Self;
-}
-
-impl Chosen for gpui::Stateful<gpui::Div> {
-    fn when_chosen(self, on: bool) -> Self {
-        if on {
-            self.border_2().border_color(color::FG)
-        } else {
-            self
-        }
-    }
-}
-
 fn bans_section(
     ctx: &SlotCx,
     community: CommunityId,
@@ -1672,7 +1378,7 @@ pub fn settings_section(
             )
             .child(list_with_overlays(ctx, community, false, window, cx))
             .into_any_element(),
-        SectionId::Server(ServerSection::Roles) => roles_section(w, ctx, community, cx),
+        SectionId::Server(ServerSection::Roles) => roles::section(w, ctx, community, window, cx),
         SectionId::Server(ServerSection::SelfRoles) => {
             self_roles::section(w, ctx, community, window, cx)
         }
