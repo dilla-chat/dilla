@@ -874,18 +874,15 @@ fn arm_outgoing(inner: &Arc<Inner>, pc: &Arc<PerClient>, channel: ChannelId) {
         let (Some(inner), Some(pc)) = (weak.upgrade(), weak_pc.upgrade()) else {
             return;
         };
-        let expired = {
-            let mut out = guard(&pc.outgoing);
-            match out.as_mut() {
-                Some(o) if o.channel == Some(channel) && !o.expired => {
-                    o.expired = true;
-                    Some(o.clone())
-                }
-                _ => None,
-            }
-        };
-        if let Some(o) = expired {
-            publish_outgoing(&inner, o);
+        // Published under the lock, as every other writer of the outgoing ring does: a call's end (which clears it and
+        // publishes none) can then never be overtaken by this expiry's older copy (w2-fix3 re-review).
+        let mut out = guard(&pc.outgoing);
+        if let Some(o) = out.as_mut()
+            && o.channel == Some(channel)
+            && !o.expired
+        {
+            o.expired = true;
+            publish_outgoing(&inner, o.clone());
         }
     });
     if let Some(previous) = guard(&pc.outgoing_timer).replace(sleeper.abort_handle()) {
