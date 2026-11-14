@@ -242,6 +242,8 @@ pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyEleme
     .flatten()
     .collect();
     out.extend(messages::overlays(window, cx));
+    // The moderation commands' confirmation (Task 28 wave 2).
+    out.extend(commands::confirm::overlay(ctx, window, cx));
     out
 }
 

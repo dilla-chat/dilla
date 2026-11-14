@@ -234,9 +234,14 @@ fn gifs_enabled(_state: &AppState, _community: Option<CommunityId>) -> bool {
 
 /// The commands the picker offers in `community` (the host's `definitions`): the available built-ins, then the Bot's.
 pub fn definitions(state: &AppState, community: Option<CommunityId>) -> Vec<CommandDefinition> {
+    // The member's bits in the server once its access is read (`/kick`, `/ban` and the other permission-gated
+    // built-ins are listed only then, as `commandAvailability` fails closed on unknown bits).
+    let bits = community
+        .filter(|c| state.roles.access_of(*c).loaded)
+        .map(|c| u64::from(crate::screens::members::my_bits(state, c)));
     let context = CommandContext {
         in_community: community.is_some(),
-        bits: None,
+        bits,
     };
     let mut out: Vec<CommandDefinition> = registry::commands()
         .iter()

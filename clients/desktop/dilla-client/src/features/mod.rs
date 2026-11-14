@@ -21,6 +21,7 @@ pub mod notify;
 pub mod profile;
 pub mod reactions;
 pub mod ring;
+pub mod role_panels;
 pub mod roles;
 pub mod search;
 pub mod server_admin;

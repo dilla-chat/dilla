@@ -14,9 +14,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use dilla_client::features::ring::{
-    AFK_RETRY, AfkBook, AfkRead, DMS_REREAD, Expiry, RingBook, RingDeps, away_patched,
-    changed_user, decode_afk, decode_changed, dms_read_due, dms_read_wait, is_builtin_afk,
-    outgoing_declined, outgoing_shrink, outgoing_start,
+    AFK_RETRY, AfkBook, AfkRead, DEFERRED_MAX, DMS_REREAD, DeferredRings, Expiry, RingBook,
+    RingDeps, away_patched, changed_user, decode_afk, decode_changed, dms_read_due, dms_read_wait,
+    is_builtin_afk, outgoing_declined, outgoing_shrink, outgoing_start,
 };
 use dilla_client::gateway::frames::{AfkAwayFrame, CallRingFrame};
 use dilla_client::state::ring::{AFK_AWAY_MAX, AfkSnapshot, Away, RING, RINGS_MAX};
@@ -611,6 +611,35 @@ fn a_dm_list_read_inside_the_window_waits_for_its_end() {
         DMS_REREAD - Duration::from_secs(2)
     );
     assert_eq!(dms_read_wait(Some(t0), t0 + DMS_REREAD), Duration::ZERO);
+}
+
+/// t28-bot-review I3: a ring for an unknown DM waits for the re-read on its own; a later ring frame of its channel
+/// (an end, or the ring again) makes it stale, other channels' frames do not, and the waiting rings are bounded.
+#[test]
+fn a_deferred_ring_is_checked_once_only_while_no_later_frame_of_its_channel_came() {
+    let (a, b) = (ChannelId([1; 16]), ChannelId([2; 16]));
+    let mut d = DeferredRings::default();
+    let first = d.defer(a).expect("room");
+    d.frame(b);
+    assert!(
+        d.take(a, first),
+        "another channel's frame leaves it current"
+    );
+    assert!(!d.take(a, first), "checked once");
+
+    let stale = d.defer(a).expect("room");
+    d.frame(a);
+    assert!(!d.take(a, stale), "ended meanwhile (state 0)");
+
+    let older = d.defer(a).expect("room");
+    let newer = d.defer(a).expect("the same channel always has room");
+    assert!(!d.take(a, older), "rung again: only the newer is checked");
+    assert!(d.take(a, newer));
+
+    for i in 0..DEFERRED_MAX {
+        assert!(d.defer(ChannelId([10 + i as u8; 16])).is_some());
+    }
+    assert_eq!(d.defer(b), None, "bounded");
 }
 
 #[test]

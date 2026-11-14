@@ -131,8 +131,9 @@ pub fn registry_when(text: &str, now: i64, offset_at: &dyn Fn(i64) -> i32) -> Op
         let (y, mo, d) = civil(days + i64::from(later));
         return Some(format!("{y:04}-{mo:02}-{d:02}T{hour:02}:{minute:02}"));
     }
-    // `2026-11-14 09:00` or `2026-11-14T09:00[:ss]`.
-    if value.len() >= 16 {
+    // `2026-11-14 09:00` or `2026-11-14T09:00[:ss]`. ASCII only, so the byte slices below fall on char boundaries
+    // (t28-bot-review C1: `imorgon förmiddag` crashed the render).
+    if value.len() >= 16 && value.is_ascii() {
         let (date, rest) = value.split_at(10);
         let sep = rest.as_bytes()[0];
         let time = &rest[1..];
@@ -467,6 +468,40 @@ mod tests {
             typed(&remind, &[String::new(), "x".into()], 0, &utc),
             r#"/remind text:"x""#
         );
+    }
+
+    #[test]
+    fn non_ascii_when_text_never_panics() {
+        let now = 1_800_000_000;
+        for text in [
+            "imorgon förmiddag",
+            "imorgon förmidd",
+            "2026-11-14ä09:00",
+            "2026-11-1ä 09:00",
+            "🎉🎉🎉🎉🎉🎉🎉🎉",
+            "in 2🎉",
+            "in ö h",
+            "ö:00",
+            "1ö:00",
+            "tomorrow 0ö:00",
+        ] {
+            assert_eq!(registry_when(text, now, &utc), None, "{text}");
+        }
+        // Every prefix of every mixed string, as a user types it one character at a time.
+        let alphabet = ['a', '1', ':', '-', ' ', 't', 'ö', 'ä', '🎉', 'İ', '\u{301}'];
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..4000 {
+            let mut text = String::new();
+            for _ in 0..24 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                text.push(alphabet[(seed % alphabet.len() as u64) as usize]);
+                let _ = registry_when(&text, now, &utc);
+                let _ = registry_when(&format!("2026-11-14{text}"), now, &utc);
+                let _ = registry_when(&format!("in {text}"), now, &utc);
+            }
+        }
     }
 
     #[test]

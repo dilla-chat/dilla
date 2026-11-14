@@ -11,6 +11,7 @@
 
 pub mod keys;
 pub mod modlog;
+mod self_roles;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -24,7 +25,7 @@ use dilla_client::features::roles::perm::{PermKey, ROLE_PERM_GROUPS};
 use dilla_client::features::roles::rank;
 use dilla_client::features::roles::{
     AssignLock, AssignRefusal, Direction, PermLock, RolePatch, assign_lock, assign_refusal,
-    assignable, held_bits, permission_lock, request_id, self_role_candidates,
+    assignable, held_bits, permission_lock, request_id,
 };
 use dilla_client::state::members::Presence as Wire;
 use dilla_client::state::roles::{RoleId, RoleSummary};
@@ -217,6 +218,17 @@ fn presence_word(p: Wire) -> &'static str {
 
 /// Asks the client once per community for what the members views read: the presence, and the access with the roles
 /// and the overwrites.
+/// Reads `community`'s presence and this account's access there once per window (the command picker lists the
+/// permission-gated built-ins, `/kick` and `/ban`, only once the access is known).
+pub fn ensure_access(
+    w: WindowId,
+    community: CommunityId,
+    client: Option<&Rc<Client>>,
+    cx: &mut App,
+) {
+    ensure_loaded(w, "people", community, client, cx);
+}
+
 fn ensure_loaded(
     w: WindowId,
     what: &'static str,
@@ -1366,83 +1378,6 @@ impl Chosen for gpui::Stateful<gpui::Div> {
     }
 }
 
-fn self_roles_section(
-    w: WindowId,
-    ctx: &SlotCx,
-    community: CommunityId,
-    cx: &mut App,
-) -> AnyElement {
-    ensure_loaded(w, "people", community, ctx.client.as_ref(), cx);
-    ensure_loaded(w, "self", community, ctx.client.as_ref(), cx);
-    let state = ctx.state.clone();
-    let access = state.roles.access_of(community);
-    let mut root = div()
-        .id("settings-self-roles")
-        .flex()
-        .flex_col()
-        .gap(space::S6)
-        .child(section_head(
-            t("admin.bot.selfRoles.title"),
-            Some(t("admin.bot.selfRoles.configure").to_owned()),
-        ));
-    let Some(list) = state.roles.self_roles.get(&community) else {
-        return root.child(note(t("members.loading"))).into_any_element();
-    };
-    let offered: HashSet<[u8; 16]> = list.iter().map(|r| r.id).collect();
-    if access.loaded && access.manage_roles {
-        // The policy: which roles below my rank, carrying nothing beyond SELF_ROLE_BITS, members may pick for themselves.
-        let sorted = sorted_roles(&state, community);
-        let roles: Vec<RoleSummary> = self_role_candidates(&sorted, &access)
-            .into_iter()
-            .cloned()
-            .collect();
-        for r in roles {
-            let (id, offered_now) = (r.id, offered.clone());
-            let client = ctx.client.clone();
-            root = root.child(
-                Toggle::new(
-                    SharedString::from(format!("self-role-{}", hex(&r.id))),
-                    r.name.clone(),
-                    offered.contains(&r.id),
-                )
-                .on_change(move |on, _w, cx| {
-                    let mut next: Vec<[u8; 16]> =
-                        offered_now.iter().copied().filter(|x| *x != id).collect();
-                    if on {
-                        next.push(id);
-                    }
-                    if let Some(client) = &client {
-                        roles_job(w, client, cx, move |r| {
-                            Box::pin(async move { r.configure_self_roles(community, &next).await })
-                        });
-                    }
-                }),
-            );
-        }
-    } else if list.is_empty() {
-        root = root.child(note(t("admin.bot.selfRoles.empty")));
-    } else {
-        for r in list {
-            let (id, client) = (r.id, ctx.client.clone());
-            root = root.child(
-                Toggle::new(
-                    SharedString::from(format!("self-role-{}", hex(&r.id))),
-                    r.name.clone(),
-                    r.self_selected,
-                )
-                .on_change(move |on, _w, cx| {
-                    if let Some(client) = &client {
-                        roles_job(w, client, cx, move |r| {
-                            Box::pin(async move { r.select_self_role(community, id, on).await })
-                        });
-                    }
-                }),
-            );
-        }
-    }
-    root.into_any_element()
-}
-
 fn bans_section(
     ctx: &SlotCx,
     community: CommunityId,
@@ -1738,7 +1673,9 @@ pub fn settings_section(
             .child(list_with_overlays(ctx, community, false, window, cx))
             .into_any_element(),
         SectionId::Server(ServerSection::Roles) => roles_section(w, ctx, community, cx),
-        SectionId::Server(ServerSection::SelfRoles) => self_roles_section(w, ctx, community, cx),
+        SectionId::Server(ServerSection::SelfRoles) => {
+            self_roles::section(w, ctx, community, window, cx)
+        }
         SectionId::Server(ServerSection::Bans) => bans_section(ctx, community, window, cx),
         SectionId::Server(ServerSection::ModerationLog) => {
             moderation_log_section(ctx, community, window, cx)

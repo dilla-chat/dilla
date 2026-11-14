@@ -9,7 +9,7 @@ Every test title in `e2e/web`, `e2e/voice`, `e2e/media` and `packages/desktop/te
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of those directories and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 8 TODO only (8 TODO tests proposed in all).
+Totals: 233 e2e tests; 162 with a Rust test, 42 n/a (browser/phone only), 23 next plan (native), 6 TODO only (6 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -42,7 +42,7 @@ Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 nex
 | `e2e/web/bot-runtime.spec.ts` | literal music command text never executes through the native runtime | dilla-client::tests/bot::literal_music_command_text_never_executes |
 | `e2e/web/bot-runtime.spec.ts` | the moderation log reads through sealed Bot commands on each device, across a Bot restart | dilla-desktop::src/screens/members/modlog::the_log_reads_pages_as_the_web_does |
 | `e2e/web/bot-runtime.spec.ts` | a Roles-enabled bot applies the configured join role on join and rejoin | dilla-client::tests/bot_admin::a_roles_bot_applies_the_join_role_on_join_and_rejoin |
-| `e2e/web/bot-runtime.spec.ts` | a human publishes a bot-authored self-service role panel and its reaction grant keeps its own source | TODO: dilla-client::tests/bot::a_bot_authored_role_panel_reaction_grant_keeps_its_own_source |
+| `e2e/web/bot-runtime.spec.ts` | a human publishes a bot-authored self-service role panel and its reaction grant keeps its own source | dilla-client::tests/bot::a_bot_authored_role_panel_reaction_grant_keeps_its_own_source |
 | `e2e/web/channel-list.spec.ts` | voice channels stand in order in the one channel list, with their people nested under them | dilla-desktop::src/screens/voice/mod::people_group_devices_by_user_and_a_mute_counts_when_every_device_is_muted; dilla-desktop::src/screens/channel_list::afk_is_listed_last_whatever_its_position |
 | `e2e/web/conversation.spec.ts` | edit, reply, react, pin and delete between the browser and the peer | dilla-desktop::tests/integration::edit_reply_react_pin_delete_one_flow; dilla-client::tests/messages::edit_pin_delete_between_two_devices |
 | `e2e/web/conversation.spec.ts` | an edit or a delete by someone else changes nothing | dilla-client::tests/messages::foreign_edit_or_delete_changes_nothing |
@@ -117,7 +117,7 @@ Totals: 233 e2e tests; 160 with a Rust test, 42 n/a (browser/phone only), 23 nex
 | `e2e/web/signup.spec.ts` | a server invite, a name and a written-down key make an account that lands in that server | dilla-client::tests/onboarding::invite_name_written_key_lands_in_server |
 | `e2e/web/slash-commands.spec.ts` | composer keeps private results private, publishes only explicit text, and retains separate channel/thread drafts | dilla-client::tests/bot::private_results_stay_private_and_auto_dismiss; dilla-desktop::tests/bot::a_private_result_follows_the_last_message |
 | `e2e/web/slash-commands.spec.ts` | polls publish in channels and threads, accept real votes, reject forged markers, and close by the creator | dilla-desktop::tests/bot::poll_card_draws_under_the_bots_post; dilla-client::src/features/utilities/polls::selection_rules |
-| `e2e/web/slash-commands.spec.ts` | moderation requires confirmation and applies to a distinct joined member | TODO: dilla-desktop::tests/bot::a_moderation_command_asks_for_confirmation_then_applies_to_a_joined_member |
+| `e2e/web/slash-commands.spec.ts` | moderation requires confirmation and applies to a distinct joined member | dilla-desktop::tests/bot::a_moderation_command_asks_for_confirmation_then_applies_to_a_joined_member |
 | `e2e/web/slash-commands.spec.ts` | reminders sync across devices and remain due after Bot restart and reload | dilla-client::tests/bot::reminders_sync_across_devices_and_stay_due_after_a_bot_restart |
 | `e2e/web/slash-commands.spec.ts` | a reminder set from the picker chips appears under Upcoming | dilla-desktop::tests/bot::a_reminder_set_from_the_chips_appears_under_upcoming |
 | `e2e/web/slowmode-announce.spec.ts` | slow mode and an announcement channel from an empty instance: the wait, the queue, the read-only notice, a refused post and a lying class | dilla-desktop::tests/messages::slow_mode_wait_queue_and_announcement_read_only |

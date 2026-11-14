@@ -185,7 +185,7 @@ impl BotSide {
 pub(super) fn data_dir(tag: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = env_or("DILLA_E2E_HOST_DATA_ROOT", PathBuf::from("/tmp/dw"));
-    std::fs::create_dir_all(&root).unwrap();
+    private_root(&root);
     let dir = root.join(format!(
         "{}-{}",
         std::process::id(),
@@ -193,6 +193,40 @@ pub(super) fn data_dir(tag: &str) -> PathBuf {
     ));
     eprintln!("bot test host {tag}: {}", dir.display());
     dir
+}
+
+/// t28-bot-review M4: the predictable root (/tmp/dw) is made 0700, and one that is a symlink or another user's (made
+/// first by someone else on a shared machine, who would then own our data and socket dirs) is refused.
+fn private_root(root: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        match std::fs::DirBuilder::new().mode(0o700).create(root) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("{}: {e}", root.display()),
+        }
+        let meta = std::fs::symlink_metadata(root).unwrap();
+        assert!(
+            meta.file_type().is_dir(),
+            "{} is not a directory (a symlink?)",
+            root.display()
+        );
+        // Our uid: the owner of a file this process just made.
+        let probe = std::env::temp_dir().join(format!("dw-uid-{}", std::process::id()));
+        std::fs::write(&probe, b"").unwrap();
+        let me = std::fs::metadata(&probe).unwrap().uid();
+        let _ = std::fs::remove_file(&probe);
+        assert_eq!(
+            meta.uid(),
+            me,
+            "{} belongs to another user: set DILLA_E2E_HOST_DATA_ROOT",
+            root.display()
+        );
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(root).unwrap();
 }
 
 /// The Bot's socket directory, `<data-dir>-bot` (cmd/dilla-testhost/bot.go `botConfig`).

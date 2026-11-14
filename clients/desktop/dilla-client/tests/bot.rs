@@ -611,3 +611,152 @@ async fn reminders_sync_across_devices_and_stay_due_after_a_bot_restart() {
     drop(host);
     let _ = std::fs::remove_dir_all(root2);
 }
+
+/// Whether `user` holds `role` in `community`, as `client` lists the members.
+fn holds(
+    s: &AppState,
+    community: CommunityId,
+    user: dilla_client::state::UserId,
+    role: [u8; 16],
+) -> bool {
+    s.members
+        .get(&community)
+        .and_then(|m| m.iter().find(|m| m.user_id == user))
+        .is_some_and(|m| m.role_ids.contains(&role))
+}
+
+/// e2e/web/bot-runtime.spec.ts "a human publishes a bot-authored self-service role panel and its reaction grant keeps
+/// its own source": ada approves Readers for self service, marks #general a Bot channel and has the Bot post a panel there
+/// (sealed operation 31, then `register_role_panel`). bjorn sees the Bot's post and reacts 👍: his confirmed reaction is
+/// applied (`apply_role_panel_reaction`) and he holds Readers. He also picks Readers himself; taking the reaction back
+/// leaves the role (its self-service grant is a source of its own), and dropping the self-service pick then takes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn a_bot_authored_role_panel_reaction_grant_keeps_its_own_source() {
+    use dilla_client::features::role_panels::PanelOption;
+    let (_host, pa, pb, c) = two_people_with_bot("t28-panel").await;
+    let community = CommunityId(c);
+    let a = start(&pa).await;
+    let b = start(&pb).await;
+    let channel = general(&a, c).await;
+    general(&b, c).await;
+    a.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("a opens general");
+    b.open_channel(channel)
+        .await
+        .unwrap()
+        .expect("b opens general");
+    enable_bot(&a, c, cap::ROLES).await;
+
+    let roles = a.roles();
+    let readers = roles
+        .create_role(community, "Readers", 0, true, false, 0)
+        .await
+        .expect("ada makes Readers");
+    roles
+        .configure_self_roles(community, &[readers])
+        .await
+        .expect("Readers is a self-service role");
+    a.bot_admin()
+        .mark_bot_channel(community, channel)
+        .await
+        .unwrap()
+        .expect("general is a Bot channel");
+
+    let options = [PanelOption {
+        emoji: "👍".into(),
+        role: readers,
+        name: "Readers".into(),
+    }];
+    let panels = a.role_panels();
+    let request = dilla_client::features::bot_admin::new_request_id();
+    panels
+        .publish(community, channel, &options, request)
+        .await
+        .expect("the Bot posts and the panel is registered");
+
+    let s = wait_for(
+        &b,
+        Duration::from_secs(60),
+        "the Bot's panel at bjorn",
+        |s| {
+            s.timelines.get(&channel).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .any(|i| i.bot && i.body.contains("👍 Readers") && i.seq.is_some())
+            })
+        },
+    )
+    .await;
+    let panel = s.timelines[&channel]
+        .items
+        .iter()
+        .find(|i| i.bot && i.body.contains("👍 Readers"))
+        .unwrap();
+    assert!(
+        panel
+            .body
+            .contains("React with the matching emoji to choose a role:"),
+        "{}",
+        panel.body
+    );
+    let panel_msg = panel.msg_id.expect("the panel has a message id");
+    let bjorn = s.account.user_id.unwrap();
+
+    // The reaction grants Readers.
+    b.reactions()
+        .react(channel, panel_msg, "👍", true)
+        .await
+        .unwrap()
+        .expect("bjorn reacts");
+    wait_for(&b, Duration::from_secs(60), "the panel's grant", |s| {
+        holds(s, community, bjorn, readers)
+    })
+    .await;
+
+    // His own self-service pick is a second source.
+    b.roles()
+        .select_self_role(community, readers, true)
+        .await
+        .expect("bjorn picks Readers");
+    b.reactions()
+        .react(channel, panel_msg, "👍", false)
+        .await
+        .unwrap()
+        .expect("bjorn takes the reaction back");
+    wait_for(&b, Duration::from_secs(30), "the reaction gone", |s| {
+        s.timelines.get(&channel).is_some_and(|t| {
+            t.items
+                .iter()
+                .find(|i| i.msg_id == Some(panel_msg))
+                .is_some_and(|i| !i.reactions.iter().any(|r| r.mine))
+        })
+    })
+    .await;
+    // The removal is applied (or refused) within its retries; the role stays either way.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    b.members()
+        .reload(community)
+        .await
+        .expect("bjorn reads the members");
+    assert!(
+        holds(&b.state().borrow(), community, bjorn, readers),
+        "the self-service pick keeps Readers"
+    );
+    let picked = b.roles().load_self_roles(community).await.unwrap();
+    assert!(picked.iter().any(|r| r.id == readers && r.self_selected));
+
+    // Dropping the pick takes it: the panel's grant went with the reaction.
+    b.roles()
+        .select_self_role(community, readers, false)
+        .await
+        .expect("bjorn drops Readers");
+    wait_for(&b, Duration::from_secs(30), "Readers gone", |s| {
+        !holds(s, community, bjorn, readers)
+    })
+    .await;
+    a.stop();
+    b.stop();
+}

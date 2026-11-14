@@ -180,5 +180,7 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
         state.roles.roles.insert(community, rows);
         state.roles.access.insert(community, access);
         state.roles.overwrites.insert(community, HashMap::new());
+        // The world approves no self-service roles (SelfRolesSection.tsx reads an empty list, not a loading one).
+        state.roles.self_roles.insert(community, Vec::new());
     }
 }

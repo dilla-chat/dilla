@@ -207,6 +207,11 @@ impl Client {
 }
 
 impl Moderation {
+    /// The handle of the client `inner` (the `/kick` and `/ban` commands run through it).
+    pub(crate) fn of(inner: Arc<Inner>) -> Self {
+        Self { inner }
+    }
+
     /// Runs `job` (built from this handle) on the client's runtime and answers its result, so a view on another executor
     /// can await it: `client.moderation().run(|m| async move { m.kick(c, u).await })`.
     pub fn run<T: Send + 'static, F, J: FnOnce(Moderation) -> F>(

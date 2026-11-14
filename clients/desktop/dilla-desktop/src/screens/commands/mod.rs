@@ -10,6 +10,7 @@
 //!   a sent draft does (post it, or answer privately).
 
 pub mod chips;
+pub mod confirm;
 pub mod copy;
 pub mod keys;
 pub mod picker;
@@ -73,6 +74,14 @@ pub struct PickerState {
     pub picked: Option<String>,
     /// The chips of the picked command, in place of the composer's field (Task 28 follow-up 14).
     pub chips: Option<chips::Chips>,
+    /// The field of the composer that reported the draft (t28-bot-review I1): the list's and the chips' keys are
+    /// taken only while it holds the focus.
+    pub composer: Option<gpui::WeakFocusHandle>,
+}
+
+/// The composer whose field is `focus` reports a draft in `window`: the list and chips belong to it.
+pub fn set_composer(window: gpui::WindowId, focus: &gpui::FocusHandle, cx: &mut App) {
+    picker_state_mut(window, cx).composer = Some(focus.downgrade());
 }
 
 /// `window`'s picker state (empty until its composer reports a draft).
@@ -230,7 +239,18 @@ pub fn picker(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElem
         picker_state_mut(wid, cx).rows = shown;
     }
     let rows = rows?;
+    if let Some(community) = ctx.community
+        && !ctx.state.roles.access_of(community).loaded
+    {
+        crate::screens::members::ensure_access(wid, community, ctx.client.as_ref(), cx);
+    }
     let active = (!rows.is_empty()).then(|| state.selected.min(rows.len() - 1));
+    // For automation (t28-bot-review I5): the highlighted row can be picked and run (a Bot command once its key is
+    // verified). Nothing is drawn.
+    let ready = active
+        .and_then(|i| rows.get(i))
+        .is_some_and(|r| r.reason.is_none())
+        .then(|| crate::tracked_box("command-active-ready", div()).into_any_element());
     let list = CommandList::new(
         "command-list",
         list_items(&rows),
@@ -261,7 +281,10 @@ pub fn picker(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElem
             .pb(dilla_desktop_ui::components::commands::list::PICKER_GAP)
             .child(crate::tracked_box(
                 "command-picker",
-                div().w_full().child(list),
+                div()
+                    .w_full()
+                    .child(list)
+                    .children(ready.map(|r| div().absolute().top_0().left_0().child(r))),
             ))
             .into_any_element(),
     )
@@ -320,6 +343,23 @@ pub fn on_send(ctx: &SlotCx, draft: &str, window: gpui::WindowId, cx: &mut App) 
             SendDecision::Handled
         }
         (None, Plan::Bot { .. }) => SendDecision::Handled,
+        // `/kick` and `/ban` ask first (CommandHost.tsx's moderation dialog).
+        (Some(client), Plan::Moderate(moderation)) => {
+            confirm::ask(
+                window,
+                confirm::Confirming {
+                    moderation,
+                    conversation: Conversation {
+                        channel,
+                        thread: None,
+                    },
+                    client: client.clone(),
+                },
+                cx,
+            );
+            SendDecision::Handled
+        }
+        (None, Plan::Moderate(_)) => SendDecision::Handled,
     };
     if decision != SendDecision::Keep {
         draft_changed(window, "", cx);
@@ -447,7 +487,7 @@ fn result_row(
         }
         window.refresh();
     });
-    if row.hold
+    let result = if row.hold
         && let Some(client) = client
     {
         result.on_retry(t("commands.retry"), move |window, _cx| {
@@ -456,7 +496,21 @@ fn result_row(
         })
     } else {
         result
-    }
+    };
+    // For automation: the row's status (the last row of a status wins). Nothing is drawn.
+    let marker = match row.status {
+        ResultStatus::Pending => "bot-result-pending",
+        ResultStatus::Success => "bot-result-success",
+        ResultStatus::Failed => "bot-result-failed",
+        ResultStatus::Cancelled => "bot-result-cancelled",
+    };
+    div().relative().w_full().child(result).child(
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .child(crate::tracked_box(marker, div())),
+    )
 }
 
 /// The name a Bot's private result shows (`result-bot-name.ts`): the community Bot's display name, else "Glenn".
@@ -550,6 +604,7 @@ mod tests {
             rows: None,
             picked: None,
             chips: None,
+            composer: None,
         };
         // draft_changed's rule, applied without an App.
         let next = "/r";

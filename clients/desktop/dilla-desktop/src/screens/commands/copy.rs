@@ -53,3 +53,36 @@ pub fn pending(id: &str) -> String {
         other => format!("/{other}…"),
     }
 }
+
+/// `privateResultCopy.action`: the moderation dialog's confirm button.
+pub fn action(id: &str) -> &'static str {
+    if id == "ban" { "Ban" } else { "Kick" }
+}
+
+/// `privateResultCopy.title`. The web isolates the names (U+2068/U+2069); GPUI's shaper has no bidi isolation to give
+/// them, so they are left out.
+pub fn moderation_title(action: &str, name: &str, server: &str) -> String {
+    format!("{action} {name} from {server}?")
+}
+
+/// `privateResultCopy.kickBody`.
+pub fn kick_body(name: &str) -> String {
+    format!("{name} leaves now and can come back only with a new invite.")
+}
+
+/// `privateResultCopy.banBody`.
+pub fn ban_body(name: &str, duration: &str) -> String {
+    if duration == "permanent" {
+        format!("{name} leaves now and can’t rejoin permanently.")
+    } else {
+        format!("{name} leaves now and can’t rejoin for {duration}.")
+    }
+}
+
+/// `privateResultCopy.server`, `.duration`, `.reason`, `.noReason`, `.logged`, `.loggedNote`.
+pub const SERVER: &str = "this server";
+pub const DURATION: &str = "Duration";
+pub const REASON: &str = "Reason";
+pub const NO_REASON: &str = "none given";
+pub const LOGGED: &str = "Logged";
+pub const LOGGED_NOTE: &str = "modlog · visible to moderators";

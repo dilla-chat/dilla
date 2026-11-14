@@ -39,6 +39,8 @@ pub(crate) struct Fake {
     pub(crate) runtime: Mutex<Option<tokio::runtime::Handle>>,
     /// While set, each key check waits for a permit (a check in flight).
     pub(crate) verify_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    /// While not empty, each key check takes the first entry: it waits for that permit, then answers that verdict.
+    pub(crate) verify_each: Mutex<Vec<(Arc<tokio::sync::Semaphore>, Verdict)>>,
 }
 
 #[async_trait]
@@ -71,6 +73,15 @@ impl BotIo for Fake {
         *lock(&self.pinned)
     }
     async fn verify(&self, _: Vec<u8>, _: [u8; 16]) -> Result<([u8; 16], String), Refusal> {
+        let each = {
+            let mut each = lock(&self.verify_each);
+            (!each.is_empty()).then(|| each.remove(0))
+        };
+        if let Some((gate, verdict)) = each {
+            *lock(&self.verified) += 1;
+            gate.acquire().await.unwrap().forget();
+            return verdict;
+        }
         let gate = lock(&self.verify_gate).clone();
         *lock(&self.verified) += 1;
         if let Some(gate) = gate {
@@ -631,4 +642,123 @@ async fn a_late_answer_after_the_timeout_still_arrives() {
     let a = late.recv().await.unwrap();
     assert_eq!(a.body, b"Reminder set.");
     assert!(!sealed.holds(rid));
+}
+
+/// Yields until `done`, failing after 10 s (a check that never starts must not spin forever).
+async fn spin_until(done: impl Fn() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !done() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the key check started");
+}
+
+/// t28-bot-review M1: a verdict is carried only for the byte-identical publication under the same pin: a different
+/// publication, a Bot user problem, or a pin the core made again for another user (it lost its pin) is unchecked until
+/// its own check answers.
+#[tokio::test]
+async fn a_verdict_is_never_carried_to_another_publication_a_problem_or_another_pin() {
+    // Another publication of the same community.
+    let fake = ready_fake();
+    let sealed = ready(&fake).await;
+    assert!(sealed.view(COMMUNITY).unwrap().fingerprint.is_some());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *lock(&fake.verify_gate) = Some(gate.clone());
+    let before = *lock(&fake.verified);
+    // The same community, another key id.
+    let other = Value::Array(vec![
+        Value::Uint(1),
+        Value::Bytes(COMMUNITY.0.to_vec()),
+        Value::Bytes(vec![4; 16]),
+    ])
+    .encode();
+    let push = tokio::spawn({
+        let sealed = sealed.clone();
+        async move { sealed.apply_frame(&frame(2, Some(other))).await }
+    });
+    spin_until(|| *lock(&fake.verified) != before).await;
+    assert_eq!(
+        sealed.view(COMMUNITY).unwrap().fingerprint,
+        None,
+        "another key is unchecked while it is checked"
+    );
+    assert!(lock(&sealed.store).publication(COMMUNITY).is_none());
+    gate.add_permits(1);
+    push.await.unwrap();
+
+    // A Bot user problem: the server names another Bot user than the pinned one.
+    let fake = ready_fake();
+    *lock(&fake.catalog) = Some(catalog_body(1));
+    let sealed = ready(&fake).await;
+    assert!(sealed.view(COMMUNITY).unwrap().fingerprint.is_some());
+    *lock(&fake.candidate) = Some(Candidate::One(OTHER_BOT));
+    lock(&fake.attested).push(OTHER_BOT);
+    sealed.refresh(COMMUNITY).await.unwrap();
+    let view = sealed.view(COMMUNITY).unwrap();
+    assert_eq!(view.status.state, BotStatusState::Changed);
+    assert_eq!(view.fingerprint, None);
+
+    // The core lost its pin and pins another user now (answer 0): the old verdict is not carried under it.
+    let fake = ready_fake();
+    *lock(&fake.catalog) = Some(catalog_body(1));
+    let sealed = ready(&fake).await;
+    assert!(sealed.view(COMMUNITY).unwrap().fingerprint.is_some());
+    *lock(&fake.pinned) = None;
+    *lock(&fake.candidate) = Some(Candidate::One(OTHER_BOT));
+    lock(&fake.attested).push(OTHER_BOT);
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *lock(&fake.verify_gate) = Some(gate.clone());
+    let before = *lock(&fake.verified);
+    let read = tokio::spawn({
+        let sealed = sealed.clone();
+        async move { sealed.refresh(COMMUNITY).await }
+    });
+    spin_until(|| *lock(&fake.verified) != before).await;
+    assert_eq!(sealed.view(COMMUNITY).unwrap().fingerprint, None);
+    assert!(lock(&sealed.store).publication(COMMUNITY).is_none());
+    gate.add_permits(1);
+    read.await.unwrap().unwrap();
+    assert!(
+        sealed.view(COMMUNITY).unwrap().fingerprint.is_some(),
+        "checked against the new pin"
+    );
+}
+
+/// t28-bot-review M2: of two checks of one key in flight, the newer answers for it: an older failure landing late
+/// does not clear the newer verdict, and an older `Ok` landing after a newer refusal does not verify it.
+#[tokio::test]
+async fn an_older_key_check_answering_late_changes_nothing() {
+    let refused = || Err(Refusal::new("E_BOT_SIGNATURE", 0));
+    let ok = || Ok(([3; 16], "ABCDEFGHJKMN".to_owned()));
+    for (older, newer, verified) in [(refused(), ok(), true), (ok(), refused(), false)] {
+        let fake = ready_fake();
+        let sealed = ready(&fake).await;
+        let (a, b) = (
+            Arc::new(tokio::sync::Semaphore::new(0)),
+            Arc::new(tokio::sync::Semaphore::new(0)),
+        );
+        *lock(&fake.verify_each) = vec![(a.clone(), older), (b.clone(), newer)];
+        let before = *lock(&fake.verified);
+        let first = tokio::spawn({
+            let sealed = sealed.clone();
+            async move { sealed.verify_entry(COMMUNITY).await }
+        });
+        spin_until(|| *lock(&fake.verified) != before).await;
+        let second = tokio::spawn({
+            let sealed = sealed.clone();
+            async move { sealed.verify_entry(COMMUNITY).await }
+        });
+        spin_until(|| *lock(&fake.verified) != before + 1).await;
+        b.add_permits(1);
+        second.await.unwrap();
+        a.add_permits(1);
+        first.await.unwrap();
+        assert_eq!(
+            sealed.view(COMMUNITY).unwrap().fingerprint.is_some(),
+            verified,
+            "the newer check's answer stands"
+        );
+    }
 }

@@ -147,6 +147,10 @@ fn picking_a_command_turns_the_field_into_its_chips() {
     app.wait_for("command-picker", Duration::from_secs(5));
     app.type_focused("code");
     app.wait_idle();
+    assert!(
+        app.element("command-active-ready").is_some(),
+        "a built-in can run at once"
+    );
     app.press("tab");
     app.wait_for("command-chips", Duration::from_secs(5));
     assert!(app.element("command-picker").is_none(), "the list closed");
@@ -244,12 +248,13 @@ fn a_reminder_set_from_the_chips_appears_under_upcoming() {
     let mut app = Driver::launch(&root);
     sign_in_app(&mut app, &host, &mut ada);
     let text = format!("chip reminder {}", std::process::id());
-    // The new device reads the Bot's catalog on its first ready; until its key checks, the command is greyed.
-    std::thread::sleep(Duration::from_secs(3));
     app.type_text("composer", "/");
     app.wait_for("command-picker", Duration::from_secs(10));
     app.type_focused("remind");
     app.wait_idle();
+    // The new device reads the Bot's catalog on its first ready; until its key checks, the command is greyed
+    // (t28-bot-review I5: wait for that, bounded, never a fixed sleep).
+    app.wait_for("command-active-ready", Duration::from_secs(60));
     app.press("tab");
     app.wait_for("command-chips", Duration::from_secs(5));
     app.type_focused("in 1 hour");
@@ -298,5 +303,94 @@ fn a_reminder_set_from_the_chips_appears_under_upcoming() {
     );
     drop(app);
     first.stop();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Picks `/kick` from the list in the window, names `who` in its user chip and runs it (slash-commands.spec.ts
+/// `runKickFromPicker`).
+fn run_kick(app: &mut Driver, who: &str) {
+    app.type_text("composer", "/");
+    app.wait_for("command-picker", Duration::from_secs(10));
+    app.type_focused("kick");
+    app.wait_idle();
+    // Greyed until this device knows its permissions here.
+    app.wait_for("command-active-ready", Duration::from_secs(60));
+    app.press("tab");
+    app.wait_for("command-chips", Duration::from_secs(5));
+    app.type_focused(who);
+    app.press("enter");
+    app.wait_idle();
+}
+
+/// e2e/web/slash-commands.spec.ts "moderation requires confirmation and applies to a distinct joined member": in the
+/// window, `/kick` naming a joined member asks first (the moderation dialog, its action button "Kick"). Cancel sends
+/// nothing: a "Kick cancelled. Nothing changed." row, and the member is still in the server. Asked again and confirmed,
+/// the member is removed (their own device loses the server) and the row says they were kicked.
+#[test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn a_moderation_command_asks_for_confirmation_then_applies_to_a_joined_member() {
+    use dilla_client::state::CommunityId;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t28-kick", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t28-kick"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t28-kick"));
+    let community = CommunityId(world::community(&host, &ada, "Midgard", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let member = rt.block_on(world::start(&bea));
+    rt.block_on(world::wait_for(
+        &member,
+        Duration::from_secs(30),
+        "bea in Midgard",
+        |s| s.communities.iter().any(|c| c.id == community),
+    ));
+
+    let root = scratch_dir("t28-kick-app");
+    let mut app = Driver::launch(&root);
+    sign_in_app(&mut app, &host, &mut ada);
+
+    run_kick(&mut app, &bea.username);
+    app.wait_for("command-confirm", Duration::from_secs(30));
+    assert!(
+        app.element("bot-result-pending").is_none(),
+        "nothing runs before the answer"
+    );
+    // Cancel (Escape on the dialog): nothing is sent, and the row says so.
+    app.press("escape");
+    app.wait_for("bot-result-cancelled", Duration::from_secs(10));
+    assert!(
+        app.element("command-confirm").is_none(),
+        "the dialog closed"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        member
+            .state()
+            .borrow()
+            .communities
+            .iter()
+            .any(|c| c.id == community),
+        "a cancelled kick changes nothing"
+    );
+
+    // Asked again, and confirmed.
+    run_kick(&mut app, &bea.username);
+    app.wait_for("command-confirm", Duration::from_secs(30));
+    app.click("command-confirm");
+    rt.block_on(world::wait_for(
+        &member,
+        Duration::from_secs(60),
+        "bea's device to lose Midgard",
+        |s| !s.communities.iter().any(|c| c.id == community),
+    ));
+    app.wait_for("bot-result-success", Duration::from_secs(30));
+    assert!(app.element("command-confirm").is_none());
+    drop(app);
+    member.stop();
     let _ = std::fs::remove_dir_all(&root);
 }

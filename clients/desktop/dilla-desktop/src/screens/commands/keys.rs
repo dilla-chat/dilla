@@ -24,12 +24,17 @@ pub fn bind(cx: &mut App) {
     cx.set_global(Bound);
     cx.intercept_keystrokes(|event, window, cx| {
         let stroke = &event.keystroke;
-        if stroke.modifiers.control || stroke.modifiers.alt || stroke.modifiers.platform {
+        // t28-bot-review I1: only while the composer the list and chips belong to holds the focus. Keys typed in a
+        // settings field, a search, a dialog, or with nothing focused (push to talk) are never theirs.
+        if !takes_keys(window, cx) {
             return;
         }
         if chips_key(window.window_handle().window_id(), stroke, cx) {
             cx.stop_propagation();
             window.refresh();
+            return;
+        }
+        if stroke.modifiers.control || stroke.modifiers.alt || stroke.modifiers.platform {
             return;
         }
         let key = match (stroke.key.as_str(), stroke.modifiers.shift) {
@@ -46,6 +51,13 @@ pub fn bind(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Whether `window`'s list and chips take its keys: the composer that reported the draft holds the focus.
+pub fn takes_keys(window: &gpui::Window, cx: &App) -> bool {
+    crate::per_window::get::<PickerState>(window.window_handle().window_id(), cx)
+        .and_then(|s| s.composer.as_ref()?.upgrade())
+        .is_some_and(|focus| focus.is_focused(window))
 }
 
 /// Applies `key` to the open list; `false` when the list is closed or the key is not the list's.
@@ -104,16 +116,22 @@ pub fn chips_key(window: gpui::WindowId, stroke: &gpui::Keystroke, cx: &mut App)
     let Some(chips) = s.chips.as_mut() else {
         return false;
     };
+    let m = stroke.modifiers;
+    // A shortcut (Cmd, or Ctrl without Alt) is the app's; AltGr (Ctrl+Alt on Linux and Windows) and Option (macOS)
+    // type characters (t28-bot-review I2).
+    let shortcut = m.platform || (m.control && !m.alt);
     match stroke.key.as_str() {
-        "enter" => return false,
-        "escape" => {
+        // Shift+Enter would be a newline in the hidden field, which drops the chips: swallowed.
+        "enter" => return m.shift && !shortcut,
+        "escape" if !shortcut => {
             s.chips = None;
             return true;
         }
-        "tab" => chips.step(stroke.modifiers.shift),
-        "backspace" => {
+        "tab" if !shortcut => chips.step(m.shift),
+        "backspace" if !shortcut => {
             chips.active_value().pop();
         }
+        _ if shortcut => return false,
         _ => match stroke.key_char.as_deref() {
             Some(text) if !text.is_empty() && !text.chars().any(char::is_control) => {
                 chips.active_value().push_str(text);
@@ -122,4 +140,84 @@ pub fn chips_key(window: gpui::WindowId, stroke: &gpui::Keystroke, cx: &mut App)
         },
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Keystroke, Modifiers};
+
+    fn stroke(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.into(),
+            key_char: key_char.map(Into::into),
+        }
+    }
+
+    fn chipped(window: gpui::WindowId, cx: &mut App) {
+        super::super::draft_changed(window, "/remind", cx);
+        let s = super::super::picker_state_mut(window, cx);
+        let mut chips = super::super::chips::Chips::new("remind".into());
+        chips.fields = 2;
+        s.chips = Some(chips);
+    }
+
+    /// t28-bot-review I2: AltGr (Ctrl+Alt on Linux and Windows) and Option (macOS) characters are typed into the
+    /// active chip; Shift+Enter is swallowed; a shortcut (Cmd, or Ctrl without Alt) and Enter are left to the app.
+    #[gpui::test]
+    fn altgr_and_option_characters_land_in_the_active_chip(cx: &mut gpui::TestAppContext) {
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            chipped(w, cx);
+            let altgr = Modifiers {
+                control: true,
+                alt: true,
+                ..Default::default()
+            };
+            let option = Modifiers {
+                alt: true,
+                ..Default::default()
+            };
+            assert!(chips_key(w, &stroke("2", Some("@"), altgr), cx));
+            assert!(chips_key(w, &stroke("8", Some("["), option), cx));
+            assert!(chips_key(w, &stroke("enter", None, Modifiers::shift()), cx));
+            assert!(!chips_key(w, &stroke("v", None, Modifiers::control()), cx));
+            assert!(!chips_key(
+                w,
+                &stroke("v", Some("v"), Modifiers::command()),
+                cx
+            ));
+            assert!(!chips_key(w, &stroke("enter", None, Modifiers::none()), cx));
+            let s = super::super::picker_state(w, cx);
+            assert_eq!(s.chips.expect("chips kept").values, ["@["]);
+        });
+    }
+
+    /// t28-bot-review I1: with the focus anywhere but the composer that holds the chips (a settings field, a dialog,
+    /// the member list for push to talk), keys are not the chips'.
+    #[gpui::test]
+    fn chips_take_keys_only_while_their_composer_holds_the_focus(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            let composer = cx.focus_handle();
+            let other = cx.focus_handle();
+            window.focus(&composer, cx);
+            super::super::set_composer(w, &composer, cx);
+            chipped(w, cx);
+            assert!(takes_keys(window, cx), "the composer holds the focus");
+            window.focus(&other, cx);
+            assert!(!takes_keys(window, cx), "a settings field holds the focus");
+            window.blur(cx);
+            assert!(
+                !takes_keys(window, cx),
+                "nothing holds the focus (push to talk)"
+            );
+            window.focus(&composer, cx);
+            assert!(takes_keys(window, cx));
+        });
+    }
 }
