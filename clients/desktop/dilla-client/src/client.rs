@@ -129,6 +129,39 @@ enum Update {
     SignerPinRefused,
 }
 
+/// The client's Api (`Client::start` builds it here, and so do the client's own tests, re-review N3): every refused call
+/// is recorded in the diagnostics, an `E_FACTOR_REQUIRED` refusal moves the account to factor setup, and an HTTP
+/// signer-pin refusal fails it closed.
+fn client_api(
+    http: ReqwestHttp,
+    socket: Arc<SocketRequests>,
+    auth: AuthToken,
+    core: CoreHandle,
+    updates: &mpsc::UnboundedSender<Update>,
+) -> Arc<Api> {
+    let refusals = updates.clone();
+    // Every refused Api call is recorded in the diagnostics (Task 24: controller.ts `recordError`).
+    let refused_errors = updates.clone();
+    let api = Arc::new(Api::new(
+        http,
+        socket,
+        auth,
+        core,
+        Arc::new(move |code: &str| {
+            let _ = refused_errors.send(Update::Apply(Box::new(
+                crate::features::diagnostics::error_update(code),
+            )));
+            refusal_recorded(code);
+            if code == "E_FACTOR_REQUIRED" {
+                let _ = refusals.send(Update::FactorRequired);
+            }
+        }),
+    ));
+    // Final review I1: an HTTP signer-pin refusal fails the account closed.
+    api.on_pin_refused(pin_refusal_hook(updates.clone()));
+    api
+}
+
 /// The hook the client gives its Api for an HTTP signer-pin refusal: the publisher fails the account closed.
 fn pin_refusal_hook(updates: mpsc::UnboundedSender<Update>) -> crate::sync::api::PinRefusedHook {
     Arc::new(move || {
@@ -363,25 +396,7 @@ impl Client {
         ));
         let socket = SocketRequests::new();
         let (updates, updates_rx) = mpsc::unbounded_channel();
-        let refusals = updates.clone();
-        // Every refused Api call is recorded in the diagnostics (Task 24: controller.ts `recordError`).
-        let refused_errors = updates.clone();
-        let api = Arc::new(Api::new(
-            http,
-            socket.clone(),
-            auth.clone(),
-            core.clone(),
-            Arc::new(move |code: &str| {
-                let _ = refused_errors.send(Update::Apply(Box::new(
-                    crate::features::diagnostics::error_update(code),
-                )));
-                refusal_recorded(code);
-                if code == "E_FACTOR_REQUIRED" {
-                    let _ = refusals.send(Update::FactorRequired);
-                }
-            }),
-        ));
-        api.on_pin_refused(pin_refusal_hook(updates.clone()));
+        let api = client_api(http, socket.clone(), auth.clone(), core.clone(), &updates);
         // On a thread of its own, outside any runtime context the caller may be in (see `start`).
         let instance = std::thread::scope(|s| {
             s.spawn(|| {

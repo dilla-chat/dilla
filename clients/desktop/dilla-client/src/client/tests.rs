@@ -126,13 +126,8 @@ fn offline_parts(tx: mpsc::UnboundedSender<Update>) -> (CoreHandle, Arc<Api>, Ar
     let auth = AuthToken::new("token");
     let http =
         ReqwestHttp::new(url::Url::parse("http://127.0.0.1:9").unwrap(), auth.clone()).unwrap();
-    let api = Arc::new(Api::new(
-        http,
-        SocketRequests::new(),
-        auth,
-        core.clone(),
-        Arc::new(|_: &str| {}),
-    ));
+    // The client's own Api, wired as `Client::start` wires it (re-review N3).
+    let api = client_api(http, SocketRequests::new(), auth, core.clone(), &tx);
     let instance = crate::sync::api::InstanceInfo {
         instance_id: [1; 16],
         policy_version: 1,
@@ -293,12 +288,11 @@ async fn an_unlisted_device_is_signed_out() {
 
 /// Final review I1 (controller.ts `failInstanceSignerPin`): a session established again over HTTP whose instance fails
 /// the signer pin stops the gateway and fails the account closed, as the gateway's own pre-connect refusal does. Through
-/// the Api's refusal and the hook the client wires to it.
+/// the Api's refusal and the hook `client_api` (what `Client::start` builds) wires to it.
 #[tokio::test]
 async fn an_http_pin_refusal_stops_the_gateway_and_fails_the_account() {
     let (publisher, rx, mut state_rx, _core, _engine) = offline_publisher();
     let (api, link) = (publisher.api.clone(), publisher.link.clone());
-    api.on_pin_refused(pin_refusal_hook(publisher.updates.clone()));
     link.connect();
     assert!(has_gateway(&link));
     tokio::spawn(publisher.run(rx));
