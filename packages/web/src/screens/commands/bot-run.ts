@@ -127,6 +127,16 @@ export interface BotRunHooks {
 }
 
 /**
+ * The voice room a Bot command `id` goes with: the call's channel for a music command, but only when it is one of the
+ * community's channels (`channels`), so a call in another community is never sealed to this community's Bot
+ * (w2-bot-review M-C5); otherwise null (the command goes with the channel it was typed in).
+ */
+export function musicChannel(id: string, callChannel: string | null, channels: readonly { id: string }[] | undefined): string | null {
+  if (!MUSIC_COMMANDS.has(id) || callChannel === null) return null;
+  return (channels ?? []).some(row => row.id === callChannel) ? callChannel : null;
+}
+
+/**
  * The handler of one catalog command: sends it sealed, shows each answer as it arrives (progress) and returns the last
  * one. A command whose result is a channel post, answered with no text, says where it went.
  */
@@ -140,8 +150,8 @@ export function botCommandHandler(definition: CommandDefinition, hooks: BotRunHo
     if (reason !== undefined) return { status: 'failure', private: true, message: reason };
     const args = botArgsOf(definition, invocation.args, new Date());
     if (!Array.isArray(args)) return { status: 'failure', private: true, message: args.error };
-    // Music has no text channel: the channel is the voice room this device is in, when it is in one.
-    const callChannel = MUSIC_COMMANDS.has(definition.id) ? context.getCall().channelId ?? null : null;
+    // Music has no text channel: the channel is the voice room this device is in, when it is in one of this community's.
+    const callChannel = musicChannel(definition.id, context.getCall().channelId ?? null, context.client.get(`channels:${communityId}`));
     const run = botCommands(context.client).sendBotCommand({ communityId, channelId: callChannel ?? context.binding.channelId,
       operation: bot.operation, args, requestId: context.requestId });
     hooks.started(run);

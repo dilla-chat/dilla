@@ -39,10 +39,14 @@ fn call_channel(state: &AppState) -> Option<ChannelId> {
 }
 
 /// bot-run.ts `callChannel ?? context.binding.channelId`: the channel a Bot command `id` typed in `here` is sent with.
-/// A music command goes with the voice room this device is in, when it is in one; everything else with `here`.
+/// A music command goes with the voice room this device is in, when it is in one of `here`'s community (w2-bot-review
+/// M-C5: a call in another community is never sealed to this community's Bot); everything else with `here`.
 pub fn send_channel(state: &AppState, id: &str, here: ChannelId) -> ChannelId {
+    let community = state.channel(here).map(|c| c.community_id);
     if is_music(id)
         && let Some(room) = call_channel(state)
+        && community.is_some()
+        && state.channel(room).map(|c| c.community_id) == community
     {
         return room;
     }
@@ -112,6 +116,13 @@ mod tests {
             send_channel(&state(CallPhase::Idle), "play", GENERAL),
             GENERAL
         );
+        // w2-bot-review M-C5: typed in another community's channel, the call here is not that community's room.
+        let mut other = state(CallPhase::In);
+        let elsewhere = ChannelId([8; 16]);
+        other
+            .channels
+            .push(channel(elsewhere, CommunityId([9; 16]), 0, "elsewhere"));
+        assert_eq!(send_channel(&other, "play", elsewhere), elsewhere);
     }
 
     /// CommandHost.tsx: the bar names the call's room when it is one of this community's channels.
