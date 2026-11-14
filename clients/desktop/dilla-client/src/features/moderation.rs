@@ -197,6 +197,15 @@ pub struct Moderation {
     inner: Arc<Inner>,
 }
 
+impl Moderation {
+    /// The handle of the client `inner` (for another area's own use).
+    pub(crate) fn of(inner: &Arc<Inner>) -> Self {
+        Self {
+            inner: inner.clone(),
+        }
+    }
+}
+
 impl Client {
     /// The [`Moderation`] handle.
     pub fn moderation(&self) -> Moderation {
