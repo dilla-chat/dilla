@@ -1007,8 +1007,17 @@ fn quitting_leaves_the_live_call(cx: &mut TestAppContext) {
     w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
         s.voice.call.phase == CallPhase::In
     }));
-    // Review L I3: the quit's answer is the leaves' outcome, not only that they answered: `leave` answers Ok only once
-    // the instance acknowledged the voice Remove (`calls.leave`), so a Remove that fails fails this.
+    // Bob is in the call too (signalling only: the process's one media slot is alice's), so alice is not alone and
+    // her leave is her voice Remove, which bob commits.
+    w.rt.block_on(w.bob.voice().join(w.voice))
+        .unwrap()
+        .expect("bob joins");
+    let alice_device = DeviceId(w.alice.state().borrow().account.device_id.unwrap().0);
+    w.rt.block_on(until(&w.bob, "bob keys alice's leaf", |s| {
+        s.voice.call.roster.iter().any(|r| r.1 == alice_device)
+    }));
+    // Review L I3 / HL I2: the quit's answer is the leaves' outcome, not only that they answered: `leave` answers Ok
+    // only once the instance acknowledged the voice Remove (`calls.leave`), so a Remove that fails fails this.
     assert!(
         cx.update(voice::on_quit),
         "the call's leave answered Ok within the quit's wait"
@@ -1018,6 +1027,15 @@ fn quitting_leaves_the_live_call(cx: &mut TestAppContext) {
         w.alice.voice().media().borrow().is_none(),
         "the media link is cut"
     );
+    // The Remove reached the instance: bob, the call's other member, commits it and alice's leaf leaves his roster.
+    w.rt.block_on(until(
+        &w.bob,
+        "alice's device leaves bob's call roster",
+        |s| {
+            s.voice.call.phase == CallPhase::In
+                && !s.voice.call.roster.iter().any(|r| r.1 == alice_device)
+        },
+    ));
 }
 
 /// Review L I3: a leave that answers an error, or whose answer is dropped, is no successful quit.

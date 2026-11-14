@@ -829,12 +829,29 @@ impl Voice {
     /// layer stops sealing and leaves the room, then this device's self-Remove is posted, and the call ends when this
     /// device was alone in it. (The web posts the self-Remove before it disconnects; here the keys stop first, so
     /// nothing is sent while the Remove is in flight. The instance's own leave report covers a Remove that fails.)
+    ///
+    /// Review HL I2: it answers `Ok` only once the instance acknowledged the leave (it took the self-Remove, a Remove
+    /// of this leaf stands there already, or it ended the call this device was alone in), or when there was no call to
+    /// leave; a Remove refused otherwise, or whose answer was lost, answers `E_LEAVE_UNACKNOWLEDGED` (the call is left
+    /// here all the same).
     pub fn leave(&self) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
-        self.inner.spawn(async move { this.leave_inner().await })
+        self.inner.spawn(async move {
+            match this.leave_acknowledged().await? {
+                true => Ok(()),
+                false => Err(ClientError::Sync("E_LEAVE_UNACKNOWLEDGED".into())),
+            }
+        })
     }
 
+    /// [`Voice::leave`] for a caller that moves on whatever the instance answered (a join's own leave, a trust block,
+    /// a lost room).
     async fn leave_inner(&self) -> Result<(), ClientError> {
+        self.leave_acknowledged().await.map(|_| ())
+    }
+
+    /// The leave; answers whether the instance acknowledged it (no call to leave: yes).
+    async fn leave_acknowledged(&self) -> Result<bool, ClientError> {
         let rt = self.rt();
         let (live, joining) = {
             let mut r = lock(&rt);
@@ -858,7 +875,7 @@ impl Voice {
             s.voice.share = LocalShare::default();
         });
         let Some(live) = live else {
-            return Ok(());
+            return Ok(true);
         };
         let alone = own.is_some_and(|d| {
             snap.voice
@@ -866,11 +883,12 @@ impl Voice {
                 .iter()
                 .all(|p| p.device_id == d)
         });
-        self.calls
+        let left = self
+            .calls
             .leave(live.group_id, live.call_id, alone)
             .await
             .map_err(|_| ClientError::Stopped)??;
-        Ok(())
+        Ok(left.proposed || left.ended)
     }
 
     /// session.ts `onRoomEnd` → `leave('lost')`: the call's LiveKit room ended on its own (a newer device of this user

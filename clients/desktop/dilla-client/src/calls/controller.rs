@@ -29,7 +29,8 @@ pub fn media_epoch<C: CallCore>(
 pub struct Left {
     /// This device was alone and the instance ended the call.
     pub ended: bool,
-    /// The self-Remove was posted (false: refused, e.g. `E_REMOVE_PENDING`, or nothing to post).
+    /// The instance acknowledged the self-Remove: it took it, or answered 409 `E_REMOVE_PENDING` (a Remove of this
+    /// leaf stands there already). False: refused otherwise, its answer lost, or nothing to post.
     pub proposed: bool,
 }
 
@@ -52,7 +53,10 @@ pub async fn leave_call<C: CallCore, R: CallRoutes + ?Sized>(
     }
     let proposal = lock(core).and_then(|mut c| c.call_leave_proposal(group));
     let proposed = match proposal {
-        Ok(body) => routes.post_proposal(group, body).await.is_ok(),
+        Ok(body) => match routes.post_proposal(group, body).await {
+            Ok(_) => true,
+            Err(e) => e.is(409, "E_REMOVE_PENDING"),
+        },
         Err(_) => false,
     };
     let _ = lock(core).map(|mut c| c.call_group_forget(group));
