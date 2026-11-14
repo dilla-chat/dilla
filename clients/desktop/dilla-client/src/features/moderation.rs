@@ -1,8 +1,16 @@
-//! Area **members** (Task 14): kick, ban, unban, timeout and warn with evidence.
+//! Area **members** (Task 14): kick, ban, unban, timeout and warn with evidence; and (Task 28 wave 2, lane A) the
+//! moderated removal of another person's message with its reason, its signed proof and its sealed evidence.
 //!
 //! Ports: packages/client-core/src/admin/controller.ts (`kickMember`, `banMember`, `unbanMember`, `loadBans`), the
 //! worker's timeout and warning commands (worker/controller.ts `setMemberTimeout`, `clearMemberTimeout`,
-//! `getMemberTimeout`, `warnMember`), and the input checks of packages/web/src/screens/admin/Moderation.tsx.
+//! `getMemberTimeout`, `warnMember`), the input checks of packages/web/src/screens/admin/Moderation.tsx, and the worker's
+//! moderated removal (`moderateRemoveMessage`, `resolveManualRemoval`, `resumeManualRemovalEvidence`,
+//! `uploadManualRemovalEvidence`, `sealedEvidence`) with the page's retry (web `conversation/manual-removal.ts`).
+//!
+//! A removal's proof is signed and its evidence sealed by the same core and Bot transport the web client uses
+//! (`ClientCore::prepare_manual_removal_evidence`, the core's durable outbox, and the sealed app operation 161): no crypto
+//! of the desktop's own. The reason and the excerpt are plaintext: this module holds them in [`Zeroizing`] buffers and
+//! wipes the copies it reads back from the core.
 //!
 //! The view offers an action only where `features::members::menu_for` says the caller may take it, but that gate is
 //! advisory: the instance decides each request again. A 403 means the access the view held is stale, so the access
@@ -11,13 +19,19 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use dilla_core::client::{ClientCore, ClientError as CoreError, ManualRemovalEvidence};
+use zeroize::{Zeroize, Zeroizing};
+
 use crate::client::{Client, Inner};
+use crate::features::bot_admin::{BotArg, BotOperations, BotRequest, OpError, default_transport};
 use crate::features::members::reload_members;
-use crate::features::roles::{call, load_access, refusal, request_id};
+use crate::features::roles::{call, load_access, perm, refusal, request_id, viewer_channel_bits};
 use crate::gateway::frames::Value;
 use crate::http::routes as r;
 use crate::state::members::BanSummary;
-use crate::state::{CommunityId, UserId};
+use crate::state::messages::decode_timeline;
+use crate::state::{ChannelId, CommunityId, MessageId, UserId, hex};
+use crate::sync::GroupRow;
 use crate::sync::api::{ApiError, try_core};
 use crate::sync::value::{DecodeError, Rows, at_least, bin16, text, u53, uint};
 
@@ -528,5 +542,599 @@ impl Moderation {
             accepted_at,
             evidence,
         })
+    }
+}
+
+// ---- moderated message removal (worker/controller.ts `moderateRemoveMessage`) ----
+
+/// The removal reason's budget in UTF-8 bytes (controller.ts `moderateRemoveMessage`, the dialog's Remove gate).
+pub const REMOVAL_REASON_MAX_BYTES: usize = 1024;
+/// The excerpt's budget in UTF-8 bytes (controller.ts).
+pub const REMOVAL_EXCERPT_MAX_BYTES: usize = 512;
+/// The excerpt the dialog takes from the message: its first 120 characters (Conversation.tsx `excerpt(.., 120)`).
+pub const REMOVAL_EXCERPT_CHARS: usize = 120;
+/// The share of the instance's 30-second acceptance window a proof uses: five seconds are kept for clock skew.
+const PROOF_LIFETIME_S: u64 = 25;
+/// The v1 operation of moderation evidence (sealed as 161).
+const EVIDENCE_OPERATION: u64 = 61;
+
+/// MessageItem.tsx: "remove for everyone" is offered on another person's stored message to a reader whose channel bits
+/// (the one resolver, `roles::viewer_channel_bits`) are known and hold `manage_messages`. Unknown bits offer nothing.
+pub fn may_remove_for_everyone(own: bool, stored: bool, bits: Option<u64>) -> bool {
+    !own && stored && bits.is_some_and(|b| b & u64::from(perm::MANAGE_MESSAGES) != 0)
+}
+
+/// Conversation.tsx: the dialog's Remove acts only on a reason that is not blank and fits 1024 bytes.
+pub fn removal_reason_ok(reason: &str) -> bool {
+    !reason.trim().is_empty() && reason.len() <= REMOVAL_REASON_MAX_BYTES
+}
+
+/// What the instance made of a removal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Removal {
+    Accepted,
+    /// The request may have landed (a timeout, a 5xx, a dropped link): the same proof is checked or sent again, never a
+    /// new removal.
+    Unknown,
+    /// The instance refused it (a 4xx other than 408): nothing was removed.
+    Rejected,
+}
+
+/// The answer of [`Moderation::remove_message`] and [`Moderation::resolve_removal`] (the worker's result object).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemovalOutcome {
+    pub removal: Removal,
+    pub proof_request_id: [u8; 16],
+    pub evidence_request_id: Option<[u8; 16]>,
+    pub evidence: Evidence,
+}
+
+impl RemovalOutcome {
+    fn new(
+        removal: Removal,
+        proof: [u8; 16],
+        evidence_request_id: Option<[u8; 16]>,
+        evidence: Evidence,
+    ) -> Self {
+        Self {
+            removal,
+            proof_request_id: proof,
+            evidence_request_id,
+            evidence,
+        }
+    }
+}
+
+fn core_err(e: CoreError) -> ApiError {
+    ApiError::local(0, e.code, &e.detail)
+}
+
+/// Runs `f` on the core; a stopped or poisoned core is E_CORE_STATE.
+async fn on_core<T: Send + 'static>(
+    inner: &Inner,
+    f: impl FnOnce(&mut ClientCore) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    try_core(inner.engine().core(), f)
+        .await
+        .map_err(|_| refusal("E_CORE_STATE", "the client core stopped"))?
+}
+
+fn wipe(row: &mut ManualRemovalEvidence) {
+    row.reason.zeroize();
+    row.excerpt.zeroize();
+    row.signed_body.zeroize();
+}
+
+/// The core's unresolved removal that `pick` chooses; the plaintext of every other row read is wiped.
+async fn removal_row(
+    inner: &Inner,
+    pick: impl Fn(&ManualRemovalEvidence) -> bool + Send + 'static,
+) -> Result<Option<ManualRemovalEvidence>, ApiError> {
+    on_core(inner, move |c| {
+        let rows = c.manual_removal_evidence().map_err(core_err)?;
+        let mut found = None;
+        for mut row in rows {
+            if found.is_none() && pick(&row) {
+                found = Some(row);
+            } else {
+                wipe(&mut row);
+            }
+        }
+        Ok(found)
+    })
+    .await
+}
+
+/// The core's unresolved removals as `(proof, group, community, state)`, with no plaintext kept.
+async fn removal_ids(inner: &Inner) -> Result<Vec<([u8; 16], [u8; 16], [u8; 16], u8)>, ApiError> {
+    on_core(inner, |c| {
+        let rows = c.manual_removal_evidence().map_err(core_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|mut r| {
+                wipe(&mut r);
+                (r.proof_request_id, r.group_id, r.community_id, r.state)
+            })
+            .collect())
+    })
+    .await
+}
+
+/// controller.ts `definiteManualRemovalRefusal`: a 4xx other than 408 is the instance's verdict; a 408, a 5xx and every
+/// transport failure may have raced its write, so they stay unknown.
+fn definite_refusal(e: &ApiError) -> bool {
+    (400..500).contains(&e.status) && e.status != 408
+}
+
+/// controller.ts `sealedEvidence`: the evidence as the sealed app operation 161 (v1 61, revision 0) to the community's
+/// Bot. Accepted only on the Bot's own success; a refusal of the Bot's (1 invalid, 2 forbidden) is rejected; a Bot that
+/// did not take it (offline, no catalog yet) leaves it pending; no answer leaves it unknown. The operations handle is
+/// made for this one request and dropped, so it keeps no copy of the plaintext for a resend.
+async fn sealed_evidence(
+    inner: &Arc<Inner>,
+    community: CommunityId,
+    request_id: [u8; 16],
+    proof: [u8; 16],
+    reason: &str,
+    excerpt: &str,
+) -> Evidence {
+    let ops = BotOperations::new(community, default_transport(inner));
+    let answer = ops
+        .request(BotRequest {
+            operation: EVIDENCE_OPERATION,
+            channel: None,
+            args: vec![
+                BotArg::Text(hex(&proof)),
+                BotArg::Text(reason.to_owned()),
+                BotArg::Text(excerpt.to_owned()),
+            ],
+            revision: Some(0),
+            request_id: Some(request_id),
+        })
+        .await;
+    drop(ops);
+    match answer {
+        Ok(r) if r.status == 0 => Evidence::Accepted,
+        Ok(r) if r.status == 1 || r.status == 2 => Evidence::Rejected,
+        Ok(_) | Err(OpError::Refused { .. }) => Evidence::Pending,
+        Err(_) => Evidence::Unknown,
+    }
+}
+
+/// controller.ts `uploadManualRemovalEvidence`: reserves the evidence request id in the core (reused while it is fresh,
+/// so a resend is the same request), sends the sealed evidence, and closes the core's row once the Bot stored it.
+async fn upload_evidence(
+    inner: &Arc<Inner>,
+    community: CommunityId,
+    proof: [u8; 16],
+    reason: &str,
+    excerpt: &str,
+) -> Evidence {
+    let reserved = on_core(inner, move |c| {
+        c.ensure_manual_removal_evidence_request(&proof, &request_id(), now_s())
+            .map_err(core_err)
+    })
+    .await;
+    let Ok((request, _expires)) = reserved else {
+        return Evidence::Unknown;
+    };
+    let evidence = sealed_evidence(inner, community, request, proof, reason, excerpt).await;
+    if evidence == Evidence::Accepted {
+        let _ = on_core(inner, move |c| {
+            c.complete_manual_removal_evidence(&proof, now_s())
+                .map_err(core_err)
+        })
+        .await;
+    }
+    evidence
+}
+
+/// POSTs a signed proof the core holds: marked submitted first (a restart then knows it may have landed), accepted on
+/// the instance's answer, retired on its refusal. `Err` carries the outcome to answer.
+async fn post_proof(
+    inner: &Arc<Inner>,
+    group: [u8; 16],
+    proof: [u8; 16],
+    signed: Zeroizing<Vec<u8>>,
+) -> Result<(), Removal> {
+    on_core(inner, move |c| {
+        c.mark_manual_removal_submitted(&proof).map_err(core_err)
+    })
+    .await
+    .map_err(|_| Removal::Unknown)?;
+    let posted =
+        call::<r::PostModerationRemoval>(inner, &[&hex(&group)], Some(signed.to_vec()), None).await;
+    match posted {
+        Ok(_) => {
+            on_core(inner, move |c| {
+                c.mark_manual_removal_accepted(&proof).map_err(core_err)
+            })
+            .await
+            .map_err(|_| Removal::Unknown)?;
+            // The tombstone: the group's feed is read now (the worker's `refreshTimeline`), not at the next ready.
+            inner.engine().request_removal_read(group);
+            Ok(())
+        }
+        Err(e) if definite_refusal(&e) => {
+            let _ = on_core(inner, move |c| {
+                c.reject_manual_removal(&proof, now_s()).map_err(core_err)
+            })
+            .await;
+            Err(Removal::Rejected)
+        }
+        Err(_) => Err(Removal::Unknown),
+    }
+}
+
+impl Moderation {
+    /// controller.ts `moderateRemoveMessage`: removes another person's message `msg` (stored at `seq`) of the community
+    /// channel `channel` for everyone, with `reason` and the message's `excerpt` as its evidence.
+    ///
+    /// Checked first, as the worker checks: the bounds of the reason and excerpt, the channel's active community text
+    /// group, the stored row (still readable, still `msg`), and the reader's `manage_messages` in this channel through the
+    /// one resolver (rights not read yet are E_NOT_READY). A removal of this message already waiting in the core is
+    /// resolved instead of signing another. Then the core signs the proof and keeps it with the evidence before anything
+    /// is sent; the proof is posted; and on its acceptance the evidence goes to the Bot. The instance checks the proof and
+    /// the right again.
+    pub async fn remove_message(
+        &self,
+        channel: ChannelId,
+        msg: MessageId,
+        seq: u64,
+        reason: &str,
+        excerpt: &str,
+    ) -> Result<RemovalOutcome, ApiError> {
+        let reason = Zeroizing::new(reason.to_owned());
+        let excerpt = Zeroizing::new(excerpt.to_owned());
+        if seq == 0 {
+            return Err(refusal("E_BAD_INPUT", "invalid target sequence"));
+        }
+        if reason.is_empty()
+            || reason.len() > REMOVAL_REASON_MAX_BYTES
+            || reason.trim().is_empty()
+            || excerpt.len() > REMOVAL_EXCERPT_MAX_BYTES
+        {
+            return Err(refusal(
+                "E_BAD_INPUT",
+                "moderation reason or excerpt is outside its allowed bounds",
+            ));
+        }
+        let snapshot = self.inner.snapshot();
+        let Some(known) = snapshot.channel(channel).cloned() else {
+            return Err(refusal(
+                "E_BAD_INPUT",
+                "moderation removal needs a community channel",
+            ));
+        };
+        let community = known.community_id;
+        let groups = on_core(&self.inner, |c| {
+            let raw = c.groups().map_err(core_err)?;
+            GroupRow::decode_all(&raw).map_err(bad)
+        })
+        .await?;
+        let group = groups
+            .iter()
+            .filter(|g| g.kind == 0 && g.target_id == channel.0)
+            .find(|g| known.text_group_id.is_none_or(|t| t.0 == g.group_id))
+            .filter(|g| g.state == 2 && g.community_id == Some(community.0))
+            .map(|g| g.group_id)
+            .ok_or_else(|| {
+                refusal(
+                    "E_NOT_READY",
+                    "the active community text group is unavailable",
+                )
+            })?;
+        let stored = on_core(&self.inner, move |c| {
+            let raw = Zeroizing::new(c.timeline(&group, seq + 1, 1).map_err(core_err)?);
+            let mut rows = decode_timeline(&raw).map_err(bad)?;
+            let ok = rows
+                .iter()
+                .any(|r| r.seq == seq && r.msg_id == Some(msg.0) && r.status == 0);
+            for r in &mut rows {
+                r.body.zeroize();
+            }
+            Ok(ok)
+        })
+        .await?;
+        if !stored {
+            return Err(refusal(
+                "E_BAD_INPUT",
+                "target message is no longer available",
+            ));
+        }
+        let Some(bits) = viewer_channel_bits(&snapshot, channel) else {
+            return Err(refusal(
+                "E_NOT_READY",
+                "current channel permissions are unavailable",
+            ));
+        };
+        if bits & u64::from(perm::MANAGE_MESSAGES) == 0 {
+            return Err(refusal(
+                "E_FORBIDDEN",
+                "manage messages permission required",
+            ));
+        }
+        let waiting = removal_row(&self.inner, move |r| {
+            r.group_id == group && r.message_id == msg.0 && r.target_sequence == seq
+        })
+        .await?;
+        if let Some(mut row) = waiting {
+            let proof = row.proof_request_id;
+            wipe(&mut row);
+            return self.resolve_removal(proof).await;
+        }
+        let (proof, evidence_request) = (request_id(), request_id());
+        let now = now_s();
+        let signed = {
+            let (reason, excerpt) = (reason.clone(), excerpt.clone());
+            on_core(&self.inner, move |c| {
+                c.prepare_manual_removal_evidence(
+                    &proof,
+                    &evidence_request,
+                    &community.0,
+                    &group,
+                    &channel.0,
+                    &msg.0,
+                    seq,
+                    &reason,
+                    &excerpt,
+                    now,
+                    now + PROOF_LIFETIME_S,
+                    now,
+                )
+                .map(Zeroizing::new)
+                .map_err(core_err)
+            })
+            .await?
+        };
+        if let Err(removal) = post_proof(&self.inner, group, proof, signed).await {
+            let (evidence_request_id, evidence) = match removal {
+                Removal::Rejected => (None, Evidence::Rejected),
+                _ => (Some(evidence_request), Evidence::Unknown),
+            };
+            return Ok(RemovalOutcome::new(
+                removal,
+                proof,
+                evidence_request_id,
+                evidence,
+            ));
+        }
+        let evidence = upload_evidence(&self.inner, community, proof, &reason, &excerpt).await;
+        Ok(RemovalOutcome::new(
+            Removal::Accepted,
+            proof,
+            Some(evidence_request),
+            evidence,
+        ))
+    }
+
+    /// controller.ts `resolveManualRemoval`: settles a removal the core still holds (the dialog's "Check or retry
+    /// removal"). One whose post may have landed is first looked for in the group's verified removal feed; one not yet
+    /// accepted is posted again with the same proof (unless it expired); an accepted one has its evidence sent again.
+    /// E_NOT_FOUND when the core no longer holds it.
+    pub async fn resolve_removal(&self, proof: [u8; 16]) -> Result<RemovalOutcome, ApiError> {
+        let gone = || refusal("E_NOT_FOUND", "manual removal request is no longer pending");
+        let mut row = removal_row(&self.inner, move |r| r.proof_request_id == proof)
+            .await?
+            .ok_or_else(gone)?;
+        if row.state == 1 {
+            // Only an authenticated feed entry of this actor, device, group and sequence promotes it; a failed read
+            // proves nothing.
+            let _ = Arc::clone(self.inner.engine())
+                .recover_removals_of(vec![row.group_id])
+                .await;
+            wipe(&mut row);
+            row = removal_row(&self.inner, move |r| r.proof_request_id == proof)
+                .await?
+                .ok_or_else(gone)?;
+        }
+        if row.state < 2 {
+            let now = now_s();
+            let (group, evidence_request) = (row.group_id, row.evidence_request_id);
+            if row.expires <= now {
+                let removal = if row.state == 0 {
+                    let _ = on_core(&self.inner, move |c| {
+                        c.reject_unsubmitted_manual_removal(&proof, now)
+                            .map_err(core_err)
+                    })
+                    .await;
+                    Removal::Rejected
+                } else {
+                    Removal::Unknown
+                };
+                wipe(&mut row);
+                return Ok(RemovalOutcome::new(
+                    removal,
+                    proof,
+                    Some(evidence_request),
+                    Evidence::Unknown,
+                ));
+            }
+            let signed = Zeroizing::new(std::mem::take(&mut row.signed_body));
+            wipe(&mut row);
+            if let Err(removal) = post_proof(&self.inner, group, proof, signed).await {
+                let (evidence_request_id, evidence) = match removal {
+                    Removal::Rejected => (None, Evidence::Rejected),
+                    _ => (Some(evidence_request), Evidence::Unknown),
+                };
+                return Ok(RemovalOutcome::new(
+                    removal,
+                    proof,
+                    evidence_request_id,
+                    evidence,
+                ));
+            }
+            match removal_row(&self.inner, move |r| r.proof_request_id == proof).await? {
+                Some(r) if r.state == 2 => row = r,
+                other => {
+                    let evidence_request = other.map_or([0; 16], |mut r| {
+                        wipe(&mut r);
+                        r.evidence_request_id
+                    });
+                    return Ok(RemovalOutcome::new(
+                        Removal::Unknown,
+                        proof,
+                        Some(evidence_request),
+                        Evidence::Unknown,
+                    ));
+                }
+            }
+        }
+        let community = CommunityId(row.community_id);
+        let evidence_request = row.evidence_request_id;
+        let (reason, excerpt) = (
+            Zeroizing::new(std::mem::take(&mut row.reason)),
+            Zeroizing::new(std::mem::take(&mut row.excerpt)),
+        );
+        wipe(&mut row);
+        let evidence = upload_evidence(&self.inner, community, proof, &reason, &excerpt).await;
+        Ok(RemovalOutcome::new(
+            Removal::Accepted,
+            proof,
+            Some(evidence_request),
+            evidence,
+        ))
+    }
+
+    /// manual-removal.ts `sendManualRemovalEvidence`: the dialog's "Retry evidence" for an accepted removal. A fresh
+    /// request id (an earlier reservation's expiry is fixed); the Bot keys the evidence by the proof's id and takes the
+    /// same reason and excerpt again, so a late duplicate is safe. Answers the request id and the outcome.
+    pub async fn send_removal_evidence(
+        &self,
+        community: CommunityId,
+        proof: [u8; 16],
+        reason: &str,
+        excerpt: &str,
+    ) -> ([u8; 16], Evidence) {
+        let request = crate::features::bot_admin::new_request_id();
+        let evidence =
+            sealed_evidence(&self.inner, community, request, proof, reason, excerpt).await;
+        (request, evidence)
+    }
+}
+
+/// controller.ts `resumeManualRemovalEvidence`, run after each ready: every removal the core still holds for an active
+/// group of its community is reconciled (a maybe-landed one against the verified feed), posted again while its proof is
+/// fresh, and its evidence sent; whatever fails waits for the next ready. One whose post may have landed stays unknown
+/// until the feed says.
+pub(crate) async fn resume_removal_evidence(inner: Arc<Inner>) {
+    let Ok(saved) = removal_ids(&inner).await else {
+        return;
+    };
+    if saved.is_empty() {
+        return;
+    }
+    let groups = inner.engine().groups().await;
+    let mut catalogs = std::collections::HashSet::new();
+    for (proof, group, community, state) in saved {
+        if inner.engine().stopped() {
+            return;
+        }
+        let active = groups.iter().any(|g| {
+            g.group_id == group && g.kind == 0 && g.state == 2 && g.community_id == Some(community)
+        });
+        if !active {
+            continue;
+        }
+        if state == 1 {
+            let _ = Arc::clone(inner.engine())
+                .recover_removals_of(vec![group])
+                .await;
+        }
+        let Ok(Some(mut row)) = removal_row(&inner, move |r| r.proof_request_id == proof).await
+        else {
+            continue;
+        };
+        if row.state < 2 {
+            let now = now_s();
+            if row.expires <= now {
+                if row.state == 0 {
+                    let _ = on_core(&inner, move |c| {
+                        c.reject_unsubmitted_manual_removal(&proof, now)
+                            .map_err(core_err)
+                    })
+                    .await;
+                }
+                wipe(&mut row);
+                continue;
+            }
+            let signed = Zeroizing::new(std::mem::take(&mut row.signed_body));
+            wipe(&mut row);
+            if post_proof(&inner, group, proof, signed).await.is_err() {
+                continue;
+            }
+            match removal_row(&inner, move |r| r.proof_request_id == proof).await {
+                Ok(Some(r)) => row = r,
+                _ => continue,
+            }
+        }
+        if row.state != 2 {
+            wipe(&mut row);
+            continue;
+        }
+        let (reason, excerpt) = (
+            Zeroizing::new(std::mem::take(&mut row.reason)),
+            Zeroizing::new(std::mem::take(&mut row.excerpt)),
+        );
+        wipe(&mut row);
+        // At a start the Bot's verified key is not read yet (the catalog sync runs beside this): it is read once per
+        // community here, so the owed evidence can be sealed now instead of waiting for another ready.
+        if catalogs.insert(community) {
+            let _ = crate::features::bot::Bot::of(&inner)
+                .sync_catalog(CommunityId(community))
+                .await;
+        }
+        let _ = upload_evidence(&inner, CommunityId(community), proof, &reason, &excerpt).await;
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    const MANAGE: u64 = perm::MANAGE_MESSAGES as u64;
+
+    /// MessageItem.tsx: another person's stored message, to a reader whose known channel bits hold manage_messages.
+    #[test]
+    fn remove_for_everyone_needs_known_manage_messages_on_another_persons_stored_message() {
+        assert!(may_remove_for_everyone(false, true, Some(MANAGE)));
+        assert!(may_remove_for_everyone(
+            false,
+            true,
+            Some(u64::from(perm::PERM_ALL))
+        ));
+        // Unknown bits offer nothing (unlike pin, which unknown bits offer).
+        assert!(!may_remove_for_everyone(false, true, None));
+        let read_send_pin = 0b11 | u64::from(perm::PIN_MESSAGES);
+        assert!(!may_remove_for_everyone(false, true, Some(read_send_pin)));
+        // The own message is deleted, not removed; a message not stored yet has no seq to remove.
+        assert!(!may_remove_for_everyone(true, true, Some(MANAGE)));
+        assert!(!may_remove_for_everyone(false, false, Some(MANAGE)));
+    }
+
+    /// Conversation.tsx: Remove acts on a non-blank reason of at most 1024 bytes.
+    #[test]
+    fn the_reason_is_not_blank_and_fits_1024_bytes() {
+        assert!(removal_reason_ok("spam"));
+        assert!(!removal_reason_ok(""));
+        assert!(!removal_reason_ok(" \n\t "));
+        assert!(removal_reason_ok(&"x".repeat(1024)));
+        assert!(!removal_reason_ok(&"x".repeat(1025)));
+        // Bytes, not characters: 512 two-byte characters fit, 513 do not.
+        assert!(removal_reason_ok(&"ä".repeat(512)));
+        assert!(!removal_reason_ok(&"ä".repeat(513)));
+    }
+
+    /// controller.ts `definiteManualRemovalRefusal`.
+    #[test]
+    fn only_a_4xx_other_than_408_is_a_definite_refusal() {
+        let e = |status| ApiError::local(status, "E_X", "");
+        for status in [400, 403, 409, 499] {
+            assert!(definite_refusal(&e(status)), "{status}");
+        }
+        // A 408, a 5xx and a local failure (no answer) prove nothing.
+        for status in [408, 500, 503, 0] {
+            assert!(!definite_refusal(&e(status)), "{status}");
+        }
     }
 }

@@ -106,7 +106,7 @@ pub fn toolbar(
             .iter()
             .map(|a| {
                 let item = MenuItem::new(a.id.clone(), t(a.label));
-                if a.id == "delete" {
+                if a.id == "delete" || a.id == super::actions::MODERATE_REMOVE {
                     item.danger()
                 } else {
                     item
@@ -120,26 +120,34 @@ pub fn toolbar(
         let ui_open = ui.clone();
         let ui_pick = ui.clone();
         let ctx = ctx.clone();
+        // The menu's trigger reports its bounds (`message-more-<n>`) so a fixture can open it, as it hovers a row.
         bar = bar.child(
-            ActionMenu::new(
-                ElementId::Name(format!("message-more-{index}").into()),
-                t("shell.message.more"),
-                items,
-            )
-            .icon(IconName::Ellipsis)
-            .icon_size(len(14.))
-            .open(menu_open)
-            .on_open_change(move |open, _, cx| {
-                let key = open.then(|| key_open.clone());
-                ui_open.update(cx, |ui, cx| ui.set_menu(key, cx));
-            })
-            .on_select(move |id, window, cx| {
-                ui_pick.update(cx, |ui, cx| ui.set_menu(None, cx));
-                if let Some((_, run)) = runs.iter().find(|(rid, _)| rid.as_ref() == id) {
-                    run(&ctx, window, cx);
-                }
-                let _ = &key;
-            }),
+            div()
+                .relative()
+                .flex()
+                .flex_none()
+                .child(super::probe(super::id_of("message-more", index)))
+                .child(
+                    ActionMenu::new(
+                        ElementId::Name(format!("message-more-{index}").into()),
+                        t("shell.message.more"),
+                        items,
+                    )
+                    .icon(IconName::Ellipsis)
+                    .icon_size(len(14.))
+                    .open(menu_open)
+                    .on_open_change(move |open, _, cx| {
+                        let key = open.then(|| key_open.clone());
+                        ui_open.update(cx, |ui, cx| ui.set_menu(key, cx));
+                    })
+                    .on_select(move |id, window, cx| {
+                        ui_pick.update(cx, |ui, cx| ui.set_menu(None, cx));
+                        if let Some((_, run)) = runs.iter().find(|(rid, _)| rid.as_ref() == id) {
+                            run(&ctx, window, cx);
+                        }
+                        let _ = &key;
+                    }),
+                ),
         );
     }
     // Shown while the row is hovered (or the menu is open); hidden otherwise.

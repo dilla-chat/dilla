@@ -1509,3 +1509,388 @@ mod live {
         .await;
     }
 }
+
+// ---- Task 28 wave 2 (lane A): moderated removal with evidence, against a real dillad and its Bot ----
+
+/// e2e/web/moderation-removal-recovery.spec.ts and e2e/web/moderation-evidence.spec.ts, through the client's own flow
+/// (`Moderation::remove_message`, the worker's `moderateRemoveMessage`): the owner, a moderator holding only
+/// manage_messages by a role, the author and a member without it.
+mod removal {
+    use std::time::{Duration, Instant};
+
+    use dilla_client::Client;
+    use dilla_client::features::moderation::{
+        Evidence, Removal, RemovalOutcome, may_remove_for_everyone,
+    };
+    use dilla_client::features::roles::{perm, viewer_channel_bits};
+    use dilla_client::state::bot_admin::{MODERATION_EVIDENCE, ModerationCase};
+    use dilla_client::state::{
+        AppState, ChannelId, CommunityId, MessageId, TimelineItemState, UserId,
+    };
+    use dilla_client::sync::api::ApiError;
+    use dilla_client::testing::host::bot::{cap, enable_bot, wait_for_catalog};
+    use dilla_client::testing::host::{
+        Host, Person, clear_session, community, sign_up, start, start_bot_host, wait_for,
+    };
+
+    const BODY: &str = "late-history removal target";
+    const REASON: &str = "reviewed by moderator";
+    const MANAGE: u64 = perm::MANAGE_MESSAGES as u64;
+
+    /// A host running the Bot; Ada owns "Removal Lab" with Bea, Cato and Dara in it. The Bot takes moderation evidence
+    /// only with a moderation capability (internal/bot/catalog `FeatureModeration`): the tests enable Removal.
+    async fn lab(tag: &str) -> (Host, Vec<Person>, CommunityId) {
+        let host = tokio::task::spawn_blocking({
+            let tag = tag.to_owned();
+            move || start_bot_host(&tag, "127.0.0.1:0")
+        })
+        .await
+        .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let mut ps = Vec::new();
+        for (user, display) in [
+            ("ada", "Ada"),
+            ("bea", "Bea"),
+            ("cato", "Cato"),
+            ("dara", "Dara"),
+        ] {
+            ps.push(sign_up(&host, &invite, user, display, tag).await);
+        }
+        tokio::task::spawn_blocking(move || {
+            let others: Vec<&Person> = ps[1..].iter().collect();
+            let c = community(&host, &ps[0], "Removal Lab", &others);
+            for p in &ps {
+                clear_session(p);
+            }
+            (host, ps, CommunityId(c))
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn general(client: &Client, c: CommunityId) -> ChannelId {
+        let s = wait_for(client, Duration::from_secs(30), "#general", |s| {
+            s.channel_named(c, "general").is_some()
+        })
+        .await;
+        s.channel_named(c, "general").unwrap().id
+    }
+
+    /// The stored message's `(msg, seq)` once `client` holds it readable.
+    async fn stored(client: &Client, ch: ChannelId) -> (MessageId, u64) {
+        let s = wait_for(client, Duration::from_secs(30), "the message stored", |s| {
+            s.timelines.get(&ch).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .any(|i| i.body == BODY && i.seq.is_some() && i.state == TimelineItemState::Ok)
+            })
+        })
+        .await;
+        let i = s.timelines[&ch]
+            .items
+            .iter()
+            .find(|i| i.body == BODY)
+            .unwrap();
+        (i.msg_id.unwrap(), i.seq.unwrap())
+    }
+
+    /// The reader's channel bits, once the one resolver has all its inputs and `pred` holds for them.
+    async fn bits_until(
+        client: &Client,
+        c: CommunityId,
+        ch: ChannelId,
+        pred: impl Fn(u64) -> bool,
+    ) -> u64 {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let _ = client.roles().load_access(c).await;
+            let bits = viewer_channel_bits(&client.state().borrow(), ch);
+            if let Some(bits) = bits.filter(|b| pred(*b)) {
+                return bits;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the channel's bits never settled: {bits:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// The message is a tombstone for this reader, and its plaintext is nowhere in the state.
+    async fn removed_for(client: &Client, ch: ChannelId, seq: u64, who: &str) {
+        let what = format!("{who}'s tombstone");
+        let s = wait_for(client, Duration::from_secs(60), &what, |s| {
+            s.timelines.get(&ch).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .filter(|i| i.seq == Some(seq))
+                    .all(|i| i.state == TimelineItemState::Deleted && i.body.is_empty())
+                    && t.items.iter().all(|i| !i.body.contains(BODY))
+            })
+        })
+        .await;
+        body_nowhere(&s, who);
+    }
+
+    fn body_nowhere(s: &AppState, who: &str) {
+        assert!(
+            !format!("{s:?}").contains(BODY),
+            "the removed body is still in {who}'s state"
+        );
+    }
+
+    /// Every manual evidence row `client` may read; `Err` is the Bot's refusal of the read.
+    async fn evidence_of(client: &Client, c: CommunityId) -> Result<Vec<ModerationCase>, u8> {
+        let admin = client.bot_admin();
+        let mut rows = Vec::new();
+        let mut cursor = None;
+        for _ in 0..16 {
+            let page = admin
+                .moderation_page(c, MODERATION_EVIDENCE, cursor)
+                .await
+                .expect("an answer")
+                .expect("the page reads");
+            if page.status != 0 {
+                return Err(page.status);
+            }
+            rows.extend(page.cases);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(rows)
+    }
+
+    /// "Retry evidence" until the Bot stored it (its catalog may still be on its way to this device).
+    async fn evidence_stored(bea: &Client, mut outcome: RemovalOutcome) -> RemovalOutcome {
+        for _ in 0..20 {
+            if outcome.evidence == Evidence::Accepted {
+                return outcome;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            outcome = bea
+                .moderation()
+                .resolve_removal(outcome.proof_request_id)
+                .await
+                .expect("the removal is still held");
+        }
+        panic!("the evidence was never stored: {outcome:?}");
+    }
+
+    /// The owner makes a "Moderators" role with manage_messages and gives it to Bea.
+    async fn moderator(ada: &Client, c: CommunityId, bea: &Person) {
+        let role = ada
+            .roles()
+            .create_role(
+                c,
+                "Moderators",
+                0,
+                false,
+                false,
+                perm::VIEW_CHANNEL | perm::SEND_MESSAGES | perm::MANAGE_MESSAGES,
+            )
+            .await
+            .expect("the role");
+        ada.roles()
+            .grant_role(c, UserId(bea.user_id), role)
+            .await
+            .expect("the grant");
+    }
+
+    /// Waits until the core no longer holds the removal (its evidence was stored); answers the refusal that says so.
+    async fn wait_settled(client: &Client, proof: [u8; 16]) -> ApiError {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match client.moderation().resolve_removal(proof).await {
+                Err(e) => return e,
+                Ok(o) => assert!(
+                    Instant::now() < deadline,
+                    "the removal is still held: {o:?}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// e2e/web/moderation-removal-recovery.spec.ts with e2e/web/moderation-evidence.spec.ts's read-back: Cato's message is
+    /// removed by Bea (manage_messages by a role) with a reason; Dara (no right) is not offered it and is refused before
+    /// any request; Ada, Cato and Dara see the tombstone with no plaintext left; the Bot stored the evidence, which the
+    /// owner (view_audit_log) reads back with its reason and excerpt, and which Bea, Cato and Dara may not read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+    async fn a_moderator_removes_a_message_with_evidence_the_owner_reads() {
+        let (_host, ps, c) = lab("w2a-remove").await;
+        let ada = start(&ps[0]).await;
+        let bea = start(&ps[1]).await;
+        let cato = start(&ps[2]).await;
+        let dara = start(&ps[3]).await;
+        let ch = general(&ada, c).await;
+        for client in [&bea, &cato, &dara] {
+            general(client, c).await;
+        }
+        for client in [&ada, &bea, &cato, &dara] {
+            client.open_channel(ch).await.unwrap().unwrap();
+        }
+        moderator(&ada, c, &ps[1]).await;
+        enable_bot(&ada, c.0, cap::REMOVAL).await;
+        wait_for_catalog(&bea, c.0, Duration::from_secs(90)).await;
+
+        cato.send_text(ch, BODY.into())
+            .await
+            .unwrap()
+            .expect("queued");
+        let (msg, seq) = stored(&cato, ch).await;
+        for client in [&ada, &bea, &dara] {
+            assert_eq!(stored(client, ch).await, (msg, seq));
+        }
+
+        // Dara holds no manage_messages: the gate offers nothing, and the client refuses before any request.
+        let dara_bits = bits_until(&dara, c, ch, |_| true).await;
+        assert!(!may_remove_for_everyone(false, true, Some(dara_bits)));
+        let refused = dara
+            .moderation()
+            .remove_message(ch, msg, seq, REASON, BODY)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "E_FORBIDDEN", "{refused}");
+        // The author deletes her own message; a moderated removal of it is not offered to her.
+        let cato_bits = bits_until(&cato, c, ch, |_| true).await;
+        assert!(!may_remove_for_everyone(true, true, Some(cato_bits)));
+
+        // Bea's role gives her the right in this channel, through the one resolver.
+        let bea_bits = bits_until(&bea, c, ch, |b| b & MANAGE != 0).await;
+        assert!(may_remove_for_everyone(false, true, Some(bea_bits)));
+        // A blank reason is refused before anything is signed.
+        let blank = bea
+            .moderation()
+            .remove_message(ch, msg, seq, "  ", BODY)
+            .await
+            .unwrap_err();
+        assert_eq!(blank.code, "E_BAD_INPUT");
+
+        let outcome = bea
+            .moderation()
+            .remove_message(ch, msg, seq, REASON, BODY)
+            .await
+            .expect("the removal");
+        assert_eq!(outcome.removal, Removal::Accepted, "{outcome:?}");
+        let outcome = evidence_stored(&bea, outcome).await;
+
+        for (client, who) in [
+            (&bea, "bea"),
+            (&ada, "ada"),
+            (&cato, "cato"),
+            (&dara, "dara"),
+        ] {
+            removed_for(client, ch, seq, who).await;
+        }
+        // The core's outbox is settled: the removal is no longer held.
+        let gone = wait_settled(&bea, outcome.proof_request_id).await;
+        assert_eq!(gone.code, "E_NOT_FOUND");
+        // A removal of the tombstone is refused before anything is signed.
+        let again = bea
+            .moderation()
+            .remove_message(ch, msg, seq, REASON, BODY)
+            .await
+            .unwrap_err();
+        assert_eq!(again.code, "E_BAD_INPUT");
+
+        // The owner (view_audit_log) reads the evidence back; nobody without view_audit_log may.
+        let rows = evidence_of(&ada, c)
+            .await
+            .expect("the owner reads the evidence");
+        assert_eq!(
+            rows.len(),
+            1,
+            "one evidence row per accepted removal: {rows:?}"
+        );
+        assert_eq!(
+            (
+                rows[0].action.as_str(),
+                rows[0].reason.as_str(),
+                rows[0].excerpt.as_str()
+            ),
+            ("remove", REASON, BODY)
+        );
+        for (client, who) in [(&bea, "bea"), (&cato, "cato"), (&dara, "dara")] {
+            assert!(
+                evidence_of(client, c).await.is_err(),
+                "{who} may not read the evidence"
+            );
+        }
+    }
+
+    /// controller.ts `resumeManualRemovalEvidence`: with no Bot yet, the removal lands and its evidence is owed (pending);
+    /// the owner then enables the Bot, and Bea's next start (its ready) sends the same evidence from the core's durable
+    /// outbox, which the owner then reads. Before that start there is none to read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+    async fn evidence_owed_while_the_bot_is_away_is_sent_at_the_next_ready() {
+        let (_host, ps, c) = lab("w2a-resume").await;
+        let ada = start(&ps[0]).await;
+        let bea = start(&ps[1]).await;
+        let cato = start(&ps[2]).await;
+        let ch = general(&ada, c).await;
+        general(&bea, c).await;
+        general(&cato, c).await;
+        for client in [&ada, &bea, &cato] {
+            client.open_channel(ch).await.unwrap().unwrap();
+        }
+        moderator(&ada, c, &ps[1]).await;
+        cato.send_text(ch, BODY.into())
+            .await
+            .unwrap()
+            .expect("queued");
+        let (msg, seq) = stored(&cato, ch).await;
+        stored(&bea, ch).await;
+        bits_until(&bea, c, ch, |b| b & MANAGE != 0).await;
+
+        let outcome = bea
+            .moderation()
+            .remove_message(ch, msg, seq, REASON, BODY)
+            .await
+            .expect("the removal");
+        assert_eq!(outcome.removal, Removal::Accepted, "{outcome:?}");
+        assert_eq!(outcome.evidence, Evidence::Pending, "no Bot takes it yet");
+        removed_for(&cato, ch, seq, "cato").await;
+
+        enable_bot(&ada, c.0, cap::REMOVAL).await;
+        wait_for_catalog(&bea, c.0, Duration::from_secs(90)).await;
+        assert_eq!(
+            evidence_of(&ada, c).await,
+            Ok(Vec::new()),
+            "nothing was sent yet"
+        );
+
+        // Bea's next start: its ready resumes the owed evidence.
+        bea.stop();
+        let bea = start(&ps[1]).await;
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let rows = loop {
+            let rows = evidence_of(&ada, c)
+                .await
+                .expect("the owner reads the evidence");
+            if !rows.is_empty() {
+                break rows;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the owed evidence was never sent"
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            (
+                rows[0].action.as_str(),
+                rows[0].reason.as_str(),
+                rows[0].excerpt.as_str()
+            ),
+            ("remove", REASON, BODY)
+        );
+        // And the core's outbox let it go once the Bot stored it.
+        let settled = wait_settled(&bea, outcome.proof_request_id).await;
+        assert_eq!(settled.code, "E_NOT_FOUND");
+    }
+}

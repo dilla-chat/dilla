@@ -1,16 +1,20 @@
-//! This area's entries of the message toolbar and context menu (`slots::message_actions`): edit, pin or unpin, delete.
-//! Edit and delete are the own message's; pin is offered to a reader whose channel bits (the one resolver,
-//! `roles::viewer_channel_bits`) hold `pin_messages`, or while the bits are not known yet (MessageItem.tsx: `p.bits ==
-//! null || bits & PERM.pinMessages`).
+//! This area's entries of the message toolbar and context menu (`slots::message_actions`): edit, pin or unpin, delete,
+//! remove for everyone. Edit and delete are the own message's; pin is offered to a reader whose channel bits (the one
+//! resolver, `roles::viewer_channel_bits`) hold `pin_messages`, or while the bits are not known yet (MessageItem.tsx:
+//! `p.bits == null || bits & PERM.pinMessages`); remove for everyone is another person's message, for a reader whose known
+//! bits hold `manage_messages` (`moderation::may_remove_for_everyone`).
 
 use std::rc::Rc;
 
 use dilla_client::Area;
+use dilla_client::features::moderation::may_remove_for_everyone;
 use dilla_client::state::{TimelineItem, TimelineItemState};
 use gpui::{AppContext as _, SharedString};
+use zeroize::Zeroizing;
 
 use dilla_desktop_ui::IconName;
 
+use super::mentions::plain_body;
 use super::ui;
 use crate::slots::MessageAction;
 
@@ -41,9 +45,7 @@ pub fn message_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<MessageAct
         });
     }
     let pinned = item.pinned;
-    // Pin and unpin need the channel's pin_messages bit (Task 28: hidden from a reader without it, as the web does). A
-    // delete of another person's message is the web's moderated removal (manage_messages, a reason and a proof request);
-    // the desktop client has no such route yet, so it is not offered.
+    // Pin and unpin need the channel's pin_messages bit (Task 28: hidden from a reader without it, as the web does).
     let may_pin = bits.is_none_or(|b| b & PIN_MESSAGES != 0);
     if may_pin {
         out.push(MessageAction {
@@ -79,8 +81,42 @@ pub fn message_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<MessageAct
             }),
         });
     }
+    // Task 28 wave 2 (lane A): another person's message is removed for everyone by a reader whose channel bits are known
+    // and hold manage_messages (MessageItem.tsx), with a reason, a signed proof and its evidence (`moderation`).
+    if may_remove_for_everyone(item.own, item.seq.is_some(), bits) {
+        let item = item.clone();
+        out.push(MessageAction {
+            id: SharedString::from(MODERATE_REMOVE),
+            label: "shell.message.moderateRemove",
+            icon: IconName::Trash2,
+            area: Area::Messages,
+            run: Rc::new(move |ctx, window, cx| {
+                let Some(h) = ui::handle(window, cx) else {
+                    return;
+                };
+                let state = &ctx.state;
+                let members = ctx
+                    .channel
+                    .and_then(|c| state.channel(c))
+                    .and_then(|c| state.members.get(&c.community_id))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let me = state.account.user_id.map(|u| u.hex());
+                let plain = Zeroizing::new(plain_body(
+                    &item.body,
+                    members,
+                    me.as_deref()
+                        .map(|id| (id, state.account.username.as_str())),
+                ));
+                h.update(cx, |ui, cx| ui.ask_moderate(ctx, &item, &plain, window, cx));
+            }),
+        });
+    }
     out
 }
+
+/// The moderated removal's action id (a danger entry of the menu, as delete is).
+pub const MODERATE_REMOVE: &str = "moderateRemove";
 
 #[cfg(test)]
 mod tests {
@@ -159,5 +195,41 @@ mod tests {
         assert_eq!(pick(true, Some(read_send)), ["edit", "delete"]);
         assert_eq!(pick(false, Some(read_send | PIN_MESSAGES)), ["pin"]);
         assert_eq!(pick(false, None), ["pin"]);
+    }
+
+    /// Task 28 wave 2 (lane A), MessageItem.tsx: "remove for everyone" is another person's stored message, offered to a
+    /// reader whose known channel bits (the one resolver) hold manage_messages; never the own message, never while the
+    /// bits are unknown.
+    #[test]
+    fn remove_for_everyone_follows_the_manage_messages_bit() {
+        const MANAGE: u64 = dilla_client::features::roles::perm::MANAGE_MESSAGES as u64;
+        let pick = |own: bool, bits: Option<u64>| -> Vec<String> {
+            message_actions(&item(own, false, TimelineItemState::Ok), bits)
+                .iter()
+                .map(|a| a.id.to_string())
+                .collect()
+        };
+        let read_send = 1 | (1 << 1);
+        assert_eq!(pick(false, Some(read_send | MANAGE)), [MODERATE_REMOVE]);
+        assert_eq!(
+            pick(false, Some(read_send | PIN_MESSAGES | MANAGE)),
+            ["pin", MODERATE_REMOVE]
+        );
+        assert_eq!(pick(false, Some(read_send)), Vec::<String>::new());
+        assert_eq!(pick(false, None), ["pin"]);
+        assert_eq!(pick(true, Some(read_send | MANAGE)), ["edit", "delete"]);
+        let a = message_actions(&item(false, false, TimelineItemState::Ok), Some(MANAGE));
+        assert_eq!(a[0].label, "shell.message.moderateRemove");
+        // A message not stored (no seq) or not readable offers nothing.
+        let mut unstored = item(false, false, TimelineItemState::Ok);
+        unstored.seq = None;
+        assert!(message_actions(&unstored, Some(MANAGE)).is_empty());
+        assert!(
+            message_actions(
+                &item(false, false, TimelineItemState::Deleted),
+                Some(MANAGE)
+            )
+            .is_empty()
+        );
     }
 }

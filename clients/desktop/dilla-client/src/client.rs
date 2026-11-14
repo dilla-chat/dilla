@@ -1493,6 +1493,13 @@ impl Publisher {
         };
         let remaining = u32::try_from(info.keypackages_remaining).unwrap_or(u32::MAX);
         crate::account::refill_key_packages(&inner, remaining);
+        // controller.ts `onReady`: a moderated removal the core still holds is settled and its evidence sent
+        // (`resumeManualRemovalEvidence`); nothing waits for it.
+        let resume = inner.clone();
+        drop(inner.spawn(async move {
+            crate::features::moderation::resume_removal_evidence(resume).await;
+            Ok(())
+        }));
         let backups = inner.clone();
         let updates = self.updates.clone();
         drop(inner.spawn(async move {

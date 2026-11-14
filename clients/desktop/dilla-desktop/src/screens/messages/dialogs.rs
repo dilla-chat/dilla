@@ -11,6 +11,7 @@ use dilla_desktop_ui::text::{line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, text};
 
 use super::mentions::excerpt;
+use super::moderation;
 use super::ui::{self, handle};
 use crate::format;
 use crate::screens::messages::css::len;
@@ -60,6 +61,9 @@ pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     }
     if let Some(channel) = pins {
         out.push(pins_dialog(ctx, channel, &ui, window));
+    }
+    if let Some(dialog) = moderation::dialog(&ui, window, cx) {
+        out.push(dialog);
     }
     out
 }
