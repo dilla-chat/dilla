@@ -143,8 +143,9 @@ pub struct AttachmentsUi {
     pub opens: u64,
     pub lightbox: Option<LightboxState>,
     pub gif: Option<GifState>,
-    /// The DM GIF notice, while it asks.
-    pub dm_notice: Option<DmNotice>,
+    /// The clients released so far (by `Client::serial`, never reused): a DM GIF notice whose read answers after its
+    /// client was released is not shown (final review I5).
+    pub released: BTreeSet<u64>,
     /// `gifStatus` per server: `None` while asked.
     pub gif_on: HashMap<CommunityId, Option<bool>>,
     /// Per window, what its composer last drew for: where a paste, a drop or a pick in that window goes. Keyed by
@@ -294,13 +295,20 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     }
     u.trays.retain(|(c, _), _| *c != owner);
     u.tray_previews.retain(|(c, _, _), _| *c != owner);
+    u.released.insert(owner);
+    // Final review I5: the DM GIF notice of any window that asked with it goes.
+    crate::per_window::each_mut::<Notice>(cx, |_, n| {
+        if n.0.as_ref().is_some_and(|n| Rc::ptr_eq(&n.client, client)) {
+            n.0 = None;
+        }
+    });
     // The decrypted images, the cards' state and the players the client opened go too (re-review N3: by owner, so a
     // DM's, a left channel's and a thread's go as well): a released account's media is not left in the process.
     forget_owner(owner, cx);
 }
 
 /// `window` closed: its composer target, and the lightbox, GIF picker and DM GIF notice drawn in it, go with their
-/// client (final review C1).
+/// client (final review C1). The window's DM GIF notice is per window and goes with it (`per_window`).
 pub fn window_closed(window: WindowId, cx: &mut App) {
     if !cx.has_global::<AttachmentsUi>() {
         return;
@@ -312,9 +320,6 @@ pub fn window_closed(window: WindowId, cx: &mut App) {
     }
     if u.gif.as_ref().is_some_and(|g| g.owner == Some(window)) {
         u.gif = None;
-    }
-    if u.dm_notice.as_ref().is_some_and(|n| n.owner == window) {
-        u.dm_notice = None;
     }
 }
 
@@ -967,6 +972,24 @@ pub struct DmNotice {
     pub owner: WindowId,
 }
 
+/// One window's DM GIF notice, while it asks (final review I5: per window, never another window's).
+#[derive(Default)]
+struct Notice(Option<DmNotice>);
+
+/// `window`'s DM GIF notice, while it asks.
+pub fn dm_notice(window: WindowId, cx: &App) -> Option<DmNotice> {
+    crate::per_window::get::<Notice>(window, cx).and_then(|n| n.0.clone())
+}
+
+/// Shows `notice` in its window (`notice.owner`), unless its client was released meanwhile (its read answered late).
+pub fn show_dm_notice(notice: DmNotice, cx: &mut App) {
+    if ui(cx).released.contains(&owner_of(&notice.client)) {
+        return;
+    }
+    let owner = notice.owner;
+    crate::per_window::get_mut::<Notice>(owner, cx).0 = Some(notice);
+}
+
 /// The GIF button of a 1:1 DM with `peer` (use-gif-community.ts `findCommunity`, only on the press): the shared
 /// servers are asked with `gifStatus` only; none with GIFs on says so; a server this device consented to for DMs
 /// opens the picker; any other opens the notice naming it.
@@ -977,7 +1000,16 @@ pub fn open_dm_gifs(
     peer: dilla_client::state::UserId,
     cx: &mut App,
 ) {
-    if ui(cx).gif.take().is_some() || ui(cx).dm_notice.take().is_some() {
+    // A second press closes this window's picker or notice (never another window's).
+    let picker_here = ui(cx).gif.as_ref().is_some_and(|g| g.owner == Some(owner));
+    if picker_here {
+        ui(cx).gif = None;
+    }
+    let notice_here = crate::per_window::get_mut::<Notice>(owner, cx)
+        .0
+        .take()
+        .is_some();
+    if picker_here || notice_here {
         cx.refresh_windows();
         return;
     }
@@ -985,6 +1017,10 @@ pub fn open_dm_gifs(
     cx.spawn(async move |cx| {
         let found = rx.await.ok().and_then(Result::ok).flatten();
         cx.update(|cx| {
+            // The client was released while the instance answered: nothing opens for it.
+            if ui(cx).released.contains(&owner_of(&client)) {
+                return;
+            }
             match found {
                 None => dilla_desktop_ui::components::toast::show_toast_in(
                     Some(owner),
@@ -1003,13 +1039,16 @@ pub fn open_dm_gifs(
                         .find(|c| c.id == community)
                         .map(|c| c.name.clone())
                         .unwrap_or_default();
-                    ui(cx).dm_notice = Some(DmNotice {
-                        channel,
-                        community,
-                        server,
-                        client: client.clone(),
-                        owner,
-                    });
+                    show_dm_notice(
+                        DmNotice {
+                            channel,
+                            community,
+                            server,
+                            client: client.clone(),
+                            owner,
+                        },
+                        cx,
+                    );
                 }
             }
             cx.refresh_windows();
@@ -1018,9 +1057,9 @@ pub fn open_dm_gifs(
     .detach();
 }
 
-/// The notice's "Use GIFs": consent for the named server is saved first; only then does the picker open.
-pub fn accept_dm_notice(cx: &mut App) {
-    let Some(n) = ui(cx).dm_notice.take() else {
+/// The notice's "Use GIFs" in `window`: consent for the named server is saved first; only then does the picker open.
+pub fn accept_dm_notice(window: WindowId, cx: &mut App) {
+    let Some(n) = crate::per_window::get_mut::<Notice>(window, cx).0.take() else {
         return;
     };
     if n.client
@@ -1039,9 +1078,9 @@ pub fn accept_dm_notice(cx: &mut App) {
     toggle_gifs(n.client, n.owner, n.channel, n.community, cx);
 }
 
-/// The notice's "Not now": nothing is saved or searched.
-pub fn dismiss_dm_notice(cx: &mut App) {
-    ui(cx).dm_notice = None;
+/// The notice's "Not now" in `window`: nothing is saved or searched.
+pub fn dismiss_dm_notice(window: WindowId, cx: &mut App) {
+    crate::per_window::set::<Notice>(window, None, cx);
     cx.refresh_windows();
 }
 

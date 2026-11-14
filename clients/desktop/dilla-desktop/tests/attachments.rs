@@ -489,3 +489,68 @@ mod two_accounts {
         drop(w);
     }
 }
+
+/// Final review I5: the DM GIF notice belongs to the window it asks in, and a release of its client (Forget, Sign out,
+/// an instance's Remove) drops it, so the store can close; an answer that comes back after the release shows nothing.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn the_dm_gif_notice_is_per_window_and_goes_with_its_client(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::state::{ChannelId, CommunityId};
+    use dilla_client::testing::host as world;
+    use dilla_desktop::screens::attachments::ui::{self, DmNotice};
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("i5-notice", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let alice = rt.block_on(world::sign_up(&host, &invite, "alice", "Alice", "i5"));
+    let client = Rc::new(rt.block_on(world::start(&alice)));
+    cx.update(dilla_desktop::install);
+    let one = cx
+        .add_empty_window()
+        .update(|window, _| window.window_handle().window_id());
+    let two = cx
+        .add_empty_window()
+        .update(|window, _| window.window_handle().window_id());
+    let notice = |owner| DmNotice {
+        channel: ChannelId([3; 16]),
+        community: CommunityId([1; 16]),
+        server: "Midgard".into(),
+        client: client.clone(),
+        owner,
+    };
+    let (a, b) = (notice(one), notice(two));
+    cx.update(|cx| ui::show_dm_notice(a, cx));
+    assert!(cx.update(|cx| ui::dm_notice(one, cx)).is_some());
+    assert!(
+        cx.update(|cx| ui::dm_notice(two, cx)).is_none(),
+        "only the window it asked in shows it"
+    );
+    // The other window's own notice does not replace or close the first.
+    cx.update(|cx| ui::show_dm_notice(b, cx));
+    assert!(cx.update(|cx| ui::dm_notice(one, cx)).is_some());
+    cx.update(|cx| ui::dismiss_dm_notice(two, cx));
+    assert!(cx.update(|cx| ui::dm_notice(one, cx)).is_some());
+    assert!(cx.update(|cx| ui::dm_notice(two, cx)).is_none());
+
+    cx.update(|cx| dilla_desktop::release::release_client(&client, cx));
+    assert!(
+        cx.update(|cx| ui::dm_notice(one, cx)).is_none(),
+        "the notice went"
+    );
+    // A notice whose read answered after the release is not shown.
+    let late = notice(one);
+    cx.update(|cx| ui::show_dm_notice(late, cx));
+    assert!(cx.update(|cx| ui::dm_notice(one, cx)).is_none());
+    assert_eq!(
+        Rc::strong_count(&client),
+        1,
+        "nothing but the caller holds the client"
+    );
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}

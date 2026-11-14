@@ -629,7 +629,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                 .into_any_element(),
         );
     }
-    if let Some(n) = ui::ui(cx).dm_notice.clone().filter(|n| n.owner == here) {
+    if let Some(n) = ui::dm_notice(here, cx) {
         let notice = div()
             .id("gif-dm-notice")
             .flex()
@@ -664,7 +664,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                             t("gif.dm.use"),
                         )
                         .variant(dilla_desktop_ui::components::button::ButtonVariant::Accent)
-                        .on_click(|_, _, cx| ui::accept_dm_notice(cx)),
+                        .on_click(move |_, _, cx| ui::accept_dm_notice(here, cx)),
                     )
                     .child(
                         dilla_desktop_ui::components::button::Button::new(
@@ -672,7 +672,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                             t("gif.dm.notNow"),
                         )
                         .variant(dilla_desktop_ui::components::button::ButtonVariant::Ghost)
-                        .on_click(|_, _, cx| ui::dismiss_dm_notice(cx)),
+                        .on_click(move |_, _, cx| ui::dismiss_dm_notice(here, cx)),
                     ),
             );
         out.push(
