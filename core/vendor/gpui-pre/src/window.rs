@@ -3400,8 +3400,19 @@ impl Window {
     }
 
     /// The line height associated with the current text style.
+    ///
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): at a whole scale factor the line height lies on
+    /// Chromium's layout unit (`util::layout_length`), as the web client's `line-height` does (13px at 1.5 is 19.5px);
+    /// upstream rounds it to a whole px (20). A fractional scale keeps upstream's rounding.
     pub fn line_height(&self) -> Pixels {
-        self.text_style().line_height_in_pixels(self.rem_size())
+        let style = self.text_style();
+        let scale = self.scale_factor();
+        if scale.fract() == 0.0 {
+            let logical = f32::from(style.line_height.to_pixels(style.font_size, self.rem_size()));
+            px(crate::util::layout_length(logical, scale) / scale)
+        } else {
+            style.line_height_in_pixels(self.rem_size())
+        }
     }
 
     /// Rounds a logical value to the nearest device pixel.

@@ -313,7 +313,7 @@ pub fn attachment_cards(
                     },
                 };
                 let mime = a.mime.clone();
-                let (el, h) = media_card(MediaCardProps {
+                let props = MediaCardProps {
                     id: id.into(),
                     video,
                     name: name.clone().into(),
@@ -334,10 +334,13 @@ pub fn attachment_cards(
                             ui::save(c, k, cx)
                         }
                     })),
-                });
+                };
+                let width =
+                    dilla_desktop_ui::components::attachments::player::media_card_width(&props);
+                let (el, h) = media_card(props);
                 cards.push(Card {
                     element: Box::new(move |_| el),
-                    width: dilla_desktop_ui::components::attachments::player::MEDIA_W,
+                    width,
                     height: Some(h),
                 });
             }

@@ -25,6 +25,15 @@ const PAD_X: f32 = 12.0;
 const GAP: f32 = 6.0;
 /// The player's and save's buttons: `min-height: 2.5rem; padding: 0 0.875rem` (flow 06).
 const CONTROL_H: f32 = 40.0;
+const CONTROL_PAD_X: f32 = 14.0;
+/// Button.css `.d-btn__label { gap: 8px }` and `.d-media-player__glyph { margin-right: 0.5rem }`: the play glyph (14px)
+/// is 8 + 8 px before its label.
+const LABEL_GAP: f32 = 8.0;
+const GLYPH: f32 = 14.0;
+const GLYPH_MARGIN: f32 = 8.0;
+/// `.d-attachment-card__meta { gap: 0.5rem }`; the error line's glyph (14px) and its 6px.
+const META_GAP: f32 = 8.0;
+const ERROR_GAP: f32 = 6.0;
 /// The ready audio bar: Chromium's `<audio controls>` is 54px high on its 300px default width.
 const BAR_H: f32 = 54.0;
 const BAR_W: f32 = 186.0;
@@ -94,6 +103,50 @@ pub fn media_card_height(video: bool, state: PlayerState, save: bool) -> f32 {
     2.0 + 2.0 * PAD_Y + meta_h() + GAP + player_h(video, state) + save_h
 }
 
+/// A mono line's width as the web lays it out: the font's 0.6 em advance per character, ceiled onto Chromium's layout
+/// unit (as `text::Line` measures it, so a box this wide never cuts its text).
+fn mono_w(s: &str, size: gpui::Pixels) -> f32 {
+    let w = s.chars().count() as f32 * f32::from(size) * crate::text::MONO_ADVANCE;
+    (w * 64.0 - 1e-3).ceil() / 64.0
+}
+
+/// A control button's width: its edges, its padding, the glyph and its gaps, the label.
+fn control_w(label: &str, glyph: bool) -> f32 {
+    let glyph = if glyph {
+        GLYPH + GLYPH_MARGIN + LABEL_GAP
+    } else {
+        0.0
+    };
+    2.0 + 2.0 * CONTROL_PAD_X + glyph + mono_w(label, text::BTN)
+}
+
+/// The card's width: `.d-attachment-card__media` is `width: min(100%, 31.5rem)` in a row that sizes it to its content,
+/// so it fits its widest line (the meta, the player, save) inside its padding and edges, up to 31.5rem.
+pub fn media_card_width(p: &MediaCardProps) -> f32 {
+    let meta = mono_w(&p.name, text::SM) + META_GAP + mono_w(&p.size, text::XS);
+    let player = match (p.video, p.state) {
+        (true, PlayerState::Idle | PlayerState::Loading) => VIDEO_W,
+        (_, PlayerState::Idle) => control_w(&p.play_label, true),
+        (_, PlayerState::Loading) => mono_w(&p.loading_label, text::UI),
+        (_, PlayerState::Ready { .. }) => BAR_W,
+        (_, PlayerState::Error) => {
+            let line = GLYPH + ERROR_GAP + mono_w(&p.error_label, text::UI);
+            let save = if p.on_save.is_some() {
+                control_w(&p.save_text, false)
+            } else {
+                0.0
+            };
+            line.max(save)
+        }
+    };
+    let save = if p.on_save.is_some() && p.state != PlayerState::Error {
+        control_w(&p.save_text, false)
+    } else {
+        0.0
+    };
+    (meta.max(player).max(save) + 2.0 * PAD_X + 2.0).min(MEDIA_W)
+}
+
 fn control_button(id: SharedString, label: SharedString, glyph: bool, f: OnClick) -> AnyElement {
     let mut b = div()
         .id(gpui::ElementId::Name(id))
@@ -101,7 +154,7 @@ fn control_button(id: SharedString, label: SharedString, glyph: bool, f: OnClick
         .flex_none()
         .items_center()
         .h(px(CONTROL_H))
-        .px(px(14.0))
+        .px(px(CONTROL_PAD_X))
         .max_w_full()
         .border_1()
         .border_color(color::CONTROL_EDGE)
@@ -112,10 +165,11 @@ fn control_button(id: SharedString, label: SharedString, glyph: bool, f: OnClick
         .focus_visible(|s| s.shadow(focus_ring()))
         .on_click(move |e, w, cx| f(e, w, cx));
     if glyph {
+        // The glyph's own margin, then the label's gap before the text.
         b = b.child(
-            div().mr(px(8.0)).child(
+            div().mr(px(GLYPH_MARGIN + LABEL_GAP)).child(
                 Icon::new(IconName::Play)
-                    .size(px(14.0))
+                    .size(px(GLYPH))
                     .color(color::ACCENT),
             ),
         );
@@ -190,6 +244,7 @@ fn audio_bar(
 /// The media card and its height.
 pub fn media_card(p: MediaCardProps) -> (AnyElement, f32) {
     let h = media_card_height(p.video, p.state, p.on_save.is_some());
+    let w = media_card_width(&p);
     let ui_h = line_height(text::UI, LEADING);
     let player: AnyElement = match (p.video, p.state) {
         (true, PlayerState::Idle | PlayerState::Loading) => div()
@@ -257,7 +312,7 @@ pub fn media_card(p: MediaCardProps) -> (AnyElement, f32) {
         .flex_col()
         .items_start()
         .gap(px(GAP))
-        .w(px(MEDIA_W))
+        .w(px(w))
         .max_w_full()
         .h(px(h))
         .px(px(PAD_X))
@@ -295,6 +350,32 @@ mod tests {
     fn a_clock_is_minutes_and_two_digit_seconds() {
         assert_eq!(clock(Duration::from_secs(2)), "0:02");
         assert_eq!(clock(Duration::from_millis(125_900)), "2:05");
+    }
+
+    /// T28 parity residue: the card fits its widest line (the play button: edges 2, padding 28, glyph 14 + 8 + 8, then
+    /// "play bridge-shanty.wav" at 11.5px mono) inside its 24px padding and edges, as the web's fit-content card.
+    #[test]
+    fn an_audio_card_fits_its_play_button() {
+        let noop: OnClick = std::rc::Rc::new(|_, _, _| {});
+        let props = MediaCardProps {
+            id: "a".into(),
+            video: false,
+            name: "bridge-shanty.wav".into(),
+            size: "188 KB".into(),
+            state: PlayerState::Idle,
+            play_label: "play bridge-shanty.wav".into(),
+            loading_label: "loading".into(),
+            error_label: "error".into(),
+            save_text: "save".into(),
+            on_play: noop.clone(),
+            on_toggle: noop.clone(),
+            on_save: Some(noop),
+        };
+        // 22 characters at 6.9px: 151.8, ceiled onto the 1/64px layout unit.
+        let label = (22.0f32 * 11.5 * 0.6 * 64.0 - 1e-3).ceil() / 64.0;
+        let button = 2.0 + 28.0 + 14.0 + 8.0 + 8.0 + label;
+        assert!((media_card_width(&props) - (button + 24.0 + 2.0)).abs() < 1e-3);
+        assert!(media_card_width(&props) < MEDIA_W);
     }
 
     #[test]

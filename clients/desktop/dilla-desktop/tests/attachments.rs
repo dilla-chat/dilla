@@ -78,12 +78,12 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_attachments_cards => "cards", "parity after T6c: chrome 0.9573 % (the fixture pictures are 1px checkerboards: GPUI's cover-crop downscale filters them otherwise than Chromium's, so every tile differs over its whole area)";
-    parity_attachments_cards_b => "cards-b", "parity after T6c: chrome 7.0269 % (as cards, over nine tiles)";
+    parity_attachments_cards => "cards", "parity after T6c: chrome 0.7293 % (the tiles' band edges: GPUI crops a cover image in whole texels (Window::paint_image's sub-tile rounds its offset and size), so the 320x240 thumbnail in its 278x208 box is scaled a little otherwise than Chromium's, and it samples the upscale bilinearly where Skia filters bicubically; a renderer change across the platform crates)";
+    parity_attachments_cards_b => "cards-b", "parity after T6c: chrome 1.4499 % (as cards, over nine tiles, each cropped sideways)";
     parity_attachments_lightbox => "lightbox";
     parity_attachments_lightbox_b => "lightbox-b";
-    parity_attachments_media_player => "media-player", "parity after T6c: chrome 0.3849 % (the audio card is wider than AttachmentCard.css's, which fits its content, and its play button's label differs)";
-    parity_attachments_media_player_b => "media-player-b", "parity after T6c: whole frame 0.6066 % (as media-player)";
+    parity_attachments_media_player => "media-player";
+    parity_attachments_media_player_b => "media-player-b";
 }
 
 mod behaviour {

@@ -349,3 +349,37 @@ fn enter_on_a_member_row_leaves_its_card_open(cx: &mut TestAppContext) {
     press_and_release(vcx, "enter");
     assert!(!card.get(), "a second Enter closes it");
 }
+
+/// A box of 13px text at 1.5 that records the window's line height inside it.
+struct LineHeight {
+    seen: Rc<Cell<f32>>,
+}
+
+impl Render for LineHeight {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let seen = self.seen.clone();
+        div()
+            .size_full()
+            .text_size(px(13.0))
+            .line_height(gpui::relative(1.5))
+            .child(
+                gpui::canvas(
+                    move |_, window, _| seen.set(f32::from(window.line_height())),
+                    |_, _, _, _| {},
+                )
+                .size_full(),
+            )
+    }
+}
+
+/// Task 28 wave 2 (the bio textarea's residue): at a whole scale the window's line height lies on Chromium's layout unit,
+/// so gpui-component's textarea lays 13px lines at 1.5 19.5px apart as the web's `<textarea>` does (upstream: 20).
+#[gpui::test]
+fn the_line_height_lies_on_the_layout_unit(cx: &mut TestAppContext) {
+    let seen = Rc::new(Cell::new(0.0));
+    let s = seen.clone();
+    let (_, vcx) = cx.add_window_view(move |_, _| LineHeight { seen: s });
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert_eq!(seen.get(), 19.5);
+}

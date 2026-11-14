@@ -102,21 +102,23 @@ pub struct Extra {
 }
 
 /// Under a message's body (after its attachments slot): the attachments (12), the poll card (20), the reactions (10),
-/// the thread count (11), in this order, each [`EXTRA_GAP`] below what is above it. Answers the stack and its height (the sum of the parts';
-/// 0 when every guest has nothing), which the timeline adds to the row's height.
+/// the thread count (11), in this order, each [`EXTRA_GAP`] below what is above it, but the attachments, which are the
+/// slot's content (MessageRow.tsx `.d-message-row__attachments`: the timeline's slot already holds its grid gap and
+/// margin). Answers the stack and its height (the sum of the parts'; 0 when every guest has nothing), which the timeline
+/// adds to the row's height.
 pub fn message_extras(
     item: &TimelineItem,
     ctx: &SlotCx,
     window: &mut Window,
     cx: &mut App,
 ) -> (AnyElement, f32) {
+    let slot = attachments::attachment_cards(item, ctx, window, cx);
     let parts = [
-        attachments::attachment_cards(item, ctx, window, cx),
         commands::poll_card(item, ctx, window, cx),
         reactions::reaction_bar(item, ctx, window, cx),
         threads::thread_count(item, ctx, window, cx),
     ];
-    stack(parts.into_iter().flatten())
+    stack_after(slot, parts.into_iter().flatten())
 }
 
 /// Above a message's head (the row's grid `order: -1`): the reply line (11). The timeline moves the head, the body and
@@ -138,12 +140,28 @@ pub const EXTRA_GAP: f32 = 1.0;
 /// other), and the total height. A part with no height (a popover anchored to the row, such as the emoji picker on a
 /// message with no reactions) is no row of the web's grid, so it takes no gap.
 pub fn stack(parts: impl IntoIterator<Item = Extra>) -> (AnyElement, f32) {
+    stack_after(None, parts)
+}
+
+/// [`stack`] after `slot`, a part drawn in the attachments slot itself (no gap of its own).
+pub fn stack_after(
+    slot: Option<Extra>,
+    parts: impl IntoIterator<Item = Extra>,
+) -> (AnyElement, f32) {
     let mut height = 0.0;
+    let parts = slot
+        .map(|s| (s, false))
+        .into_iter()
+        .chain(parts.into_iter().map(|p| (p, true)));
     let column = div()
         .flex()
         .flex_col()
-        .children(parts.into_iter().map(|part| {
-            let gap = if part.height > 0.0 { EXTRA_GAP } else { 0.0 };
+        .children(parts.map(|(part, gapped)| {
+            let gap = if gapped && part.height > 0.0 {
+                EXTRA_GAP
+            } else {
+                0.0
+            };
             height += gap + part.height;
             div()
                 .flex_none()
@@ -314,7 +332,7 @@ pub fn settings_sections() -> Vec<SettingsSection> {
 mod tests {
     use gpui::{IntoElement, div};
 
-    use super::{EXTRA_GAP, Extra, stack};
+    use super::{EXTRA_GAP, Extra, stack, stack_after};
 
     fn part(height: f32) -> Extra {
         Extra {
@@ -331,6 +349,17 @@ mod tests {
         assert_eq!(
             stack([part(28.0), part(0.0), part(24.0)]).1,
             28.0 + 24.0 + 2.0 * EXTRA_GAP
+        );
+    }
+
+    /// The attachments are the slot's content (its gap and margin are the timeline's slot): they take no gap, the parts
+    /// after them do.
+    #[test]
+    fn the_attachments_take_no_gap_of_their_own() {
+        assert_eq!(stack_after(Some(part(128.75)), []).1, 128.75);
+        assert_eq!(
+            stack_after(Some(part(100.0)), [part(28.0)]).1,
+            100.0 + 28.0 + EXTRA_GAP
         );
     }
 }
