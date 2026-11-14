@@ -511,3 +511,79 @@ fn the_scene_carries_the_scale_it_was_painted_at(cx: &mut TestAppContext) {
     assert!(scale > 0.0);
     assert_eq!(painted, scale);
 }
+
+/// A focusable box with a click that handles Escape on key-down itself (stopping propagation, as a dialog's or a
+/// popover's own Escape does).
+struct EscapeGuard {
+    clicks: Rc<Cell<u32>>,
+    escapes: Rc<Cell<u32>>,
+    focus: gpui::FocusHandle,
+}
+
+impl Render for EscapeGuard {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui::InteractiveElement as _;
+        use gpui::StatefulInteractiveElement as _;
+        let (clicks, escapes) = (self.clicks.clone(), self.escapes.clone());
+        div().size_full().child(
+            div()
+                .id("guard")
+                .size(px(20.0))
+                .track_focus(&self.focus)
+                .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+                .on_key_down(move |e: &gpui::KeyDownEvent, _, cx| {
+                    if e.keystroke.key == "escape" {
+                        escapes.set(escapes.get() + 1);
+                        cx.stop_propagation();
+                    }
+                }),
+        )
+    }
+}
+
+/// Final review M2: a key-down between an activation key's down and up cancels the activation, as upstream's and a
+/// browser's do, even when the element handles that key-down itself: Space down, Escape down (handled, propagation
+/// stopped), Space up (Escape still held) clicks nothing. Space down and up alone still clicks.
+#[gpui::test]
+fn a_handled_key_down_between_cancels_an_armed_activation(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let escapes = Rc::new(Cell::new(0));
+    let (c, e) = (clicks.clone(), escapes.clone());
+    let (view, vcx) = cx.add_window_view(move |_, cx| EscapeGuard {
+        clicks: c,
+        escapes: e,
+        focus: cx.focus_handle(),
+    });
+    vcx.update(|window, cx| {
+        let focus = view.read(cx).focus.clone();
+        window.focus(&focus, cx);
+    });
+    vcx.run_until_parked();
+    let down = |vcx: &mut gpui::VisualTestContext, key: &'static str| {
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        vcx.run_until_parked();
+    };
+    let up = |vcx: &mut gpui::VisualTestContext, key: &'static str| {
+        vcx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+        });
+        vcx.run_until_parked();
+    };
+    // Escape is still held when Space comes up (a key-up of another key cancels on its own).
+    down(vcx, "space");
+    down(vcx, "escape");
+    up(vcx, "space");
+    up(vcx, "escape");
+    assert_eq!(escapes.get(), 1, "the element handled Escape");
+    assert_eq!(
+        clicks.get(),
+        0,
+        "and the Space it interrupted did not click"
+    );
+    press_and_release(vcx, "space");
+    assert_eq!(clicks.get(), 1, "Space alone still clicks");
+}

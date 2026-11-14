@@ -3090,8 +3090,19 @@ impl Interactivity {
                     // This design avoids an ABA problem that happens if you
                     // store the focus handle that registered the keypress.
                     //
-                    // DILLA PATCH: the recorder is registered in `paint_keyboard_listeners`, after the element's own
-                    // key-down listeners (see `pending_activation_recorder`).
+                    // DILLA PATCH: the recorder that arms is registered in `paint_keyboard_listeners`, after the
+                    // element's own key-down listeners (see `pending_activation_recorder`). Upstream's place keeps the
+                    // half that disarms (final review M2): every key-down that reaches the element first clears an
+                    // armed activation, so a key the element then handles itself (Escape between Space's down and up)
+                    // still cancels it, as upstream's and a browser's do.
+                    window.on_key_event({
+                        let pending_keyboard_down = pending_keyboard_down.clone();
+                        move |_: &KeyDownEvent, phase, _window, _cx| {
+                            if phase.bubble() {
+                                *pending_keyboard_down.borrow_mut() = None;
+                            }
+                        }
+                    });
                     self.pending_activation_recorder = Some(pending_keyboard_down.clone());
 
                     // Press enter, space to trigger click, when the element is focused.
