@@ -428,6 +428,15 @@ impl Composer {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // w2 I-B1: a member chip naming nobody (a display name typed, no member picked) runs nothing; its list shows.
+        if crate::screens::commands::chips::hold_unnamed_member(
+            &self.slots,
+            window.window_handle().window_id(),
+            cx,
+        ) {
+            window.refresh();
+            return;
+        }
         // Task 28 follow-up 14: with a command picked, the chips' typed form is what is sent.
         let chips = crate::screens::commands::chips::draft(
             &self.slots,

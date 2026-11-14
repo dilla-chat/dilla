@@ -230,20 +230,18 @@ pub fn offered(
     listed: &[(String, Entry)],
     preview: &dyn Fn(&str) -> Option<String>,
 ) -> Offered {
-    offered_with(definition, option, text, listed, &[], preview)
+    offered_with(definition, option, text, listed, &[], false, preview)
 }
 
-/// The members a member field offers for `query` (CommandHost.tsx `suggest` for a `user` option): the community's people
-/// but this account and the Bot, matching the id, the name or the username; for `/kick` and `/ban` only those this
-/// account may moderate (`eligibleModerationTarget`). Each value is the member's user id, its label the name and its
-/// second line the `@username`. Nothing outside a community, and nothing for `/unban` (its banned members are not
-/// ported yet).
-pub fn member_suggestions(
-    state: &AppState,
+/// The members a member field may name (CommandHost.tsx `suggest` for a `user` option): the community's people but this
+/// account and the Bot, and for `/kick` and `/ban` only those this account may moderate (`eligibleModerationTarget`).
+/// All of them, never a truncated list. Nothing outside a community, and nothing for `/unban` (its banned members are
+/// not ported yet).
+fn eligible_members<'a>(
+    state: &'a AppState,
     community: Option<CommunityId>,
     command: &str,
-    query: &str,
-) -> Vec<Suggestion> {
+) -> Vec<&'a dilla_client::state::members::Member> {
     use dilla_client::features::bot::moderation_target;
     let Some(community) = community.filter(|_| command != "unban") else {
         return Vec::new();
@@ -252,11 +250,30 @@ pub fn member_suggestions(
         return Vec::new();
     };
     let me = state.account.user_id;
-    let needle = query.to_lowercase();
-    let needle = needle.trim_start_matches('@');
     members
         .iter()
         .filter(|m| Some(m.user_id) != me && m.kind != 1)
+        .filter(|m| match command {
+            "kick" | "ban" => {
+                moderation_target(state, community, &m.user_id.hex(), command == "kick").is_some()
+            }
+            _ => true,
+        })
+        .collect()
+}
+
+/// The members a member field offers for `query` ([`eligible_members`] matching the id, the name or the username, at
+/// most 20). Each value is the member's user id, its label the name and its second line the `@username`.
+pub fn member_suggestions(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command: &str,
+    query: &str,
+) -> Vec<Suggestion> {
+    let needle = query.to_lowercase();
+    let needle = needle.trim_start_matches('@');
+    eligible_members(state, community, command)
+        .into_iter()
         .filter(|m| {
             let name = if m.display.is_empty() {
                 &m.username
@@ -266,12 +283,6 @@ pub fn member_suggestions(
             m.user_id.hex() == query
                 || name.to_lowercase().contains(needle)
                 || m.username.to_lowercase().contains(needle)
-        })
-        .filter(|m| match command {
-            "kick" | "ban" => {
-                moderation_target(state, community, &m.user_id.hex(), command == "kick").is_some()
-            }
-            _ => true,
         })
         .take(20)
         .map(|m| Suggestion {
@@ -287,35 +298,39 @@ pub fn member_suggestions(
         .collect()
 }
 
-/// CommandPicker.tsx: the member a member field's typed `text` names when none was picked: the one whose id it is,
-/// else the only one whose name or `@username` it is. Two members called the same: none, so the person picks one.
-pub fn resolve_member(suggestions: &[Suggestion], text: &str) -> Option<String> {
+/// The member a member field's typed `text` names when none was picked: a literal user id, or an `@username`, each
+/// unique by definition, among all [`eligible_members`]. A display name is never resolved, not even one that looks
+/// unique (w2-bot-review I-B1 and the coordinator's ruling, as the web): the person picks a member from the list.
+pub fn resolve_member(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command: &str,
+    text: &str,
+) -> Option<String> {
     let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    if let Some(s) = suggestions.iter().find(|s| s.value == text) {
-        return Some(s.value.clone());
-    }
-    let lower = text.to_lowercase();
-    let lower = lower.trim_start_matches('@');
-    let at = format!("@{lower}");
-    let mut by_label = suggestions
+    let username = text.strip_prefix('@').map(str::to_lowercase);
+    let eligible = eligible_members(state, community, command);
+    eligible
         .iter()
-        .filter(|s| s.label.to_lowercase() == lower || s.sub.to_lowercase() == at);
-    match (by_label.next(), by_label.next()) {
-        (Some(s), None) => Some(s.value.clone()),
-        _ => None,
-    }
+        .find(|m| m.user_id.hex() == text)
+        .or_else(|| {
+            let username = username.as_deref().filter(|u| !u.is_empty())?;
+            eligible
+                .iter()
+                .find(|m| m.username.to_lowercase() == username)
+        })
+        .map(|m| m.user_id.hex())
 }
 
-/// [`offered`], with the members a member field offers ([`member_suggestions`]).
+/// [`offered`], with the members a member field offers ([`member_suggestions`]) and whether its member was `picked`:
+/// only a pick is an exact match there (a typed name never is, so Tab or Enter picks from the list).
 pub fn offered_with(
     definition: &CommandDefinition,
     option: &CommandOption,
     text: &str,
     listed: &[(String, Entry)],
     members: &[Suggestion],
+    picked: bool,
     preview: &dyn Fn(&str) -> Option<String>,
 ) -> Offered {
     let kind = suggest_for(definition, option);
@@ -372,9 +387,13 @@ pub fn offered_with(
     };
     let items: Vec<Suggestion> = items.into_iter().take(MAX_SUGGESTIONS).collect();
     let typed = text.to_lowercase();
-    let exact = items
-        .iter()
-        .any(|s| s.label.to_lowercase() == typed || s.value.to_lowercase() == typed);
+    let exact = if kind == Suggest::Member {
+        picked
+    } else {
+        items
+            .iter()
+            .any(|s| s.label.to_lowercase() == typed || s.value.to_lowercase() == typed)
+    };
     let can_accept = !items.is_empty() && !exact && !text.is_empty();
     let no_accept =
         kind == Suggest::None || definition.id == "play" || option.kind == ArgKind::Number;
@@ -621,12 +640,7 @@ fn zone_name() -> String {
 pub fn draft(ctx: &SlotCx, window: gpui::WindowId, cx: &App) -> Option<String> {
     let chips = super::picker_state(window, cx).chips?;
     let definition = definition(&ctx.state, ctx.community, &chips.command)?;
-    let member = |text: &str| {
-        resolve_member(
-            &member_suggestions(&ctx.state, ctx.community, &chips.command, text),
-            text,
-        )
-    };
+    let member = |text: &str| resolve_member(&ctx.state, ctx.community, &chips.command, text);
     Some(typed(
         &definition,
         &chips.values,
@@ -692,8 +706,52 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         &text,
         &listed,
         &members,
+        chips
+            .picked
+            .get(chips.active.min(last))
+            .is_some_and(Option::is_some),
         &preview,
     ))
+}
+
+/// The first member field of `chips` that names nobody: typed, no member picked, and not a user id or `@username`
+/// ([`resolve_member`]).
+pub fn unnamed_member(
+    state: &AppState,
+    community: Option<CommunityId>,
+    definition: &CommandDefinition,
+    chips: &Chips,
+) -> Option<usize> {
+    definition
+        .options
+        .iter()
+        .enumerate()
+        .position(|(i, option)| {
+            let text = chips.values.get(i).map_or("", String::as_str);
+            suggest_for(definition, option) == Suggest::Member
+                && !text.trim().is_empty()
+                && chips.picked.get(i).is_none_or(Option::is_none)
+                && resolve_member(state, community, &chips.command, text).is_none()
+        })
+}
+
+/// Enter while `window`'s chips hold a member field that names nobody (a display name typed, no member picked): nothing
+/// runs; that field becomes the active one, so its members are listed to pick from (coordinator's ruling on I-B1, as the
+/// web's "No member called …"). `true`: held.
+pub fn hold_unnamed_member(ctx: &SlotCx, window: gpui::WindowId, cx: &mut App) -> bool {
+    let Some(chips) = super::picker_state(window, cx).chips else {
+        return false;
+    };
+    let Some(definition) = definition(&ctx.state, ctx.community, &chips.command) else {
+        return false;
+    };
+    let Some(i) = unnamed_member(&ctx.state, ctx.community, &definition, &chips) else {
+        return false;
+    };
+    if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
+        c.active = i;
+    }
+    true
 }
 
 /// The automation ids of the suggestion rows (at most [`MAX_SUGGESTIONS`]).
@@ -1049,27 +1107,114 @@ mod tests {
             "",
             &[],
             &all,
+            false,
             &|_| None,
         );
         assert_eq!(o.title, "Members");
         assert_eq!(labels(&o), ["Alex", "Alex", "bea"]);
+        let user = option("user", ArgKind::User, None);
+        let typed_name = offered_with(
+            &command("kick", vec![]),
+            &user,
+            "bea",
+            &[],
+            &all,
+            false,
+            &|_| None,
+        );
+        assert!(
+            typed_name.can_accept,
+            "a typed name is never exact: Tab or Enter picks from the list"
+        );
+        let picked = offered_with(
+            &command("kick", vec![]),
+            &user,
+            "bea",
+            &[],
+            &all,
+            true,
+            &|_| None,
+        );
+        assert!(!picked.can_accept, "a pick is: Enter runs");
     }
 
-    /// w2-bot-review I-B1: a typed name resolves only when one member has it; two Alexes resolve to nobody (the person
-    /// picks one), and `@troll` or an id names exactly one.
+    /// w2-bot-review I-B1, coordinator's ruling: only a literal user id or an `@username` names a member; a display name
+    /// never does, not even one only one member seems to have.
     #[test]
-    fn a_typed_name_resolves_only_when_one_member_has_it() {
+    fn only_an_id_or_username_names_a_member() {
         let (s, c) = alexes();
-        let resolve =
-            |text: &str| resolve_member(&member_suggestions(&s, Some(c), "ban", text), text);
+        let resolve = |text: &str| resolve_member(&s, Some(c), "ban", text);
         let id = |n: u8| dilla_client::state::UserId([n; 16]).hex();
-        assert_eq!(resolve("Alex"), None, "two members are called Alex");
+        assert_eq!(resolve("Alex"), None, "a display name");
         assert_eq!(resolve("@troll"), Some(id(3)));
-        assert_eq!(resolve("troll"), Some(id(3)));
-        assert_eq!(resolve("BEA"), Some(id(4)));
+        assert_eq!(resolve("@TROLL"), Some(id(3)));
+        assert_eq!(resolve("troll"), None, "without @ it could be a name");
+        assert_eq!(resolve("bea"), None);
         assert_eq!(resolve(&id(2)), Some(id(2)));
-        assert_eq!(resolve("glenn"), None, "the Bot");
+        assert_eq!(resolve("@glenn"), None, "the Bot");
+        assert_eq!(resolve("@ada"), None, "oneself");
         assert_eq!(resolve(""), None);
+        assert_eq!(resolve("@"), None);
+    }
+
+    /// The coordinator's ruling: two members share a display name, one of them ranked past the 20 suggestions; typing
+    /// that name names neither, and the chips hold Enter on that field.
+    #[test]
+    fn a_shared_name_past_the_suggestion_cut_names_neither() {
+        use dilla_client::state::UserId;
+        use dilla_client::state::members::Member;
+        let (mut s, c) = alexes();
+        let rows = s.members.get_mut(&c).unwrap();
+        rows.retain(|m| m.username != "troll" && m.username != "alex");
+        rows.push(Member {
+            user_id: UserId([0x20; 16]),
+            username: "sam".into(),
+            display: "Sam".into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        });
+        for n in 0..25u8 {
+            rows.push(Member {
+                user_id: UserId([0x40 + n; 16]),
+                username: format!("samfan{n}"),
+                display: format!("Samfan {n}"),
+                kind: 0,
+                role_ids: Vec::new(),
+                status_msg: String::new(),
+                bio: String::new(),
+            });
+        }
+        rows.push(Member {
+            user_id: UserId([0x7f; 16]),
+            username: "impostor".into(),
+            display: "Sam".into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        });
+        let listed = member_suggestions(&s, Some(c), "ban", "Sam");
+        assert_eq!(listed.len(), 20);
+        assert!(
+            !listed.iter().any(|m| m.sub == "@impostor"),
+            "the second Sam is past the cut"
+        );
+        assert_eq!(resolve_member(&s, Some(c), "ban", "Sam"), None);
+        assert_eq!(
+            resolve_member(&s, Some(c), "ban", "@impostor"),
+            Some(UserId([0x7f; 16]).hex())
+        );
+        let ban = command("ban", vec![option("user", ArgKind::User, None)]);
+        let mut chips = Chips::new("ban".into());
+        chips.values = vec!["Sam".into()];
+        assert_eq!(unnamed_member(&s, Some(c), &ban, &chips), Some(0));
+        chips.values = vec!["@sam".into()];
+        assert_eq!(unnamed_member(&s, Some(c), &ban, &chips), None);
+        chips.values = vec!["Sam".into()];
+        chips.picked = vec![Some(UserId([0x20; 16]).hex())];
+        assert_eq!(unnamed_member(&s, Some(c), &ban, &chips), None, "picked");
     }
 
     /// w2-bot-review I-B1: picking a member puts their name in the chip and keeps their id, which the typed form sends;
@@ -1088,8 +1233,7 @@ mod tests {
         assert_eq!(chips.values, ["Alex"]);
         let troll = dilla_client::state::UserId([3; 16]).hex();
         assert_eq!(chips.picked, [Some(troll.clone())]);
-        let member =
-            |text: &str| resolve_member(&member_suggestions(&s, Some(c), "kick", text), text);
+        let member = |text: &str| resolve_member(&s, Some(c), "kick", text);
         assert_eq!(
             typed(&kick, &chips.values, &chips.picked, &member, 0, &utc),
             format!("/kick user:\"{troll}\"")
