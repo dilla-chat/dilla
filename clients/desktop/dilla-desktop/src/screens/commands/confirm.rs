@@ -92,8 +92,9 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
         ModAction::Ban {
             duration, reason, ..
         } => (
-            copy::ban_body(&m.name, duration),
-            duration.clone(),
+            // CommandHost.tsx: the length as the chips suggested it (`1d` is "1 day").
+            copy::ban_body(&m.name, &super::chips::suggestion_of(duration)),
+            super::chips::suggestion_of(duration),
             Some(if reason.is_empty() {
                 copy::NO_REASON.to_owned()
             } else {

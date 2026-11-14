@@ -492,6 +492,44 @@ pub fn registry_when(text: &str, now: i64, offset_at: &dyn Fn(i64) -> i32) -> Op
     None
 }
 
+/// picker-catalog.ts `registryDuration`: the registry's form of a typed duration (`1 day` is `1d`, `1h30m` stays), or
+/// `None` for one it does not read (w2-bot-review I-C2: the chips' "1 day" made a command that never ran).
+pub fn registry_duration(value: &str) -> Option<String> {
+    let text = value.trim().to_lowercase();
+    if is_short_duration(&text) {
+        return Some(text);
+    }
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let (n, unit) = text.split_at(digits);
+    const UNITS: [&str; 18] = [
+        "second", "seconds", "sec", "secs", "minute", "minutes", "min", "mins", "hour", "hours",
+        "hr", "hrs", "day", "days", "week", "weeks", "wk", "wks",
+    ];
+    let unit = unit.trim_start();
+    if !UNITS.contains(&unit) {
+        return None;
+    }
+    let letter = match unit.as_bytes()[0] {
+        b's' => 's',
+        b'm' => 'm',
+        b'h' => 'h',
+        b'd' => 'd',
+        _ => 'w',
+    };
+    Some(format!("{n}{letter}"))
+}
+
+/// CommandHost.tsx: the duration a dialog shows for a registry `value`, as the chips suggested it (`1d` is "1 day").
+pub fn suggestion_of(value: &str) -> String {
+    DURATION_SUGGESTIONS
+        .iter()
+        .find(|s| registry_duration(s).as_deref() == Some(value))
+        .map_or_else(|| value.to_owned(), |s| (*s).to_owned())
+}
+
 /// `(?:\d+(?:\.\d+)?(?:ms|s|m|h|d|w))+`.
 fn is_short_duration(s: &str) -> bool {
     let b = s.as_bytes();
@@ -590,6 +628,13 @@ pub fn typed(
         }
         let value = if option.kind == ArgKind::Time && definition.id == "remind" {
             registry_when(value, now, offset_at).unwrap_or_else(|| value.clone())
+        } else if suggest_for(definition, option) == Suggest::Duration {
+            // CommandPicker.tsx `validate`: `/ban`'s "permanent" as is, else `registryDuration(text) ?? text`.
+            if definition.id == "ban" && value.trim().eq_ignore_ascii_case(PERMANENT) {
+                PERMANENT.to_owned()
+            } else {
+                registry_duration(value).unwrap_or_else(|| value.clone())
+            }
         } else if suggest_for(definition, option) == Suggest::Member {
             picked
                 .get(i)
@@ -1155,6 +1200,60 @@ mod tests {
         assert_eq!(resolve("@ada"), None, "oneself");
         assert_eq!(resolve(""), None);
         assert_eq!(resolve("@"), None);
+    }
+
+    /// w2-bot-review I-C2: picker-catalog.ts `registryDuration`, the registry's form of a typed duration.
+    #[test]
+    fn spoken_durations_take_the_registry_form() {
+        assert_eq!(registry_duration("1 day").as_deref(), Some("1d"));
+        assert_eq!(registry_duration("10 Minutes").as_deref(), Some("10m"));
+        assert_eq!(registry_duration("7 days").as_deref(), Some("7d"));
+        assert_eq!(registry_duration("1 hour").as_deref(), Some("1h"));
+        assert_eq!(registry_duration("2 wks").as_deref(), Some("2w"));
+        assert_eq!(registry_duration("30 secs").as_deref(), Some("30s"));
+        assert_eq!(registry_duration("1h30m").as_deref(), Some("1h30m"));
+        assert_eq!(registry_duration("soon"), None);
+        assert_eq!(registry_duration("1 fortnight"), None);
+        assert_eq!(suggestion_of("1d"), "1 day");
+        assert_eq!(suggestion_of("3d"), "3d");
+    }
+
+    /// w2-bot-review I-C2: every duration the chips suggest, picked for `/ban`, makes a command that runs (the
+    /// moderation dialog), with the length in the registry's form; "permanent" stays.
+    #[test]
+    fn ban_runs_with_each_suggested_duration() {
+        use dilla_client::features::bot::{ModAction, Plan, plan};
+        let (s, c) = alexes();
+        let ban = definition(&s, Some(c), "ban").expect("/ban is offered to its owner");
+        let bea = dilla_client::state::UserId([4; 16]).hex();
+        let user = ban.options.iter().position(|o| o.name == "user").unwrap();
+        let duration = ban
+            .options
+            .iter()
+            .position(|o| o.name == "duration")
+            .unwrap();
+        let nobody = |_: &str| None;
+        for (picked, want) in DURATION_SUGGESTIONS
+            .iter()
+            .zip(["10m", "1h", "1d", "7d"])
+            .chain([(&PERMANENT, "permanent")])
+        {
+            let mut values = vec![String::new(); ban.options.len()];
+            values[user] = bea.clone();
+            values[duration] = (*picked).to_owned();
+            let draft = typed(&ban, &values, &[], &nobody, 0, &utc);
+            match plan(&s, Some(c), &draft) {
+                // "10 minutes" is shorter than a ban may be: refused, but by the ban's own rule, not as incomplete.
+                Plan::Private(_, text, _) if want == "10m" => {
+                    assert_eq!(text, "Ban duration must be from 1h to 100y.", "{draft}")
+                }
+                Plan::Moderate(m) => match m.action {
+                    ModAction::Ban { duration, .. } => assert_eq!(duration, want, "{draft}"),
+                    other => panic!("{other:?}"),
+                },
+                other => panic!("{draft}: {other:?}"),
+            }
+        }
     }
 
     /// The coordinator's ruling: two members share a display name, one of them ranked past the 20 suggestions; typing
