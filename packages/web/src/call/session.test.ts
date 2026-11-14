@@ -790,7 +790,7 @@ describe('the page call session (L-WEB-50)', () => {
   // chip say "— ms" in a reference shot, and no RTT is reported.
   it('lane P: a join marked as a parity fixture reads no link and reports no RTT', async () => {
     const f = fakes({ parityFixture: true });
-    const pc = f.room.engine.pcManager as unknown as { publisher: { getStats: () => Promise<Map<string, unknown>> } };
+    const pc = f.room.engine.pcManager;
     let reads = 0;
     pc.publisher.getStats = () => { reads += 1; return Promise.resolve(new Map<string, unknown>()); };
     const call = await start(f);
