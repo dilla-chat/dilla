@@ -74,7 +74,7 @@ pub enum CardStatus {
 /// A media card's player (Attachments.tsx `playState` and the media element).
 pub enum Player {
     Loading,
-    Ready(Playback),
+    Ready(Box<Playback>), // boxed: a Windows Playback is 240+ bytes (clippy large_enum_variant)
     Error,
 }
 
@@ -827,7 +827,7 @@ pub fn play_from(
                         .map(|d| Box::new(d) as Box<dyn MediaDecoder>)
                         .and_then(Playback::start)
                     {
-                        Ok(p) => Some(Player::Ready(p)),
+                        Ok(p) => Some(Player::Ready(Box::new(p))),
                         Err(_) => Some(Player::Error),
                     },
                 },
