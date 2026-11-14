@@ -104,10 +104,9 @@ impl UserSettings {
         } else if display_error {
             display = display.error(t("profile.error.display"));
         }
-        let mut status =
-            TextField::new("profile-status", t("profile.status.label"), &self.status)
-                .frame(input)
-                .text_overlay(typed_line(&self.status.read(cx).value()));
+        let mut status = TextField::new("profile-status", t("profile.status.label"), &self.status)
+            .frame(input)
+            .text_overlay(typed_line(&self.status.read(cx).value()));
         if let Some(text) = problem(e.problem_status) {
             status = status.error(text);
         }

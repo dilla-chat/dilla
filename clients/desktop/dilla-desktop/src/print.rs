@@ -276,8 +276,8 @@ mod mac {
     use std::ffi::c_void;
     use std::ptr::NonNull;
 
-    use objc2::{AnyThread as _, MainThreadMarker};
     use objc2::rc::autoreleasepool;
+    use objc2::{AnyThread as _, MainThreadMarker};
     use objc2_app_kit::{
         NSImage, NSImageView, NSPrintInfo, NSPrintOperation, NSPrintingPaginationMode,
     };
@@ -299,8 +299,9 @@ mod mac {
             // first); `freeWhenDone: false` leaves the buffer to its zeroizing owner.
             let data =
                 unsafe { NSData::dataWithBytesNoCopy_length_freeWhenDone(bytes, pdf.len(), false) };
-            let image = NSImage::initWithData(NSImage::alloc(), &data)
-                .ok_or_else(|| PrintError::Failed("the document is not a PDF AppKit reads".into()))?;
+            let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or_else(|| {
+                PrintError::Failed("the document is not a PDF AppKit reads".into())
+            })?;
             let page = NSRect::new(
                 NSPoint::new(0.0, 0.0),
                 NSSize::new(f64::from(PAGE_W), f64::from(PAGE_H)),
@@ -345,6 +346,7 @@ mod win {
     use std::mem::{size_of, zeroed};
     use std::ptr::null;
 
+    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::Graphics::Gdi::{
         CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DEFAULT_QUALITY, DeleteDC, DeleteObject,
         FF_MODERN, FF_SWISS, FIXED_PITCH, FW_BOLD, FW_NORMAL, GetDeviceCaps, HDC, LOGPIXELSX,
@@ -352,7 +354,6 @@ mod win {
         SetTextAlign, TA_BASELINE, TA_LEFT, TRANSPARENT, TextOutW, VARIABLE_PITCH,
     };
     use windows_sys::Win32::Storage::Xps::{DOCINFOW, EndDoc, EndPage, StartDocW, StartPage};
-    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::UI::Controls::Dialogs::{
         CommDlgExtendedError, PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC, PRINTDLGW, PrintDlgW,
     };
@@ -539,7 +540,9 @@ fn unescape(s: &[u8]) -> Zeroizing<String> {
         if b == b'\\' && i + 1 < s.len() {
             let octal = &s[i + 1..(i + 4).min(s.len())];
             if octal.len() == 3 && octal.iter().all(|d| (b'0'..=b'7').contains(d)) {
-                b = octal.iter().fold(0u8, |n, d| n.wrapping_mul(8) + (d - b'0'));
+                b = octal
+                    .iter()
+                    .fold(0u8, |n, d| n.wrapping_mul(8) + (d - b'0'));
                 i += 3;
             } else {
                 b = s[i + 1];
@@ -569,17 +572,28 @@ mod tests {
     /// copy, and every code numbered in Courier, top to bottom; escapes and WinAnsi quotes come back as written.
     #[test]
     fn the_runs_read_back_the_document() {
-        let doc = codes_pdf("Your (backup) codes", "Keep them – they’re yours.", "Backup codes", &codes());
+        let doc = codes_pdf(
+            "Your (backup) codes",
+            "Keep them – they’re yours.",
+            "Backup codes",
+            &codes(),
+        );
         let runs = runs(&doc);
         assert_eq!(runs[0].text.as_str(), "Your (backup) codes");
-        assert_eq!((runs[0].font, runs[0].size, runs[0].x), (2, TITLE_PT, MARGIN));
+        assert_eq!(
+            (runs[0].font, runs[0].size, runs[0].x),
+            (2, TITLE_PT, MARGIN)
+        );
         assert_eq!(runs[1].text.as_str(), "Keep them – they’re yours.");
         let coded: Vec<&Run> = runs.iter().filter(|r| r.font == 3).collect();
         assert_eq!(coded.len(), 10);
         for (i, (run, code)) in coded.iter().zip(codes()).enumerate() {
             assert_eq!(run.text.as_str(), format!("{:>2}. {code}", i + 1));
         }
-        assert!(runs.windows(2).all(|w| w[1].y < w[0].y), "each run below the one before");
+        assert!(
+            runs.windows(2).all(|w| w[1].y < w[0].y),
+            "each run below the one before"
+        );
     }
 
     fn codes() -> Vec<String> {

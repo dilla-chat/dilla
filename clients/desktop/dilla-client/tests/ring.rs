@@ -1124,7 +1124,10 @@ async fn an_unanswered_outgoing_ring_expires_after_30_s() {
         "not before 30 s ({:?})",
         started.elapsed()
     );
-    assert_eq!(s.ring.outgoing.as_ref().unwrap().ringing, vec![p.peer_user()]);
+    assert_eq!(
+        s.ring.outgoing.as_ref().unwrap().ringing,
+        vec![p.peer_user()]
+    );
     p.client
         .calls()
         .leave(joined.group_id, joined.started.call_id, true)
