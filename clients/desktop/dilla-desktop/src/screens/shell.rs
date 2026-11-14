@@ -563,6 +563,24 @@ impl ShellView {
                 }
                 None => false,
             },
+            // A setting's result opens its section (search-settings.spec.ts): the app's settings host over the shell.
+            Navigate::Settings(section) => {
+                self.navigate(Route::Settings(Some(section)), cx);
+                true
+            }
+            Navigate::ServerSettings { community, section } => {
+                if !self.state.communities.iter().any(|c| c.id == community) {
+                    return false;
+                }
+                self.navigate(
+                    Route::ServerSettings {
+                        community,
+                        section: Some(section),
+                    },
+                    cx,
+                );
+                true
+            }
             _ => false,
         }
     }
