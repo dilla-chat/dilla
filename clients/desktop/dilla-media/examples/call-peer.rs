@@ -192,6 +192,10 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // This peer is a measurement tool: it records the audio edges from the moment it connects, so `edges` before any
+    // `listen` answers the changes since the join (a late joiner's first audio). The app's calls record none until a
+    // measurement clears them (`Call::clear_audio_edges`, w2-bot-review M-C4).
+    call.clear_audio_edges();
     emit(json!({"event": "connected", "identity": call.identity()}));
 
     // The room's end on its own (a voice takeover's removal, the room closed) is passed on once, as
