@@ -396,8 +396,17 @@ impl Api {
             };
             if error.status == 401 && auth && !reauthenticated {
                 reauthenticated = true;
-                if self.establish().await.is_ok() && attempt < RETRY_MAX_ATTEMPTS {
-                    continue;
+                if self.establish().await.is_ok() {
+                    // Review HL m2: held to the pin before anything more goes out over it, as the gateway's connect is.
+                    if let Err(refused) = self.pin_checked().await {
+                        if refused.status != 0 {
+                            (self.on_refusal)(&refused.code);
+                        }
+                        return Err(refused);
+                    }
+                    if attempt < RETRY_MAX_ATTEMPTS {
+                        continue;
+                    }
                 }
             }
             if (error.status == 429 || error.status == 503) && attempt < RETRY_MAX_ATTEMPTS {
@@ -573,13 +582,46 @@ impl Api {
     /// routes.ts `getInstance`: `[.., .., .., instance_id, generation, name, mode, methods, policy_version, .., external_sender_pub]`.
     pub async fn get_instance(&self) -> Result<InstanceInfo, ApiError> {
         let Raw(raw) = self.http_call::<r::GetInstance>(&[], NoBody, true).await?;
-        let v = value::decode(&raw).map_err(ApiError::decode)?;
-        let a = at_least(&v, 11).map_err(ApiError::decode)?;
-        Ok(InstanceInfo {
-            instance_id: bin16(&a[3]).map_err(ApiError::decode)?,
-            policy_version: uint(&a[8]).map_err(ApiError::decode)?,
-            external_sender_pub: bin32(&a[10]).map_err(ApiError::decode)?,
-        })
+        decode_instance(&raw)
+    }
+
+    /// controller.ts `reauthenticate` → `checkInstanceSignerPin` (review HL m2): after a session was established again
+    /// over HTTP, the instance's signer key is read over it (once, straight: no retry and no second re-establish) and held
+    /// to the pin ([`pin_after_establish`]). A refusal closes: the new session is dropped, so every later call asks for
+    /// one again and meets the same check.
+    async fn pin_checked(&self) -> Result<(), ApiError> {
+        let read = match self.http.call::<r::GetInstance>(&[], NoBody).await {
+            Ok(Raw(raw)) => decode_instance(&raw),
+            Err(e) => Err(ApiError::of_http(&e)),
+        };
+        let pinned = match &read {
+            Ok(instance) => {
+                let (id, key) = (instance.instance_id, instance.external_sender_pub);
+                Some(
+                    with_core(&self.core, move |c| c.instance_signer_key_pin(&id, &key))
+                        .await
+                        .map_err(|e| e.code.to_string()),
+                )
+            }
+            Err(_) => None,
+        };
+        match pin_after_establish(read.as_ref().map(|_| ()), pinned) {
+            PinAfter::Go => Ok(()),
+            // The read's own refusal as it came (its status kept), else the core's code.
+            PinAfter::Fail(code) => Err(read
+                .err()
+                .unwrap_or_else(|| ApiError::local(0, &code, "the instance signer pin"))),
+            PinAfter::Refuse(code) => {
+                self.auth.clear();
+                let refused = ApiError::local(
+                    0,
+                    &code,
+                    "authenticated instance discovery does not match the pinned identity",
+                );
+                (self.on_refusal)(&refused.code);
+                Err(refused)
+            }
+        }
     }
 
     /// routes.ts `getDeviceList`: `None` on 404.
@@ -966,9 +1008,82 @@ fn decode_session(raw: &[u8]) -> Option<(Zeroizing<String>, u64, u64)> {
     ))
 }
 
+/// What a session established again comes to once held to the instance signer pin ([`pin_after_establish`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PinAfter {
+    /// The pin holds: the call goes on.
+    Go,
+    /// The check could not run (the read failed, a core error other than a pin refusal): this call fails with the code.
+    Fail(String),
+    /// The pin is refused (controller.ts `failInstanceSignerPin`, `E_CORE_STATE`): closed.
+    Refuse(String),
+}
+
+/// controller.ts `checkInstanceSignerPin`'s verdict from the instance read (`Err`: its refusal) and, once read, the
+/// core's pin check (`Err`: its code): a document that does not decode, a changed key or another instance (the core's
+/// `E_CORE_STATE` / `E_CORE_INPUT`) refuse; anything else that failed rethrows.
+pub(crate) fn pin_after_establish(
+    read: Result<(), &ApiError>,
+    pinned: Option<Result<(), String>>,
+) -> PinAfter {
+    match (read, pinned) {
+        (Err(e), _) if e.code == "E_DECODE" => PinAfter::Refuse("E_CORE_STATE".into()),
+        (Err(e), _) => PinAfter::Fail(e.code.clone()),
+        (Ok(()), Some(Ok(()))) => PinAfter::Go,
+        (Ok(()), Some(Err(code))) if code == "E_CORE_STATE" || code == "E_CORE_INPUT" => {
+            PinAfter::Refuse("E_CORE_STATE".into())
+        }
+        (Ok(()), Some(Err(code))) => PinAfter::Fail(code),
+        (Ok(()), None) => PinAfter::Refuse("E_CORE_STATE".into()),
+    }
+}
+
+/// routes.ts `getInstance`'s document: the instance id, the policy version and the external sender's key.
+fn decode_instance(raw: &[u8]) -> Result<InstanceInfo, ApiError> {
+    let v = value::decode(raw).map_err(ApiError::decode)?;
+    let a = at_least(&v, 11).map_err(ApiError::decode)?;
+    Ok(InstanceInfo {
+        instance_id: bin16(&a[3]).map_err(ApiError::decode)?,
+        policy_version: uint(&a[8]).map_err(ApiError::decode)?,
+        external_sender_pub: bin32(&a[10]).map_err(ApiError::decode)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review HL m2 (controller.ts `reauthenticate` → `checkInstanceSignerPin`): a session established again over HTTP
+    /// is held to the instance signer pin before the call goes on. A pin the core refuses (a changed key, another
+    /// instance) or a document that does not decode refuses closed; a read that failed, or another core error, fails the
+    /// call (the web rethrows) without closing; a pin that holds lets it go on.
+    #[test]
+    fn a_reestablished_session_is_held_to_the_pin() {
+        let network = ApiError::local(0, "E_NETWORK", "down");
+        let garbled = ApiError::local(0, "E_DECODE", "a list");
+        let held = |code: &str| Some(Err(code.to_owned()));
+        assert_eq!(pin_after_establish(Ok(()), Some(Ok(()))), PinAfter::Go);
+        assert_eq!(
+            pin_after_establish(Ok(()), held("E_CORE_STATE")),
+            PinAfter::Refuse("E_CORE_STATE".into())
+        );
+        assert_eq!(
+            pin_after_establish(Ok(()), held("E_CORE_INPUT")),
+            PinAfter::Refuse("E_CORE_STATE".into())
+        );
+        assert_eq!(
+            pin_after_establish(Err(&garbled), None),
+            PinAfter::Refuse("E_CORE_STATE".into())
+        );
+        assert_eq!(
+            pin_after_establish(Err(&network), None),
+            PinAfter::Fail("E_NETWORK".into())
+        );
+        assert_eq!(
+            pin_after_establish(Ok(()), held("E_STORE")),
+            PinAfter::Fail("E_STORE".into())
+        );
+    }
 
     #[test]
     fn error_bodies_decode_as_errors_ts() {
