@@ -749,14 +749,36 @@ fn media_free_within(wait: std::time::Duration) -> bool {
     }
 }
 
+/// A call's media made current in the process's router for a test, ended when it drops (review M M6: an assert that
+/// fails while it is live would otherwise leave it current for every later test of the binary).
+struct LiveMedia {
+    router: std::sync::Arc<dilla_media::transform::Router>,
+    media: std::sync::Arc<dilla_media::transform::CallMedia>,
+}
+
+impl Drop for LiveMedia {
+    fn drop(&mut self) {
+        self.router.end(&self.media);
+    }
+}
+
 /// The race the slot closes, forced: a call live in this process (another test's window) holds the next real-instance
 /// test, instead of that test's media starting into `E_CALL_BUSY`; the wait ends once the live call's media ends.
+///
+/// Review M M7: it installs the process's frame hook and starts call media, so it is gated as the call tests are (the
+/// desktop-gpui job runs it with `--ignored` on Linux).
 #[test]
+#[ignore = "starts call media (the dilla frame hook): run with the call tests (--ignored)"]
 fn a_live_call_in_the_process_holds_the_next_call_test_until_its_media_ends() {
-    let _slot = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
+    // The slot, once an earlier test's media is gone (a window's media session can outlive its test).
+    let _slot = media_slot();
     let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
     let live = dilla_media::transform::CallMedia::new();
     router.begin(live.clone()).expect("no call is live yet");
+    let guard = LiveMedia {
+        router: router.clone(),
+        media: live.clone(),
+    };
     // The race itself: a second call's media cannot start while the first is live.
     assert!(matches!(
         router.begin(dilla_media::transform::CallMedia::new()),
@@ -772,7 +794,7 @@ fn a_live_call_in_the_process_holds_the_next_call_test_until_its_media_ends() {
         !waiter.is_finished(),
         "the next test waits while the call is live"
     );
-    router.end(&live);
+    drop(guard);
     assert!(
         waiter.join().unwrap(),
         "the wait ends with the call's media"
