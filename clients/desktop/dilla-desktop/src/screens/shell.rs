@@ -1204,7 +1204,12 @@ impl Render for ShellView {
         // The log wraps its bodies to its own width: the window less the rail, the sidebar and a column aside.
         // The members aside reads the slot context the shell holds (its hook takes none of its own; Task 14).
         crate::screens::members::sync(window.window_handle().window_id(), &ctx, cx);
-        let aside = slots::aside(self.route(), window, cx);
+        // Shell.tsx `channelAside`: a voice channel's stage (and the AFK page) has no aside beside it.
+        let aside = if channel.is_some_and(|c| c.kind == 1) {
+            None
+        } else {
+            slots::aside(self.route(), window, cx)
+        };
         // `.d-app-shell__aside`: the pane's width is its content's; its 1px border-left is outside it.
         let aside_width = if aside.is_some() && column {
             panes.aside + HAIRLINE_W

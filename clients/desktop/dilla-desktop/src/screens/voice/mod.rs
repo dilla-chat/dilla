@@ -84,6 +84,13 @@ mod m {
     pub const MENU_W: f32 = 320.0;
     pub const MENU_PAD: f32 = 12.0;
     pub const MENU_GAP: f32 = 8.0;
+    /// ChannelHeader.css: the bar 20px in on the left and 10px on the right, 10px between title and topic, the 14px
+    /// glyph 6px before the name.
+    pub const HEADER_LEFT: f32 = 20.0;
+    pub const HEADER_RIGHT: f32 = 10.0;
+    pub const HEADER_GAP: f32 = 10.0;
+    pub const HEADER_TITLE_GAP: f32 = 6.0;
+    pub const HEADER_GLYPH: f32 = 14.0;
     /// app.css `.dw-dm-call`: the DM call box is at most 40 % of the conversation's height; its grid's columns are at
     /// least 11rem wide (`minmax(min(100%, 11rem), 1fr)`), its cards 8px in with no least height.
     pub const DM_BOX_SHARE: f32 = 0.4;
@@ -310,28 +317,67 @@ fn afk_stage(channel: &Channel, w: WindowId, cx: &mut App) -> Option<AnyElement>
         .flex()
         .flex_col()
         .bg(color::BG)
-        .child(stage_title(channel))
+        .child(stage_title(
+            channel,
+            IconName::Moon,
+            t("voice.header.afk").to_owned(),
+        ))
         .children(ring_notice(&ctx.state, channel))
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .child(tracked("voice-afk-page", page)),
-        );
+        .child(div().flex_1().min_h_0().child(tracked(
+            "voice-afk-page",
+            // `.d-call-stage__afk` fills the stage and centres its column.
+            div().size_full().flex().flex_col().child(page),
+        )));
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
 
-/// The stage's title bar: the channel's name.
-fn stage_title(channel: &Channel) -> Div {
+/// The stage's title bar (VoiceView.tsx: the voice channel's `ChannelHeader`, no controls): the 14px glyph, the name in
+/// 13.5px/700 and the topic in 12px --fg-2, on the 44px bar with its hairline.
+fn stage_title(channel: &Channel, glyph: IconName, topic: String) -> Div {
     div()
         .flex_none()
-        .h(layout::BAR)
-        .px(px(m::STAGE_PAD))
+        .h(layout::CHANNEL_HEADER_H)
+        .pl(px(m::HEADER_LEFT))
+        .pr(px(m::HEADER_RIGHT))
         .flex()
         .items_center()
+        .gap(px(m::HEADER_GAP))
+        .bg(color::BG)
         .border_b_1()
         .border_color(color::HAIRLINE)
-        .child(line(channel.name.clone(), text::MD, 18.0, color::FG).weight(font::WEIGHT_LABEL))
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(m::HEADER_TITLE_GAP))
+                .child(
+                    Icon::new(glyph)
+                        .size(px(m::HEADER_GLYPH))
+                        .color(color::FG_3),
+                )
+                .child(
+                    line(
+                        channel.name.clone(),
+                        text::BASE,
+                        dilla_desktop_ui::text::line_height(text::BASE, 1.5),
+                        color::FG,
+                    )
+                    .weight(font::WEIGHT_DISPLAY)
+                    .ellipsis(),
+                ),
+        )
+        .child(
+            div().flex_1().min_w_0().overflow_hidden().child(
+                line(
+                    topic,
+                    text::UI,
+                    dilla_desktop_ui::text::line_height(text::UI, 1.5),
+                    color::FG_2,
+                )
+                .ellipsis(),
+            ),
+        )
 }
 
 /// The ring area's stage notice for `channel` (VoiceView.tsx `stageNotice`): a block (Task 18's
@@ -1374,7 +1420,16 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             }))
             .into_any_element()
     };
-    let title = stage_title(channel);
+    // Ruling Z: the voice header's topic is "{n} in voice" once joined, else "voice channel".
+    let topic = if joined {
+        tf(
+            "voice.count",
+            &[("n", count(&state, channel.id).to_string().as_str())],
+        )
+    } else {
+        t("voice.header.idle").to_owned()
+    };
+    let title = stage_title(channel, IconName::Volume2, topic);
     let n = keys.len();
     let stage = div()
         .id("voice-stage")

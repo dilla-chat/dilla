@@ -1205,3 +1205,30 @@ fn control_shift_m_and_d_show_muted_and_deafened_to_the_peer(cx: &mut TestAppCon
         "bob sees alice undeafened",
     );
 }
+
+// ---- parity (S4, lane G): the app's frame of each fixture against the web client's (parity/references/linux/voice/) ----
+
+fn parity_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/voice")
+        .join(format!("{name}.json"))
+}
+
+macro_rules! parity {
+    ($($test:ident => $name:literal $(; $why:literal)?),* $(,)?) => {$(
+        #[test]
+        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+        $(#[ignore = $why])?
+        fn $test() {
+            let report = dilla_parity::screen::assert_screen(&parity_fixture($name))
+                .unwrap_or_else(|e| panic!("voice/{} differs from its web reference: {e}", $name));
+            println!("SCREEN voice/{}: {} text lines, chrome {:.4} %", $name, report.text_lines, report.chrome_pct);
+        }
+    )*};
+}
+
+parity! {
+    parity_voice_stage => "stage"; "parity after T6c: whole frame 0.9412 % (R22, lane G: the joined stage's call bar is the web's 64px bar with the room, its stats and worded controls, the tile grid's band and the dock's stats line; the web's live ping and kb/s)",
+    parity_voice_stage_b => "stage-b"; "parity after T6c: whole frame 1.5143 % (R22, lane G: the not-joined preview, overlapping faces, the room and Join voice, is not ported; the app draws the tile grid and a join button)",
+    parity_voice_dm_call => "dm-call"; "parity after T6c: no reference (R22, lane G): the browser, a device added after the parity world opened the DM, stays at 'joining this channel' in it, so the DM's call button never shows and shoot.mjs times out on the join step",
+}

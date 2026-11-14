@@ -50,6 +50,8 @@ pub enum FixtureScreen {
     /// The shell on a server's default channel (`/c/{server}`: the route names no channel, the shell opens the server's
     /// first text channel, as the web client does).
     ShellHome { community: CommunityId },
+    /// The shell on a DM's conversation (`/dm/{dm/<id>}`, lane G: the DM call box).
+    ShellDm { dm: ChannelId },
     /// The welcome and sign-in screen of a device with no account.
     SignIn,
     /// The user settings host, on this section (`/settings/<section>`).
@@ -181,6 +183,7 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
         ) => Ok(FixtureScreen::ShellHome {
             community: *community,
         }),
+        (Route::Dm(dm), Phase::Ready) => Ok(FixtureScreen::ShellDm { dm: *dm }),
         (Route::Welcome { .. }, Phase::SignedOut) => Ok(FixtureScreen::SignIn),
         (Route::Settings(Some(section)), Phase::Ready) => {
             Ok(FixtureScreen::Settings { section: *section })
@@ -298,10 +301,11 @@ pub fn build_state(
         ..AppState::default()
     };
     attachments::apply(world, viewer, &mut state);
-    calls::apply(world, viewer, &mut state);
     devices::apply(world, viewer, &mut state);
     diagnostics::apply(world, viewer, &mut state);
-    dms::apply(world, viewer, &mut state);
+    dms::apply(world, viewer, ids, &mut state);
+    // After the DMs: a DM's call is placed in the DM the dms facet made.
+    calls::apply(world, viewer, ids, &mut state);
     members::apply(world, viewer, &mut state);
     messages::apply(world, viewer, &mut state);
     notify::apply(fixture, ids, &mut state);

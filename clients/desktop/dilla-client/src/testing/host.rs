@@ -63,18 +63,35 @@ impl Drop for Host {
 /// A host that serves the web client is the parity world's, so it also runs in the host's parity-fixture mode
 /// (`-parity-fixture`: GET /v1/instance carries the marker that makes the web client's diagnostics deterministic).
 pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
-    launch(tag, listen, web_root, false)
+    launch(tag, listen, web_root, false, false)
+}
+
+/// [`start_host`] with the host's in-process LiveKit (`-sfu`, its signalling and ICE ports free ones), listening on a
+/// free port of its own: a browser the host serves reaches LiveKit at `ws://<listen>` through the host's `/rtc` gate
+/// (dilla-testhost's `-web-root` rule), so the port must be a real one. The parity world's fixtures whose viewer joins a
+/// call in the browser.
+pub fn start_host_with_sfu(tag: &str, web_root: Option<&Path>) -> Host {
+    let listen = format!("127.0.0.1:{}", free_port());
+    launch(tag, &listen, web_root, false, true)
+}
+
+/// A TCP port nothing listens on now (the kernel's pick, released at once).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("a free port")
 }
 
 /// [`start_host`] with dilla's real Bot supervised beside the instance (`-bot`, see [`bot`]): the Bot is started and
 /// healthy when this answers, and the host's fake clock follows the wall clock. Blocking.
 pub fn start_bot_host(tag: &str, listen: &str) -> Host {
-    let host = launch(tag, listen, None, true);
+    let host = launch(tag, listen, None, true, false);
     host.start_bot();
     host
 }
 
-fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool) -> Host {
+fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool, sfu: bool) -> Host {
     let root = repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
         .map_or_else(|| root.join("target/dilla-testhost"), PathBuf::from);
@@ -120,6 +137,11 @@ fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool) -> H
     .arg(&data);
     if let Some(web) = web_root {
         cmd.arg("-web-root").arg(web).arg("-parity-fixture");
+    }
+    if sfu {
+        cmd.arg("-sfu")
+            .args(["-sfu-port", &free_port().to_string()])
+            .args(["-sfu-udp-port", &free_port().to_string()]);
     }
     let bot_state = with_bot.then(|| {
         let (args, state) = bot::args(&data, &wasm);

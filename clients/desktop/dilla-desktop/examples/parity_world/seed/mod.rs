@@ -56,10 +56,36 @@ pub async fn before_sign_in(f: &ScreenFixture, people: &[(String, Person)]) {
     roles::before_sign_in(f, people).await;
 }
 
-/// Seeds every facet once the history is posted.
-pub async fn seed(f: &ScreenFixture, people: &[(String, Person)], clients: &[(&str, Client)]) {
+/// Whether `person`'s headless client stays online while the browser is shot (dms: the viewer's, for its DMs' groups).
+pub fn keep_online(f: &ScreenFixture, person: &str) -> bool {
+    dms::keep_online(f, person)
+}
+
+/// Whether the host needs its LiveKit: the viewer joins a call in the browser (calls).
+pub fn needs_sfu(f: &ScreenFixture) -> bool {
+    calls::needs_sfu(f)
+}
+
+/// Makes what the browser must find when it signs in and whose ids its route names (the DMs, with the viewer's client),
+/// adding those ids to `ids`.
+pub async fn before_browser(
+    f: &ScreenFixture,
+    clients: &[(&str, Client)],
+    ids: &mut std::collections::BTreeMap<String, String>,
+) {
+    dms::before_browser(f, clients, ids).await;
+}
+
+/// Seeds every facet once the history is posted. `ids` are the real ids by `kind:local`.
+pub async fn seed(
+    f: &ScreenFixture,
+    people: &[(String, Person)],
+    clients: &[(&str, Client)],
+    host: &dilla_client::testing::host::Host,
+    ids: &std::collections::BTreeMap<String, String>,
+) {
     attachments::seed(f, people).await;
-    calls::seed(f, people).await;
+    calls::seed(f, host, ids).await;
     diagnostics::seed(f, people).await;
     dms::seed(f, people).await;
     gifs::seed(f, people).await;
