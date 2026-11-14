@@ -162,6 +162,12 @@ mod m {
     pub const CODE_PAD_X: f32 = 8.0;
     pub const CODE_GLYPH_EM: f32 = 0.875;
     pub const CODE_GLYPH_GAP: f32 = 6.0;
+    /// `.d-call-stage__code-body`: at most 26rem, 6px under the summary, 8px by 12px in; its help 6px under the digits.
+    pub const CODE_BODY_MAX_W: f32 = 416.0;
+    pub const CODE_BODY_GAP: f32 = 6.0;
+    pub const CODE_BODY_PAD_Y: f32 = 8.0;
+    pub const CODE_BODY_PAD_X: f32 = 12.0;
+    pub const CODE_HELP_GAP: f32 = 6.0;
     /// app.css: the DM box's controls stand 8px above and below; CallControls.css: 2px between the toolbar's buttons,
     /// and the hairline before leave 8px high in and 4px aside.
     pub const DM_CONTROLS_PAD_Y: f32 = 8.0;
@@ -207,6 +213,9 @@ pub struct VoiceUi {
     ptt_key: Option<(String, u32)>,
     /// The DM call box's tile grid's width, logical px, as last laid out ([`dm_call_box`]): its column count follows it.
     dm_grid_w: f32,
+    /// The DM box's call code disclosure is open (CallStage.tsx's `<details>`), and its summary's focus.
+    pub code_open: bool,
+    code_focus: Option<FocusHandle>,
     /// A test's remote frames, drawn while there is no media session (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     test_frames: HashMap<StreamKey, Arc<RenderImage>>,
@@ -1965,6 +1974,10 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
     let w = wid(window);
     let state = ui_of(w, cx)?.state.clone();
     if !joined(&state, channel.id) {
+        // CallStage.tsx's `<details>` goes with the box: the next call's code starts closed.
+        if ui_of(w, cx).is_some_and(|u| u.code_open) {
+            ui_mut(w, cx).code_open = false;
+        }
         return None;
     }
     let images = refresh_images(window, cx);
@@ -1993,22 +2006,12 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
         .grid_cols(u16::try_from(dm_columns(grid_w)).unwrap_or(1))
         .gap(px(m::TILE_GAP))
         .children(cards);
-    let code = state.voice.call.code.clone().map(|_| {
-        div()
-            .ml_auto()
-            .h(px(m::CODE_H))
-            .px(px(m::CODE_PAD_X))
-            .flex()
-            .items_center()
-            .gap(px(m::CODE_GLYPH_GAP))
-            .rounded(radius::MD)
-            .child(
-                Icon::new(IconName::ChevronRight)
-                    .size(px(f32::from(text::META) * m::CODE_GLYPH_EM))
-                    .color(color::FG_2),
-            )
-            .child(line(t("voice.code"), text::META, 13.65, color::FG_2))
-    });
+    let code = state
+        .voice
+        .call
+        .code
+        .clone()
+        .map(|code| code_disclosure(w, &code, cx));
     let head = div()
         .flex()
         .flex_wrap()
@@ -2048,6 +2051,125 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
             .child(dm_controls(&state))
             .into_any_element(),
     )
+}
+
+/// CallStage.tsx `groupCode`: six groups of five digits; anything that is not 30 digits is shown as given.
+pub fn group_code(code: &str) -> String {
+    let digits: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    if digits.len() == 30 && digits.bytes().all(|b| b.is_ascii_digit()) {
+        digits
+            .as_bytes()
+            .chunks(5)
+            .map(|c| std::str::from_utf8(c).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        code.to_owned()
+    }
+}
+
+/// The DM box's call code (CallStage.tsx's `<details>`): its summary toggles on a click, Enter or Space; opened, its body
+/// under the summary holds the grouped safety-code digits and the help. Escape closes it and keeps the focus on the
+/// summary.
+fn code_disclosure(w: WindowId, code: &str, cx: &mut App) -> AnyElement {
+    let focus = {
+        let have = ui_mut(w, cx).code_focus.clone();
+        match have {
+            Some(h) => h,
+            None => {
+                let h = cx.focus_handle();
+                ui_mut(w, cx).code_focus = Some(h.clone());
+                h
+            }
+        }
+    };
+    let open = ui_of(w, cx).is_some_and(|u| u.code_open);
+    let summary = div()
+        .id("dm-call-code")
+        .debug_selector(move || {
+            if open {
+                "dm-call-code-open".to_owned()
+            } else {
+                "dm-call-code".to_owned()
+            }
+        })
+        .track_focus(&focus.clone().tab_stop(true))
+        .h(px(m::CODE_H))
+        .px(px(m::CODE_PAD_X))
+        .flex()
+        .items_center()
+        .gap(px(m::CODE_GLYPH_GAP))
+        .rounded(radius::MD)
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .child(
+            Icon::new(if open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size(px(f32::from(text::META) * m::CODE_GLYPH_EM))
+            .color(color::FG_2),
+        )
+        .child(line(
+            t("voice.code"),
+            text::META,
+            line_height(text::META, 1.3),
+            color::FG_2,
+        ))
+        .on_click(move |_, _, cx| {
+            let ui = ui_mut(w, cx);
+            ui.code_open = !ui.code_open;
+            cx.refresh_windows();
+        });
+    let body = open.then(|| {
+        div()
+            .debug_selector(|| "dm-call-code-digits".to_owned())
+            .w_full()
+            .max_w(px(m::CODE_BODY_MAX_W))
+            .mt(px(m::CODE_BODY_GAP))
+            .py(px(m::CODE_BODY_PAD_Y))
+            .px(px(m::CODE_BODY_PAD_X))
+            .bg(color::SURFACE_2)
+            .border_1()
+            .border_color(color::LINE_STRONG)
+            .rounded(radius::MD)
+            .child(
+                line(
+                    group_code(code),
+                    text::MD,
+                    line_height(text::MD, 1.3),
+                    color::FG,
+                )
+                .tracking(dilla_desktop_ui::metrics::LABEL_TRACKING),
+            )
+            .child(
+                div()
+                    .mt(px(m::CODE_HELP_GAP))
+                    .child(dilla_desktop_ui::text::flow_paragraph(
+                        t("voice.codeHelp"),
+                        text::XS,
+                        line_height(text::XS, 1.3),
+                        color::FG_2,
+                    )),
+            )
+    });
+    div()
+        .ml_auto()
+        .flex()
+        .flex_col()
+        .items_end()
+        .on_key_down(move |e: &gpui::KeyDownEvent, window, cx| {
+            if e.keystroke.key == "escape" && ui_of(w, cx).is_some_and(|u| u.code_open) {
+                ui_mut(w, cx).code_open = false;
+                focus.focus(window, cx);
+                cx.stop_propagation();
+                cx.refresh_windows();
+            }
+        })
+        .child(summary)
+        .children(body)
+        .into_any_element()
 }
 
 /// The media notice over the tiles, or nothing while there is none.

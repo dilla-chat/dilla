@@ -294,6 +294,52 @@ fn a_dm_call_box_keeps_compact_tiles_when_the_other_person_shares_their_screen(
     );
 }
 
+/// Wave 2 review I-G2 (CallStage.tsx's `<details>`): the DM box's "call code" is a disclosure. A click opens it on the
+/// grouped safety-code digits (six groups of five), a second click closes it; Escape closes it too.
+#[gpui::test]
+fn the_dm_call_code_opens_on_its_grouped_digits(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let (_, cx) = cx.add_window_view(|_, _| DmHost);
+    let mut s = (*dm_state()).clone();
+    s.voice.call.code = Some("123451234512345123451234512345".into());
+    let s = Arc::new(s);
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), s.clone(), None, cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    let summary = cx.debug_bounds("dm-call-code").expect("the call code's summary");
+    assert!(cx.debug_bounds("dm-call-code-digits").is_none(), "closed at first");
+    cx.simulate_click(summary.center(), gpui::Modifiers::none());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-open").is_some());
+    let digits = cx
+        .debug_bounds("dm-call-code-digits")
+        .expect("the digits show");
+    assert!(digits.origin.y >= summary.origin.y + summary.size.height);
+    assert_eq!(
+        voice::group_code("123451234512345123451234512345"),
+        "12345 12345 12345 12345 12345 12345"
+    );
+    assert_eq!(voice::group_code("12345 6"), "12345 6", "not 30 digits: as given");
+    // A second click closes it.
+    cx.simulate_click(summary.center(), gpui::Modifiers::none());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-digits").is_none());
+    // Opened again, Escape closes it.
+    cx.simulate_click(summary.center(), gpui::Modifiers::none());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-digits").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("dm-call-code-digits").is_none());
+    assert!(cx.debug_bounds("dm-call-code").is_some());
+}
+
 /// Twelve people with long names (the -b fixtures' world) draw without a panic, and the people group per user.
 #[gpui::test]
 fn twelve_people_with_long_names_draw(cx: &mut TestAppContext) {
