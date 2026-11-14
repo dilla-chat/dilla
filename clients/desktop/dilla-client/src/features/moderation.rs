@@ -10,7 +10,10 @@
 //! A removal's proof is signed and its evidence sealed by the same core and Bot transport the web client uses
 //! (`ClientCore::prepare_manual_removal_evidence`, the core's durable outbox, and the sealed app operation 161): no crypto
 //! of the desktop's own. The reason and the excerpt are plaintext: this module holds them in [`Zeroizing`] buffers and
-//! wipes the copies it reads back from the core.
+//! wipes the copies it reads back from the core. Past `sealed_evidence` the sealed transport copies them (into its
+//! `BotArg`s, `SealedCommand`, `Submit` and the CBOR request); those copies are wiped as they go (`BotArg`'s drop,
+//! `Value::encode_wiped`), not held here. The message's text the excerpt comes from also stays, unwiped, in the
+//! timeline's rows for the session, as the web's does.
 //!
 //! The view offers an action only where `features::members::menu_for` says the caller may take it, but that gate is
 //! advisory: the instance decides each request again. A 403 means the access the view held is stale, so the access
