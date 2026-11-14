@@ -163,7 +163,7 @@ mod driven {
         ($($test:ident => $name:literal $(, ignore $why:literal)?;)*) => {$(
             #[test]
             #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-            $(#[ignore = $why])?
+            $(#[cfg_attr(target_os = "linux", ignore = $why)])?  // off Linux the line above already ignores it
             fn $test() {
                 assert_screen(&fixture($name)).unwrap_or_else(|f| panic!("{f}"));
             }

@@ -3669,5 +3669,11 @@ test('parity tests parked until the shared-component pass need no --ignored run,
   assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'off-Linux ignore and R22-only macro reasons need no run line');
   writeFileSync(join(dir, 'parked.rs'), macro('needs dillad'));
   assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a macro forwarding another reason still needs its run line');
+  // The Linux-only forwarding spelling (one ignore per OS, so clippy's duplicate-attribute lint holds off Linux) reads the same.
+  const linuxOnly = (why) => `macro_rules! p { ($($t:ident $(; $why:literal)?),*) => {$(#[test] #[cfg_attr(not(target_os = "linux"), ignore = "refs are Linux only")] $(#[cfg_attr(target_os = "linux", ignore = $why)])? fn $t() {})*}; }\np!(a; "${why}", b);\n`;
+  writeFileSync(join(dir, 'parked.rs'), linuxOnly('parity after T6c: chrome 0.3 %'));
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-only forwarded R22 reason needs no run line');
+  writeFileSync(join(dir, 'parked.rs'), linuxOnly('needs dillad'));
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-only forwarded other reason still needs its run line');
   rmSync(root, { recursive: true, force: true });
 });
