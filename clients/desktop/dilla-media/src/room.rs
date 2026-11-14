@@ -175,6 +175,9 @@ struct Heard {
     tails: HashMap<String, VecDeque<i16>>,
     edges: VecDeque<AudioEdge>,
     audible: BTreeMap<String, String>,
+    /// A measurement asked for the edges ([`Call::clear_audio_edges`]): before that none are kept, so a call that is
+    /// never measured allocates nothing per edge (w2-bot-review M-C4). What is audible is followed either way.
+    recording: bool,
 }
 
 impl Heard {
@@ -185,6 +188,9 @@ impl Heard {
         } else {
             self.audible.remove(&edge.stream);
         }
+        if !self.recording {
+            return;
+        }
         if self.edges.len() == MAX_EDGES {
             self.edges.pop_front();
         }
@@ -193,6 +199,7 @@ impl Heard {
 
     /// Forgets the edges; each stream audible now starts the new record with an audible edge at `at_ms`.
     fn restart(&mut self, at_ms: f64) {
+        self.recording = true;
         self.edges = self
             .audible
             .iter()
@@ -715,8 +722,9 @@ impl Call {
         heard.tails.get(device).map(|t| t.iter().copied().collect())
     }
 
-    /// Every quiet/audible edge of the verified remote devices' decoded audio since the call joined or the last
-    /// [`Call::clear_audio_edges`], oldest first (at most the last 4096).
+    /// Every quiet/audible edge of the verified remote devices' decoded audio since the last
+    /// [`Call::clear_audio_edges`], oldest first (at most the last 4096). None before the first: a measurement starts by
+    /// clearing (w2-bot-review M-C4).
     pub fn remote_audio_edges(&self) -> Vec<AudioEdge> {
         let heard = self.tails.lock().unwrap_or_else(|p| p.into_inner());
         heard.edges.iter().cloned().collect()
@@ -1418,6 +1426,21 @@ mod edge_tests {
             edge("d:3", 6.0, true),
         ];
         assert_eq!(heard(&edges), [(1.0, true), (4.0, false), (6.0, true)]);
+    }
+
+    /// w2-bot-review M-C4: until a measurement first clears the record, no edge is kept (what is audible is still
+    /// followed, so the first clear starts with it).
+    #[test]
+    fn no_edge_is_kept_until_a_measurement_starts() {
+        let mut heard = Heard::default();
+        heard.record(edge("d:1", 1.0, true));
+        heard.record(edge("d:2", 2.0, true));
+        heard.record(edge("d:2", 3.0, false));
+        assert!(heard.edges.is_empty());
+        heard.restart(4.0);
+        assert_eq!(heard.edges.len(), 1, "d:1 is audible now");
+        heard.record(edge("d:1", 5.0, false));
+        assert_eq!(heard.edges.len(), 2);
     }
 
     /// A stream whose reader ends while audible ends quiet, and a new record starts with what is audible now.
