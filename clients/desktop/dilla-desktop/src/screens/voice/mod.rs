@@ -1954,11 +1954,16 @@ fn outgoing_text(state: &AppState, channel: ChannelId) -> Option<String> {
         return None;
     }
     let me = state.account.user_id;
+    let own = state.account.device_id;
+    let call = &state.voice.call;
+    // `|| call.state.tiles.length > 0`: a tile is another device of the call group (the session's roster), which the
+    // instance's participant read may not list yet.
     let others = state
         .voice
         .participants(channel)
         .iter()
-        .any(|p| Some(p.user_id) != me);
+        .any(|p| Some(p.user_id) != me)
+        || (call.channel == Some(channel) && call.roster.iter().any(|r| Some(r.1) != own));
     outgoing_line(out, others, &|u| dm_name_of(state, u))
 }
 
@@ -3216,6 +3221,37 @@ mod tests {
 
     use super::*;
     use dilla_client::state::voice::flags;
+
+    /// VoiceView.tsx `DmCall`'s `others`: someone else is in the call when a participant is another person, or when the
+    /// call has a tile of another device (`call.state.tiles.length > 0`: another member of the call group, the roster here,
+    /// before the instance's participant read lists them). Then an expired ring says nothing, not "No answer.".
+    #[test]
+    fn another_device_in_the_call_group_is_someone_else_in_the_call() {
+        use dilla_client::calls::CallPhase;
+        use dilla_client::state::ring::Outgoing;
+        use dilla_client::state::voice::OwnCall;
+        let (me, bob) = (UserId([1; 16]), UserId([2; 16]));
+        let (mine, bobs) = (DeviceId([0x11; 16]), DeviceId([0x22; 16]));
+        let dm = ChannelId([0xd4; 16]);
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.account.device_id = Some(mine);
+        s.ring.outgoing = Some(Outgoing {
+            channel: Some(dm),
+            ringing: vec![bob],
+            expired: true,
+            ..Outgoing::default()
+        });
+        s.voice.call = OwnCall {
+            phase: CallPhase::In,
+            channel: Some(dm),
+            roster: vec![(me, mine, 0)],
+            ..OwnCall::default()
+        };
+        assert_eq!(outgoing_text(&s, dm).as_deref(), Some("No answer."));
+        s.voice.call.roster.push((bob, bobs, 1));
+        assert_eq!(outgoing_text(&s, dm), None, "bob's device is in the call");
+    }
 
     /// VoiceView.tsx `Dock`'s ping: "— ms" until a ping is read, "<1 ms" under a millisecond, else "{ms} ms".
     #[test]
