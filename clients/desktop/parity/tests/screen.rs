@@ -215,13 +215,15 @@ fn variant(edit: impl FnOnce(&mut serde_json::Value)) -> (tempfile::TempDir, Pat
 }
 
 #[test]
-fn the_welcome_route_draws_the_sign_in_screen() {
+fn the_welcome_route_draws_the_sign_up_first_step() {
     let (_dir, path) = variant(|j| {
         j["route"] = "/welcome".into();
         j["phase"] = "signed_out".into();
     });
     let mut app = Driver::try_launch_fixture(&path, None, &[]).expect("the app draws /welcome");
-    app.wait_for("signin-server", Duration::from_secs(30));
+    // Task 28 lane F: /welcome is the sign-up's "Join with an invite", as on the web, not the sign-in form.
+    app.wait_for("onboarding-invite", Duration::from_secs(30));
+    assert!(app.element("signin-username").is_none(), "not the sign-in");
     assert!(app.element("composer").is_none(), "the shell is not drawn");
 }
 
