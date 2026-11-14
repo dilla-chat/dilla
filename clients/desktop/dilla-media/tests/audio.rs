@@ -470,7 +470,9 @@ fn run_frames(mode: NoiseMode, input: &[Vec<i16>]) -> Vec<Vec<i16>> {
             out.push(o);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // A drain bound, not a budget: it ends as soon as every frame is out. The Windows runner's debug build of the
+    // enhanced model needed more than 10 s for 800 frames.
+    let deadline = Instant::now() + Duration::from_secs(60);
     while out.len() < input.len() && Instant::now() < deadline {
         match rx.try_recv() {
             Ok(o) => out.push(o),

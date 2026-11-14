@@ -407,6 +407,10 @@ fn focused_reports_id() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "screenshots need a headless renderer: Linux (wgpu on lavapipe) and macOS have one, Windows' DirectX renderer none yet"
+)]
 fn hover_changes_state() {
     let mut app = Driver::launch_harness();
     let box_ = app.element("hover-box").expect("the hover box is drawn");
