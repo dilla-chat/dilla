@@ -284,7 +284,28 @@ impl AppView {
                     this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
-                crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
+                crate::fixture::FixtureScreen::Welcome(start) => {
+                    this.show_pre_account(start, &fixture, window, cx)
+                }
+                crate::fixture::FixtureScreen::Home => {
+                    // `/`: the first server's first text channel (App.tsx), or, in no server, the empty view.
+                    let channel = fixture.state.communities.first().and_then(|c| {
+                        crate::screens::channel_list::ordered(&fixture.state, c.id)
+                            .into_iter()
+                            .find(|c| c.is_text())
+                            .map(|c| c.id)
+                    });
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let shell = cx.new(|cx| {
+                        ShellView::new(Arc::new(fixture.state), None, channel, clock, window, cx)
+                    });
+                    this.attach_shell(&shell, window, cx);
+                    this.focus_shell(&shell, window, cx);
+                    this.screen = Screen::Shell(shell);
+                }
                 crate::fixture::FixtureScreen::Settings { section } => {
                     let ctx = SlotCx {
                         state: Arc::new(fixture.state),
@@ -383,6 +404,102 @@ impl AppView {
         self.screen = Screen::Signup(view);
         self.fit_window(window, cx);
         cx.notify();
+    }
+
+    /// Automation: a `signed_out` fixture's screen (`fixture::pre_account`). `/welcome` is the sign-up's first step, as on
+    /// the web (its invite in the field, its `signin` notice as the banner); a later step starts where the instance's
+    /// answers left the web's, fed offline through the views' own handlers.
+    #[cfg(feature = "automation")]
+    fn show_pre_account(
+        &mut self,
+        start: crate::fixture::pre_account::PreAccount,
+        fixture: &crate::fixture::Fixture,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::fixture::pre_account::{self as pa, PreAccount};
+        use crate::screens::onboarding::signup::Step;
+        let (invite, notice) = match &fixture.route {
+            crate::router::Route::Welcome { invite, signin } => (invite.clone(), *signin),
+            _ => (None, None),
+        };
+        let pin = dilla_client::seams::InstanceConfig {
+            id: dilla_client::seams::InstanceId(0),
+            server: url::Url::parse(&format!("https://{}", pa::INSTANCE_NAME)).expect("a url"),
+            data_dir: std::path::PathBuf::new(),
+        };
+        let info = || dilla_client::features::signup::InstanceInfo {
+            id: [0; 16],
+            name: pa::INSTANCE_NAME.to_owned(),
+            registration_mode: dilla_client::features::signup::RegistrationMode::InviteOnly,
+            password_signup: true,
+            totp: true,
+            passkeys: false,
+            external_sender: [0; 32],
+        };
+        let doc = || dilla_client::features::factors::InstanceDoc {
+            name: pa::INSTANCE_NAME.to_owned(),
+            passkeys: false,
+            oidc: false,
+        };
+        match start {
+            PreAccount::SignUp | PreAccount::SignUpIdentity | PreAccount::SignUpKeys => {
+                self.show_signup(invite, window, cx);
+                let Screen::Signup(view) = &self.screen else {
+                    return;
+                };
+                view.update(cx, |v, cx| v.set_notice(notice, cx));
+                let step = match start {
+                    PreAccount::SignUpIdentity => Some((Step::Identity, None)),
+                    PreAccount::SignUpKeys => Some((
+                        Step::Keys,
+                        dilla_client::features::signup::RecoveryKey::for_fixture(
+                            &"0123456789ABCDEFGHJKMNPQRSTVWXYZ".repeat(2)[..52],
+                        ),
+                    )),
+                    _ => None,
+                };
+                if let Some((step, key)) = step {
+                    view.update(cx, |v, cx| v.fixture_at(step, info(), key, window, cx));
+                }
+            }
+            PreAccount::SignUpDone => {
+                let codes = dilla_client::features::factors::BackupCodes(zeroize::Zeroizing::new(
+                    (0..pa::BACKUP_CODES)
+                        .map(|i| format!("{:04}-{:04}", i * 1111 % 10000, i * 7))
+                        .collect(),
+                ));
+                let result = SignupResult {
+                    community: None,
+                    join_error: None,
+                    invite: None,
+                };
+                let view = cx.new(|cx| DoneView::new(result, Some(codes), window, cx));
+                self.screen = Screen::Done(view);
+                cx.notify();
+            }
+            PreAccount::SignIn | PreAccount::SignInFactor | PreAccount::SignInError => {
+                self.show_sign_in(None, window, cx);
+                let Screen::SignIn(view) = &self.screen else {
+                    return;
+                };
+                let username = pa::username(&fixture.spec);
+                let (typed, answer) = match start {
+                    PreAccount::SignInFactor => (
+                        Some(username.as_str()),
+                        Some(Ok(dilla_client::signin::Owed::Code)),
+                    ),
+                    PreAccount::SignInError => (
+                        Some(username.as_str()),
+                        Some(Err(dilla_client::signin::SignInError::LoginFailed)),
+                    ),
+                    _ => (None, None),
+                };
+                view.update(cx, |v, cx| {
+                    v.fixture_answer(pin, doc(), typed, answer, window, cx)
+                });
+            }
+        }
     }
 
     /// The sign-up's done step, once the new account is ready and the invite's server joined (Task 25).

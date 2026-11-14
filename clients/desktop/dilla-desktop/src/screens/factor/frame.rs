@@ -27,14 +27,21 @@ const CARD_GAP: f32 = 20.0;
 /// `.d-onboarding-frame__bar`: `top: 22px; left: 24px`.
 const BAR_TOP: f32 = 22.0;
 const BAR_LEFT: f32 = 24.0;
-/// The brand mark: a 20px tile, 8px to the word.
-const MARK: f32 = 20.0;
-const MARK_GAP: f32 = 8.0;
-/// `.d-onboarding-frame__body`: `gap: 14px`.
+/// `.d-onboarding-frame__body`: `gap: 14px`, pulled 14px towards the title; its first paragraph keeps 6px more under it.
+/// The footer is pulled 6px towards the body, and the nav row 3.5px into the card's padding.
 const BODY_GAP: f32 = 14.0;
+const FIRST_PARA_GAP: f32 = 6.0;
+const FOOTER_PULL: f32 = 6.0;
+const NAV_PULL: f32 = 3.5;
+/// The step row's margin under it (`.d-onboarding-frame__steprow`).
+const STEP_ROW_GAP: f32 = 2.0;
+/// `.d-onboarding-frame .d-text-field__input { height: 2.5rem }`: the card's fields.
+pub const FIELD_H: f32 = 40.0;
 /// The footer's gap (12px) and the links row's (14px).
 const FOOTER_GAP: f32 = 12.0;
 const LINKS_GAP: f32 = 14.0;
+const LINKS_PULL_TOP: f32 = 1.5;
+const LINKS_PULL_BOTTOM: f32 = 11.5;
 /// The dots: 4px high, 6px wide, the current 18px, 4px apart.
 const DOT_H: f32 = 4.0;
 const DOT_W: f32 = 6.0;
@@ -126,17 +133,21 @@ pub fn nav_row(back: AnyElement, other: Option<AnyElement>) -> AnyElement {
         .items_center()
         .justify_between()
         .gap(px(LINKS_GAP))
+        .mb(px(-NAV_PULL))
         .child(back)
         .children(other)
         .into_any_element()
 }
 
-/// A row of links (`.d-onboarding-frame__links`).
+/// A row of links (`.d-onboarding-frame__links`: `margin: -1.5px 0 -11.5px`, the 24px link boxes centred on the
+/// prototype's 17px line).
 pub fn links_row(links: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_wrap()
-        .gap(px(LINKS_GAP))
+        .mt(px(-LINKS_PULL_TOP))
+        .mb(px(-LINKS_PULL_BOTTOM))
+        .gap_x(px(LINKS_GAP))
         .children(links)
         .into_any_element()
 }
@@ -235,6 +246,7 @@ impl AuthFrame {
                 .items_center()
                 .justify_between()
                 .gap(px(FOOTER_GAP))
+                .mb(px(STEP_ROW_GAP))
                 .child(match self.step {
                     Some(step) => line(
                         step.to_uppercase(),
@@ -300,6 +312,7 @@ impl AuthFrame {
             .border_1()
             .border_color(color::HAIRLINE)
             .rounded(radius::XXL)
+            .shadow(dilla_desktop_ui::components::onboarding::frame::shadow_card())
             .flex()
             .flex_col()
             .gap(px(CARD_GAP))
@@ -311,18 +324,29 @@ impl AuthFrame {
                     line_height(text::HEADING, 1.5),
                     color::FG,
                 )
-                .weight(font::WEIGHT_DISPLAY),
+                .weight(font::WEIGHT_DISPLAY)
+                .tracking(-0.01),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(BODY_GAP))
+                    .mt(px(-BODY_GAP))
                     .min_w_0()
                     .when_some(self.banner, |d, (tone, t)| {
-                        d.child(Banner::new("auth-banner", tone, t))
+                        d.child(tracked_box(
+                            "auth-banner",
+                            Banner::new("auth-banner", tone, t),
+                        ))
                     })
-                    .children(self.body),
+                    .children(self.body.into_iter().enumerate().map(|(i, part)| {
+                        if i == 0 {
+                            div().mb(px(FIRST_PARA_GAP)).child(part).into_any_element()
+                        } else {
+                            part
+                        }
+                    })),
             )
             .when(action.is_some() || !self.below.is_empty(), |d| {
                 d.child(
@@ -330,6 +354,7 @@ impl AuthFrame {
                         .flex()
                         .flex_col()
                         .gap(px(FOOTER_GAP))
+                        .mt(px(-FOOTER_PULL))
                         .children(action)
                         .children(self.below),
                 )
@@ -343,31 +368,11 @@ impl AuthFrame {
     }
 }
 
-/// The brand mark of the top bar.
+/// The brand mark of the top bar (`.d-onboarding-frame__bar`, TopBar.tsx `BrandMark`).
 fn brand_mark() -> impl IntoElement {
     div()
         .absolute()
         .left(px(BAR_LEFT))
         .top(px(BAR_TOP))
-        .flex()
-        .items_center()
-        .gap(px(MARK_GAP))
-        .child(
-            div()
-                .size(px(MARK))
-                .rounded(radius::SM)
-                .bg(color::BRAND)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    line("D", text::UI, f32::from(text::UI), color::BRAND_INK)
-                        .weight(font::WEIGHT_DISPLAY),
-                ),
-        )
-        .child(
-            line("DILLA", text::XS, line_height(text::XS, 1.5), color::FG)
-                .weight(font::WEIGHT_DISPLAY)
-                .tracking(STEP_TRACKING),
-        )
+        .child(dilla_desktop_ui::components::onboarding::BrandMark)
 }

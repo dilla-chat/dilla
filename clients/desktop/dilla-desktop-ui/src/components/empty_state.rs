@@ -2,8 +2,8 @@
 //! one or two ways forward, centred.
 
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, px,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 
 use super::button::{Button, ButtonVariant, ClickHandler};
@@ -27,6 +27,8 @@ pub struct EmptyState {
     body: SharedString,
     action: Option<Action>,
     secondary: Option<Action>,
+    /// Wraps each way forward, by its part (`"action"`, `"secondary"`): the app's automation probes.
+    wrap: Option<Box<dyn Fn(&'static str, AnyElement) -> AnyElement>>,
 }
 
 impl EmptyState {
@@ -41,6 +43,7 @@ impl EmptyState {
             body: body.into(),
             action: None,
             secondary: None,
+            wrap: None,
         }
     }
 
@@ -67,6 +70,18 @@ impl EmptyState {
             label: label.into(),
             on_click: Box::new(on_click),
         });
+        self
+    }
+}
+
+impl EmptyState {
+    /// Wraps each button (`"action"`, `"secondary"`) in what the caller adds around it (an automation probe); the
+    /// layout is the button's own.
+    pub fn wrap_actions(
+        mut self,
+        wrap: impl Fn(&'static str, AnyElement) -> AnyElement + 'static,
+    ) -> Self {
+        self.wrap = Some(Box::new(wrap));
         self
     }
 }
@@ -102,17 +117,28 @@ impl RenderOnce for EmptyState {
                     )),
             );
         if self.action.is_some() || self.secondary.is_some() {
+            let wrap = self.wrap;
+            let wrapped = move |part: &'static str, el: AnyElement| match &wrap {
+                Some(w) => w(part, el),
+                None => el,
+            };
             let mut actions = div().flex().flex_wrap().justify_center().gap(px(8.0));
             if let Some(a) = self.action {
-                actions = actions.child(
+                actions = actions.child(wrapped(
+                    "action",
                     Button::new((id.clone(), "action"), a.label)
                         .variant(ButtonVariant::Accent)
-                        .on_click(a.on_click),
-                );
+                        .on_click(a.on_click)
+                        .into_any_element(),
+                ));
             }
             if let Some(a) = self.secondary {
-                actions =
-                    actions.child(Button::new((id, "secondary"), a.label).on_click(a.on_click));
+                actions = actions.child(wrapped(
+                    "secondary",
+                    Button::new((id, "secondary"), a.label)
+                        .on_click(a.on_click)
+                        .into_any_element(),
+                ));
             }
             root = root.child(actions);
         }

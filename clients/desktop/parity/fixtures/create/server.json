@@ -1,0 +1,31 @@
+{
+  "name": "create/server",
+  "window": [
+    1280,
+    800
+  ],
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      }
+    ],
+    "servers": [],
+    "messages": []
+  },
+  "viewer": "ada",
+  "route": "/",
+  "phase": "ready",
+  "clock": 1794481738,
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=button[name=\"Start a server\"s]",
+      "gpui": "create-empty-start"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

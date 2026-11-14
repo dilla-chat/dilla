@@ -173,8 +173,18 @@ export function playwrightChord(chord) {
   return chord.split('-').map((p) => names[p] ?? (/^f([1-9]|1[0-2])$/.test(p) ? p.toUpperCase() : p)).join('+');
 }
 
+/** A typed text with its placeholder filled from the world: `{invite}` is the host's invite code (a code made by the real
+ * dillad, which a fixture cannot know); `{totp:<selector>}` is the authenticator code for the setup key the page shows in
+ * `<selector>`, at the host's clock (the code a person's app would show). Any other text is typed as written. */
+export async function typedText(text, { state, page, codeFor }) {
+  if (text === '{invite}') return state.invite;
+  const totpOf = /^\{totp:(.+)\}$/.exec(text);
+  if (totpOf) return codeFor(await page.locator(totpOf[1]).first().inputValue());
+  return text;
+}
+
 /** One step of the fixture, on the web side. */
-async function replayStep(page, step) {
+async function replayStep(page, step, state) {
   const pick = (sel) => {
     if (sel === '-') return null;
     const optional = sel.startsWith('if:');
@@ -192,7 +202,8 @@ async function replayStep(page, step) {
       const t = pick(step.web);
       if (!t) return;
       await t.locator.click();
-      await page.keyboard.type(step.text);
+      const codeFor = (secret) => nextCode({ control: state.control, totpSecret: secret, totpLast: -1 });
+      await page.keyboard.type(await typedText(step.text, { state, page, codeFor }));
       return;
     }
     case 'key': {
@@ -254,7 +265,8 @@ async function shoot(args, fixture, text) {
       await page.getByLabel('Recovery key', { exact: true }).fill(state.recoveryKey);
       await page.getByRole('button', { name: 'Add browser', exact: true }).click();
       await page.getByRole('button', { name: 'Open dilla', exact: true }).click();
-      await page.locator('.d-channel-header').waitFor();
+      // A viewer in no server lands on the shell's empty view ("You are not in a server yet"), with no channel header.
+      await page.locator('.d-channel-header').or(page.getByText('You are not in a server yet', { exact: true })).first().waitFor();
       for (const v of state.visit) await visit(page, v.server, v.channel);
       await page.waitForTimeout(3000);
     }
@@ -271,7 +283,7 @@ async function shoot(args, fixture, text) {
     const target = [...fixture.route.matchAll(/\{([^}/]+\/[^}]+)\}/g)].map((m) => m[1]).at(-1);
     const last = (fixture.world.messages ?? []).filter((m) => m.channel === target).at(-1);
     if (last) await page.getByText(last.body, { exact: true }).first().waitFor();
-    for (const step of fixture.steps ?? []) await replayStep(page, step);
+    for (const step of fixture.steps ?? []) await replayStep(page, step, state);
     if (!(fixture.steps ?? []).some((s) => s.do === 'hover')) {
       await page.mouse.move(viewport.width - 2, viewport.height - 2);
       await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());

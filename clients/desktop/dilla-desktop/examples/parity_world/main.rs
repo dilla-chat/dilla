@@ -204,6 +204,8 @@ async fn main() {
         "totpSecret": viewer.totp_secret,
         "totpLast": viewer.totp_last,
         "recoveryKey": viewer.recovery_key,
+        // The host's invite, for a fixture whose browser makes an account of its own (shoot.mjs `{invite}`).
+        "invite": invite,
         "visit": visit,
         "window": [f.window.0, f.window.1],
         "now": f.clock + shift,
