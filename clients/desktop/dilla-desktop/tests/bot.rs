@@ -48,13 +48,13 @@ fn poll_card_b_wraps_and_grows_with_its_answers() {
 }
 
 #[test]
-#[ignore = "no reference: the parity world cannot seed a poll yet (it needs a running Bot; seed/polls.rs refuses the facet)"]
+#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a poll yet (it needs a running Bot; seed/polls.rs refuses the facet)"]
 fn parity_polls_card() {
     dilla_parity::screen::assert_screen(&fixture("polls/card.json")).unwrap();
 }
 
 #[test]
-#[ignore = "no reference: the parity world cannot seed a poll yet (it needs a running Bot; seed/polls.rs refuses the facet)"]
+#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a poll yet (it needs a running Bot; seed/polls.rs refuses the facet)"]
 fn parity_polls_card_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/card-b.json")).unwrap();
 }
