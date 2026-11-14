@@ -10,10 +10,11 @@
 //! as `chipKeyDown`), and the music commands' bar naming the voice room this device is in ([`music_bar`]).
 //!
 //! w2-bot-review I-B1: a member field lists the community's members ([`member_suggestions`]); a pick keeps the member's
-//! id, which is what the command sends, so `/kick` and `/ban` never act on a name.
+//! id, which is what the command sends, so `/kick` and `/ban` never act on a name. `/unban`'s lists the server's banned
+//! members.
 //!
 //! Not ported yet: the other entity suggestions (what the Bot or the instance looks up: channels, roles, queue items,
-//! search results, `/unban`'s banned members) and a DST fold's two `when` candidates.
+//! search results) and a DST fold's two `when` candidates.
 
 use dilla_client::features::bot::registry::{ArgKind, CommandDefinition, CommandOption};
 use dilla_client::features::bot::room;
@@ -235,8 +236,8 @@ pub fn offered(
 
 /// The members a member field may name (CommandHost.tsx `suggest` for a `user` option): the community's people but this
 /// account and the Bot, and for `/kick` and `/ban` only those this account may moderate (`eligibleModerationTarget`).
-/// All of them, never a truncated list. Nothing outside a community, and nothing for `/unban` (its banned members are
-/// not ported yet).
+/// All of them, never a truncated list. Nothing outside a community, and nothing for `/unban`, whose field lists the
+/// banned members instead ([`banned_members`]).
 fn eligible_members<'a>(
     state: &'a AppState,
     community: Option<CommunityId>,
@@ -265,17 +266,43 @@ fn eligible_members<'a>(
         .collect()
 }
 
+/// CommandHost.tsx `suggest` for `/unban`'s user: the community's banned members as `loadBans` read them (none until
+/// read), in the instance's order.
+fn banned_members<'a>(
+    state: &'a AppState,
+    community: Option<CommunityId>,
+) -> &'a [dilla_client::state::members::BanSummary] {
+    community
+        .and_then(|c| state.people.bans.get(&c))
+        .map_or(&[], Vec::as_slice)
+}
+
 /// The members a member field offers for `query` ([`eligible_members`] matching the id, the name or the username, at
-/// most 20). Each value is the member's user id, its label the name and its second line the `@username`.
+/// most 20). Each value is the member's user id, its label the name and its second line the `@username`. `/unban`
+/// offers the banned members matching the id or the name, each "Banned member" ([`banned_members`]).
 pub fn member_suggestions(
     state: &AppState,
     community: Option<CommunityId>,
     command: &str,
     query: &str,
 ) -> Vec<Suggestion> {
+    let as_id = dilla_client::features::server_admin::unhex_id(query);
+    if command == "unban" {
+        let needle = query.to_lowercase();
+        return banned_members(state, community)
+            .iter()
+            .filter(|b| as_id == Some(b.user_id.0) || b.name.to_lowercase().contains(&needle))
+            .take(20)
+            .map(|b| Suggestion {
+                label: b.name.clone(),
+                value: b.user_id.hex(),
+                sub: copy::BANNED_MEMBER.to_owned(),
+                icon: IconName::User,
+            })
+            .collect();
+    }
     let needle = query.to_lowercase();
     let needle = needle.trim_start_matches('@');
-    let as_id = dilla_client::features::server_admin::unhex_id(query);
     eligible_members(state, community, command)
         .into_iter()
         .filter(|m| {
@@ -313,8 +340,15 @@ pub fn resolve_member(
 ) -> Option<String> {
     let text = text.trim();
     let username = text.strip_prefix('@').map(str::to_lowercase);
-    let eligible = eligible_members(state, community, command);
     let as_id = dilla_client::features::server_admin::unhex_id(text);
+    if command == "unban" {
+        // builtin.ts `unban`: the banned member whose id it is; a name is never resolved.
+        return banned_members(state, community)
+            .iter()
+            .find(|b| as_id == Some(b.user_id.0))
+            .map(|b| b.user_id.hex());
+    }
+    let eligible = eligible_members(state, community, command);
     eligible
         .iter()
         .find(|m| as_id == Some(m.user_id.0))
@@ -711,6 +745,29 @@ pub fn music_bar(description: &str, room: Option<&str>) -> String {
     )
 }
 
+/// CommandHost.tsx `suggest` for `/unban` (`loadBans`): the conversation's server's bans are read once its user field is
+/// offered and none are held yet, once per server while the app runs (a ban or unban reads them again).
+fn read_bans(ctx: &SlotCx) {
+    thread_local! {
+        static ASKED: std::cell::RefCell<std::collections::HashSet<CommunityId>> =
+            std::cell::RefCell::default();
+    }
+    let (Some(client), Some(community)) = (&ctx.client, ctx.community) else {
+        return;
+    };
+    if ctx.state.people.bans.contains_key(&community)
+        || !ASKED.with(|a| a.borrow_mut().insert(community))
+    {
+        return;
+    }
+    // The read runs on the client's runtime; its answer is published as `PeopleState::bans`.
+    drop(
+        client
+            .moderation()
+            .run(move |m| async move { m.load_bans(community).await.map(|_| ()) }),
+    );
+}
+
 /// The suggestions of `chips`' active field in the conversation of `ctx` (`None`: the command has no field, or went).
 pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
     let definition = definition(&ctx.state, ctx.community, &chips.command)?;
@@ -746,6 +803,9 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         .and_then(Result::ok)
     };
     let members = if suggest_for(&definition, option) == Suggest::Member {
+        if definition.id == "unban" {
+            read_bans(ctx);
+        }
         member_suggestions(&ctx.state, ctx.community, &definition.id, &text)
     } else {
         Vec::new()
@@ -1186,6 +1246,56 @@ mod tests {
             &|_| None,
         );
         assert!(!picked.can_accept, "a pick is: Enter runs");
+    }
+
+    /// CommandHost.tsx `suggest` for `/unban`'s user: the server's banned members (`bans:<community>`), matched by id or
+    /// name, each labelled with its name, "Banned member" under it and its id as the value; a typed id of a banned
+    /// member names them. Nothing before the bans are read, and nothing outside a community.
+    #[test]
+    fn unban_lists_the_banned_members() {
+        use dilla_client::state::UserId;
+        use dilla_client::state::members::BanSummary;
+        let (mut s, c) = alexes();
+        assert!(
+            member_suggestions(&s, Some(c), "unban", "").is_empty(),
+            "not read yet"
+        );
+        let ban = |n: u8, name: &str| BanSummary {
+            user_id: UserId([n; 16]),
+            name: name.into(),
+            reason: String::new(),
+            by_user: UserId([1; 16]),
+            created: 0,
+            expires: None,
+        };
+        s.people
+            .bans
+            .insert(c, vec![ban(8, "Loki"), ban(9, "Fenrir")]);
+        let all = member_suggestions(&s, Some(c), "unban", "");
+        let rows: Vec<(&str, &str)> = all
+            .iter()
+            .map(|m| (m.label.as_str(), m.sub.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [("Loki", "Banned member"), ("Fenrir", "Banned member")]
+        );
+        assert_eq!(all[1].value, UserId([9; 16]).hex());
+        let fen = member_suggestions(&s, Some(c), "unban", "fen");
+        assert_eq!(fen.len(), 1);
+        assert_eq!(fen[0].label, "Fenrir");
+        let by_id = member_suggestions(&s, Some(c), "unban", &UserId([8; 16]).hex());
+        assert_eq!(by_id[0].label, "Loki");
+        assert_eq!(
+            resolve_member(&s, Some(c), "unban", &UserId([9; 16]).hex()),
+            Some(UserId([9; 16]).hex())
+        );
+        assert_eq!(
+            resolve_member(&s, Some(c), "unban", "Fenrir"),
+            None,
+            "a name"
+        );
+        assert!(member_suggestions(&s, None, "unban", "").is_empty(), "a DM");
     }
 
     /// w2-fix1 re-review: a `/kick` or `/ban` member list is judged through one moderation gate read once for the list

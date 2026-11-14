@@ -20,6 +20,8 @@ pub const WHEN_HINT: &str = "Try “in 1 hour” or “tomorrow 09:00”";
 pub const JOIN_VOICE_FIRST: &str = "join voice first";
 /// `commandPickerCopy.separator`.
 pub const SEPARATOR: &str = " · ";
+/// CommandHost.tsx `suggest`: a `/unban` suggestion's second line.
+pub const BANNED_MEMBER: &str = "Banned member";
 /// `commandPickerCopy.sugTitle`: the suggestions' title, by what they suggest.
 pub const SUG_MEMBERS: &str = "Members";
 pub const SUG_DURATIONS: &str = "Durations";
