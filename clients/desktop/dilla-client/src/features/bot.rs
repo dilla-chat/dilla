@@ -430,9 +430,12 @@ pub(crate) fn stopped(inner: &Arc<Inner>) {
 }
 
 /// Each running client's op 63 bookkeeping ([`hints::HintGate`]), by its `Inner`.
-static HINTS: Mutex<Vec<(Weak<Inner>, Arc<Mutex<hints::HintGate>>)>> = Mutex::new(Vec::new());
+static HINTS: Mutex<Vec<(Weak<Inner>, SharedGate)>> = Mutex::new(Vec::new());
 
-fn hints_for(inner: &Arc<Inner>) -> Arc<Mutex<hints::HintGate>> {
+/// One client's [`hints::HintGate`], shared with its trailing fetches.
+type SharedGate = Arc<Mutex<hints::HintGate>>;
+
+fn hints_for(inner: &Arc<Inner>) -> SharedGate {
     let mut r = HINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

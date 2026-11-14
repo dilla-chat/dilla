@@ -1388,7 +1388,7 @@ fn the_dm_list_is_read_without_opening_the_dms(cx: &mut TestAppContext) {
     let w = world("w2h-dm-start", 0);
     let ada = Rc::new(w.start(&w.ada));
     let bjorn = w.start(&w.bjorn);
-    let general = w.general(&ada);
+    w.general(&ada);
     w.general(&bjorn);
     cx.executor().allow_parking();
     cx.update(dilla_desktop::install);

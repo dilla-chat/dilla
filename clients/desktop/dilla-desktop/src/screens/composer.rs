@@ -1059,7 +1059,7 @@ mod tests {
     #[gpui::test]
     fn a_release_empties_the_draft_in_the_field(cx: &mut gpui::TestAppContext) {
         cx.update(crate::install);
-        let (composer, vcx) = cx.add_window_view(|window, cx| Composer::new(window, cx));
+        let (composer, vcx) = cx.add_window_view(Composer::new);
         vcx.update(|window, cx| {
             let input = composer.read(cx).input.clone();
             input.update(cx, |s, cx| s.set_value("half a secret", window, cx));
