@@ -338,6 +338,45 @@ fn end_room(ended: &watch::Sender<Option<RoomEnd>>, why: Option<RoomEnd>) {
     });
 }
 
+/// stats.ts `RTT_MAX`: the most a ping says, in ms.
+const RTT_MAX_MS: f64 = 60_000.0;
+
+/// stats.ts `rttOf` over one peer connection's report: the current round-trip time of the pair in use (the transport's
+/// selected pair, else a nominated pair that succeeded), in whole ms. `None` when no pair is in use or it was never
+/// answered (no round trip measured yet).
+pub fn rtt_ms_of(report: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
+    use livekit::webrtc::stats::{IceCandidatePairState, RtcStats};
+    let pairs = || {
+        report.iter().filter_map(|s| match s {
+            RtcStats::CandidatePair(p) => Some(p),
+            _ => None,
+        })
+    };
+    let selected = report.iter().find_map(|s| match s {
+        RtcStats::Transport(t) if !t.transport.selected_candidate_pair_id.is_empty() => {
+            Some(t.transport.selected_candidate_pair_id.as_str())
+        }
+        _ => None,
+    });
+    let pair = selected
+        .and_then(|id| pairs().find(|p| p.rtc.id == id))
+        .or_else(|| {
+            pairs().find(|p| {
+                p.candidate_pair.nominated
+                    && p.candidate_pair.state == Some(IceCandidatePairState::Succeeded)
+            })
+        })?;
+    let p = &pair.candidate_pair;
+    if p.responses_received == 0 && p.current_round_trip_time <= 0.0 {
+        return None;
+    }
+    Some(
+        (p.current_round_trip_time * 1000.0)
+            .round()
+            .clamp(0.0, RTT_MAX_MS) as u32,
+    )
+}
+
 /// A local share being published.
 struct LocalShare {
     sid: TrackSid,
@@ -794,6 +833,13 @@ impl Call {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
+    }
+
+    /// The link's ping now (session.ts `readLink`: the publisher's connection, else the subscriber's), in ms; `None`
+    /// while no round trip is measured or the stats cannot be read. It never goes to the server.
+    pub async fn rtt_ms(&self) -> Option<u32> {
+        let stats = self.room.get_stats().await.ok()?;
+        rtt_ms_of(&stats.publisher_stats).or_else(|| rtt_ms_of(&stats.subscriber_stats))
     }
 
     /// The room's end on its own ([`RoomEnd`]): `None` while this device is in it. A [`Call::leave`] never sets it.
@@ -1472,5 +1518,60 @@ mod end_tests {
         let (tx, rx) = watch::channel(None);
         end_room(&tx, None);
         assert_eq!(*rx.borrow(), Some(RoomEnd::Disconnected));
+    }
+}
+
+#[cfg(test)]
+mod rtt_tests {
+    use super::*;
+    use livekit::webrtc::stats::{self as st, RtcStats};
+
+    fn pair(id: &str, rtt: f64, nominated: bool, answered: bool) -> RtcStats {
+        let mut p = st::CandidatePairStats::default();
+        p.rtc.id = id.into();
+        p.candidate_pair.current_round_trip_time = rtt;
+        p.candidate_pair.nominated = nominated;
+        p.candidate_pair.state = Some(st::IceCandidatePairState::Succeeded);
+        p.candidate_pair.responses_received = u64::from(answered);
+        RtcStats::CandidatePair(p)
+    }
+
+    fn transport(selected: &str) -> RtcStats {
+        let mut t = st::TransportStats::default();
+        t.transport.selected_candidate_pair_id = selected.into();
+        RtcStats::Transport(t)
+    }
+
+    /// stats.ts `rttOf`: the transport's selected pair's current round-trip time (else a nominated, succeeded pair), in
+    /// whole ms; a report with no pair, or a pair never answered, knows none.
+    #[test]
+    fn the_ping_is_the_selected_pair_s_round_trip() {
+        let report = [
+            pair("a", 0.250, true, true),
+            pair("b", 0.0124, false, true),
+            transport("b"),
+        ];
+        assert_eq!(
+            rtt_ms_of(&report),
+            Some(12),
+            "the selected pair, not the nominated one"
+        );
+        assert_eq!(rtt_ms_of(&[pair("a", 0.0456, true, true)]), Some(46));
+        assert_eq!(
+            rtt_ms_of(&[pair("a", 0.0004, true, true)]),
+            Some(0),
+            "under 1 ms"
+        );
+        assert_eq!(
+            rtt_ms_of(&[pair("a", 0.0, true, false)]),
+            None,
+            "never answered"
+        );
+        assert_eq!(
+            rtt_ms_of(&[pair("a", 0.02, false, true)]),
+            None,
+            "no pair in use"
+        );
+        assert_eq!(rtt_ms_of(&[]), None);
     }
 }

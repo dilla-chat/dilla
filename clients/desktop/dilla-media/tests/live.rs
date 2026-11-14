@@ -376,6 +376,17 @@ fn desktop_to_desktop_through_the_sfu_with_client_core_keys_and_an_epoch_change(
     }
     assert_eq!(failed(&sa), 0, "{sa}");
     assert_eq!(failed(&sb), 0, "{sb}");
+    // The link's ping (the dock's and the call bar's "{ms} ms"): measured on a live link, here a few ms at most.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let rtt = loop {
+        let s = a.stats();
+        if let Some(ms) = s["rtt_ms"].as_u64() {
+            break ms;
+        }
+        assert!(Instant::now() < deadline, "no ping measured: {s}");
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    assert!(rtt < 1000, "a local link's ping: {rtt} ms");
 
     // An epoch change mid-call: bob commits, both install the new epoch; audio carries on under
     // the new KIDs with no frame accepted under another key.

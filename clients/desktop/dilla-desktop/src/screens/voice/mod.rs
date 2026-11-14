@@ -1197,6 +1197,16 @@ use gpui::prelude::FluentBuilder as _;
 
 // ---- the dock -----------------------------------------------------------------------------------------------------
 
+/// VoiceView.tsx `Dock`'s ping of the link (`call.ping_ms`, the media's read): "— ms" until one is read (a parity
+/// fixture's call has none), "<1 ms" under a millisecond, else "{ms} ms".
+pub fn ping_text(ms: Option<u32>) -> String {
+    match ms {
+        None => t("voice.dock.pingNone").to_owned(),
+        Some(0) => t("voice.dock.pingSub").to_owned(),
+        Some(ms) => tf("voice.dock.ping", &[("ms", &ms.to_string())]),
+    }
+}
+
 /// The voice dock over the user panel (`slots::dock`, first): the call's channel, its state and leave. Shown from the
 /// join's start to the leave.
 pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -1209,7 +1219,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     // VoiceView.tsx `Dock`'s `where`: the channel, or "the call with {name}" for a DM.
     let name = call_place(&state).unwrap_or_default();
     let where_ = match call.phase {
-        CallPhase::In => t("voice.dock.pingNone").to_owned(),
+        CallPhase::In => ping_text(call.ping_ms),
         CallPhase::WaitingForRemove => t("voice.announce.rejoining").to_owned(),
         _ => t("voice.dock.connecting").to_owned(),
     };
@@ -2602,7 +2612,7 @@ fn bar_control(
 
 /// The 64px call bar (CallStage.tsx `bar`, Signal §5.6): the room with its `--ok` dot and the stats line under it on the
 /// left, then mute, deafen, camera, share (with the stream-quality chevron while sharing) and leave, worded. The stats
-/// are the link's ping as the dock reads it (`voice.dock.pingNone` until the client reads one).
+/// are the link's ping as the dock reads it ([`ping_text`]: `voice.dock.pingNone` until the media reads one).
 fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
     let v = &state.voice;
     let muted = v.self_mute || v.self_deaf;
@@ -2640,7 +2650,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
         )
         .child(
             line(
-                t("voice.dock.pingNone"),
+                ping_text(v.call.ping_ms),
                 text::META,
                 line_height(text::META, BAR_LINE),
                 color::FG_3,
@@ -2953,6 +2963,14 @@ fn count_label(n: usize) -> String {
 mod tests {
     use super::*;
     use dilla_client::state::voice::flags;
+
+    /// VoiceView.tsx `Dock`'s ping: "— ms" until a ping is read, "<1 ms" under a millisecond, else "{ms} ms".
+    #[test]
+    fn the_ping_reads_as_the_web_s_dock_says_it() {
+        assert_eq!(ping_text(None), "— ms");
+        assert_eq!(ping_text(Some(0)), "<1 ms");
+        assert_eq!(ping_text(Some(42)), "42 ms");
+    }
 
     fn state_with(people: &[(u8, u8, u8)]) -> (AppState, Channel) {
         let ch = Channel {

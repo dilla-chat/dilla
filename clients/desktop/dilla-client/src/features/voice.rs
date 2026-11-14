@@ -697,6 +697,7 @@ impl Voice {
                 code: Some(code),
                 error: None,
                 roster,
+                ping_ms: None,
             };
         });
         // Product walk M5: a call started muted or deafened says so to the others at once.
@@ -1043,6 +1044,17 @@ impl Voice {
         self.inner.publish(move |s| {
             if s.voice.speaking != devices {
                 s.voice.speaking = devices;
+            }
+        });
+    }
+
+    /// The link's ping the media read for the call `call` (`None`: none measured now). A call left meanwhile, or
+    /// another call, takes nothing.
+    pub fn set_ping(&self, call: [u8; 16], ms: Option<u32>) {
+        self.inner.publish(move |s| {
+            let c = &mut s.voice.call;
+            if c.call_id == Some(call) && c.phase == CallPhase::In && c.ping_ms != ms {
+                c.ping_ms = ms;
             }
         });
     }

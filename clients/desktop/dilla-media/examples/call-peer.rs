@@ -11,7 +11,7 @@
 //!   epoch <epoch> <base key hex> <own leaf> <leaf>:<device hex>,...   the call group's keys
 //!   mute 0|1
 //!   mic <device id>                           switch the device microphone (prints {"event":"mic"})
-//!   stats                                     prints {"event":"stats",...}
+//!   stats                                     prints {"event":"stats",...,"rtt_ms":ms|null} (the link's ping)
 //!   listen                                    forgets the audio edges so far (prints {"event":"listening"})
 //!   edges                                     prints {"event":"edges","heard":[{"t","audible"}],"edges":[...]}:
 //!                                             the call's audio as a whole turning audible or quiet (any verified
@@ -279,7 +279,10 @@ async fn main() {
                         Some((d.clone(), json!(peak_hz(&tail))))
                     })
                     .collect();
-                emit(json!({"event": "stats", "media": stats, "levels": levels, "peaks": peaks}));
+                let rtt_ms = call.rtt_ms().await;
+                emit(
+                    json!({"event": "stats", "media": stats, "levels": levels, "peaks": peaks, "rtt_ms": rtt_ms}),
+                );
             }
             // The receive-side first-audio measurement (Task 28 wave 2, the Bot music timing tests): `listen` starts
             // over, `edges` answers each verified device's quiet/audible changes since, stamped with the wall clock.
