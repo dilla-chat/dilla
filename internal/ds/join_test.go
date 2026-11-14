@@ -14,6 +14,7 @@ package ds_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 
@@ -211,5 +212,52 @@ func TestWithNobodyOnlineAnExternalJoinIsNotHeldByTheFreeze(t *testing.T) {
 	var dsErr *ds.Error
 	if !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
 		t.Fatalf("got %v, want the parse's E_COMMIT_INVALID: nobody is online, so no freeze holds", err)
+	}
+}
+
+// A closed group takes no commit (CALLS-2), and says so with its own code: an external join that
+// comes after the last member ended the call (DELETE ?if_alone=1 closed its group) is 409
+// E_GROUP_CLOSED, never E_COMMIT_INVALID under rule "epoch", which a joiner reads as a stale epoch
+// and retries against a GroupInfo that never changes again; the joiner registers a fresh call group
+// instead. The refusal comes before the parse, so the bytes need not be a commit. Control: the same
+// bytes against the open group reach the parse.
+func TestAnExternalJoinOfAClosedGroupIsRefusedAsClosed(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.offline(g.members[0], g.members[1])
+	joiner := h.sessionOf(t, h.device(t))
+	h.acl.allow(joiner.UserID)
+	req := ds.ResyncRequest{ExternalCommit: []byte{0x00, 0x01, 0x02}, GroupInfo: []byte{0x03}}
+	ctx := context.Background()
+
+	var dsErr *ds.Error
+	if _, err := h.ds.Resync(ctx, joiner, g.id, req); !errors.As(err, &dsErr) || dsErr.Code != "E_COMMIT_INVALID" {
+		t.Fatalf("control: an external join of the open group = %v, want the parse's E_COMMIT_INVALID", err)
+	}
+	if err := h.ds.Close(ctx, g.id); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, err := h.ds.Resync(ctx, joiner, g.id, req)
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_CLOSED" || dsErr.Status != http.StatusConflict || dsErr.Rule != "" {
+		t.Fatalf("an external join of a closed group = %v, want 409 E_GROUP_CLOSED", err)
+	}
+
+	// A member's own commit is refused the same way, and so is POST /commit's early check.
+	row, err := h.repo.GetGroup(ctx, g.id)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	member := g.sessionOf(0)
+	commit := ds.CommitRequest{Epoch: row.Epoch, Commit: []byte{0x00}, GroupInfo: []byte{0x01}}
+	if _, err := h.ds.Commit(ctx, member, g.id, commit); !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_CLOSED" {
+		t.Fatalf("a member commit to a closed group = %v, want E_GROUP_CLOSED", err)
+	}
+	if err := h.ds.CheckCommit(ctx, member, g.id, row.Epoch); !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_CLOSED" {
+		t.Fatalf("CheckCommit of a closed group = %v, want E_GROUP_CLOSED", err)
+	}
+	// A device that holds no leaf learns nothing more about the group from POST /commit.
+	stranger := h.sessionOf(t, h.device(t))
+	if _, err := h.ds.Commit(ctx, stranger, g.id, commit); !errors.As(err, &dsErr) || dsErr.Code != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("a non-member's commit to a closed group = %v, want E_LEAF_NOT_CURRENT", err)
 	}
 }

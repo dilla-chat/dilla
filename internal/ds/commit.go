@@ -103,6 +103,14 @@ func (d *DS) commitPreflight(ctx context.Context, s Session, groupID id.ID, epoc
 		}
 	}
 
+	// (1b) a closed group takes no commit at all (CALLS-2), whatever its epoch: its own refusal, after
+	// the membership answer above (a stranger learns nothing more) and before the epoch's, so a
+	// joiner whose external commit comes after the call's end is not sent round a stale-epoch retry
+	// that cannot succeed. commitLocked's transaction asks again under the group's row lock.
+	if row.ClosedAt != nil {
+		return store.GroupRow{}, errGroupClosed()
+	}
+
 	// (2) one commit per epoch (invariant 3). protocol/02 defines the conflict as "a later one
 	// for the SAME epoch", so a client AHEAD of the instance — after a restore, say — is a
 	// structural error, not a conflict: winningCommit has nothing to return for a future epoch,
@@ -318,7 +326,10 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			if err != nil {
 				return err
 			}
-			if lockedGroup.ClosedAt != nil || lockedGroup.Epoch != row.Epoch {
+			if lockedGroup.ClosedAt != nil {
+				return errGroupClosed()
+			}
+			if lockedGroup.Epoch != row.Epoch {
 				return errCommitInvalid("epoch", "the group changed while this commit was being prepared")
 			}
 			epoch, err := g.Merge(ctx, *processed.Staged)

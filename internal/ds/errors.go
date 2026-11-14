@@ -117,6 +117,15 @@ func errCommitInvalid(rule, detail string) *Error {
 	}
 }
 
+// errGroupClosed is the refusal of a commit to a closed group: a call group whose call ended
+// (CALLS-2), a deleted channel's group, one a restore replaced. No commit of a closed group lands, so
+// its own code tells a committer apart from a stale epoch, which it would retry: the group is final.
+// A call joiner whose external commit came after the end reads the channel's call again and
+// registers a fresh call group (protocol/09 § Voice). 409: it is the group's state.
+func errGroupClosed() *Error {
+	return &Error{Code: "E_GROUP_CLOSED", Detail: "the group is closed", Status: http.StatusConflict}
+}
+
 func errCommitConflict(winning []byte, proposals [][]byte) *Error {
 	return &Error{
 		Code:          "E_COMMIT_CONFLICT",

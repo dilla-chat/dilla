@@ -171,10 +171,10 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `GET /v1/groups/{id}/info` | E | — | `[epoch, group_info, tree_hash, next_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/tree` | E | — | `[epoch, ratchet_tree, tree_hash]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/handshakes?from=&limit=` | E | — | `[[seq, epoch, kind, sender, blob]]` | `E_NOT_FOUND`, `E_PRUNED` |
-| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
+| `POST /v1/groups/{id}/commit` | E | `[epoch, commit(bstr), group_info(bstr), welcomes([[device_id(bstr16), blob(bstr)]]), ratchet_tree(bstr\|null)]` | `[seq, epoch]` | `E_COMMIT_CONFLICT`, `E_COMMIT_REQUIRED`, `E_COMMIT_INVALID`, `E_GROUP_CLOSED`, `E_FORBIDDEN`, `E_LEAF_NOT_CURRENT`, `E_INVALID_REQUEST`, `E_RATE_LIMITED` |
 | `POST /v1/groups/{id}/proposal` | E | `[epoch, proposal(bstr)]` | `[seq]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_INVALID_REQUEST`, `E_REMOVE_PENDING` |
 | `POST /v1/groups/{id}/message` | E | `[epoch, private_message(bstr), class(uint)]` (§ Upload class) | `[seq, franking_tag(bstr32), recv_ts]` | `E_COMMIT_REQUIRED`, `E_LEAF_NOT_CURRENT`, `E_TOO_LARGE`, `E_COMMITMENT_INVALID`, `E_FORBIDDEN`, `E_RATE_LIMITED`, `E_INVALID_REQUEST`, `E_NOT_FOUND` |
-| `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` (freeze-exempt, invariant 5) |
+| `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_GROUP_CLOSED`, `E_FORBIDDEN`, `E_REMOVE_PENDING` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
 | `POST /v1/keypackages` | E or V | `[packages([bstr]), last_resort(bstr\|null)]` | `201 [count]` | `E_COMMIT_INVALID`, `E_TOO_LARGE` |
 | `GET /v1/keypackages` | E | — | `200 [ordinary_active_count(uint), has_current_fallback(uint 0\|1)]` | `E_FORBIDDEN` (a Bot session: it reads its installation-scoped inventory instead) |
@@ -761,7 +761,10 @@ A class-1 upload is never checked for `send_messages` nor slowed. Whatever the c
 into the text group of a community channel that has been deleted is `403 E_FORBIDDEN`, and an
 upload into a closed group of any kind (a deleted channel's, or one a mode change or a restore
 replaced) is `404 E_NOT_FOUND`, as for a group that does not exist, before the freeze and the
-current-leaf check.
+current-leaf check. A commit to a closed group, member or external, is `409 E_GROUP_CLOSED`: after
+the membership answer a non-member gets (`403 E_LEAF_NOT_CURRENT` on `POST /commit`; `404
+E_NOT_FOUND` on `POST /resync` for a device the ACL does not admit) and before the epoch check, and
+again under the group lock, so a commit that loses the race with the close gets it too.
 
 Receivers drop a row whose class disagrees with its decrypted type (`04` § Semantics).
 
@@ -1154,6 +1157,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 409 | `E_CALL_FULL` | the call already has `livekit.max_voice_participants` devices | show "This call is full"; the user may retry later |
 | 409 | `E_CALL_SHARERS_FULL` | the call already has `livekit.max_publishers` devices sharing camera or screen | show that sharing is full; retry after a sharer stops |
 | 409 | `E_CALL_NOT_ALONE` | `DELETE /v1/calls/{call_id}?if_alone=1`: the caller's device is not the call group's only current leaf | the call goes on; just leave it |
+| 409 | `E_GROUP_CLOSED` | a commit (`POST /commit`, or an external commit on `POST /resync`) to a closed group: a call group whose call ended, a deleted channel's group, or one a mode change or a restore replaced. No commit of it lands | do not retry against this group; a call joiner reads the channel's call again and registers a fresh call group (`09` § Voice) |
 | 409 | `E_BOT_DUPLICATE` | a sealed Bot command's `request_id` was sent by another device in the last five minutes | mint a new `request_id` |
 | 409 | `E_NOT_BOT_CHANNEL` | a webhook's channel is not a Bot channel of its community: when the webhook is created, or on a POST after the channel was unmarked | pick a Bot channel, or mark the channel again |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
@@ -1209,6 +1213,10 @@ command sealed to a key the Bot no longer opens, refused before it is relayed (s
 never be answered: no reply key comes out of it). Incoming webhooks (`10` § Webhooks) add
 `E_NOT_BOT_CHANNEL` (409), a webhook whose channel is not a Bot channel; the public webhook route
 answers its refusals as JSON `{"code", "message"}` with these codes rather than as CBOR.
+`E_GROUP_CLOSED` (409) came with the GPUI desktop client's call fixes: a commit to a closed group
+was refused `422 E_COMMIT_INVALID` under rule `epoch`, which a call joiner whose external commit
+landed after the last member ended the call (`09` § Voice) read as a stale epoch; its own code tells
+the joiner to register a fresh call group instead. It is a delivery-service code.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

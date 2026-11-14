@@ -775,7 +775,7 @@ func (h *Calls) end(w http.ResponseWriter, r *http.Request) {
 	}
 	// The conditional form closes the group first, under its lock and only while the caller is its
 	// only current non-bot leaf; endCall then finds it closed and finishes the end. A joiner whose commit
-	// comes after the close is refused for the closed group and registers a fresh one.
+	// comes after the close is refused for the closed group (409 E_GROUP_CLOSED) and registers a fresh one.
 	if ifAlone && !closed {
 		if err := h.closeIfAlone(r.Context(), group, s.DeviceID); err != nil {
 			server.WriteError(w, err)
