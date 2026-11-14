@@ -405,6 +405,7 @@ fn echo_after(flags: ApmFlags) -> (f64, f64) {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "real-time pacing: measured on the Linux runner; a shared macOS/Windows CI VM's scheduler is no measure (run it on a real machine)")]
 fn aec_removes_playout_echo() {
     let (echo_dbfs, after) = echo_after(ApmFlags::default());
     println!("aec: echo {echo_dbfs:.1} dBFS -> {after:.1} dBFS");
@@ -779,6 +780,7 @@ fn the_device_latencies_set_the_apm_stream_delay() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "real-time pacing: measured on the Linux runner; a shared macOS/Windows CI VM's scheduler is no measure (run it on a real machine)")]
 fn enhanced_within_80ms_budget() {
     // A voiced burst (a 150 Hz pulse train through a 3 kHz low-pass: speech-like energy) after a
     // second of silence, at real-time pace. The delay is the time from the burst's first sample

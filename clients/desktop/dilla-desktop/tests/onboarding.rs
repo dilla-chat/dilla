@@ -278,7 +278,7 @@ fn recovery_key_field_accepts_paste_with_hyphens(cx: &mut TestAppContext) {
         .collect::<Vec<_>>()
         .join("-");
     cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(pasted.clone())));
-    cx.simulate_keystrokes("ctrl-v");
+    cx.simulate_keystrokes("secondary-v"); // the platform paste: ⌘V on macOS, Ctrl+V elsewhere
     cx.run_until_parked();
     let value = input.read_with(cx, |s, _| s.value().to_string());
     assert_eq!(value, pasted, "the paste is kept as typed, hyphens and all");
