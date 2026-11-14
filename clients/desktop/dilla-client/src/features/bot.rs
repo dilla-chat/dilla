@@ -496,7 +496,7 @@ impl Bot {
             )
             .is_some_and(|(u, _)| u == m.user);
             let outcome = if still {
-                let moderation = crate::features::moderation::Moderation::of(inner.clone());
+                let moderation = crate::features::moderation::Moderation::of(&inner);
                 let done = match &m.action {
                     ModAction::Kick => moderation.kick(m.community, m.user).await,
                     ModAction::Ban {
