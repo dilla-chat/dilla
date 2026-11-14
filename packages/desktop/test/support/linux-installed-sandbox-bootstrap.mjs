@@ -34,7 +34,7 @@ export async function createSourceSnapshot(checkout,expectedSHA,destination){
   return {mode:match[1]==='100755'?0o700:0o600,id:match[2],path:match[3]};
  });
  if(!entries.length||entries.length>16384)invalid();
- const raw=gitOutput(checkout,['cat-file','--batch'],{input:entries.map(entry=>entry.id+'\n').join(''),maxBuffer:128*1024**2});
+ const raw=gitOutput(checkout,['cat-file','--batch'],{input:entries.map(entry=>entry.id+'\n').join(''),maxBuffer:512*1024**2}); // the whole HEAD tree's blobs (145 MiB at the GPUI screens wave)
  let offset=0;
  for(const entry of entries){
   const end=raw.indexOf(10,offset);if(end<offset||end-offset>100)invalid();
