@@ -964,14 +964,8 @@ impl Voice {
         self.calls.forget(&live.group_id);
         let snap = self.inner.snapshot();
         let (own, community) = (snap.account.device_id, snap.voice.call.community);
-        self.inner.publish(move |s| {
-            if let Some(d) = own {
-                s.voice.drop_device(live.channel, d);
-            }
-            s.voice.call = OwnCall::default();
-            s.voice.speaking.clear();
-            s.voice.share = LocalShare::default();
-        });
+        self.inner
+            .publish(move |s| ended_removed(s, live.channel, own));
         self.after_end(community, None).await;
     }
 
@@ -1215,6 +1209,21 @@ fn epoch_fields(m: &MediaEpoch) -> (u64, String, Vec<(UserId, DeviceId, u16)>) {
     )
 }
 
+/// The state a call whose own leaf is gone ends in (controller.ts `lost`: `phase: 'removed'`): idle, with the removal
+/// said in `call.error` (`E_REMOVED`, the code a takeover's lost room says too) in the same snapshot, so the stage never
+/// shows a silent idle; the own entry leaves the room, and the speaking set and the share go.
+fn ended_removed(s: &mut AppState, channel: ChannelId, own: Option<DeviceId>) {
+    if let Some(d) = own {
+        s.voice.drop_device(channel, d);
+    }
+    s.voice.call = OwnCall {
+        error: Some("E_REMOVED".into()),
+        ..OwnCall::default()
+    };
+    s.voice.speaking.clear();
+    s.voice.share = LocalShare::default();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1232,6 +1241,29 @@ mod tests {
                 V::Uint(flags),
             ],
         }
+    }
+
+    /// w2-fix2 re-review (controller.ts `lost`: `phase: 'removed'`): a call whose own leaf is gone ends idle with the
+    /// removal said (`E_REMOVED`) in the same snapshot, never as a silent idle; the own entry, the speaking set and the
+    /// share go with it.
+    #[test]
+    fn a_removed_call_ends_saying_so() {
+        let ch = ChannelId([7; 16]);
+        let own = DeviceId([2; 16]);
+        let mut s = AppState::default();
+        s.voice.call = OwnCall {
+            phase: CallPhase::In,
+            channel: Some(ch),
+            call_id: Some([9; 16]),
+            ..OwnCall::default()
+        };
+        s.voice.share.camera = true;
+        ended_removed(&mut s, ch, Some(own));
+        assert_eq!(s.voice.call.phase, CallPhase::Idle);
+        assert_eq!(s.voice.call.error.as_deref(), Some("E_REMOVED"));
+        assert_eq!(s.voice.call.call_id, None);
+        assert!(!s.voice.share.camera);
+        assert!(s.voice.participants(ch).iter().all(|p| p.device_id != own));
     }
 
     fn state_with_channel(ch: [u8; 16]) -> AppState {
