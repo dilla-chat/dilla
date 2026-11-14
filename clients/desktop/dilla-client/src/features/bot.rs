@@ -12,6 +12,7 @@
 //!   finished row goes away [`crate::state::bot::PRIVATE_RESULT_TTL_MS`] after it finished; the area sweeps itself on a timer.
 
 pub mod catalog;
+pub mod hints;
 mod io;
 pub mod private;
 pub mod registry;
@@ -389,6 +390,52 @@ pub(crate) fn stopped(inner: &Arc<Inner>) {
     });
 }
 
+/// Each running client's op 63 bookkeeping ([`hints::HintGate`]), by its `Inner`.
+static HINTS: Mutex<Vec<(Weak<Inner>, Arc<Mutex<hints::HintGate>>)>> = Mutex::new(Vec::new());
+
+fn hints_for(inner: &Arc<Inner>) -> Arc<Mutex<hints::HintGate>> {
+    let mut r = HINTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    r.retain(|(w, _)| w.strong_count() > 0);
+    if let Some((_, g)) = r
+        .iter()
+        .find(|(w, _)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(inner)))
+    {
+        return g.clone();
+    }
+    let gate = Arc::new(Mutex::new(hints::HintGate::default()));
+    r.push((Arc::downgrade(inner), gate.clone()));
+    gate
+}
+
+/// Runs `fetch` for op 63's hint `frame` when the gate says (hints.ts `request`): now, after the coalescing window, or not
+/// at all.
+fn coalesced(
+    inner: &Arc<Inner>,
+    frame: &frames::BotStateChangedFrame,
+    fetch: impl FnOnce() + Send + 'static,
+) {
+    let scope = (frame.scope_kind, frame.scope_id);
+    let gate = hints_for(inner);
+    let hint = gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .on_hint(scope, frame.revision, std::time::Instant::now());
+    match hint {
+        hints::Hint::Drop => {}
+        hints::Hint::Now => fetch(),
+        hints::Hint::After(wait) => drop(inner.spawn(async move {
+            tokio::time::sleep(wait).await;
+            gate.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .due(scope, std::time::Instant::now());
+            fetch();
+            Ok(())
+        })),
+    }
+}
+
 /// The voice channel whose player op 63 asks to read again: a call scope (kind 2, its id the voice channel) of the call
 /// this device is in, where the dock shows the player (music.tsx reads only a shown player).
 fn music_hint(
@@ -424,18 +471,27 @@ impl AreaFrames for Bot {
                 let Ok(frame) = frames::bot_state_changed_of(f) else {
                     return;
                 };
-                // A community's Bot changed state (scope kind 0): read its catalog and status again.
+                // A community's Bot changed state (scope kind 0): read its catalog and status again, at most once per
+                // 250 ms (Task 28 item 15, hints.ts).
                 if frame.scope_kind == 0 {
-                    drop(inner.spawn(async move {
-                        let _ = sealed.refresh(CommunityId(frame.scope_id)).await;
-                        Ok(())
-                    }));
+                    let reading = inner.clone();
+                    coalesced(inner, &frame, move || {
+                        drop(reading.spawn(async move {
+                            let _ = sealed.refresh(CommunityId(frame.scope_id)).await;
+                            Ok(())
+                        }));
+                    });
                 }
-                // The player of this device's call changed (Task 21's `Music::refresh`, integration 3 step 5).
+                // The player of this device's call changed (Task 21's `Music::refresh`, integration 3 step 5). Only a
+                // shown player is read (hints.ts `visible`).
                 if let Some(channel) = music_hint(&inner.snapshot(), &frame) {
-                    let transport = crate::features::bot_admin::default_transport(inner);
-                    let admin = crate::features::bot_admin::BotAdmin::new(inner.clone(), transport);
-                    drop(crate::features::music::Music::new(admin).refresh(channel));
+                    let reading = inner.clone();
+                    coalesced(inner, &frame, move || {
+                        let transport = crate::features::bot_admin::default_transport(&reading);
+                        let admin =
+                            crate::features::bot_admin::BotAdmin::new(reading.clone(), transport);
+                        drop(crate::features::music::Music::new(admin).refresh(channel));
+                    });
                 }
             }
             _ => {}
