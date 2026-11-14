@@ -340,7 +340,8 @@ fn row(
             }
         })
         // The list is one tab stop (useRovingFocus): Up and Down step, Home and End jump; Enter opens the card and
-        // Shift+F10 or the Menu key the person menu, at the pointer (the row has no other anchor here).
+        // Shift+F10 or the Menu key the person menu, under the row at its left edge. Enter is handled here and stops
+        // propagation, so the key-up does not click the row again (the vendored GPUI's activation patch).
         .track_focus(&focus.handles[focus.index].clone().tab_stop(focus.stop))
         .focus_visible(|s| s.shadow(crate::metrics::focus_ring()))
         .on_key_down(move |e: &KeyDownEvent, window, cx| {

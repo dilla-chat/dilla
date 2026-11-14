@@ -86,8 +86,9 @@ pub struct LightboxState {
     pub images: Vec<(u32, String, u64)>,
     pub at: usize,
     pub close_focus: FocusHandle,
-    /// The client whose message it shows, and the window it is drawn in (multi-instance: never another window's).
-    pub client: Rc<Client>,
+    /// The client whose message it shows (`None` in a drawn fixture, whose whole pictures are already in `images`), and
+    /// the window it is drawn in (multi-instance: never another window's).
+    pub client: Option<Rc<Client>>,
     pub owner: WindowId,
 }
 
@@ -281,7 +282,7 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
         .retain(|_, t| !t.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
     if u.lightbox
         .as_ref()
-        .is_some_and(|l| Rc::ptr_eq(&l.client, client))
+        .is_some_and(|l| l.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)))
     {
         u.lightbox = None;
     }
@@ -831,7 +832,7 @@ pub fn toggle(key: CardKey, cx: &mut App) {
 
 /// Opens the lightbox on image `index` of a message's images, focus on close.
 pub fn open_lightbox(
-    client: Rc<Client>,
+    client: Option<Rc<Client>>,
     channel: ChannelId,
     seq: u64,
     images: Vec<(u32, String, u64)>,

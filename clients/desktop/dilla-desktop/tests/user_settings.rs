@@ -94,11 +94,11 @@ macro_rules! parity {
 
 parity! {
     parity_user_settings_profile => "profile";
-    parity_user_settings_profile_b => "profile-b", "parity after T6c: chrome 0.2469 % (the bio textarea: gpui-component lays its lines 20px apart where the web's 1.5 line height is 19.5px, and draws no resize grip)";
+    parity_user_settings_profile_b => "profile-b", "parity after T6c: chrome 0.2469 % (the bio textarea: its lines are 19.5px apart now (the vendored GPUI's line height on the layout unit), but Chromium snaps each line's baseline to a whole css px (19 and 20 apart in turn) where gpui-base places them at 19.5 steps, and it draws no resize grip)";
     parity_user_settings_profile_short_wide => "profile-short-wide";
     parity_user_settings_profile_short_wide_b => "profile-short-wide-b";
-    parity_user_settings_devices => "devices", "parity after T6c: chrome 0.4956 % (this device is the desktop app, \"Dilla on Linux\" with its DESKTOP · LINUX tag, where the web reference's is a browser, \"Chrome on Linux\"; the shot's device ids and the sign-up device's last activity are not in the sidecar)";
-    parity_user_settings_devices_b => "devices-b", "parity after T6c: chrome 0.3917 % (as devices)";
+    parity_user_settings_devices => "devices";
+    parity_user_settings_devices_b => "devices-b";
     parity_user_settings_devices_sign_out => "devices-sign-out";
     parity_user_settings_devices_sign_out_b => "devices-sign-out-b";
     parity_user_settings_appearance => "appearance";

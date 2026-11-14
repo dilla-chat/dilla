@@ -338,6 +338,17 @@ impl RenderOnce for DeviceRow {
         )
         .child(main)
         .child(actions)
-        .children(menus)
+        // The menu takes no place in the row (a flex item would add a 14px gap after the actions, which the web's
+        // portal does not): it hangs at the row's right edge, where the actions end.
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right(px(PAD_X))
+                .flex()
+                .items_center()
+                .children(menus),
+        )
     }
 }

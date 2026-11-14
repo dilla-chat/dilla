@@ -56,21 +56,21 @@ fn parity_reactions_bar_b() {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2392 % (the log end now matches; the pill chips' rounded corners anti-alias differently from Skia's, and with 12 chips in a row that passes the gate)"]
+#[ignore = "parity after T6c: chrome 0.2392 % (the colour emoji glyphs: the bitmap face scaled to 15px samples otherwise than Skia's, and a chip's width follows the emoji's advance, so some chips' edges sit a device px apart; not fixable at the root without the text system's emoji path)"]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2331 % (as many-wrapping: chip corner anti-aliasing)"]
+#[ignore = "parity after T6c: chrome 0.2331 % (as many-wrapping: the emoji glyphs and the chip edges they move)"]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2812 % (the log end matches; the picker grid's emoji glyphs and cell edges, 1 css px)"]
+#[ignore = "parity after T6c: chrome 0.2812 % (the picker grid's colour emoji glyphs, as many-wrapping)"]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }

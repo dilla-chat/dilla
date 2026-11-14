@@ -163,6 +163,21 @@ pub fn attachment_cards(
             )
         })
         .collect();
+    // A drawn fixture's whole pictures of this message's images, by index (empty with a client).
+    let fixture_pictures: std::rc::Rc<Vec<(u32, Vec<u8>)>> = std::rc::Rc::new(if live {
+        Vec::new()
+    } else {
+        item.attachments
+            .iter()
+            .filter_map(|a| {
+                ctx.state
+                    .attachments
+                    .fixture_pictures
+                    .get(&(a.name.clone(), a.size))
+                    .map(|b| (a.index, b.clone()))
+            })
+            .collect()
+    });
     let mut cards = Vec::new();
     for a in &item.attachments {
         let name = safe_name(&a.name, t("shell.attachment.unnamed"));
@@ -241,10 +256,26 @@ pub fn attachment_cards(
                 let open = key.map(|k| {
                     let images = images.clone();
                     let client = ctx.client.clone();
+                    let pictures = fixture_pictures.clone();
                     click(move |w, cx| {
-                        if let Some(c) = &client {
+                        // A drawn fixture has no client: its whole pictures go in as the opens' answers would.
+                        for (index, bytes) in pictures.iter() {
+                            if let Some(image) = ui::picture(bytes) {
+                                ui::ui(cx).images.insert(
+                                    ImageKey {
+                                        client: k.client,
+                                        channel: k.channel,
+                                        seq: k.seq,
+                                        index: *index,
+                                        thumb: false,
+                                    },
+                                    Slot::Ready(image),
+                                );
+                            }
+                        }
+                        if client.is_some() || !pictures.is_empty() {
                             ui::open_lightbox(
-                                c.clone(),
+                                client.clone(),
                                 k.channel,
                                 k.seq,
                                 images.clone(),
@@ -284,7 +315,7 @@ pub fn attachment_cards(
                     },
                 };
                 let mime = a.mime.clone();
-                let (el, h) = media_card(MediaCardProps {
+                let props = MediaCardProps {
                     id: id.into(),
                     video,
                     name: name.clone().into(),
@@ -305,10 +336,13 @@ pub fn attachment_cards(
                             ui::save(c, k, &save_name, cx)
                         }
                     })),
-                });
+                };
+                let width =
+                    dilla_desktop_ui::components::attachments::player::media_card_width(&props);
+                let (el, h) = media_card(props);
                 cards.push(Card {
                     element: Box::new(move |_| el),
-                    width: dilla_desktop_ui::components::attachments::player::MEDIA_W,
+                    width,
                     height: Some(h),
                 });
             }
@@ -617,20 +651,24 @@ fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
     let client = l.client.clone();
     let (index, name, size) = l.images.get(at)?.clone();
     let focus = l.close_focus.clone();
+    // A drawn fixture (no client) has its whole pictures in `images` already, under owner 0.
+    let owner = client.as_deref().map_or(0, ui::owner_of);
     let key = ImageKey {
-        client: ui::owner_of(&client),
+        client: owner,
         channel,
         seq,
         index,
         thumb: false,
     };
-    ui::ensure_image(&client, key, cx);
+    if let Some(c) = &client {
+        ui::ensure_image(c, key, cx);
+    }
     let image = match ui::ui(cx).images.get(&key) {
         Some(Slot::Ready(i)) => Some(i.clone()),
         _ => None,
     };
     let card = CardKey {
-        client: ui::owner_of(&client),
+        client: owner,
         channel,
         seq,
         index,
@@ -645,7 +683,11 @@ fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
         save_label: t("shell.lightbox.save").into(),
         on_save: click({
             let name = name.clone();
-            move |_, cx| ui::save(&client, card, &name, cx)
+            move |_, cx| {
+                if let Some(c) = &client {
+                    ui::save(c, card, &name, cx)
+                }
+            }
         }),
         close_label: t("shell.lightbox.close").into(),
         on_close: click(|_, cx| ui::close_lightbox(cx)),

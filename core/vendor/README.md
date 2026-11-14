@@ -256,3 +256,20 @@ painter (`dilla-desktop-ui/src/text.rs`, `LinePaint`) reads it; the test `laid_o
 `clients/desktop/dilla-desktop/tests/vendored_patches.rs` pins it, and `laid_out_size_is_asked_in_prepaint_only` its assert.
 
 Keep this patch while the Linux parity references are Chromium frames.
+
+A second change (Task 28 wave 2, 2026-11-14), marked `DILLA PATCH` in `src/elements/div.rs`: a focused element with a
+click listener arms its keyboard click (Enter or Space key-down, fired on the matching key-up) from a recorder that
+`paint_keyboard_listeners` registers after the element's own key-down listeners (`Interactivity::pending_activation_recorder`);
+upstream registers it before them, in `paint_mouse_listeners`. A key-down the element handles itself (it stops propagation
+or prevents the default) therefore no longer also clicks it on key-up, as a browser runs a button's activation behaviour
+only for a keydown whose default was not prevented. Upstream, Enter on a member row opened its card on key-down and the
+key-up click closed it again; every row, chip and menu item that handles Enter itself did the same. Tests:
+`a_key_down_the_element_handles_does_not_also_click` and `enter_on_a_member_row_leaves_its_card_open` in
+`clients/desktop/dilla-desktop/tests/vendored_patches.rs`. Keep it until upstream checks the key-down's handling before
+arming the click.
+
+A third change (Task 28 wave 2), marked `DILLA PATCH` in `src/window.rs`: `Window::line_height` answers the text style's
+line height on Chromium's layout unit (`util::layout_length`) at a whole scale factor, where upstream rounds it to a whole
+px. gpui-component's inputs and textareas lay their lines out by it, so a 13px textarea at 1.5 drew its lines 20px apart
+where the web's are 19.5px. `TextStyle::line_height_in_pixels` (the text elements' own path) keeps upstream's rounding;
+a fractional scale keeps it too. Test: `the_line_height_lies_on_the_layout_unit` in the same file.

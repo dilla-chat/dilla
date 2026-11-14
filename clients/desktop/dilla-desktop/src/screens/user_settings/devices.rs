@@ -38,8 +38,9 @@ pub fn time_ago(unix: u64, now: u64) -> String {
 }
 
 /// What this device calls itself when the server holds no name for it (the web's "Chrome on Linux" from the user agent; the
-/// native app has no user agent, so it names itself and its system).
-pub fn suggested_name() -> String {
+/// native app has no user agent, so it names itself and its system). `browser`: a drawn fixture's browser
+/// (`ProfileState::fixture_browser`), which names this device instead.
+pub fn suggested_name(browser: Option<&str>) -> String {
     let os = match dilla_client::features::devices::this_platform() {
         "darwin" => "macOS",
         "win32" => "Windows",
@@ -48,15 +49,15 @@ pub fn suggested_name() -> String {
     };
     tf(
         "devices.renameSuggestion",
-        &[("browser", "Dilla"), ("os", os)],
+        &[("browser", browser.unwrap_or("Dilla")), ("os", os)],
     )
 }
 
 /// The title of a device: its stored label; for this device without one, the suggestion; else "Unnamed device".
-pub fn title_of(d: &DeviceEntry) -> String {
+pub fn title_of(d: &DeviceEntry, browser: Option<&str>) -> String {
     match &d.label {
         Some(l) => l.clone(),
-        None if d.own => suggested_name(),
+        None if d.own => suggested_name(browser),
         None => t("devices.unnamed").to_owned(),
     }
 }
@@ -129,16 +130,16 @@ pub fn ordered(devices: &[DeviceEntry]) -> Vec<DeviceEntry> {
     order_devices(devices)
 }
 
-/// This device's tag: "Desktop · Linux".
-pub fn own_tag() -> String {
-    own_platform_tag()
+/// This device's tag: "Desktop · Linux"; none in a browser (a drawn fixture's, `browser`), as the web shows none there.
+pub fn own_tag(browser: Option<&str>) -> Option<String> {
+    browser.is_none().then(own_platform_tag)
 }
 
 /// The text a rename dialog starts on: the current name; this device without one, the suggestion.
-pub fn rename_start(d: &DeviceEntry) -> String {
+pub fn rename_start(d: &DeviceEntry, browser: Option<&str>) -> String {
     match &d.label {
         Some(l) => l.clone(),
-        None if d.own => suggested_name(),
+        None if d.own => suggested_name(browser),
         None => String::new(),
     }
 }
@@ -277,11 +278,20 @@ mod tests {
     #[test]
     fn titles_never_show_an_id() {
         let mut d = device(1, false, 1, None, true);
-        assert_eq!(title_of(&d), "Unnamed device");
+        assert_eq!(title_of(&d, None), "Unnamed device");
         d.label = Some("Laptop".into());
-        assert_eq!(title_of(&d), "Laptop");
+        assert_eq!(title_of(&d, None), "Laptop");
         let own = device(2, true, 1, None, true);
-        assert!(title_of(&own).starts_with("Dilla on "));
+        assert!(title_of(&own, None).starts_with("Dilla on "));
+        assert!(own_tag(None).is_some());
+    }
+
+    /// A drawn fixture's own device is the shooter's browser: named from it, with no platform tag (the web's row).
+    #[test]
+    fn a_fixture_s_own_device_is_the_shooter_s_browser() {
+        let own = device(2, true, 1, None, true);
+        assert!(title_of(&own, Some("Chrome")).starts_with("Chrome on "));
+        assert_eq!(own_tag(Some("Chrome")), None);
     }
 
     /// Devices.tsx: this device signs out, every other live device is removed (with the key when the signed list names it),

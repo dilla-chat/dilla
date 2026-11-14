@@ -2,7 +2,8 @@
 //!
 //! The web shooter's viewer signed up on one device and signs in on a fresh one (see `diagnostics.rs`), so the account
 //! lists two live devices: this one (the shooter's, first in the list) and the sign-up device. Their ids are derived
-//! from the viewer's, as the fixture's other ids are.
+//! from the viewer's, as the fixture's other ids are. This one is the shooter's browser, "Chrome on <os>" with no
+//! platform tag, as the web names it from the user agent.
 
 use dilla_client::state::AppState;
 use dilla_client::state::DeviceId;
@@ -25,4 +26,6 @@ pub(super) fn apply(_world: &WorldSpec, viewer: &str, state: &mut AppState) {
     };
     state.profile.devices = vec![entry(this, true), entry(signup, false)];
     state.profile.devices_loaded = true;
+    // The reference's own device is the shooter's Chromium (shoot.mjs), which names itself from its user agent.
+    state.profile.fixture_browser = Some("Chrome".to_owned());
 }

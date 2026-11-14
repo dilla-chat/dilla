@@ -389,7 +389,7 @@ impl UserSettings {
                 .devices
                 .iter()
                 .find(|d| d.id == *id)
-                .map(rename_start)
+                .map(|d| rename_start(d, self.ctx.state.profile.fixture_browser.as_deref()))
                 .unwrap_or_default();
             self.rename
                 .update(cx, |s, cx| s.set_value(start, window, cx));
@@ -418,7 +418,10 @@ impl UserSettings {
             .devices
             .iter()
             .find(|d| d.id == id)
-            .map_or_else(|| id.hex().chars().take(8).collect(), title_of)
+            .map_or_else(
+                || id.hex().chars().take(8).collect(),
+                |d| title_of(d, self.ctx.state.profile.fixture_browser.as_deref()),
+            )
     }
 
     fn removed_toast(&self, name: &str, window: &Window, cx: &mut Context<Self>) {
@@ -597,13 +600,18 @@ impl UserSettings {
         let rows = self.rows();
         let n = rows.len();
         let this = cx.entity();
-        let mut list = div().flex().flex_col().gap(density.row_gap());
+        // workspace.css: in the settings frame the device list has no gap (`.d-settings-frame .dw-device-list { gap: 0 }`):
+        // its rows are one group, each after the first drawing the hairline between.
+        let mut list = div().flex().flex_col();
         for (i, d) in rows.iter().enumerate() {
             let id = d.id;
             let meta = meta_of(d, now);
-            let mut row = DeviceRow::new(("device", i), title_of(d))
-                .position(GroupPosition::of(i, n))
-                .seen(meta.seen);
+            let mut row = DeviceRow::new(
+                ("device", i),
+                title_of(d, self.ctx.state.profile.fixture_browser.as_deref()),
+            )
+            .position(GroupPosition::of(i, n))
+            .seen(meta.seen);
             if let Some(state) = meta.state {
                 row = row.state(state);
             }
@@ -616,9 +624,10 @@ impl UserSettings {
                 ));
             }
             if d.own {
-                row = row
-                    .platform_label(own_tag())
-                    .own_label(t("devices.thisBrowser"));
+                if let Some(tag) = own_tag(self.ctx.state.profile.fixture_browser.as_deref()) {
+                    row = row.platform_label(tag);
+                }
+                row = row.own_label(t("devices.thisBrowser"));
             }
             if let Some(action) = action_of(d) {
                 let this = this.clone();
@@ -640,7 +649,13 @@ impl UserSettings {
             if can_rename(d) {
                 let this = this.clone();
                 row = row.menu(
-                    tf("signalSettings.menu.device", &[("name", &title_of(d))]),
+                    tf(
+                        "signalSettings.menu.device",
+                        &[(
+                            "name",
+                            &title_of(d, self.ctx.state.profile.fixture_browser.as_deref()),
+                        )],
+                    ),
                     vec![MenuItem::new("rename", t("devices.rename"))],
                     move |_, window, cx| {
                         this.update(cx, |v, cx| {
@@ -675,7 +690,10 @@ impl UserSettings {
         };
         let device = self.ctx.state.profile.devices.iter().find(|d| d.id == id);
         let (name, id8) = match device {
-            Some(d) => (title_of(d), short_id(d, 8)),
+            Some(d) => (
+                title_of(d, self.ctx.state.profile.fixture_browser.as_deref()),
+                short_id(d, 8),
+            ),
             None => (String::new(), id.hex().chars().take(8).collect()),
         };
         div()

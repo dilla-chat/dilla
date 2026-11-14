@@ -18,7 +18,7 @@ use gpui_component::input::{InputEvent, TextareaState};
 use zeroize::Zeroizing;
 
 use super::mentions::{
-    MentionMember, MentionRole, RoleInfo, edit_roles, editable_text, encode_mentions, mention_roles,
+    MentionMember, MentionRole, edit_roles, editable_text, encode_mentions, mention_roles,
 };
 use crate::slots::SlotCx;
 
@@ -247,10 +247,9 @@ impl MessageUi {
             .and_then(|c| state.members.get(&c))
             .map(Vec::as_slice)
             .unwrap_or_default();
-        let roles: Vec<RoleInfo> = Vec::new();
-        // T14: the right to mention @everyone and @here comes from the channel's permission bits; until the roles slice
-        // exists nobody is offered it, so an edit never turns text into a broadcast.
-        let broadcast = false;
+        // Conversation.tsx: an edit is encoded with the composer's rule (the channel's bits, the shell's rule while
+        // unknown) and with the offered roles plus every role the message already names (`editRoles`).
+        let (broadcast, roles) = crate::screens::composer::mention_rights(state, Some(channel));
         let self_user = state.account.user_id.map(|u| u.hex());
         let text = editable_text(
             &item.body,

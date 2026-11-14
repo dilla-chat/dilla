@@ -113,17 +113,23 @@ impl Focusable for Composer {
     }
 }
 
-/// Whether the viewer may mention everyone in the server (ComposerArea.tsx `broadcast`: the `mentionEveryone` bit; the
-/// owner and an administrator hold every bit), and the server's roles a mention can name (`offeredRoles` filters them).
-fn mention_rights(slots: &SlotCx) -> (bool, Vec<RoleInfo>) {
-    use dilla_client::features::roles::perm::{self, PermInput, PermRole};
-    let (Some(community), Some(me)) = (slots.community, slots.state.account.user_id) else {
+/// Whether the viewer may mention everyone in `channel`, and the server's roles a mention can name (`offeredRoles`
+/// filters them): ComposerArea.tsx's `broadcast`, `bits & mentionEveryone` with `bits` from `useChannelBits` (the
+/// channel's overwrites applied; the owner and an administrator hold every bit). While the bits are unknown the web's
+/// shell rule stands (Shell.tsx `broadcast = channel !== null`): any server channel offers it, a DM never does.
+pub(crate) fn mention_rights(
+    state: &dilla_client::state::AppState,
+    channel: Option<ChannelId>,
+) -> (bool, Vec<RoleInfo>) {
+    use dilla_client::features::roles::{perm, viewer_channel_bits};
+    let Some((channel, community)) =
+        channel.and_then(|c| state.channel(c).map(|ch| (c, ch.community_id)))
+    else {
         return (false, Vec::new());
     };
-    let state = &slots.state;
-    let access = state.roles.access_of(community);
-    let summaries = state.roles.roles_of(community);
-    let roles: Vec<RoleInfo> = summaries
+    let roles: Vec<RoleInfo> = state
+        .roles
+        .roles_of(community)
         .iter()
         .map(|r| RoleInfo {
             id: dilla_client::features::server_admin::hex_id(&r.id),
@@ -132,43 +138,23 @@ fn mention_rights(slots: &SlotCx) -> (bool, Vec<RoleInfo>) {
             mentionable: r.mentionable,
         })
         .collect();
-    let broadcast = access.owner
-        || access.administrator
-        || access.everyone_id.is_some_and(|everyone| {
-            let owner = state
-                .communities
-                .iter()
-                .find(|c| c.id == community)
-                .map(|c| c.owner.0);
-            let held: Vec<[u8; 16]> = state
-                .members
-                .get(&community)
-                .and_then(|m| m.iter().find(|m| m.user_id == me))
-                .map(|m| m.role_ids.clone())
-                .unwrap_or_default();
-            let perm_roles: Vec<PermRole> = summaries
-                .iter()
-                .map(|r| PermRole {
-                    id: r.id,
-                    position: u64::from(r.position),
-                    allow: r.allow,
-                    deny: r.deny,
-                })
-                .collect();
-            owner.is_some_and(|owner| {
-                perm::resolve_community(
-                    &PermInput {
-                        owner,
-                        everyone_id: everyone,
-                        roles: &perm_roles,
-                        held: &held,
-                    },
-                    me.0,
-                ) & perm::MENTION_EVERYONE
-                    != 0
-            })
-        });
+    let broadcast = viewer_channel_bits(state, channel)
+        .is_none_or(|bits| bits & u64::from(perm::MENTION_EVERYONE) != 0);
     (broadcast, roles)
+}
+
+/// The draft as posted (ComposerArea.tsx `encodeMentions(value, encodeWith, broadcast, roleMentions)`): member names,
+/// @everyone and @here when `broadcast`, and the offered roles, encoded back to their tokens.
+pub(crate) fn encode_draft(
+    raw: &str,
+    members: &[MentionMember],
+    broadcast: bool,
+    roles: &[RoleInfo],
+) -> String {
+    let usernames: Vec<&str> = members.iter().map(|m| m.username.as_str()).collect();
+    let role_mentions: Vec<MentionRole> =
+        mention_roles(&offered_roles(roles, broadcast), &usernames);
+    encode_mentions(raw, members, broadcast, &role_mentions)
 }
 
 /// The members a mention can name in the open channel, without the viewer.
@@ -362,7 +348,7 @@ impl Composer {
         if self.dismissed == Some(start) {
             return Vec::new();
         }
-        let (broadcast, roles) = mention_rights(&self.slots);
+        let (broadcast, roles) = mention_rights(&self.slots.state, self.slots.channel);
         mention_options(
             &query,
             &candidates(&self.slots),
@@ -437,11 +423,8 @@ impl Composer {
                 username: m.username.clone(),
             })
             .collect();
-        let roles: Vec<RoleInfo> = Vec::new();
-        let usernames: Vec<&str> = members.iter().map(|m| m.username.as_str()).collect();
-        let role_mentions: Vec<MentionRole> =
-            mention_roles(&offered_roles(&roles, false), &usernames);
-        encode_mentions(raw, &members, false, &role_mentions)
+        let (broadcast, roles) = mention_rights(&self.slots.state, self.slots.channel);
+        encode_draft(raw, &members, broadcast, &roles)
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1077,5 +1060,143 @@ mod tests {
             "",
             "the draft left the field"
         );
+    }
+
+    /// A server with one text channel, the viewer holding only @everyone (allow `everyone_allow`), and one mentionable
+    /// role "mods" at position 1. `read` says whether the roles slice (access, overwrites) has been read.
+    fn world(
+        everyone_allow: u32,
+        read: bool,
+    ) -> (dilla_client::state::AppState, ChannelId, [u8; 16]) {
+        use dilla_client::features::roles::perm;
+        use dilla_client::state::channels::{ChannelGroupState, Community};
+        use dilla_client::state::roles::{CommunityAccess, RoleSummary};
+        use dilla_client::state::{AppState, CommunityId, UserId};
+        let (community, channel, everyone) = (CommunityId([1; 16]), ChannelId([2; 16]), [3; 16]);
+        let me = UserId([4; 16]);
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: community,
+            name: "c".into(),
+            owner: UserId([9; 16]),
+            policy_version: 0,
+        });
+        s.channels.push(Channel {
+            id: channel,
+            community_id: community,
+            kind: 0,
+            mode: 0,
+            name: "general".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        });
+        s.members.insert(
+            community,
+            vec![Member {
+                user_id: me,
+                username: "me".into(),
+                display: String::new(),
+                kind: 0,
+                role_ids: Vec::new(),
+                status_msg: String::new(),
+                bio: String::new(),
+            }],
+        );
+        let role = |id: [u8; 16], name: &str, position: u32, allow: u32| RoleSummary {
+            id,
+            name: name.into(),
+            color: 0,
+            position,
+            hoist: false,
+            mentionable: position > 0,
+            allow,
+            deny: 0,
+            members: 1,
+        };
+        s.roles.roles.insert(
+            community,
+            vec![
+                role(
+                    everyone,
+                    "@everyone",
+                    0,
+                    everyone_allow | perm::VIEW_CHANNEL,
+                ),
+                role([5; 16], "mods", 1, 0),
+            ],
+        );
+        if read {
+            s.roles.access.insert(
+                community,
+                CommunityAccess {
+                    loaded: true,
+                    everyone_id: Some(everyone),
+                    ..CommunityAccess::default()
+                },
+            );
+            s.roles.overwrites.entry(community).or_default();
+        }
+        (s, channel, everyone)
+    }
+
+    #[test]
+    fn a_picked_everyone_and_role_are_posted_as_mentions() {
+        use dilla_client::features::roles::perm;
+        let (s, channel, _) = world(perm::MENTION_EVERYONE, true);
+        let (broadcast, roles) = mention_rights(&s, Some(channel));
+        assert!(broadcast);
+        assert_eq!(
+            encode_draft("@everyone and @mods", &[], broadcast, &roles),
+            format!("<@everyone> and <@{}>", "05".repeat(16)),
+        );
+    }
+
+    #[test]
+    fn the_channel_s_overwrite_decides_the_broadcast_right() {
+        use dilla_client::features::roles::perm;
+        use dilla_client::state::roles::OverwriteSummary;
+        let (mut s, channel, everyone) = world(perm::MENTION_EVERYONE, true);
+        let community = s.channel(channel).unwrap().community_id;
+        s.roles.overwrites.entry(community).or_default().insert(
+            channel,
+            vec![OverwriteSummary {
+                kind: 0,
+                target_id: everyone,
+                allow: 0,
+                deny: perm::MENTION_EVERYONE,
+            }],
+        );
+        let (broadcast, roles) = mention_rights(&s, Some(channel));
+        assert!(!broadcast, "the channel denies it");
+        assert_eq!(
+            encode_draft("@everyone", &[], broadcast, &roles),
+            "@everyone"
+        );
+        // And a channel can grant it to someone the server does not.
+        let (mut s, channel, everyone) = world(0, true);
+        let (broadcast, _) = mention_rights(&s, Some(channel));
+        assert!(!broadcast);
+        s.roles.overwrites.entry(community).or_default().insert(
+            channel,
+            vec![OverwriteSummary {
+                kind: 0,
+                target_id: everyone,
+                allow: perm::MENTION_EVERYONE,
+                deny: 0,
+            }],
+        );
+        assert!(mention_rights(&s, Some(channel)).0, "the channel allows it");
+    }
+
+    #[test]
+    fn while_the_rights_are_unknown_a_server_channel_offers_the_broadcast() {
+        let (s, channel, _) = world(0, false);
+        assert!(mention_rights(&s, Some(channel)).0);
+        assert!(!mention_rights(&s, None).0, "no channel (a DM)");
     }
 }

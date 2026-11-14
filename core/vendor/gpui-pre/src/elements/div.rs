@@ -2223,6 +2223,11 @@ pub struct Interactivity {
     pub(crate) pinch_listeners: Vec<PinchListener>,
     pub(crate) back_gesture_listeners: Vec<BackGestureListener>,
     pub(crate) key_down_listeners: Vec<KeyDownListener>,
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): the focused element's Enter/Space recorder, set by
+    /// `paint_mouse_listeners` and registered by `paint_keyboard_listeners` after the element's own key-down
+    /// listeners, so a key-down the element handles itself (propagation stopped or default prevented) does not also
+    /// arm the key-up click.
+    pub(crate) pending_activation_recorder: Option<Rc<RefCell<Option<u64>>>>,
     pub(crate) key_up_listeners: Vec<KeyUpListener>,
     pub(crate) modifiers_changed_listeners: Vec<ModifiersChangedListener>,
     pub(crate) action_listeners: Vec<(TypeId, ActionListener)>,
@@ -3084,19 +3089,10 @@ impl Interactivity {
                     //
                     // This design avoids an ABA problem that happens if you
                     // store the focus handle that registered the keypress.
-                    window.on_key_event({
-                        let pending_keyboard_down = pending_keyboard_down.clone();
-                        move |event: &KeyDownEvent, phase, window, _cx| {
-                            if phase.bubble() && !window.default_prevented() {
-                                let stroke = &event.keystroke;
-                                let is_activation_key = (stroke.key.eq("enter")
-                                    || stroke.key.eq("space"))
-                                    && !stroke.modifiers.modified();
-                                *pending_keyboard_down.borrow_mut() =
-                                    is_activation_key.then_some(window.focus_generation);
-                            }
-                        }
-                    });
+                    //
+                    // DILLA PATCH: the recorder is registered in `paint_keyboard_listeners`, after the element's own
+                    // key-down listeners (see `pending_activation_recorder`).
+                    self.pending_activation_recorder = Some(pending_keyboard_down.clone());
 
                     // Press enter, space to trigger click, when the element is focused.
                     window.on_key_event({
@@ -3345,6 +3341,20 @@ impl Interactivity {
             window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
                 listener(event, phase, window, cx);
             })
+        }
+
+        // DILLA PATCH (see `pending_activation_recorder`): after the element's key-down listeners, as a browser's
+        // activation behaviour runs only when the keydown's default was not prevented.
+        if let Some(pending_keyboard_down) = self.pending_activation_recorder.take() {
+            window.on_key_event(move |event: &KeyDownEvent, phase, window, _cx| {
+                if phase.bubble() && !window.default_prevented() {
+                    let stroke = &event.keystroke;
+                    let is_activation_key = (stroke.key.eq("enter") || stroke.key.eq("space"))
+                        && !stroke.modifiers.modified();
+                    *pending_keyboard_down.borrow_mut() =
+                        is_activation_key.then_some(window.focus_generation);
+                }
+            });
         }
 
         for listener in key_up_listeners {

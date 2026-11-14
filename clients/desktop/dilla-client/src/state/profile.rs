@@ -98,6 +98,10 @@ pub struct ProfileState {
     pub reduce_motion: MotionSetting,
     /// This device signed itself out and removed itself: the app wipes the store and shows the sign-in again.
     pub signed_out: bool,
+    /// The browser this device is in a drawn fixture ("Chrome"): the web reference's viewer is the shooter's Chromium,
+    /// so the fixture's own device is that browser, named from it and with no platform tag. Set only by the automation
+    /// build's fixture (`dilla-desktop/src/fixture/devices.rs`); `None` in the app, which names itself.
+    pub fixture_browser: Option<String>,
 }
 
 /// `AccountState.user`'s profile fields.

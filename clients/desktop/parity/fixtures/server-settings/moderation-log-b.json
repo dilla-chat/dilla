@@ -255,7 +255,8 @@
               "kick",
               "ban",
               "moderate",
-              "manageRoles"
+              "manageRoles",
+              "auditLog"
             ],
             "members": [
               "sigrid",
