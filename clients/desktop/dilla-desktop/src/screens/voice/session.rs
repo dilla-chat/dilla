@@ -104,6 +104,36 @@ pub enum Command {
     Quality(ShareOptions),
 }
 
+/// The link's ping read (session.ts `linkTick`), polled beside the call loop's other arms rather than awaited in one, so
+/// a stalled read never holds up a leave, the room's end or a command: one read in flight at a time, answering none
+/// once [`LINK_STALL`] has passed.
+#[derive(Default)]
+struct PingRead<'a> {
+    read: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>>>,
+}
+
+impl<'a> PingRead<'a> {
+    /// A tick: starts a read unless one is still in flight.
+    fn start(&mut self, read: impl std::future::Future<Output = Option<u32>> + Send + 'a) {
+        if self.read.is_none() {
+            self.read = Some(Box::pin(async move {
+                tokio::time::timeout(LINK_STALL, read).await.ok().flatten()
+            }));
+        }
+    }
+
+    /// The read's answer; pending while none is in flight. Cancel-safe: a read the loop's `select!` drops this for is
+    /// kept and answers later.
+    async fn answer(&mut self) -> Option<u32> {
+        let Some(read) = self.read.as_mut() else {
+            return std::future::pending().await;
+        };
+        let ms = read.await;
+        self.read = None;
+        ms
+    }
+}
+
 /// The running session (see the module docs). Dropping it leaves the call's media.
 pub struct MediaSession {
     _runtime: tokio::runtime::Runtime,
@@ -352,6 +382,7 @@ async fn in_call(
     let mut speaking = Speaking::default();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
     let mut link_read = tokio::time::interval(LINK_EVERY);
+    let mut ping = PingRead::default();
     let own = ctx.states.borrow().account.device_id;
     let mut applied: Option<(bool, bool)> = None;
     loop {
@@ -413,11 +444,9 @@ async fn in_call(
                 }
             },
             // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
-            // [`LINK_STALL`] says none.
-            _ = link_read.tick() => {
-                let ms = tokio::time::timeout(LINK_STALL, call.rtt_ms()).await.ok().flatten();
-                ctx.voice.set_ping(link.call_id, ms);
-            }
+            // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
+            _ = link_read.tick() => ping.start(call.rtt_ms()),
+            ms = ping.answer() => ctx.voice.set_ping(link.call_id, ms),
             _ = stats.tick() => {
                 let st = call.stats();
                 ctx.voice.send_stats(CallStatsReport {
@@ -432,6 +461,7 @@ async fn in_call(
     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
     ctx.voice.set_speaking(BTreeSet::new());
     feeder.abort();
+    drop(ping);
     call.leave().await;
 }
 
@@ -521,6 +551,30 @@ mod tests {
             roster: vec![(0, [1; 16], [2; 16]), (1, [3; 16], [4; 16])],
             code: String::new(),
         }
+    }
+
+    /// w2-fix2 re-review: the ping read is polled beside the call loop's other arms, never awaited in one: a stalled
+    /// read does not hold up a leave (or the room's end), it answers none after [`LINK_STALL`], one read is in flight at a
+    /// time, and an answered read clears the slot for the next tick.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_ping_read_never_holds_up_the_loop() {
+        let mut ping = PingRead::default();
+        ping.start(std::future::pending::<Option<u32>>());
+        // A second tick while the first read stalls starts nothing new (it would answer at once).
+        ping.start(std::future::ready(Some(5)));
+        let started = tokio::time::Instant::now();
+        let leave = std::future::ready(());
+        let left = tokio::select! {
+            biased;
+            ms = ping.answer() => Err(ms),
+            () = leave => Ok(()),
+        };
+        assert_eq!(left, Ok(()), "the leave is handled while the read stalls");
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+        assert_eq!(ping.answer().await, None, "a stalled read says none");
+        assert_eq!(started.elapsed(), LINK_STALL);
+        ping.start(std::future::ready(Some(42)));
+        assert_eq!(ping.answer().await, Some(42), "the next tick reads again");
     }
 
     /// The production feeder (ruling R24): a refusal suspends the call's keys, the same epoch passing again resumes
