@@ -89,6 +89,8 @@ interface Live {
   leaveRun: Promise<void> | null;
   /** The group epoch whose leaf verdict already had its leaves read again (rekey): a second verdict there blocks. */
   verdictRefreshed: bigint | null;
+  /** That read is still out (final review M1): another trust refresh meanwhile keeps the hold; the read's answer judges. */
+  verdictReading: boolean;
 }
 /** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
  *  'reset' (forgotten locally, nothing sent), a drop of its server with 'dropped' (torn down as a leave, then phase
@@ -347,7 +349,7 @@ export class CallController {
       notRung: waiting.filter((u) => rung !== null && !rung.has(u)) } : null;
     this.live = { channel, channelId, dm, members: target.members, groupId, callId: started.callId, vdec, postedEpoch: media.epoch,
       leaving: false, keysDropped: false, rotateOut: false, outgoing, rosterUsers: [], rosterDevices: [], leaveRun: null,
-      verdictRefreshed: null };
+      verdictRefreshed: null, verdictReading: false };
     // The join epoch's key: a push posted before this command's ret, its buffer transferred (L-TS-52).
     this.postKeys(this.live, media);
     this.setIn(media);
@@ -476,13 +478,19 @@ export class CallController {
       const epoch = this.groupEpoch(live);
       if (LEAF_VERDICTS.has(code) && epoch !== null && live.verdictRefreshed !== epoch) {
         live.verdictRefreshed = epoch;
+        live.verdictReading = true;
         live.keysDropped = true;
         this.setState({ ...this.state, phase: 'paused', error: this.deps.errorOf(e), changedUser: null });
         // Answered or refused, the gate judges again: a read that failed leaves the cached list, which still refuses.
-        const judgeAgain = (): void => { if (this.live === live && !live.leaving) this.rekey(fromEpoch); };
+        const judgeAgain = (): void => {
+          live.verdictReading = false;
+          if (this.live === live && !live.leaving) this.rekey(fromEpoch);
+        };
         this.deps.track(this.deps.refreshLeaves(live.groupId).then(judgeAgain, judgeAgain));
         return;
       }
+      // Final review M1: another trust refresh ended while that read is out; the call stays held until the read decides.
+      if (LEAF_VERDICTS.has(code) && live.verdictReading) return;
       // Any other gate refusal (unlisted, credential, tier, binding): blocked, and the device leaves.
       if (isTrustBlock(code)) {
         this.setState({ ...this.state, phase: 'blocked', error: this.deps.errorOf(e), changedUser: null });

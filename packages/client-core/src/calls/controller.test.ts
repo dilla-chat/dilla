@@ -805,6 +805,29 @@ describe('keys after the join (L-TS-56 step 2)', () => {
     expect(w.server.routes()).not.toContain('POST proposal');
   });
 
+  // Final review M1: another trust refresh that ends while the verdict's leaves are still being read (onTrust → rekey)
+  // meets the same verdict at the epoch already marked; it waits for the read instead of blocking, so the one retry
+  // still decides.
+  it('a trust refresh during a leaf verdict\'s read keeps the hold, and the read decides', async () => {
+    const w = await joined();
+    const refresh = w.server.hold('GET device list');
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await refresh.reached;
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    (w.controller as unknown as { calls: { onTrust: () => void } }).calls.onTrust();
+    await Promise.resolve();
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    expect(w.server.routes()).not.toContain('POST proposal');
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }]);
+    w.model.removeLeaf(w.callGroup, 2);
+    refresh.release();
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', error: null });
+    expect(w.pushes('callKeys')).toHaveLength(1);
+    expect(w.server.routes()).not.toContain('POST proposal');
+  });
+
   // w2-fix2 re-review: a refresh that rejects (its contract is a Promise, whatever the worker's never-throws today) must
   // not leave the call held until some later trust refresh: the gate judges again at once on what it has, and the leaf
   // it still refuses blocks and leaves.
