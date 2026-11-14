@@ -12,6 +12,11 @@
 //! device registers a fresh one). Each step, [`REJOIN_STEP`] apart, reads the call and the group's
 //! GroupInfo and tries the join again only when either has changed; the wait ends [`REJOIN_WAIT`]
 //! after the first refusal, failing closed with that refusal.
+//!
+//! A join whose external commit reaches the call group after the last member ended the call (its
+//! `DELETE ?if_alone=1` closed the group) is refused 409 `E_GROUP_CLOSED`, never as a stale
+//! epoch: the join reads the call once more and registers a fresh call group, as a first joiner
+//! does (join.ts).
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -187,10 +192,12 @@ fn stopped(leave: Option<[u8; 16]>) -> JoinRefused {
 }
 
 /// A refusal of the external join, and whether its cause was the instance's 409
-/// `E_REMOVE_PENDING` (join.ts `isHttp(e.cause, 409, 'E_REMOVE_PENDING')`).
+/// `E_REMOVE_PENDING` (join.ts `isHttp(e.cause, 409, 'E_REMOVE_PENDING')`) or 409
+/// `E_GROUP_CLOSED` (the call ended as the join was built: its group is closed).
 struct ExistingRefused {
     refused: JoinRefused,
     remove_pending: bool,
+    group_closed: bool,
 }
 
 impl From<JoinRefused> for ExistingRefused {
@@ -198,6 +205,7 @@ impl From<JoinRefused> for ExistingRefused {
         Self {
             refused,
             remove_pending: false,
+            group_closed: false,
         }
     }
 }
@@ -213,6 +221,7 @@ fn route_refused(e: &RouteError) -> ExistingRefused {
     ExistingRefused {
         refused: refused(&route_code(e), None),
         remove_pending: e.is(409, "E_REMOVE_PENDING"),
+        group_closed: e.is(409, "E_GROUP_CLOSED"),
     }
 }
 
@@ -250,6 +259,7 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
 ) -> Result<Joined, JoinRefused> {
     let mut reread_exists = true;
     let mut reread_closed = true;
+    let mut reread_ended = true;
     let mut wait_since: Option<Instant> = None;
     let mut read = reread(routes, target, seen).await?;
     loop {
@@ -297,6 +307,17 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
                 let mut tried: Option<Vec<u8>> = None;
                 if let Err(e) = join_existing(core, routes, hooks, target, &group, &mut tried).await
                 {
+                    // The call ended as this join was built (the last member's `DELETE
+                    // ?if_alone=1` closed its group): the instance refuses the external commit for
+                    // the closed group (409 `E_GROUP_CLOSED`). That group is final, so the call is
+                    // read once more and, when it names no group, a fresh one is registered
+                    // through the same steps (and the same core gate) as any first joiner's.
+                    // Once only: a second refusal fails the join.
+                    if e.group_closed && reread_ended && !hooks.cancelled() {
+                        reread_ended = false;
+                        read = reread(routes, target, seen).await?;
+                        continue;
+                    }
                     let Some(info) = tried.filter(|_| e.remove_pending && !hooks.cancelled())
                     else {
                         return Err(e.refused);
@@ -476,6 +497,8 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
             }
             Err(e) => {
                 discard(core, group);
+                // 409 `E_GROUP_CLOSED` is not stale: the group is final, and `join_loop`
+                // registers a fresh one.
                 let stale = e.is(422, "E_COMMIT_INVALID") || e.is(409, "E_COMMIT_CONFLICT");
                 if again && stale && moved_since(routes, group, &info).await {
                     continue;

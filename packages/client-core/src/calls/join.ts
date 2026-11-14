@@ -86,7 +86,7 @@ export async function joinCall(d: JoinDeps, t: JoinTarget): Promise<Joined> {
 }
 
 async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | null }): Promise<Joined> {
-  let reread = { exists: true, closed: true };
+  let reread = { exists: true, closed: true, ended: true };
   let waitSince: number | null = null;
   let read: ChannelCall = await d.routes.getChannelCall(t.channelId);
   seen.read = read;
@@ -121,6 +121,15 @@ async function joinLoop(d: JoinDeps, t: JoinTarget, seen: { read: ChannelCall | 
       try {
         await joinExisting(d, t, groupId, tried);
       } catch (e) {
+        // The call ended as this join was built (the last member's DELETE ?if_alone=1 closed its group): the instance
+        // refuses the external commit for the closed group (409 E_GROUP_CLOSED). That group is final, so the call is read
+        // once more and, when it names no group, a fresh one is registered through the same steps (and the same core
+        // gate) as any first joiner's. Once only: a second refusal fails the join.
+        if (e instanceof JoinRefused && isHttp(e.cause, 409, 'E_GROUP_CLOSED') && reread.ended && !d.cancelled()) {
+          reread = { ...reread, ended: false };
+          read = await d.routes.getChannelCall(t.channelId);
+          continue;
+        }
         if (!(e instanceof JoinRefused && isHttp(e.cause, 409, 'E_REMOVE_PENDING')) || tried.info === null || d.cancelled()) throw e;
         if (waitSince === null) { waitSince = d.now(); d.rejoining(); }
         read = await waitForRemove(d, t, e, waitSince, groupId, tried.info);
@@ -219,7 +228,8 @@ async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id, tried: { in
 
 /** The instance's refusals of a commit built on an epoch it has left: dillad answers 422 E_COMMIT_INVALID (rule
  *  structural, its resync takes the epoch to commit against from the group itself), a lost race 409 E_COMMIT_CONFLICT.
- *  409 E_REMOVE_PENDING is neither: the rejoin's own wait takes it. */
+ *  409 E_REMOVE_PENDING is neither: the rejoin's own wait takes it; nor is 409 E_GROUP_CLOSED, which joinLoop answers
+ *  with a fresh registration. */
 function isStaleCommit(e: unknown): boolean {
   return e instanceof DillaHttpError && ((e.status === 422 && e.code === 'E_COMMIT_INVALID') || (e.status === 409 && e.code === 'E_COMMIT_CONFLICT'));
 }

@@ -618,6 +618,46 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(v.pushes('callKeys')).toHaveLength(0);
   });
 
+  // The last member ends the call (DELETE ?if_alone=1 closes its group) while this device is joining: its external commit
+  // reaches the closed group and the instance refuses it as closed (409 E_GROUP_CLOSED), never as a stale epoch. The
+  // GroupInfo never changes again, so a stale-epoch retry could not help; the join reads the call once more and
+  // registers a fresh group through the same steps a first joiner takes (callGroupCreate, POST group, the join epoch's
+  // key through the gate), and nothing of the refused join is left behind.
+  it('a join whose external commit meets the call ended (409 E_GROUP_CLOSED) registers a fresh call group', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    const held = w.server.hold('POST resync');
+    const joined = w.call(JOIN(w));
+    await held.reached;
+    w.ds.closeCallGroup(w.callGroup);
+    held.release();
+    await joined;
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync',
+      'GET channel call', 'POST group', 'POST calls']);
+    expect(w.slice('call').phase).toBe('in');
+    const fresh = w.model.groups().filter((g) => g.kind === 1 && g.state === 2);
+    expect(fresh).toHaveLength(1);
+    expect(toHex(fresh[0].groupId)).not.toBe(toHex(w.callGroup));
+    expect(w.model.group(w.callGroup)).toBeUndefined();
+    expect(CALL_KEYS(w.pushes('callKeys')[0]).roster).toEqual([{ leaf: 0, deviceId: toHex(ME.device), userId: toHex(ME.user) }]);
+    expect(w.pushes('callKeys')).toHaveLength(1);
+  });
+
+  it('a second E_GROUP_CLOSED fails the join: the fresh read is taken once only', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.ds.closeCallGroup(w.callGroup);
+    // Both reads still name the closed group (an instance whose call read lags its close).
+    w.server.reply('GET channel call', { groupId: w.callGroup, callId: null, participants: [] });
+    w.server.reply('GET channel call', { groupId: w.callGroup, callId: null, participants: [] });
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_GROUP_CLOSED');
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync',
+      'GET channel call', 'GET group info', 'GET group tree', 'POST resync']);
+    expect(w.slice('call').phase).toBe('failed');
+    expect(w.model.group(w.callGroup)).toBeUndefined();
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+
   // Attacker: the instance (or a member) adds a forged device to the call group before this device joins. Nothing is
   // posted for that tree, and no state of the refused join is left behind.
   it('a block present at join time posts nothing and leaves no call group behind', async () => {

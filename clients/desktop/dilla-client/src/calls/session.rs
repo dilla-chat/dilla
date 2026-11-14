@@ -226,6 +226,25 @@ impl<H: Http + 'static> Calls<H> {
     /// Joins the channel's call ([`join_call`]), with the instance's policy version and external
     /// sender from the client's start.
     pub fn join(&self, target: CallTarget) -> CallJoin {
+        self.join_on(target, self.routes.clone())
+    }
+
+    /// [`Calls::join`] over `wrap` of these routes: a test steps in at a chosen request (another
+    /// device's end of the call between the join's reads and its commit). Never in a shipping build.
+    #[cfg(feature = "testing")]
+    pub fn join_through<R: CallRoutes + 'static>(
+        &self,
+        target: CallTarget,
+        wrap: impl FnOnce(Arc<SocketCallRoutes<H>>) -> R,
+    ) -> CallJoin {
+        self.join_on(target, Arc::new(wrap(self.routes.clone())))
+    }
+
+    fn join_on<R: CallRoutes + ?Sized + 'static>(
+        &self,
+        target: CallTarget,
+        routes: Arc<R>,
+    ) -> CallJoin {
         let (phase_tx, phase) = watch::channel(CallPhase::Idle);
         let cancel = Arc::new(AtomicBool::new(false));
         let engine = self.inner.engine().clone();
@@ -242,7 +261,6 @@ impl<H: Http + 'static> Calls<H> {
             cancel: cancel.clone(),
             phase: phase_tx,
         };
-        let routes = self.routes.clone();
         let outcome = self.inner.spawn(async move {
             let core = engine.core().clone();
             let joined = join_call(&*core, &*routes, &hooks, &target).await;

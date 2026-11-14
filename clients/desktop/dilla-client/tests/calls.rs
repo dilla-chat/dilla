@@ -1016,6 +1016,88 @@ async fn a_rejoin_whose_call_closed_while_it_waited_registers_a_fresh_group() {
     );
 }
 
+/// The last member ended the call (`DELETE ?if_alone=1` closed its group) while this device was
+/// joining: the external commit meets the closed group, 409 `E_GROUP_CLOSED`. The join reads the
+/// call once more and registers a fresh group, through the core's create and registration as a
+/// first joiner does; it neither waits nor retries the closed group.
+#[tokio::test(start_paused = true)]
+async fn a_join_whose_call_ended_under_it_registers_a_fresh_group() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    routes
+        .resync
+        .lock()
+        .unwrap()
+        .push_back(Err(err(409, "E_GROUP_CLOSED")));
+    routes.calls.lock().unwrap().extend([
+        ChannelCall {
+            group_id: Some(GROUP),
+            call_id: Some(CHANNEL),
+            participants: vec![],
+        },
+        ChannelCall {
+            group_id: None,
+            call_id: None,
+            participants: vec![],
+        },
+    ]);
+    let h = hooks();
+    let began = tokio::time::Instant::now();
+    let joined = join_call(&core, &routes, &h, &target()).await.unwrap();
+    assert_eq!(joined.group_id, FRESH);
+    assert!(
+        began.elapsed() < REJOIN_STEP,
+        "the closed group was waited on"
+    );
+    assert_eq!(
+        routes.posted(),
+        [
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync",
+            "get_call",
+            "post_group",
+            "start"
+        ]
+    );
+    let log = core.lock().unwrap().inner.log.clone();
+    assert!(log.contains(&"create 55".to_owned()), "{log:?}");
+    assert!(log.contains(&"registered 55 1".to_owned()), "{log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("joined")), "{log:?}");
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [CallPhase::Joining, CallPhase::In]
+    );
+}
+
+/// The fresh read is taken once: a call read that still names the closed group, refused again,
+/// fails the join with that refusal.
+#[tokio::test(start_paused = true)]
+async fn a_second_e_group_closed_fails_the_join() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    *routes.resync_always.lock().unwrap() = Some(err(409, "E_GROUP_CLOSED"));
+    let refused = join_call(&core, &routes, &hooks(), &target())
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "E_GROUP_CLOSED");
+    assert_eq!(refused.leave, None);
+    assert_eq!(
+        routes.posted(),
+        [
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync",
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync"
+        ]
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn only_409_e_remove_pending_waits_every_other_refusal_fails_at_once() {
     for (status, code) in [
@@ -1395,6 +1477,179 @@ async fn rejoin_waits_for_pending_remove() {
     expected.sort();
     assert_eq!(members["devices"], json!(expected));
     drop(client);
+    drop(host);
+}
+
+/// Alice's calls, her group and her call: the end [`EndBeforeResync`] makes.
+type AliceEnds = (dilla_client::calls::Calls, [u8; 16], [u8; 16]);
+
+/// Bob's call routes, with one step in: just before his external commit is posted, alice (alone in the call) leaves
+/// and so ends it (`DELETE ?if_alone=1` closes its group). Every answer of the commit is recorded.
+struct EndBeforeResync {
+    inner: std::sync::Arc<dilla_client::calls::SocketCallRoutes<dilla_client::calls::NoHttp>>,
+    /// Taken by the first resync.
+    end: Mutex<Option<AliceEnds>>,
+    resyncs: std::sync::Arc<Mutex<Vec<Result<u64, RouteError>>>>,
+}
+
+#[async_trait::async_trait]
+impl CallRoutes for EndBeforeResync {
+    async fn get_channel_call(&self, c: &[u8; 16]) -> Result<ChannelCall, RouteError> {
+        self.inner.get_channel_call(c).await
+    }
+    async fn post_group(&self, b: Vec<u8>) -> Result<u64, RouteError> {
+        self.inner.post_group(b).await
+    }
+    async fn get_group_info(&self, g: &[u8; 16]) -> Result<Vec<u8>, RouteError> {
+        self.inner.get_group_info(g).await
+    }
+    async fn get_group_tree(&self, g: &[u8; 16]) -> Result<Vec<u8>, RouteError> {
+        self.inner.get_group_tree(g).await
+    }
+    async fn post_resync(&self, g: &[u8; 16], b: Vec<u8>) -> Result<u64, RouteError> {
+        let end = self.end.lock().unwrap().take();
+        if let Some((alice, group, call)) = end {
+            let left = alice
+                .leave(group, call, true)
+                .await
+                .unwrap()
+                .expect("alice's client");
+            assert!(left.ended, "alice, alone, ends the call: {left:?}");
+        }
+        let answer = self.inner.post_resync(g, b).await;
+        self.resyncs.lock().unwrap().push(answer.clone());
+        answer
+    }
+    async fn post_commit(
+        &self,
+        g: &[u8; 16],
+        b: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, RouteError> {
+        self.inner.post_commit(g, b, idem).await
+    }
+    async fn post_proposal(&self, g: &[u8; 16], b: Vec<u8>) -> Result<u64, RouteError> {
+        self.inner.post_proposal(g, b).await
+    }
+    async fn get_handshakes(
+        &self,
+        g: &[u8; 16],
+        from: u64,
+        limit: u64,
+    ) -> Result<HandshakePage, RouteError> {
+        self.inner.get_handshakes(g, from, limit).await
+    }
+    async fn start_call(&self, c: &[u8; 16], v: &str) -> Result<CallStarted, RouteError> {
+        self.inner.start_call(c, v).await
+    }
+    async fn end_call_if_alone(&self, c: &[u8; 16]) -> Result<bool, RouteError> {
+        self.inner.end_call_if_alone(c).await
+    }
+    async fn decline_call(&self, c: &[u8; 16], t: u64) -> Result<(), RouteError> {
+        self.inner.decline_call(c, t).await
+    }
+}
+
+/// The call-join race against a real dillad: alice is alone in a call and leaves (ending it, `DELETE ?if_alone=1`
+/// closes its group) while bob joins, after bob read the call's GroupInfo and tree and before his external commit is
+/// posted. The instance refuses that commit as closed (409 `E_GROUP_CLOSED`, never `E_COMMIT_INVALID` under rule
+/// `epoch`), and bob's join reads the call once more and registers a fresh call group, through the same core create and
+/// registration as a first joiner: he ends in a call of his own, its only leaf.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_join_racing_the_last_members_end_registers_a_fresh_call() {
+    use dilla_client::calls::CallTarget;
+
+    let host = tokio::task::spawn_blocking(|| world::start_host("closed"))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let alice = world::sign_up(&host, &invite, "alice", "closed").await;
+    let bob = world::sign_up(&host, &invite, "bob", "closed").await;
+    let (host, alice, bob, community, voice) = tokio::task::spawn_blocking(move || {
+        let (c, v) = world::voice_community(&host, &alice, &[&bob]);
+        world::clear_session(&alice);
+        world::clear_session(&bob);
+        (host, alice, bob, c, v)
+    })
+    .await
+    .unwrap();
+    let a_client = world::start(&alice).await;
+    let b_client = world::start(&bob).await;
+    world::connected(&a_client).await;
+    world::connected(&b_client).await;
+    let target = CallTarget {
+        channel: voice,
+        community: Some(community),
+        vdec: String::new(),
+    };
+
+    // Alice opens the call alone: she registers its group and starts it.
+    let a_calls = a_client.calls();
+    let first = a_calls
+        .join(target.clone())
+        .outcome()
+        .await
+        .expect("alice's client")
+        .expect("alice joins");
+    assert!(first.started.created);
+
+    // Bob joins it; alice ends the call just before his external commit is posted.
+    let b_calls = b_client.calls();
+    let resyncs = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let join = b_calls.join_through(target.clone(), {
+        let end = Some((a_calls.clone(), first.group_id, first.started.call_id));
+        let resyncs = resyncs.clone();
+        move |inner| EndBeforeResync {
+            inner,
+            end: Mutex::new(end),
+            resyncs,
+        }
+    });
+    let phase = join.phase();
+    let joined = tokio::time::timeout(Duration::from_secs(60), join.outcome())
+        .await
+        .expect("bob's join ends")
+        .expect("bob's client")
+        .expect("bob is in a fresh call");
+    assert_eq!(*phase.borrow(), CallPhase::In);
+
+    let answers = resyncs.lock().unwrap().clone();
+    assert_eq!(
+        answers.len(),
+        1,
+        "one external commit, no retry of the closed group: {answers:?}"
+    );
+    let refusal = answers[0]
+        .as_ref()
+        .expect_err("the closed group refused the commit");
+    assert!(refusal.is(409, "E_GROUP_CLOSED"), "{refusal:?}");
+
+    // A fresh call group, registered by bob, with his device its only leaf.
+    assert_ne!(joined.group_id, first.group_id, "a fresh call group");
+    assert!(joined.started.created, "bob started the call");
+    assert_eq!(joined.started.group_id, joined.group_id);
+    assert_eq!(joined.media.roster.len(), 1);
+    assert_eq!(joined.media.roster[0].1, bob.device_id);
+    let read = b_calls
+        .routes()
+        .get_channel_call(&voice)
+        .await
+        .expect("the call read");
+    assert_eq!(
+        read.group_id,
+        Some(joined.group_id),
+        "the channel's call is bob's"
+    );
+
+    let left = b_calls
+        .leave(joined.group_id, joined.started.call_id, true)
+        .await
+        .unwrap()
+        .expect("bob's client");
+    assert!(left.ended, "{left:?}");
+    drop(b_client);
+    drop(a_client);
     drop(host);
 }
 

@@ -6240,9 +6240,9 @@ describe('call commands in the worker (task 6)', () => {
     expect(routeCalls(w)).toBe(before);
   });
 
-  it('lets the six call codes through sanitizeWorkerError', async () => {
+  it('lets the seven call codes through sanitizeWorkerError', async () => {
     const { sanitizeWorkerError } = await import('./controller');
-    for (const code of ['E_CALL_FULL', 'E_CALL_SHARERS_FULL', 'E_CALL_ACTIVE', 'E_REMOVE_PENDING', 'E_NO_CALL', 'E_DISCONNECTED']) {
+    for (const code of ['E_CALL_FULL', 'E_CALL_SHARERS_FULL', 'E_CALL_ACTIVE', 'E_GROUP_CLOSED', 'E_REMOVE_PENDING', 'E_NO_CALL', 'E_DISCONNECTED']) {
       const e = new DillaHttpError({ code, detail: 'secret detail', status: 409, retryAfterMs: null, extra: [] });
       expect(sanitizeWorkerError(e)).toEqual({ code, detail: '', status: 409, retryAfterMs: null });
     }
