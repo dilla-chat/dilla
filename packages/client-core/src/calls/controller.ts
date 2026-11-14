@@ -2,6 +2,7 @@
 // who is in voice (step 7) and the incoming DM rings (step 8). Every key, the join epoch's included, leaves the worker
 // only as a `callKeys` push with its buffer transferred (L-TS-52); no command result and no slice carries a key byte.
 import { CoreError, isTrustBlock, type ApplyResult, type CallMediaEpoch, type CorePort, type Id } from '../core-port';
+import { LEAF_VERDICTS } from '../sync/errors';
 import { callRingOf, Op, voiceStateOf, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
@@ -86,6 +87,8 @@ interface Live {
   rosterDevices: string[];
   /** The leave in flight (one per call): a second leave awaits it and sends nothing (task 8b review I1). */
   leaveRun: Promise<void> | null;
+  /** The group epoch whose leaf verdict already had its leaves read again (rekey): a second verdict there blocks. */
+  verdictRefreshed: bigint | null;
 }
 /** A join in flight (review I1): a leave or a sign-out cancels it with 'leave' (the self-Remove is sent), a reset with
  *  'reset' (forgotten locally, nothing sent), a drop of its server with 'dropped' (torn down as a leave, then phase
@@ -343,7 +346,8 @@ export class CallController {
     const outgoing = dm && started.created ? { ringing: waiting.filter((u) => rung === null || rung.has(u)), declined: [],
       notRung: waiting.filter((u) => rung !== null && !rung.has(u)) } : null;
     this.live = { channel, channelId, dm, members: target.members, groupId, callId: started.callId, vdec, postedEpoch: media.epoch,
-      leaving: false, keysDropped: false, rotateOut: false, outgoing, rosterUsers: [], rosterDevices: [], leaveRun: null };
+      leaving: false, keysDropped: false, rotateOut: false, outgoing, rosterUsers: [], rosterDevices: [], leaveRun: null,
+      verdictRefreshed: null };
     // The join epoch's key: a push posted before this command's ret, its buffer transferred (L-TS-52).
     this.postKeys(this.live, media);
     this.setIn(media);
@@ -464,6 +468,21 @@ export class CallController {
           changedUser: this.changedUser(text === null ? [live.groupId] : [live.groupId, text], live.dm ? live.members : live.rosterUsers) });
         return;
       }
+      // The native follow_epochs rule (fix-call-trust), as sendWithTrustRetry answers the same verdicts: a leaf verdict
+      // (unlisted, revoked, credential, tier) is judged against the cached signed list of the leaf's user, which predates
+      // a device that user added since (a known contact's new device joining the call). Once per group epoch the call is
+      // held (the page drops its keys), the group's leaves are read again, and the gate judges once more; the core alone
+      // decides that second answer, and a leaf the fresh read still refuses blocks and leaves below.
+      const epoch = this.groupEpoch(live);
+      if (LEAF_VERDICTS.has(code) && epoch !== null && live.verdictRefreshed !== epoch) {
+        live.verdictRefreshed = epoch;
+        live.keysDropped = true;
+        this.setState({ ...this.state, phase: 'paused', error: this.deps.errorOf(e), changedUser: null });
+        this.deps.track(this.deps.refreshLeaves(live.groupId).then(() => {
+          if (this.live === live && !live.leaving) this.rekey(fromEpoch);
+        }));
+        return;
+      }
       // Any other gate refusal (unlisted, credential, tier, binding): blocked, and the device leaves.
       if (isTrustBlock(code)) {
         this.setState({ ...this.state, phase: 'blocked', error: this.deps.errorOf(e), changedUser: null });
@@ -501,6 +520,11 @@ export class CallController {
     live.postedEpoch = media.epoch;
     this.postKeys(live, media);
     this.setIn(media);
+  }
+
+  /** The call group's current epoch, or null when it cannot be read. */
+  private groupEpoch(live: Live): bigint | null {
+    try { return this.deps.core()?.groupRow(live.groupId)?.epoch ?? null; } catch { return null; }
   }
 
   /** The call group's epoch is not the one whose key was posted last (a read that fails answers yes: fail closed). */
