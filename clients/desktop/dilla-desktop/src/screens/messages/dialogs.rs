@@ -283,8 +283,10 @@ pub fn jump_from_pins(channel: ChannelId, msg: MessageId, window: &mut Window, c
     });
     ui.update(cx, |ui, cx| {
         ui.close_pins(cx);
-        if let Some(key) = key {
-            ui.jump_to(key, cx);
+        match key {
+            Some(key) => ui.jump_to(key, cx),
+            // Conversation.tsx: a message the log has not loaded is not jumped to; the conversation says so.
+            None => ui.not_loaded(channel, cx),
         }
     });
 }
@@ -324,6 +326,37 @@ mod tests {
     use super::*;
 
     const PIN: u64 = dilla_client::features::roles::perm::PIN_MESSAGES as u64;
+
+    /// Task 28 item 11 (Conversation.tsx's jump effect): a jump to a message the log has not loaded (a pin of an older
+    /// one) does not vanish: the conversation says the original is further back (`shell.message.replyNotLoaded`), until
+    /// dismissed, in that conversation only.
+    #[gpui::test]
+    fn a_jump_to_a_message_not_loaded_says_so(cx: &mut gpui::TestAppContext) {
+        let channel = ChannelId([4; 16]);
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let ui = vcx.update(|window, cx| {
+            let ui = super::super::ui::ui_for_test(window.window_handle().window_id(), cx);
+            ui.update(cx, |u, _| {
+                u.ctx = Some(SlotCx {
+                    channel: Some(channel),
+                    ..SlotCx::default()
+                })
+            });
+            ui
+        });
+        vcx.update(|window, cx| jump_from_pins(channel, MessageId([9; 16]), window, cx));
+        assert_eq!(
+            ui.read_with(vcx, |u, _| u.notice_in(channel)),
+            Some("shell.message.replyNotLoaded")
+        );
+        assert_eq!(
+            ui.read_with(vcx, |u, _| u.notice_in(ChannelId([5; 16]))),
+            None,
+            "another conversation shows none"
+        );
+        ui.update(vcx, |u, cx| u.dismiss_notice(cx));
+        assert_eq!(ui.read_with(vcx, |u, _| u.notice_in(channel)), None);
+    }
 
     /// Review L I2 (Conversation.tsx's PinsPanel props): Unpin is offered with the channel's pin_messages bit or while
     /// the bits are unknown (`canUnpin`); the note shows once the bits are known (`perm.pinsNote`; absent in a DM).

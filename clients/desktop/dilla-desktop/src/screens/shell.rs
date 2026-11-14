@@ -1364,6 +1364,10 @@ impl Render for ShellView {
                     &on_toggle,
                 ))
                 .children(dm_strip.map(|s| div().flex_none().child(s)))
+                .children(
+                    crate::screens::messages::notice(channel.map(|c| c.id), window, cx)
+                        .map(|n| div().flex_none().child(n)),
+                )
                 .child({
                     // MessageLog.tsx `present`: away from the newest message, a bar over the log's foot says so and
                     // offers the jump back.

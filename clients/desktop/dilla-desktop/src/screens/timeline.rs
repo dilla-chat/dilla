@@ -948,11 +948,18 @@ pub fn render(
     let (tops, rows_bottom) = row_tops(y, &shapes);
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
     // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.
-    if let Some(msg) = crate::screens::threads::take_jump(window, cx)
-        && let Some(found) = items.iter().find(|i| i.msg_id == Some(msg))
-    {
-        let key = found.key.clone();
-        ui.update(cx, |u, cx| u.jump_to(key, cx));
+    // Task 28 item 11 (Conversation.tsx): a message this log has not loaded is not jumped to; the conversation says so.
+    if let Some(msg) = crate::screens::threads::take_jump(window, cx) {
+        match items.iter().find(|i| i.msg_id == Some(msg)) {
+            Some(found) => {
+                let key = found.key.clone();
+                ui.update(cx, |u, cx| u.jump_to(key, cx));
+            }
+            None => {
+                let id = channel.id;
+                ui.update(cx, |u, cx| u.not_loaded(id, cx));
+            }
+        }
     }
     let jump = ui.update(cx, |u, _| u.jump.take());
     let jumped = jump
