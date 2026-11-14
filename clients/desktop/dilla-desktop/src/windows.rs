@@ -463,21 +463,47 @@ pub fn release_instance(cx: &mut App, id: InstanceId) {
         (None, None) => Weak::<()>::new(),
     };
     retire_hold(cx, id, guard, alive);
-    // Final review C1: the full release path, as Forget and Sign out take it. The client stops syncing now (its key is
-    // already erased), and every app-wide area lets go of it and clears what it decrypted, so its last handle goes with
-    // its window and the removal can delete its data.
-    if let Some(client) = &client {
-        client.halt();
-        crate::release::release_client(client, cx);
-    }
-    if let Some(window) = window {
-        window
-            .update(cx, |_, window, _| window.remove_window())
-            .ok();
-    }
-    // The client stops when the last reference goes: the registry's (here), then the shell view's with its window.
-    drop(client);
+    let close = move |cx: &mut App| {
+        if let Some(window) = window {
+            window
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
+    };
+    let Some(client) = client else {
+        close(cx);
+        return;
+    };
+    // Re-review N1: a call this device is in is left first, as Forget and Sign out do (its self-Remove goes to the
+    // instance, so the others see the device leave at once), for at most LEAVE_WAIT. Then final review C1: the full
+    // release path. The client stops syncing (its key is already erased), every app-wide area lets go of it and clears
+    // what it decrypted, and the window goes, so its last handle goes with the window and the removal can delete its
+    // data.
+    let mut leave = client.voice().leave();
+    cx.spawn(async move |cx| {
+        let polls = LEAVE_WAIT.as_millis() / LEAVE_POLL.as_millis();
+        for _ in 0..polls {
+            match leave.try_recv() {
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    cx.background_executor().timer(LEAVE_POLL).await;
+                }
+                _ => break,
+            }
+        }
+        cx.update(|cx| {
+            client.halt();
+            crate::release::release_client(&client, cx);
+            close(cx);
+        });
+        // The client stops when the last reference goes: this one (here), then the shell view's with its window.
+        drop(client);
+    })
+    .detach();
 }
+
+/// How long a removed instance's call leave may take before its client is stopped anyway, and how often it is asked.
+const LEAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+const LEAVE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// [`release_instance`] with the argument order of the manager's host closures.
 pub fn release_instance_in(id: InstanceId, cx: &mut App) {

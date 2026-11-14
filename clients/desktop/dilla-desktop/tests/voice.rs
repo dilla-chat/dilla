@@ -1157,6 +1157,151 @@ fn quitting_leaves_the_live_call(cx: &mut TestAppContext) {
     ));
 }
 
+/// Re-review N1: removing an instance from the manager while its window is in a call leaves the call first, as Forget
+/// and Sign out do: the others see the device go at once (its voice Remove), not after the instance notices a silent
+/// device.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn removing_an_instance_in_a_call_leaves_the_call(cx: &mut TestAppContext) {
+    use dilla_desktop::{AppView, Launch, windows};
+    let tag = "t-remove-call";
+    let media = media_slot();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (_host, alice, bob, voice_channel) = rt.block_on(async {
+        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
+        let bob = call_world::sign_up(&host, &invite, "bob", tag).await;
+        let (host, alice, bob, voice) = tokio::task::spawn_blocking(move || {
+            let (_, v) = call_world::voice_community(&host, &alice, &[&bob]);
+            call_world::clear_session(&alice);
+            call_world::clear_session(&bob);
+            (host, alice, bob, ChannelId(v))
+        })
+        .await
+        .unwrap();
+        let b = call_world::start(&bob).await;
+        call_world::connected(&b).await;
+        b.voice().start();
+        (host, alice, b, voice)
+    });
+    let root = alice
+        .cfg
+        .data_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let launch = Launch::live(Some(root), alice.kc.clone());
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    cx.update(|cx| windows::open_instance(cx, &launch, alice.cfg.clone(), None, false))
+        .expect("the instance window opens");
+    let id = alice.cfg.id;
+    // The shell shows on alice's client (the compact start window hands it to a workspace window).
+    let deadline = std::time::Instant::now() + CALL_WAIT;
+    let (client, window) = loop {
+        cx.run_until_parked();
+        let shell = cx
+            .windows()
+            .iter()
+            .filter_map(|w| w.downcast::<AppView>())
+            .find(|w| {
+                w.read_with(cx, |v, _| v.screen_name() == "shell")
+                    .unwrap_or(false)
+            });
+        if let (Some(w), Some(c)) = (shell, cx.update(|cx| windows::running_client(cx, id))) {
+            break (c, w.window_id());
+        }
+        assert!(std::time::Instant::now() < deadline, "the shell showed");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    pump(cx, &rt, &client, "the voice channel is listed", |s| {
+        s.channel(voice_channel).is_some()
+    });
+    cx.update(|cx| voice::join(voice_channel, window, cx));
+    pump(cx, &rt, &client, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    });
+    // Bob is in the call too (signalling only: the process's one media slot is alice's), so alice's leave is her voice
+    // Remove, which bob commits.
+    rt.block_on(bob.voice().join(voice_channel))
+        .unwrap()
+        .expect("bob joins");
+    let alice_device = DeviceId(client.state().borrow().account.device_id.unwrap().0);
+    rt.block_on(until(&bob, "bob keys alice's leaf", |s| {
+        s.voice.call.roster.iter().any(|r| r.1 == alice_device)
+    }));
+    drop(client);
+
+    let manager = cx
+        .update(|cx| windows::open_manager(cx, &launch, false))
+        .expect("the manager opens");
+    let index = manager
+        .read_with(cx, |v, _| v.entries().iter().position(|e| e.id == id))
+        .unwrap()
+        .expect("the instance is listed");
+    manager
+        .update(cx, |view, _, cx| view.ask_remove(index, cx))
+        .unwrap();
+    manager
+        .update(cx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    // At once: the leave is the Remove's own, not the instance's eventual timeout of a silent device.
+    let left = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut moved = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        let gone = !bob
+            .state()
+            .borrow()
+            .voice
+            .call
+            .roster
+            .iter()
+            .any(|r| r.1 == alice_device);
+        if gone {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < left,
+            "the removed device left bob's call roster at once"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        cx.executor().advance_clock(moved.elapsed());
+        moved = std::time::Instant::now();
+    }
+    // The removal still finishes: the instance is gone from the list.
+    let done = std::time::Instant::now() + CALL_WAIT;
+    loop {
+        cx.run_until_parked();
+        let listed = manager
+            .read_with(cx, |v, _| v.entries().iter().any(|e| e.id == id))
+            .unwrap();
+        if !listed {
+            break;
+        }
+        assert!(std::time::Instant::now() < done, "the removal finished");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        cx.executor().advance_clock(moved.elapsed());
+        moved = std::time::Instant::now();
+    }
+    assert_eq!(
+        manager
+            .read_with(cx, |v, _| v.error().map(str::to_owned))
+            .unwrap(),
+        None
+    );
+    drop(bob);
+    drop(media);
+}
+
 /// Review L I3: a leave that answers an error, or whose answer is dropped, is no successful quit.
 #[test]
 fn a_failed_leave_fails_the_quit_s_wait() {
