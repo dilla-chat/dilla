@@ -564,6 +564,26 @@ fn an_abort_of_an_applied_rotation_needs_a_resync() {
     assert_eq!((core.state, core.epoch, core.next_seq), (3, 1, 7));
 }
 
+/// controller.ts `onGroupChanged`: the call ends (removed) once this device's own leaf is gone from the call group
+/// (state 4: another member committed its Remove, as after a voice takeover) or the group's state is lost (3: a call
+/// group is never resynced). An active group, or one this device no longer holds, is not.
+#[test]
+fn the_call_ends_when_its_own_leaf_is_gone() {
+    let core = Mutex::new(Core::default());
+    assert!(!controller::own_leaf_gone(&core, &GROUP), "active");
+    core.lock().unwrap().state = 4;
+    assert!(controller::own_leaf_gone(&core, &GROUP), "the leaf is gone");
+    core.lock().unwrap().state = 3;
+    assert!(
+        controller::own_leaf_gone(&core, &GROUP),
+        "the state is lost"
+    );
+    assert!(
+        !controller::own_leaf_gone(&core, &[0x55; 16]),
+        "another group"
+    );
+}
+
 /// Every write loses its answer: after ROTATE_WRITES writes, within ROTATE_RECONCILE, the pending commit is aborted.
 #[tokio::test(start_paused = true)]
 async fn a_rotation_never_reconciled_is_aborted_within_its_bound() {

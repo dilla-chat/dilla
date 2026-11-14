@@ -1702,6 +1702,8 @@ mod removal {
     }
 
     /// Every manual evidence row `client` may read; `Err` is the Bot's refusal of the read.
+    /// The evidence rows `client` reads, or why not: the Bot's refusal status, or 255 for a read that got no Bot answer
+    /// (a transport refusal or a timeout, as for a reader that never waited for the Bot's catalog; review A M5).
     async fn evidence_of(client: &Client, c: CommunityId) -> Result<Vec<ModerationCase>, u8> {
         let admin = client.bot_admin();
         let mut rows = Vec::new();
@@ -1711,7 +1713,7 @@ mod removal {
                 .moderation_page(c, MODERATION_EVIDENCE, cursor)
                 .await
                 .expect("an answer")
-                .expect("the page reads");
+                .map_err(|_| 255u8)?;
             if page.status != 0 {
                 return Err(page.status);
             }

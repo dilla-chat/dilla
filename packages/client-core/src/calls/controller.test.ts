@@ -781,6 +781,30 @@ describe('keys after the join (L-TS-56 step 2)', () => {
     expect(w.model.group(w.callGroup)?.state).toBe(4);
   });
 
+  // The native follow_epochs rule (fix-call-trust 2c23780a1), as sendWithTrustRetry answers the same verdicts: a leaf
+  // verdict is judged against the cached signed list of the leaf's user, which predates a device that user added since (a
+  // known contact's new device joining the call). The keys are held, the group's leaves are read again, and the gate
+  // judges once more: a leaf the fresh read admits keeps the call (no leave, the new epoch keyed); one it does not still
+  // blocks and leaves.
+  it('a leaf verdict reads the leaves again before it leaves, and a leaf the read admits keeps the call', async () => {
+    const w = await joined();
+    // The leaves are read again while the verdict holds; meanwhile the new device's list is in (the test admits the leaf).
+    const refresh = w.server.hold('GET device list');
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await refresh.reached;
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(w.server.routes()).not.toContain('POST proposal');
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }]);
+    w.model.removeLeaf(w.callGroup, 2);
+    refresh.release();
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', error: null });
+    expect(w.pushes('callKeys')).toHaveLength(1);
+    expect(w.server.routes()).not.toContain('POST proposal');
+  });
+
   it('an unlisted leaf mid-call still leaves (only an identity change pauses)', async () => {
     const w = await joined();
     w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');

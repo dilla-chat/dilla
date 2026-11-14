@@ -964,7 +964,8 @@ pub(crate) async fn check_instance_signer_pin(
 
 /// controller.ts `mintTicket`: before every gateway connection attempt (the reconnects included) the instance's signer
 /// key is read over the session again and held to the pin, as at the start ([`check_instance_signer_pin`]). An instance
-/// that cannot be read now (unreachable, a 5xx) is tried again after the backoff; a document that does not decode, a
+/// that cannot be read now (unreachable, a 5xx) is tried again after the backoff; a read refused 401 (the device revoked)
+/// ends the gateway as revoked, so the renewal and sign-out path runs; a document that does not decode, a
 /// changed key or another instance stops the gateway, closed (`failInstanceSignerPin`).
 fn pin_check(api: Arc<Api>, core: CoreHandle) -> crate::gateway::PreConnect {
     Arc::new(move || {
@@ -988,9 +989,20 @@ pub(crate) fn pin_verdict(
     use crate::gateway::PreConnectVerdict as V;
     match (read, pinned) {
         (Err(e), _) if e.code == "E_DECODE" => V::Refuse,
+        // An authenticated read refused 401 after `http_call`'s own re-establish: the device is revoked
+        // (controller.ts: a refused `establish` enters Revoked).
+        (Err(e), _) if e.status == 401 => V::Revoked,
         (Err(_), _) => V::Retry,
         (Ok(()), Some(Ok(()))) => V::Go,
-        (Ok(()), _) => V::Refuse,
+        // Review HL m1: only the core's pin refusals (a changed key, another instance) fail closed, as
+        // controller.ts `checkInstanceSignerPin` does; any other error (a busy store) is tried again.
+        (Ok(()), Some(Err(ClientError::Sync(code))))
+            if code == "E_CORE_STATE" || code == "E_CORE_INPUT" =>
+        {
+            V::Refuse
+        }
+        (Ok(()), Some(Err(_))) => V::Retry,
+        (Ok(()), None) => V::Refuse,
     }
 }
 

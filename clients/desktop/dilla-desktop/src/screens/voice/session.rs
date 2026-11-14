@@ -91,6 +91,12 @@ pub fn mic_open(s: &AppState, ptt_mode: bool) -> bool {
     !(s.voice.self_mute || s.voice.self_deaf) && (!ptt_mode || s.voice.ptt_held)
 }
 
+/// stats.ts `LINK_EVERY_MS`: how often the link's ping is read.
+pub const LINK_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+/// A ping read that takes longer says none (session.ts `LINK_STALL_MS` takes the stats away after 5 s; here the read
+/// runs inside the call's loop, so it is bounded under one read interval and never holds the loop a tick long).
+const LINK_STALL: std::time::Duration = std::time::Duration::from_millis(1_500);
+
 /// What a share asks for.
 pub enum Command {
     Share(ShareKind, bool, ShareOptions),
@@ -342,8 +348,10 @@ async fn in_call(
     let mut videos = call.remote_videos();
     let mut events = call.events();
     let mut ended = call.shares_ended();
+    let mut room_end = call.ended();
     let mut speaking = Speaking::default();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
+    let mut link_read = tokio::time::interval(LINK_EVERY);
     let own = ctx.states.borrow().account.device_id;
     let mut applied: Option<(bool, bool)> = None;
     loop {
@@ -362,6 +370,17 @@ async fn in_call(
                 }
             }
             r = states.changed() => if r.is_err() { break },
+            // session.ts `onRoomEnd` → `leave('lost')`: the room ended on its own (a newer device took voice over,
+            // the room closed, the connection gave up). The call ends, saying why, and the takeover notice shows.
+            r = room_end.changed() => {
+                let end = *room_end.borrow_and_update();
+                if r.is_err() || end.is_some() {
+                    let code = end.map_or("E_DISCONNECTED", dilla_media::RoomEnd::code);
+                    log::warn!("voice: the call's room ended on its own ({code})");
+                    drop(ctx.voice.lost(link.call_id, code));
+                    break;
+                }
+            }
             r = levels.changed() => {
                 if r.is_ok() {
                     let now = speaking.update(&levels.borrow_and_update(), Instant::now());
@@ -393,6 +412,12 @@ async fn in_call(
                     }
                 }
             },
+            // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
+            // [`LINK_STALL`] says none.
+            _ = link_read.tick() => {
+                let ms = tokio::time::timeout(LINK_STALL, call.rtt_ms()).await.ok().flatten();
+                ctx.voice.set_ping(link.call_id, ms);
+            }
             _ = stats.tick() => {
                 let st = call.stats();
                 ctx.voice.send_stats(CallStatsReport {

@@ -20,6 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use dilla_core::bot::command::{ReplySecret, open_reply};
 use tokio::sync::mpsc;
+use zeroize::Zeroizing;
 
 use crate::features::bot_admin::{BotArg, SealedAnswer, SealedBot, SealedCommand, SendError};
 use crate::gateway::frames::{BotCatalogFrame, BotReplyFrame, Value};
@@ -89,12 +90,13 @@ pub trait BotIo: Send + Sync {
     ) -> Result<([u8; 16], String), Refusal>;
     /// Reads the Bot user's device list and pins it (`bot_device_list_pin`): 0 current, 1 a key change held, 2 behind.
     async fn pin_device_list(&self, user: [u8; 16]) -> Result<u8, Refusal>;
-    /// `bot_command_seal`: the sealed bytes and the one-time reply secret.
+    /// `bot_command_seal`: the sealed bytes and the one-time reply secret. `request` is the plaintext command, wiped as it
+    /// goes.
     async fn seal(
         &self,
         publication: Vec<u8>,
         user: [u8; 16],
-        request: Vec<u8>,
+        request: Zeroizing<Vec<u8>>,
     ) -> Result<(Vec<u8>, ReplySecret), Refusal>;
     /// POST /v1/communities/{community}/bot/commands (202).
     async fn post(
@@ -642,8 +644,9 @@ impl Sealed {
         Err(Refusal::new("E_BOT_OFFLINE", 503))
     }
 
-    /// The request the core seals: `[request_id, community_id, channel_id | null, operation, args, sent_at]`.
-    fn request_bytes(&self, req: &Submit) -> Vec<u8> {
+    /// The request the core seals: `[request_id, community_id, channel_id | null, operation, args, sent_at]`, in a wiped
+    /// buffer; the item it was encoded from is wiped (review A M1).
+    fn request_bytes(&self, req: &Submit) -> Zeroizing<Vec<u8>> {
         Value::Array(vec![
             Value::Bytes(req.request_id.to_vec()),
             Value::Bytes(req.community.0.to_vec()),
@@ -659,7 +662,7 @@ impl Sealed {
             .args_value(),
             Value::Uint(self.io.now_s()),
         ])
-        .encode()
+        .encode_wiped()
     }
 
     /// `BotCommandRelay.send`: seals and sends one command; its answers arrive on the receiver. A resend of the same

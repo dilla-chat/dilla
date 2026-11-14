@@ -843,12 +843,163 @@ mod tests {
     fn an_own_thread_message_offers_edit_and_delete() {
         let mut own = item(TimelineItemState::Ok, "mine");
         own.own = true;
-        assert_eq!(view::row_actions(&own), ["edit", "delete"]);
-        assert!(view::row_actions(&item(TimelineItemState::Ok, "theirs")).is_empty());
+        assert_eq!(view::row_actions(&own, None), ["edit", "delete"]);
+        assert!(view::row_actions(&item(TimelineItemState::Ok, "theirs"), None).is_empty());
         let mut pending = own.clone();
         pending.state = TimelineItemState::Pending;
         pending.seq = None;
-        assert!(view::row_actions(&pending).is_empty());
+        assert!(view::row_actions(&pending, None).is_empty());
+    }
+
+    /// Review A M4 (ThreadView.tsx offers MessageItem's `moderateRemove`): another person's stored thread message offers
+    /// Remove for everyone to a reader whose known channel bits hold manage_messages; unknown bits, or bits without it,
+    /// offer nothing, and an own message is edited and deleted instead.
+    #[test]
+    fn another_s_thread_message_offers_remove_for_everyone_to_a_moderator() {
+        let manage = u64::from(dilla_client::features::roles::perm::MANAGE_MESSAGES);
+        let theirs = item(TimelineItemState::Ok, "theirs");
+        assert_eq!(view::row_actions(&theirs, Some(manage)), ["moderateRemove"]);
+        assert!(view::row_actions(&theirs, None).is_empty(), "unknown bits");
+        assert!(view::row_actions(&theirs, Some(0)).is_empty());
+        let mut own = theirs.clone();
+        own.own = true;
+        assert_eq!(view::row_actions(&own, Some(manage)), ["edit", "delete"]);
+    }
+
+    /// Review HL item 12 (weak test) and A M4, driven through the drawn pane as a person does: hovering a row shows its
+    /// toolbar; the own reply's Edit opens the messages area's editor on it and its Delete asks through the delete dialog;
+    /// another person's reply offers a moderator Remove for everyone, which opens the moderation dialog on it.
+    #[gpui::test]
+    fn the_thread_pane_s_toolbar_acts_through_the_drawn_rows(cx: &mut TestAppContext) {
+        use crate::screens::shell::{Clock, ShellView};
+        cx.update(crate::install);
+        let (me, them) = (UserId([5; 16]), UserId([6; 16]));
+        let channel = ChannelId([2; 16]);
+        let root = MessageId([7; 16]);
+        let mut s = dilla_client::state::AppState::default();
+        // The owner: the viewer's bits are known and hold manage_messages.
+        s.communities.push(dilla_client::state::Community {
+            id: CommunityId([1; 16]),
+            name: "Midgard".into(),
+            owner: me,
+            policy_version: 0,
+        });
+        s.channels = vec![Channel {
+            id: channel,
+            community_id: CommunityId([1; 16]),
+            kind: 0,
+            mode: 0,
+            name: "general".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        }];
+        s.account.user_id = Some(me);
+        let reply = |key: &str, msg: u8, seq: u64, own: bool| {
+            let mut i = item(TimelineItemState::Ok, "a reply");
+            i.key = key.into();
+            i.msg_id = Some(MessageId([msg; 16]));
+            i.seq = Some(seq);
+            i.own = own;
+            i.sender_user = Some(if own { me } else { them });
+            i
+        };
+        s.threads.threads.insert(
+            root,
+            dilla_client::state::threads::ThreadData {
+                channel,
+                root: None,
+                replies: vec![reply("s2", 8, 2, true), reply("s3", 9, 3, false)],
+                has_earlier: false,
+                count: 2,
+            },
+        );
+        let state = Arc::new(s);
+        let (_shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        let here = vcx.update(|window, _| wid(window));
+        let ctx = vcx
+            .update(|_, cx| current(here, cx))
+            .expect("the shell gave the threads area its context");
+        vcx.update(|_, cx| open_thread(channel, root, &ctx, cx));
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("thread-close").is_some(),
+            "the pane is drawn"
+        );
+        let press =
+            |vcx: &mut gpui::VisualTestContext, row: &'static str, selector: &'static str| {
+                // The toolbar shows on hover only: the row is hovered first, then the button is clicked.
+                assert!(
+                    vcx.debug_bounds(selector).is_none(),
+                    "{selector} is hidden until its row is hovered"
+                );
+                let row = vcx
+                    .debug_bounds(row)
+                    .unwrap_or_else(|| panic!("{row} is drawn"));
+                vcx.simulate_mouse_move(row.center(), None, gpui::Modifiers::none());
+                vcx.run_until_parked();
+                vcx.update(|window, _| window.refresh());
+                vcx.run_until_parked();
+                let at = vcx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} shows on hover"))
+                    .center();
+                vcx.simulate_click(at, gpui::Modifiers::none());
+                vcx.run_until_parked();
+                // The pointer leaves for the window's corner, so the next row's toolbar starts hidden.
+                vcx.simulate_mouse_move(
+                    gpui::point(gpui::Pixels::from(1.0f32), gpui::Pixels::from(1.0f32)),
+                    None,
+                    gpui::Modifiers::none(),
+                );
+                vcx.run_until_parked();
+                vcx.update(|window, _| window.refresh());
+                vcx.run_until_parked();
+            };
+        let ui = vcx
+            .update(|window, cx| crate::screens::messages::ui::handle(window, cx))
+            .expect("the messages area's ui");
+        press(vcx, "thread-row-s2", "thread-edit-s2");
+        assert_eq!(
+            ui.read_with(vcx, |u, _| u.editing.as_ref().map(|e| e.key.clone())),
+            Some("s2".to_owned()),
+            "Edit opens the editor on the own reply"
+        );
+        vcx.update(|_, cx| ui.update(cx, |u, cx| u.cancel_edit(cx)));
+        vcx.run_until_parked();
+        press(vcx, "thread-row-s2", "thread-delete-s2");
+        assert!(
+            ui.read_with(vcx, |u, _| u
+                .deleting
+                .is_some_and(|d| d.msg == MessageId([8; 16]))),
+            "Delete asks through the delete dialog"
+        );
+        assert!(
+            vcx.debug_bounds("thread-edit-s3").is_none(),
+            "another's reply has no Edit"
+        );
+        vcx.update(|_, cx| ui.update(cx, |u, cx| u.cancel_delete(cx)));
+        vcx.run_until_parked();
+        press(vcx, "thread-row-s3", "thread-moderate-s3");
+        assert!(
+            ui.read_with(vcx, |u, _| u.moderating.is_some()),
+            "Remove for everyone opens the moderation dialog"
+        );
     }
 
     /// Task 28 item 12: the thread pane's Edit opens the messages area's editor on that message, and its Delete asks

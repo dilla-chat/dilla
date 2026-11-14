@@ -59,6 +59,24 @@ impl Value {
         e.into_vec()
     }
 
+    /// Wipes every text and byte string of this item, leaving them empty (a sealed command's plaintext).
+    pub fn wipe(&mut self) {
+        use zeroize::Zeroize as _;
+        match self {
+            Value::Bytes(b) => b.zeroize(),
+            Value::Text(t) => t.zeroize(),
+            Value::Array(items) => items.iter_mut().for_each(Value::wipe),
+            Value::Uint(_) | Value::Null => {}
+        }
+    }
+
+    /// [`Value::encode`] into a wiped buffer, then wipes this item: a plaintext encoded once and never left behind.
+    pub fn encode_wiped(mut self) -> zeroize::Zeroizing<Vec<u8>> {
+        let out = zeroize::Zeroizing::new(self.encode());
+        self.wipe();
+        out
+    }
+
     fn write(&self, e: &mut Encoder) {
         match self {
             Value::Uint(v) => {

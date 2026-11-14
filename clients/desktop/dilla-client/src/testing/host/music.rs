@@ -162,6 +162,8 @@ struct Peer {
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
     lines: Mutex<Receiver<Value>>,
+    /// The room's end on its own (`{"event":"ended","code"}`), passed on as the app's media session does.
+    ended: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
 }
 
 impl Peer {
@@ -176,11 +178,17 @@ impl Peer {
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let (tx, lines) = channel();
+        let (ended_tx, ended) = tokio::sync::mpsc::unbounded_channel();
         std::thread::spawn(move || {
             for line in stdout.lines().map_while(Result::ok) {
-                if let Ok(v) = serde_json::from_str::<Value>(&line)
-                    && tx.send(v).is_err()
-                {
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if v["event"] == "ended" {
+                    let _ =
+                        ended_tx.send(v["code"].as_str().unwrap_or("E_DISCONNECTED").to_owned());
+                }
+                if tx.send(v).is_err() {
                     break;
                 }
             }
@@ -189,7 +197,13 @@ impl Peer {
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
             lines: Mutex::new(lines),
+            ended: Mutex::new(Some(ended)),
         }
+    }
+
+    /// The room's end on its own, once.
+    fn take_ended(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<String>> {
+        self.ended.lock().unwrap().take()
     }
 
     fn send(&self, line: &str) {
@@ -268,6 +282,8 @@ pub struct Seat {
     pub device: DeviceId,
     peer: Option<Arc<Peer>>,
     pump: Option<tokio::task::JoinHandle<()>>,
+    /// Passes the room's end on to the call (`Voice::lost`), as the app's media session does.
+    end: Option<tokio::task::JoinHandle<()>>,
     room: Option<ChannelId>,
 }
 
@@ -286,6 +302,7 @@ impl Seat {
             device,
             peer: None,
             pump: None,
+            end: None,
             room: None,
         }
     }
@@ -326,6 +343,14 @@ impl Seat {
         }));
         let p = peer.clone();
         blocking(move || p.next("connected", Duration::from_secs(30))).await;
+        if let Some(mut ended) = peer.take_ended() {
+            let (voice, call) = (self.client.voice(), link.call_id);
+            self.end = Some(tokio::spawn(async move {
+                if let Some(code) = ended.recv().await {
+                    let _ = voice.lost(call, &code).await;
+                }
+            }));
+        }
         self.peer = Some(peer);
         self.room = Some(room);
     }
@@ -334,6 +359,9 @@ impl Seat {
     pub async fn stand(&mut self) {
         if let Some(pump) = self.pump.take() {
             pump.abort();
+        }
+        if let Some(end) = self.end.take() {
+            end.abort();
         }
         if let Some(peer) = self.peer.take() {
             blocking(move || peer.quit()).await;
@@ -468,6 +496,9 @@ impl Drop for Seat {
     fn drop(&mut self) {
         if let Some(pump) = self.pump.take() {
             pump.abort();
+        }
+        if let Some(end) = self.end.take() {
+            end.abort();
         }
         if let Some(peer) = self.peer.take() {
             peer.quit();

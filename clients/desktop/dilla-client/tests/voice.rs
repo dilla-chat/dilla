@@ -389,9 +389,11 @@ async fn share_and_camera_reach_peer_verified_and_stop() {
         let (f1, t1) = (frames(&mut b_media), ticks());
         let secs = at.elapsed().as_secs_f64();
         let hz = 100.0; // USER_HZ on Linux
-        let cpu = (t1 - t0) as f64 / hz / secs * 100.0;
+        // The ticks are summed over this process's children: one that exits between the samples (a cargo or helper
+        // process) takes its ticks with it, so the second sum can be the smaller one (it overflowed and flaked).
+        let cpu = t1.saturating_sub(t0) as f64 / hz / secs * 100.0;
         let expected = (2.0 * 15.0 * secs).round() as u64;
-        let dropped = expected.saturating_sub(f1 - f0);
+        let dropped = expected.saturating_sub(f1.saturating_sub(f0));
         println!("VIDEO linux {cpu:.1}% {dropped} (of {expected} frames, two media processes, 2 streams 320x180@15)");
         b_media
     })

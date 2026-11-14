@@ -572,8 +572,6 @@ async fn remove_changed_device_restores_sending_here_only() {
     assert!(privacy.changed.is_some() && privacy.verified_key.is_none());
 }
 
-/// Requirements 15-16 (flow 07): a DM opened from one side is listed on the other, its text arrives and counts as
-/// unread there until it is read.
 /// Task 28 item 17 (engine.ts `onUnexpectedWelcome`, controller.ts `reloadDms` on it): a Welcome for a group this device
 /// does not expect (a DM another person just opened) reads the DM list at once, so the DM is listed and joined without
 /// waiting for the list's poll. Bob's client runs no DM watcher (no poll, no ready read): only the Welcome can list it.
@@ -619,6 +617,8 @@ async fn an_unexpected_welcome_reads_the_dm_list() {
     .await;
 }
 
+/// Requirements 15-16 (flow 07): a DM opened from one side is listed on the other, its text arrives and counts as
+/// unread there until it is read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
 async fn dm_open_list_send_and_unread() {

@@ -247,7 +247,7 @@ impl BotIo for InnerIo {
         &self,
         publication: Vec<u8>,
         user: [u8; 16],
-        request: Vec<u8>,
+        request: zeroize::Zeroizing<Vec<u8>>,
     ) -> Result<(Vec<u8>, ReplySecret), Refusal> {
         let now = now_s();
         let (_, sealed, secret) = self

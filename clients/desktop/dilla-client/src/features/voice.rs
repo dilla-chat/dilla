@@ -697,6 +697,7 @@ impl Voice {
                 code: Some(code),
                 error: None,
                 roster,
+                ping_ms: None,
             };
         });
         // Product walk M5: a call started muted or deafened says so to the others at once.
@@ -775,6 +776,13 @@ impl Voice {
                         });
                     }
                     Ok(_) => {}
+                    // controller.ts `onGroupChanged`: this device's own leaf is gone (another member committed its
+                    // Remove: a voice takeover, the instance's leave report) or the group's state is lost. A call group
+                    // is never resynced, so the call ends here as removed, with no self-Remove.
+                    Err(_) if this.calls.own_leaf_gone(&live.group_id) => {
+                        this.removed(generation, live).await;
+                        return Ok(());
+                    }
                     Err(e) => {
                         // WB security I1 (session.ts `dropKeys`): the gate refused the group's newest epoch (an
                         // identity change, a stale or unlisted device list). Every media key is dropped (the epochs
@@ -822,12 +830,29 @@ impl Voice {
     /// layer stops sealing and leaves the room, then this device's self-Remove is posted, and the call ends when this
     /// device was alone in it. (The web posts the self-Remove before it disconnects; here the keys stop first, so
     /// nothing is sent while the Remove is in flight. The instance's own leave report covers a Remove that fails.)
+    ///
+    /// Review HL I2: it answers `Ok` only once the instance acknowledged the leave (it took the self-Remove, a Remove
+    /// of this leaf stands there already, or it ended the call this device was alone in), or when there was no call to
+    /// leave; a Remove refused otherwise, or whose answer was lost, answers `E_LEAVE_UNACKNOWLEDGED` (the call is left
+    /// here all the same).
     pub fn leave(&self) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
-        self.inner.spawn(async move { this.leave_inner().await })
+        self.inner.spawn(async move {
+            match this.leave_acknowledged().await? {
+                true => Ok(()),
+                false => Err(ClientError::Sync("E_LEAVE_UNACKNOWLEDGED".into())),
+            }
+        })
     }
 
+    /// [`Voice::leave`] for a caller that moves on whatever the instance answered (a join's own leave, a trust block,
+    /// a lost room).
     async fn leave_inner(&self) -> Result<(), ClientError> {
+        self.leave_acknowledged().await.map(|_| ())
+    }
+
+    /// The leave; answers whether the instance acknowledged it (no call to leave: yes).
+    async fn leave_acknowledged(&self) -> Result<bool, ClientError> {
         let rt = self.rt();
         let (live, joining) = {
             let mut r = lock(&rt);
@@ -851,7 +876,7 @@ impl Voice {
             s.voice.share = LocalShare::default();
         });
         let Some(live) = live else {
-            return Ok(());
+            return Ok(true);
         };
         let alone = own.is_some_and(|d| {
             snap.voice
@@ -859,11 +884,82 @@ impl Voice {
                 .iter()
                 .all(|p| p.device_id == d)
         });
-        self.calls
+        let left = self
+            .calls
             .leave(live.group_id, live.call_id, alone)
             .await
             .map_err(|_| ClientError::Stopped)??;
-        Ok(())
+        Ok(left.proposed || left.ended)
+    }
+
+    /// session.ts `onRoomEnd` → `leave('lost')`: the call's LiveKit room ended on its own (a newer device of this user
+    /// took voice over, the room closed, the connection gave up for good). The call is left as a leave leaves it (its
+    /// self-Remove posted; one the instance already holds is fine), `call.error` says why (`code`: `E_REMOVED`,
+    /// `E_CALL_ENDED`, `E_DISCONNECTED`), and the community's AFK snapshot is read again, so a takeover's notice ("Voice
+    /// moved to your other device.") shows. Only the call `call` ends: a newer call of this device is left alone.
+    pub fn lost(&self, call: [u8; 16], code: &str) -> oneshot::Receiver<Result<(), ClientError>> {
+        let this = self.clone();
+        let code = code.to_owned();
+        self.inner.spawn(async move {
+            let current = lock(&this.rt())
+                .live
+                .as_ref()
+                .is_some_and(|l| l.call_id == call);
+            if !current {
+                return Ok(());
+            }
+            let community = this.inner.snapshot().voice.call.community;
+            let _ = this.leave_inner().await;
+            this.after_end(community, Some(code)).await;
+            Ok(())
+        })
+    }
+
+    /// controller.ts `lost`: this device's own leaf is gone from the call group of `live` (generation `generation`), so
+    /// the call ends with no self-Remove: the media's link goes, the group is forgotten, the own entry leaves the room,
+    /// and the AFK snapshot is read again (a takeover's notice).
+    async fn removed(&self, generation: u64, live: Live) {
+        {
+            let rt = self.rt();
+            let mut r = lock(&rt);
+            if r.generation != generation {
+                return;
+            }
+            r.generation += 1;
+            r.link.send_replace(None);
+            r.live = None;
+            r.last_self = None;
+            r.self_offline = None;
+            r.resends = None;
+            r.own_in_call.clear();
+        }
+        self.calls.forget(&live.group_id);
+        let snap = self.inner.snapshot();
+        let (own, community) = (snap.account.device_id, snap.voice.call.community);
+        self.inner.publish(move |s| {
+            if let Some(d) = own {
+                s.voice.drop_device(live.channel, d);
+            }
+            s.voice.call = OwnCall::default();
+            s.voice.speaking.clear();
+            s.voice.share = LocalShare::default();
+        });
+        self.after_end(community, None).await;
+    }
+
+    /// After a call ended on its own: its reason stands in `call.error` (unless a newer call started meanwhile), and the
+    /// community's AFK snapshot is read again, so the takeover or AFK move it announces shows.
+    async fn after_end(&self, community: Option<CommunityId>, error: Option<String>) {
+        if error.is_some() {
+            self.inner.publish(move |s| {
+                if s.voice.call.phase == CallPhase::Idle {
+                    s.voice.call.error = error;
+                }
+            });
+        }
+        if let Some(c) = community {
+            let _ = self.ring().load_afk(c).await;
+        }
     }
 
     /// controller.ts `voiceSelf`: kept as the last one for the call (before the online check, so the re-send rule
@@ -948,6 +1044,17 @@ impl Voice {
         self.inner.publish(move |s| {
             if s.voice.speaking != devices {
                 s.voice.speaking = devices;
+            }
+        });
+    }
+
+    /// The link's ping the media read for the call `call` (`None`: none measured now). A call left meanwhile, or
+    /// another call, takes nothing.
+    pub fn set_ping(&self, call: [u8; 16], ms: Option<u32>) {
+        self.inner.publish(move |s| {
+            let c = &mut s.voice.call;
+            if c.call_id == Some(call) && c.phase == CallPhase::In && c.ping_ms != ms {
+                c.ping_ms = ms;
             }
         });
     }

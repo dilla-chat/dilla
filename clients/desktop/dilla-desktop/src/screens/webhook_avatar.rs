@@ -1,7 +1,8 @@
 //! A webhook post's avatar (Task 28 item 15; web `conversation/webhook.ts` `useWebhookAvatar`): loaded only from the
 //! instance's member route (`Bot::webhook_avatar`), never from a sender's URL, once per client, community and avatar id,
-//! the newest [`KEPT`] kept. A miss (the instance no longer holds it, a failed read) is not kept, so the row shows the
-//! placeholder avatar and a later draw asks again; a read in flight is not asked for twice.
+//! the newest [`KEPT`] kept. A miss (the instance no longer holds it, a failed read) shows the placeholder avatar and
+//! is not asked for again until the client is released (review HL I4: the web asks once per mount, not per render); a
+//! read in flight is not asked for twice.
 
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -26,6 +27,8 @@ struct Avatars {
     ready: HashMap<Key, Arc<Image>>,
     order: VecDeque<Key>,
     loading: std::collections::HashSet<Key>,
+    /// Read and missed (the instance holds none, a failed read, a body that is no picture): asked once per client.
+    missed: std::collections::HashSet<Key>,
 }
 
 impl Global for Avatars {}
@@ -38,11 +41,18 @@ pub fn image(
     cx: &mut App,
 ) -> Option<Arc<Image>> {
     let key = (client.serial(), community, avatar.to_owned());
-    if let Some(image) = cx.default_global::<Avatars>().ready.get(&key) {
+    let ask = || client.bot().webhook_avatar(community, avatar.to_owned());
+    image_with(key, ask, cx)
+}
+
+/// [`image`] with the read to start (`ask`): asked only when `key` is neither held, in flight nor missed already.
+pub fn image_with(key: Key, ask: impl FnOnce() -> Answer, cx: &mut App) -> Option<Arc<Image>> {
+    let a = cx.default_global::<Avatars>();
+    if let Some(image) = a.ready.get(&key) {
         return Some(image.clone());
     }
-    if !cx.global::<Avatars>().loading.contains(&key) {
-        let rx = client.bot().webhook_avatar(community, avatar.to_owned());
+    if !a.loading.contains(&key) && !a.missed.contains(&key) {
+        let rx = ask();
         load(key, rx, cx);
     }
     None
@@ -71,6 +81,9 @@ pub fn load(key: Key, rx: Answer, cx: &mut App) {
                     }
                 }
                 cx.refresh_windows();
+            } else {
+                // Review HL I4: not asked for again (every redraw would), until the client is released.
+                a.missed.insert(key);
             }
         });
     })
@@ -97,6 +110,7 @@ pub fn forget_owner(owner: u64, cx: &mut App) {
     a.ready.retain(|k, _| k.0 != owner);
     a.order.retain(|k| k.0 != owner);
     a.loading.retain(|k| k.0 != owner);
+    a.missed.retain(|k| k.0 != owner);
 }
 
 #[cfg(test)]
@@ -140,5 +154,40 @@ mod tests {
             !cx.update(|cx| held(&key(7, 3), cx)),
             "a late answer after the release lands nothing"
         );
+    }
+
+    /// Review HL I4 (webhook.ts `useWebhookAvatar` asks once per mount, not per render): a missed avatar is not asked
+    /// for again on the next draws of its row; a release forgets the miss, so a new client asks again.
+    #[gpui::test]
+    fn a_missed_avatar_is_asked_for_once(cx: &mut gpui::TestAppContext) {
+        type Tx = tokio::sync::oneshot::Sender<Result<Option<Vec<u8>>, dilla_client::ClientError>>;
+        let asks = Rc::new(std::cell::Cell::new(0));
+        // One draw of the row: its answer's sender, whether or not it asked.
+        let draw = |cx: &mut gpui::TestAppContext| -> Tx {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let a = asks.clone();
+            let shown = cx.update(|cx| {
+                image_with(
+                    key(7, 4),
+                    move || {
+                        a.set(a.get() + 1);
+                        rx
+                    },
+                    cx,
+                )
+            });
+            assert!(shown.is_none());
+            tx
+        };
+        draw(cx)
+            .send(Err(dilla_client::ClientError::Network("down".into())))
+            .unwrap();
+        cx.run_until_parked();
+        draw(cx);
+        draw(cx);
+        assert_eq!(asks.get(), 1, "one read for the miss, not one per draw");
+        cx.update(|cx| forget_owner(7, cx));
+        let _pending = draw(cx);
+        assert_eq!(asks.get(), 2, "a release forgets the miss");
     }
 }

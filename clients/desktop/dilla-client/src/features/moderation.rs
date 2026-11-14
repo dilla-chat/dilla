@@ -10,7 +10,10 @@
 //! A removal's proof is signed and its evidence sealed by the same core and Bot transport the web client uses
 //! (`ClientCore::prepare_manual_removal_evidence`, the core's durable outbox, and the sealed app operation 161): no crypto
 //! of the desktop's own. The reason and the excerpt are plaintext: this module holds them in [`Zeroizing`] buffers and
-//! wipes the copies it reads back from the core.
+//! wipes the copies it reads back from the core. Past `sealed_evidence` the sealed transport copies them (into its
+//! `BotArg`s, `SealedCommand`, `Submit` and the CBOR request); those copies are wiped as they go (`BotArg`'s drop,
+//! `Value::encode_wiped`), not held here. The message's text the excerpt comes from also stays, unwiped, in the
+//! timeline's rows for the session, as the web's does.
 //!
 //! The view offers an action only where `features::members::menu_for` says the caller may take it, but that gate is
 //! advisory: the instance decides each request again. A 403 means the access the view held is stale, so the access
@@ -738,13 +741,29 @@ async fn upload_evidence(
     evidence
 }
 
+/// What a definite refusal of a proof's post does to the core's row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnRefusal {
+    /// The removal's own post (and the page's retry): the refusal is the instance's verdict, and the row is retired.
+    Retire,
+    /// The resume after a ready (controller.ts `resumeManualRemovalEvidence`, `catch { continue; }`): the row stays as
+    /// it is, an explicit unknown, retried at the next ready (review A I1).
+    Keep,
+}
+
+/// Whether the refusal `e` of a proof's post retires its row.
+fn retires(e: &ApiError, on: OnRefusal) -> bool {
+    on == OnRefusal::Retire && definite_refusal(e)
+}
+
 /// POSTs a signed proof the core holds: marked submitted first (a restart then knows it may have landed), accepted on
-/// the instance's answer, retired on its refusal. `Err` carries the outcome to answer.
+/// the instance's answer, retired on its refusal when `on` says so. `Err` carries the outcome to answer.
 async fn post_proof(
     inner: &Arc<Inner>,
     group: [u8; 16],
     proof: [u8; 16],
     signed: Zeroizing<Vec<u8>>,
+    on: OnRefusal,
 ) -> Result<(), Removal> {
     on_core(inner, move |c| {
         c.mark_manual_removal_submitted(&proof).map_err(core_err)
@@ -764,7 +783,7 @@ async fn post_proof(
             inner.engine().request_removal_read(group);
             Ok(())
         }
-        Err(e) if definite_refusal(&e) => {
+        Err(e) if retires(&e, on) => {
             let _ = on_core(inner, move |c| {
                 c.reject_manual_removal(&proof, now_s()).map_err(core_err)
             })
@@ -896,7 +915,8 @@ impl Moderation {
             })
             .await?
         };
-        if let Err(removal) = post_proof(&self.inner, group, proof, signed).await {
+        if let Err(removal) = post_proof(&self.inner, group, proof, signed, OnRefusal::Retire).await
+        {
             let (evidence_request_id, evidence) = match removal {
                 Removal::Rejected => (None, Evidence::Rejected),
                 _ => (Some(evidence_request), Evidence::Unknown),
@@ -961,7 +981,9 @@ impl Moderation {
             }
             let signed = Zeroizing::new(std::mem::take(&mut row.signed_body));
             wipe(&mut row);
-            if let Err(removal) = post_proof(&self.inner, group, proof, signed).await {
+            if let Err(removal) =
+                post_proof(&self.inner, group, proof, signed, OnRefusal::Retire).await
+            {
                 let (evidence_request_id, evidence) = match removal {
                     Removal::Rejected => (None, Evidence::Rejected),
                     _ => (Some(evidence_request), Evidence::Unknown),
@@ -1069,7 +1091,10 @@ pub(crate) async fn resume_removal_evidence(inner: Arc<Inner>) {
             }
             let signed = Zeroizing::new(std::mem::take(&mut row.signed_body));
             wipe(&mut row);
-            if post_proof(&inner, group, proof, signed).await.is_err() {
+            if post_proof(&inner, group, proof, signed, OnRefusal::Keep)
+                .await
+                .is_err()
+            {
                 continue;
             }
             match removal_row(&inner, move |r| r.proof_request_id == proof).await {
@@ -1132,6 +1157,20 @@ mod removal_tests {
         // Bytes, not characters: 512 two-byte characters fit, 513 do not.
         assert!(removal_reason_ok(&"ä".repeat(512)));
         assert!(!removal_reason_ok(&"ä".repeat(513)));
+    }
+
+    /// Review A I1 (controller.ts `resumeManualRemovalEvidence`: `catch { continue; }`): a removal's own post retires it
+    /// on a definite refusal, but the resume after a ready never does. The instance answers some 4xx before its replay
+    /// check (a closed group's 404, a 429), so a removal that may have landed stays an explicit unknown, retried at the
+    /// next ready, and its evidence still reaches the Bot once the feed says it landed.
+    #[test]
+    fn the_resume_never_retires_a_removal_on_a_refusal() {
+        let e = |status| ApiError::local(status, "E_X", "");
+        assert!(retires(&e(403), OnRefusal::Retire));
+        assert!(!retires(&e(503), OnRefusal::Retire));
+        for status in [404, 429, 403, 409, 503] {
+            assert!(!retires(&e(status), OnRefusal::Keep), "{status}");
+        }
     }
 
     /// controller.ts `definiteManualRemovalRefusal`.

@@ -629,10 +629,31 @@ pub fn ensure_image_from(key: ImageKey, rx: OpenAnswer, cx: &mut App) {
 /// asks for a path, then the file is opened and its plaintext written there (review L m7: nothing is decrypted while the
 /// dialog asks, for as long as it is left open). Each save is its own: a second save of the card while the first is in
 /// flight writes the path its own dialog chose, or shows its own failure.
-pub fn save(client: &Client, key: CardKey, name: &str, cx: &mut App) {
-    let attachments = client.attachments();
-    let open = move || attachments.open(key.channel, key.seq, key.index, false);
-    save_from(key, name, open, dirs_home(), cx);
+///
+/// Review HL I3: the save holds only a `Weak` client while the dialog asks, upgraded once a path is chosen, so the
+/// release of the client (a Forget, a sign-out) is never held up by a dialog left open; a client gone by then opens
+/// nothing.
+pub fn save(client: &Rc<Client>, key: CardKey, name: &str, cx: &mut App) {
+    let open = move |c: &Client| c.attachments().open(key.channel, key.seq, key.index, false);
+    save_weak(Rc::downgrade(client), open, key, name, dirs_home(), cx);
+}
+
+/// [`save`] over any holder of the open (the client): only `holder` (a `Weak`) is kept while the dialog asks; `open`
+/// runs on it once a path is chosen, and a holder gone by then opens nothing (the save ends with no status).
+pub fn save_weak<T: 'static>(
+    holder: std::rc::Weak<T>,
+    open: impl FnOnce(&T) -> OpenAnswer + 'static,
+    key: CardKey,
+    name: &str,
+    home: PathBuf,
+    cx: &mut App,
+) {
+    let open = move || match holder.upgrade() {
+        Some(h) => open(&h),
+        // A closed answer: the save lands with no status.
+        None => tokio::sync::oneshot::channel().1,
+    };
+    save_from(key, name, open, home, cx);
 }
 
 /// [`save`] with the open to start once a path is chosen (`open`) and the dialog starting at `home`; the tests drive it.
@@ -1291,6 +1312,53 @@ mod tests {
             .ok();
         cx.run_until_parked();
         assert_eq!(std::fs::read(dir.join("a.txt")).unwrap(), b"secret");
+        cx.update(|cx| {
+            let u = ui(cx);
+            assert!(u.cards.is_empty() && u.saves.is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review HL I3: while the save dialog asks, the save holds no strong handle to its client (a `Weak`, upgraded
+    /// only once a path is chosen), so a Forget or a sign-out can close the client's store meanwhile; a client gone by
+    /// then opens nothing and writes nothing.
+    #[gpui::test]
+    fn a_save_holds_no_client_while_its_dialog_asks(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("dilla-hl-i3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A stand-in for the client: what the save captures of it is all that is checked.
+        let holder = Rc::new(());
+        let (_tx, rx) = answer();
+        let asked = Rc::new(std::cell::Cell::new(false));
+        let a = asked.clone();
+        let weak = Rc::downgrade(&holder);
+        let home = dir.clone();
+        cx.update(move |cx| {
+            save_weak(
+                weak,
+                move |_: &()| {
+                    a.set(true);
+                    rx
+                },
+                card_key(),
+                "a.txt",
+                home,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path());
+        assert_eq!(
+            Rc::strong_count(&holder),
+            1,
+            "the open dialog holds no client"
+        );
+        drop(holder);
+        cx.simulate_new_path_selection(|_| Some(dir.join("a.txt")));
+        cx.run_until_parked();
+        assert!(!asked.get(), "a client gone by then opens nothing");
+        assert!(!dir.join("a.txt").exists());
         cx.update(|cx| {
             let u = ui(cx);
             assert!(u.cards.is_empty() && u.saves.is_empty());

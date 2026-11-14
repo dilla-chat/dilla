@@ -280,6 +280,16 @@ impl<H: Http + 'static> Calls<H> {
         media_epoch(&**self.inner.engine().core(), group)
     }
 
+    /// Whether this device's own leaf is gone from the call group ([`super::controller::own_leaf_gone`]).
+    pub fn own_leaf_gone(&self, group: &[u8; 16]) -> bool {
+        super::controller::own_leaf_gone(&**self.inner.engine().core(), group)
+    }
+
+    /// Forgets the call group with no self-Remove (controller.ts `lost`: the own leaf is gone already).
+    pub fn forget(&self, group: &[u8; 16]) {
+        let _ = super::lock(&**self.inner.engine().core()).map(|mut c| c.call_group_forget(group));
+    }
+
     /// Leaves the call ([`leave_call`]).
     pub fn leave(
         &self,

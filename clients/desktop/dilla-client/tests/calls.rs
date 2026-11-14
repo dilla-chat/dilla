@@ -630,6 +630,28 @@ async fn a_leave_ends_the_call_when_alone_then_proposes_its_remove_and_forgets()
     assert_eq!(core.lock().unwrap().log, ["leave_proposal 44", "forget 44"]);
 }
 
+/// Review HL I2: a leave's Remove counts as acknowledged when the instance took it, or answers 409 `E_REMOVE_PENDING`
+/// (a Remove of this leaf stands there already); any other refusal or a lost answer is not.
+#[tokio::test]
+async fn a_pending_remove_is_an_acknowledged_leave() {
+    let core = Mutex::new(FakeCore::default());
+    let routes = FakeRoutes::default();
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(err(409, "E_REMOVE_PENDING")));
+    let left = leave_call(&core, &routes, &GROUP, &CHANNEL, false).await;
+    assert!(left.proposed && !left.ended);
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(err(503, "E_UNAVAILABLE")));
+    let left = leave_call(&core, &routes, &GROUP, &CHANNEL, false).await;
+    assert!(!left.proposed && !left.ended);
+}
+
 #[tokio::test]
 async fn a_rotation_is_confirmed_when_posted_and_aborted_when_refused() {
     let core = Mutex::new(FakeCore::default());

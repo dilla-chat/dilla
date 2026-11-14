@@ -88,6 +88,9 @@ pub struct OwnCall {
     pub error: Option<String>,
     /// `(user, device, leaf)` of every member of the call group.
     pub roster: Vec<(UserId, DeviceId, u16)>,
+    /// The link's ping to the SFU in ms (session.ts `link.rttMs`), read by the media every few seconds; `None` until
+    /// one is measured (the dock and the call bar say "— ms").
+    pub ping_ms: Option<u32>,
 }
 
 /// What this device publishes besides its microphone.

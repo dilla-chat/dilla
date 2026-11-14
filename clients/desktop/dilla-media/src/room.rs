@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use dilla_core::sframe::Slot;
 use futures_util::StreamExt;
+use livekit::DisconnectReason;
 use livekit::e2ee::key_provider::{KeyProvider, KeyProviderOptions};
 use livekit::e2ee::{E2eeOptions, EncryptionType};
 use livekit::options::TrackPublishOptions;
@@ -294,6 +295,88 @@ pub struct StreamKey {
 /// Every verified remote video stream's newest frame.
 pub type RemoteVideos = BTreeMap<StreamKey, RemoteFrame>;
 
+/// Why a call's room ended on its own (session.ts `endCodeOf`): the caller ends the call ("lost", session.ts
+/// `onRoomEnd` → `leave('lost')`), so the signalling never stays in a room this device is no longer in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomEnd {
+    /// The room was deleted or closed: the call ended.
+    CallEnded,
+    /// This device was removed from the room (a voice takeover by a newer device, a kick, an AFK move).
+    Removed,
+    /// The connection was lost for good (the SDK's reconnects gave up), or any other reason.
+    Disconnected,
+}
+
+impl RoomEnd {
+    pub fn of(reason: DisconnectReason) -> RoomEnd {
+        match reason {
+            DisconnectReason::RoomDeleted | DisconnectReason::RoomClosed => RoomEnd::CallEnded,
+            DisconnectReason::ParticipantRemoved => RoomEnd::Removed,
+            _ => RoomEnd::Disconnected,
+        }
+    }
+
+    /// The web's error code for it.
+    pub fn code(self) -> &'static str {
+        match self {
+            RoomEnd::CallEnded => "E_CALL_ENDED",
+            RoomEnd::Removed => "E_REMOVED",
+            RoomEnd::Disconnected => "E_DISCONNECTED",
+        }
+    }
+}
+
+/// Says the room ended (`None`: its events stopped with no reason, a lost connection); the first end stands.
+fn end_room(ended: &watch::Sender<Option<RoomEnd>>, why: Option<RoomEnd>) {
+    let why = why.unwrap_or(RoomEnd::Disconnected);
+    ended.send_if_modified(|e| {
+        if e.is_some() {
+            return false;
+        }
+        *e = Some(why);
+        true
+    });
+}
+
+/// stats.ts `RTT_MAX`: the most a ping says, in ms.
+const RTT_MAX_MS: f64 = 60_000.0;
+
+/// stats.ts `rttOf` over one peer connection's report: the current round-trip time of the pair in use (the transport's
+/// selected pair, else a nominated pair that succeeded), in whole ms. `None` when no pair is in use or it was never
+/// answered (no round trip measured yet).
+pub fn rtt_ms_of(report: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
+    use livekit::webrtc::stats::{IceCandidatePairState, RtcStats};
+    let pairs = || {
+        report.iter().filter_map(|s| match s {
+            RtcStats::CandidatePair(p) => Some(p),
+            _ => None,
+        })
+    };
+    let selected = report.iter().find_map(|s| match s {
+        RtcStats::Transport(t) if !t.transport.selected_candidate_pair_id.is_empty() => {
+            Some(t.transport.selected_candidate_pair_id.as_str())
+        }
+        _ => None,
+    });
+    let pair = selected
+        .and_then(|id| pairs().find(|p| p.rtc.id == id))
+        .or_else(|| {
+            pairs().find(|p| {
+                p.candidate_pair.nominated
+                    && p.candidate_pair.state == Some(IceCandidatePairState::Succeeded)
+            })
+        })?;
+    let p = &pair.candidate_pair;
+    if p.responses_received == 0 && p.current_round_trip_time <= 0.0 {
+        return None;
+    }
+    Some(
+        (p.current_round_trip_time * 1000.0)
+            .round()
+            .clamp(0.0, RTT_MAX_MS) as u32,
+    )
+}
+
 /// A local share being published.
 struct LocalShare {
     sid: TrackSid,
@@ -320,6 +403,7 @@ pub struct Call {
     shares: Mutex<HashMap<ShareKind, LocalShare>>,
     shares_ended: mpsc::UnboundedSender<ShareKind>,
     shares_ended_rx: Mutex<Option<mpsc::UnboundedReceiver<ShareKind>>>,
+    ended: watch::Receiver<Option<RoomEnd>>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -479,13 +563,14 @@ impl Call {
         let (shares_ended, shares_ended_rx) = mpsc::unbounded_channel();
         let tails: Tails = Arc::default();
         let muted = Arc::new(AtomicBool::new(options.muted));
+        let (ended_tx, ended) = watch::channel(None);
         let mut tasks = vec![tokio::spawn(remote_tracks(
             events,
             media.clone(),
-            levels_tx,
-            videos_tx,
+            (levels_tx, videos_tx),
             tails.clone(),
             speaker.as_ref().map(|s| s.sink()),
+            ended_tx,
         ))];
 
         let mut call = Call {
@@ -507,6 +592,7 @@ impl Call {
             shares: Mutex::new(HashMap::new()),
             shares_ended,
             shares_ended_rx: Mutex::new(Some(shares_ended_rx)),
+            ended,
             tasks: Vec::new(),
         };
         match call.publish_mic(options.mic, &mut tasks).await {
@@ -749,6 +835,18 @@ impl Call {
             .take()
     }
 
+    /// The link's ping now (session.ts `readLink`: the publisher's connection, else the subscriber's), in ms; `None`
+    /// while no round trip is measured or the stats cannot be read. It never goes to the server.
+    pub async fn rtt_ms(&self) -> Option<u32> {
+        let stats = self.room.get_stats().await.ok()?;
+        rtt_ms_of(&stats.publisher_stats).or_else(|| rtt_ms_of(&stats.subscriber_stats))
+    }
+
+    /// The room's end on its own ([`RoomEnd`]): `None` while this device is in it. A [`Call::leave`] never sets it.
+    pub fn ended(&self) -> watch::Receiver<Option<RoomEnd>> {
+        self.ended.clone()
+    }
+
     /// How many frames the share of `kind` has handed the encoder.
     pub fn share_frames(&self, kind: ShareKind) -> Option<u64> {
         self.shares
@@ -973,16 +1071,18 @@ async fn feed_pcm(
     }
 }
 
-/// Binds each subscribed track and measures each verified device's audio.
+/// Binds each subscribed track and measures each verified device's audio. The room's end on its own (its
+/// `Disconnected`, or its events stopping) is said on `ended`.
 async fn remote_tracks(
     mut events: mpsc::UnboundedReceiver<RoomEvent>,
     media: Arc<CallMedia>,
-    levels: watch::Sender<RemoteLevels>,
-    videos: watch::Sender<RemoteVideos>,
+    (levels, videos): (watch::Sender<RemoteLevels>, watch::Sender<RemoteVideos>),
     tails: Tails,
     playout: Option<PlayoutSink>,
+    ended: watch::Sender<Option<RoomEnd>>,
 ) {
     let mut readers: HashMap<String, JoinHandle<()>> = HashMap::new();
+    let mut why = None;
     while let Some(event) = events.recv().await {
         match event {
             RoomEvent::TrackSubscribed {
@@ -1091,13 +1191,18 @@ async fn remote_tracks(
                     }
                 }
             }
-            RoomEvent::Disconnected { .. } => break,
+            RoomEvent::Disconnected { reason } => {
+                why = Some(RoomEnd::of(reason));
+                break;
+            }
             _ => {}
         }
     }
     for (_, r) in readers {
         r.abort();
     }
+    // A leave aborts this task before it closes the room, so only an end on its own reaches here.
+    end_room(&ended, why);
 }
 
 async fn read_audio(
@@ -1366,5 +1471,107 @@ mod edge_tests {
         let last = tails.lock().unwrap().edges.back().cloned().unwrap();
         assert_eq!((last.stream.as_str(), last.audible), ("d:1", false));
         assert!(!tails.lock().unwrap().audible.contains_key("d:1"));
+    }
+}
+
+#[cfg(test)]
+mod end_tests {
+    use super::*;
+
+    /// session.ts `endCodeOf`: a deleted or closed room is the call's end, a removal (a voice takeover, a kick) is
+    /// E_REMOVED, and anything else is a lost connection.
+    #[test]
+    fn a_room_end_says_why_as_the_web_does() {
+        assert_eq!(
+            RoomEnd::of(DisconnectReason::RoomDeleted),
+            RoomEnd::CallEnded
+        );
+        assert_eq!(
+            RoomEnd::of(DisconnectReason::RoomClosed),
+            RoomEnd::CallEnded
+        );
+        assert_eq!(
+            RoomEnd::of(DisconnectReason::ParticipantRemoved),
+            RoomEnd::Removed
+        );
+        for other in [
+            DisconnectReason::UnknownReason,
+            DisconnectReason::SignalClose,
+            DisconnectReason::ServerShutdown,
+            DisconnectReason::DuplicateIdentity,
+        ] {
+            assert_eq!(RoomEnd::of(other), RoomEnd::Disconnected, "{other:?}");
+        }
+        assert_eq!(RoomEnd::CallEnded.code(), "E_CALL_ENDED");
+        assert_eq!(RoomEnd::Removed.code(), "E_REMOVED");
+        assert_eq!(RoomEnd::Disconnected.code(), "E_DISCONNECTED");
+    }
+
+    /// The room's end is said once: the first reason stands, and a room whose events stop with no reason (the SDK
+    /// dropped the stream) has ended too, as a lost connection.
+    #[test]
+    fn the_first_room_end_stands() {
+        let (tx, rx) = watch::channel(None);
+        end_room(&tx, Some(RoomEnd::Removed));
+        end_room(&tx, Some(RoomEnd::Disconnected));
+        assert_eq!(*rx.borrow(), Some(RoomEnd::Removed));
+        let (tx, rx) = watch::channel(None);
+        end_room(&tx, None);
+        assert_eq!(*rx.borrow(), Some(RoomEnd::Disconnected));
+    }
+}
+
+#[cfg(test)]
+mod rtt_tests {
+    use super::*;
+    use livekit::webrtc::stats::{self as st, RtcStats};
+
+    fn pair(id: &str, rtt: f64, nominated: bool, answered: bool) -> RtcStats {
+        let mut p = st::CandidatePairStats::default();
+        p.rtc.id = id.into();
+        p.candidate_pair.current_round_trip_time = rtt;
+        p.candidate_pair.nominated = nominated;
+        p.candidate_pair.state = Some(st::IceCandidatePairState::Succeeded);
+        p.candidate_pair.responses_received = u64::from(answered);
+        RtcStats::CandidatePair(p)
+    }
+
+    fn transport(selected: &str) -> RtcStats {
+        let mut t = st::TransportStats::default();
+        t.transport.selected_candidate_pair_id = selected.into();
+        RtcStats::Transport(t)
+    }
+
+    /// stats.ts `rttOf`: the transport's selected pair's current round-trip time (else a nominated, succeeded pair), in
+    /// whole ms; a report with no pair, or a pair never answered, knows none.
+    #[test]
+    fn the_ping_is_the_selected_pair_s_round_trip() {
+        let report = [
+            pair("a", 0.250, true, true),
+            pair("b", 0.0124, false, true),
+            transport("b"),
+        ];
+        assert_eq!(
+            rtt_ms_of(&report),
+            Some(12),
+            "the selected pair, not the nominated one"
+        );
+        assert_eq!(rtt_ms_of(&[pair("a", 0.0456, true, true)]), Some(46));
+        assert_eq!(
+            rtt_ms_of(&[pair("a", 0.0004, true, true)]),
+            Some(0),
+            "under 1 ms"
+        );
+        assert_eq!(
+            rtt_ms_of(&[pair("a", 0.0, true, false)]),
+            None,
+            "never answered"
+        );
+        assert_eq!(
+            rtt_ms_of(&[pair("a", 0.02, false, true)]),
+            None,
+            "no pair in use"
+        );
+        assert_eq!(rtt_ms_of(&[]), None);
     }
 }
