@@ -26,6 +26,24 @@ const TYPING_WINDOW_MS: u64 = 10_000;
 /// gateway.ts `sendTyping`: an "on" within this of the last one is not sent again.
 const TYPING_THROTTLE_MS: u64 = 3_000;
 
+/// The stored seq of `msg` in `channel`, from wherever its row is held (review HL m3: the web takes it from the row): the
+/// channel's log, else a thread of the channel (its replies or its root).
+fn stored_seq(s: &crate::state::AppState, channel: ChannelId, msg: MessageId) -> Option<u64> {
+    let in_log = s
+        .timelines
+        .get(&channel)
+        .and_then(|t| t.items.iter().find(|i| i.msg_id == Some(msg)));
+    let in_thread = || {
+        s.threads
+            .threads
+            .values()
+            .filter(|t| t.channel == channel)
+            .flat_map(|t| t.root.iter().chain(t.replies.iter()))
+            .find(|i| i.msg_id == Some(msg))
+    };
+    in_log.or_else(in_thread).and_then(|i| i.seq)
+}
+
 /// The messages area's handle for messages: cheap to clone, no I/O on construction.
 #[derive(Clone)]
 pub struct Messages {
@@ -129,11 +147,7 @@ impl Messages {
                 .map_err(crate::features::profile::refusal)?
                 .is_some()
             {
-                let seq = s
-                    .timelines
-                    .get(&channel)
-                    .and_then(|t| t.items.iter().find(|i| i.msg_id == Some(msg)))
-                    .and_then(|i| i.seq)
+                let seq = stored_seq(&s, channel, msg)
                     .ok_or_else(|| ClientError::Sync("E_BAD_INPUT".into()))?;
                 inner
                     .api()
@@ -335,5 +349,67 @@ mod tests {
     #[test]
     fn a_fold_type_is_the_envelope_s() {
         assert_eq!([EDIT, DELETE, PIN, UNPIN], [1, 2, 5, 6]);
+    }
+
+    fn item(msg: u8, seq: u64) -> crate::state::TimelineItem {
+        crate::state::TimelineItem {
+            key: format!("s{seq}"),
+            state: crate::state::TimelineItemState::Ok,
+            reason: String::new(),
+            sender_user: None,
+            sender_device: None,
+            own: true,
+            bot: false,
+            ts: 0,
+            body: String::new(),
+            msg_id: Some(MessageId([msg; 16])),
+            seq: Some(seq),
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+        }
+    }
+
+    /// Review HL m3: the timed-out delete takes the message's seq from wherever its row is held, as the web takes it
+    /// from the row: the channel's log, or a thread's replies or root (the thread pane's Delete).
+    #[test]
+    fn a_timed_out_delete_finds_the_seq_of_a_thread_reply() {
+        use crate::state::threads::ThreadData;
+        let channel = ChannelId([1; 16]);
+        let mut s = crate::state::AppState::default();
+        s.timelines.insert(
+            channel,
+            crate::state::Timeline {
+                channel_id: channel,
+                group: crate::state::ChannelGroupState::Active,
+                items: vec![item(1, 10)],
+                has_earlier: false,
+            },
+        );
+        s.threads.threads.insert(
+            MessageId([1; 16]),
+            ThreadData {
+                channel,
+                root: Some(item(1, 10)),
+                replies: vec![item(2, 11)],
+                has_earlier: false,
+                count: 1,
+            },
+        );
+        assert_eq!(stored_seq(&s, channel, MessageId([1; 16])), Some(10));
+        assert_eq!(
+            stored_seq(&s, channel, MessageId([2; 16])),
+            Some(11),
+            "a thread reply"
+        );
+        assert_eq!(stored_seq(&s, channel, MessageId([3; 16])), None);
+        assert_eq!(
+            stored_seq(&s, ChannelId([9; 16]), MessageId([2; 16])),
+            None,
+            "another channel's thread"
+        );
     }
 }
