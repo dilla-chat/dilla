@@ -619,3 +619,59 @@ fn a_moderation_command_asks_for_confirmation_then_applies_to_a_joined_member() 
     member.stop();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Final review I4: an open /kick or /ban confirmation lets go of its client when the client is released (Forget, Sign
+/// out, an instance's Remove), whether or not its window draws again, so the store can close: the dialog goes, and the
+/// caller's handle is the last.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn a_release_drops_an_open_moderation_confirmation(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::{ModAction, Moderation};
+    use dilla_client::state::bot::Conversation;
+    use dilla_client::state::{ChannelId, CommunityId, UserId};
+    use dilla_desktop::screens::commands::confirm;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("i4-confirm", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let alice = rt.block_on(world::sign_up(&host, &invite, "alice", "Alice", "i4"));
+    let client = Rc::new(rt.block_on(world::start(&alice)));
+    cx.update(dilla_desktop::install);
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    let confirming = confirm::Confirming {
+        moderation: Moderation {
+            community: CommunityId([1; 16]),
+            user: UserId([2; 16]),
+            name: "Bea".into(),
+            username: "bea".into(),
+            action: ModAction::Kick,
+        },
+        conversation: Conversation {
+            channel: ChannelId([3; 16]),
+            thread: None,
+        },
+        client: client.clone(),
+    };
+    vcx.update(|_, cx| confirm::ask(window, confirming, cx));
+    assert!(vcx.update(|_, cx| confirm::is_open(window, cx)));
+    assert_eq!(Rc::strong_count(&client), 2, "the dialog holds the client");
+
+    vcx.update(|_, cx| dilla_desktop::release::release_client(&client, cx));
+    assert!(
+        !vcx.update(|_, cx| confirm::is_open(window, cx)),
+        "the dialog went"
+    );
+    assert_eq!(
+        Rc::strong_count(&client),
+        1,
+        "nothing but the caller holds the client"
+    );
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}

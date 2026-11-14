@@ -13,7 +13,7 @@ use crate::screens;
 
 /// Lets go of `client` everywhere outside the window's own views: voice (and its call's media), attachments, the DM
 /// picker and comparison, the message dialogs, the create flows, the ring banner, the search palette, threads, the
-/// factor area's step-ups and registration.
+/// factor area's step-ups and registration, and an open moderation confirmation.
 pub fn release_client(client: &Rc<Client>, cx: &mut App) {
     // The views a window keeps between frames (its keyed state) let go first: without this they would hold the client
     // until the window draws again, which a hidden or minimized window may not do (review M5).
@@ -44,6 +44,7 @@ pub fn release_client(client: &Rc<Client>, cx: &mut App) {
     screens::ring::effects::release_notifier(cx);
     screens::threads::release(client, cx);
     screens::factor::release(client, cx);
+    screens::commands::confirm::release(client, cx);
 }
 
 /// A view kept between frames that holds a client, and how it lets go of it.

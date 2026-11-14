@@ -46,6 +46,21 @@ pub fn ask(window: gpui::WindowId, confirming: Confirming, cx: &mut App) {
     crate::per_window::get_mut::<Open>(window, cx).0 = Some(confirming);
 }
 
+/// Lets go of `client` (Forget, sign-out, an instance's Remove: `crate::release::release_client`, final review I4): a
+/// confirmation it asks in any window goes, unanswered (nothing is sent or recorded), so the store can close though the
+/// window does not draw again.
+pub fn release(client: &std::rc::Rc<Client>, cx: &mut App) {
+    crate::per_window::each_mut::<Open>(cx, |_, open| {
+        if open
+            .0
+            .as_ref()
+            .is_some_and(|c| std::rc::Rc::ptr_eq(&c.client, client))
+        {
+            open.0 = None;
+        }
+    });
+}
+
 /// Whether `window` shows the confirmation.
 pub fn is_open(window: gpui::WindowId, cx: &App) -> bool {
     crate::per_window::get::<Open>(window, cx).is_some_and(|o| o.0.is_some())
