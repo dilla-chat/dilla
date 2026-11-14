@@ -44,7 +44,25 @@ pub enum BotArg {
     Null,
 }
 
+/// Review A M1: an argument's text and bytes (a removal's reason and excerpt, a music search, a poll's choice) are wiped
+/// as it goes, so a [`SealedCommand`], a sealed `Submit` and every clone of them leave no plaintext behind.
+impl Drop for BotArg {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
 impl BotArg {
+    /// Wipes the argument's text or bytes, leaving them empty.
+    pub fn wipe(&mut self) {
+        use zeroize::Zeroize as _;
+        match self {
+            Self::Text(t) => t.zeroize(),
+            Self::Bytes(b) => b.zeroize(),
+            Self::Uint(_) | Self::Null => {}
+        }
+    }
+
     fn value(&self) -> Value {
         match self {
             Self::Uint(n) => Value::Uint(*n),
@@ -1222,6 +1240,34 @@ mod tests {
     use super::*;
     use crate::state::bot_admin::{APP_OPERATION_BASE, MODERATION_CASES, encode_bot_status};
     use std::sync::Mutex as StdMutex;
+
+    /// Review A M1 (central zeroizing of the sealed Bot path): a sealed command's text and byte arguments (a removal's
+    /// reason and excerpt, a search, a poll's choice) are wiped as an argument goes, so `SealedCommand`, `Submit` and every
+    /// clone of them leave no plaintext behind; the CBOR the core seals is encoded once into a wiped buffer, and the
+    /// `Value` it was built from is wiped.
+    #[test]
+    fn the_sealed_path_wipes_its_plaintext() {
+        let mut text = BotArg::Text("spam reason".into());
+        text.wipe();
+        assert_eq!(text, BotArg::Text(String::new()));
+        let mut bytes = BotArg::Bytes(vec![7; 4]);
+        bytes.wipe();
+        assert_eq!(bytes, BotArg::Bytes(Vec::new()));
+        let command = SealedCommand {
+            operation: 1,
+            channel: None,
+            args: vec![BotArg::Text("excerpt".into()), BotArg::Uint(3)],
+            request_id: [1; 16],
+        };
+        let mut value = command.args_value();
+        let encoded: zeroize::Zeroizing<Vec<u8>> = value.clone().encode_wiped();
+        assert_eq!(&encoded[..], &value.encode()[..]);
+        value.wipe();
+        assert_eq!(
+            value,
+            Value::Array(vec![Value::Text(String::new()), Value::Uint(3)])
+        );
+    }
 
     /// A transport that answers from a closure and records every command it was sent.
     type Answerer = Box<dyn Fn(&SealedCommand) -> Result<SealedAnswer, SendError> + Send + Sync>;

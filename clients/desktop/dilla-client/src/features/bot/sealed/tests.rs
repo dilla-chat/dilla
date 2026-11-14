@@ -101,14 +101,14 @@ impl BotIo for Fake {
         &self,
         _: Vec<u8>,
         _: [u8; 16],
-        request: Vec<u8>,
+        request: zeroize::Zeroizing<Vec<u8>>,
     ) -> Result<(Vec<u8>, ReplySecret), Refusal> {
         if let Some(r) = lock(&self.seal_refusals).pop() {
             return Err(r);
         }
         let secret = ReplySecret::generate().unwrap();
         lock(&self.reply_keys).push(secret.public_key());
-        Ok((request, secret))
+        Ok((request.to_vec(), secret))
     }
     async fn post(&self, _: CommunityId, body: Vec<u8>, _: Vec<u8>) -> Result<(), Refusal> {
         if let Some(r) = lock(&self.post_refusal).clone() {
