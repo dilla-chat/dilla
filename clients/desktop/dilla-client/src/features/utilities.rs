@@ -76,6 +76,18 @@ impl Utilities {
         }
     }
 
+    /// The Bot this device talks to in `community` (UtilityCommandProvider.tsx's `installationId` and `botUserId`): the
+    /// Bot user it pinned and its verified command key, which a reinstalled Bot changes. `None` while none is pinned.
+    pub fn bot_identity(&self, community: CommunityId) -> Option<BotIdentity> {
+        let view = crate::features::bot::Bot::of(&self.inner)
+            .sealed()
+            .view(community)?;
+        Some(BotIdentity {
+            user: view.bot_user?,
+            key: view.fingerprint,
+        })
+    }
+
     /// Holds `community`'s reminders as the Bot answered them, soonest first.
     pub fn hold_reminders(&self, community: CommunityId, mut reminders: Vec<ReminderView>) {
         reminders.sort_by_key(|r| (r.due, r.id));
@@ -83,6 +95,14 @@ impl Utilities {
             s.bot.reminders.insert(community, reminders);
         });
     }
+}
+
+/// Which Bot answers a community ([`Utilities::bot_identity`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BotIdentity {
+    pub user: crate::state::UserId,
+    /// The verified command key's fingerprint; `None` while none is checked.
+    pub key: Option<String>,
 }
 
 /// Why a poll or reminder action did not go through (utilities.ts errors).

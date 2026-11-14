@@ -13,7 +13,7 @@
 use std::rc::Rc;
 
 use dilla_client::Client;
-use dilla_client::features::utilities::UtilityError;
+use dilla_client::features::utilities::{BotIdentity, UtilityError};
 use dilla_client::state::bot::ReminderStatus;
 use dilla_client::state::{AppState, CommunityId};
 use gpui::{
@@ -199,8 +199,30 @@ fn outcome(answer: &Result<(), UtilityError>) -> (bool, bool) {
     }
 }
 
+/// `fetchInbox`'s post-scan check (w2-bot-review M-D2, UtilityCommandProvider.tsx:247-256): the servers whose Bot is not
+/// the one their reminders were read from any more (`now` differs from what `read` recorded before each read). A server
+/// read before this device pinned its Bot (the read itself pins it) has nothing to compare with, and stays.
+fn changed_since(
+    read: &[(CommunityId, Option<BotIdentity>)],
+    now: impl Fn(CommunityId) -> Option<BotIdentity>,
+) -> Vec<CommunityId> {
+    read.iter()
+        .filter(|(community, before)| {
+            let Some(before) = before else {
+                return false;
+            };
+            // A key checked only during the read is no change; a key that differs from the one checked before is.
+            now(*community).is_none_or(|now| {
+                now.user != before.user || (before.key.is_some() && now.key != before.key)
+            })
+        })
+        .map(|(community, _)| *community)
+        .collect()
+}
+
 /// Reads every server's reminders again (`fetchInbox`), one server after another; a server whose Bot cannot answer
-/// drops out of the list. `show_loading`: the list is hidden behind the loading line until the read lands.
+/// drops out of the list, and so does one whose Bot changed while the scan ran. `show_loading`: the list is hidden
+/// behind the loading line until the read lands.
 fn read(window: WindowId, client: &Rc<Client>, state: &AppState, show_loading: bool, cx: &mut App) {
     let communities: Vec<CommunityId> = state.communities.iter().map(|c| c.id).collect();
     let i = inbox(window, cx);
@@ -211,16 +233,24 @@ fn read(window: WindowId, client: &Rc<Client>, state: &AppState, show_loading: b
     }
     let job = client.utilities().run(move |u| async move {
         let mut failed = false;
+        let mut read = Vec::new();
         for (index, community) in communities.into_iter().enumerate() {
             if let Some(wait) = stagger(index) {
                 tokio::time::sleep(wait).await;
             }
+            let before = u.bot_identity(community);
             let answer = u.refresh_reminders(community).await.map(|_| ());
             let (forget, fails) = outcome(&answer);
             if forget {
                 u.hold_reminders(community, Vec::new());
+            } else {
+                read.push((community, before));
             }
             failed |= fails;
+        }
+        // The installation and the Bot user must still be the ones each server's reminders came from.
+        for community in changed_since(&read, |c| u.bot_identity(c)) {
+            u.hold_reminders(community, Vec::new());
         }
         Ok(failed)
     });
@@ -543,6 +573,50 @@ mod tests {
         assert_eq!(ms(7), Some(840));
         assert_eq!(ms(8), Some(900));
         assert_eq!(ms(100), Some(900));
+    }
+
+    /// w2-bot-review M-D2 (`fetchInbox`'s post-scan check, UtilityCommandProvider.tsx:247-256): a server whose Bot is
+    /// no longer the one its reminders were read from (another Bot user, another command key) or no longer answers
+    /// drops out, as an unavailable one does; an unchanged one stays.
+    #[test]
+    fn a_server_whose_bot_changed_during_the_scan_drops_out() {
+        use dilla_client::state::UserId;
+        let (a, b, c) = (
+            CommunityId([1; 16]),
+            CommunityId([2; 16]),
+            CommunityId([3; 16]),
+        );
+        let id = |user: u8, key: &str| {
+            Some(BotIdentity {
+                user: UserId([user; 16]),
+                key: Some(key.to_owned()),
+            })
+        };
+        let read = vec![(a, id(9, "K1")), (b, id(9, "K1")), (c, id(9, "K1"))];
+        let now = |community: CommunityId| match community.0[0] {
+            1 => id(9, "K1"),
+            2 => id(8, "K1"),
+            _ => None,
+        };
+        assert_eq!(changed_since(&read, now), [b, c]);
+        let rekeyed = |_: CommunityId| id(9, "K2");
+        assert_eq!(changed_since(&read[..1], rekeyed), [a], "a new command key");
+        let unchecked = [(
+            a,
+            Some(BotIdentity {
+                user: UserId([9; 16]),
+                key: None,
+            }),
+        )];
+        assert!(
+            changed_since(&unchecked, |_| id(9, "K1")).is_empty(),
+            "a key first checked during the read is no change"
+        );
+        let unknown = [(a, None)];
+        assert!(
+            changed_since(&unknown, |_| id(9, "K1")).is_empty(),
+            "pinned by the read itself: nothing to compare with"
+        );
     }
 
     fn reminder(id: u8, due: u64, state: ReminderStatus) -> ReminderView {
