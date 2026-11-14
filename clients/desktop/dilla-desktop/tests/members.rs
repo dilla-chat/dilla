@@ -353,7 +353,7 @@ fn the_roles_section_locks_at_or_above_my_rank_and_the_bits_i_lack() {
 }
 
 /// RolesSection.tsx in the shipping window (the roles-b fixture): the top role opens first, every switch locked; a click
-/// on role 01 opens it, where a bit ada holds may change and one she lacks stays locked; the arrows walk the list.
+/// on role 01 opens it, where a bit ada holds may change and one she lacks stays locked; Up walks the list.
 #[test]
 fn the_roles_section_selects_a_role_and_locks_by_rank_in_the_window() {
     let f = load("server-settings/roles-b");
@@ -376,7 +376,7 @@ fn the_roles_section_selects_a_role_and_locks_by_rank_in_the_window() {
     assert!(app.element("perm-kick-locked").is_none(), "she holds kick");
     assert!(app.element("perm-view-on").is_some());
     assert!(app.element("perm-manageChannels-locked").is_some());
-    // Up from role 01 reaches role 02; Down wraps past "New role" to @everyone.
+    // Up from role 01 reaches role 02.
     app.press("up");
     app.wait_idle();
     assert_eq!(
