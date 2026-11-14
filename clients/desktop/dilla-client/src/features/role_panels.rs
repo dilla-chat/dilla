@@ -191,6 +191,19 @@ pub fn retryable(e: &ApiError) -> bool {
     e.status == 0 || e.status == 408 || e.status == 425 || e.status == 429 || e.status >= 500
 }
 
+/// This device refused to build the request (`apply`'s `E_ROUTE_INPUT`): no answer from the instance, so the stored
+/// action is neither retried nor deleted (w2-bot-review M-B4: controller.ts deletes only on a `DillaHttpError`).
+const LOCAL_REFUSAL: &str = "E_ROUTE_INPUT";
+
+/// What an answer does to a stored action: `Some(true)` retry, `Some(false)` delete, `None` keep as it is.
+pub fn on_refusal(e: &ApiError) -> Option<bool> {
+    if e.code == LOCAL_REFUSAL {
+        None
+    } else {
+        Some(retryable(e))
+    }
+}
+
 // ---- the running client ----
 
 #[derive(Default)]
@@ -325,11 +338,14 @@ async fn submit(inner: &Arc<Inner>, key: String, action: PendingAction, attempt:
                 let _ = reload_members(inner, CommunityId(c)).await;
             }
         }
-        Err(e) if retryable(&e) => schedule(inner, &pc, key.clone(), action, attempt + 1),
-        Err(_) => {
-            let k = key.clone();
-            let _ = try_core(&core, move |c| c.setting_delete(&k)).await;
-        }
+        Err(e) => match on_refusal(&e) {
+            Some(true) => schedule(inner, &pc, key.clone(), action, attempt + 1),
+            Some(false) => {
+                let k = key.clone();
+                let _ = try_core(&core, move |c| c.setting_delete(&k)).await;
+            }
+            None => {}
+        },
     }
     lock(&pc.jobs).remove(&key);
 }
@@ -838,6 +854,12 @@ mod tests {
         for s in [400, 403, 404, 409] {
             assert!(!retryable(&e(s)), "{s}");
         }
+        // w2-bot-review M-B4: a refusal of this device's own (no answer from the instance) is kept, never deleted or
+        // retried; the instance's answers are retried or deleted.
+        assert_eq!(on_refusal(&ApiError::local(0, "E_ROUTE_INPUT", "")), None);
+        assert_eq!(on_refusal(&e(503)), Some(true));
+        assert_eq!(on_refusal(&e(0)), Some(true));
+        assert_eq!(on_refusal(&e(404)), Some(false));
     }
 
     #[test]
