@@ -11,8 +11,8 @@
 
 pub mod keys;
 pub mod modlog;
-mod self_roles;
 pub mod roles;
+mod self_roles;
 
 use std::collections::HashSet;
 use std::rc::Rc;
