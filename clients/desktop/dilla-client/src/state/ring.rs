@@ -42,6 +42,9 @@ pub struct Outgoing {
     pub declined: Vec<UserId>,
     /// Held back by the instance's pair rule (called too recently).
     pub not_rung: Vec<UserId>,
+    /// The ring has run its [`RING`] (30 s) from the call's start (useCall.tsx `ringExpired`): "ringing …" is no longer
+    /// said, and with nobody else in the call the line is "No answer.".
+    pub expired: bool,
 }
 
 /// A call this device may not join or had to leave (decision 4, RV-1, RV-3): the `blocked` phase of types.ts `CallState`

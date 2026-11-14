@@ -1905,22 +1905,34 @@ pub fn dm_columns(width: f32) -> usize {
     (((width + m::TILE_GAP) / (m::DM_TILE_MIN + m::TILE_GAP)).floor() as usize).max(1)
 }
 
-/// The outgoing ring's line over the tiles (useCall.tsx `outgoingText`), while this device's DM call rings someone.
+/// The outgoing ring's line over the tiles (VoiceView.tsx `DmCall`), while this device's DM call rings someone. Someone
+/// else is in the call when a participant is another person (`userId !== self`).
 fn outgoing_text(state: &AppState, channel: ChannelId) -> Option<String> {
     let out = state.ring.outgoing.as_ref()?;
     if out.channel != Some(channel) {
         return None;
     }
-    let others = state.voice.participants(channel).iter().any(|p| !p.own);
-    let names = |users: &[UserId]| {
-        users
-            .iter()
-            .map(|u| dm_name_of(state, *u))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let me = state.account.user_id;
+    let others = state
+        .voice
+        .participants(channel)
+        .iter()
+        .any(|p| Some(p.user_id) != me);
+    outgoing_line(out, others, &|u| dm_name_of(state, u))
+}
+
+/// useCall.tsx `outgoingText`: `ringing {names}` while it rings and the ring has not run its 30 s, `{names} not rung`
+/// for the participants the instance did not ring (with nobody else in the call), `{name} declined.` per decline, and
+/// `No answer.` once every ring ended (30 s, or nobody left ringing or waiting) with nobody else in the call and nobody
+/// declined; `None` when there is nothing to say.
+pub fn outgoing_line(
+    out: &dilla_client::state::ring::Outgoing,
+    others: bool,
+    name: &dyn Fn(UserId) -> String,
+) -> Option<String> {
+    let names = |users: &[UserId]| users.iter().map(|u| name(*u)).collect::<Vec<_>>().join(", ");
     let mut parts = Vec::new();
-    if !out.ringing.is_empty() {
+    if !out.ringing.is_empty() && !out.expired {
         parts.push(tf(
             "call.outgoing.ringing",
             &[("names", names(&out.ringing).as_str())],
@@ -1933,12 +1945,12 @@ fn outgoing_text(state: &AppState, channel: ChannelId) -> Option<String> {
         ));
     }
     for u in &out.declined {
-        parts.push(tf(
-            "call.outgoing.declined",
-            &[("name", dm_name_of(state, *u).as_str())],
-        ));
+        parts.push(tf("call.outgoing.declined", &[("name", name(*u).as_str())]));
     }
-    if !others && out.ringing.is_empty() && out.not_rung.is_empty() && out.declined.is_empty() {
+    // useCall.tsx `unanswered`.
+    let unanswered =
+        !others && (out.expired || (out.ringing.is_empty() && out.not_rung.is_empty()));
+    if unanswered && out.declined.is_empty() {
         parts.push(t("call.outgoing.noAnswer").to_owned());
     }
     (!parts.is_empty()).then(|| parts.join(" "))
@@ -2951,6 +2963,53 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Wave 2 review I-G1, useCall.tsx `outgoingText` (VoiceView.wb2.test.tsx's cases): the ring's line before and after
+    /// its 30 s, with and without someone else in the call, declined and not rung.
+    #[test]
+    fn the_outgoing_line_follows_the_ring_clock() {
+        use dilla_client::state::ring::Outgoing;
+        let (bob, cy) = (UserId([2; 16]), UserId([3; 16]));
+        let name = |u: UserId| if u == bob { "bob".to_owned() } else { "cy".to_owned() };
+        let line = |out: &Outgoing, others: bool| outgoing_line(out, others, &name);
+        let ringing = Outgoing {
+            ringing: vec![bob],
+            ..Outgoing::default()
+        };
+        assert_eq!(line(&ringing, false).as_deref(), Some("ringing bob"));
+        // 30 s on with nobody answering: no longer ringing, "No answer.".
+        let expired = Outgoing {
+            expired: true,
+            ..ringing.clone()
+        };
+        assert_eq!(line(&expired, false).as_deref(), Some("No answer."));
+        // Someone else is in the call: nothing to say once expired.
+        assert_eq!(line(&expired, true), None);
+        // Not rung: said, and "No answer." waits for the ring time.
+        let not_rung = Outgoing {
+            not_rung: vec![bob],
+            ..Outgoing::default()
+        };
+        let said = line(&not_rung, false).unwrap();
+        assert!(!said.contains("No answer."), "{said}");
+        assert!(!said.contains("ringing"), "{said}");
+        let said = line(
+            &Outgoing {
+                expired: true,
+                ..not_rung
+            },
+            false,
+        )
+        .unwrap();
+        assert!(said.ends_with("No answer."), "{said}");
+        // A decline is said, and no "No answer." after it, expired or not.
+        let declined = Outgoing {
+            declined: vec![cy],
+            expired: true,
+            ..Outgoing::default()
+        };
+        assert_eq!(line(&declined, false).as_deref(), Some("cy declined."));
+    }
+
     use super::*;
     use dilla_client::state::voice::flags;
 
