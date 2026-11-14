@@ -112,11 +112,30 @@ pub fn chips_key(window: gpui::WindowId, stroke: &gpui::Keystroke, cx: &mut App)
     if state.chips.is_none() {
         return false;
     }
+    // w2-bot-review M-B2: a paste (Cmd+V, Ctrl+V) would land in the hidden field and drop the chips with every value; the
+    // clipboard's first line goes in the active chip instead.
+    let m = stroke.modifiers;
+    if stroke.key == "v" && !m.shift && (m.platform || (m.control && !m.alt)) {
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap_or_default();
+        let line: String = text
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        if let Some(chips) = super::picker_state_mut(window, cx).chips.as_mut() {
+            chips.active_value().push_str(&line);
+        }
+        return true;
+    }
     let s = super::picker_state_mut(window, cx);
     let Some(chips) = s.chips.as_mut() else {
         return false;
     };
-    let m = stroke.modifiers;
     // A shortcut (Cmd, or Ctrl without Alt) is the app's; AltGr (Ctrl+Alt on Linux and Windows) and Option (macOS)
     // type characters (t28-bot-review I2).
     let shortcut = m.platform || (m.control && !m.alt);
@@ -190,15 +209,41 @@ mod tests {
             assert!(chips_key(w, &stroke("2", Some("@"), altgr), cx));
             assert!(chips_key(w, &stroke("8", Some("["), option), cx));
             assert!(chips_key(w, &stroke("enter", None, Modifiers::shift()), cx));
-            assert!(!chips_key(w, &stroke("v", None, Modifiers::control()), cx));
+            assert!(!chips_key(w, &stroke("c", None, Modifiers::control()), cx));
             assert!(!chips_key(
                 w,
-                &stroke("v", Some("v"), Modifiers::command()),
+                &stroke("c", Some("c"), Modifiers::command()),
                 cx
             ));
             assert!(!chips_key(w, &stroke("enter", None, Modifiers::none()), cx));
             let s = super::super::picker_state(w, cx);
             assert_eq!(s.chips.expect("chips kept").values, ["@["]);
+        });
+    }
+
+    /// w2-bot-review M-B2: Ctrl+V and Cmd+V put the clipboard's first line in the active chip (the chips stay); a paste
+    /// never reaches the hidden field.
+    #[gpui::test]
+    fn a_paste_goes_in_the_active_chip(cx: &mut gpui::TestAppContext) {
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            chipped(w, cx);
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                "tomorrow\tnine\nsecond line".into(),
+            ));
+            assert!(chips_key(w, &stroke("v", None, Modifiers::control()), cx));
+            assert!(chips_key(
+                w,
+                &stroke("v", Some("v"), Modifiers::command()),
+                cx
+            ));
+            let s = super::super::picker_state(w, cx);
+            assert_eq!(
+                s.chips.expect("chips kept").values,
+                ["tomorrowninetomorrownine"]
+            );
         });
     }
 
