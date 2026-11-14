@@ -23,6 +23,7 @@ use crate::store::open_store;
 use dilla_core::cbor::{Encoder, decode_strict};
 
 pub mod bot;
+pub mod music;
 
 pub const PASSWORD: &str = "correct horse battery staple";
 
@@ -74,7 +75,31 @@ pub fn start_bot_host(tag: &str, listen: &str) -> Host {
     host
 }
 
+/// Task 28 wave 2 (lane C): [`start_bot_host`] whose Bot plays music into calls, as e2e/voice/bot-music.spec.ts starts
+/// its host (`botRuntime`, `advanceClockWithWall`, an SFU with a 90 s departure timeout): dilla-testhost's in-process
+/// LiveKit SFU, reached by the Bot and by each device's media on the host's own listener (`ws://<listen>`, the `-web-root`
+/// rule), and the music fixtures ([`music::write_fixtures`]) copied into the Bot's state directory before it starts, where
+/// a `dilla_testhost` Bot plays them through the same ffmpeg as a real track. Blocking.
+pub fn start_music_host(tag: &str) -> Host {
+    let listen = format!("127.0.0.1:{}", music::free_port());
+    let host = launch_with(tag, &listen, None, true, true);
+    let fixtures = music::write_fixtures(&repo_root().join("target/dilla-bot-music-fixtures"));
+    host.copy_music_fixtures(&fixtures);
+    host.start_bot();
+    host
+}
+
 fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool) -> Host {
+    launch_with(tag, listen, web_root, with_bot, false)
+}
+
+fn launch_with(
+    tag: &str,
+    listen: &str,
+    web_root: Option<&Path>,
+    with_bot: bool,
+    sfu: bool,
+) -> Host {
     let root = repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
         .map_or_else(|| root.join("target/dilla-testhost"), PathBuf::from);
@@ -126,6 +151,9 @@ fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool) -> H
     .arg(&data);
     if let Some(web) = web_root {
         cmd.arg("-web-root").arg(web).arg("-parity-fixture");
+    }
+    if sfu {
+        music::sfu_args(&mut cmd, &data);
     }
     let bot_state = with_bot.then(|| {
         let (args, state) = bot::args(&data, &wasm);

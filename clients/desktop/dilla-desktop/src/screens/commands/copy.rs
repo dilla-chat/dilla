@@ -16,6 +16,16 @@ pub const PRESS_TO_RUN: &str = "press ↵ to run";
 /// `commandPickerCopy.whenHint`.
 pub const WHEN_HINT: &str = "Try “in 1 hour” or “tomorrow 09:00”";
 
+/// `commandPickerCopy.joinVoiceFirst`: a music command's bar with this device in no voice room.
+pub const JOIN_VOICE_FIRST: &str = "join voice first";
+/// `commandPickerCopy.separator`.
+pub const SEPARATOR: &str = " · ";
+/// `commandPickerCopy.sugTitle`: the suggestions' title, by what they suggest.
+pub const SUG_DURATIONS: &str = "Durations";
+pub const SUG_WHEN: &str = "When";
+pub const SUG_SUGGESTIONS: &str = "Suggestions";
+pub const SUG_COMMANDS: &str = "Commands";
+
 /// `commandPickerCopy.noMatch`.
 pub fn no_match(draft: &str) -> String {
     format!("No command matches {draft}")

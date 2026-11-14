@@ -9,6 +9,7 @@ pub mod list;
 pub mod poll_card;
 pub mod poll_dialog;
 pub mod reminders;
+pub mod suggestions;
 
 use gpui::{BoxShadow, Hsla, point, px};
 

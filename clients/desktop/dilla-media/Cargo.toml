@@ -47,7 +47,8 @@ tls_codec = { version = "=0.5.0", features = ["derive", "serde", "mls"] }
 serde_json = "1.0.151"
 # tests/e2e_call.rs (screens wave 1, Task 3): two desktop clients' call signalling through a real dillad, the accounts
 # enrolled as dilla-client's tests enrol them (the testkit, an authenticator app over RFC 6238). All already in the lock.
-dilla-client = { path = "../dilla-client" }
+# Task 28 wave 2: tests/call.rs's Bot music timing tests use its real-dillad helpers (`testing::host::music`).
+dilla-client = { path = "../dilla-client", features = ["testing-host"] }
 dilla-testkit = { path = "../../../testkit" }
 hmac = "0.13"
 sha1 = "0.11"

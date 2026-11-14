@@ -12,6 +12,11 @@
 //!   mute 0|1
 //!   mic <device id>                           switch the device microphone (prints {"event":"mic"})
 //!   stats                                     prints {"event":"stats",...}
+//!   listen                                    forgets the audio edges so far (prints {"event":"listening"})
+//!   edges                                     prints {"event":"edges","heard":[{"t","audible"}],"edges":[...]}:
+//!                                             the call's audio as a whole turning audible or quiet (any verified
+//!                                             stream audible), and each stream's own changes
+//!                                             ({"device","stream","t","audible"}), t in Unix ms
 //!   quit
 //! stdout: one JSON object per line ({"event": ...}).
 
@@ -262,6 +267,26 @@ async fn main() {
                     })
                     .collect();
                 emit(json!({"event": "stats", "media": stats, "levels": levels, "peaks": peaks}));
+            }
+            // The receive-side first-audio measurement (Task 28 wave 2, the Bot music timing tests): `listen` starts
+            // over, `edges` answers each verified device's quiet/audible changes since, stamped with the wall clock.
+            ["listen"] => {
+                call.clear_audio_edges();
+                emit(json!({"event": "listening"}));
+            }
+            ["edges"] => {
+                let raw = call.remote_audio_edges();
+                let heard: Vec<serde_json::Value> = dilla_media::heard(&raw)
+                    .into_iter()
+                    .map(|(t, audible)| json!({"t": t, "audible": audible}))
+                    .collect();
+                let edges: Vec<serde_json::Value> = raw
+                    .into_iter()
+                    .map(|e| {
+                        json!({"device": e.device, "stream": e.stream, "t": e.at_ms, "audible": e.audible})
+                    })
+                    .collect();
+                emit(json!({"event": "edges", "heard": heard, "edges": edges}));
             }
             ["quit"] => break,
             _ => emit(json!({"event": "error", "line": line})),

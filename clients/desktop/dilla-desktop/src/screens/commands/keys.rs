@@ -120,6 +120,10 @@ pub fn chips_key(window: gpui::WindowId, stroke: &gpui::Keystroke, cx: &mut App)
     // A shortcut (Cmd, or Ctrl without Alt) is the app's; AltGr (Ctrl+Alt on Linux and Windows) and Option (macOS)
     // type characters (t28-bot-review I2).
     let shortcut = m.platform || (m.control && !m.alt);
+    // The active chip's suggestions take ↑↓, and Tab or Enter while one can go in the field.
+    if !shortcut && chips.suggestion_key(&stroke.key, m.shift) {
+        return true;
+    }
     match stroke.key.as_str() {
         // Shift+Enter would be a newline in the hidden field, which drops the chips: swallowed.
         "enter" => return m.shift && !shortcut,

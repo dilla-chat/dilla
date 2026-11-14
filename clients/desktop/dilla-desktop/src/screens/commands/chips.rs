@@ -5,14 +5,20 @@
 //! Escape leaves them, and Enter sends what they hold through the composer's own send ([`draft`]), so a Bot command runs
 //! sealed and a built-in posts or answers exactly as its typed form would.
 //!
-//! Not ported yet: the suggestions list above the active chip (entity choices, the when chips' phrases, a DST fold's two
-//! candidates) and the music commands' room bar.
+//! Task 28 wave 2 (lane C): the suggestions above the active chip ([`offered`], drawn by [`popup`]: durations, `/remind`'s
+//! `when` phrases with their previews, an option's fixed choices, `/help`'s commands; ↑↓ move, Tab and Enter accept,
+//! as `chipKeyDown`), and the music commands' bar naming the voice room this device is in ([`music_bar`]).
+//!
+//! Not ported yet: entity suggestions (members, and what the Bot or the instance looks up: channels, roles, queue items,
+//! search results) and a DST fold's two `when` candidates.
 
-use dilla_client::features::bot::registry::{ArgKind, CommandDefinition};
+use dilla_client::features::bot::registry::{ArgKind, CommandDefinition, CommandOption};
+use dilla_client::features::bot::room;
 use dilla_client::features::utilities::time::{ReminderTime, ReminderZone, parse_reminder_time};
 use dilla_client::state::{AppState, CommunityId};
 use gpui::{AnyElement, App, IntoElement, ParentElement, Styled, Window, div};
 
+use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::commands::chips::{
     BarTone, CommandBar, CommandChips, CommandField,
 };
@@ -44,6 +50,16 @@ pub struct Chips {
     pub active: usize,
     /// How many fields the last frame drew (what Tab wraps over; 0 for a command with no arguments).
     pub fields: usize,
+    /// The highlighted suggestion of the active field.
+    pub sug: usize,
+    /// The suggestions the active field's last frame offered (what ↑↓, Tab and Enter act on).
+    pub shown: Vec<String>,
+    /// The active field's text those suggestions were for: a new text moves the highlight back to the first.
+    pub sug_for: String,
+    /// Tab (and, unless the field takes free text, Enter) puts the highlighted suggestion in the field
+    /// (CommandPicker.tsx `canAccept`, `noAccept`).
+    pub can_accept: bool,
+    pub enter_accepts: bool,
 }
 
 impl Chips {
@@ -70,6 +86,191 @@ impl Chips {
         } else {
             (self.active + 1) % n
         };
+    }
+
+    /// CommandPicker.tsx `accept`: suggestion `i`'s value goes in the active field, and the next field becomes active.
+    pub fn accept(&mut self, i: usize) {
+        let Some(label) = self.shown.get(i).cloned() else {
+            return;
+        };
+        *self.active_value() = label;
+        self.active = (self.active + 1).min(self.fields.saturating_sub(1));
+        self.sug = 0;
+        self.can_accept = false;
+    }
+
+    /// A key on the suggestions (CommandPicker.tsx `chipKeyDown`): ↑↓ move the highlight (wrapping) while there are
+    /// suggestions; Tab, and Enter where the field does not take free text, accept the highlighted one while one can be
+    /// accepted. `false`: not the suggestions' key (the chips' own keys go on).
+    pub fn suggestion_key(&mut self, key: &str, shift: bool) -> bool {
+        let n = self.shown.len();
+        match (key, shift) {
+            ("up" | "down", false) if n > 0 => {
+                self.sug = if key == "down" {
+                    (self.sug + 1) % n
+                } else {
+                    (self.sug + n - 1) % n
+                };
+                true
+            }
+            ("tab", false) if self.can_accept => {
+                self.accept(self.sug.min(n.saturating_sub(1)));
+                true
+            }
+            ("enter", false) if self.can_accept && self.enter_accepts => {
+                self.accept(self.sug.min(n.saturating_sub(1)));
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What a chip suggests (picker-catalog.ts `PickerSuggest`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Suggest {
+    Member,
+    Duration,
+    When,
+    Provider,
+    Choice,
+    Command,
+    None,
+}
+
+/// picker-catalog.ts `suggestFor`.
+pub fn suggest_for(command: &CommandDefinition, option: &CommandOption) -> Suggest {
+    const ENTITY: [ArgKind; 7] = [
+        ArgKind::Channel,
+        ArgKind::Role,
+        ArgKind::Message,
+        ArgKind::QueueItem,
+        ArgKind::Poll,
+        ArgKind::Announcement,
+        ArgKind::Reminder,
+    ];
+    match option.kind {
+        _ if command.id == "help" && option.name == "command" => Suggest::Command,
+        ArgKind::User => Suggest::Member,
+        ArgKind::Duration => Suggest::Duration,
+        ArgKind::Time if command.id == "remind" => Suggest::When,
+        ArgKind::Time => Suggest::None,
+        ArgKind::Choice if option.choices.as_ref().is_some_and(|c| !c.is_empty()) => {
+            Suggest::Choice
+        }
+        ArgKind::Choice => Suggest::Provider,
+        k if ENTITY.contains(&k) => Suggest::Provider,
+        _ if command.id == "play" && option.name == "query-or-url" => Suggest::Provider,
+        _ => Suggest::None,
+    }
+}
+
+/// picker-catalog.ts `DURATION_SUGGESTIONS` (`/ban` adds `PERMANENT`) and `WHEN_SUGGESTIONS`.
+pub const DURATION_SUGGESTIONS: [&str; 4] = ["10 minutes", "1 hour", "1 day", "7 days"];
+pub const PERMANENT: &str = "permanent";
+pub const WHEN_SUGGESTIONS: [&str; 5] = [
+    "in 1 minute",
+    "in 10 minutes",
+    "in 1 hour",
+    "tonight 20:00",
+    "tomorrow 09:00",
+];
+/// CommandPicker.tsx `MAX_SUGGESTIONS`.
+pub const MAX_SUGGESTIONS: usize = 6;
+
+/// One suggestion (`Sug`): what its row shows, and what a pick puts in the field (its label, or a command's id).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub label: String,
+    pub value: String,
+    pub sub: String,
+    pub icon: IconName,
+}
+
+/// The suggestions of the active field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offered {
+    pub title: &'static str,
+    pub items: Vec<Suggestion>,
+    pub can_accept: bool,
+    pub enter_accepts: bool,
+}
+
+/// CommandPicker.tsx `suggestionsFor` for the kinds this device can answer by itself: durations, `/remind`'s `when`
+/// phrases (each with its preview, from `preview`), an option's fixed choices and `/help`'s commands (`listed`: the
+/// commands of the picker, with their entries). A member or provider field (an entity the Bot or the instance looks up)
+/// offers nothing here yet. Then the accept rules (`canAccept`, `noAccept`) for `text`.
+pub fn offered(
+    definition: &CommandDefinition,
+    option: &CommandOption,
+    text: &str,
+    listed: &[(String, Entry)],
+    preview: &dyn Fn(&str) -> Option<String>,
+) -> Offered {
+    let kind = suggest_for(definition, option);
+    let needle = text.trim().to_lowercase();
+    let has = |v: &str| needle.is_empty() || v.to_lowercase().contains(&needle);
+    let icon = |icon: IconName, label: &str, sub: String| Suggestion {
+        label: label.to_owned(),
+        value: label.to_owned(),
+        sub,
+        icon,
+    };
+    let (title, items): (&'static str, Vec<Suggestion>) = match kind {
+        Suggest::Duration => (
+            copy::SUG_DURATIONS,
+            DURATION_SUGGESTIONS
+                .iter()
+                .copied()
+                .chain((definition.id == "ban").then_some(PERMANENT))
+                .filter(|v| has(v))
+                .map(|v| icon(IconName::Timer, v, String::new()))
+                .collect(),
+        ),
+        Suggest::When => (
+            copy::SUG_WHEN,
+            WHEN_SUGGESTIONS
+                .iter()
+                .filter(|v| has(v))
+                .map(|v| icon(IconName::AlarmClock, v, preview(v).unwrap_or_default()))
+                .collect(),
+        ),
+        Suggest::Choice => (
+            copy::SUG_SUGGESTIONS,
+            option
+                .choices
+                .iter()
+                .flatten()
+                .filter(|v| has(v))
+                .map(|v| icon(IconName::Hash, v, String::new()))
+                .collect(),
+        ),
+        Suggest::Command => (
+            copy::SUG_COMMANDS,
+            listed
+                .iter()
+                .filter(|(id, _)| has(id))
+                .map(|(id, e)| Suggestion {
+                    value: id.clone(),
+                    ..icon(e.icon, &format!("/{id}"), e.description.clone())
+                })
+                .collect(),
+        ),
+        Suggest::Member | Suggest::Provider | Suggest::None => (copy::SUG_SUGGESTIONS, Vec::new()),
+    };
+    let items: Vec<Suggestion> = items.into_iter().take(MAX_SUGGESTIONS).collect();
+    let typed = text.to_lowercase();
+    let exact = items
+        .iter()
+        .any(|s| s.label.to_lowercase() == typed || s.value.to_lowercase() == typed);
+    let can_accept = !items.is_empty() && !exact && !text.is_empty();
+    let no_accept =
+        kind == Suggest::None || definition.id == "play" || option.kind == ArgKind::Number;
+    Offered {
+        title,
+        items,
+        can_accept,
+        enter_accepts: !no_accept,
     }
 }
 
@@ -300,6 +501,122 @@ pub fn draft(ctx: &SlotCx, window: gpui::WindowId, cx: &App) -> Option<String> {
     Some(typed(&definition, &chips.values, now_s(), &offset_at))
 }
 
+/// A music command's bar (CommandPicker.tsx): its description, then the voice room this device is in, else "join voice
+/// first".
+pub fn music_bar(description: &str, room: Option<&str>) -> String {
+    format!(
+        "{description}{}{}",
+        copy::SEPARATOR,
+        room.unwrap_or(copy::JOIN_VOICE_FIRST)
+    )
+}
+
+/// The suggestions of `chips`' active field in the conversation of `ctx` (`None`: the command has no field, or went).
+pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
+    let definition = definition(&ctx.state, ctx.community, &chips.command)?;
+    let last = definition.options.len().checked_sub(1)?;
+    let option = &definition.options[chips.active.min(last)];
+    let text = chips
+        .values
+        .get(chips.active.min(last))
+        .cloned()
+        .unwrap_or_default();
+    let listed: Vec<(String, Entry)> = if suggest_for(&definition, option) == Suggest::Command {
+        let bot_name = ctx
+            .community
+            .and_then(|c| ctx.state.bot.catalogs.get(&c))
+            .map_or("", |v| v.bot_name.as_str());
+        picker::definitions(&ctx.state, ctx.community)
+            .iter()
+            .map(|d| (d.id.clone(), picker::entry(d, bot_name)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let name = zone_name();
+    let preview = |v: &str| {
+        when_line(
+            v,
+            ReminderZone {
+                name: &name,
+                offset_at: &offset_at,
+            },
+            now_s(),
+        )
+        .and_then(Result::ok)
+    };
+    Some(offered(&definition, option, &text, &listed, &preview))
+}
+
+/// The automation ids of the suggestion rows (at most [`MAX_SUGGESTIONS`]).
+pub const SUGGESTION_IDS: [&str; MAX_SUGGESTIONS] = [
+    "command-suggestion-0",
+    "command-suggestion-1",
+    "command-suggestion-2",
+    "command-suggestion-3",
+    "command-suggestion-4",
+    "command-suggestion-5",
+];
+
+/// The active chip's suggestions over the composer (`CommandSuggestions`, in `slots::composer_popup` while chips show):
+/// a row clicked goes in the field as Tab would put it; `None` with nothing to suggest.
+pub fn popup(ctx: &SlotCx, chips: &Chips, window: gpui::WindowId) -> Option<AnyElement> {
+    use dilla_desktop_ui::components::commands::list::{PICKER_GAP, PICKER_INSET_X};
+    use dilla_desktop_ui::components::commands::suggestions::{CommandSuggestions, SuggestionItem};
+    let offer = offer(ctx, chips)?;
+    if offer.items.is_empty() {
+        return None;
+    }
+    let items = offer
+        .items
+        .iter()
+        .map(|s| SuggestionItem {
+            icon: s.icon,
+            label: s.label.clone().into(),
+            sub: s.sub.clone().into(),
+        })
+        .collect();
+    let active = chips.sug.min(offer.items.len() - 1);
+    let list = CommandSuggestions::new("command-suggestions", offer.title, items)
+        .active(Some(active))
+        .row_ids(|i| {
+            gpui::ElementId::Name(
+                SUGGESTION_IDS
+                    .get(i)
+                    .copied()
+                    .unwrap_or("command-suggestion")
+                    .into(),
+            )
+        })
+        .on_active(move |i, window, cx| {
+            if let Some(c) = super::picker_state_mut(window_id(window), cx)
+                .chips
+                .as_mut()
+                && c.sug != i
+            {
+                c.sug = i;
+                window.refresh();
+            }
+        })
+        .on_pick(move |i, w, cx| {
+            if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
+                c.accept(i);
+            }
+            w.refresh();
+        });
+    Some(
+        div()
+            .px(PICKER_INSET_X)
+            .pb(PICKER_GAP)
+            .child(crate::tracked_box("command-suggestions", list))
+            .into_any_element(),
+    )
+}
+
+fn window_id(window: &Window) -> gpui::WindowId {
+    window.window_handle().window_id()
+}
+
 /// The chips in place of the composer's field (`None` while no command is picked).
 pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
@@ -345,8 +662,32 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
     let (text, tone) = match &when {
         Some((_, Ok(preview))) => (copy::reminds_you(preview), BarTone::Info),
         Some((_, Err(()))) => (copy::WHEN_HINT.to_owned(), BarTone::Danger),
+        // A music command says where the Bot plays: the voice room this device is in (CommandPicker.tsx).
+        None if room::is_music(&definition.id) => (
+            music_bar(
+                &entry.description,
+                room::room_name(&ctx.state, ctx.community).as_deref(),
+            ),
+            BarTone::Info,
+        ),
         None => (entry.description.clone(), BarTone::Info),
     };
+    // The active field's suggestions, kept for the keys (`Chips::suggestion_key`); `popup` draws them.
+    let offer = offer(ctx, &chips);
+    if let Some(c) = super::picker_state_mut(wid, cx).chips.as_mut() {
+        let text = c.values.get(c.active).cloned().unwrap_or_default();
+        if c.sug_for != text {
+            c.sug_for = text;
+            c.sug = 0;
+        }
+        c.shown = offer
+            .as_ref()
+            .map(|o| o.items.iter().map(|s| s.value.clone()).collect())
+            .unwrap_or_default();
+        c.sug = c.sug.min(c.shown.len().saturating_sub(1));
+        c.can_accept = offer.as_ref().is_some_and(|o| o.can_accept);
+        c.enter_accepts = offer.as_ref().is_some_and(|o| o.enter_accepts);
+    }
     let bar = CommandBar::new("command-bar", entry.icon, text, tone).hint(copy::FIELD_HINT);
     let mut row = CommandChips::new("command-chips", entry.icon, definition.id.clone());
     if n == 0 {
@@ -467,6 +808,218 @@ mod tests {
         assert_eq!(
             typed(&remind, &[String::new(), "x".into()], 0, &utc),
             r#"/remind text:"x""#
+        );
+    }
+
+    fn option(name: &str, kind: ArgKind, choices: Option<Vec<String>>) -> CommandOption {
+        CommandOption {
+            name: name.into(),
+            kind,
+            description: String::new(),
+            required: true,
+            free_text: false,
+            choices,
+            min: None,
+            max: None,
+        }
+    }
+
+    fn command(id: &str, options: Vec<CommandOption>) -> CommandDefinition {
+        use dilla_client::features::bot::registry::Provider;
+        CommandDefinition {
+            id: id.into(),
+            description: String::new(),
+            community_only: true,
+            provider: Provider::Bot,
+            permission_bit: None,
+            options,
+            bot: None,
+        }
+    }
+
+    fn labels(o: &Offered) -> Vec<&str> {
+        o.items.iter().map(|s| s.label.as_str()).collect()
+    }
+
+    /// picker-catalog.ts `suggestFor`: what each field suggests.
+    #[test]
+    fn each_field_suggests_by_its_kind() {
+        let kinds = [
+            (
+                command("ban", vec![]),
+                option("user", ArgKind::User, None),
+                Suggest::Member,
+            ),
+            (
+                command("ban", vec![]),
+                option("d", ArgKind::Duration, None),
+                Suggest::Duration,
+            ),
+            (
+                command("remind", vec![]),
+                option("when", ArgKind::Time, None),
+                Suggest::When,
+            ),
+            (
+                command("other", vec![]),
+                option("at", ArgKind::Time, None),
+                Suggest::None,
+            ),
+            (
+                command("vote", vec![]),
+                option("multi", ArgKind::Choice, Some(vec!["on".into()])),
+                Suggest::Choice,
+            ),
+            (
+                command("vote", vec![]),
+                option("x", ArgKind::Choice, None),
+                Suggest::Provider,
+            ),
+            (
+                command("role", vec![]),
+                option("r", ArgKind::Role, None),
+                Suggest::Provider,
+            ),
+            (
+                command("play", vec![]),
+                option("query-or-url", ArgKind::Text, None),
+                Suggest::Provider,
+            ),
+            (
+                command("help", vec![]),
+                option("command", ArgKind::Text, None),
+                Suggest::Command,
+            ),
+            (
+                command("me", vec![]),
+                option("text", ArgKind::Text, None),
+                Suggest::None,
+            ),
+        ];
+        for (c, o, want) in kinds {
+            assert_eq!(suggest_for(&c, &o), want, "{} {}", c.id, o.name);
+        }
+    }
+
+    /// CommandPicker.tsx `suggestionsFor`: the prototype's durations (`/ban` adds "permanent"), filtered by the typed
+    /// text; `/remind`'s phrases each with its preview; Tab accepts only a typed, not yet exact, match.
+    #[test]
+    fn durations_and_when_phrases_are_suggested_and_filtered() {
+        let ban = command("ban", vec![]);
+        let duration = option("duration", ArgKind::Duration, None);
+        let none = |_: &str| None;
+        let all = offered(&ban, &duration, "", &[], &none);
+        assert_eq!(
+            labels(&all),
+            ["10 minutes", "1 hour", "1 day", "7 days", "permanent"]
+        );
+        assert_eq!(all.title, "Durations");
+        assert!(!all.can_accept, "nothing typed: Tab moves on");
+        let typed = offered(&ban, &duration, "day", &[], &none);
+        assert_eq!(labels(&typed), ["1 day", "7 days"]);
+        assert!(typed.can_accept && typed.enter_accepts);
+        let exact = offered(&ban, &duration, "1 Day", &[], &none);
+        assert!(!exact.can_accept, "an exact match is already in the field");
+        let timeout = offered(&command("timeout", vec![]), &duration, "", &[], &none);
+        assert!(!labels(&timeout).contains(&"permanent"));
+
+        let remind = command("remind", vec![]);
+        let when = option("when", ArgKind::Time, None);
+        let preview = |v: &str| Some(format!("preview of {v}"));
+        let w = offered(&remind, &when, "in", &[], &preview);
+        assert_eq!(
+            labels(&w),
+            ["in 1 minute", "in 10 minutes", "in 1 hour"],
+            "{w:?}"
+        );
+        assert_eq!(w.items[2].sub, "preview of in 1 hour");
+    }
+
+    /// `/help`'s command field lists the commands (their id goes in the field); `/play`'s query takes free text, so
+    /// Enter runs it rather than accepting; a fixed choice is offered as is.
+    #[test]
+    fn commands_and_choices_are_suggested_and_play_never_accepts_on_enter() {
+        let help = command("help", vec![]);
+        let field = option("command", ArgKind::Text, None);
+        let entry = |icon| Entry {
+            icon,
+            description: "Play music".into(),
+            args: String::new(),
+            source: String::new(),
+            opens_form: false,
+            fields: Vec::new(),
+        };
+        let listed = vec![
+            ("play".to_owned(), entry(IconName::Play)),
+            ("remind".to_owned(), entry(IconName::AlarmClock)),
+        ];
+        let o = offered(&help, &field, "pl", &listed, &|_| None);
+        assert_eq!(labels(&o), ["/play"]);
+        assert_eq!(o.items[0].value, "play");
+        assert!(o.can_accept && o.enter_accepts);
+
+        let play = command("play", vec![]);
+        let q = offered(
+            &play,
+            &option("query-or-url", ArgKind::Text, None),
+            "x",
+            &[],
+            &|_| None,
+        );
+        assert!(q.items.is_empty() && !q.enter_accepts);
+
+        let vote = command("vote", vec![]);
+        let multi = option(
+            "multi",
+            ArgKind::Choice,
+            Some(vec!["on".into(), "off".into()]),
+        );
+        assert_eq!(
+            labels(&offered(&vote, &multi, "", &[], &|_| None)),
+            ["on", "off"]
+        );
+    }
+
+    /// `chipKeyDown`: ↑↓ wrap over the suggestions; Tab puts the highlighted one in the field and moves on; Enter does
+    /// only where the field accepts on Enter; with nothing to accept the keys are the chips' own.
+    #[test]
+    fn the_suggestion_keys_move_and_accept() {
+        let mut c = Chips::new("ban".into());
+        c.fields = 3;
+        c.active = 1;
+        c.shown = vec!["1 day".into(), "7 days".into()];
+        c.can_accept = true;
+        c.enter_accepts = true;
+        assert!(c.suggestion_key("up", false));
+        assert_eq!(c.sug, 1);
+        assert!(c.suggestion_key("down", false));
+        assert_eq!(c.sug, 0);
+        assert!(c.suggestion_key("down", false));
+        assert!(c.suggestion_key("tab", false));
+        assert_eq!(c.values, ["", "7 days"]);
+        assert_eq!((c.active, c.sug, c.can_accept), (2, 0, false));
+        assert!(
+            !c.suggestion_key("tab", false),
+            "nothing to accept: Tab moves"
+        );
+        assert!(!c.suggestion_key("tab", true), "Shift+Tab is the chips'");
+        c.can_accept = true;
+        c.enter_accepts = false;
+        assert!(!c.suggestion_key("enter", false), "Enter runs");
+        c.shown.clear();
+        assert!(!c.suggestion_key("down", false));
+    }
+
+    /// CommandPicker.tsx: a music command's bar names the voice room, else asks to join one.
+    #[test]
+    fn a_music_commands_bar_names_the_room() {
+        assert_eq!(
+            music_bar("Play music", Some("Lounge")),
+            "Play music · Lounge"
+        );
+        assert_eq!(
+            music_bar("Play music", None),
+            "Play music · join voice first"
         );
     }
 
