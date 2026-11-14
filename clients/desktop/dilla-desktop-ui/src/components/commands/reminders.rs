@@ -1,22 +1,37 @@
 //! `RemindersPopover` (packages/ui RemindersPopover): the 342px panel under the bell. Its head is the Bot's tile,
 //! "Reminders" and the Due / Upcoming tabs with their counts; then the rows of the picked tab (a 26px alarm-clock tile,
 //! `--warn` on a due one, the text, "when · where", and Dismiss or Cancel) or the tab's empty line; then the footer note.
+//!
+//! It draws only: the host owns the list, the picked tab, the tabs' focus handles (the picked tab takes the focus when
+//! the panel opens, ←→ Home End move between the tabs) and what Escape and a press outside do.
 
 use std::rc::Rc;
 
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use super::shadow_popover;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{line, line_height, paragraph};
+use crate::metrics::{OPACITY_MUTED, focus_ring};
+use crate::text::{flow_paragraph, line, line_height};
 use crate::tokens::{color, font, radius, text};
 
 /// The panel's width: the prototype's 340 content and its 1px border.
 pub const WIDTH: f32 = 342.0;
+/// `.d-reminders__row`: 10px between the tile, the text and the action, 8px each side.
+const ROW_GAP: f32 = 10.0;
+const ROW_PAD_X: f32 = 8.0;
+/// `.d-reminders__icon`.
+const TILE: f32 = 26.0;
+/// `.d-reminders__body`'s padding.
+const BODY_PAD: f32 = 4.0;
+/// `.d-reminders__action`'s padding each side and its border.
+const ACTION_PAD_X: f32 = 8.0;
+/// `.d-reminders__text`'s line height.
+const TEXT_LINE: f32 = 1.35;
 
 /// One reminder (`ReminderItem`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +51,29 @@ pub enum Tab {
     Upcoming,
 }
 
+impl Tab {
+    /// The tab's automation id.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Due => "reminders-tab-due",
+            Self::Upcoming => "reminders-tab-upcoming",
+        }
+    }
+
+    /// `onTabKey`: ←→ flip, Home is Due, End is Upcoming; `None` for any other key.
+    pub fn after_key(self, key: &str) -> Option<Self> {
+        match key {
+            "home" => Some(Self::Due),
+            "end" => Some(Self::Upcoming),
+            "left" | "right" => Some(match self {
+                Self::Due => Self::Upcoming,
+                Self::Upcoming => Self::Due,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// The popover's copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Labels {
@@ -51,6 +89,8 @@ pub struct Labels {
 
 type OnTab = Rc<dyn Fn(Tab, &mut Window, &mut App)>;
 type OnAction = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Draws an extra child into the element named by its id (the app's automation bounds probe).
+pub type Probe = Rc<dyn Fn(&str) -> AnyElement>;
 
 #[derive(IntoElement)]
 pub struct RemindersPopover {
@@ -59,9 +99,12 @@ pub struct RemindersPopover {
     tab: Tab,
     bot_initials: Option<SharedString>,
     status: Option<SharedString>,
+    loading: bool,
     labels: Labels,
+    tab_focus: Option<(FocusHandle, FocusHandle)>,
     on_tab: Option<OnTab>,
     on_action: Option<OnAction>,
+    probe: Option<Probe>,
 }
 
 impl RemindersPopover {
@@ -72,9 +115,12 @@ impl RemindersPopover {
             tab,
             bot_initials: None,
             status: None,
+            loading: false,
             labels,
+            tab_focus: None,
             on_tab: None,
             on_action: None,
+            probe: None,
         }
     }
 
@@ -83,8 +129,21 @@ impl RemindersPopover {
         self
     }
 
+    /// A loading or error line over the list.
     pub fn status(mut self, status: Option<SharedString>) -> Self {
         self.status = status;
+        self
+    }
+
+    /// The status is the loading line: the list is not known yet, so the tab's empty line is not drawn under it.
+    pub fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+
+    /// The tabs' focus handles (Due, Upcoming): the picked one is the panel's one tab stop.
+    pub fn tab_focus(mut self, due: FocusHandle, upcoming: FocusHandle) -> Self {
+        self.tab_focus = Some((due, upcoming));
         self
     }
 
@@ -98,6 +157,13 @@ impl RemindersPopover {
         self.on_action = Some(Rc::new(f));
         self
     }
+
+    /// Draws `probe(id)` into the tabs (`reminders-tab-due`, `reminders-tab-upcoming`), each row (`reminder-<id>`) and its
+    /// action (`reminder-action-<id>`).
+    pub fn probe(mut self, probe: Probe) -> Self {
+        self.probe = Some(probe);
+        self
+    }
 }
 
 impl RenderOnce for RemindersPopover {
@@ -105,13 +171,15 @@ impl RenderOnce for RemindersPopover {
         let xs = line_height(text::XS, 1.5);
         let due_count = self.items.iter().filter(|i| i.due).count();
         let upcoming_count = self.items.len() - due_count;
-        let tab_button = |which: Tab, label: SharedString, count: usize, on: Option<OnTab>| {
+        let probe = self.probe.clone();
+        let probed = move |id: &str| probe.as_ref().map(|p| p(id));
+        let tab_button = |which: Tab, label: SharedString, count: usize| {
             let selected = which == self.tab;
-            div()
-                .id(match which {
-                    Tab::Due => "reminders-tab-due",
-                    Tab::Upcoming => "reminders-tab-upcoming",
-                })
+            let fg = if selected { color::FG } else { color::FG_2 };
+            let (on_click, on_key) = (self.on_tab.clone(), self.on_tab.clone());
+            let mut tab = div()
+                .id(which.id())
+                .relative()
                 .flex()
                 .items_center()
                 .gap(px(5.0))
@@ -119,24 +187,33 @@ impl RenderOnce for RemindersPopover {
                 .px(px(8.0))
                 .rounded(radius::SM)
                 .cursor_pointer()
+                .focus_visible(|s| s.shadow(focus_ring()))
                 .when_bg(selected, color::HOVER_HI)
                 .on_click(move |_, window, cx| {
-                    if let Some(f) = &on {
+                    if let Some(f) = &on_click {
                         f(which, window, cx);
                     }
                 })
-                .child(line(
-                    label,
-                    text::XS,
-                    xs,
-                    if selected { color::FG } else { color::FG_2 },
-                ))
-                .child(div().opacity(0.7).child(line(
-                    count.to_string(),
-                    text::XS,
-                    xs,
-                    if selected { color::FG } else { color::FG_2 },
-                )))
+                .on_key_down(move |e: &KeyDownEvent, window, cx| {
+                    if let (Some(next), Some(f)) =
+                        (self.tab.after_key(e.keystroke.key.as_str()), &on_key)
+                    {
+                        cx.stop_propagation();
+                        f(next, window, cx);
+                    }
+                })
+                .child(line(label, text::XS, xs, fg))
+                .child(
+                    div()
+                        .opacity(0.7)
+                        .child(line(count.to_string(), text::XS, xs, fg)),
+                )
+                .children(probed(which.id()));
+            if let Some((due, upcoming)) = &self.tab_focus {
+                let handle = if which == Tab::Due { due } else { upcoming };
+                tab = tab.track_focus(&handle.clone().tab_stop(selected));
+            }
+            tab
         };
         let head = div()
             .flex()
@@ -184,17 +261,11 @@ impl RenderOnce for RemindersPopover {
                     .border_1()
                     .border_color(color::HAIRLINE_2)
                     .rounded(radius::MD)
-                    .child(tab_button(
-                        Tab::Due,
-                        self.labels.due.clone(),
-                        due_count,
-                        self.on_tab.clone(),
-                    ))
+                    .child(tab_button(Tab::Due, self.labels.due.clone(), due_count))
                     .child(tab_button(
                         Tab::Upcoming,
                         self.labels.upcoming.clone(),
                         upcoming_count,
-                        self.on_tab.clone(),
                     )),
             );
         let shown: Vec<(usize, &Item)> = self
@@ -208,8 +279,9 @@ impl RenderOnce for RemindersPopover {
         } else {
             self.labels.empty_upcoming.clone()
         };
-        let sm = line_height(text::SM, 1.35);
-        let meta = line_height(text::META, 1.35);
+        let sm = line_height(text::SM, TEXT_LINE);
+        let meta = line_height(text::META, TEXT_LINE);
+        let action_line = line_height(text::META, 1.5);
         let rows = shown.iter().map(|&(index, item)| {
             let act = self.on_action.clone();
             let label = if item.due {
@@ -222,17 +294,48 @@ impl RenderOnce for RemindersPopover {
             } else {
                 format!("{} · {}", item.when, item.place)
             };
+            let row_id = format!("reminder-{}", item.id);
+            let action_id = format!("reminder-action-{}", item.id);
+            let busy = item.busy;
+            let mut action = div()
+                .id(SharedString::from(action_id.clone()))
+                .relative()
+                .flex_none()
+                .flex()
+                .items_center()
+                .h(px(TILE))
+                .px(px(ACTION_PAD_X))
+                .border_1()
+                .border_color(color::LINE_STRONG)
+                .rounded(radius::ROW)
+                .child(line(label, text::META, action_line, color::FG_CHIP))
+                .children(probed(&action_id));
+            action = if busy {
+                action.opacity(OPACITY_MUTED).cursor_not_allowed()
+            } else {
+                action
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(color::ACCENT))
+                    .on_click(move |_, window, cx| {
+                        if let Some(f) = &act {
+                            f(index, window, cx);
+                        }
+                    })
+            };
             div()
+                .id(SharedString::from(row_id.clone()))
+                .relative()
                 .flex()
                 .items_start()
-                .gap(px(10.0))
+                .gap(px(ROW_GAP))
                 .py(px(10.0))
-                .px(px(8.0))
+                .px(px(ROW_PAD_X))
                 .rounded(radius::SEG)
+                .hover(|s| s.bg(color::HOVER))
                 .child(
                     div()
                         .flex_none()
-                        .size(px(26.0))
+                        .size(px(TILE))
                         .rounded(radius::MD)
                         .bg(if item.due {
                             color::WARN_TINT
@@ -255,47 +358,19 @@ impl RenderOnce for RemindersPopover {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .children(paragraph(
-                            &item.text,
-                            text::SM,
-                            sm,
-                            color::FG,
-                            WIDTH - 2.0 - 8.0 - 16.0 - 26.0 - 20.0 - 70.0,
-                        ))
+                        // `overflow-wrap: anywhere` in what the row leaves the text.
+                        .child(flow_paragraph(item.text.clone(), text::SM, sm, color::FG))
                         .child(line(where_, text::META, meta, color::FG_3)),
                 )
-                .child(
-                    div()
-                        .id(("reminder-action", index))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .h(px(26.0))
-                        .px(px(8.0))
-                        .border_1()
-                        .border_color(color::LINE_STRONG)
-                        .rounded(radius::ROW)
-                        .cursor_pointer()
-                        .opacity(if item.busy { 0.5 } else { 1.0 })
-                        .on_click(move |_, window, cx| {
-                            if let Some(f) = &act {
-                                f(index, window, cx);
-                            }
-                        })
-                        .child(line(
-                            label,
-                            text::META,
-                            line_height(text::META, 1.5),
-                            color::FG_CHIP,
-                        )),
-                )
+                .child(action)
+                .children(probed(&row_id))
         });
         let ui = line_height(text::UI, 1.5);
         let body = div()
             .id("reminders-body")
             .max_h(px(300.0))
             .overflow_y_scroll()
-            .p(px(4.0))
+            .p(px(BODY_PAD))
             .children(self.status.clone().map(|s| {
                 div()
                     .py(px(8.0))
@@ -304,7 +379,7 @@ impl RenderOnce for RemindersPopover {
                     .justify_center()
                     .child(line(s, text::UI, ui, color::FG_3))
             }))
-            .children(shown.is_empty().then(|| {
+            .children((shown.is_empty() && !self.loading).then(|| {
                 div()
                     .py(px(24.0))
                     .px(px(12.0))
@@ -330,7 +405,7 @@ impl RenderOnce for RemindersPopover {
                     .px(px(12.0))
                     .border_t_1()
                     .border_color(color::HAIRLINE)
-                    .child(line(
+                    .child(flow_paragraph(
                         self.labels.footer.clone(),
                         text::META,
                         line_height(text::META, 1.5),
@@ -347,5 +422,20 @@ trait When: Sized {
 impl When for gpui::Stateful<gpui::Div> {
     fn when_bg(self, on: bool, bg: gpui::Hsla) -> Self {
         if on { self.bg(bg) } else { self }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Tab;
+
+    /// `onTabKey`: the arrows flip between the two tabs, Home and End go to the first and the last; other keys pass.
+    #[test]
+    fn the_arrows_home_and_end_move_between_the_tabs() {
+        assert_eq!(Tab::Due.after_key("right"), Some(Tab::Upcoming));
+        assert_eq!(Tab::Upcoming.after_key("left"), Some(Tab::Due));
+        assert_eq!(Tab::Upcoming.after_key("home"), Some(Tab::Due));
+        assert_eq!(Tab::Due.after_key("end"), Some(Tab::Upcoming));
+        assert_eq!(Tab::Due.after_key("enter"), None);
     }
 }

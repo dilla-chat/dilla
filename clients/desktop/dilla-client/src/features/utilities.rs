@@ -57,6 +57,25 @@ impl Utilities {
             .unwrap_or_default()
     }
 
+    /// Runs `job` on the client's own runtime (the Bot's operations need its reactor), so a view can await the answer on
+    /// any executor. A client that stopped meanwhile answers `Unavailable("E_STOPPED")`.
+    pub fn run<T: Send + 'static, F, J: FnOnce(Utilities) -> F>(
+        &self,
+        job: J,
+    ) -> impl std::future::Future<Output = Result<T, UtilityError>> + use<T, F, J>
+    where
+        F: std::future::Future<Output = Result<T, UtilityError>> + Send + 'static,
+    {
+        let work = job(self.clone());
+        let rx = self.inner.spawn(async move { Ok(work.await) });
+        async move {
+            match rx.await {
+                Ok(Ok(answer)) => answer,
+                _ => Err(UtilityError::Unavailable("E_STOPPED".into())),
+            }
+        }
+    }
+
     /// Holds `community`'s reminders as the Bot answered them, soonest first.
     pub fn hold_reminders(&self, community: CommunityId, mut reminders: Vec<ReminderView>) {
         reminders.sort_by_key(|r| (r.due, r.id));

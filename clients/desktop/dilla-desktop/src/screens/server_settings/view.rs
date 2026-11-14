@@ -23,7 +23,7 @@ use dilla_desktop_ui::components::settings::footer::SettingsFooter;
 use dilla_desktop_ui::components::settings::frame::SettingsFrame;
 use dilla_desktop_ui::components::settings::nav::{NavItem, SettingsNav};
 
-use super::body::{Body, BodyEvent, OverviewDraft};
+use super::body::{Body, BodyEvent, JoinRoleDraft, OverviewDraft};
 use super::model;
 use crate::edit_state::{Flags, Nav, Section, Workspace};
 use crate::router::{ServerSection, UserSection};
@@ -66,6 +66,20 @@ impl Section for OverviewSection {
     }
 }
 
+/// The Join roles page's draft as the workspace's section (BotSection.tsx `botEditState`): Save marks the request.
+struct JoinRoleSection(Rc<RefCell<JoinRoleDraft>>);
+
+impl Section for JoinRoleSection {
+    fn save(&mut self) -> bool {
+        self.0.borrow_mut().save_requested = true;
+        true
+    }
+
+    fn reset(&mut self) {
+        self.0.borrow_mut().reset();
+    }
+}
+
 pub struct ServerSettingsView {
     community: CommunityId,
     state: Arc<AppState>,
@@ -74,7 +88,8 @@ pub struct ServerSettingsView {
     requested: Option<ServerSection>,
     body: Entity<Body>,
     workspace: Workspace<Leave>,
-    attached: bool,
+    /// The section whose draft is attached to the workspace.
+    attached: Option<ServerSection>,
     /// The settings' root: it holds the focus when they open, so Tab and Escape reach them.
     focus: gpui::FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -149,7 +164,7 @@ impl ServerSettingsView {
             requested,
             body,
             workspace: Workspace::new(),
-            attached: false,
+            attached: None,
             focus: cx.focus_handle(),
             _subscriptions: vec![subscription],
         }
@@ -191,7 +206,7 @@ impl ServerSettingsView {
         match to {
             Leave::Server(section) => {
                 self.workspace.detach();
-                self.attached = false;
+                self.attached = None;
                 self.requested = Some(section);
             }
             Leave::User(section) => cx.emit(SettingsEvent::OpenUser(section)),
@@ -258,8 +273,8 @@ impl ServerSettingsView {
                             });
                         }),
                 )
-                .action(
-                    Button::new("settings-save", t("settings.editing.save"))
+                .action({
+                    let save = Button::new("settings-save", t("settings.editing.save"))
                         .variant(ButtonVariant::Accent)
                         .disabled(!footer.save_enabled)
                         .on_click(move |_, window, app| {
@@ -269,8 +284,14 @@ impl ServerSettingsView {
                                 body.update(cx, |b, cx| b.flush_save(window, cx));
                                 cx.notify();
                             });
-                        }),
-                )
+                        });
+                    #[cfg(feature = "automation")]
+                    let save = div()
+                        .relative()
+                        .child(save)
+                        .child(crate::automation::bounds_probe("settings-save"));
+                    save
+                })
                 .into_any_element(),
         )
     }
@@ -358,23 +379,41 @@ impl Render for ServerSettingsView {
             );
         }
         let active = self.active();
-        // The Overview is the one section with a draft: it registers with the workspace while it is open.
-        if active == Some(ServerSection::Overview) {
-            let draft = self.body.read(cx).overview.clone();
-            if !self.attached {
-                self.workspace
-                    .attach(Box::new(OverviewSection(draft.clone())));
-                self.attached = true;
-            }
-            let d = draft.borrow();
-            self.workspace.publish(Flags {
-                dirty: d.dirty(),
-                busy: d.busy,
-                can_save: d.dirty(),
-            });
-        } else if self.attached {
+        // The Overview and Join roles keep drafts: each registers with the workspace while it is open.
+        if self.attached.is_some() && self.attached != active {
             self.workspace.detach();
-            self.attached = false;
+            self.attached = None;
+        }
+        match active {
+            Some(ServerSection::Overview) => {
+                let draft = self.body.read(cx).overview.clone();
+                if self.attached.is_none() {
+                    self.workspace
+                        .attach(Box::new(OverviewSection(draft.clone())));
+                    self.attached = active;
+                }
+                let d = draft.borrow();
+                self.workspace.publish(Flags {
+                    dirty: d.dirty(),
+                    busy: d.busy,
+                    can_save: d.dirty(),
+                });
+            }
+            Some(ServerSection::JoinRoles) => {
+                let draft = self.body.read(cx).join_role.clone();
+                if self.attached.is_none() {
+                    self.workspace
+                        .attach(Box::new(JoinRoleSection(draft.clone())));
+                    self.attached = active;
+                }
+                let d = draft.borrow();
+                self.workspace.publish(Flags {
+                    dirty: d.dirty(),
+                    busy: d.busy,
+                    can_save: d.dirty() && !d.busy,
+                });
+            }
+            _ => {}
         }
 
         let nav = self.nav(active, cx);

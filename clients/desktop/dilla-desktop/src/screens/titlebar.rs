@@ -4,8 +4,8 @@
 //! draws the bar without the window controls, as the web client does in a browser.
 
 use gpui::{
-    App, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, StatefulInteractiveElement, Styled, Window, div,
+    App, ClickEvent, FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, StatefulInteractiveElement, Styled, Window, canvas, div,
 };
 
 use dilla_desktop_ui::components::tooltip::{SHOW_DELAY, tooltip};
@@ -62,6 +62,12 @@ pub struct TitlebarModel {
     pub controls: bool,
     /// The ⌘K / Ctrl K hint in the search field.
     pub search_hint: &'static str,
+    /// The due reminders: the bell draws a count badge above 0.
+    pub reminders_due: usize,
+    /// The reminders popover is open: the bell reads as pressed.
+    pub reminders_open: bool,
+    /// The bell's focus (the popover's Escape gives it back).
+    pub bell_focus: Option<FocusHandle>,
 }
 
 #[derive(Clone)]
@@ -70,6 +76,109 @@ pub struct TitlebarHandlers {
     pub on_settings: super::shell::Action,
     /// The search field was pressed: the search palette opens (Task 23).
     pub on_search: super::shell::Action,
+    /// The bell was pressed: the reminders popover opens or closes.
+    pub on_reminders: super::shell::Action,
+}
+
+/// TopBar.css `.d-topbar__badge`: 14px high, at least as wide, 2px in from the bell's top right, a 2px ring of the bar.
+mod badge {
+    pub const SIZE: f32 = 14.0;
+    pub const INSET: f32 = 2.0;
+    pub const PAD: f32 = 3.0;
+    pub const RING: f32 = 2.0;
+}
+
+/// The bell (`.d-topbar__bell`): its button, its due count and, while open, the reminders popover hanging under it.
+fn bell(
+    model: &TitlebarModel,
+    on_reminders: super::shell::Action,
+    popover: Option<gpui::AnyElement>,
+) -> impl IntoElement + use<> {
+    let open = model.reminders_open;
+    let mut button = interactive(div().id("topbar-bell"))
+        .tab_index(0)
+        .cursor_pointer()
+        .rounded(radius::MD)
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .tooltip(tooltip(t("reminder.inbox"), &[]))
+        .tooltip_show_delay(SHOW_DELAY)
+        .on_click(move |_: &ClickEvent, window, cx| on_reminders(window, cx))
+        .child(centred(
+            Pixels::from(css::BUTTON),
+            Icon::new(IconName::Bell)
+                .size(Pixels::from(css::BUTTON_GLYPH))
+                .color(if open { color::ACCENT } else { color::FG_2 }),
+        ));
+    if open {
+        button = button.bg(color::ACCENT_SOFT);
+    }
+    if let Some(focus) = &model.bell_focus {
+        button = button.track_focus(focus);
+    }
+    let due = model.reminders_due;
+    let badge = (due > 0).then(|| {
+        let count = if due > 99 {
+            "99+".to_owned()
+        } else {
+            due.to_string()
+        };
+        div()
+            .absolute()
+            .top(Pixels::from(badge::INSET))
+            .right(Pixels::from(badge::INSET))
+            .min_w(Pixels::from(badge::SIZE))
+            .h(Pixels::from(badge::SIZE))
+            .px(Pixels::from(badge::PAD))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(radius::PILL)
+            .bg(color::MENTION)
+            .shadow(dilla_desktop_ui::metrics::spread_ring(
+                color::BG_2,
+                badge::RING,
+            ))
+            .child(
+                line(
+                    count,
+                    text::BADGE,
+                    f32::from(text::BADGE),
+                    color::MENTION_INK,
+                )
+                .weight(font::WEIGHT_DISPLAY),
+            )
+    });
+    // The popover's press-outside check leaves a press on the bell to the bell's own toggle.
+    let bounds = canvas(
+        |bounds, window, cx| {
+            crate::screens::commands::reminders::note_bell(
+                window.window_handle().window_id(),
+                bounds,
+                cx,
+            )
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .size_full();
+    let wrap = div()
+        .relative()
+        .flex_none()
+        .flex()
+        .child(button)
+        .child(bounds)
+        .children(badge)
+        .children(popover);
+    #[cfg(feature = "automation")]
+    let wrap = wrap
+        .child(crate::automation::bounds_probe("topbar-bell"))
+        .children(
+            model
+                .bell_focus
+                .as_ref()
+                .map(|f| crate::automation::focus_probe("topbar-bell", f)),
+        );
+    wrap
 }
 
 fn window_button(
@@ -106,7 +215,11 @@ fn window_button(
         )
 }
 
-pub fn render(model: &TitlebarModel, handlers: &TitlebarHandlers) -> impl IntoElement + use<> {
+pub fn render(
+    model: &TitlebarModel,
+    handlers: &TitlebarHandlers,
+    reminders: Option<gpui::AnyElement>,
+) -> impl IntoElement + use<> {
     let brand_name_line = line_height(text::XS, 1.5);
     let brand = div()
         .flex_1()
@@ -196,12 +309,7 @@ pub fn render(model: &TitlebarModel, handlers: &TitlebarHandlers) -> impl IntoEl
         .flex()
         .justify_end()
         .gap(Pixels::from(css::END_GAP))
-        .child(centred(
-            Pixels::from(css::BUTTON),
-            Icon::new(IconName::Bell)
-                .size(Pixels::from(css::BUTTON_GLYPH))
-                .color(color::FG_2),
-        ))
+        .child(bell(model, handlers.on_reminders.clone(), reminders))
         .child(
             interactive(div().id("topbar-settings"))
                 .tab_index(0)

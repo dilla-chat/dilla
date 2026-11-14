@@ -14,6 +14,7 @@ pub mod confirm;
 pub mod copy;
 pub mod keys;
 pub mod picker;
+pub mod reminders;
 
 use dilla_client::features::bot::{self, Plan, run};
 use dilla_client::features::utilities::polls;

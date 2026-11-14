@@ -59,6 +59,127 @@ fn parity_polls_card_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/card-b.json")).unwrap();
 }
 
+/// The reminders popover open under the bell (Signal §6.7), nothing kept: the Upcoming tab and its empty line.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn parity_commands_reminders() {
+    dilla_parity::screen::assert_screen(&fixture("commands/reminders.json")).unwrap();
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn parity_commands_reminders_b() {
+    dilla_parity::screen::assert_screen(&fixture("commands/reminders-b.json")).unwrap();
+}
+
+/// RemindersPopover.tsx: the bell opens the popover 36px under its top, its right edge 6px past the bell's, 342px wide,
+/// with the picked tab focused (Upcoming: nothing is due); ←→ move between the tabs; Escape closes it and gives the bell
+/// the focus back. A second press on the bell closes it, and so does a press outside it.
+#[test]
+fn the_bell_opens_the_reminders_popover_and_escape_gives_the_focus_back() {
+    let mut app = Driver::launch_fixture(&fixture("shell/channel-view.json"), None, &[]);
+    app.wait_for("composer", Duration::from_secs(20));
+    assert!(app.element("reminders-popover").is_none());
+    app.click("topbar-bell");
+    let pop = app.wait_for("reminders-popover", Duration::from_secs(5));
+    let bell = app.element("topbar-bell").expect("the bell");
+    assert_eq!(pop.width, 342.0, "{pop:?}");
+    assert_eq!(pop.y, bell.y + 36.0, "{pop:?} {bell:?}");
+    assert_eq!(
+        pop.x + pop.width,
+        bell.x + bell.width + 6.0,
+        "{pop:?} {bell:?}"
+    );
+    assert_eq!(app.focused().as_deref(), Some("reminders-tab-upcoming"));
+    app.press("left");
+    app.wait_idle();
+    assert_eq!(app.focused().as_deref(), Some("reminders-tab-due"));
+    app.press("end");
+    app.wait_idle();
+    assert_eq!(app.focused().as_deref(), Some("reminders-tab-upcoming"));
+    app.press("escape");
+    app.wait_idle();
+    assert!(
+        app.element("reminders-popover").is_none(),
+        "Escape closes it"
+    );
+    assert_eq!(app.focused().as_deref(), Some("topbar-bell"));
+
+    app.click("topbar-bell");
+    app.wait_for("reminders-popover", Duration::from_secs(5));
+    app.click("topbar-bell");
+    app.wait_idle();
+    assert!(
+        app.element("reminders-popover").is_none(),
+        "the bell closes it again"
+    );
+    app.click("topbar-bell");
+    app.wait_for("reminders-popover", Duration::from_secs(5));
+    app.click("composer");
+    app.wait_idle();
+    assert!(
+        app.element("reminders-popover").is_none(),
+        "a press outside closes it"
+    );
+}
+
+/// ReminderPanel: the due reminders under Due (the tab while anything is due) and the scheduled ones under Upcoming, each
+/// tab counting its own; the bell's badge counts the due ones.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_popover_lists_due_reminders_first_and_upcoming_ones_under_their_tab(
+    cx: &mut gpui::TestAppContext,
+) {
+    use dilla_client::state::bot::{ReminderStatus, ReminderView};
+    use dilla_desktop::app::{AppView, Launch};
+    use dilla_desktop::screens::commands::reminders;
+    let mut loaded =
+        dilla_desktop::fixture::Fixture::load(&fixture("shell/channel-view.json"), None)
+            .expect("the shell fixture");
+    let community = loaded.state.communities[0].id;
+    let reminder = |id: u8, due: u64, state: ReminderStatus| ReminderView {
+        id: [id; 16],
+        text: format!("reminder {id}"),
+        due,
+        timezone: "UTC".into(),
+        source_channel: None,
+        source_thread: None,
+        state,
+        revision: 1,
+    };
+    let now = loaded.now;
+    loaded.state.bot.reminders.insert(
+        community,
+        vec![
+            reminder(0xd1, now - 60, ReminderStatus::Due),
+            reminder(0xa1, now + 3600, ReminderStatus::Scheduled),
+        ],
+    );
+    assert_eq!(reminders::due_count(&loaded.state), 1);
+    cx.update(dilla_desktop::install);
+    let (_app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    vcx.update(|window, cx| reminders::toggle(window.window_handle().window_id(), cx));
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    // `debug_bounds` takes a `'static` name.
+    let due_row: &'static str = format!("reminder-{}", "d1".repeat(16)).leak();
+    let upcoming_row: &'static str = format!("reminder-{}", "a1".repeat(16)).leak();
+    assert!(vcx.debug_bounds(due_row).is_some(), "Due is the tab");
+    assert!(vcx.debug_bounds(upcoming_row).is_none());
+    let tab = vcx
+        .debug_bounds("reminders-tab-upcoming")
+        .expect("the Upcoming tab");
+    vcx.simulate_click(tab.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds(upcoming_row).is_some(), "under Upcoming");
+    assert!(vcx.debug_bounds(due_row).is_none());
+}
+
 /// Integration 3, step 5 (T20's `private_results` in Task 9's log): a private result of the open conversation is drawn
 /// after the log's last message, and the log grows by it.
 #[cfg(feature = "automation")]
@@ -220,12 +341,11 @@ fn sign_in_app(app: &mut Driver, host: &world::Host, person: &mut world::Person)
 
 /// e2e/web/slash-commands.spec.ts "a reminder set from the picker chips appears under Upcoming": in the window, `/remind`
 /// picked from the list turns into its chips; "in 1 hour" in `when` (the bar previews it), Tab, the text, Enter: the Bot's
-/// sealed answer is a private row (the chips leave), and the reminder is listed under Upcoming (`split_reminders`, the bell's first tab;
-/// read on the account's first device: the desktop has no reminders popover yet).
+/// sealed answer is a private row (the chips leave), and the reminder is listed under Upcoming in the window's reminders
+/// popover (the bell's; the account's first device reads it from the Bot for its id and its time).
 #[test]
 #[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
 fn a_reminder_set_from_the_chips_appears_under_upcoming() {
-    use dilla_client::features::utilities::split_reminders;
     use dilla_client::state::CommunityId;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -290,17 +410,118 @@ fn a_reminder_set_from_the_chips_appears_under_upcoming() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let (upcoming, due) = split_reminders(&listed, now);
-    let mine = upcoming
-        .iter()
-        .find(|r| r.text == text)
-        .expect("under Upcoming");
-    assert!(due.iter().all(|r| r.text != text));
+    let mine = listed.iter().find(|r| r.text == text).unwrap();
     // "in 1 hour", as the chip said.
     assert!(
         (3500..=3700).contains(&(mine.due.saturating_sub(now))),
         "{mine:?}"
     );
+
+    // Upcoming, as the window shows it: the bell's popover reads the list when it opens. Nothing is due, so Upcoming is
+    // its tab, and the reminder's row is there; the Due tab does not list it.
+    let row = format!(
+        "reminder-{}",
+        mine.id
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    app.click("topbar-bell");
+    app.wait_for("reminders-popover", Duration::from_secs(10));
+    assert_eq!(app.focused().as_deref(), Some("reminders-tab-upcoming"));
+    app.wait_for(&row, Duration::from_secs(60));
+    app.click("reminders-tab-due");
+    app.wait_idle();
+    assert!(app.element(&row).is_none(), "not under Due");
+    app.click("reminders-tab-upcoming");
+    app.wait_for(&row, Duration::from_secs(5));
+    drop(app);
+    first.stop();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Server settings → Join roles (BotSection.tsx `page === 'joinRoles'`), against a real dillad and its Bot: the owner's
+/// community has "Arrival Crew" and a Roles-enabled Bot with no join role. In the window, the page (opened from the search
+/// palette, "join role") reads the Bot's setting and offers the role in its select; picking it makes the page dirty and
+/// the footer's Save sends it (`configureBotJoinRole` on the installation it read). The first device reads it back.
+#[test]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+fn the_join_roles_page_saves_the_role_the_bot_gives_on_join() {
+    use dilla_client::state::CommunityId;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_bot_host("t28-joinpage", "127.0.0.1:0");
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t28-joinpage"));
+    let community = world::community(&host, &ada, "Arrivals", &[]);
+    world::clear_session(&ada);
+    let first = rt.block_on(world::start(&ada));
+    let installation = rt.block_on(world::bot::enable_bot(
+        &first,
+        community,
+        world::bot::cap::ROLES,
+    ));
+    let role = rt
+        .block_on(first.roles().create_role(
+            CommunityId(community),
+            "Arrival Crew",
+            0,
+            false,
+            false,
+            0,
+        ))
+        .expect("the role");
+    assert_eq!(
+        rt.block_on(first.roles().bot_join_role(CommunityId(community)))
+            .unwrap(),
+        Some((None, installation.id)),
+        "no join role yet"
+    );
+
+    let root = scratch_dir("t28-joinpage-app");
+    let mut app = Driver::launch(&root);
+    sign_in_app(&mut app, &host, &mut ada);
+    app.press("ctrl-k");
+    app.wait_for("search-input", Duration::from_secs(10));
+    app.type_focused("join role");
+    app.wait_idle();
+    app.press("enter");
+    // The select is drawn once the Bot's setting and the installation are read and match.
+    app.wait_for("join-role-select", Duration::from_secs(60));
+    assert!(
+        app.element("settings-save").is_none(),
+        "nothing to save yet"
+    );
+    app.click("join-role-select");
+    app.wait_idle();
+    app.press("down");
+    app.press("enter");
+    app.wait_for("settings-save", Duration::from_secs(10));
+    app.click("settings-save");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let read = rt
+            .block_on(first.roles().bot_join_role(CommunityId(community)))
+            .unwrap();
+        if read == Some((Some(role), installation.id)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the page never saved the join role: {read:?}"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    // Saved: the draft is clean again, so the footer goes.
+    let gone = std::time::Instant::now() + Duration::from_secs(10);
+    while app.element("settings-save").is_some() {
+        assert!(std::time::Instant::now() < gone, "the footer stayed");
+        std::thread::sleep(Duration::from_millis(100));
+    }
     drop(app);
     first.stop();
     let _ = std::fs::remove_dir_all(&root);

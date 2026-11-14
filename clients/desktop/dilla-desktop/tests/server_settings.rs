@@ -56,6 +56,22 @@ parity_tests! {
     parity_server_settings_danger => "danger",
     parity_server_settings_danger_b => "danger-b",
     parity_server_settings_welcome_b => "welcome-b",
+    parity_server_settings_join_roles => "join-roles",
+    parity_server_settings_join_roles_b => "join-roles-b",
+}
+
+/// BotSection.tsx's Join roles page with no Bot installation (a fixture is an instance with none): the section's title,
+/// the Bot setup button, the page's own heading and note, and why it cannot be set; no role select and nothing to save.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the headless renderer is Linux only here"
+)]
+fn the_join_roles_page_without_a_bot_offers_its_setup_and_no_select() {
+    let mut driver = dilla_parity::Driver::launch_fixture(&fixture("join-roles"), None, &[]);
+    driver.wait_idle();
+    assert!(driver.element("join-role-select").is_none());
+    assert!(driver.element("settings-save").is_none());
 }
 
 // ---- keyboard (S6) ----

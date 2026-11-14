@@ -1,0 +1,161 @@
+{
+  "name": "commands/reminders-b",
+  "window": [1440, 900],
+  "viewer": "ada",
+  "route": "/c/{northern}/{northern/release}",
+  "clock": 1794481751,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "sven",
+        "display": "Sven"
+      },
+      {
+        "id": "kari",
+        "display": "Kari"
+      },
+      {
+        "id": "liv",
+        "display": "Liv"
+      },
+      {
+        "id": "glenn",
+        "display": "Glenn"
+      },
+      {
+        "id": "ines",
+        "display": "Ines"
+      },
+      {
+        "id": "ole",
+        "display": "Ole"
+      },
+      {
+        "id": "tove",
+        "display": "Tove"
+      },
+      {
+        "id": "ulf",
+        "display": "Ulf"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira", "bjorn"],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      },
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "ada",
+        "members": ["ada", "mira", "sven", "kari", "liv", "glenn", "ines", "ole", "tove", "bjorn", "ulf"],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "release",
+            "kind": "text",
+            "name": "release-coordination-and-long-running-discussions"
+          },
+          {
+            "id": "projects",
+            "kind": "category",
+            "name": "projects"
+          },
+          {
+            "id": "desktop",
+            "kind": "text",
+            "name": "desktop",
+            "parent": "projects"
+          },
+          {
+            "id": "standup",
+            "kind": "voice",
+            "name": "standup",
+            "parent": "projects"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "northern/release",
+        "sender": "bjorn",
+        "ts": 1794481741,
+        "body": "morning! the desktop preview builds again"
+      },
+      {
+        "key": "m2",
+        "channel": "northern/release",
+        "sender": "mira",
+        "ts": 1794481741,
+        "body": "I went through the whole release checklist for the preview this morning and everything that touches the timeline, the composer and the sign-in flow behaves the way the web client does, including the wrapping of long lines like this one, which keeps going well past the width of the message column so that it has to break onto a second and a third line before it ends"
+      },
+      {
+        "key": "m3",
+        "channel": "northern/release",
+        "sender": "mira",
+        "ts": 1794481741,
+        "body": "the only thing left is the member count in the header"
+      },
+      {
+        "key": "m4",
+        "channel": "northern/release",
+        "sender": "ada",
+        "ts": 1794481741,
+        "body": "great, then the two-digit count is the last check"
+      },
+      {
+        "key": "m5",
+        "channel": "northern/release",
+        "sender": "liv",
+        "ts": 1794481741,
+        "body": "eleven of us now, so it is two digits"
+      }
+    ]
+  },
+  "steps": [
+    {"do": "click", "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]", "gpui": "header-members"},
+    {"do": "click", "web": "css=.d-topbar__bell button", "gpui": "topbar-bell"},
+    {"do": "settle"}
+  ]
+}

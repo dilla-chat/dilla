@@ -1,0 +1,136 @@
+{
+  "name": "commands/reminders",
+  "window": [1280, 800],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira", "bjorn"],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "morning, the release branch is green again"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "nice. did the voice e2e pass on all three platforms?"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "linux and windows yes, macos is still running"
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "I pushed the fix for the sealed-command retry\nit needs a second pair of eyes before merge"
+      },
+      {
+        "key": "m5",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "on it, give me ten minutes"
+      },
+      {
+        "key": "m6",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "the core of the change is the outbox"
+      },
+      {
+        "key": "m7",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "reads fine to me, the outbox keeps the order"
+      },
+      {
+        "key": "m8",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "approved, merging after ci"
+      },
+      {
+        "key": "m9",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "thanks both"
+      },
+      {
+        "key": "m10",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "ci is green, the tag goes out this afternoon"
+      },
+      {
+        "key": "m11",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "I will tell the homelab session to upgrade CT 144"
+      },
+      {
+        "key": "m12",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "perfect, nothing else from me"
+      }
+    ]
+  },
+  "steps": [
+    {"do": "click", "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]", "gpui": "header-members"},
+    {"do": "click", "web": "css=.d-topbar__bell button", "gpui": "topbar-bell"},
+    {"do": "settle"}
+  ]
+}

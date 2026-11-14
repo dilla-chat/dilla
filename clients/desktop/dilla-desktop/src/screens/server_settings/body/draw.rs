@@ -1533,21 +1533,30 @@ impl Body {
             )
             .into_any_element(),
         ];
-        out.push(
-            div()
-                .flex()
-                .pb(layout::SECTION_GAP)
-                .child(
-                    Button::new("bot-setup", t("workspace.botSetup")).on_click(act_click(
-                        cx,
-                        |this, _, cx| {
-                            cx.emit(super::BodyEvent::OpenSection(ServerSection::Bot));
-                            let _ = this;
-                        },
-                    )),
-                )
-                .into_any_element(),
-        );
+        // BotSection.tsx: the way to the Bot's setup until it is ready.
+        let ready = self
+            .state
+            .bot_admin
+            .installation
+            .get(&self.community)
+            .is_some_and(|i| i.state == 3);
+        if !ready {
+            out.push(
+                div()
+                    .flex()
+                    .pb(layout::SECTION_GAP)
+                    .child(
+                        Button::new("bot-setup", t("workspace.botSetup")).on_click(act_click(
+                            cx,
+                            |this, _, cx| {
+                                cx.emit(super::BodyEvent::OpenSection(ServerSection::Bot));
+                                let _ = this;
+                            },
+                        )),
+                    )
+                    .into_any_element(),
+            );
+        }
         if section == ServerSection::Welcome {
             // The panel until the bot installation (Task 21) fills it: its heading and help, why it cannot be used, and
             // its disabled load button.
@@ -1584,9 +1593,101 @@ impl Body {
                     .into_any_element(),
             );
         } else {
-            out.push(dim(t("admin.bot.joinRole.requiresBot")));
+            out.push(self.join_role_panel(cx));
         }
         out
+    }
+
+    /// BotSection.tsx's `page === 'joinRoles'` section: its heading, the honest note, why it cannot be set (no ready Bot,
+    /// no Manage roles), the refusal, the read in flight, and the role select once the Bot is ready.
+    fn join_role_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let access = self.access();
+        let d = self.join_role.borrow().clone();
+        let para = |key: &str| {
+            line(
+                t(key),
+                text::BASE,
+                line_height(text::BASE, 1.5),
+                color::FG_2,
+            )
+        };
+        let size = px(f32::from(text::BASE) * UA_H3_EM);
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .child(
+                line(
+                    t("admin.bot.joinRole.title"),
+                    size,
+                    line_height(size, 1.5),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY),
+            )
+            .child(para("admin.bot.joinRole.honest"));
+        let permitted = access.manage_community && access.manage_roles;
+        if d.loaded == Some(None) && d.error.is_none() {
+            panel = panel.child(para("admin.bot.joinRole.requiresBot"));
+        }
+        if access.loaded && !permitted {
+            panel = panel.child(para("admin.bot.joinRole.requiresBot"));
+        }
+        if let (Some(_), Some(e), true) = (d.loaded, &d.error, permitted) {
+            panel = panel.child(alert(e.clone()));
+        }
+        if d.loaded.is_none() {
+            panel = panel.child(para("admin.bot.loading"));
+        }
+        if let Some(setting) = d.setting()
+            && self.join_role_ready(&setting)
+            && access.manage_roles
+        {
+            // `joinRoleCandidates`: every role above @everyone this person may hand out (the owner any, else below their
+            // top role).
+            let mut roles: Vec<_> = self
+                .state
+                .roles
+                .roles_of(self.community)
+                .iter()
+                .filter(|r| r.position > 0 && (access.owner || u64::from(r.position) < access.top))
+                .cloned()
+                .collect();
+            roles.sort_by(|a, b| b.position.cmp(&a.position).then(a.id.cmp(&b.id)));
+            let values: Vec<(String, String)> =
+                std::iter::once((String::new(), t("admin.bot.joinRole.none").to_owned()))
+                    .chain(roles.iter().map(|r| (hex_id(&r.id), r.name.clone())))
+                    .collect();
+            let options: Vec<(&str, &str)> = values
+                .iter()
+                .map(|(v, l)| (v.as_str(), l.as_str()))
+                .collect();
+            let current = d.value.map(|r| hex_id(&r)).unwrap_or_default();
+            let draft = self.join_role.clone();
+            let select = Select::new(
+                "join-role",
+                t("admin.bot.joinRole.label"),
+                &options,
+                current,
+            )
+            .bare()
+            .disabled(d.busy)
+            .on_change(act_value(cx, move |_, value, _, cx| {
+                let mut d = draft.borrow_mut();
+                d.value = parse_id(value);
+                d.error = None;
+                drop(d);
+                cx.notify();
+            }));
+            let control = div().w_full().child(select);
+            #[cfg(feature = "automation")]
+            let control = control
+                .relative()
+                .child(crate::automation::bounds_probe("join-role-select"));
+            panel = panel.child(
+                SettingsRow::new("join-role-row", t("admin.bot.joinRole.label")).child(control),
+            );
+        }
+        panel.into_any_element()
     }
 
     // ---- Danger ----
@@ -1778,6 +1879,16 @@ impl Body {
         .on_close(self.close_dialogue(cx))
         .into_any_element()
     }
+}
+
+/// A role id as a select's value: 32 lower-case hex digits.
+fn hex_id(id: &[u8; 16]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A select's value as a role id (`""`, "No role", is none).
+fn parse_id(value: &str) -> Option<[u8; 16]> {
+    dilla_client::features::server_admin::unhex_id(value)
 }
 
 /// A `Select`'s or `Segmented`'s change handler on the settings' own entity.
