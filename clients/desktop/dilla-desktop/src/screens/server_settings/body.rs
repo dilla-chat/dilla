@@ -147,6 +147,12 @@ impl JoinRoleDraft {
         self.dirty() && !self.busy && self.permitted
     }
 
+    /// w2-bot-review M-D4: Save found the installation changed since the page read it: nothing is sent, and the page
+    /// says so (`admin.bot.error.conflict`) rather than staying dirty in silence.
+    pub fn installation_changed(&mut self) {
+        self.error = Some(t("admin.bot.error.conflict").to_owned());
+    }
+
     /// Throws the pick away (`reset`: the saved role again).
     pub fn reset(&mut self) {
         if let Some(s) = self.setting() {
@@ -571,7 +577,12 @@ impl Body {
             let Some(setting) = d.setting() else {
                 return;
             };
-            if d.busy || !d.dirty() || !self.join_role_ready(&setting) {
+            if d.busy || !d.dirty() {
+                return;
+            }
+            if !self.join_role_ready(&setting) {
+                d.installation_changed();
+                cx.notify();
                 return;
             }
             // w2-bot-review I-D1: the permissions are checked again at save, as the web's `saveJoinRole` does; they may
@@ -1598,6 +1609,8 @@ mod tests {
         assert!(d.can_save());
         d.busy = true;
         assert!(!d.can_save());
+        d.installation_changed();
+        assert_eq!(d.error.as_deref(), Some(t("admin.bot.error.conflict")));
     }
 
     /// BotSection.tsx `errorMessage`.
