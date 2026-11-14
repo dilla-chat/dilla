@@ -2170,6 +2170,7 @@ dependencies = [
  "dilla-media",
  "dilla-parity",
  "dilla-testkit",
+ "dispatch2",
  "getrandom 0.3.4",
  "gpui-component",
  "gpui-pre",
@@ -2177,6 +2178,9 @@ dependencies = [
  "hmac 0.13.0",
  "image",
  "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "opus-pure",
  "reqwest 0.13.5",
  "rodio",
@@ -2188,6 +2192,7 @@ dependencies = [
  "sys-locale",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

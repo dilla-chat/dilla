@@ -10,7 +10,16 @@
 //! backend's when it has read the job). Every buffer of it on the app's side is a [`Zeroizing`] one. What the printing
 //! system then does with the job (a spool file, the printer) is the system's, as for the web's print.
 //!
-//! Other platforms have no print path yet: [`system`] answers [`PrintError::Unsupported`].
+//! On macOS the same PDF is printed with AppKit's print operation (`NSPrintOperation`, the system's print panel): an
+//! `NSImage` reads the document from an `NSData` laid over the app's own zeroizing buffer (no copy, nothing on disk),
+//! an `NSImageView` of the page's size draws it, and the operation runs on the main thread, as AppKit requires.
+//!
+//! Windows has no system PDF printing the app can hand a document to without a file, so there the app draws the same
+//! document itself: the system's print dialog (`PrintDlgW`) answers a printer's device context, and each text run of
+//! the PDF's content stream ([`runs`]) is drawn on it with GDI at its place on the page, in the faces the PDF names
+//! (Arial for Helvetica, Courier New for Courier). Nothing is written to the disk there either.
+//!
+//! Any other platform answers [`PrintError::Unsupported`].
 
 use std::fmt::Write as _;
 
@@ -188,7 +197,7 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Prints `pdf` through the system's print dialog, titled `title` (see the module's comment). Linux only for now.
+/// Prints `pdf` through the system's print dialog, titled `title` (see the module's comment): on Linux, the XDG portal.
 #[cfg(target_os = "linux")]
 pub async fn system(title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, PrintError> {
     use std::io::{Seek as _, SeekFrom, Write as _};
@@ -254,17 +263,324 @@ pub async fn system(title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, P
     }
 }
 
-/// Prints `pdf` through the system's print dialog: no print path on this platform yet.
-#[cfg(not(target_os = "linux"))]
+/// Prints `pdf` through the system's print panel (see the module's comment): AppKit's print operation on the main
+/// thread, which this (background) task waits for.
+#[cfg(target_os = "macos")]
+#[allow(clippy::unused_async)]
+pub async fn system(title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, PrintError> {
+    dispatch2::run_on_main(move |mtm| mac::print(mtm, &title, &pdf))
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+
+    use objc2::{AnyThread as _, MainThreadMarker};
+    use objc2::rc::autoreleasepool;
+    use objc2_app_kit::{
+        NSImage, NSImageView, NSPrintInfo, NSPrintOperation, NSPrintingPaginationMode,
+    };
+    use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString};
+
+    use super::{PAGE_H, PAGE_W, PrintError, Printed};
+
+    pub(super) fn print(
+        mtm: MainThreadMarker,
+        title: &str,
+        pdf: &[u8],
+    ) -> Result<Printed, PrintError> {
+        let Some(bytes) = NonNull::new(pdf.as_ptr().cast_mut().cast::<c_void>()) else {
+            return Err(PrintError::Failed("an empty document".into()));
+        };
+        // Every object goes with the pool, before the caller's buffer is zeroized and freed.
+        autoreleasepool(|_| {
+            // SAFETY: the data is read only, and the buffer outlives it and every object made from it (the pool ends
+            // first); `freeWhenDone: false` leaves the buffer to its zeroizing owner.
+            let data =
+                unsafe { NSData::dataWithBytesNoCopy_length_freeWhenDone(bytes, pdf.len(), false) };
+            let image = NSImage::initWithData(NSImage::alloc(), &data)
+                .ok_or_else(|| PrintError::Failed("the document is not a PDF AppKit reads".into()))?;
+            let page = NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(f64::from(PAGE_W), f64::from(PAGE_H)),
+            );
+            let view = NSImageView::initWithFrame(mtm.alloc(), page);
+            view.setImage(Some(&image));
+            // The page is the document's own A4 with its own margins: the view fits the paper, centred, edge to edge.
+            let info = NSPrintInfo::new();
+            info.setTopMargin(0.0);
+            info.setBottomMargin(0.0);
+            info.setLeftMargin(0.0);
+            info.setRightMargin(0.0);
+            info.setHorizontallyCentered(true);
+            info.setVerticallyCentered(true);
+            info.setHorizontalPagination(NSPrintingPaginationMode::Fit);
+            info.setVerticalPagination(NSPrintingPaginationMode::Fit);
+            let operation = NSPrintOperation::printOperationWithView_printInfo(&view, &info);
+            operation.setJobTitle(Some(&NSString::from_str(title)));
+            operation.setShowsPrintPanel(true);
+            operation.setShowsProgressPanel(true);
+            Ok(if operation.runOperation() {
+                Printed::Sent
+            } else {
+                Printed::Cancelled
+            })
+        })
+    }
+}
+
+/// Prints `pdf` through the system's print dialog (see the module's comment): the dialog, then the document's text runs
+/// drawn on the printer the person chose. The dialog is modal and runs on this (background) task's thread.
+#[cfg(target_os = "windows")]
+#[allow(clippy::unused_async)]
+pub async fn system(title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, PrintError> {
+    let runs = runs(&pdf);
+    drop(pdf);
+    win::print(&title, &runs)
+}
+
+#[cfg(target_os = "windows")]
+mod win {
+    use std::mem::{size_of, zeroed};
+    use std::ptr::null;
+
+    use windows_sys::Win32::Graphics::Gdi::{
+        CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DEFAULT_QUALITY, DeleteDC, DeleteObject,
+        FF_MODERN, FF_SWISS, FIXED_PITCH, FW_BOLD, FW_NORMAL, GetDeviceCaps, HDC, LOGPIXELSX,
+        LOGPIXELSY, OUT_DEFAULT_PRECIS, PHYSICALOFFSETX, PHYSICALOFFSETY, SelectObject, SetBkMode,
+        SetTextAlign, TA_BASELINE, TA_LEFT, TRANSPARENT, TextOutW, VARIABLE_PITCH,
+    };
+    use windows_sys::Win32::Storage::Xps::{DOCINFOW, EndDoc, EndPage, StartDocW, StartPage};
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        CommDlgExtendedError, PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC, PRINTDLGW, PrintDlgW,
+    };
+    use zeroize::Zeroizing;
+
+    use super::{PAGE_H, PrintError, Printed, Run};
+
+    /// A device context the dialog answered, deleted when dropped.
+    struct Dc(HDC);
+
+    impl Drop for Dc {
+        fn drop(&mut self) {
+            // SAFETY: the context is the dialog's, created for this print only.
+            unsafe { DeleteDC(self.0) };
+        }
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub(super) fn print(title: &str, runs: &[Run]) -> Result<Printed, PrintError> {
+        // SAFETY: a zeroed PRINTDLGW is its documented empty state; only the size and the flags are set.
+        let mut dialog: PRINTDLGW = unsafe { zeroed() };
+        dialog.lStructSize = size_of::<PRINTDLGW>() as u32;
+        dialog.Flags = PD_RETURNDC | PD_NOPAGENUMS | PD_NOSELECTION;
+        // SAFETY: the struct is initialised as above and outlives the call.
+        let chosen = unsafe { PrintDlgW(&mut dialog) };
+        // SAFETY: the dialog's global handles are freed once (null ones are skipped).
+        unsafe {
+            if !dialog.hDevMode.is_null() {
+                GlobalFree(dialog.hDevMode);
+            }
+            if !dialog.hDevNames.is_null() {
+                GlobalFree(dialog.hDevNames);
+            }
+        }
+        if chosen == 0 {
+            // SAFETY: no arguments; it reads the dialog's last error on this thread.
+            return match unsafe { CommDlgExtendedError() } {
+                0 => Ok(Printed::Cancelled),
+                code => Err(PrintError::Failed(format!("print dialog error {code:#x}"))),
+            };
+        }
+        if dialog.hDC.is_null() {
+            return Err(PrintError::Failed("the dialog answered no printer".into()));
+        }
+        let dc = Dc(dialog.hDC);
+        let name = wide(title);
+        let job = DOCINFOW {
+            cbSize: size_of::<DOCINFOW>() as i32,
+            lpszDocName: name.as_ptr(),
+            lpszOutput: null(),
+            lpszDatatype: null(),
+            fwType: 0,
+        };
+        // SAFETY: the context is valid until `dc` drops; every pointer handed over outlives its call.
+        unsafe {
+            if StartDocW(dc.0, &job) <= 0 {
+                return Err(PrintError::Failed("the printer refused the job".into()));
+            }
+            if StartPage(dc.0) <= 0 {
+                EndDoc(dc.0);
+                return Err(PrintError::Failed("the printer refused the page".into()));
+            }
+            let (dpi_x, dpi_y) = (
+                GetDeviceCaps(dc.0, LOGPIXELSX as i32) as f32,
+                GetDeviceCaps(dc.0, LOGPIXELSY as i32) as f32,
+            );
+            // The context's origin is the printable area's corner, this far into the page.
+            let (off_x, off_y) = (
+                GetDeviceCaps(dc.0, PHYSICALOFFSETX as i32) as f32,
+                GetDeviceCaps(dc.0, PHYSICALOFFSETY as i32) as f32,
+            );
+            SetBkMode(dc.0, TRANSPARENT as i32);
+            SetTextAlign(dc.0, TA_BASELINE | TA_LEFT);
+            for run in runs {
+                let (face, weight, family) = match run.font {
+                    2 => ("Arial", FW_BOLD, VARIABLE_PITCH | FF_SWISS),
+                    3 => ("Courier New", FW_NORMAL, FIXED_PITCH | FF_MODERN),
+                    _ => ("Arial", FW_NORMAL, VARIABLE_PITCH | FF_SWISS),
+                };
+                let face = wide(face);
+                // A negative height is the em size; points to device pixels at the printer's resolution.
+                let font = CreateFontW(
+                    -(run.size / 72.0 * dpi_y).round() as i32,
+                    0,
+                    0,
+                    0,
+                    weight as i32,
+                    0,
+                    0,
+                    0,
+                    u32::from(DEFAULT_CHARSET),
+                    u32::from(OUT_DEFAULT_PRECIS),
+                    u32::from(CLIP_DEFAULT_PRECIS),
+                    u32::from(DEFAULT_QUALITY),
+                    u32::from(family),
+                    face.as_ptr(),
+                );
+                let previous = SelectObject(dc.0, font);
+                // The PDF's baseline from the page's bottom, in points; the context's from its top, in pixels.
+                let x = (run.x / 72.0 * dpi_x - off_x).round() as i32;
+                let y = ((PAGE_H - run.y) / 72.0 * dpi_y - off_y).round() as i32;
+                let text: Zeroizing<Vec<u16>> = Zeroizing::new(run.text.encode_utf16().collect());
+                TextOutW(dc.0, x, y, text.as_ptr(), text.len() as i32);
+                SelectObject(dc.0, previous);
+                DeleteObject(font);
+            }
+            EndPage(dc.0);
+            EndDoc(dc.0);
+        }
+        Ok(Printed::Sent)
+    }
+}
+
+/// Any other platform has no print path.
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 #[allow(clippy::unused_async)]
 pub async fn system(_title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, PrintError> {
     drop(pdf);
     Err(PrintError::Unsupported)
 }
 
+/// One text run of a [`codes_pdf`] document's content stream (`BT /F<n> <size> Tf <x> <y> Td (<text>) Tj ET`): its face
+/// (1 Helvetica, 2 Helvetica-Bold, 3 Courier), size in points and baseline origin in points from the page's lower left,
+/// and its text decoded from WinAnsi. What a platform that draws the document itself (Windows) draws.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) struct Run {
+    pub font: u8,
+    pub size: f32,
+    pub x: f32,
+    pub y: f32,
+    pub text: Zeroizing<String>,
+}
+
+/// The text runs of a [`codes_pdf`] document, in order (only the content stream this module writes is read).
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) fn runs(pdf: &[u8]) -> Vec<Run> {
+    let mut out = Vec::new();
+    let Some(start) = find(pdf, b"stream\n").map(|i| i + b"stream\n".len()) else {
+        return out;
+    };
+    let end = find(&pdf[start..], b"\nendstream").map_or(pdf.len(), |i| start + i);
+    for line in pdf[start..end].split(|b| *b == b'\n') {
+        if let Some(run) = run_of(line) {
+            out.push(run);
+        }
+    }
+    out
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// `BT /F<n> <size> Tf <x> <y> Td (<text>) Tj ET`.
+fn run_of(line: &[u8]) -> Option<Run> {
+    let rest = line.strip_prefix(b"BT /F")?;
+    let open = rest.iter().position(|b| *b == b'(')?;
+    let close = rest.len() - rest.iter().rev().position(|b| *b == b')')? - 1;
+    let head = std::str::from_utf8(&rest[..open]).ok()?;
+    let mut words = head.split_whitespace();
+    let font: u8 = words.next()?.parse().ok()?;
+    let size: f32 = words.next()?.parse().ok()?;
+    let _tf = words.next()?;
+    let x: f32 = words.next()?.parse().ok()?;
+    let y: f32 = words.next()?.parse().ok()?;
+    Some(Run {
+        font,
+        size,
+        x,
+        y,
+        text: unescape(&rest[open + 1..close]),
+    })
+}
+
+/// A PDF literal string's bytes ([`pdf_string`]'s escapes) as text: WinAnsi's codes back to their characters.
+fn unescape(s: &[u8]) -> Zeroizing<String> {
+    let mut out = Zeroizing::new(String::with_capacity(s.len()));
+    let mut i = 0;
+    while i < s.len() {
+        let mut b = s[i];
+        if b == b'\\' && i + 1 < s.len() {
+            let octal = &s[i + 1..(i + 4).min(s.len())];
+            if octal.len() == 3 && octal.iter().all(|d| (b'0'..=b'7').contains(d)) {
+                b = octal.iter().fold(0u8, |n, d| n.wrapping_mul(8) + (d - b'0'));
+                i += 3;
+            } else {
+                b = s[i + 1];
+                i += 1;
+            }
+        }
+        out.push(match b {
+            0x85 => '…',
+            0x91 => '‘',
+            0x92 => '’',
+            0x93 => '“',
+            0x94 => '”',
+            0x96 => '–',
+            0x97 => '—',
+            b => char::from(b),
+        });
+        i += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The runs a platform that draws the document itself reads back are the document's own: the title in bold, the
+    /// copy, and every code numbered in Courier, top to bottom; escapes and WinAnsi quotes come back as written.
+    #[test]
+    fn the_runs_read_back_the_document() {
+        let doc = codes_pdf("Your (backup) codes", "Keep them – they’re yours.", "Backup codes", &codes());
+        let runs = runs(&doc);
+        assert_eq!(runs[0].text.as_str(), "Your (backup) codes");
+        assert_eq!((runs[0].font, runs[0].size, runs[0].x), (2, TITLE_PT, MARGIN));
+        assert_eq!(runs[1].text.as_str(), "Keep them – they’re yours.");
+        let coded: Vec<&Run> = runs.iter().filter(|r| r.font == 3).collect();
+        assert_eq!(coded.len(), 10);
+        for (i, (run, code)) in coded.iter().zip(codes()).enumerate() {
+            assert_eq!(run.text.as_str(), format!("{:>2}. {code}", i + 1));
+        }
+        assert!(runs.windows(2).all(|w| w[1].y < w[0].y), "each run below the one before");
+    }
 
     fn codes() -> Vec<String> {
         (0..10)
