@@ -4,14 +4,14 @@
 //! in the join dialog.
 //!
 //! The backup codes are the ones the factor step's add returned (Onboarding.tsx `finishFactor`, Task 3b): their copy
-//! (`onboarding.done.codesBody`), a summary with the count, Copy, Save as file and Show/Hide (the list is collapsed until
+//! (`onboarding.done.codesBody`), a summary with the count, Copy, Print and Show/Hide (the list is collapsed until
 //! shown, as the web's disclosure), and the tick "I saved my backup codes somewhere safe", which "Open dilla" waits for.
-//! The web's Print is the browser's; the desktop saves a file instead (as the key step's Save as file). The codes live
-//! in this view only, in a zeroizing buffer: never a log, prefs or the store, and wiped when Open dilla leaves the step
-//! (and when the view drops).
+//! Print is the web's (Jonas 2026-11-14): the system's print dialog, handed a document that never touches the disk
+//! (`crate::print`). The codes live in this view only, in a zeroizing buffer: never a log, prefs or the store, and wiped
+//! when Open dilla leaves the step (and when the view drops).
 
 use dilla_client::features::factors::BackupCodes;
-use dilla_client::features::signup::{self as su, SignupResult};
+use dilla_client::features::signup::SignupResult;
 use dilla_client::state::{AppState, Channel, CommunityId};
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -36,11 +36,9 @@ use crate::screens::{FocusNext, FocusPrevious};
 use crate::strings::{t, tf};
 use crate::{tracked, tracked_box, tracked_focus};
 
-/// The name Save as file suggests. The web prints its codes and has no file of them, so no copy names one; this is
-/// the key file's pattern (`onboarding.keys.fileName`) for the codes.
-const CODES_FILE: &str = "dilla-backup-codes.txt";
-/// The refusal a failed Save as file shows (the key step's: the web has no `onboarding.keys.saveFailed`).
-const SAVE_FAILED: &str = "settings.editing.saveFailed";
+/// The refusal a print that could not start shows, with its code (the web's print cannot fail, so it has no copy of
+/// its own: the factor area's generic one).
+const PRINT_FAILED: &str = "factor.error.other";
 /// The gap between the summary's actions, and between the count and them (CodeList.css `__actions`, 0.75rem).
 const ACTIONS_GAP: f32 = 12.0;
 /// The gap between the codes' parts (the list, the summary, the tick).
@@ -70,7 +68,7 @@ impl SignupCodes {
 /// The focus handles of the codes' controls (the automation build's `focused`, and Tab's order).
 struct CodeHandles {
     copy: FocusHandle,
-    save: FocusHandle,
+    print: FocusHandle,
     show: FocusHandle,
     ack: FocusHandle,
 }
@@ -86,7 +84,7 @@ pub struct DoneView {
     expanded: bool,
     /// "I saved my backup codes somewhere safe".
     saved: bool,
-    /// Why the last Save as file did not write.
+    /// Why the last Print did not start.
     problem: Option<SharedString>,
     handles: CodeHandles,
 }
@@ -104,17 +102,17 @@ pub fn first_text_channel(state: &AppState, community: CommunityId) -> Option<&C
     channels.into_iter().find(|c| c.is_text())
 }
 
-/// The text Save as file writes: the codes' title and copy, then the codes as Copy gives them (one per line, grouped).
-fn codes_file(codes: &[String]) -> Zeroizing<String> {
+/// The document Print hands the dialog: the codes' title and copy, the list's label, then the codes as the list shows
+/// them (grouped, as Copy gives them).
+fn codes_document(codes: &[String]) -> Zeroizing<Vec<u8>> {
     let listed = Zeroizing::new(copy_text(codes));
-    let mut out = Zeroizing::new(String::with_capacity(listed.len() + 256));
-    out.push_str(t("factor.codes.title"));
-    out.push_str("\n\n");
-    out.push_str(t("onboarding.done.codesBody"));
-    out.push_str("\n\n");
-    out.push_str(&listed);
-    out.push('\n');
-    out
+    let shown: Zeroizing<Vec<String>> = Zeroizing::new(listed.lines().map(str::to_owned).collect());
+    crate::print::codes_pdf(
+        t("factor.codes.title"),
+        t("onboarding.done.codesBody"),
+        t("factor.codes.label"),
+        &shown,
+    )
 }
 
 impl DoneView {
@@ -137,7 +135,7 @@ impl DoneView {
             problem: None,
             handles: CodeHandles {
                 copy: cx.focus_handle().tab_stop(true),
-                save: cx.focus_handle().tab_stop(true),
+                print: cx.focus_handle().tab_stop(true),
                 show: cx.focus_handle().tab_stop(true),
                 ack: cx.focus_handle().tab_stop(true),
             },
@@ -191,38 +189,35 @@ impl DoneView {
         cx.write_to_clipboard(ClipboardItem::new_string(text.as_str().to_owned()));
     }
 
-    /// Save as file: the codes once, in the file the person picks, written as the key file is (0600, never through a
-    /// link), never anywhere else.
-    fn save(&mut self, cx: &mut Context<Self>) {
+    /// Print (Onboarding.tsx `onPrint`, the browser's print): the system's print dialog, given the codes' document.
+    fn print(&mut self, cx: &mut Context<Self>) {
+        self.print_with(crate::print::system, cx);
+    }
+
+    /// Print through `printer` (the system's dialog; a test's stand-in). The document is made from the codes the step
+    /// holds at the press, so nothing is printed once Open dilla has wiped them; a print that could not start says why.
+    fn print_with<F, Fut>(&mut self, printer: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce(String, Zeroizing<Vec<u8>>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<crate::print::Printed, crate::print::PrintError>>
+            + Send
+            + 'static,
+    {
         if self.codes.is_empty() {
             return;
         }
-        let body = codes_file(&self.codes);
-        let dir = std::env::home_dir()
-            .map(|h| h.join("Downloads"))
-            .filter(|d| d.is_dir())
-            .or_else(std::env::home_dir)
-            .unwrap_or_default();
-        let chosen = cx.prompt_for_new_path(&dir, Some(CODES_FILE));
+        let document = codes_document(&self.codes);
+        let title = t("factor.codes.title").to_owned();
         self.problem = None;
+        cx.notify();
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = chosen.await else {
-                return;
-            };
-            // The step was left (Open dilla, the view gone) while the picker was open: its codes are wiped, and so is
-            // this copy, unwritten.
-            if !this
-                .update(cx, |this, _| !this.codes.is_empty())
-                .unwrap_or(false)
-            {
-                return;
-            }
-            let written = cx
-                .background_spawn(async move { su::write_key_file(&path, body.as_bytes()) })
+            let printed = cx
+                .background_spawn(async move { printer(title, document).await })
                 .await;
-            if written.is_err() {
+            if let Err(e) = printed {
+                log::warn!("print: {}", e.code());
                 let _ = this.update(cx, |this, cx| {
-                    this.problem = Some(t(SAVE_FAILED).into());
+                    this.problem = Some(tf(PRINT_FAILED, &[("code", e.code())]).into());
                     cx.notify();
                 });
             }
@@ -230,7 +225,7 @@ impl DoneView {
         .detach();
     }
 
-    /// The codes' block: the copy, the summary (count, Copy, Save as file, Show/Hide), the list while shown, the tick.
+    /// The codes' block: the copy, the summary (count, Copy, Print, Show/Hide), the list while shown, the tick.
     fn codes_block(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let count = tf(
             "onboarding.done.codesCount",
@@ -253,11 +248,11 @@ impl DoneView {
                     .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
             ))
             .child(tracked_focus(
-                "onboarding-codes-save",
-                &self.handles.save,
-                Button::new("onboarding-codes-save", t("onboarding.keys.save"))
-                    .focus_handle(&self.handles.save)
-                    .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                "onboarding-codes-print",
+                &self.handles.print,
+                Button::new("onboarding-codes-print", t("factor.codes.print"))
+                    .focus_handle(&self.handles.print)
+                    .on_click(cx.listener(|this, _, _, cx| this.print(cx))),
             ))
             .child(tracked_focus(
                 "onboarding-codes-show",
@@ -498,41 +493,102 @@ mod tests {
         assert_eq!(open_at(vcx), unticked, "no hint line above Open dilla");
     }
 
-    /// Save as file writes the codes where the person chose, but only while the step still holds them: Open dilla
-    /// with the picker still open wipes them, and the later answer writes nothing.
-    #[gpui::test]
-    fn save_writes_only_while_the_step_holds_the_codes(cx: &mut TestAppContext) {
+    /// What a stand-in printer was handed: the dialog's title and the document.
+    type Handed = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
+
+    type Answer = Result<crate::print::Printed, crate::print::PrintError>;
+
+    /// A stand-in for the system's print dialog that keeps what it was handed and answers `answer`.
+    fn printer(
+        handed: &Handed,
+        answer: fn() -> Answer,
+    ) -> impl FnOnce(String, Zeroizing<Vec<u8>>) -> std::future::Ready<Answer> + Send + 'static
+    {
+        let handed = handed.clone();
+        move |title, document| {
+            handed.lock().unwrap().push((title, document.to_vec()));
+            std::future::ready(answer())
+        }
+    }
+
+    fn print_view(
+        cx: &mut TestAppContext,
+    ) -> (gpui::Entity<DoneView>, &mut gpui::VisualTestContext) {
         cx.update(crate::install);
-        let dir = std::env::temp_dir().join(format!("dilla-done-save-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         let (view, vcx) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| DoneView::new(result(), Some(ten()), window, cx));
             Host(view)
         });
         let done = view.read_with(vcx, |h, _| h.0.clone());
-        // Saved while the step shows: the file holds the codes.
-        let kept = dir.join("kept.txt");
-        done.update(vcx, |d, cx| d.save(cx));
+        (done, vcx)
+    }
+
+    /// Print (Onboarding.tsx `onPrint`) hands the system's dialog the codes' document, titled as the codes are: every
+    /// code in it as the list shows it.
+    #[gpui::test]
+    fn print_hands_the_dialog_the_codes(cx: &mut TestAppContext) {
+        let (done, vcx) = print_view(cx);
+        let handed = Handed::default();
+        done.update(vcx, |d, cx| {
+            d.print_with(printer(&handed, || Ok(crate::print::Printed::Sent)), cx);
+        });
         vcx.run_until_parked();
-        let to = kept.clone();
-        vcx.simulate_new_path_selection(move |_| Some(to));
-        vcx.run_until_parked();
-        let body = std::fs::read_to_string(&kept).expect("the file is written");
-        assert!(body.contains(&copy_text(&ten().0)));
-        // Open dilla while the picker is open: the later answer writes nothing.
-        let late = dir.join("late.txt");
-        done.update(vcx, |d, cx| d.save(cx));
-        vcx.run_until_parked();
+        let handed = handed.lock().unwrap();
+        assert_eq!(handed.len(), 1, "one print");
+        let (title, document) = &handed[0];
+        assert_eq!(title, t("factor.codes.title"));
+        assert!(document.starts_with(b"%PDF-"));
+        let text = String::from_utf8_lossy(document);
+        for code in copy_text(&ten().0).lines() {
+            assert!(text.contains(code), "{code} is printed");
+        }
+        done.read_with(vcx, |d, _| assert!(d.problem.is_none()));
+    }
+
+    /// Nothing is printed once Open dilla has left the step: its codes are wiped.
+    #[gpui::test]
+    fn print_after_the_step_is_left_prints_nothing(cx: &mut TestAppContext) {
+        let (done, vcx) = print_view(cx);
+        let handed = Handed::default();
         done.update(vcx, |d, cx| {
             d.toggle_saved(cx);
             d.open(cx);
+            d.print_with(printer(&handed, || Ok(crate::print::Printed::Sent)), cx);
         });
-        let to = late.clone();
-        vcx.simulate_new_path_selection(move |_| Some(to));
         vcx.run_until_parked();
-        assert!(!late.exists(), "no file after the step was left");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            handed.lock().unwrap().is_empty(),
+            "no document after the step was left"
+        );
+    }
+
+    /// A print that could not start (no print portal, another platform) says so with its code; a cancelled dialog says
+    /// nothing.
+    #[gpui::test]
+    fn a_print_that_cannot_start_says_why(cx: &mut TestAppContext) {
+        let (done, vcx) = print_view(cx);
+        let handed = Handed::default();
+        done.update(vcx, |d, cx| {
+            d.print_with(
+                printer(&handed, || Ok(crate::print::Printed::Cancelled)),
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        done.read_with(vcx, |d, _| {
+            assert!(d.problem.is_none(), "a cancel is no problem");
+        });
+        done.update(vcx, |d, cx| {
+            d.print_with(
+                printer(&handed, || Err(crate::print::PrintError::Unsupported)),
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let problem = done
+            .read_with(vcx, |d, _| d.problem.clone())
+            .expect("the refusal");
+        assert!(problem.contains("E_PRINT_UNSUPPORTED"), "{problem}");
     }
 
     /// The handover's holder (`AppView::open_workspace`): a launch dropped without a window leaves the codes with the
@@ -548,15 +604,17 @@ mod tests {
         assert!(kept.take().is_none(), "and nothing is left behind");
     }
 
-    /// The saved file: the title, the copy, then the codes one per line as Copy gives them.
+    /// The printed document: the title, the copy, the list's label, then the codes one per line as the list shows them.
     #[test]
-    fn the_file_holds_the_copy_and_the_codes() {
+    fn the_document_holds_the_copy_and_the_codes() {
         let codes = ten();
-        let body = codes_file(&codes.0);
-        assert!(body.starts_with(t("factor.codes.title")));
-        assert!(body.contains(t("onboarding.done.codesBody")));
-        assert!(body.ends_with(&format!("{}\n", copy_text(&codes.0))));
-        assert_eq!(body.lines().filter(|l| l.contains('-')).count(), 10);
+        let document = codes_document(&codes.0);
+        let text = String::from_utf8_lossy(&document);
+        assert!(text.contains(t("factor.codes.label")));
+        assert!(text.contains("Each backup code signs you in once"));
+        for code in copy_text(&codes.0).lines() {
+            assert_eq!(text.matches(code).count(), 1, "{code}");
+        }
     }
 
     struct Host(gpui::Entity<DoneView>);

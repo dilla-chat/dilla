@@ -10,6 +10,7 @@ pub mod fixture;
 pub mod format;
 pub mod keys;
 pub mod per_window;
+pub mod print;
 pub mod release;
 pub mod router;
 pub mod screens;
