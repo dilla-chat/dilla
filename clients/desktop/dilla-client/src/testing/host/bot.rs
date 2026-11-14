@@ -212,8 +212,14 @@ fn private_root(root: &std::path::Path) {
             "{} is not a directory (a symlink?)",
             root.display()
         );
-        // Our uid: the owner of a file this process just made.
-        let probe = std::env::temp_dir().join(format!("dw-uid-{}", std::process::id()));
+        // Our uid: the owner of a file this process just made. One probe per call: tests of one process run in
+        // parallel, and a shared name let one test remove the probe between another's write and its read.
+        static PROBE: AtomicUsize = AtomicUsize::new(0);
+        let probe = std::env::temp_dir().join(format!(
+            "dw-uid-{}-{}",
+            std::process::id(),
+            PROBE.fetch_add(1, Ordering::SeqCst)
+        ));
         std::fs::write(&probe, b"").unwrap();
         let me = std::fs::metadata(&probe).unwrap().uid();
         let _ = std::fs::remove_file(&probe);
