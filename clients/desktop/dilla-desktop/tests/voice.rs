@@ -544,11 +544,98 @@ struct CallWorld {
     alice: Rc<dilla_client::Client>,
     bob: Rc<dilla_client::Client>,
     voice: ChannelId,
+    /// Declared last, so it is let go after everything above.
+    _media: MediaSlot,
 }
 
 const CALL_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 
+/// The process's one media slot. `dilla_media`'s frame hook routes one live call per process (N2): a second window's
+/// media in the same process fails with `E_CALL_BUSY`, and the desktop then leaves that call (its media did not
+/// start). The real-instance tests here run on parallel threads of one test binary, so a test whose media lost the
+/// slot to another test's left its own call; alone in it, the leave ended the call and closed its group, and bob's join
+/// built on that group was refused (`E_COMMIT_INVALID`: the delivery service refuses a commit to a closed group). Each
+/// real-instance test holds the slot for its whole run, and first waits for an earlier test's media to be gone (a
+/// window's media session can outlive its test's world).
+static MEDIA_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How long a test waits for an earlier test's call media to end.
+const MEDIA_FREE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A held [`MEDIA_SLOT`].
+struct MediaSlot {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+/// Takes the process's media slot ([`MEDIA_SLOT`]) once no call media is live in this process.
+fn media_slot() -> MediaSlot {
+    let guard = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
+    assert!(
+        media_free_within(MEDIA_FREE_WAIT),
+        "an earlier test's call media is still live in this process after {MEDIA_FREE_WAIT:?}"
+    );
+    MediaSlot { _guard: guard }
+}
+
+/// True once no call is current in this process's media router, polled until `wait` has passed. The probe is the
+/// router's own claim, released at once: only a holder of [`MEDIA_SLOT`] probes, and every test of this binary that
+/// starts call media holds it.
+fn media_free_within(wait: std::time::Duration) -> bool {
+    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let probe = dilla_media::transform::CallMedia::new();
+        match router.begin(probe.clone()) {
+            Ok(()) => {
+                router.end(&probe);
+                return true;
+            }
+            Err(dilla_media::MediaError::Busy) => {}
+            Err(e) => panic!("the media router refused the probe: {e}"),
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The race the slot closes, forced: a call live in this process (another test's window) holds the next real-instance
+/// test, instead of that test's media starting into `E_CALL_BUSY`; the wait ends once the live call's media ends.
+#[test]
+fn a_live_call_in_the_process_holds_the_next_call_test_until_its_media_ends() {
+    let _slot = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
+    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
+    let live = dilla_media::transform::CallMedia::new();
+    router.begin(live.clone()).expect("no call is live yet");
+    // The race itself: a second call's media cannot start while the first is live.
+    assert!(matches!(
+        router.begin(dilla_media::transform::CallMedia::new()),
+        Err(dilla_media::MediaError::Busy)
+    ));
+    assert!(
+        !media_free_within(std::time::Duration::from_millis(300)),
+        "a live call holds the slot"
+    );
+    let waiter = std::thread::spawn(|| media_free_within(std::time::Duration::from_secs(10)));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !waiter.is_finished(),
+        "the next test waits while the call is live"
+    );
+    router.end(&live);
+    assert!(
+        waiter.join().unwrap(),
+        "the wait ends with the call's media"
+    );
+    assert!(
+        media_free_within(std::time::Duration::ZERO),
+        "the slot is free again"
+    );
+}
+
 fn call_world(tag: &'static str) -> CallWorld {
+    let media = media_slot();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -589,6 +676,7 @@ fn call_world(tag: &'static str) -> CallWorld {
         alice: Rc::new(alice),
         bob: Rc::new(bob),
         voice,
+        _media: media,
     }
 }
 
