@@ -89,6 +89,13 @@ pub fn start_music_host(tag: &str) -> Host {
     host
 }
 
+/// [`start_host`] with dilla-testhost's in-process LiveKit SFU on the host's own listener (as [`start_music_host`]
+/// starts it), without the Bot: calls start and their media can connect. Blocking.
+pub fn start_sfu_host(tag: &str) -> Host {
+    let listen = format!("127.0.0.1:{}", music::free_port());
+    launch_with(tag, &listen, None, false, true)
+}
+
 fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool) -> Host {
     launch_with(tag, listen, web_root, with_bot, false)
 }

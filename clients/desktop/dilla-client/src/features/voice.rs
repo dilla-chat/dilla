@@ -733,7 +733,33 @@ impl Voice {
                 if lock(&this.rt()).generation != generation {
                     return Ok(());
                 }
-                match this.calls.media_epoch(&live.group_id) {
+                let judged = match this.calls.media_epoch(&live.group_id) {
+                    // A leaf verdict is judged against the cached signed list of the leaf's user, which predates a
+                    // device that user added since (a known contact's new device joining the call). Its leaf is
+                    // unlisted only until a trust pass reads the newer list, which the engine starts on the epoch's
+                    // apply but this poll can outrun. So, as controller.ts `sendWithTrustRetry` answers the same
+                    // verdict, the group's leaves are read again and the gate judges once more; the core alone
+                    // decides that second answer, and a device the fresh list leaves out or revokes still refuses.
+                    // The media keys are dropped first, so nothing is sealed or opened while the refresh runs.
+                    Err(e) if is_leaf_verdict(&e.code) => {
+                        if epochs.borrow().is_some() {
+                            epochs.send_replace(None);
+                        }
+                        let _ = tokio::time::timeout(
+                            crate::calls::session::WAIT_LIST,
+                            this.inner.engine().refresh_group_trust(live.group_id),
+                        )
+                        .await;
+                        if this.inner.engine().stopped()
+                            || lock(&this.rt()).generation != generation
+                        {
+                            continue;
+                        }
+                        this.calls.media_epoch(&live.group_id)
+                    }
+                    other => other,
+                };
+                match judged {
                     Ok(m) if hands_on(m.epoch, last, epochs.borrow().is_none()) => {
                         last = m.epoch;
                         let m = Arc::new(m);
@@ -1031,6 +1057,12 @@ pub fn refused_epoch(code: &str) -> RefusedEpoch {
     }
 }
 
+/// Whether a refused epoch's `code` is one of the core's leaf verdicts (errors.ts `LEAF_VERDICTS`): judged against a
+/// cached signed list, so the follower reads the group's leaves again before it acts on it.
+pub fn is_leaf_verdict(code: &str) -> bool {
+    crate::sync::trust::LEAF_VERDICTS.contains(&code)
+}
+
 /// Whether an epoch the gate passed goes to the media: a newer one, or (ruling R24) the same one again after a refusal
 /// suspended it (the person re-trusted with no commit between), which resumes the call.
 pub fn hands_on(epoch: u64, last: u64, suspended: bool) -> bool {
@@ -1145,6 +1177,29 @@ mod tests {
         }
         for code in ["E_NETWORK", "E_EPOCH_STALE", "E_CORE_DECODE", ""] {
             assert_eq!(refused_epoch(code), RefusedEpoch::Pause, "{code}");
+        }
+    }
+
+    /// A leaf verdict (judged against a cached list) reads the group's leaves again before the follower acts on it; a
+    /// changed identity, a binding refusal, a pending leaf or any other code is acted on as it stands.
+    #[test]
+    fn only_a_leaf_verdict_refreshes_the_leaves_before_judging_again() {
+        for code in [
+            "E_DEVICE_UNLISTED",
+            "E_DEVICE_REVOKED",
+            "E_CREDENTIAL",
+            "E_TIER_MISMATCH",
+        ] {
+            assert!(is_leaf_verdict(code), "{code}");
+        }
+        for code in [
+            "E_UMK_CHANGED",
+            "E_BINDING",
+            "E_DEVICE_LIST_STALE",
+            "E_NETWORK",
+            "",
+        ] {
+            assert!(!is_leaf_verdict(code), "{code}");
         }
     }
 

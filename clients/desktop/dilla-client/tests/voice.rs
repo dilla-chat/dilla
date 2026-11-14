@@ -572,3 +572,81 @@ async fn coarse_reports_go_over_the_socket_in_a_live_call() {
     assert!(!a.voice().send_stats(report), "no call, no report");
     drop(b);
 }
+
+/// The voice channel `name` of `community` once the client lists it.
+async fn room_named(c: &Client, community: [u8; 16], name: &str) -> ChannelId {
+    use dilla_client::state::CommunityId;
+    let s = until(c, "the room is listed", |s| {
+        s.channel_named(CommunityId(community), name).is_some()
+    })
+    .await;
+    s.channel_named(CommunityId(community), name).unwrap().id
+}
+
+/// e2e/voice/bot-music.spec.ts "a new device uses /play within its first session", the trust half: alice is in a call
+/// with bob, and bob's NEW device (its list published on sign-in, which alice has not read yet) joins it. Alice's cached
+/// list of bob predates the device, so the core's gate first judges its leaf `E_DEVICE_UNLISTED`; the epoch follower
+/// reads the group's leaves again (controller.ts `sendWithTrustRetry`'s rule) and the new list admits it. Alice stays in
+/// the call and keys the new epoch, its roster naming the new device; no block is recorded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_known_contacts_new_device_joining_keeps_the_call() {
+    use dilla_client::testing::host as th;
+    let tag = "voice-newdev";
+    let host = tokio::task::spawn_blocking(move || th::start_sfu_host(tag))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let alice = th::sign_up(&host, &invite, "alice", "alice", tag).await;
+    let bob = th::sign_up(&host, &invite, "bob", "bob", tag).await;
+    let (host, alice, mut bob, community) = tokio::task::spawn_blocking(move || {
+        let c = th::community_with(&host, &alice, "calls", &[&bob], &[(1, "room", None)]);
+        th::clear_session(&alice);
+        th::clear_session(&bob);
+        (host, alice, bob, c)
+    })
+    .await
+    .unwrap();
+    let a = th::start(&alice).await;
+    a.voice().start();
+    let b = th::start(&bob).await;
+    b.voice().start();
+    let voice = room_named(&a, community, "room").await;
+    room_named(&b, community, "room").await;
+    a.voice().join(voice).await.unwrap().expect("alice joins");
+    b.voice().join(voice).await.unwrap().expect("bob joins");
+    let bob_first = DeviceId(bob.device_id);
+    until(&a, "alice keys bob's first device", |s| {
+        s.voice.call.roster.iter().any(|r| r.1 == bob_first)
+    })
+    .await;
+    // Bob's new device: signed in and started, its own list published; alice has not read it.
+    let (d, data) = th::second_device(&host, &mut bob, tag).await;
+    d.voice().start();
+    room_named(&d, community, "room").await;
+    d.voice()
+        .join(voice)
+        .await
+        .unwrap()
+        .expect("the new device joins");
+    let mine = d.state().borrow().account.device_id.expect("its id");
+    let s = until(&a, "alice keys the new device's epoch, or leaves", |s| {
+        s.voice.call.phase != CallPhase::In || s.voice.call.roster.iter().any(|r| r.1 == mine)
+    })
+    .await;
+    assert_eq!(
+        s.voice.call.phase,
+        CallPhase::In,
+        "alice stays in the call: {:?}; ring {:?}",
+        s.voice.call,
+        s.ring
+    );
+    assert_eq!(s.voice.call.error, None);
+    // It holds: no refusal follows (the follower reads the gate every 250 ms).
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let s = a.state().borrow().clone();
+    assert_eq!(s.voice.call.phase, CallPhase::In, "ring {:?}", s.ring);
+    assert_eq!(s.voice.call.error, None);
+    drop((a, b, d));
+    let _ = std::fs::remove_dir_all(data);
+}
