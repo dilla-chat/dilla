@@ -106,6 +106,13 @@ pub fn start_music_host(tag: &str) -> Host {
     host
 }
 
+/// [`start_host`] with dilla-testhost's in-process LiveKit SFU on the host's own listener (as [`start_music_host`]
+/// starts it), without the Bot: calls start and their media can connect. Blocking.
+pub fn start_sfu_host(tag: &str) -> Host {
+    let listen = format!("127.0.0.1:{}", music::free_port());
+    launch_with(tag, &listen, None, false, Sfu::Music)
+}
+
 /// The host's in-process LiveKit SFU, if any.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Sfu {
@@ -113,7 +120,8 @@ enum Sfu {
     Off,
     /// On free ports, for the parity world's call fixtures ([`start_host_with_sfu`]: the host serves the web client).
     Parity,
-    /// The music host's ([`music::sfu_args`]: its own one-page web root and a 90 s departure timeout).
+    /// The music host's and [`start_sfu_host`]'s ([`music::sfu_args`]: its own one-page web root and a 90 s departure
+    /// timeout).
     Music,
 }
 
