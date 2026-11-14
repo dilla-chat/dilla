@@ -554,3 +554,49 @@ fn the_dm_gif_notice_is_per_window_and_goes_with_its_client(cx: &mut gpui::TestA
     );
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
 }
+
+/// Re-review N2: a DM GIF notice whose read answers after its window closed is not kept anywhere (not in the closed
+/// window's spare slot either), so it holds no client: a later release of that client finds nothing holding it.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_dm_gif_notice_for_a_closed_window_holds_no_client(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::state::{ChannelId, CommunityId};
+    use dilla_client::testing::host as world;
+    use dilla_desktop::screens::attachments::ui::{self, DmNotice};
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("n2-notice", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let alice = rt.block_on(world::sign_up(&host, &invite, "alice", "Alice", "n2"));
+    let client = Rc::new(rt.block_on(world::start(&alice)));
+    cx.update(dilla_desktop::install);
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    // The window closes (the close hook's fan-out) while the notice's read is out.
+    vcx.update(|window, cx| {
+        dilla_desktop::windows::on_closed(cx, window.window_handle().window_id());
+        window.remove_window();
+    });
+    cx.run_until_parked();
+    let late = DmNotice {
+        channel: ChannelId([3; 16]),
+        community: CommunityId([1; 16]),
+        server: "Midgard".into(),
+        client: client.clone(),
+        owner: window,
+    };
+    cx.update(|cx| ui::show_dm_notice(late, cx));
+    assert!(cx.update(|cx| ui::dm_notice(window, cx)).is_none());
+    assert_eq!(
+        Rc::strong_count(&client),
+        1,
+        "nothing holds the client for a closed window"
+    );
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}

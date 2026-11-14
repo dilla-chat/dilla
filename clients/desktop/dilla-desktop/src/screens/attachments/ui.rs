@@ -981,13 +981,15 @@ pub fn dm_notice(window: WindowId, cx: &App) -> Option<DmNotice> {
     crate::per_window::get::<Notice>(window, cx).and_then(|n| n.0.clone())
 }
 
-/// Shows `notice` in its window (`notice.owner`), unless its client was released meanwhile (its read answered late).
+/// Shows `notice` in its window (`notice.owner`), unless its client was released meanwhile or its window closed (its
+/// read answered late): `per_window::set` keeps nothing for a closed window (re-review N2: `get_mut` would park the
+/// client in the closed window's spare slot, where no release finds it).
 pub fn show_dm_notice(notice: DmNotice, cx: &mut App) {
     if ui(cx).released.contains(&owner_of(&notice.client)) {
         return;
     }
     let owner = notice.owner;
-    crate::per_window::get_mut::<Notice>(owner, cx).0 = Some(notice);
+    crate::per_window::set(owner, Some(Notice(Some(notice))), cx);
 }
 
 /// The GIF button of a 1:1 DM with `peer` (use-gif-community.ts `findCommunity`, only on the press): the shared
