@@ -548,14 +548,14 @@ impl AppView {
         .detach();
         self._subscriptions =
             vec![
-                cx.subscribe_in(&view, window, |this, _, open: &OpenDilla, _, cx| {
+                cx.subscribe_in(&view, window, |this, _, open: &OpenDilla, window, cx| {
                     if let Some(shell) = this.shell.clone() {
                         if let Some(community) = open.result.community {
                             shell.update(cx, |s, cx| s.pick_community(community, cx));
                         }
                         this.screen = Screen::Shell(shell);
                         // A join refused after the factor is offered again, with its invite and why (App.tsx).
-                        crate::screens::create::offer_refused_join(&open.result, cx);
+                        crate::screens::create::offer_refused_join(window, &open.result, cx);
                         cx.notify();
                     }
                 }),

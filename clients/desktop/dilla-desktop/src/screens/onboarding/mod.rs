@@ -23,3 +23,8 @@ pub use signup::{SignedUp, SignupView, WantsSignIn};
 pub fn open_add_server(cx: &mut gpui::App) {
     crate::screens::create::open_add_server(cx);
 }
+
+/// [`open_add_server`] in `window`, whichever window is active (final review M11: the rail's "+" of that window).
+pub fn open_add_server_in(window: &gpui::Window, cx: &mut gpui::App) {
+    crate::screens::create::open_add_server_in(window, cx);
+}

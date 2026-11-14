@@ -227,10 +227,10 @@ fn a_refused_join_is_offered_again_with_its_invite(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         window.activate_window();
         assert!(
-            !create::offer_refused_join(&joined, cx),
+            !create::offer_refused_join(window, &joined, cx),
             "a join that worked offers nothing"
         );
-        assert!(create::offer_refused_join(&refused, cx));
+        assert!(create::offer_refused_join(window, &refused, cx));
     });
     host.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
@@ -490,4 +490,31 @@ fn invite_name_written_key_lands_in_server() {
     let stopped = owner_client;
     std::thread::spawn(move || stopped.stop()).join().unwrap();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Final review M11: a create or join opened from a window's own control opens in that window, whichever window is
+/// active: with two instance windows, the "+" of the one behind never runs through the front one's client.
+#[gpui::test]
+fn a_flow_opened_in_a_window_opens_there_not_in_the_active_one(cx: &mut TestAppContext) {
+    install(cx);
+    let community = dilla_client::state::CommunityId([7; 16]);
+    let front = cx.add_window(|_, _| OverlayHost);
+    let back = cx.add_window(|_, _| OverlayHost);
+    front
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    back.update(cx, |_, window, cx| {
+        create::open_create_channel_in(window, community, cx)
+    })
+    .unwrap();
+    for w in [front, back] {
+        w.update(cx, |_, _, cx| cx.notify()).unwrap();
+    }
+    cx.run_until_parked();
+    let current = |w: gpui::WindowHandle<OverlayHost>, cx: &mut TestAppContext| {
+        w.update(cx, |_, window, cx| create::current(window, cx))
+            .unwrap()
+    };
+    assert_eq!(current(back, cx), Some(Dialog::CreateChannel));
+    assert_eq!(current(front, cx), None, "the active window opened nothing");
 }

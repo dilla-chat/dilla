@@ -73,7 +73,8 @@ fn windows(cx: &mut App) -> &mut Windows {
     cx.default_global::<Windows>()
 }
 
-/// Opens `which` in the active window (on its next frame).
+/// Opens `which` in the active window (on its next frame). A press in a window opens through [`open_in`] (final review
+/// M11: the active window may be another instance's, on another account's client).
 pub fn open(which: Open, cx: &mut App) {
     let Some(window) = cx.active_window() else {
         return;
@@ -101,9 +102,26 @@ pub fn open_create_channel(community: CommunityId, cx: &mut App) {
     );
 }
 
-/// Opens the add-server dialog ("join a server" or "new server"): the rail's "+" (Task 8) calls it.
+/// Opens the add-server dialog ("join a server" or "new server") in the active window.
 pub fn open_add_server(cx: &mut App) {
     open(Open::AddServer, cx);
+}
+
+/// [`open_create_channel`] in `window` (the channel list's "+" of that window), whichever window is active.
+pub fn open_create_channel_in(window: &Window, community: CommunityId, cx: &mut App) {
+    open_in(
+        window,
+        Open::CreateChannel {
+            community,
+            parent: None,
+        },
+        cx,
+    );
+}
+
+/// [`open_add_server`] in `window` (the rail's "+" of that window), whichever window is active.
+pub fn open_add_server_in(window: &Window, cx: &mut App) {
+    open_in(window, Open::AddServer, cx);
 }
 
 /// Opens the join dialog with `invite` in its field (Task 27's pasted invite, the GPUI form of `/welcome?invite=`).
@@ -201,13 +219,15 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 /// After the sign-up's "Open dilla" (App.tsx): a join that was refused after the factor opens the join dialog with the
 /// invite in its field and the refusal under it. Answers whether it opened one.
 pub fn offer_refused_join(
+    window: &Window,
     result: &dilla_client::features::signup::SignupResult,
     cx: &mut App,
 ) -> bool {
     let Some(error) = &result.join_error else {
         return false;
     };
-    open(
+    open_in(
+        window,
         Open::Join {
             invite: result.invite.clone(),
             refusal: Some(flows::join_refusal(&error.code)),

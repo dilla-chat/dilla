@@ -1126,7 +1126,9 @@ impl Render for ShellView {
                 on_pick,
                 on_home,
                 // The add-a-server dialog is the onboarding area's (Task 25).
-                on_add: Rc::new(|_, cx| crate::screens::onboarding::open_add_server(cx)),
+                on_add: Rc::new(|window, cx| {
+                    crate::screens::onboarding::open_add_server_in(window, cx)
+                }),
             },
             window,
             cx,
@@ -1154,10 +1156,11 @@ impl Render for ShellView {
                 on_toggle: Rc::new(move |id, _, cx| {
                     let _ = w2.update(cx, |shell, cx| shell.toggle_category(id, cx));
                 }),
-                on_add: Rc::new(move |_category, _, cx| {
-                    // The create-channel flow is the onboarding area's (Task 25); its hook takes the server only.
+                on_add: Rc::new(move |_category, window, cx| {
+                    // The create-channel flow is the onboarding area's (Task 25); its hook takes the server only. In
+                    // this window, whichever is active (final review M11).
                     if let Some(community) = community {
-                        crate::screens::create::open_create_channel(community, cx);
+                        crate::screens::create::open_create_channel_in(window, community, cx);
                     }
                 }),
                 on_menu: Rc::new(move |id, at, _, cx| {
