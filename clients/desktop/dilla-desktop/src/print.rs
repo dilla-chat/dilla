@@ -462,10 +462,12 @@ pub async fn system(title: String, pdf: Zeroizing<Vec<u8>>) -> Result<Printed, P
 }
 
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod win {
     use std::mem::{size_of, zeroed};
     use std::ptr::null;
 
+    use super::{PAGE_H, PrintError, Printed, Run, utf16};
     use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::Graphics::Gdi::{
         CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DEFAULT_QUALITY, DeleteDC, DeleteObject,
@@ -477,9 +479,6 @@ mod win {
     use windows_sys::Win32::UI::Controls::Dialogs::{
         CommDlgExtendedError, PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC, PRINTDLGW, PrintDlgW,
     };
-    use zeroize::Zeroizing;
-
-    use super::{PAGE_H, PrintError, Printed, Run};
 
     /// A device context the dialog answered, deleted when dropped.
     struct Dc(HDC);
@@ -578,7 +577,7 @@ mod win {
                 // The PDF's baseline from the page's bottom, in points; the context's from its top, in pixels.
                 let x = (run.x / 72.0 * dpi_x - off_x).round() as i32;
                 let y = ((PAGE_H - run.y) / 72.0 * dpi_y - off_y).round() as i32;
-                let text: Zeroizing<Vec<u16>> = Zeroizing::new(run.text.encode_utf16().collect());
+                let text = utf16(&run.text);
                 TextOutW(dc.0, x, y, text.as_ptr(), text.len() as i32);
                 SelectObject(dc.0, previous);
                 DeleteObject(font);
@@ -608,6 +607,15 @@ pub(crate) struct Run {
     pub x: f32,
     pub y: f32,
     pub text: Zeroizing<String>,
+}
+
+/// `text` as UTF-16 (what Windows draws), in a zeroizing buffer sized for it before the first unit is written: UTF-16
+/// never has more units than UTF-8 has bytes, so it never grows and frees an unwiped block of a code on the way.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) fn utf16(text: &str) -> Zeroizing<Vec<u16>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(text.len()));
+    out.extend(text.encode_utf16());
+    out
 }
 
 /// The text runs of a [`codes_pdf`] document, in order (only the content stream this module writes is read).
@@ -808,6 +816,22 @@ mod tests {
 
     /// The copy a platform's own object takes over (macOS: the `NSData` the print operation may keep after the call) is
     /// the document's bytes, exactly as long, and taking it back hands over that very allocation, a zeroizing one.
+    /// A run's UTF-16 text (Windows draws it with TextOutW) is written into a buffer sized for it up front: it never
+    /// grows, so no unwiped block of a code is freed on the way (UTF-16 never has more units than UTF-8 has bytes).
+    #[test]
+    fn a_runs_utf16_never_reallocates() {
+        for text in [
+            "",
+            " 1. ABCDE-FGHIJ-KLMNO-P0001",
+            "Keep them – they’re yours…",
+            "é",
+        ] {
+            let wide = utf16(text);
+            assert_eq!(wide.capacity(), text.len(), "{text:?}");
+            assert_eq!(&wide[..], &text.encode_utf16().collect::<Vec<u16>>()[..]);
+        }
+    }
+
     #[test]
     #[allow(unsafe_code)]
     fn a_handed_over_copy_comes_back_whole() {
