@@ -2339,7 +2339,20 @@ export const GPUI_PINNED_STEPS = {
     '    bash scripts/install-ci-tool.sh wasm-bindgen',
     '    bash scripts/install-ci-tool.sh wasm-pack',
     '    bash scripts/install-ci-tool.sh binaryen',
+    // install-ci-tool.sh adds its directory to GITHUB_PATH, which only the later steps see.
+    '    export PATH="$RUNNER_TEMP/dilla-ci-tools:$PATH"',
     '    wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
+  ].join('\n'),
+  // The runner has no sound card (a call's media opens the default speaker), and the media tests' web peer reads the
+  // git-ignored WASI core from internal/mlswasi/testdata.
+  callPrereqs: [
+    '- name: A null sound card and the WASI core for the call tests (Linux)',
+    "  if: runner.os == 'Linux' && !cancelled()",
+    '  shell: bash',
+    '  run: |',
+    "    printf 'pcm.!default {\\n  type null\\n}\\n' > ~/.asoundrc",
+    '    mkdir -p internal/mlswasi/testdata',
+    '    cp target/wasm32-wasip1/release/dilla_core_wasi.wasm internal/mlswasi/testdata/',
   ].join('\n'),
   chromium: [
     '- name: Playwright Chromium (Linux)',
