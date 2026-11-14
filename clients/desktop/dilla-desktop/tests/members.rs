@@ -242,8 +242,8 @@ parity! {
     parity_server_settings_members_b => "server-settings/members-b";
     parity_server_settings_roles => "server-settings/roles", "parity after T6c: whole frame 1.8776 % (the Roles section is not RolesSection.tsx's two panes: the web lists the roles at the left with the top role's editor open beside them (name, colour swatches, the permission switches), GPUI draws a list of rows)";
     parity_server_settings_roles_b => "server-settings/roles-b", "parity after T6c: whole frame 2.4827 % (as roles)";
-    parity_server_settings_self_roles => "server-settings/self-roles", "parity after T6c: whole frame 1.1456 % (the section is not SelfRolesSection.tsx: the web draws a fieldset of role checkboxes and the Publish-a-role-panel form, GPUI a list of switches, and Loading in a fixture, which maps no self roles)";
-    parity_server_settings_self_roles_b => "server-settings/self-roles-b", "parity after T6c: whole frame 1.2626 % (as self-roles)";
+    parity_server_settings_self_roles => "server-settings/self-roles", "parity after T28 wave 2: whole frame 1.0478 % (SelfRolesSection.tsx's layout is drawn: the fieldset of role checkboxes and the Publish-a-role-panel form; what is left is the browser's own widgets: the groove-edged fieldset sits 1px higher and 1px further left, the native checkbox and the native <select> in its UA sans face)";
+    parity_server_settings_self_roles_b => "server-settings/self-roles-b", "parity after T28 wave 2: whole frame 1.9086 % (as self-roles, and the browser wraps the checkbox labels inline mid-label, 'role number / 05', where GPUI wraps whole label boxes)";
     parity_server_settings_bans => "server-settings/bans";
     parity_server_settings_bans_b => "server-settings/bans-b";
     parity_server_settings_moderation_log => "server-settings/moderation-log";

@@ -123,6 +123,9 @@ pub type Task = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 #[derive(Clone, Debug)]
 struct Verified {
     publication: Vec<u8>,
+    /// The pinned Bot user the publication was checked against (t28-bot-review M1): a verdict is never carried, or
+    /// sealed to, under another pin.
+    pinned: [u8; 16],
     #[allow(
         dead_code,
         reason = "kept with the verdict, as catalog.ts does; the view shows the fingerprint"
@@ -158,6 +161,9 @@ struct Store {
     /// Bot users whose device list this connection pinned (current or held): not read again.
     list_settled: HashSet<[u8; 16]>,
     bot_names: HashMap<CommunityId, String>,
+    /// Each community's newest key check (t28-bot-review M2): an answer of an older one changes nothing, so an older
+    /// failure never clears a newer verdict and an older `Ok` never lands after a newer refusal.
+    checks: HashMap<CommunityId, u64>,
 }
 
 impl Store {
@@ -211,7 +217,8 @@ impl Store {
             return None;
         }
         let v = self.entries.get(&community)?.verified.as_ref()?;
-        (publication == Some(&v.publication)).then(|| v.clone())
+        (publication == Some(&v.publication) && self.pins.get(&community) == Some(&v.pinned))
+            .then(|| v.clone())
     }
 
     /// The publication the core accepted, which is the only one anything is sealed to.
@@ -220,7 +227,8 @@ impl Store {
             return None;
         }
         let v = self.entries.get(&community)?.verified.as_ref()?;
-        Some((v.publication.clone(), *self.pins.get(&community)?))
+        let pinned = *self.pins.get(&community)?;
+        (pinned == v.pinned).then(|| (v.publication.clone(), pinned))
     }
 }
 
@@ -508,8 +516,13 @@ impl Sealed {
     /// `verifyEntry`: the held publication is checked in the core against the pinned Bot user.
     async fn verify_entry(&self, community: CommunityId) {
         for _ in 0..2 {
-            let (publication, pinned) = {
+            let (publication, pinned, check) = {
                 let mut s = lock(&self.store);
+                let check = {
+                    let n = s.checks.entry(community).or_default();
+                    *n += 1;
+                    *n
+                };
                 let problem = s.problems.contains_key(&community);
                 let pinned = s.pins.get(&community).copied();
                 let Some(e) = s.entries.get_mut(&community) else {
@@ -523,7 +536,7 @@ impl Sealed {
                     e.refusal = None;
                     return;
                 };
-                (publication, pinned)
+                (publication, pinned, check)
             };
             // A publication for another community is refused before the core sees it.
             if publication_community(&publication) != Some(community.0) {
@@ -537,11 +550,16 @@ impl Sealed {
                 Ok((key_id, fingerprint)) => {
                     let mut s = lock(&self.store);
                     s.list_held.remove(&pinned);
+                    let current = s.checks.get(&community) == Some(&check)
+                        && s.pins.get(&community) == Some(&pinned)
+                        && !s.problems.contains_key(&community);
                     if let Some(e) = s.entries.get_mut(&community)
+                        && current
                         && e.publication.as_ref() == Some(&publication)
                     {
                         e.verified = Some(Verified {
                             publication,
+                            pinned,
                             key_id,
                             fingerprint,
                         });
@@ -550,9 +568,16 @@ impl Sealed {
                     return;
                 }
                 Err(r) => {
-                    if let Some(e) = lock(&self.store).entries.get_mut(&community) {
-                        e.verified = None;
-                        e.refusal = Some(r.code.clone());
+                    {
+                        let mut s = lock(&self.store);
+                        if s.checks.get(&community) != Some(&check) {
+                            // A newer check answers for the key.
+                            return;
+                        }
+                        if let Some(e) = s.entries.get_mut(&community) {
+                            e.verified = None;
+                            e.refusal = Some(r.code.clone());
+                        }
                     }
                     if SIGNER_REFUSALS.contains(&r.code.as_str()) {
                         self.resolve_bot(community).await;

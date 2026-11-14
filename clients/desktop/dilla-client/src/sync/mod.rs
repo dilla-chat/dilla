@@ -246,6 +246,19 @@ pub trait SyncHooks: Send + Sync {
     /// engine.ts `onUnexpectedWelcome`: a Welcome for a group this device does not expect was kept (a DM another person
     /// just opened). Once per group until the expected set changes; the client reads its DM list again.
     fn unexpected_welcome(&self, _group: Gid) {}
+    /// An own outbox row `msg` of `group` was stored at `seq` (engine.ts `onPosted`): its kind (3 and 4 are a reaction
+    /// added and removed), the message it folds onto and its body. The role panels area offers a reaction to the
+    /// instance as a panel action.
+    fn posted(
+        &self,
+        _group: Gid,
+        _msg: Gid,
+        _kind: u8,
+        _target: Option<Gid>,
+        _body: &str,
+        _seq: u64,
+    ) {
+    }
 }
 
 /// The gateway's lifecycle as the model sees it.
@@ -2371,6 +2384,10 @@ impl Engine {
                 if self.stopped() {
                     return;
                 }
+                // The seq the instance gave the row (engine.ts `onPosted`'s `confirmedSeq`).
+                let confirmed_seq = value::decode(&answer)
+                    .ok()
+                    .and_then(|v| v.as_array().and_then(|a| a.first()?.as_uint()));
                 if with_core(&self.core, move |c| c.send_confirm(&msg, &answer))
                     .await
                     .is_err()
@@ -2396,6 +2413,10 @@ impl Engine {
                     st.count425.remove(&msg);
                     st.queued.retain(|q| *q != msg);
                     st.slowed.remove(&msg);
+                }
+                if let Some(seq) = confirmed_seq {
+                    self.hooks
+                        .posted(g, msg, row.kind, row.reply_to, &row.body, seq);
                 }
                 self.hooks.group_changed(g);
                 self.request_drain(g);

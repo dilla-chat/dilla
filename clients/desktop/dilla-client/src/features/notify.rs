@@ -703,6 +703,8 @@ pub struct NoticeTracker {
     /// Unix seconds on the instance's clock (the rows' `recv_ts`): a first-seen channel's messages received before it are
     /// history.
     floor: u64,
+    /// The gateway readies the floor was last set at (`ConnectionState::readies`).
+    readies: u64,
 }
 
 impl Default for NoticeTracker {
@@ -725,6 +727,17 @@ impl NoticeTracker {
         Self {
             marks: HashMap::new(),
             floor,
+            readies: 0,
+        }
+    }
+
+    /// controller.ts `noticeFloor = serverNowS()` at every ready (t28-bot-review I4, M6): once the gateway is ready
+    /// again (`readies`, the state's count, grew), what this ready catches up was not delivered live, so a channel first
+    /// seen from now on holds history up to `now` (unix seconds, the instance's clock).
+    pub fn ready(&mut self, readies: u64, now: u64) {
+        if readies != self.readies {
+            self.readies = readies;
+            self.floor = now;
         }
     }
 
@@ -1008,9 +1021,11 @@ impl Notify {
         let mut engine = Engine::new(notifier, env, text);
         // The floor is on the instance's clock, as the rows' receive times are (controller.ts `noticeFloor =
         // serverNowS()`).
-        engine.tracker = NoticeTracker::with_floor(self.inner.api().server_now_s());
-        // The first value only sets the marks.
+        let api = self.inner.api().clone();
+        engine.tracker = NoticeTracker::with_floor(api.server_now_s());
+        // The first value only sets the marks; a ready it already counts set no floor later than this one.
         let first = state.borrow_and_update().clone();
+        engine.tracker.readies = first.connection.readies;
         engine.tracker.observe(&first);
         drop(self.inner.spawn(async move {
             loop {
@@ -1021,6 +1036,7 @@ impl Notify {
                             break;
                         }
                         let snapshot = state.borrow_and_update().clone();
+                        engine.tracker.ready(snapshot.connection.readies, api.server_now_s());
                         engine.on_state(&snapshot, &prefs);
                     }
                 }
@@ -1738,6 +1754,37 @@ mod tests {
             ["after"]
         );
         assert!(tracker.observe(&opened).is_empty(), "once");
+    }
+
+    /// t28-bot-review I4: after a reconnect, a channel first seen holding rows the ready caught up (a DM its peer opened
+    /// while this device slept) notifies none of them; a message received after the ready does.
+    #[test]
+    fn a_reconnect_moves_the_floor_so_caught_up_rows_of_a_first_seen_channel_stay_quiet() {
+        let mut tracker = NoticeTracker::with_floor(1_000);
+        tracker.ready(1, 1_000);
+        assert!(tracker.observe(&world()).is_empty());
+        // Asleep from 1_000 to 30_000; the reconnect's ready.
+        tracker.ready(2, 30_000);
+        tracker.ready(2, 40_000);
+        let caught_up: Vec<_> = (1..=30)
+            .map(|i| item(i, BOB, 1_000 + i * 900, "while asleep", false))
+            .collect();
+        let opened = with_items(&world(), RANDOM, caught_up.clone());
+        assert!(
+            tracker.observe(&opened).is_empty(),
+            "caught up, not live (one ready sets the floor once)"
+        );
+        let mut rows = caught_up;
+        rows.push(item(31, BOB, 30_001, "live", false));
+        let live = with_items(&world(), RANDOM, rows);
+        assert_eq!(
+            tracker
+                .observe(&live)
+                .iter()
+                .map(|n| n.body.as_str())
+                .collect::<Vec<_>>(),
+            ["live"]
+        );
     }
 
     #[test]

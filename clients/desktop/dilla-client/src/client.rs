@@ -177,6 +177,28 @@ impl SyncHooks for Hooks {
             drop(inner.spawn(async move { crate::features::dms::reload(&reading).await }));
         }
     }
+    fn posted(
+        &self,
+        group: [u8; 16],
+        msg: [u8; 16],
+        kind: u8,
+        target: Option<[u8; 16]>,
+        body: &str,
+        seq: u64,
+    ) {
+        // Task 28 wave 2: a confirmed reaction may be a role panel action (controller.ts `onPosted`).
+        if let Some(inner) = self.inner.get().and_then(Weak::upgrade) {
+            crate::features::role_panels::on_posted(
+                &inner,
+                group,
+                msg,
+                kind,
+                target,
+                body.to_owned(),
+                seq,
+            );
+        }
+    }
 }
 
 /// The gateway connection's owner: the one place a gateway is started, replaced or stopped.
@@ -1546,6 +1568,8 @@ impl Publisher {
         };
         let remaining = u32::try_from(info.keypackages_remaining).unwrap_or(u32::MAX);
         crate::account::refill_key_packages(&inner, remaining);
+        // controller.ts `retryPendingRolePanelActions`: every stored role panel action of this device, sent again.
+        crate::features::role_panels::on_ready(&inner);
         let backups = inner.clone();
         let updates = self.updates.clone();
         drop(inner.spawn(async move {

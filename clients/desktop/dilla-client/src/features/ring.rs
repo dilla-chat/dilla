@@ -551,11 +551,53 @@ struct PerClient {
     dms_reading: tokio::sync::Mutex<()>,
     /// Each channel's ring timer: re-arming aborts the one before.
     timers: Mutex<HashMap<ChannelId, tokio::task::AbortHandle>>,
+    /// Rings for a DM this device does not list yet, waiting for the list's re-read off the worker.
+    deferred: Mutex<DeferredRings>,
 }
 
 /// The bound on the area's frame queue: frames past it are dropped (op 53 and 55 are droppable, gateway/frames.ts
 /// `DROPPABLE_OPS`).
 pub const FRAME_QUEUE: usize = 256;
+/// The bound on rings waiting for a re-read of the DM list: an instance ringing for many unknown channels at once gets
+/// no more waiting than this (the book shows at most `RINGS_MAX` rings anyway).
+pub const DEFERRED_MAX: usize = 16;
+
+/// Rings for a DM this device does not list yet (t28-bot-review I3). Each waits for the DM list's re-read in a task of
+/// its own, never in the area's worker, so the frames behind it (another ring, a decline, AFK) are handled at once. A
+/// later ring frame of the same channel makes a waiting one stale: only the current one is checked once the list is
+/// read.
+#[derive(Debug, Default)]
+pub struct DeferredRings {
+    next: u64,
+    pending: HashMap<ChannelId, u64>,
+}
+
+impl DeferredRings {
+    /// A ring frame (state 0 or 1) of `channel` arrived: a ring of it that was waiting is no longer current.
+    pub fn frame(&mut self, channel: ChannelId) {
+        self.pending.remove(&channel);
+    }
+
+    /// Defers a ring of `channel`: the token its check later presents, or `None` when [`DEFERRED_MAX`] already wait
+    /// (the ring is dropped, as one for an unknown channel is).
+    pub fn defer(&mut self, channel: ChannelId) -> Option<u64> {
+        if !self.pending.contains_key(&channel) && self.pending.len() >= DEFERRED_MAX {
+            return None;
+        }
+        self.next += 1;
+        self.pending.insert(channel, self.next);
+        Some(self.next)
+    }
+
+    /// Whether the deferred ring `token` of `channel` is still current; if so it is taken (checked once).
+    pub fn take(&mut self, channel: ChannelId, token: u64) -> bool {
+        if self.pending.get(&channel) == Some(&token) {
+            self.pending.remove(&channel);
+            return true;
+        }
+        false
+    }
+}
 /// The least time between two reads of the DM list (a ring for an unknown DM reads it again).
 pub const DMS_REREAD: Duration = Duration::from_secs(5);
 
@@ -697,11 +739,35 @@ async fn on_ring(inner: &Arc<Inner>, pc: &Arc<PerClient>, f: &CallRingFrame) {
         }
         return;
     }
+    guard(&pc.deferred).frame(channel);
+    if f.state == 1 && !guard(&pc.dms).contains_key(&channel) {
+        // A DM this device does not list yet (opened a moment ago): its list is read once more before the check, in a
+        // task of its own (t28-bot-review I3: the re-read may wait up to DMS_REREAD, and the worker never waits).
+        let Some(token) = guard(&pc.deferred).defer(channel) else {
+            return;
+        };
+        let (inner, pc, f) = (inner.clone(), pc.clone(), f.clone());
+        drop(inner.clone().spawn(async move {
+            load_dms(&inner, &pc).await;
+            if guard(&pc.deferred).take(channel, token) {
+                check_ring(&inner, &pc, &f, own).await;
+            }
+            Ok::<(), ClientError>(())
+        }));
+        return;
+    }
+    check_ring(inner, pc, f, own).await;
+}
+
+/// The ring frame `f` (state 0 or 1) against the book; a ring (state 1) is checked against the DM list as it is held.
+async fn check_ring(
+    inner: &Arc<Inner>,
+    pc: &Arc<PerClient>,
+    f: &CallRingFrame,
+    own: Option<UserId>,
+) {
+    let channel = ChannelId(f.channel_id);
     let step = if f.state == 1 {
-        // A DM this device does not list yet (opened a moment ago): its list is read once more before the check.
-        if !guard(&pc.dms).contains_key(&channel) {
-            load_dms(inner, pc).await;
-        }
         let members = guard(&pc.dms).get(&channel).map(|d| d.members.clone());
         let blocked = members.is_some() && channel_blocked(inner, channel).await;
         let state = inner.snapshot();

@@ -309,6 +309,12 @@ impl Composer {
                 self.active = 0;
                 // Task 20's `/` list reads the draft the composer reports.
                 let draft = input.read(cx).value().to_string();
+                let focus = input.read(cx).focus_handle(cx);
+                crate::screens::commands::set_composer(
+                    window.window_handle().window_id(),
+                    &focus,
+                    cx,
+                );
                 crate::screens::commands::draft_changed(
                     window.window_handle().window_id(),
                     &draft,

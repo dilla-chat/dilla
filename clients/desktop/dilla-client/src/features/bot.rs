@@ -99,6 +99,8 @@ pub enum RunOutcome {
         definition: CommandDefinition,
         args: registry::Args,
     },
+    /// A moderation command (`/kick`, `/ban`): the caller asks for confirmation, then runs it with [`Bot::moderate`].
+    Moderate(Moderation),
 }
 
 /// `privateResultCopy.author`: who a private result names as its author.
@@ -200,6 +202,7 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
                 "shrug" | "tableflip" | "unflip" => Plan::Post(
                     registry::classic_message(&command_id, arg("text")).unwrap_or_default(),
                 ),
+                "kick" | "ban" => moderation_plan(state, community, &command_id, &args),
                 "code" => {
                     let language = arg("language").unwrap_or_default().trim().to_owned();
                     let text = arg("text").unwrap_or_default();
@@ -234,6 +237,42 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
     }
 }
 
+/// The copy of a moderation command's private row (copy.ts `privateResultCopy`, `mod.*.done`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModerationTexts {
+    pub cancelled: String,
+    pub pending: String,
+    pub done: String,
+}
+
+/// builtin.ts `mutationError`: a definitive refusal names its code; anything else is an uncertain outcome.
+pub fn mutation_error(e: &crate::sync::api::ApiError) -> String {
+    const DEFINITIVE: [&str; 8] = [
+        "E_BAD_INPUT",
+        "E_FORBIDDEN",
+        "E_NOT_FOUND",
+        "E_UNAUTHORIZED",
+        "E_CONFLICT",
+        "E_RATE_LIMITED",
+        "E_BOT_PERMISSION",
+        "E_BOT_BAD_INPUT",
+    ];
+    let code = (!e.code.is_empty() && e.code != "E_HTTP").then_some(e.code.as_str());
+    if code.is_some_and(|c| DEFINITIVE.contains(&c)) || (400..500).contains(&e.status) {
+        return code.map_or("Command was refused.".to_owned(), |c| {
+            format!("Command was refused ({c}).")
+        });
+    }
+    code.map_or(
+        "The command result is uncertain. Check the current server state before retrying.".to_owned(),
+        |c| {
+            format!(
+                "The command result is uncertain ({c}). Check the current server state before retrying."
+            )
+        },
+    )
+}
+
 /// What a draft does ([`plan`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Plan {
@@ -244,7 +283,161 @@ pub enum Plan {
         definition: CommandDefinition,
         args: registry::Args,
     },
+    /// A moderation command, to confirm first (CommandHost.tsx: the moderation dialog), then [`Bot::moderate`].
+    Moderate(Moderation),
     Incomplete,
+}
+
+/// A checked moderation command (builtin.ts `kick`, `ban`): its member, the name the dialog shows, and what it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Moderation {
+    pub community: CommunityId,
+    pub user: crate::state::UserId,
+    pub name: String,
+    pub action: ModAction,
+}
+
+/// What a [`Moderation`] does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModAction {
+    Kick,
+    /// `seconds` is `None` for a permanent ban; `duration` is the length as typed (`1d`, `permanent`).
+    Ban {
+        seconds: Option<u64>,
+        duration: String,
+        reason: String,
+    },
+}
+
+impl ModAction {
+    /// `kick` or `ban`: the strings' keys.
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Kick => "kick",
+            Self::Ban { .. } => "ban",
+        }
+    }
+}
+
+/// builtin.ts `eligibleModerationTarget`: the member `who` names (a user id, else a username or display name) when this
+/// account holds the action's permission and outranks them; their id and the name to show.
+pub fn moderation_target(
+    state: &AppState,
+    community: CommunityId,
+    who: &str,
+    kick: bool,
+) -> Option<(crate::state::UserId, String)> {
+    use crate::features::roles::rank;
+    let access = state.roles.access_of(community);
+    let owner = state.communities.iter().find(|c| c.id == community)?.owner;
+    let roles = state.roles.roles_of(community);
+    let members = state.members.get(&community)?;
+    let me = state.account.user_id?;
+    let who = who.trim();
+    let lower = who.trim_start_matches('@').to_lowercase();
+    let target = members
+        .iter()
+        .find(|m| m.user_id.hex() == who)
+        .or_else(|| members.iter().find(|m| m.username.to_lowercase() == lower))
+        .or_else(|| {
+            members
+                .iter()
+                .find(|m| !m.display.is_empty() && m.display.to_lowercase() == lower)
+        })?;
+    let mine = members.iter().find(|m| m.user_id == me)?;
+    let permitted = if kick {
+        access.kick_members
+    } else {
+        access.ban_members
+    };
+    if !access.loaded || !permitted {
+        return None;
+    }
+    rank::can_moderate(
+        me.0,
+        target.user_id.0,
+        owner.0,
+        rank::top_of(&mine.role_ids, roles),
+        rank::top_of(&target.role_ids, roles),
+    )
+    .then(|| {
+        let name = if target.display.is_empty() {
+            target.username.clone()
+        } else {
+            target.display.clone()
+        };
+        (target.user_id, name)
+    })
+}
+
+/// builtin.ts `reasonProblem`: more than 512 bytes, or a control character.
+fn reason_problem(reason: &str) -> bool {
+    reason.len() > 512
+        || reason
+            .chars()
+            .any(|c| matches!(c as u32, 0..=8 | 0x0b..=0x1f | 0x7f..=0x9f))
+}
+
+fn moderation_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let Some(community) = community else {
+        return failed("This command needs a community channel.");
+    };
+    let kick = command_id == "kick";
+    let who = args.get("user").map_or("", String::as_str);
+    let Some((user, name)) = moderation_target(state, community, who, kick) else {
+        return failed(if kick {
+            "This member cannot be kicked with your current permissions and rank."
+        } else {
+            "This member cannot be banned with your current permissions and rank."
+        });
+    };
+    let action = if kick {
+        ModAction::Kick
+    } else {
+        let duration = args
+            .get("duration")
+            .cloned()
+            .unwrap_or_else(|| "1d".to_owned());
+        let seconds = if duration == "permanent" {
+            None
+        } else {
+            match run::duration_seconds(&duration) {
+                Some(s) if (3600..=3_153_600_000).contains(&s) => Some(s),
+                _ => return failed("Ban duration must be from 1h to 100y."),
+            }
+        };
+        let reason = args
+            .get("reason")
+            .map_or(String::new(), |r| r.trim().to_owned());
+        if reason_problem(&reason) {
+            return failed(
+                "Reason must be at most 512 UTF-8 bytes and contain no control characters.",
+            );
+        }
+        ModAction::Ban {
+            seconds,
+            duration,
+            reason,
+        }
+    };
+    Plan::Moderate(Moderation {
+        community,
+        user,
+        name,
+        action,
+    })
 }
 
 impl Bot {
@@ -263,7 +456,72 @@ impl Bot {
                 RunOutcome::Private(self.add_result(conversation, status, text, provider))
             }
             Plan::Bot { definition, args } => RunOutcome::Bot { definition, args },
+            Plan::Moderate(m) => RunOutcome::Moderate(m),
         }
+    }
+
+    /// Runs a moderation command the person answered (CommandHost.tsx): cancelled, a "cancelled" row and nothing sent;
+    /// confirmed, a pending row, then the kick or ban, and the row says how it ended (`done` is its success copy). The
+    /// target is checked again first: permissions or rank may have changed while the dialog was open. Answers the row.
+    pub fn moderate(
+        &self,
+        conversation: Conversation,
+        m: Moderation,
+        confirmed: bool,
+        texts: ModerationTexts,
+    ) -> u64 {
+        if !confirmed {
+            return self.add_result(
+                conversation,
+                ResultStatus::Cancelled,
+                texts.cancelled,
+                ResultProvider::Builtin,
+            );
+        }
+        let row = self.add_result(
+            conversation,
+            ResultStatus::Pending,
+            texts.pending,
+            ResultProvider::Builtin,
+        );
+        let inner = self.inner.clone();
+        let runs = self.runs();
+        drop(self.inner.spawn(async move {
+            let still = moderation_target(
+                &inner.snapshot(),
+                m.community,
+                &m.user.hex(),
+                m.action == ModAction::Kick,
+            )
+            .is_some_and(|(u, _)| u == m.user);
+            let outcome = if still {
+                let moderation = crate::features::moderation::Moderation::of(inner.clone());
+                let done = match &m.action {
+                    ModAction::Kick => moderation.kick(m.community, m.user).await,
+                    ModAction::Ban {
+                        seconds, reason, ..
+                    } => moderation.ban(m.community, m.user, reason, *seconds).await,
+                };
+                done.map_err(|e| mutation_error(&e))
+            } else {
+                Err("Your permissions or the member’s rank changed.".to_owned())
+            };
+            let (status, text) = match outcome {
+                Ok(()) => (ResultStatus::Success, texts.done),
+                Err(text) => (ResultStatus::Failed, text),
+            };
+            runs.patch(
+                conversation,
+                row,
+                private::Patch {
+                    status: Some(status),
+                    text: Some(text),
+                    hold: None,
+                },
+            );
+            Ok(())
+        }));
+        row
     }
 
     /// The private rows of this client and the runs behind them.
@@ -655,6 +913,87 @@ mod tests {
             )
         );
         assert_eq!(plan(&s, Some(c), "/code"), Plan::Incomplete);
+    }
+
+    /// builtin.ts `kick`/`ban`: a joined member this account outranks, named by username or id, is a moderation to
+    /// confirm; without the permission, against the owner, oneself or an unknown name it fails privately; a ban checks
+    /// its length and reason first.
+    #[test]
+    fn kick_and_ban_ask_first_only_for_a_member_this_account_may_moderate() {
+        use crate::state::members::Member;
+        use crate::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let (me, bea, owner) = (UserId([1; 16]), UserId([2; 16]), UserId([3; 16]));
+        let member = |user_id, username: &str| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: me,
+            policy_version: 1,
+        });
+        s.members.insert(
+            c,
+            vec![member(me, "ada"), member(bea, "bea"), member(owner, "olaf")],
+        );
+        let mut access = s.roles.access_of(c);
+        access.loaded = true;
+        access.owner = true;
+        access.kick_members = true;
+        access.ban_members = true;
+        s.roles.access.insert(c, access.clone());
+        let kick = Plan::Moderate(Moderation {
+            community: c,
+            user: bea,
+            name: "bea".into(),
+            action: ModAction::Kick,
+        });
+        assert_eq!(plan(&s, Some(c), "/kick user:bea"), kick);
+        assert_eq!(
+            plan(&s, Some(c), &format!("/kick user:{}", bea.hex())),
+            kick
+        );
+        let refused =
+            |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
+        let cannot_kick =
+            refused("This member cannot be kicked with your current permissions and rank.");
+        assert_eq!(plan(&s, Some(c), "/kick user:ada"), cannot_kick, "oneself");
+        assert_eq!(plan(&s, Some(c), "/kick user:nobody"), cannot_kick);
+        match plan(&s, Some(c), "/ban user:bea duration:2d reason:spam") {
+            Plan::Moderate(Moderation {
+                action: ModAction::Ban {
+                    seconds, reason, ..
+                },
+                ..
+            }) => assert_eq!((seconds, reason.as_str()), (Some(172_800), "spam")),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            plan(&s, Some(c), "/ban user:bea duration:permanent"),
+            Plan::Moderate(Moderation {
+                action: ModAction::Ban { seconds: None, .. },
+                ..
+            })
+        ));
+        assert_eq!(
+            plan(&s, Some(c), "/ban user:bea duration:10m"),
+            refused("Ban duration must be from 1h to 100y.")
+        );
+        // Not the owner and without Kick Members: nobody can be kicked.
+        s.communities[0].owner = owner;
+        access.owner = false;
+        access.kick_members = false;
+        s.roles.access.insert(c, access);
+        assert_eq!(plan(&s, Some(c), "/kick user:bea"), cannot_kick);
     }
 
     #[test]

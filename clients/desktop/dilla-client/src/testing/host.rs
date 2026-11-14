@@ -104,6 +104,12 @@ fn launch(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool) -> H
     };
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
+    #[cfg(unix)]
+    if with_bot {
+        // Private from the start (t28-bot-review M4), not only once the Bot starts.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let mut cmd = std::process::Command::new(bin);
     cmd.args([
         "-listen",
