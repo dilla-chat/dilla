@@ -58,6 +58,19 @@ pub(crate) fn typed_text(field: gpui::Div, value: &str, line: f32) -> gpui::Div 
     let _ = (value, line);
     field
 }
+/// [`typed_text`] for a one-line input's editor: its value is one line box (it scrolls, never wraps).
+pub(crate) fn typed_line(field: gpui::Div, value: &str, line: f32) -> gpui::Div {
+    #[cfg(feature = "automation")]
+    let field = field.child(crate::automation::typed_line_probe(
+        value.to_owned(),
+        text::INPUT,
+        line,
+    ));
+    #[cfg(not(feature = "automation"))]
+    let _ = (value, line);
+    field
+}
+
 /// The face Chromium falls back to for the ⇧ and ↵ JetBrains Mono lacks (fontconfig's sans-serif on the reference
 /// machine).
 const SYMBOL_FALLBACK: &str = "DejaVu Sans";

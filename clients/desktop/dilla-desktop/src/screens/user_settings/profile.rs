@@ -91,16 +91,23 @@ impl UserSettings {
             pad_y: 0.0,
             line: line_height(text::INPUT, 1.5),
         };
+        // The typed name's and status's line boxes for the R13 mask (automation build only), as the bio's.
+        let typed_line = |value: &str| {
+            crate::screens::composer::typed_line(div().size_full(), value, input.line)
+        };
         let mut display =
             TextField::new("profile-display", t("profile.display.label"), &self.display)
-                .frame(input);
+                .frame(input)
+                .text_overlay(typed_line(&self.display.read(cx).value()));
         if let Some(text) = problem(e.problem_display) {
             display = display.error(text);
         } else if display_error {
             display = display.error(t("profile.error.display"));
         }
         let mut status =
-            TextField::new("profile-status", t("profile.status.label"), &self.status).frame(input);
+            TextField::new("profile-status", t("profile.status.label"), &self.status)
+                .frame(input)
+                .text_overlay(typed_line(&self.status.read(cx).value()));
         if let Some(text) = problem(e.problem_status) {
             status = status.error(text);
         }

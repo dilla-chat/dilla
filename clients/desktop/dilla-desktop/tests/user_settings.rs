@@ -94,7 +94,7 @@ macro_rules! parity {
 
 parity! {
     parity_user_settings_profile => "profile";
-    parity_user_settings_profile_b => "profile-b", "parity after T6c: chrome 0.2469 % (the bio textarea: its lines are 19.5px apart now (the vendored GPUI's line height on the layout unit), but Chromium snaps each line's baseline to a whole css px (19 and 20 apart in turn) where gpui-base places them at 19.5 steps, and it draws no resize grip)";
+    parity_user_settings_profile_b => "profile-b";
     parity_user_settings_profile_short_wide => "profile-short-wide";
     parity_user_settings_profile_short_wide_b => "profile-short-wide-b";
     parity_user_settings_devices => "devices";

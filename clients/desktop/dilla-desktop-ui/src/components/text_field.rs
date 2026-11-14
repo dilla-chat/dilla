@@ -114,7 +114,8 @@ impl TextField {
         self
     }
 
-    /// An element laid over a framed multi-line field's text box (the automation build's typed-text probe).
+    /// An element laid over the field's text box (the automation build's typed-text probe): a framed multi-line field's
+    /// text box, or a single-line field's editor.
     pub fn text_overlay(mut self, overlay: impl IntoElement) -> Self {
         self.overlay = Some(overlay.into_any_element());
         self
@@ -186,13 +187,25 @@ impl RenderOnce for TextField {
         frame = match &self.control {
             // `.d-text-field__input` is 13px (`--text-input`) with the frame's own 12px sides: the editor's own size
             // (gpui-component's 14px `text_sm`) and its inner padding would set the text larger and further in.
-            Control::Single(input) => frame.child(
-                Input::new(input)
+            Control::Single(input) => {
+                let field = Input::new(input)
                     .appearance(false)
                     .text_size(text::INPUT)
                     .px_0()
-                    .py_0(),
-            ),
+                    .py_0();
+                match self.overlay {
+                    None => frame.child(field),
+                    // The overlay lies over the editor's own box (its one line).
+                    Some(overlay) => frame.child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .child(field)
+                            .child(div().absolute().inset_0().child(overlay)),
+                    ),
+                }
+            }
             Control::Multi(input) => match self.frame {
                 None => frame
                     .min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
