@@ -34,6 +34,10 @@ pub enum Face {
     Mono,
     /// DM Serif Display italic: ascent 1.036, descent 0.335.
     SerifItalic,
+    /// A symbol the web's JetBrains Mono subset lacks (⇧), which Chromium draws from fontconfig's fallback face, DejaVu
+    /// Sans on the reference machine, on the line's own (JetBrains Mono) baseline: the embedded JetBrains Mono has the
+    /// glyph, so a fallback list would never reach it.
+    Symbol,
 }
 
 /// JetBrains Mono's advance, per em.
@@ -50,7 +54,7 @@ pub fn mono_covers(c: char) -> bool {
 impl Face {
     fn metrics(self) -> (f32, f32) {
         match self {
-            Self::Mono => (1.02, 0.3),
+            Self::Mono | Self::Symbol => (1.02, 0.3),
             Self::SerifItalic => (1.036, 0.335),
         }
     }
@@ -62,6 +66,7 @@ impl Face {
         match self {
             Self::Mono => font::MONO,
             Self::SerifItalic => font::SERIF_ITALIC,
+            Self::Symbol => font::SYMBOL,
         }
     }
 }

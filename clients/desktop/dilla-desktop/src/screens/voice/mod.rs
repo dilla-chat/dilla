@@ -29,7 +29,8 @@ use gpui::{
 
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
-use dilla_desktop_ui::text::line;
+use dilla_desktop_ui::metrics::focus_ring;
+use dilla_desktop_ui::text::{Face, line, line_height};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
@@ -37,6 +38,14 @@ use crate::strings::{t, tf};
 use crate::{tracked, tracked_box};
 
 use session::MediaSession;
+
+/// What this client's microphone sends (`dilla_media`'s Opus encoder at 48 kHz): the own tile's codec stat.
+const OWN_CODEC: (&str, &str) = ("opus", "48");
+
+/// The regular density's line height (`--line-height`, 1.5).
+const LINE: f32 = 1.5;
+/// `.d-call-stage__where`'s line height.
+const BAR_LINE: f32 = 1.3;
 
 /// The area's sizes, logical px, named after the packages/ui CSS they come from (R21: no literal `px(..)` in screens).
 mod m {
@@ -64,11 +73,10 @@ mod m {
     pub const TILE_GAP: f32 = 10.0;
     pub const GRID_PAD: f32 = 2.0;
     pub const FILM_TILE_W: f32 = 188.0;
-    /// CallTile.css: the caption and the stats tag 8px from the corners, 6px in and 6px between parts; the edge 1px,
+    /// CallTile.css: the caption 8px from the corner, 6px between its parts; the edge 1px,
     /// 2px while speaking or selected.
     pub const CAPTION_INSET: f32 = 8.0;
     pub const CAPTION_GAP: f32 = 6.0;
-    pub const CAPTION_PAD_X: f32 = 6.0;
     pub const TILE_EDGE: f32 = 1.0;
     pub const TILE_EDGE_STRONG: f32 = 2.0;
     /// The media notice: 12x10 in, a 12px gap, the 14px warning glyph.
@@ -76,9 +84,56 @@ mod m {
     pub const NOTICE_PAD_Y: f32 = 10.0;
     pub const NOTICE_GAP: f32 = 12.0;
     pub const NOTICE_GLYPH: f32 = 14.0;
-    /// CallControls.css: the 64px bar, 6px between buttons.
+    /// CallStage.css `.d-call-stage__controls[data-bar]`: the 64px bar (`--panel-h`), 6px between its parts, 10px by 16px in;
+    /// `__room`: the 6px `--ok` dot 6px before the name.
     pub const CONTROLS_H: f32 = 64.0;
     pub const CONTROLS_GAP: f32 = 6.0;
+    pub const BAR_PAD_X: f32 = 16.0;
+    pub const BAR_PAD_Y: f32 = 10.0;
+    pub const BAR_DOT: f32 = 6.0;
+    pub const BAR_ROOM_GAP: f32 = 6.0;
+    /// CallControls.css `.d-call-controls--bar`: 40px controls at least 44px wide, 12px in (Leave 14px, set 8px further
+    /// apart), the glyph (16px), the word and the keycap 8px apart; the keycap at 0.6 (Signal's theme). Below a 1240px
+    /// (77.5rem) window only the glyphs show (Leave keeps its word).
+    pub const BAR_BUTTON_H: f32 = 40.0;
+    pub const BAR_BUTTON_MIN_W: f32 = 44.0;
+    pub const BAR_BUTTON_PAD_X: f32 = 12.0;
+    pub const BAR_LEAVE_PAD_X: f32 = 14.0;
+    pub const BAR_LEAVE_GAP: f32 = 8.0;
+    pub const BAR_BUTTON_GAP: f32 = 8.0;
+    pub const BAR_GLYPH: f32 = 16.0;
+    pub const KEYCAP_OPACITY: f32 = 0.6;
+    pub const BAR_WORDS_MIN_W: f32 = 1240.0;
+    /// The live share's Stream quality chevron: 30 x 40, 2px after Share (`margin-left: calc(2px - 0.375rem)`), a 14px
+    /// glyph, its left edge the 1px ink seam.
+    pub const QUALITY_W: f32 = 30.0;
+    pub const QUALITY_SEAM: f32 = 2.0 - CONTROLS_GAP;
+    pub const QUALITY_GLYPH: f32 = 14.0;
+    pub const SEAM: f32 = 1.0;
+    /// `.d-call-stage__preview`: 10px in, 16px between the faces, the text and Join voice, 4px between the text's lines;
+    /// `__face`: 48px faces 10px over the one before, a 3px `--bg` ring and a 5px `--ok` ring on whoever speaks;
+    /// `__join`: 40px, 18px in, the 15px phone glyph 8px before the word.
+    pub const PREVIEW_PAD: f32 = 10.0;
+    pub const PREVIEW_GAP: f32 = 16.0;
+    pub const PREVIEW_TEXT_GAP: f32 = 4.0;
+    pub const FACE: f32 = 48.0;
+    pub const FACE_OVERLAP: f32 = 10.0;
+    pub const FACE_RING: f32 = 3.0;
+    pub const FACE_SPEAKING: f32 = 5.0;
+    pub const JOIN_H: f32 = 40.0;
+    pub const JOIN_PAD_X: f32 = 18.0;
+    pub const JOIN_GAP: f32 = 8.0;
+    pub const JOIN_GLYPH: f32 = 15.0;
+    /// CallTile.css `[data-stage] .d-call-tile__caption`: a 22px chip 8px in from the bottom left, 7px in; `__stat`: 8px from
+    /// the right and 7px from the top.
+    pub const CAPTION_H: f32 = 22.0;
+    /// `.d-call-tile__meter`: three 2 x 10px bars 1.5px apart.
+    pub const METER_W: f32 = 2.0;
+    pub const METER_H: f32 = 10.0;
+    pub const METER_GAP: f32 = 1.5;
+    pub const CAPTION_CHIP_PAD_X: f32 = 7.0;
+    pub const STAT_RIGHT: f32 = 8.0;
+    pub const STAT_TOP: f32 = 7.0;
     /// The stream-quality menu: 320px wide, 72px over the stage's foot (the bar and its gap), 12px in, 8px gaps.
     pub const MENU_BOTTOM: f32 = 72.0;
     pub const MENU_W: f32 = 320.0;
@@ -111,6 +166,9 @@ mod m {
     /// and the hairline before leave 8px high in and 4px aside.
     pub const DM_CONTROLS_PAD_Y: f32 = 8.0;
     pub const TOOLBAR_GAP: f32 = 2.0;
+    /// `.d-voice-toolbar__control`: 8px in; a pressed control's underline 2px.
+    pub const TOOLBAR_PAD_X: f32 = 8.0;
+    pub const TOOLBAR_UNDERLINE: f32 = 2.0;
     pub const DIVIDER_INSET_Y: f32 = 8.0;
     pub const DIVIDER_INSET_X: f32 = 4.0;
 }
@@ -573,9 +631,9 @@ fn repaint_on_video(window: WindowId, cx: &mut App) {
     .detach();
 }
 
-/// Where this device's call is, for the ring's busy text (`call.ring.busy`'s `{where}`): its channel's or DM's name while
-/// it is joining or in a call, `None` outside one.
-fn call_place(state: &AppState) -> Option<String> {
+/// The plain name of where this device's call is (Shell.tsx `whereOf`: the voice channel's or the DM's name) while it
+/// is joining or in a call, `None` outside one: the top bar's voice chip.
+pub fn call_room(state: &AppState) -> Option<String> {
     let call = &state.voice.call;
     if call.phase == CallPhase::Idle {
         return None;
@@ -588,6 +646,46 @@ fn call_place(state: &AppState) -> Option<String> {
             .or_else(|| state.dms.get(channel).map(|d| d.name.clone()))
             .unwrap_or_default(),
     )
+}
+
+/// Where this device's call is (Shell.tsx `callWhere`, product walk M8): a voice channel by its name, a DM's call as
+/// "the call with {name}"; `None` outside a call. The ring's busy text, the dock and the user panel say it.
+pub fn call_place(state: &AppState) -> Option<String> {
+    let room = call_room(state)?;
+    let dm = state
+        .voice
+        .call
+        .channel
+        .is_some_and(|c| state.channel(c).is_none() && state.dms.get(c).is_some());
+    Some(if dm {
+        tf("call.where", &[("name", &room)])
+    } else {
+        room
+    })
+}
+
+/// Where this device's call is once it is up (Shell.tsx `selfRoom`: the call slice's phase `in`): the user panel's
+/// "in {channel}".
+pub fn in_room(state: &AppState) -> Option<String> {
+    (state.voice.call.phase == CallPhase::In)
+        .then(|| call_place(state))
+        .flatten()
+}
+
+/// The route that opens this device's call (TopBar.tsx's voice chip): its voice channel, or its DM.
+pub fn call_route(state: &AppState) -> Option<crate::router::Route> {
+    let call = &state.voice.call;
+    if call.phase == CallPhase::Idle {
+        return None;
+    }
+    let id = call.channel?;
+    match state.channel(id) {
+        Some(c) => Some(crate::router::Route::Channel {
+            community: c.community_id,
+            channel: Some(id),
+        }),
+        None => state.dms.get(id).map(|_| crate::router::Route::Dm(id)),
+    }
 }
 
 /// The ring area (18) follows this device's call: rings turn busy (or not) when the call's place changes
@@ -1042,8 +1140,8 @@ use gpui::prelude::FluentBuilder as _;
 
 // ---- the dock -----------------------------------------------------------------------------------------------------
 
-/// The voice dock over the user panel (`slots::dock`, first): the call's channel and its state, camera, share and
-/// leave. Shown from the join's start to the leave.
+/// The voice dock over the user panel (`slots::dock`, first): the call's channel, its state and leave. Shown from the
+/// join's start to the leave.
 pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let w = wid(window);
     let state = ui_of(w, cx)?.state.clone();
@@ -1051,53 +1149,24 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     if call.phase == CallPhase::Idle {
         return None;
     }
-    let channel = call.channel.and_then(|c| state.channel(c));
-    let name = channel.map_or_else(String::new, |c| c.name.clone());
+    // VoiceView.tsx `Dock`'s `where`: the channel, or "the call with {name}" for a DM.
+    let name = call_place(&state).unwrap_or_default();
     let where_ = match call.phase {
         CallPhase::In => t("voice.dock.pingNone").to_owned(),
         CallPhase::WaitingForRemove => t("voice.announce.rejoining").to_owned(),
         _ => t("voice.dock.connecting").to_owned(),
     };
-    let share = state.voice.share;
+    // VoiceView.tsx `Dock`: camera and share are the stage's controls; the dock holds leave only.
     let controls = div()
         .flex()
         .flex_none()
         .items_center()
         .gap(px(m::DOCK_CONTROLS_GAP))
         .child(tracked_box(
-            "voice-dock-camera",
-            IconButton::new(
-                "voice-dock-camera-b",
-                if share.camera {
-                    IconName::VideoOff
-                } else {
-                    IconName::Video
-                },
-                t("callStage.bar.camera"),
-            )
-            .size(IconButtonSize::S28)
-            .pressed(share.camera)
-            .on_click(|_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx)),
-        ))
-        .child(tracked_box(
-            "voice-dock-share",
-            IconButton::new(
-                "voice-dock-share-b",
-                if share.screen {
-                    IconName::MonitorX
-                } else {
-                    IconName::MonitorUp
-                },
-                t("callStage.bar.share"),
-            )
-            .size(IconButtonSize::S28)
-            .pressed(share.screen)
-            .on_click(|_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx)),
-        ))
-        .child(tracked_box(
             "voice-leave",
             IconButton::new("voice-leave-b", IconName::PhoneOff, t("voice.leave"))
                 .size(IconButtonSize::S28)
+                .danger(true)
                 .on_click(|_, window, cx| leave(wid(window), cx)),
         ));
     let status = div()
@@ -1347,6 +1416,10 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let focused = ui.focused.clone().filter(|k| keys.contains(k));
     let selected = ui.selected.min(keys.len().saturating_sub(1));
     let joined = joined(&state, channel.id);
+    // VoiceView.tsx `Stage`: a channel this device's call is not in (nor joining) shows the preview, no tiles and no bar.
+    let in_call =
+        state.voice.call.phase != CallPhase::Idle && state.voice.call.channel == Some(channel.id);
+    let stage_focused = focus.is_focused(window);
     let tile_views: Vec<AnyElement> = keys
         .iter()
         .enumerate()
@@ -1355,13 +1428,15 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 &state,
                 channel,
                 k,
-                (i == selected, focused.as_ref()),
+                (stage_focused && i == selected, focused.as_ref()),
                 &images,
                 &stats,
             )
         })
         .collect();
-    let body = if keys.is_empty() {
+    let body = if !in_call {
+        preview(&state, channel)
+    } else if keys.is_empty() {
         div()
             .flex_1()
             .flex()
@@ -1431,6 +1506,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     };
     let title = stage_title(channel, IconName::Volume2, topic);
     let n = keys.len();
+    let wide = f32::from(window.viewport_size().width) >= m::BAR_WORDS_MIN_W;
     let stage = div()
         .id("voice-stage")
         .relative()
@@ -1455,9 +1531,8 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .p(px(m::STAGE_PAD))
                 .child(body),
         )
-        .child(controls(&state, joined, channel.id))
+        .when(in_call, |d| d.child(call_bar(&state, channel, wide)))
         .children(menu);
-    let _ = window;
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
 
@@ -1574,18 +1649,35 @@ fn tile(
         },
     };
     let video = images.get(&stream).cloned();
+    let own = p.is_some_and(|p| p.own);
+    // VoiceView.tsx `withTileStats`: a screen says its frames; the own person tile what its microphone sends (this
+    // client's capture is always Opus at 48 kHz: `dilla_media`), once the call is up.
     let stat = video
         .is_some()
         .then(|| stats.get(&stream))
         .flatten()
-        .map(|(h, fps)| frame_stat(*h, *fps));
+        .map(|(h, fps)| frame_stat(*h, *fps))
+        .or_else(|| {
+            (own && !k.screen && state.voice.call.phase == CallPhase::In).then(|| {
+                tf(
+                    "callStage.stat.codec",
+                    &[("codec", OWN_CODEC.0), ("khz", OWN_CODEC.1)],
+                )
+            })
+        });
+    // Signal §5.6: the own tile is "{name} (you)".
+    let title = if own && !k.screen {
+        tf("callStage.tile.you", &[("name", &name)])
+    } else {
+        name.clone()
+    };
     let muted = p.is_some_and(|p| p.muted() || p.deafened());
     let deafened = p.is_some_and(VoiceParticipant::deafened);
     let is_focused = focused == Some(k);
     let face = if focused.is_some() && !is_focused {
         AvatarSize::Confirm
     } else {
-        AvatarSize::Lg
+        AvatarSize::Stage
     };
     let media = match video {
         Some(image) => img(ImageSource::Render(image))
@@ -1618,17 +1710,27 @@ fn tile(
             )
             .into_any_element(),
     };
+    // The web draws the tile's edge as an inset shadow, which moves nothing; here it is a border, inside which absolute
+    // children are placed, so their insets are counted from the tile's outer edge.
+    let edge = if speaking || selected {
+        m::TILE_EDGE_STRONG
+    } else {
+        m::TILE_EDGE
+    };
     let caption = div()
         .absolute()
-        .left(px(m::CAPTION_INSET))
-        .bottom(px(m::CAPTION_INSET))
+        .left(px(m::CAPTION_INSET - edge))
+        .bottom(px(m::CAPTION_INSET - edge))
+        .h(px(m::CAPTION_H))
+        .overflow_hidden()
         .flex()
         .items_center()
         .gap(px(m::CAPTION_GAP))
-        .px(px(m::CAPTION_PAD_X))
-        .rounded(radius::MD)
-        .bg(color::BG_2)
-        .child(line(name, text::XS, 14.0, color::FG).weight(font::WEIGHT_LABEL))
+        .px(px(m::CAPTION_CHIP_PAD_X))
+        .rounded(radius::ROW)
+        .bg(color::SCRIM_CAPTION)
+        // CallTile.tsx's stage caption: the mute glyph, the name, then the three-bar live meter (drawn while speaking; it
+        // holds its room otherwise).
         .when(deafened, |d| {
             d.child(
                 Icon::new(IconName::HeadphoneOff)
@@ -1642,7 +1744,21 @@ fn tile(
                     .size(px(m::GLYPH))
                     .color(color::DANGER),
             )
-        });
+        })
+        .child(
+            line(title, text::XS, line_height(text::XS, LINE), color::FG)
+                .weight(font::WEIGHT_LABEL),
+        )
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_end()
+                .gap(px(m::METER_GAP))
+                .h(px(m::METER_H))
+                .when(!speaking, |d| d.invisible())
+                .children((0..3).map(|_| div().w(px(m::METER_W)).h(px(m::METER_H)).bg(color::OK))),
+        );
     let key = k.clone();
     div()
         .id(ElementId::Name(
@@ -1658,11 +1774,7 @@ fn tile(
         .overflow_hidden()
         .rounded(radius::XL)
         .bg(color::STAGE_TILE)
-        .border(if speaking || selected {
-            px(m::TILE_EDGE_STRONG)
-        } else {
-            px(m::TILE_EDGE)
-        })
+        .border(px(edge))
         .border_color(if speaking {
             color::OK
         } else if selected {
@@ -1689,12 +1801,14 @@ fn tile(
             d.child(
                 div()
                     .absolute()
-                    .top(px(m::CAPTION_INSET))
-                    .right(px(m::CAPTION_INSET))
-                    .px(px(m::CAPTION_PAD_X))
-                    .rounded(radius::MD)
-                    .bg(color::BG_2)
-                    .child(line(stat, text::MICRO, 14.0, color::FG_2)),
+                    .top(px(m::STAT_TOP - edge))
+                    .right(px(m::STAT_RIGHT - edge))
+                    .child(line(
+                        stat,
+                        text::CHIP,
+                        line_height(text::CHIP, LINE),
+                        color::FG_3,
+                    )),
             )
         })
         .into_any_element()
@@ -2004,7 +2118,6 @@ fn card(
 fn dm_controls(state: &AppState) -> AnyElement {
     let v = &state.voice;
     let muted = v.self_mute || v.self_deaf;
-    let button = |id: &'static str, b: IconButton| tracked_box(id, b.size(IconButtonSize::S40));
     div()
         .flex_none()
         .flex()
@@ -2018,61 +2131,53 @@ fn dm_controls(state: &AppState) -> AnyElement {
                 .flex_wrap()
                 .items_stretch()
                 .gap(px(m::TOOLBAR_GAP))
-                .child(button(
+                .child(toolbar_control(
                     "dm-call-mute",
-                    IconButton::new(
-                        "dm-call-mute-b",
-                        if muted {
-                            IconName::MicOff
-                        } else {
-                            IconName::Mic
-                        },
-                        t("voice.mute"),
-                    )
-                    .pressed(muted)
-                    .on_click(|_, window, cx| toggle_mute_in(wid(window), cx)),
+                    if muted {
+                        IconName::MicOff
+                    } else {
+                        IconName::Mic
+                    },
+                    t("voice.mute"),
+                    Some(muted),
+                    false,
+                    |_, window, cx| toggle_mute_in(wid(window), cx),
                 ))
-                .child(button(
+                .child(toolbar_control(
                     "dm-call-deafen",
-                    IconButton::new(
-                        "dm-call-deafen-b",
-                        if v.self_deaf {
-                            IconName::HeadphoneOff
-                        } else {
-                            IconName::Headphones
-                        },
-                        t("voice.deafen"),
-                    )
-                    .pressed(v.self_deaf)
-                    .on_click(|_, window, cx| toggle_deafen_in(wid(window), cx)),
+                    if v.self_deaf {
+                        IconName::HeadphoneOff
+                    } else {
+                        IconName::Headphones
+                    },
+                    t("voice.deafen"),
+                    Some(v.self_deaf),
+                    false,
+                    |_, window, cx| toggle_deafen_in(wid(window), cx),
                 ))
-                .child(button(
+                .child(toolbar_control(
                     "dm-call-camera",
-                    IconButton::new(
-                        "dm-call-camera-b",
-                        if v.share.camera {
-                            IconName::VideoOff
-                        } else {
-                            IconName::Video
-                        },
-                        t("callStage.bar.camera"),
-                    )
-                    .pressed(v.share.camera)
-                    .on_click(|_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx)),
+                    if v.share.camera {
+                        IconName::Video
+                    } else {
+                        IconName::VideoOff
+                    },
+                    t("callStage.bar.camera"),
+                    Some(v.share.camera),
+                    false,
+                    |_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx),
                 ))
-                .child(button(
+                .child(toolbar_control(
                     "dm-call-share",
-                    IconButton::new(
-                        "dm-call-share-b",
-                        if v.share.screen {
-                            IconName::MonitorX
-                        } else {
-                            IconName::MonitorUp
-                        },
-                        t("callStage.bar.share"),
-                    )
-                    .pressed(v.share.screen)
-                    .on_click(|_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx)),
+                    if v.share.screen {
+                        IconName::MonitorX
+                    } else {
+                        IconName::MonitorUp
+                    },
+                    t("callStage.bar.share"),
+                    Some(v.share.screen),
+                    false,
+                    |_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx),
                 ))
                 .child(
                     div()
@@ -2083,13 +2188,77 @@ fn dm_controls(state: &AppState) -> AnyElement {
                         .border_l_1()
                         .border_color(color::HAIRLINE_2),
                 )
-                .child(button(
+                .child(toolbar_control(
                     "dm-call-leave",
-                    IconButton::new("dm-call-leave-b", IconName::PhoneOff, t("voice.leave"))
-                        .on_click(|_, window, cx| leave(wid(window), cx)),
+                    IconName::PhoneOff,
+                    t("voice.leave"),
+                    None,
+                    true,
+                    |_, window, cx| leave(wid(window), cx),
                 )),
         )
         .into_any_element()
+}
+
+/// One control of the DM call box's toolbar (CallControls.css `.d-voice-toolbar__control`, a `d-btn`): 40px with the
+/// 16px glyph, a `--control-edge` edge on nothing; leave the `danger` variant (`--danger` on its `--danger-border` edge).
+/// A toggled-on control is `--danger` on `--surface-2` with its edge and the 2px underline.
+fn toolbar_control(
+    id: &'static str,
+    glyph: IconName,
+    label: &str,
+    on: Option<bool>,
+    danger: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let pressed = on == Some(true);
+    let (fg, edge) = if pressed || danger {
+        (
+            color::DANGER,
+            if pressed {
+                color::DANGER
+            } else {
+                color::DANGER_BORDER
+            },
+        )
+    } else {
+        (color::FG, color::CONTROL_EDGE)
+    };
+    let button = div()
+        .id(id)
+        .tab_index(0)
+        .relative()
+        .flex_none()
+        .min_w(px(m::BAR_BUTTON_H))
+        .min_h(px(m::BAR_BUTTON_H))
+        .px(px(m::TOOLBAR_PAD_X))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::MD)
+        .border_1()
+        .border_color(edge)
+        .when(pressed, |d| d.bg(color::SURFACE_2))
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+            label.to_owned(),
+            &[],
+        ))
+        .child(Icon::new(glyph).size(px(m::BAR_GLYPH)).color(fg))
+        .when(pressed, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(m::TOOLBAR_UNDERLINE))
+                    .bg(fg),
+            )
+        })
+        .on_click(on_click);
+    tracked_box(id, button)
 }
 
 /// A stage notice's box: the warning glyph and its line (the media notice and the ring area's notices).
@@ -2144,132 +2313,434 @@ fn notice(state: &AppState) -> AnyElement {
         .into_any_element()
 }
 
-/// The call controls under the stage (CallControls, the 64px bar): mute, deafen, camera, share and leave while in the
-/// call; join before.
-fn controls(state: &AppState, joined: bool, channel: ChannelId) -> AnyElement {
-    let bar = div()
+/// The not-joined preview (CallStage.tsx `preview`, Signal §5.6): the faces of who is inside (each 48px, 10px over the
+/// one before with a 3px `--bg` ring, a 5px `--ok` ring on whoever speaks), the room (16px 700), who is there (12px
+/// `--fg-2`) and the green Join voice. No join while a block holds it back (Flow 06, Task 18's `join_held`).
+fn preview(state: &AppState, channel: &Channel) -> AnyElement {
+    let people = people(state, channel);
+    let names: Vec<&str> = people.iter().map(|p| p.name.as_str()).collect();
+    let who = match names.as_slice() {
+        [] => t("callStage.preview.nobody").to_owned(),
+        [one] => tf("callStage.preview.one", &[("name", one)]),
+        many => tf(
+            "callStage.preview.many",
+            &[("names", &many.join(t("callStage.preview.and")))],
+        ),
+    };
+    let faces = div().flex().children(people.iter().map(|p| {
+        let ring = div()
+            .absolute()
+            .top(px(-m::FACE_RING))
+            .left(px(-m::FACE_RING))
+            .size(px(m::FACE + 2.0 * m::FACE_RING))
+            .rounded(radius::AVATAR)
+            .bg(color::BG);
+        let ring = if p.speaking {
+            ring.border(px(m::FACE_SPEAKING - m::FACE_RING))
+                .border_color(color::OK)
+                .top(px(-m::FACE_SPEAKING))
+                .left(px(-m::FACE_SPEAKING))
+                .size(px(m::FACE + 2.0 * m::FACE_SPEAKING))
+        } else {
+            ring
+        };
+        div()
+            .relative()
+            .flex_none()
+            .ml(px(-m::FACE_OVERLAP))
+            .size(px(m::FACE))
+            .child(ring)
+            .child(
+                Avatar::new(
+                    ElementId::Name(format!("voice-preview-face-{}", p.user.hex()).into()),
+                    p.name.clone(),
+                )
+                .size(AvatarSize::StagePreview),
+            )
+    }));
+    let text_block = div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(m::PREVIEW_TEXT_GAP))
+        .child(
+            line(
+                channel.name.clone(),
+                text::PREVIEW,
+                line_height(text::PREVIEW, LINE),
+                color::FG,
+            )
+            .weight(font::WEIGHT_DISPLAY),
+        )
+        .child(line(
+            who,
+            text::UI,
+            line_height(text::UI, LINE),
+            color::FG_2,
+        ));
+    let id = channel.id;
+    let join_button = (!crate::screens::ring::join_held(state, channel.id)).then(|| {
+        tracked_box(
+            "voice-join",
+            div()
+                .id("voice-join-b")
+                .tab_index(0)
+                .h(px(m::JOIN_H))
+                .px(px(m::JOIN_PAD_X))
+                .flex()
+                .items_center()
+                .gap(px(m::JOIN_GAP))
+                .rounded(radius::LG)
+                .bg(color::OK)
+                .cursor_pointer()
+                .focus_visible(|s| s.shadow(focus_ring()))
+                .child(
+                    Icon::new(IconName::Phone)
+                        .size(px(m::JOIN_GLYPH))
+                        .color(color::OK_INK),
+                )
+                .child(
+                    line(
+                        t("callStage.preview.join"),
+                        text::SM,
+                        line_height(text::SM, LINE),
+                        color::OK_INK,
+                    )
+                    .weight(font::WEIGHT_DISPLAY),
+                )
+                .on_click(move |_, window, cx| join(id, wid(window), cx)),
+        )
+    });
+    div()
+        .id("voice-preview")
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(m::PREVIEW_GAP))
+        .p(px(m::PREVIEW_PAD))
+        .child(faces)
+        .child(text_block)
+        .children(join_button)
+        .into_any_element()
+}
+
+/// The shortcut keycaps of the call bar's mute and deafen (shortcuts.ts `voiceKeycapText`).
+fn keycaps() -> (&'static str, &'static str) {
+    if cfg!(target_os = "macos") {
+        ("⌘⇧M", "⌘⇧D")
+    } else {
+        ("Ctrl⇧M", "Ctrl⇧D")
+    }
+}
+
+/// A keycap split where the web's JetBrains Mono subset lacks a glyph (`mono_covers` is the embedded full face, so the
+/// ⇧ is listed): `(run, drawn in the symbol face)`.
+fn keycap_runs(keycap: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, c) in keycap.char_indices() {
+        if c == '⇧' {
+            if start < i {
+                out.push((&keycap[start..i], false));
+            }
+            out.push((&keycap[i..i + c.len_utf8()], true));
+            start = i + c.len_utf8();
+        }
+    }
+    if start < keycap.len() {
+        out.push((&keycap[start..], false));
+    }
+    out
+}
+
+/// How a call bar control is tinted (CallControls.css `.d-call-controls--bar`).
+#[derive(Clone, Copy, PartialEq)]
+enum Tint {
+    /// Idle: `--surface-tile` with a `--hairline-2` edge.
+    Idle,
+    /// A toggled-on mute or deafen: the `--danger` tint.
+    Danger,
+    /// A live camera or share: `--accent` with `--accent-ink`.
+    Accent,
+    /// Leave: `--danger` with `--danger-ink`, 700.
+    Leave,
+}
+
+/// One control of the call bar: the 16px glyph, its word and (mute, deafen) the shortcut's keycap. Below a 1240px window
+/// the words and keycaps are not drawn (Leave keeps its word), as CallControls.css's `max-width: 77.49rem`.
+fn bar_control(
+    id: &'static str,
+    glyph: IconName,
+    word: &str,
+    keycap: Option<&'static str>,
+    tint: Tint,
+    wide: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let (fg, bg, edge) = match tint {
+        Tint::Idle => (color::FG, color::SURFACE_TILE, Some(color::HAIRLINE_2)),
+        Tint::Danger => (
+            color::DANGER,
+            color::DANGER_SOFT,
+            Some(color::DANGER_BORDER),
+        ),
+        Tint::Accent => (color::ACCENT_INK, color::ACCENT, Some(color::ACCENT)),
+        Tint::Leave => (color::DANGER_INK, color::DANGER, None),
+    };
+    let leave = tint == Tint::Leave;
+    let words = wide || leave;
+    let button = div()
+        .id(id)
+        .tab_index(0)
         .flex_none()
-        .h(px(m::CONTROLS_H))
+        .h(px(m::BAR_BUTTON_H))
+        .min_w(px(m::BAR_BUTTON_MIN_W))
+        .px(px(if leave {
+            m::BAR_LEAVE_PAD_X
+        } else {
+            m::BAR_BUTTON_PAD_X
+        }))
         .flex()
         .items_center()
         .justify_center()
-        .gap(px(m::CONTROLS_GAP))
-        .border_t_1()
-        .border_color(color::HAIRLINE);
-    if !joined {
-        // Flow 06: no join button while a block holds the join back (Task 18's `join_held`).
-        if crate::screens::ring::join_held(state, channel) {
-            return bar.into_any_element();
-        }
-        let busy = state.voice.call.channel == Some(channel);
-        return bar
-            .child(tracked_box(
-                "voice-join",
-                IconButton::new("voice-join-b", IconName::Phone, t("voice.join"))
-                    .size(IconButtonSize::S40)
-                    .pressed(busy)
-                    .on_click(move |_, window, cx| join(channel, wid(window), cx)),
-            ))
-            .into_any_element();
-    }
+        .gap(px(m::BAR_BUTTON_GAP))
+        .rounded(radius::SEG)
+        .bg(bg)
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .when_some(edge, |d, edge| d.border_1().border_color(edge))
+        .when(leave, |d| {
+            d.ml(px(m::BAR_LEAVE_GAP))
+                .hover(|s| s.bg(color::DANGER_HOVER))
+        })
+        .child(Icon::new(glyph).size(px(m::BAR_GLYPH)).color(fg))
+        .when(words, |d| {
+            d.child(
+                line(word.to_owned(), text::BTN, line_height(text::BTN, LINE), fg).weight(
+                    if leave {
+                        font::WEIGHT_DISPLAY
+                    } else {
+                        font::WEIGHT_BTN
+                    },
+                ),
+            )
+        })
+        .when_some(keycap.filter(|_| words), |d, keycap| {
+            // The web's JetBrains Mono has no ⇧: Chromium draws it in DejaVu Sans (`Face::Symbol`), the rest in the mono.
+            let ink = fg.opacity(m::KEYCAP_OPACITY);
+            let lh = line_height(text::MICRO, LINE);
+            d.child(div().flex().children(keycap_runs(keycap).into_iter().map(
+                move |(run, symbol)| {
+                    let l = line(run.to_owned(), text::MICRO, lh, ink);
+                    if symbol { l.face(Face::Symbol) } else { l }
+                },
+            )))
+        })
+        .on_click(on_click);
+    tracked_box(id, button)
+}
+
+/// The 64px call bar (CallStage.tsx `bar`, Signal §5.6): the room with its `--ok` dot and the stats line under it on the
+/// left, then mute, deafen, camera, share (with the stream-quality chevron while sharing) and leave, worded. The stats
+/// are the link's ping as the dock reads it (`voice.dock.pingNone` until the client reads one).
+fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
     let v = &state.voice;
     let muted = v.self_mute || v.self_deaf;
-    bar.child(tracked_box(
-        "voice-mute",
-        IconButton::new(
-            "voice-mute-b",
+    let (mute_key, deafen_key) = keycaps();
+    let where_ = div()
+        .flex_1()
+        .min_w_0()
+        .mr_auto()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(m::BAR_ROOM_GAP))
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(m::BAR_DOT))
+                        .rounded(radius::AVATAR)
+                        .bg(color::OK),
+                )
+                .child(
+                    line(
+                        channel.name.clone(),
+                        text::UI,
+                        line_height(text::UI, BAR_LINE),
+                        color::FG,
+                    )
+                    .weight(font::WEIGHT_LABEL)
+                    .ellipsis(),
+                ),
+        )
+        .child(
+            line(
+                t("voice.dock.pingNone"),
+                text::META,
+                line_height(text::META, BAR_LINE),
+                color::FG_3,
+            )
+            .ellipsis(),
+        );
+    let sharing = v.share.screen;
+    let share = div()
+        .flex()
+        .items_center()
+        .child(bar_control(
+            "voice-share",
+            IconName::MonitorUp,
+            t(if sharing {
+                "callStage.bar.stopShare"
+            } else {
+                "callStage.bar.share"
+            }),
+            None,
+            if sharing { Tint::Accent } else { Tint::Idle },
+            wide,
+            move |_, window, cx| {
+                // CallControls.tsx: before a share Share opens the picker; while sharing it stops the share.
+                let w = wid(window);
+                if sharing {
+                    toggle_share(ShareKind::Screen, w, cx);
+                } else if ui_of(w, cx).is_some() {
+                    let ui = ui_mut(w, cx);
+                    ui.share_menu = !ui.share_menu;
+                    window.refresh();
+                }
+            },
+        ))
+        .when(sharing, |d| {
+            d.child(tracked_box(
+                "voice-share-quality",
+                div()
+                    .id("voice-share-quality-b")
+                    .tab_index(0)
+                    .w(px(m::QUALITY_W))
+                    .h(px(m::BAR_BUTTON_H))
+                    .ml(px(m::QUALITY_SEAM))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(color::ACCENT)
+                    .border_1()
+                    .border_color(color::ACCENT)
+                    .rounded_r(radius::SEG)
+                    .relative()
+                    // The left edge is the 0.25 ink seam (`border-left-color: var(--accent-split)`).
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(m::SEAM))
+                            .bg(color::ACCENT_SPLIT),
+                    )
+                    .cursor_pointer()
+                    .focus_visible(|s| s.shadow(focus_ring()))
+                    .child(
+                        Icon::new(IconName::ChevronUp)
+                            .size(px(m::QUALITY_GLYPH))
+                            .color(color::ACCENT_INK),
+                    )
+                    .on_click(|_, window, cx| {
+                        let w = wid(window);
+                        if ui_of(w, cx).is_some() {
+                            let ui = ui_mut(w, cx);
+                            ui.share_menu = !ui.share_menu;
+                            window.refresh();
+                        }
+                    }),
+            ))
+        });
+    div()
+        .id("voice-call-bar")
+        .flex_none()
+        .min_h(px(m::CONTROLS_H))
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap(px(m::CONTROLS_GAP))
+        .px(px(m::BAR_PAD_X))
+        .py(px(m::BAR_PAD_Y))
+        .border_t_1()
+        .border_color(color::HAIRLINE)
+        .bg(color::BG_2)
+        .child(where_)
+        .child(bar_control(
+            "voice-mute",
             if muted {
                 IconName::MicOff
             } else {
                 IconName::Mic
             },
-            t("voice.mute"),
-        )
-        .size(IconButtonSize::S40)
-        .pressed(muted)
-        .on_click(|_, window, cx| toggle_mute_in(wid(window), cx)),
-    ))
-    .child(tracked_box(
-        "voice-deafen",
-        IconButton::new(
-            "voice-deafen-b",
+            t(if muted {
+                "callStage.bar.unmute"
+            } else {
+                "callStage.bar.mute"
+            }),
+            Some(mute_key),
+            if muted { Tint::Danger } else { Tint::Idle },
+            wide,
+            |_, window, cx| toggle_mute_in(wid(window), cx),
+        ))
+        .child(bar_control(
+            "voice-deafen",
             if v.self_deaf {
                 IconName::HeadphoneOff
             } else {
                 IconName::Headphones
             },
-            t("voice.deafen"),
-        )
-        .size(IconButtonSize::S40)
-        .pressed(v.self_deaf)
-        .on_click(|_, window, cx| toggle_deafen_in(wid(window), cx)),
-    ))
-    .child(tracked_box(
-        "voice-camera",
-        IconButton::new(
-            "voice-camera-b",
-            if v.share.camera {
-                IconName::VideoOff
+            t(if v.self_deaf {
+                "callStage.bar.undeafen"
             } else {
+                "callStage.bar.deafen"
+            }),
+            Some(deafen_key),
+            if v.self_deaf {
+                Tint::Danger
+            } else {
+                Tint::Idle
+            },
+            wide,
+            |_, window, cx| toggle_deafen_in(wid(window), cx),
+        ))
+        .child(bar_control(
+            "voice-camera",
+            if v.share.camera {
                 IconName::Video
+            } else {
+                IconName::VideoOff
             },
             t("callStage.bar.camera"),
-        )
-        .size(IconButtonSize::S40)
-        .pressed(v.share.camera)
-        .on_click(|_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx)),
-    ))
-    .child(share_split(v.share.screen))
-    .child(tracked_box(
-        "voice-stage-leave",
-        IconButton::new("voice-stage-leave-b", IconName::PhoneOff, t("voice.leave"))
-            .size(IconButtonSize::S40)
-            .on_click(|_, window, cx| leave(wid(window), cx)),
-    ))
-    .into_any_element()
-}
-
-/// The share button and its split half, the stream-quality menu (CallControls' split button).
-fn share_split(sharing: bool) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .child(tracked_box(
-            "voice-share",
-            IconButton::new(
-                "voice-share-b",
-                if sharing {
-                    IconName::MonitorX
-                } else {
-                    IconName::MonitorUp
-                },
-                t(if sharing {
-                    "callStage.bar.stopShare"
-                } else {
-                    "callStage.bar.share"
-                }),
-            )
-            .size(IconButtonSize::S40)
-            .pressed(sharing)
-            .on_click(|_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx)),
+            None,
+            if v.share.camera {
+                Tint::Accent
+            } else {
+                Tint::Idle
+            },
+            wide,
+            |_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx),
         ))
-        .child(tracked_box(
-            "voice-share-quality",
-            IconButton::new(
-                "voice-share-quality-b",
-                IconName::ChevronUp,
-                t("callStage.share.quality"),
-            )
-            .size(IconButtonSize::S28)
-            .on_click(|_, window, cx| {
-                let w = wid(window);
-                if ui_of(w, cx).is_some() {
-                    let ui = ui_mut(w, cx);
-                    ui.share_menu = !ui.share_menu;
-                    window.refresh();
-                }
-            }),
+        .child(share)
+        .child(bar_control(
+            "voice-stage-leave",
+            IconName::PhoneOff,
+            t("callStage.bar.leave"),
+            None,
+            Tint::Leave,
+            wide,
+            |_, window, cx| leave(wid(window), cx),
         ))
+        .into_any_element()
 }
 
 /// The stream-quality menu (SharePicker's options on a desktop: resolution and frame rate, with the upload estimate;

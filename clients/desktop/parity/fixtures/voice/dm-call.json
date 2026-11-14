@@ -76,8 +76,12 @@
   "steps": [
     {
       "do": "click",
-      "web": "[data-dm-call-start]",
+      "web": "textarea",
       "gpui": "-"
+    },
+    {
+      "do": "key",
+      "chord": "ctrl-shift-enter"
     },
     {
       "do": "settle"

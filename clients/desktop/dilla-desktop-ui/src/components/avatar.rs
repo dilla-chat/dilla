@@ -83,6 +83,10 @@ pub enum AvatarSize {
     Card,
     /// The profile preview card's avatar (`.dw-profile-preview__body .d-avatar`: 48px, `--text-ui`).
     Preview,
+    /// A call stage tile's face (CallTile.css `.d-call-tile__avatar`: `--d-face` 4rem, `--text-title`).
+    Stage,
+    /// The not-joined preview's faces (CallStage.css `.d-call-stage__face .d-avatar`: 3rem, `--text-md`).
+    StagePreview,
 }
 
 impl AvatarSize {
@@ -102,6 +106,8 @@ impl AvatarSize {
             Self::Card => (px(56.0), text::LG),
             Self::Preview => (px(48.0), text::UI),
             Self::Lg => (px(64.0), text::LG),
+            Self::Stage => (px(64.0), text::TITLE),
+            Self::StagePreview => (px(48.0), text::MD),
         }
     }
 
