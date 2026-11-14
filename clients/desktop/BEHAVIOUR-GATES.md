@@ -153,7 +153,7 @@ Totals: 233 e2e tests; 169 with a Rust test, 42 n/a (browser/phone only), 22 nex
 | `e2e/voice/blocked.spec.ts` | (a) a changed contact in the call group refuses the join before any call write is sent; the room never sees the browser | dilla-client::tests/ring::blocked_contact_refuses_join_before_any_call_write |
 | `e2e/voice/blocked.spec.ts` | (b) a device that fails the signed-list check joins mid-call: alice leaves, her dock goes and so does her leaf | dilla-client::src/features/voice::a_refused_epoch_pauses_on_a_changed_identity_and_leaves_on_any_other_trust_block |
 | `e2e/voice/blocked.spec.ts` | (c) a contact whose identity changes mid-call pauses the call for each browser until verified or gone (RV-3) | dilla-client::src/features/voice::a_refused_epoch_pauses_on_a_changed_identity_and_leaves_on_any_other_trust_block |
-| `e2e/voice/blocked.spec.ts` | DM: a blocked DM call leaves the DM composer enabled | dilla-desktop::tests/ring::a_held_dm_block_hides_the_call_button_and_says_why |
+| `e2e/voice/blocked.spec.ts` | DM: a blocked DM call leaves the DM composer enabled | dilla-desktop::tests/ring::a_held_dm_block_takes_the_call_from_the_row_menu_and_says_why |
 | `e2e/voice/bot-music.spec.ts` | play from Enter to first audio frame meets G3 | dilla-media::tests/call::bot_play_from_enter_to_first_audio_frame_meets_g3 |
 | `e2e/voice/bot-music.spec.ts` | next queued track gap is under 150 ms | dilla-media::tests/call::bot_next_queued_track_gap_is_under_150_ms |
 | `e2e/voice/bot-music.spec.ts` | a repeated track starts within 500 ms at p95 | dilla-media::tests/call::bot_repeated_track_starts_within_500_ms_at_p95 |
