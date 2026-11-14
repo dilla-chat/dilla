@@ -650,17 +650,40 @@ fn an_afk_move_is_said_on_the_stage(cx: &mut TestAppContext) {
     assert!(vcx.debug_bounds("voice-afk-moved").is_some());
 }
 
-/// VoiceView.tsx `dmCallStart` / `DmCall`: the DM header's call button, gone while a block holds the join, whose notice
-/// then stands under the header.
+/// The DM row's menu: a right-click on the list's row of `DM` (Home lists the DMs), as ChannelList.tsx's `onContextMenu`.
+fn open_dm_row_menu(vcx: &mut VisualTestContext) {
+    let row = vcx
+        .debug_bounds("dm-row-0")
+        .expect("the DM list's row of the DM");
+    vcx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: row.center(),
+        modifiers: gpui::Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+}
+
+/// Ruling Z (Shell.tsx: a DM's call is in the DM row's context menu, VoiceView.tsx `dmCallStart`): the DM row's menu
+/// starts the call until a block holds it, and the DM header has no call button (a DM header is name and topic only).
 #[gpui::test]
-fn the_dm_header_has_its_call_button_until_a_block_holds_it(cx: &mut TestAppContext) {
+fn the_dm_rows_menu_has_its_call_until_a_block_holds_it(cx: &mut TestAppContext) {
     let (_, vcx) = shell_on(server(), dilla_desktop::router::Route::Dm(DM), cx);
-    assert!(vcx.debug_bounds("header-dm-call").is_some(), "Start call");
+    assert!(
+        vcx.debug_bounds("header-dm-call").is_none(),
+        "no header button"
+    );
+    open_dm_row_menu(vcx);
+    assert!(vcx.debug_bounds("menu-item-call").is_some(), "Start call");
+    assert!(vcx.debug_bounds("menu-item-pins").is_some(), "the pins");
     assert!(vcx.debug_bounds("voice-blocked").is_none());
 }
 
 #[gpui::test]
-fn a_held_dm_block_hides_the_call_button_and_says_why(cx: &mut TestAppContext) {
+fn a_held_dm_block_takes_the_call_from_the_row_menu_and_says_why(cx: &mut TestAppContext) {
     let mut s = server();
     s.ring.blocked = Some(CallBlock {
         channel: DM,
@@ -669,8 +692,25 @@ fn a_held_dm_block_hides_the_call_button_and_says_why(cx: &mut TestAppContext) {
         when: BlockWhen::BeforeJoin,
     });
     let (_, vcx) = shell_on(s, dilla_desktop::router::Route::Dm(DM), cx);
-    assert!(vcx.debug_bounds("header-dm-call").is_none());
     assert!(vcx.debug_bounds("voice-blocked").is_some());
+    open_dm_row_menu(vcx);
+    assert!(vcx.debug_bounds("menu-item-call").is_none());
+    assert!(vcx.debug_bounds("menu-item-pins").is_some());
+}
+
+/// Shell.tsx's DM row menu: Start call on a DM that is not the open one opens it too (with no client the join itself
+/// does nothing here).
+#[gpui::test]
+fn the_row_menus_call_opens_its_dm(cx: &mut TestAppContext) {
+    let (shell, vcx) = shell_on(server(), dilla_desktop::router::Route::Dms, cx);
+    open_dm_row_menu(vcx);
+    let call = vcx.debug_bounds("menu-item-call").expect("Start call");
+    vcx.simulate_click(call.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(
+        shell.read_with(vcx, |s, _| s.route().clone()),
+        dilla_desktop::router::Route::Dm(DM)
+    );
 }
 
 /// Ring.tsx `onAnswer` (Shell.tsx: "opens the DM and joins its call"): answering a ring opens its DM.

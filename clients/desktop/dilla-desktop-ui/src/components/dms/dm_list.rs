@@ -1,14 +1,15 @@
 //! The Home sidebar's DM list (packages/ui ChannelList on `/dm`, ChannelList.css): the title in the server head's
 //! display serif (Shell.tsx passes `titleKind="server"`), the square-pen "message someone" button and the host's menu
 //! (the DM defaults' ⌄) in the head, the stats line (online, conversations), the section label in tracked
-//! capitals over a hairline, and the DMs as person rows (Row with `person`, 42px). Automation ids: `dm-list`,
-//! `dm-new`, `dm-<i>` (a row).
+//! capitals over a hairline, and the DMs as person rows (Row with `person`, 42px), each with its context menu (a
+//! right-click; ChannelList.tsx `rowMenu`, Ruling Z: a DM's call and pins). Automation ids: `dm-list`, `dm-new`,
+//! `dm-<i>` (a row); test selector `dm-row-<i>`.
 
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    App, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
+    Pixels, Point, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::components::icon_button::{IconButton, IconButtonSize};
@@ -33,6 +34,7 @@ const SECTION_PAD_TOP: f32 = 14.0;
 const HAIRLINE: f32 = 1.0;
 
 type Select = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
+type Menu = Rc<dyn Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static>;
 type Click = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
@@ -45,6 +47,7 @@ pub struct DmList {
     items: Vec<DmItem>,
     on_select: Select,
     on_new: Click,
+    on_menu: Option<Menu>,
     menu: Option<gpui::AnyElement>,
 }
 
@@ -69,6 +72,7 @@ impl DmList {
             items,
             on_select: Rc::new(|_, _, _| {}),
             on_new: Rc::new(|_, _, _| {}),
+            on_menu: None,
             menu: None,
         }
     }
@@ -82,6 +86,15 @@ impl DmList {
     /// A row was chosen (its index in the items).
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Rc::new(handler);
+        self
+    }
+
+    /// A row's context menu was asked for (a right-click at the point): its index in the items.
+    pub fn on_menu(
+        mut self,
+        handler: impl Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_menu = Some(Rc::new(handler));
         self
     }
 
@@ -184,17 +197,24 @@ impl RenderOnce for DmList {
                 .enumerate()
                 .map(|(i, item)| {
                     let select = self.on_select.clone();
-                    div()
-                        .mt(layout::LIST_GAP)
-                        .child(
-                            Row::new(("dm", i), item.name, RowKind::Dm)
-                                .person(item.person)
-                                .active(item.active)
-                                .unread(item.unread)
-                                .mentions(item.mentions)
-                                .on_click(move |_, window, cx| select(i, window, cx)),
-                        )
-                        .into_any_element()
+                    let mut cell = div()
+                        .debug_selector(move || format!("dm-row-{i}"))
+                        .mt(layout::LIST_GAP);
+                    if let Some(menu) = self.on_menu.clone() {
+                        cell = cell.on_mouse_down(
+                            MouseButton::Right,
+                            move |e: &MouseDownEvent, window, cx| menu(i, e.position, window, cx),
+                        );
+                    }
+                    cell.child(
+                        Row::new(("dm", i), item.name, RowKind::Dm)
+                            .person(item.person)
+                            .active(item.active)
+                            .unread(item.unread)
+                            .mentions(item.mentions)
+                            .on_click(move |_, window, cx| select(i, window, cx)),
+                    )
+                    .into_any_element()
                 })
                 .collect()
         };

@@ -9,7 +9,7 @@
 //!   ring arrives while the window is focused, focus moves to it (and never otherwise).
 //! - [`block_notice`]: what the voice stage (Task 17) says about a blocked call, and the comparison it offers.
 //! - [`afk_page`]: the AFK channel's page body; [`afk_moved`] the move's line for the stage of the channel left.
-//! - [`dm_call_start`]: the DM header's call button (start, or join a live call), or nothing while a block holds it.
+//! - [`dm_call_start`]: the DM row menu's call (start, or join a live call), or nothing while a block holds it.
 
 pub mod effects;
 pub mod keys;
@@ -334,7 +334,7 @@ pub fn block_notice(
     })
 }
 
-/// `dmCallStart`: the DM header's call button (`call.start`, or `call.join` while a call is live), or `None` while this
+/// `dmCallStart`: the DM row menu's call item (`call.start`, or `call.join` while a call is live), or `None` while this
 /// device is in that call or a block holds the join.
 pub fn dm_call_start(
     state: &AppState,

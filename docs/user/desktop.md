@@ -104,9 +104,9 @@ On macOS, read Control as ⌘ and Alt as ⌥.
 | Enter, Escape on an incoming ring | Answers, declines |
 | Arrow Up, Arrow Down, Tab, Enter, Escape in the `/` list | Chooses, completes, runs, closes |
 
-Settings → Keyboard lists seven shortcuts. Two of them are not bound in the preview yet: Control+End (jump to the
-newest message) and Control+Shift+Enter (call the open direct message). Scroll with the wheel or Page Down, and use the
-call button in the direct message's header.
+Settings → Keyboard lists seven shortcuts, among them Control+End (jump to the newest message) and Control+Shift+Enter
+(call the open direct message). As on the web, a direct message's header has no call button: right-click the direct
+message in the list for its menu, which starts (or joins) its call and opens its pinned messages.
 
 ### Known gaps
 

@@ -41,9 +41,6 @@ pub struct HeaderModel<'a> {
     pub members: usize,
     /// The aside that is open (`None`: none).
     pub aside: Option<AsideKind>,
-    /// A DM's call button (VoiceView.tsx `dmCallStart`, an icon in the DM header): its label (`call.start` or
-    /// `call.join`) and what it does; `None` where there is nothing to start.
-    pub call: Option<(&'static str, OnCall)>,
     /// A DM's header (Ruling Z): the at-sign, the name and this topic (Shell.tsx `dmTopic`, `None` when the other
     /// person is unknown), and no Threads or Members.
     pub dm: Option<Option<String>>,
@@ -58,9 +55,6 @@ const TIP_DELAY: std::time::Duration = std::time::Duration::ZERO;
 
 pub type OnToggle = Rc<dyn Fn(AsideKind, &mut Window, &mut App)>;
 
-/// The DM call button's press.
-pub type OnCall = Rc<dyn Fn(&mut Window, &mut App)>;
-
 pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement {
     let name = model.channel.map_or_else(String::new, |c| c.name.clone());
     let threads = on_toggle.clone();
@@ -68,13 +62,6 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
     let count = model.members.to_string();
     let members_label = tf("layout.header.membersCount", &[("n", count.as_str())]);
     let members_tip = SharedString::from(t("layout.header.members"));
-    let call = model.call.clone().map(|(label, on_call)| {
-        crate::tracked_box(
-            "header-dm-call",
-            BarButton::new("header-dm-call-b", IconName::Phone, label)
-                .on_click(move |_: &ClickEvent, window, cx| on_call(window, cx)),
-        )
-    });
     // Tooltip.tsx places the tooltip against the button (above, centred, kept inside the window), not at the pointer.
     let members_button = WithTooltip::new(
         "header-members-tip",
@@ -91,7 +78,7 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
         .child(members_button)
         .child(crate::automation::bounds_probe("header-members"));
     if let Some(topic) = model.dm.clone() {
-        return dm_bar(name, topic, call).into_any_element();
+        return dm_bar(name, topic).into_any_element();
     }
     let bar = div()
         .flex_none()
@@ -129,7 +116,6 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
                 .flex()
                 .items_center()
                 .gap(Pixels::from(css::ACTIONS_GAP))
-                .children(call)
                 .child(
                     BarButton::new(
                         "header-threads",
@@ -150,7 +136,9 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
 
 /// ChannelHeader.tsx with `kind="dm"` (Ruling Z): the at-sign glyph and the name (the title keeps up to 8rem, its name
 /// cut first by the topic), then the topic in 12px `--fg-2`, cut with an ellipsis; the DM call's button at the end.
-fn dm_bar(name: String, topic: Option<String>, call: Option<impl IntoElement>) -> impl IntoElement {
+/// Ruling Z (Shell.tsx): a DM header is the at-sign, the name and the topic, no buttons; the DM's call and pins are in
+/// its row's menu.
+fn dm_bar(name: String, topic: Option<String>) -> impl IntoElement {
     let bar = div()
         .flex_none()
         .relative()
@@ -186,15 +174,6 @@ fn dm_bar(name: String, topic: Option<String>, call: Option<impl IntoElement>) -
                 .flex_1()
                 .min_w_0()
                 .child(line(topic, text::UI, line_height(text::UI, 1.5), color::FG_2).ellipsis())
-        }))
-        .children(call.map(|c| {
-            div()
-                .ml_auto()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(Pixels::from(css::ACTIONS_GAP))
-                .child(c)
         }));
     #[cfg(feature = "automation")]
     let bar = bar.child(crate::automation::bounds_probe("shell-header"));

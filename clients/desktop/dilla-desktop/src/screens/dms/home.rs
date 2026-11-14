@@ -198,12 +198,16 @@ pub struct DmsMenu {
     pub current: Option<String>,
     pub on_open: OnMenuOpen,
     pub on_pick: OnMenuPick,
+    /// A DM row's context menu asked for (Shell.tsx's DM `rowMenu`: its call and pins), at the pointer.
+    pub on_row_menu: OnRowMenu,
 }
 
 /// The DM list head's menu opened or closed.
 pub type OnMenuOpen = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 /// The DM list head's menu picked a default (its `DM_DEFAULTS` value).
 pub type OnMenuPick = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+/// A DM row's context menu was asked for, at the pointer.
+pub type OnRowMenu = Rc<dyn Fn(ChannelId, gpui::Point<Pixels>, &mut Window, &mut App)>;
 
 /// The menu's items, the stored default checked.
 pub fn dms_menu_items(current: Option<&str>) -> Vec<MenuItem> {
@@ -248,9 +252,20 @@ pub fn sidebar(
         t("shell.dms.new"),
         items(&state, selected),
     )
-    .on_select(move |i, window, cx| {
-        if let Some(id) = ids.get(i) {
-            navigate(Nav::Dm(*id), window, cx);
+    .on_select({
+        let ids = ids.clone();
+        move |i, window, cx| {
+            if let Some(id) = ids.get(i) {
+                navigate(Nav::Dm(*id), window, cx);
+            }
+        }
+    })
+    .on_menu({
+        let on_row_menu = menu.on_row_menu.clone();
+        move |i, at, window, cx| {
+            if let Some(id) = ids.get(i) {
+                on_row_menu(*id, at, window, cx);
+            }
         }
     })
     .on_new(move |_, window, cx| {

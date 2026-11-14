@@ -795,6 +795,21 @@ impl ShellView {
 
     fn menu_items(&self, channel: ChannelId) -> Vec<MenuItem> {
         let muted = self.channel_muted(channel);
+        // Ruling Z (Shell.tsx's DM `rowMenu`): a DM's call (`dmCallStart`: none while in it or while a block holds the
+        // join) and its pins are in the DM row's menu, not in its header.
+        if self.state.dms.get(channel).is_some() {
+            let in_call = crate::screens::voice::joined(&self.state, channel);
+            let live = crate::screens::voice::count(&self.state, channel) > 0;
+            let call = crate::screens::ring::dm_call_start(&self.state, channel, in_call, live);
+            return call
+                .map(|label| MenuItem::new("call", label))
+                .into_iter()
+                .chain([
+                    MenuItem::new("pins", t("shell.pins.open")),
+                    MenuItem::new("mute", t("notify.mute")).check(muted),
+                ])
+                .collect();
+        }
         vec![
             // Ruling X: the channel row's menu holds the pins (the header has no pin button).
             MenuItem::new("pins", t("shell.pins.open")),
@@ -804,8 +819,21 @@ impl ShellView {
         ]
     }
 
-    fn choose(&mut self, channel: ChannelId, item: &str, window: &Window, cx: &mut Context<Self>) {
+    fn choose(
+        &mut self,
+        channel: ChannelId,
+        item: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match item {
+            // Shell.tsx: the DM's call starts, and a DM that is not the open one opens.
+            "call" => {
+                start_dm_call(channel, window, cx);
+                if !(self.dm_view && self.channel == Some(channel)) {
+                    self.navigate(Route::Dm(channel), cx);
+                }
+            }
             "pins" => {
                 crate::screens::messages::open_pins(channel, self.client.as_ref(), window, cx)
             }
@@ -1204,6 +1232,12 @@ impl Render for ShellView {
                             let _ = w.update(cx, |shell, cx| shell.choose_dm_default(item, cx));
                         })
                     },
+                    on_row_menu: {
+                        let w = shell.clone();
+                        Rc::new(move |id, at, _, cx| {
+                            let _ = w.update(cx, |shell, cx| shell.open_menu(id, at, cx));
+                        })
+                    },
                 },
                 window,
                 cx,
@@ -1346,9 +1380,15 @@ impl Render for ShellView {
         let mut overlays = slots::overlays(&ctx, window, cx);
         if let Some(menu) = self.menu {
             let (w_sel, w_open) = (shell.clone(), shell.clone());
-            let name = state
-                .channel(menu.channel)
-                .map_or_else(String::new, |c| c.name.clone());
+            let name = state.channel(menu.channel).map_or_else(
+                || {
+                    state
+                        .dms
+                        .get(menu.channel)
+                        .map_or_else(String::new, |d| d.name.clone())
+                },
+                |c| c.name.clone(),
+            );
             overlays.push(
                 ActionMenu::new(
                     "channel-menu",
@@ -1394,19 +1434,8 @@ impl Render for ShellView {
             cx,
         );
         let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
-        // A DM: its call button in the header (VoiceView.tsx `dmCallStart`, Task 18: none while in that call or while a
-        // block holds the join), and the call's notice strip under the header while this device is not in its call.
-        let dm_call = channel.filter(|_| self.dm_view).and_then(|dm| {
-            let id = dm.id;
-            let in_call = crate::screens::voice::joined(&state, id);
-            let live = crate::screens::voice::count(&state, id) > 0;
-            crate::screens::ring::dm_call_start(&state, id, in_call, live).map(|label| {
-                // As the ring's answer does: one call per device, the DM's call joined through the ring gate.
-                let on_call: header::OnCall =
-                    Rc::new(move |window, cx| start_dm_call(id, window, cx));
-                (label, on_call)
-            })
-        });
+        // A DM: the call's notice strip under the header while this device is not in its call. Its call is in the DM row's
+        // menu (Ruling Z), not in the header.
         let dm_strip = channel
             .filter(|dm| self.dm_view && !crate::screens::voice::joined(&state, dm.id))
             .and_then(|dm| crate::screens::voice::ring_notice(&state, dm));
@@ -1447,7 +1476,6 @@ impl Render for ShellView {
                                 ))
                             .then_some(AsideKind::Members)
                         }),
-                        call: dm_call,
                         dm: self.dm_view.then(|| {
                             channel
                                 .and_then(|c| state.dms.get(c.id))
@@ -1733,7 +1761,7 @@ fn palette_refused(overlay_open: bool, contexts: &[gpui::KeyContext]) -> bool {
             .any(|c| c.contains(OVERLAY_CONTEXT) || c.contains(MENU_CONTEXT))
 }
 
-/// Starts the call of the DM `id` from `window` (its header button, Ctrl+Shift+Enter): one call per device, so a call
+/// Starts the call of the DM `id` from `window` (its row's menu, Ctrl+Shift+Enter): one call per device, so a call
 /// another instance window is in is left first, and the DM's call is joined through the ring gate.
 fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
     let w = crate::screens::voice::wid(window);
