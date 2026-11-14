@@ -172,6 +172,8 @@ pub struct ShellView {
     overlay_open: bool,
     /// The Home/DMs view is shown (`/dm`, `/dm/<id>`): the sidebar is the DM list (13) and `channel` is the open DM.
     dm_view: bool,
+    /// Ctrl+Shift+Enter held down starts the DM call once (review L m3).
+    call_key: keys::RepeatLatch,
     /// This device's microphone and speakers, as the panel's buttons last set them (the voice area owns the call).
     mic_off: bool,
     deaf: bool,
@@ -247,6 +249,7 @@ impl ShellView {
             server_menu_open: false,
             overlay_open: false,
             dm_view: false,
+            call_key: keys::RepeatLatch::default(),
             mic_off: false,
             deaf: false,
             sidebar_splitter: cx.focus_handle().tab_stop(true),
@@ -256,6 +259,11 @@ impl ShellView {
             window_id: window.window_handle().window_id(),
             _subscriptions: vec![sent],
         };
+        // The DM area (13) follows the instance from the shell's start (the DM list, the trust slice), whatever the shell
+        // first shows: a person who never opens the DMs still has their list (the Home tile's counts, the ring gate).
+        if let Some(client) = &this.client {
+            client.dms().start();
+        }
         this.settle_selection(cx);
         // The voice area's hooks read this state and client (17).
         crate::screens::voice::sync(this.window_id, this.state.clone(), this.client.as_ref(), cx);
@@ -955,12 +963,7 @@ impl Render for ShellView {
         // their client at once (review M5).
         if let Some(client) = self.client.clone() {
             crate::release::hold(&client, &cx.entity(), |s: &mut Self, _| s.client = None, cx);
-            crate::release::hold(
-                &client,
-                &self.composer,
-                |c, _| c.set_slots(SlotCx::default()),
-                cx,
-            );
+            crate::release::hold(&client, &self.composer, |c, cx| c.let_go(cx), cx);
         }
         let state = self.state.clone();
         // An open DM is drawn with the channel's log, header and composer (Task 9's views on the DM's id, 13): a channel
@@ -1361,6 +1364,10 @@ impl Render for ShellView {
                     &on_toggle,
                 ))
                 .children(dm_strip.map(|s| div().flex_none().child(s)))
+                .children(
+                    crate::screens::messages::notice(channel.map(|c| c.id), window, cx)
+                        .map(|n| div().flex_none().child(n)),
+                )
                 .child({
                     // MessageLog.tsx `present`: away from the newest message, a bar over the log's foot says so and
                     // offers the jump back.
@@ -1523,6 +1530,10 @@ impl Render for ShellView {
             }))
             // Ctrl+Shift+Enter: the open DM's call, as its header button (none while in it, or while a block holds it).
             .on_action(cx.listener(|this, _: &keys::CallOpenDm, window, cx| {
+                // Shell.tsx: a held chord's auto-repeats do nothing.
+                if !this.call_key.press(std::time::Instant::now()) {
+                    return;
+                }
                 let dm = this.channel.filter(|_| this.dm_view);
                 let startable = dm.is_some_and(|id| {
                     let in_call = crate::screens::voice::joined(&this.state, id);
@@ -1534,6 +1545,12 @@ impl Render for ShellView {
                         start_dm_call(id, window, cx)
                     }
                     _ => cx.propagate(),
+                }
+            }))
+            // The chord's Enter going up opens the latch for the next press.
+            .capture_key_up(cx.listener(|this, e: &gpui::KeyUpEvent, _, _| {
+                if e.keystroke.key == "enter" {
+                    this.call_key.release();
                 }
             }))
             .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {

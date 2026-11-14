@@ -836,4 +836,51 @@ mod tests {
         };
         assert_ne!(chip(a, cx), chip(b, cx), "each window has its own chip");
     }
+
+    /// Task 28 item 12 (ThreadView.tsx's MessageItem rows): an own, stored message of the thread offers Edit and Delete;
+    /// another's, or one not stored yet, offers neither.
+    #[test]
+    fn an_own_thread_message_offers_edit_and_delete() {
+        let mut own = item(TimelineItemState::Ok, "mine");
+        own.own = true;
+        assert_eq!(view::row_actions(&own), ["edit", "delete"]);
+        assert!(view::row_actions(&item(TimelineItemState::Ok, "theirs")).is_empty());
+        let mut pending = own.clone();
+        pending.state = TimelineItemState::Pending;
+        pending.seq = None;
+        assert!(view::row_actions(&pending).is_empty());
+    }
+
+    /// Task 28 item 12: the thread pane's Edit opens the messages area's editor on that message, and its Delete asks
+    /// first, through the messages area's dialog (one editor and one delete dialog per window, as the web's).
+    #[gpui::test]
+    fn the_thread_pane_edits_and_deletes_through_the_messages_area(cx: &mut TestAppContext) {
+        let channel = ChannelId([3; 16]);
+        let mut own = item(TimelineItemState::Ok, "mine");
+        own.own = true;
+        let w = cx.add_window(|_, _| Blank);
+        let ui = w
+            .update(cx, |_, window, cx| {
+                crate::screens::messages::ui::ui_for_test(window.window_handle().window_id(), cx)
+            })
+            .unwrap();
+        let ctx = SlotCx {
+            channel: Some(channel),
+            ..SlotCx::default()
+        };
+        w.update(cx, |_, window, cx| view::edit_row(&ctx, &own, window, cx))
+            .unwrap();
+        assert_eq!(
+            ui.read_with(cx, |u, _| u.editing.as_ref().map(|e| e.key.clone())),
+            Some(own.key.clone())
+        );
+        w.update(cx, |_, window, cx| {
+            view::delete_row(channel, &own, window, cx)
+        })
+        .unwrap();
+        assert!(ui.read_with(cx, |u, _| {
+            u.deleting
+                .is_some_and(|d| d.channel == channel && Some(d.msg) == own.msg_id)
+        }));
+    }
 }

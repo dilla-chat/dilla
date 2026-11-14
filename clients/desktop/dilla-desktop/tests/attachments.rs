@@ -303,8 +303,8 @@ mod behaviour {
             seq,
             index: 0,
         };
-        cx.update(|cx| ui::save(&bob, key, cx));
-        // The file opens, then the save dialog asks; nothing is written before the person answers it.
+        cx.update(|cx| ui::save(&bob, key, "the file.txt", cx));
+        // The save dialog asks (before the file is opened); nothing is written before the person answers it.
         let deadline = std::time::Instant::now() + WAIT;
         while !cx.did_prompt_for_new_path() {
             assert!(

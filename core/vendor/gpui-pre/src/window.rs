@@ -5521,6 +5521,8 @@ impl Window {
     /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): the size `layout_id` was laid out at, in logical px,
     /// before its edges snap ([`Window::layout_bounds`] answers the snapped box). Call it during `prepaint`.
     pub fn laid_out_size(&mut self, layout_id: LayoutId) -> Size<Pixels> {
+        self.invalidator.debug_assert_prepaint();
+
         let scale_factor = self.scale_factor();
         self.layout_engine
             .as_ref()

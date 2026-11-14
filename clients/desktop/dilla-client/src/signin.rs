@@ -273,6 +273,19 @@ pub struct SignIn {
     /// The held assertion is a first-factor login's (password or OIDC, still owing a factor): a passkey finish carries
     /// it (enrol.ts `boundFirstFactor`).
     bound_first_factor: bool,
+    /// Feature `testing`: what goes wrong with this ceremony's own list PUT.
+    #[cfg(feature = "testing")]
+    list_put_fault: Option<ListPutFault>,
+}
+
+/// Feature `testing`: a fault of the key step's own device-list PUT, as a dropped connection leaves it.
+#[cfg(feature = "testing")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListPutFault {
+    /// The PUT landed on the instance, its answer was lost.
+    AnswerLost,
+    /// The PUT never reached the instance.
+    NeverSent,
 }
 
 /// What the instance's document says about signing in (`GET /v1/instance`).
@@ -343,7 +356,16 @@ impl SignIn {
             used_passkey: false,
             held_at: None,
             bound_first_factor: false,
+            #[cfg(feature = "testing")]
+            list_put_fault: None,
         })
+    }
+
+    /// Feature `testing`: the key step's own list PUT fails as `fault` says (a transport error, after the enrolment was
+    /// written: the ceremony answers [`Enrolled::FinishAtStart`]).
+    #[cfg(feature = "testing")]
+    pub fn fault_list_put(&mut self, fault: ListPutFault) {
+        self.list_put_fault = Some(fault);
     }
 
     /// The instance's name and its sign-in methods.
@@ -812,11 +834,23 @@ impl SignIn {
             }
         }
         let list = self.with_core(|c| c.device_list_body())?;
-        match self
+        #[cfg(feature = "testing")]
+        if self.list_put_fault == Some(ListPutFault::NeverSent) {
+            return Err(SignInError::Network(
+                "the list PUT was never sent (test)".into(),
+            ));
+        }
+        let put = self
             .http
             .call::<r::PutDeviceList>(&[&user_hex], Raw(list))
-            .await
-        {
+            .await;
+        #[cfg(feature = "testing")]
+        if put.is_ok() && self.list_put_fault == Some(ListPutFault::AnswerLost) {
+            return Err(SignInError::Network(
+                "the list PUT's answer was lost (test)".into(),
+            ));
+        }
+        match put {
             Ok(()) => {}
             Err(HttpError::Status { status: 409, .. }) => return Err(SignInError::ListRace),
             Err(HttpError::Status { status: 401, .. }) => return Err(SignInError::Evicted),

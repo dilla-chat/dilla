@@ -635,6 +635,47 @@ pub async fn second_device(host: &Host, person: &mut Person, tag: &str) -> (Clie
     (client, root)
 }
 
+/// [`second_device`]'s sign-in with its own list PUT failing as `fault` says, not started: the key step answers that the
+/// start must finish it. Answers the device's instance, keychain and data root (the caller's to delete).
+pub async fn second_device_faulted(
+    host: &Host,
+    person: &mut Person,
+    tag: &str,
+    fault: crate::signin::ListPutFault,
+) -> (InstanceConfig, Arc<MemoryKeychain>, PathBuf) {
+    use crate::signin::{Enrolled, Owed, SignIn};
+    let root = repo_root().join(format!(
+        "target/testing-client-{tag}-{}-faulted-{}",
+        person.username,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let cfg = Instances::load(&root)
+        .expect("an instance list")
+        .add(person.cfg.server.clone())
+        .expect("an instance");
+    let kc = Arc::new(MemoryKeychain::new());
+    let mut sign_in = SignIn::new(cfg.clone(), kc.clone()).expect("a sign-in");
+    sign_in.fault_list_put(fault);
+    let owed = sign_in
+        .login(&person.username, PASSWORD)
+        .await
+        .expect("the password");
+    assert_eq!(owed, Owed::Code);
+    let code = person.next_code(host);
+    sign_in.code(&code).await.expect("the code");
+    let enrolled = sign_in
+        .add_device(&person.recovery_key)
+        .await
+        .expect("the recovery key");
+    assert!(
+        matches!(enrolled, Enrolled::FinishAtStart(_)),
+        "the faulted list PUT leaves the start to finish: {enrolled:?}"
+    );
+    drop(sign_in);
+    (cfg, kc, root)
+}
+
 /// Waits (at most `within`) until `pred` holds for the client's state, answering that state.
 pub async fn wait_for(
     client: &Client,

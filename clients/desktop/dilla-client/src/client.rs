@@ -169,6 +169,14 @@ impl SyncHooks for Hooks {
     fn removals_read(&self, group: [u8; 16]) {
         let _ = self.tx.send(Update::RemovalsCleared(group));
     }
+    /// controller.ts `onUnexpectedWelcome`: the DM list is read again, so a DM another person opened is listed and its
+    /// group joined at once rather than on the list's next poll.
+    fn unexpected_welcome(&self, _group: [u8; 16]) {
+        if let Some(inner) = self.inner.get().and_then(Weak::upgrade) {
+            let reading = inner.clone();
+            drop(inner.spawn(async move { crate::features::dms::reload(&reading).await }));
+        }
+    }
 }
 
 /// The gateway connection's owner: the one place a gateway is started, replaced or stopped.
@@ -182,6 +190,8 @@ struct Link {
     updates: mpsc::UnboundedSender<Update>,
     /// The app took the connection down (`Client::disconnect`) and has not asked for it again.
     app_offline: AtomicBool,
+    /// Run before every connection attempt: the instance signer pin ([`pin_check`]).
+    pre_connect: Option<crate::gateway::PreConnect>,
 }
 
 /// What every handle of the client shares: the area features (`crate::features`) hold it and reach the engine, the API,
@@ -420,6 +430,7 @@ impl Client {
             gateway: Mutex::new(None),
             app_offline: AtomicBool::new(false),
             updates: updates.clone(),
+            pre_connect: Some(pin_check(api.clone(), core.clone())),
         });
         let inner = Arc::new(Inner {
             link: link.clone(),
@@ -719,10 +730,11 @@ impl Link {
         if slot.is_some() || self.engine.stopped() || self.app_offline.load(Ordering::Acquire) {
             return;
         }
-        let gateway = Arc::new(WsGateway::connect_with(
+        let gateway = Arc::new(WsGateway::connect_checked(
             self.server.clone(),
             self.auth.clone(),
             self.options.clone(),
+            self.pre_connect.clone(),
         ));
         let events = gateway.events();
         self.engine.set_gateway(Some(gateway.clone()));
@@ -928,6 +940,38 @@ pub(crate) async fn check_instance_signer_pin(
         .map_err(|e| ClientError::Sync(e.code.to_string()))
 }
 
+/// controller.ts `mintTicket`: before every gateway connection attempt (the reconnects included) the instance's signer
+/// key is read over the session again and held to the pin, as at the start ([`check_instance_signer_pin`]). An instance
+/// that cannot be read now (unreachable, a 5xx) is tried again after the backoff; a document that does not decode, a
+/// changed key or another instance stops the gateway, closed (`failInstanceSignerPin`).
+fn pin_check(api: Arc<Api>, core: CoreHandle) -> crate::gateway::PreConnect {
+    Arc::new(move || {
+        let (api, core) = (api.clone(), core.clone());
+        Box::pin(async move {
+            let read = api.get_instance().await;
+            let pinned = match &read {
+                Ok(instance) => Some(check_instance_signer_pin(&core, instance).await),
+                Err(_) => None,
+            };
+            pin_verdict(read.as_ref().map(|_| ()), pinned)
+        })
+    })
+}
+
+/// [`pin_check`]'s verdict from the instance read (`Err`: its refusal) and, once read, the pin check.
+pub(crate) fn pin_verdict(
+    read: Result<(), &crate::sync::api::ApiError>,
+    pinned: Option<Result<(), ClientError>>,
+) -> crate::gateway::PreConnectVerdict {
+    use crate::gateway::PreConnectVerdict as V;
+    match (read, pinned) {
+        (Err(e), _) if e.code == "E_DECODE" => V::Refuse,
+        (Err(_), _) => V::Retry,
+        (Ok(()), Some(Ok(()))) => V::Go,
+        (Ok(()), _) => V::Refuse,
+    }
+}
+
 /// signup.ts `publishDeviceList`'s 409 branch, before any adoption: what the served list's version says about this
 /// device's unpublished candidate.
 #[derive(Debug, PartialEq, Eq)]
@@ -954,8 +998,8 @@ fn list_body_version(body: &[u8]) -> Option<u64> {
 
 /// signup.ts `publishDeviceList` for a store whose own list is not published yet, then session.ts `establish` for the
 /// enrolled session the list makes possible. A 409 whose served list is at least the candidate's version is adopted
-/// (verified by the core, a page at a time) and answers `E_DEVICE_UNLISTED` when it leaves this device out; an older
-/// or missing one is a list race. A 401 is a revoked row.
+/// (verified by the core, a page at a time); one that leaves this device out (`E_DEVICE_UNLISTED`) is a revocation, as
+/// at the web's ready. An older or missing one is a list race. A 401 is a revoked row.
 async fn publish_own_list(
     api: &Api,
     core: &CoreHandle,
@@ -976,8 +1020,10 @@ async fn publish_own_list(
             if list_conflict(served.map(|s| s.version), candidate) == ListConflict::Race {
                 return Err(ClientError::Sync("E_LIST_RACE".into()));
             }
+            // controller.ts `enterReady`: a served list that leaves this enrolled device out (`E_DEVICE_UNLISTED` at
+            // phase 2) is a revocation, as a refused session is.
             if !crate::features::devices::adopt_served_list(api, core, user, device).await? {
-                return Err(ClientError::Sync("E_DEVICE_UNLISTED".into()));
+                return Err(ClientError::Revoked);
             }
         }
         Err(e) if e.status == 401 => return Err(ClientError::Revoked),
@@ -1455,6 +1501,13 @@ impl Publisher {
                     }
                     OnRefused::SignOut => self.sign_out(),
                 }
+                false
+            }
+            // controller.ts `failInstanceSignerPin`: the instance's signer key is no longer the pinned one (or another
+            // instance answers). The gateway stopped; the client fails closed, and a restart's start refuses it too.
+            ConnectionEvent::Refused(Refusal::InstanceSignerChanged, _) => {
+                self.state.connection.status = ConnectionStatus::Offline;
+                self.state.account.phase = AccountPhase::Failed;
                 false
             }
             ConnectionEvent::Refused(Refusal::SecondFactorRequired, _) => {

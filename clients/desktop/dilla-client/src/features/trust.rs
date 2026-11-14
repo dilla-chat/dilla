@@ -178,8 +178,20 @@ impl Trust {
 }
 
 /// Starts the watcher of `inner`'s client once (the UI calls this on every frame that draws the area).
+/// The clients whose watcher runs ([`start`]).
+static STARTED: Mutex<Vec<Weak<Inner>>> = Mutex::new(Vec::new());
+
+/// Feature `testing`: whether `inner`'s watcher (the DM list and the trust slice) runs.
+#[cfg(feature = "testing")]
+pub(crate) fn started(inner: &Arc<Inner>) -> bool {
+    STARTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|w| std::ptr::eq(w.as_ptr(), Arc::as_ptr(inner)))
+}
+
 pub(crate) fn start(inner: &Arc<Inner>, state: &watch::Receiver<Arc<AppState>>) {
-    static STARTED: Mutex<Vec<Weak<Inner>>> = Mutex::new(Vec::new());
     {
         let mut started = STARTED
             .lock()

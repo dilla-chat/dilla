@@ -105,3 +105,30 @@ pub fn message_actions(item: &TimelineItem, bits: Option<u64>) -> Vec<MessageAct
 pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     dialogs::overlays(window, cx)
 }
+
+/// Conversation.tsx's notice over the log (an info `Banner` with its Dismiss): what `window`'s conversation of `channel`
+/// says, if anything (a jump to a message not loaded, Task 28 item 11).
+pub fn notice(
+    channel: Option<dilla_client::state::ChannelId>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> Option<gpui::AnyElement> {
+    use dilla_desktop_ui::components::banner::{Banner, BannerTone};
+    use gpui::IntoElement as _;
+    let handle = ui::handle(window, cx)?;
+    let key = handle.read(cx).notice_in(channel?)?;
+    Some(
+        Banner::new(
+            "conversation-notice",
+            BannerTone::Info,
+            crate::strings::t(key),
+        )
+        .action(
+            crate::strings::t("shell.banner.dismiss"),
+            move |_, _, cx| {
+                handle.update(cx, |u, cx| u.dismiss_notice(cx));
+            },
+        )
+        .into_any_element(),
+    )
+}

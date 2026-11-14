@@ -44,7 +44,6 @@ pub struct ImageKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MediaKey {
     Image(ImageKey),
-    Card(CardKey),
     Player(CardKey),
 }
 
@@ -314,7 +313,7 @@ impl MediaKey {
     pub fn client(&self) -> u64 {
         match self {
             MediaKey::Image(k) => k.client,
-            MediaKey::Card(k) | MediaKey::Player(k) => k.client,
+            MediaKey::Player(k) => k.client,
         }
     }
 }
@@ -333,9 +332,6 @@ pub fn forget_owner(owner: u64, cx: &mut App) {
         match key {
             MediaKey::Image(k) => {
                 u.images.remove(&k);
-            }
-            MediaKey::Card(k) => {
-                u.cards.remove(&k);
             }
             MediaKey::Player(k) => {
                 u.players.remove(&k);
@@ -362,7 +358,6 @@ fn still_waiting(open: u64, key: MediaKey, cx: &mut App) -> bool {
     u.media_owners.get(&key) == Some(&open)
         && match key {
             MediaKey::Image(k) => matches!(u.images.get(&k), Some(Slot::Loading)),
-            MediaKey::Card(k) => matches!(u.cards.get(&k), Some(CardStatus::Loading)),
             MediaKey::Player(k) => matches!(u.players.get(&k), Some(Player::Loading)),
         }
 }
@@ -629,58 +624,70 @@ pub fn ensure_image_from(key: ImageKey, rx: OpenAnswer, cx: &mut App) {
     .detach();
 }
 
-/// Saves an attachment where the person chooses (only after their action): it is opened, the save dialog asks for a
-/// path, and the plaintext is written there. Each save is its own: a second save of the card while the first is in
+/// Saves an attachment, `name` as its card shows it, where the person chooses (only after their action): the save dialog
+/// asks for a path, then the file is opened and its plaintext written there (review L m7: nothing is decrypted while the
+/// dialog asks, for as long as it is left open). Each save is its own: a second save of the card while the first is in
 /// flight writes the path its own dialog chose, or shows its own failure.
-pub fn save(client: &Client, key: CardKey, cx: &mut App) {
-    let rx = client
-        .attachments()
-        .open(key.channel, key.seq, key.index, false);
-    save_from(key, rx, dirs_home(), cx);
+pub fn save(client: &Client, key: CardKey, name: &str, cx: &mut App) {
+    let attachments = client.attachments();
+    let open = move || attachments.open(key.channel, key.seq, key.index, false);
+    save_from(key, name, open, dirs_home(), cx);
 }
 
-/// [`save`] with the open already started (`rx`) and the dialog starting at `home`; the tests drive it.
-pub fn save_from(key: CardKey, rx: OpenAnswer, home: PathBuf, cx: &mut App) {
-    let open = save_started(key, cx);
+/// [`save`] with the open to start once a path is chosen (`open`) and the dialog starting at `home`; the tests drive it.
+pub fn save_from(
+    key: CardKey,
+    name: &str,
+    open: impl FnOnce() -> OpenAnswer + 'static,
+    home: PathBuf,
+    cx: &mut App,
+) {
+    let save = save_started(key, cx);
     cx.refresh_windows();
+    let shown = safe_name(name, t("shell.attachment.unnamed"));
+    let path_rx = cx.prompt_for_new_path(&home, Some(&shown));
     cx.spawn(async move |cx| {
-        let opened = match rx.await {
+        let path = match path_rx.await {
+            Ok(Ok(Some(path))) => path,
+            _ => {
+                cx.update(|cx| {
+                    if land_save(save, None, cx) {
+                        cx.refresh_windows();
+                    }
+                });
+                return;
+            }
+        };
+        // Released while the dialog asked: nothing is opened, nothing written.
+        if !cx.update(|cx| save_live(save, cx)) {
+            return;
+        }
+        let opened = match open().await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 cx.update(|cx| {
-                    if land_save(open, Some(CardStatus::Failed(e.to_string())), cx) {
+                    if land_save(save, Some(CardStatus::Failed(e.to_string())), cx) {
                         cx.refresh_windows();
                     }
                 });
                 return;
             }
             Err(_) => {
-                cx.update(|cx| land_save(open, None, cx));
+                cx.update(|cx| land_save(save, None, cx));
                 return;
             }
         };
-        // Released meanwhile: the plaintext (`Zeroizing`) is wiped as it drops; no save dialog asks for it.
-        if !cx.update(|cx| save_live(open, cx)) {
-            return;
-        }
-        let shown = safe_name(&opened.name, t("shell.attachment.unnamed"));
-        let path_rx = cx.update(|cx| cx.prompt_for_new_path(&home, Some(&shown)));
-        let path = match path_rx.await {
-            Ok(Ok(Some(path))) => Some(path),
-            _ => None,
-        };
-        // Released while the dialog asked: nothing is written.
-        let result = match path {
-            Some(path) if cx.update(|cx| save_live(open, cx)) => {
-                dilla_client::features::attachments::Attachments::save(&path, &opened.bytes)
-                    .map_err(|_| "E_SAVE".to_owned())
-            }
-            _ => Ok(()),
+        // Released while the file opened: the plaintext (`Zeroizing`) is wiped as it drops, unwritten.
+        let result = if cx.update(|cx| save_live(save, cx)) {
+            dilla_client::features::attachments::Attachments::save(&path, &opened.bytes)
+                .map_err(|_| "E_SAVE".to_owned())
+        } else {
+            Ok(())
         };
         drop(opened);
         cx.update(|cx| {
             let status = result.err().map(CardStatus::Failed);
-            if land_save(open, status, cx) {
+            if land_save(save, status, cx) {
                 cx.refresh_windows();
             }
         });
@@ -1118,7 +1125,8 @@ mod tests {
     use super::*;
 
     /// Re-review N3: a release drops the decrypted images and the cards the released client opened, by owner: a DM's
-    /// image (in no channel list) goes too, and another client's stay.
+    /// image (in no channel list) goes too, and another client's stay. A card's state is dropped by its own key, which
+    /// names its client (review L m8: no owner entry for cards).
     #[gpui::test]
     fn a_release_drops_the_media_the_client_opened(cx: &mut gpui::TestAppContext) {
         let (mine, theirs) = (ChannelId([1; 16]), ChannelId([2; 16]));
@@ -1144,8 +1152,6 @@ mod tests {
             u.media_owners.insert(MediaKey::Image(key(2, theirs)), 11);
             u.cards.insert(card(1, mine), CardStatus::Loading);
             u.cards.insert(card(2, theirs), CardStatus::Loading);
-            u.media_owners.insert(MediaKey::Card(card(1, mine)), 12);
-            u.media_owners.insert(MediaKey::Card(card(2, theirs)), 13);
             forget_owner(1, cx);
             let u = ui(cx);
             assert!(
@@ -1249,23 +1255,70 @@ mod tests {
         });
     }
 
-    /// Coordinator item 3, driven through `save` itself: a client released while its file opens gets no save dialog.
+    /// An open that answers whatever the test sends, and says whether it was asked for.
+    fn recorded(
+        rx: OpenAnswer,
+    ) -> (
+        Rc<std::cell::Cell<bool>>,
+        impl FnOnce() -> OpenAnswer + 'static,
+    ) {
+        let asked = Rc::new(std::cell::Cell::new(false));
+        let a = asked.clone();
+        (asked, move || {
+            a.set(true);
+            rx
+        })
+    }
+
+    /// Review L m7: the save dialog asks first, and the file is opened (decrypted) only once a path was chosen, so no
+    /// plaintext waits on a dialog the person may leave open for as long as they like.
     #[gpui::test]
-    fn save_asks_for_no_path_after_a_release_mid_open(cx: &mut gpui::TestAppContext) {
+    fn a_save_decrypts_only_after_its_path_is_chosen(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("dilla-l-m7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         let (tx, rx) = answer();
-        cx.update(|cx| save_from(card_key(), rx, std::env::temp_dir(), cx));
-        cx.update(|cx| forget_owner(7, cx));
+        let (asked, open) = recorded(rx);
+        cx.update(|cx| save_from(card_key(), "a.txt", open, dir.clone(), cx));
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path(), "the dialog asks first");
+        assert!(!asked.get(), "nothing is opened while the dialog asks");
+        cx.simulate_new_path_selection(|_| Some(dir.join("a.txt")));
+        cx.run_until_parked();
+        assert!(asked.get(), "the chosen path opens the file");
         tx.send(Ok(opened(b"secret".to_vec(), "a.txt", "text/plain")))
             .ok();
         cx.run_until_parked();
-        assert!(
-            !cx.did_prompt_for_new_path(),
-            "no save dialog after the release"
-        );
+        assert_eq!(std::fs::read(dir.join("a.txt")).unwrap(), b"secret");
         cx.update(|cx| {
             let u = ui(cx);
             assert!(u.cards.is_empty() && u.saves.is_empty());
         });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Coordinator item 3, driven through `save` itself: a client released while its save dialog asks opens nothing and
+    /// writes nothing.
+    #[gpui::test]
+    fn save_opens_nothing_after_a_release_mid_dialog(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("dilla-l-m7r-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_tx, rx) = answer();
+        let (asked, open) = recorded(rx);
+        cx.update(|cx| save_from(card_key(), "a.txt", open, dir.clone(), cx));
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path());
+        cx.update(|cx| forget_owner(7, cx));
+        cx.simulate_new_path_selection(|_| Some(dir.join("a.txt")));
+        cx.run_until_parked();
+        assert!(!asked.get(), "nothing opened after the release");
+        assert!(!dir.join("a.txt").exists());
+        cx.update(|cx| {
+            let u = ui(cx);
+            assert!(u.cards.is_empty() && u.saves.is_empty());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Coordinator item 3, driven through `play` itself: a released client's audio never starts, and its video is never
@@ -1352,7 +1405,7 @@ mod tests {
         });
     }
 
-    /// Coordinator item 2: two saves of one card while the first opens each write the path their own dialog chose.
+    /// Coordinator item 2: two saves of one card in flight at once each write the path their own dialog chose.
     #[gpui::test]
     fn two_saves_of_one_card_each_write_their_path(cx: &mut gpui::TestAppContext) {
         let dir = std::env::temp_dir().join(format!("dilla-t28-saves-{}", std::process::id()));
@@ -1360,27 +1413,27 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (tx1, rx1) = answer();
         let (tx2, rx2) = answer();
-        cx.update(|cx| {
-            save_from(card_key(), rx1, dir.clone(), cx);
-            save_from(card_key(), rx2, dir.clone(), cx);
-        });
-        tx1.send(Ok(opened(b"one".to_vec(), "a.txt", "text/plain")))
-            .ok();
+        cx.update(|cx| save_from(card_key(), "a.txt", move || rx1, dir.clone(), cx));
         cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path());
         cx.simulate_new_path_selection(|_| Some(dir.join("first.txt")));
         cx.run_until_parked();
-        cx.update(|cx| {
-            assert!(
-                matches!(ui(cx).cards.get(&card_key()), Some(CardStatus::Loading)),
-                "the second save is still in flight"
-            );
-        });
-        tx2.send(Ok(opened(b"two".to_vec(), "a.txt", "text/plain")))
-            .ok();
+        cx.update(|cx| save_from(card_key(), "a.txt", move || rx2, dir.clone(), cx));
         cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path(), "the second save asks too");
         cx.simulate_new_path_selection(|_| Some(dir.join("second.txt")));
+        cx.run_until_parked();
+        tx2.send(Ok(opened(b"two".to_vec(), "a.txt", "text/plain")))
+            .ok();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                matches!(ui(cx).cards.get(&card_key()), Some(CardStatus::Loading)),
+                "the first save is still in flight"
+            );
+        });
+        tx1.send(Ok(opened(b"one".to_vec(), "a.txt", "text/plain")))
+            .ok();
         cx.run_until_parked();
         assert_eq!(std::fs::read(dir.join("first.txt")).unwrap(), b"one");
         assert_eq!(std::fs::read(dir.join("second.txt")).unwrap(), b"two");

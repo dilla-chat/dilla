@@ -79,6 +79,9 @@ pub struct MessageUi {
     pub ctx: Option<SlotCx>,
     /// The log's focus: PageUp and PageDown act while it holds the focus.
     pub log_focus: Option<gpui::FocusHandle>,
+    /// The conversation's notice and the channel it is about (Conversation.tsx `notice`): a jump to a message the log
+    /// has not loaded says so.
+    notice: Option<(ChannelId, &'static str)>,
 }
 
 /// The window's message state, created on first use. Notifying it redraws the view that drew the timeline.
@@ -88,6 +91,14 @@ pub fn ui(window: &mut Window, cx: &mut App) -> Entity<MessageUi> {
     if crate::per_window::get::<UiHandle>(id, cx).is_none_or(|h| h.0.entity_id() != e.entity_id()) {
         crate::per_window::set(id, Some(UiHandle(e.clone())), cx);
     }
+    e
+}
+
+/// Tests: `window`'s message state, made outside a frame.
+#[cfg(test)]
+pub(crate) fn ui_for_test(window: gpui::WindowId, cx: &mut App) -> Entity<MessageUi> {
+    let e = cx.new(|_| MessageUi::default());
+    crate::per_window::set(window, Some(UiHandle(e.clone())), cx);
     e
 }
 
@@ -274,6 +285,24 @@ impl MessageUi {
 
     pub fn close_pins(&mut self, cx: &mut Context<Self>) {
         self.pins = None;
+        cx.notify();
+    }
+
+    /// The notice `channel`'s conversation shows (`strings.rs` key), if any.
+    pub fn notice_in(&self, channel: ChannelId) -> Option<&'static str> {
+        self.notice.filter(|(c, _)| *c == channel).map(|(_, k)| k)
+    }
+
+    /// Conversation.tsx's jump effect: the message a jump aims at is not in `channel`'s loaded log, so the conversation
+    /// says the original is further back (`shell.message.replyNotLoaded`) instead of jumping.
+    pub fn not_loaded(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
+        self.notice = Some((channel, "shell.message.replyNotLoaded"));
+        cx.notify();
+    }
+
+    /// The notice's Dismiss.
+    pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        self.notice = None;
         cx.notify();
     }
 

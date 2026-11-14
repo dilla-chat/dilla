@@ -441,6 +441,101 @@ async fn heartbeat_timeout_reconnects() {
     gw.stop();
 }
 
+/// A pre-connect check answering `verdicts` in turn (then `Go`), counting its calls.
+fn checks(
+    verdicts: Vec<dilla_client::gateway::PreConnectVerdict>,
+) -> (
+    dilla_client::gateway::PreConnect,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let verdicts = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+        verdicts,
+    )));
+    let counted = calls.clone();
+    let check: dilla_client::gateway::PreConnect = Arc::new(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let v = verdicts
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(dilla_client::gateway::PreConnectVerdict::Go);
+        Box::pin(async move { v })
+    });
+    (check, calls)
+}
+
+/// Wave 2 H (recovery review, concern 4; controller.ts `mintTicket`): the instance signer pin is checked again before
+/// every connection attempt, the reconnects included. A check that cannot be made now (`Retry`, the instance unreachable)
+/// opens no socket and is tried again after the backoff.
+#[tokio::test]
+async fn the_pre_connect_check_runs_before_every_attempt() {
+    use dilla_client::gateway::PreConnectVerdict as V;
+    let script = Script {
+        heartbeat_ms: 500,
+        ack_first: false,
+        ..Script::default()
+    };
+    let (addr, mut seen) = scripted_server(script).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let options = GatewayOptions {
+        ack_timeout: Duration::from_millis(300),
+        ..GatewayOptions::default()
+    };
+    let (check, calls) = checks(vec![V::Retry, V::Go]);
+    let gw = WsGateway::connect_checked(base, AuthToken::new("tok-pin"), options, Some(check));
+    let mut events = gw.events();
+    let GatewayEvent::Connected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Connected");
+    };
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "checked before the first attempt and again before its retry"
+    );
+    let upgrades = std::iter::from_fn(|| seen.try_recv().ok())
+        .filter(|s| matches!(s, Seen::Upgrade { .. }))
+        .count();
+    assert_eq!(upgrades, 1, "the Retry opened no socket");
+    // The unanswered heartbeat drops the connection; the reconnect is checked first.
+    let GatewayEvent::Disconnected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Disconnected");
+    };
+    let GatewayEvent::Connected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Connected again");
+    };
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    gw.stop();
+}
+
+/// Wave 2 H: a pin the instance no longer matches stops the gateway for good (controller.ts `failInstanceSignerPin`:
+/// the gateway stops, the account fails closed), with no socket opened.
+#[tokio::test]
+async fn a_refused_pre_connect_check_stops_the_gateway() {
+    use dilla_client::gateway::{PreConnectVerdict as V, Refusal};
+    let (addr, mut seen) = scripted_server(Script::default()).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let (check, calls) = checks(vec![V::Refuse]);
+    let gw = WsGateway::connect_checked(
+        base,
+        AuthToken::new("tok-pin"),
+        GatewayOptions::default(),
+        Some(check),
+    );
+    let mut events = gw.events();
+    let GatewayEvent::Disconnected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Disconnected");
+    };
+    assert_eq!(gw.refusal(), Some(Refusal::InstanceSignerChanged));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(seen.try_recv().is_err(), "no socket was opened");
+}
+
 #[tokio::test]
 async fn oversized_frame_refused() {
     // The bound must still admit the ready frame (106 bytes here): a larger read closes the socket 4109.

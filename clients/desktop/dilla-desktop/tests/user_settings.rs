@@ -159,11 +159,32 @@ fn keyboard_user_settings_every_shortcut_is_a_keystroke() {
 }
 
 /// Every action Settings -> Keyboard lists has a registered binding (no exception list: Task 28 bound the last two, the
-/// jump and the open DM's call, which this test used to allow as "expected missing" and so never caught).
+/// jump and the open DM's call, which this test used to allow as "expected missing" and so never caught). Review L m9:
+/// each row's chord is bound to the row's own action, not just to some action (a later binding of the chord elsewhere
+/// would otherwise satisfy it).
 #[gpui::test]
 fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {
     cx.update(dilla_desktop::install);
+    // The action each row names, by the row's `strings.rs` key. Escape closes a dialog or the settings frame through
+    // their own key listeners, not a binding (`components::dialog`, `settings::frame`; `components.rs`'s
+    // `dialog_traps_focus_and_escape_returns_it` holds it), so its row names none.
+    let expected = |action: &str| -> Option<&'static str> {
+        match action {
+            "signalSettings.keyboard.search" | "signalSettings.keyboard.searchSlash" => {
+                Some("dilla_search::OpenSearch")
+            }
+            "signalSettings.keyboard.mute" => Some("dilla_voice::ToggleMute"),
+            "signalSettings.keyboard.deafen" => Some("dilla_voice::ToggleDeafen"),
+            "signalSettings.keyboard.close" => None,
+            "signalSettings.keyboard.jump" => Some("dilla_shell::JumpToPresent"),
+            "keyboard.dmCallAction" => Some("dilla_shell::CallOpenDm"),
+            other => panic!("{other}: a Settings -> Keyboard row this test does not know"),
+        }
+    };
     for s in SHORTCUTS {
+        let Some(want) = expected(s.action) else {
+            continue;
+        };
         let input = [gpui::Keystroke::parse(s.keystroke).unwrap()];
         let names: Vec<String> = cx.update(|cx| {
             cx.all_bindings_for_input(&input)
@@ -171,11 +192,11 @@ fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {
                 .map(|b| b.action().name().to_owned())
                 .collect()
         });
-        let registered = names.iter().any(|n| !n.starts_with("input::"));
         assert!(
-            registered,
-            "{} ({}) is listed in Settings -> Keyboard but bound nowhere: {names:?}",
-            s.action, s.keystroke
+            names.iter().any(|n| n == want),
+            "{} ({}) is listed in Settings -> Keyboard but {want} is not bound to it: {names:?}",
+            s.action,
+            s.keystroke
         );
     }
 }

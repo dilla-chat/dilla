@@ -113,7 +113,44 @@ impl Messages {
         channel: ChannelId,
         msg: MessageId,
     ) -> oneshot::Receiver<Result<(), ClientError>> {
-        self.fold(channel, msg, DELETE, String::new())
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            let g = Self::group_of(&inner, channel).await?;
+            // controller.ts `deleteMessage` (Task 28 item 13): a member timed out in the channel's community may still
+            // remove their own message. The instance refuses every upload of theirs while the timeout lasts, a delete
+            // fold included, so the message is deleted from the group through the instance instead.
+            let s = inner.snapshot();
+            if let (Some(community), Some(me)) = (
+                s.channel(channel).map(|c| c.community_id),
+                s.account.user_id,
+            ) && crate::features::moderation::Moderation::of(&inner)
+                .timeout_of(community, me)
+                .await
+                .map_err(crate::features::profile::refusal)?
+                .is_some()
+            {
+                let seq = s
+                    .timelines
+                    .get(&channel)
+                    .and_then(|t| t.items.iter().find(|i| i.msg_id == Some(msg)))
+                    .and_then(|i| i.seq)
+                    .ok_or_else(|| ClientError::Sync("E_BAD_INPUT".into()))?;
+                inner
+                    .api()
+                    .socket_route::<crate::http::routes::DeleteGroupMessage>(
+                        &[&crate::state::hex(&g), &seq.to_string()],
+                        None,
+                    )
+                    .await
+                    .map_err(crate::features::profile::refusal)?;
+                return Ok(());
+            }
+            inner
+                .engine()
+                .send_request(g, DELETE, Some(msg.0), String::new())
+                .await?;
+            Ok(())
+        })
     }
 
     /// Pins (`on`) or unpins `msg`.

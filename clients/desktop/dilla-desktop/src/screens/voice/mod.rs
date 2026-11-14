@@ -127,6 +127,9 @@ pub struct VoiceAreas {
     windows: HashMap<WindowId, VoiceUi>,
     /// The repaint loops running now, one per live call ([`repaint_on_video`]).
     loops: usize,
+    /// The newest join's [`handover`] (review L m1): one call per device, so an older handover still waiting starts no
+    /// join of its own.
+    handovers: u64,
 }
 
 impl Global for VoiceAreas {}
@@ -653,6 +656,10 @@ pub fn leave_other_calls(window: WindowId, cx: &mut App) {
 /// and the window says it could not join: a leave that never answers must not hold the join forever.
 pub const HANDOVER_WAIT: Duration = Duration::from_secs(10);
 
+/// How long the handover waits for the join's own answer (review L m2). Past it the handover stops looking: the window's
+/// voice area still shows whatever the client's call becomes, and a window that closes leaves it then.
+pub const JOIN_WAIT: Duration = Duration::from_secs(120);
+
 /// How often the handover looks at the pending leaves.
 const HANDOVER_POLL: Duration = Duration::from_millis(50);
 
@@ -684,7 +691,8 @@ pub fn after_leaving_other_calls(
 
 /// The handover of [`after_leaving_other_calls`]: waits for `leaves` (each answers on its client's runtime; the wait
 /// polls them on the UI's executor, never blocking it) for [`HANDOVER_WAIT`] at most, then runs `start`. A leave that
-/// does not answer in time, or a join that answers with an error, shows `voice.failed` in `window`.
+/// does not answer in time shows `voice.failed` in `window`; a join that answers with an error shows its
+/// [`join_failure_key`] notice (none for a cancelled start or a trust refusal).
 ///
 /// Task 28 item 2: the join belongs to `window`'s voice area. A window that closed while the leaves were pending starts
 /// no join; a join that lands after its window closed is left again (`undo`), else the client would stay in a call no
@@ -696,6 +704,12 @@ pub fn handover(
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
+    let ticket = {
+        let areas = cx.default_global::<VoiceAreas>();
+        areas.handovers += 1;
+        areas.handovers
+    };
+    let newest = move |cx: &App| cx.try_global::<VoiceAreas>().map(|a| a.handovers) == Some(ticket);
     cx.spawn(async move |cx| {
         let mut waited = Duration::ZERO;
         loop {
@@ -708,6 +722,9 @@ pub fn handover(
             if leaves.is_empty() {
                 break;
             }
+            if !cx.update(|cx| newest(cx)) {
+                return;
+            }
             if waited >= HANDOVER_WAIT {
                 log::warn!(
                     "voice: another instance's call did not answer its leave; the join is dropped"
@@ -718,26 +735,38 @@ pub fn handover(
             cx.background_executor().timer(HANDOVER_POLL).await;
             waited += HANDOVER_POLL;
         }
-        if !cx.update(|cx| area_open(window, cx)) {
+        // A newer join started meanwhile (in this window or another): it is the device's one call (review L m1).
+        if !cx.update(|cx| area_open(window, cx) && newest(cx)) {
             return;
         }
-        // The join answers on the client's runtime; it is polled on the same timer (a wake from another thread is no
-        // wake of the UI's executor).
+        // The join answers on the client's runtime; it is polled on the same timer, for [`JOIN_WAIT`] at most. (The
+        // platform dispatcher would wake an await on the answer from another thread, but the tests' scheduler runs only
+        // what its own clock and turns wake, so the poll keeps both alike.)
         let mut join = start();
-        let joined = loop {
+        let mut joining = Duration::ZERO;
+        // `None`: joined; else the notice to show (shell-model.ts `joinFailureKey`), if any.
+        let failure: Option<Option<&'static str>> = loop {
             match join.try_recv() {
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    if joining >= JOIN_WAIT {
+                        log::warn!("voice: a join did not answer; its window stops waiting for it");
+                        return;
+                    }
                     cx.background_executor().timer(HANDOVER_POLL).await;
+                    joining += HANDOVER_POLL;
                 }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break false,
-                Ok(r) => break r.is_ok(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    break Some(Some("voice.failed"));
+                }
+                Ok(Ok(())) => break None,
+                Ok(Err(e)) => break Some(join_failure_key(&e)),
             }
         };
         cx.update(|cx| {
             if !area_open(window, cx) {
                 undo();
-            } else if !joined {
-                join_failed(window, cx);
+            } else if let Some(Some(key)) = failure {
+                join_notice(window, key, cx);
             }
         });
     })
@@ -754,7 +783,7 @@ pub const QUIT_WAIT: Duration = Duration::from_secs(3);
 
 /// Task 28 item 3: quitting leaves every live call (its voice Remove reaches the instance, as a closed window's does),
 /// waiting for the leaves [`QUIT_WAIT`] at most. The leaves answer on their clients' runtimes, so the UI thread may
-/// block on them here. Answers whether every leave answered in time.
+/// block on them here. Answers whether every leave answered Ok in time.
 pub fn on_quit(cx: &mut App) -> bool {
     let mut clients: Vec<Rc<Client>> = Vec::new();
     if let Some(areas) = cx.try_global::<VoiceAreas>() {
@@ -772,24 +801,28 @@ pub fn on_quit(cx: &mut App) -> bool {
     let leaves: Vec<_> = clients.iter().map(|c| c.voice().leave()).collect();
     let answered = wait_answers(leaves, QUIT_WAIT);
     if !answered {
-        log::warn!("voice: a call's leave did not answer before the app quit");
+        log::warn!("voice: a call's leave failed or did not answer before the app quit");
     }
     answered
 }
 
 /// Waits for every answer in `answers` (an answer, or its sender gone) for `within` at most, blocking the calling
-/// thread. Answers whether all answered.
+/// thread. Answers whether all answered `Ok` in time (review L I3: a leave answers `Ok` only once the instance
+/// acknowledged its voice Remove; an error, or a sender gone, is no success).
 pub fn wait_answers(mut answers: Vec<VoiceAnswer>, within: Duration) -> bool {
     let deadline = std::time::Instant::now() + within;
+    let mut all_ok = true;
     loop {
-        answers.retain_mut(|a| {
-            matches!(
-                a.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            )
+        answers.retain_mut(|a| match a.try_recv() {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => true,
+            Ok(Ok(())) => false,
+            Ok(Err(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                all_ok = false;
+                false
+            }
         });
         if answers.is_empty() {
-            return true;
+            return all_ok;
         }
         if std::time::Instant::now() >= deadline {
             return false;
@@ -798,9 +831,33 @@ pub fn wait_answers(mut answers: Vec<VoiceAnswer>, within: Duration) -> bool {
     }
 }
 
+/// The notice for a join that answered `e` (shell-model.ts `joinFailureKey`), `None` when nothing is said.
+pub fn join_failure_key(e: &dilla_client::ClientError) -> Option<&'static str> {
+    let dilla_client::ClientError::Sync(code) = e else {
+        return Some("voice.failed");
+    };
+    match code.as_str() {
+        "E_CALL_FULL" => Some("voice.full"),
+        "E_CALL_SHARERS_FULL" => Some("voice.sharersFull"),
+        "E_CALL_IN_OTHER_TAB" => Some("voice.otherTab"),
+        // A start the person cancelled (a leave, or another join, while joining: the client's `E_CANCELLED`, the web's
+        // `E_ABORTED`) says nothing.
+        "E_CANCELLED" | "E_ABORTED" => None,
+        // A trust refusal sets the call's blocked notice, which says why (flow 06).
+        "E_UMK_CHANGED" | "E_CREDENTIAL" | "E_DEVICE_UNLISTED" | "E_DEVICE_REVOKED"
+        | "E_TIER_MISMATCH" | "E_BINDING" => None,
+        _ => Some("voice.failed"),
+    }
+}
+
 /// A join that did not happen: `window` says so (VoiceView.tsx's `voice.failed`).
 fn join_failed(window: WindowId, cx: &mut App) {
-    dilla_desktop_ui::components::toast::show_toast_in(Some(window), t("voice.failed"), cx);
+    join_notice(window, "voice.failed", cx);
+}
+
+/// Shows the join notice `key` in `window`.
+fn join_notice(window: WindowId, key: &'static str, cx: &mut App) {
+    dilla_desktop_ui::components::toast::show_toast_in(Some(window), t(key), cx);
 }
 
 /// Joins `channel`'s call through `window`'s own client (the voice row's join, the stage's join), once a call another

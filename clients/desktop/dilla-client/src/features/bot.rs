@@ -12,6 +12,7 @@
 //!   finished row goes away [`crate::state::bot::PRIVATE_RESULT_TTL_MS`] after it finished; the area sweeps itself on a timer.
 
 pub mod catalog;
+pub mod hints;
 mod io;
 pub mod private;
 pub mod registry;
@@ -42,6 +43,45 @@ impl Client {
         Bot {
             inner: self.inner().clone(),
         }
+    }
+}
+
+/// A webhook avatar id as the instance names one: 64 lower-case hex digits (routes.ts `getWebhookAvatar`).
+pub fn is_webhook_avatar_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+impl Bot {
+    /// routes.ts `getWebhookAvatar` (Task 28 item 15): `GET …/bot/webhook-avatars/{avatar}`, the instance's re-encoded
+    /// PNG of a webhook post's avatar (at most 1 MiB), the only place one is ever loaded from. `None` on 404 (the
+    /// instance keeps avatars in memory: gone after its restart). An id that is not one is refused before any request.
+    pub fn webhook_avatar(
+        &self,
+        community: CommunityId,
+        avatar: String,
+    ) -> tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, crate::ClientError>> {
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            if !is_webhook_avatar_id(&avatar) {
+                return Err(crate::ClientError::Sync("E_CBOR_SHAPE".into()));
+            }
+            let reply = inner
+                .api()
+                .http_call::<crate::http::routes::GetWebhookAvatar>(
+                    &[&community.hex(), &avatar],
+                    crate::http::routes::NoBody,
+                    true,
+                )
+                .await
+                .map_err(|e| {
+                    if e.status == 0 && e.code == "E_NETWORK" {
+                        crate::ClientError::Network(e.detail)
+                    } else {
+                        crate::ClientError::Sync(e.code)
+                    }
+                })?;
+            Ok((reply.status == 200 && !reply.body.is_empty()).then_some(reply.body))
+        })
     }
 }
 
@@ -324,6 +364,18 @@ pub(crate) fn on_connection_of(
         return;
     }
     sealed.new_connection();
+    // controller.ts (review M6): once the ready's trust refresh has settled, a community whose first pin was refused for
+    // want of the Bot's attestation is resolved again (Task 28 item 21, `attestationsChanged`).
+    let (after, refreshing) = (sealed.clone(), inner.clone());
+    sealed.spawn(Box::pin(async move {
+        let Some(engine) = refreshing.upgrade().map(|i| i.engine().clone()) else {
+            return;
+        };
+        engine.refresh_trust().await;
+        if after.connection_generation() == generation {
+            after.attestations_changed().await;
+        }
+    }));
     let weak = inner;
     let waiting = sealed.clone();
     sealed.spawn(Box::pin(async move {
@@ -377,6 +429,55 @@ pub(crate) fn stopped(inner: &Arc<Inner>) {
     });
 }
 
+/// Each running client's op 63 bookkeeping ([`hints::HintGate`]), by its `Inner`.
+static HINTS: Mutex<Vec<(Weak<Inner>, SharedGate)>> = Mutex::new(Vec::new());
+
+/// One client's [`hints::HintGate`], shared with its trailing fetches.
+type SharedGate = Arc<Mutex<hints::HintGate>>;
+
+fn hints_for(inner: &Arc<Inner>) -> SharedGate {
+    let mut r = HINTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    r.retain(|(w, _)| w.strong_count() > 0);
+    if let Some((_, g)) = r
+        .iter()
+        .find(|(w, _)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(inner)))
+    {
+        return g.clone();
+    }
+    let gate = Arc::new(Mutex::new(hints::HintGate::default()));
+    r.push((Arc::downgrade(inner), gate.clone()));
+    gate
+}
+
+/// Runs `fetch` for op 63's hint `frame` when the gate says (hints.ts `request`): now, after the coalescing window, or not
+/// at all.
+fn coalesced(
+    inner: &Arc<Inner>,
+    frame: &frames::BotStateChangedFrame,
+    fetch: impl FnOnce() + Send + 'static,
+) {
+    let scope = (frame.scope_kind, frame.scope_id);
+    let gate = hints_for(inner);
+    let hint = gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .on_hint(scope, frame.revision, std::time::Instant::now());
+    match hint {
+        hints::Hint::Drop => {}
+        hints::Hint::Now => fetch(),
+        hints::Hint::After(wait) => drop(inner.spawn(async move {
+            tokio::time::sleep(wait).await;
+            gate.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .due(scope, std::time::Instant::now());
+            fetch();
+            Ok(())
+        })),
+    }
+}
+
 /// The voice channel whose player op 63 asks to read again: a call scope (kind 2, its id the voice channel) of the call
 /// this device is in, where the dock shows the player (music.tsx reads only a shown player).
 fn music_hint(
@@ -412,18 +513,27 @@ impl AreaFrames for Bot {
                 let Ok(frame) = frames::bot_state_changed_of(f) else {
                     return;
                 };
-                // A community's Bot changed state (scope kind 0): read its catalog and status again.
+                // A community's Bot changed state (scope kind 0): read its catalog and status again, at most once per
+                // 250 ms (Task 28 item 15, hints.ts).
                 if frame.scope_kind == 0 {
-                    drop(inner.spawn(async move {
-                        let _ = sealed.refresh(CommunityId(frame.scope_id)).await;
-                        Ok(())
-                    }));
+                    let reading = inner.clone();
+                    coalesced(inner, &frame, move || {
+                        drop(reading.spawn(async move {
+                            let _ = sealed.refresh(CommunityId(frame.scope_id)).await;
+                            Ok(())
+                        }));
+                    });
                 }
-                // The player of this device's call changed (Task 21's `Music::refresh`, integration 3 step 5).
+                // The player of this device's call changed (Task 21's `Music::refresh`, integration 3 step 5). Only a
+                // shown player is read (hints.ts `visible`).
                 if let Some(channel) = music_hint(&inner.snapshot(), &frame) {
-                    let transport = crate::features::bot_admin::default_transport(inner);
-                    let admin = crate::features::bot_admin::BotAdmin::new(inner.clone(), transport);
-                    drop(crate::features::music::Music::new(admin).refresh(channel));
+                    let reading = inner.clone();
+                    coalesced(inner, &frame, move || {
+                        let transport = crate::features::bot_admin::default_transport(&reading);
+                        let admin =
+                            crate::features::bot_admin::BotAdmin::new(reading.clone(), transport);
+                        drop(crate::features::music::Music::new(admin).refresh(channel));
+                    });
                 }
             }
             _ => {}
@@ -436,6 +546,15 @@ mod tests {
     use super::*;
     use crate::gateway::frames::Value;
     use crate::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+
+    /// Task 28 item 15 (routes.ts `getWebhookAvatar`): only a 64-digit lower-case hex id is ever put in the path.
+    #[test]
+    fn a_webhook_avatar_id_is_64_lower_hex() {
+        assert!(is_webhook_avatar_id(&"ab".repeat(32)));
+        assert!(!is_webhook_avatar_id(&"AB".repeat(32)));
+        assert!(!is_webhook_avatar_id(&"ab".repeat(31)));
+        assert!(!is_webhook_avatar_id(&format!("{}/x", "a".repeat(62))));
+    }
 
     /// Integration 3, step 5: op 63's call scope (kind 2, its id the voice channel) reads the player again while this
     /// device is in that call (the dock shows it, music.tsx's `watchBotHint`); another call, another kind or no call

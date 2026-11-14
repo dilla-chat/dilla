@@ -574,6 +574,51 @@ async fn remove_changed_device_restores_sending_here_only() {
 
 /// Requirements 15-16 (flow 07): a DM opened from one side is listed on the other, its text arrives and counts as
 /// unread there until it is read.
+/// Task 28 item 17 (engine.ts `onUnexpectedWelcome`, controller.ts `reloadDms` on it): a Welcome for a group this device
+/// does not expect (a DM another person just opened) reads the DM list at once, so the DM is listed and joined without
+/// waiting for the list's poll. Bob's client runs no DM watcher (no poll, no ready read): only the Welcome can list it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+async fn an_unexpected_welcome_reads_the_dm_list() {
+    let host = host("t28-welcome-dm").await;
+    let invite = host.invites.last().unwrap().clone();
+    let pa = sign_up(&host, &invite, "alice", "Alice", "t28-welcome-dm").await;
+    let pb = sign_up(&host, &invite, "bob", "Bob", "t28-welcome-dm").await;
+    let (host, pa, pb) = tokio::task::spawn_blocking(move || {
+        community(&host, &pa, "dms", &[&pb]);
+        clear_session(&pa);
+        clear_session(&pb);
+        (host, pa, pb)
+    })
+    .await
+    .unwrap();
+    let _keep = host;
+    let a = start(&pa).await;
+    let b = start(&pb).await;
+    wait_for(&b, WAIT, "b online", |s| {
+        s.connection.status == dilla_client::state::ConnectionStatus::Online
+    })
+    .await;
+    assert!(!b.dms().started(), "bob's client runs no DM watcher");
+    let dm = a
+        .dms()
+        .open_dm(UserId(pb.user_id))
+        .await
+        .unwrap()
+        .expect("the DM opens");
+    a.dms()
+        .open(dm)
+        .await
+        .unwrap()
+        .expect("a registers the DM's group");
+    wait_for(&b, WAIT, "b lists and joins the DM on the Welcome", |s| {
+        s.dms
+            .get(dm)
+            .is_some_and(|d| d.group == dilla_client::state::ChannelGroupState::Active)
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
 async fn dm_open_list_send_and_unread() {

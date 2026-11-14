@@ -858,15 +858,35 @@ fn quitting_leaves_the_live_call(cx: &mut TestAppContext) {
     w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
         s.voice.call.phase == CallPhase::In
     }));
+    // Review L I3: the quit's answer is the leaves' outcome, not only that they answered: `leave` answers Ok only once
+    // the instance acknowledged the voice Remove (`calls.leave`), so a Remove that fails fails this.
     assert!(
         cx.update(voice::on_quit),
-        "the call's leave answered within the quit's wait"
+        "the call's leave answered Ok within the quit's wait"
     );
     assert_eq!(phase_of(&w.alice), CallPhase::Idle);
     assert!(
         w.alice.voice().media().borrow().is_none(),
         "the media link is cut"
     );
+}
+
+/// Review L I3: a leave that answers an error, or whose answer is dropped, is no successful quit.
+#[test]
+fn a_failed_leave_fails_the_quit_s_wait() {
+    let (tx, failed) = answer_pair();
+    tx.send(Err(dilla_client::ClientError::Network("down".into())))
+        .unwrap();
+    assert!(!voice::wait_answers(
+        vec![failed],
+        std::time::Duration::from_secs(5)
+    ));
+    let (tx, closed) = answer_pair();
+    drop(tx);
+    assert!(!voice::wait_answers(
+        vec![closed],
+        std::time::Duration::from_secs(5)
+    ));
 }
 
 /// Task 28 item 3: the quit's wait for the leaves is bounded: a leave that never answers does not hold the quit.
@@ -884,10 +904,10 @@ fn the_quit_s_wait_for_the_leaves_is_bounded() {
     );
     let (tx, answered) = answer_pair();
     tx.send(Ok(())).unwrap();
-    let (tx2, closed) = answer_pair();
-    drop(tx2);
+    let (tx2, answered2) = answer_pair();
+    tx2.send(Ok(())).unwrap();
     assert!(voice::wait_answers(
-        vec![answered, closed],
+        vec![answered, answered2],
         std::time::Duration::from_secs(5)
     ));
 }
@@ -1143,4 +1163,124 @@ fn control_shift_m_and_d_show_muted_and_deafened_to_the_peer(cx: &mut TestAppCon
         false,
         "bob sees alice undeafened",
     );
+}
+
+/// Review L m1: one call per device, the newest join wins. A handover still waiting for another window's leave is dropped
+/// when a newer join starts (in any window): else both would join once the leave answered.
+#[gpui::test]
+fn a_newer_join_drops_an_older_waiting_handover(cx: &mut TestAppContext) {
+    let (_a, a) = handover_window(cx);
+    let b = cx.add_window(|_, _| Host).window_id();
+    cx.update(|cx| voice::sync(b, state(2), None, cx));
+    let (older, newer) = (Rc::new(Did::default()), Rc::new(Did::default()));
+    let (leave_tx, leave_rx) = answer_pair();
+    let (_join_a_tx, join_a_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&older, join_a_rx);
+    cx.update(|cx| voice::handover(a, vec![leave_rx], start, undo, cx));
+    cx.run_until_parked();
+    // B's join finds no live call (the other window's leave already published Idle) and starts at once.
+    let (_join_b_tx, join_b_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&newer, join_b_rx);
+    cx.update(|cx| voice::handover(b, Vec::new(), start, undo, cx));
+    cx.run_until_parked();
+    assert!(newer.started.get());
+    leave_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(!older.started.get(), "the older handover starts no join");
+    assert_eq!(toast_in(cx, a), None, "a dropped handover says nothing");
+}
+
+/// Review L m2: a join whose answer never comes is not polled for as long as the app runs.
+#[gpui::test]
+fn a_join_that_never_answers_is_not_polled_forever(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, Vec::new(), start, undo, cx));
+    cx.run_until_parked();
+    assert!(did.started.get());
+    cx.executor()
+        .advance_clock(voice::JOIN_WAIT - std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(!join_tx.is_closed(), "still waiting within the bound");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(join_tx.is_closed(), "the poll gave up on the answer");
+}
+
+/// The toast a join that answers `answer` leaves in its window, after the handover.
+fn toast_after_join(
+    cx: &mut TestAppContext,
+    answer: Result<(), dilla_client::ClientError>,
+) -> Option<String> {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, Vec::new(), start, undo, cx));
+    cx.run_until_parked();
+    join_tx.send(answer).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    toast_in(cx, id)
+}
+
+fn sync_err(code: &str) -> Result<(), dilla_client::ClientError> {
+    Err(dilla_client::ClientError::Sync(code.into()))
+}
+
+/// Review L I1 (shell-model.ts `joinFailureKey`): a join the person cancelled (a leave, or another join, while joining)
+/// says nothing.
+#[gpui::test]
+fn a_cancelled_join_says_nothing(cx: &mut TestAppContext) {
+    assert_eq!(toast_after_join(cx, sync_err("E_CANCELLED")), None);
+}
+
+/// Review L I1: a trust refusal says nothing in a toast; the stage's blocked notice says why.
+#[gpui::test]
+fn a_trust_refused_join_says_nothing(cx: &mut TestAppContext) {
+    assert_eq!(toast_after_join(cx, sync_err("E_UMK_CHANGED")), None);
+}
+
+/// Review L I1: a full call says so.
+#[gpui::test]
+fn a_full_call_says_it_is_full(cx: &mut TestAppContext) {
+    assert_eq!(
+        toast_after_join(cx, sync_err("E_CALL_FULL")).as_deref(),
+        Some(dilla_desktop::strings::t("voice.full"))
+    );
+}
+
+/// Review L I1: `joinFailureKey`, code by code (shell-model.test.ts).
+#[test]
+fn a_join_failure_maps_as_the_web_s() {
+    use dilla_client::ClientError;
+    let key = |e: ClientError| voice::join_failure_key(&e);
+    let sync = |c: &str| ClientError::Sync(c.into());
+    assert_eq!(key(sync("E_CALL_FULL")), Some("voice.full"));
+    assert_eq!(key(sync("E_CALL_SHARERS_FULL")), Some("voice.sharersFull"));
+    assert_eq!(key(sync("E_CALL_IN_OTHER_TAB")), Some("voice.otherTab"));
+    for quiet in [
+        "E_CANCELLED",
+        "E_ABORTED",
+        "E_UMK_CHANGED",
+        "E_CREDENTIAL",
+        "E_DEVICE_UNLISTED",
+        "E_DEVICE_REVOKED",
+        "E_TIER_MISMATCH",
+        "E_BINDING",
+    ] {
+        assert_eq!(key(sync(quiet)), None, "{quiet}");
+    }
+    assert_eq!(key(sync("E_NETWORK")), Some("voice.failed"));
+    assert_eq!(
+        key(ClientError::Network("down".into())),
+        Some("voice.failed")
+    );
+    assert_eq!(key(ClientError::UnknownChannel), Some("voice.failed"));
 }

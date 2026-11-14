@@ -84,6 +84,8 @@ pub struct ThreadRow {
     kind: ThreadRowKind,
     bot: bool,
     width: f32,
+    /// What stands in the body's place (the inline message editor while the message is edited).
+    replace_body: Option<gpui::AnyElement>,
 }
 
 impl ThreadRow {
@@ -104,7 +106,14 @@ impl ThreadRow {
             kind: ThreadRowKind::Ok,
             bot: false,
             width: body_width(pane_width),
+            replace_body: None,
         }
+    }
+
+    /// Draws `element` in the body's place (MessageItem's `editor`: the message being edited).
+    pub fn replace_body(mut self, element: impl IntoElement) -> Self {
+        self.replace_body = Some(element.into_any_element());
+        self
     }
 
     pub fn grouped(mut self, grouped: bool) -> Self {
@@ -150,8 +159,16 @@ impl RenderOnce for ThreadRow {
             ThreadRowKind::Failed => color::DANGER,
             ThreadRowKind::Note => color::FG_3,
         };
-        let lines = paragraph(&self.body, text::SM, body_line(), tone, self.width);
-        let body = div().flex().flex_col().children(lines);
+        let body = match self.replace_body {
+            Some(element) => div().flex().flex_col().child(element),
+            None => div().flex().flex_col().children(paragraph(
+                &self.body,
+                text::SM,
+                body_line(),
+                tone,
+                self.width,
+            )),
+        };
         let mut root = div().id(self.id).flex().gap(px(COLUMN_GAP)).min_w_0();
         if self.spaced && !self.grouped {
             root = root.mt(px(ROW_GAP));

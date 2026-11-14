@@ -1165,12 +1165,18 @@ impl Body {
                         field = field.error(e.clone());
                     }
                     // `.dw-gifs-settings__form`: the field's 20rem basis takes the line, Save wraps under it.
+                    let field = div().w_full().child(field);
+                    // The automation build records the field's bounds too (the narrow-body test: the widest part).
+                    #[cfg(feature = "automation")]
+                    let field = field
+                        .relative()
+                        .child(crate::automation::bounds_probe("gif-key-field"));
                     let mut form = div()
                         .flex()
                         .flex_wrap()
                         .items_end()
                         .gap(layout::GIFS_FORM_GAP)
-                        .child(div().w_full().child(field))
+                        .child(field)
                         .child(
                             Button::new("gif-save", t("gif.settings.save"))
                                 .variant(ButtonVariant::Accent)

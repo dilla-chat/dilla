@@ -243,6 +243,9 @@ pub trait SyncHooks: Send + Sync {
     /// A community group's removal feed was read to its end (the core holds every tombstone the instance has): its
     /// timeline may be published again ([`Engine::recover_removals_all`] lists those whose read failed).
     fn removals_read(&self, _group: Gid) {}
+    /// engine.ts `onUnexpectedWelcome`: a Welcome for a group this device does not expect was kept (a DM another person
+    /// just opened). Once per group until the expected set changes; the client reads its DM list again.
+    fn unexpected_welcome(&self, _group: Gid) {}
 }
 
 /// The gateway's lifecycle as the model sees it.
@@ -285,6 +288,8 @@ struct St {
     recovery_generation: HashMap<Gid, u64>,
     quiet: HashSet<Gid>,
     lost_reported: HashSet<Gid>,
+    /// Unexpected groups already reported ([`SyncHooks::unexpected_welcome`]); cleared when the expected set changes.
+    unexpected_reported: HashSet<Gid>,
     volunteer: HashMap<Gid, AbortHandle>,
     cursor_timer: HashMap<Gid, AbortHandle>,
     timers: Vec<AbortHandle>,
@@ -533,6 +538,11 @@ impl Engine {
             let mut st = self.st();
             let before: HashSet<Gid> = st.expected.iter().map(|g| g.group_id).collect();
             let gained = groups.iter().any(|g| !before.contains(&g.group_id));
+            let after: HashSet<Gid> = groups.iter().map(|g| g.group_id).collect();
+            // engine.ts `setExpected`: any change lets a kept unexpected Welcome be reported once more.
+            if before != after {
+                st.unexpected_reported.clear();
+            }
             st.expected = groups;
             gained && st.ready.is_some()
         };
@@ -640,6 +650,11 @@ impl Engine {
                         | crate::gateway::Refusal::SecondFactorRequired => {
                             ApiError::local(401, "E_UNAUTHENTICATED", "the session was revoked")
                         }
+                        crate::gateway::Refusal::InstanceSignerChanged => ApiError::local(
+                            0,
+                            "E_CORE_STATE",
+                            "the instance's signer key is not the pinned one",
+                        ),
                         _ => ApiError::local(
                             426,
                             "E_UPGRADE_REQUIRED",
@@ -1142,6 +1157,13 @@ impl Engine {
         })
     }
 
+    /// The trust memory's step before a removal feed is read again for an unjudged moderator: every leaf is read again
+    /// (controller.ts `onReady`'s `fetchedLeaves.clear()`, which is what the web relies on here), and the annotations
+    /// (unlisted, history pending, refused own leaves) are kept until a pass reads those users again.
+    pub(crate) async fn forget_before_removal_retry(&self) {
+        self.trust.lock().await.forget_read_leaves();
+    }
+
     /// [`removals::recover_group`] for `g`. The core verifies a removal only against a moderator whose user key this
     /// device pinned (a trust refresh of the moderator's leaf). A moderator this device has not judged yet (no message
     /// from them read, a refresh that has not run since the ready) is refused `E_CORE_INPUT`: the pending leaves are
@@ -1149,7 +1171,8 @@ impl Engine {
     /// no group changed: a group whose feed has not been read yet must not have its timeline published by it (the
     /// caller reports `g` once its feed is in).
     ///
-    /// The trust memory is reset at most once per group per ready. A success is reported ([`SyncHooks::removals_read`]).
+    /// The read leaves are forgotten at most once per group per ready (the annotations kept). A success is reported
+    /// ([`SyncHooks::removals_read`]).
     async fn recover_removals(&self, g: Gid) -> Result<u64, SyncError> {
         let read = match removals::recover_group(&self.core, &self.api, g).await {
             Err(SyncError::Core(e))
@@ -1157,7 +1180,7 @@ impl Engine {
                     && !self.stopped()
                     && self.st().removal_trust_tried.insert(g) =>
             {
-                *self.trust.lock().await = trust::TrustMemory::default();
+                self.forget_before_removal_retry().await;
                 self.refresh_trust().await;
                 removals::recover_group(&self.core, &self.api, g).await
             }
@@ -1705,7 +1728,11 @@ impl Engine {
                 continue;
             };
             if outcome == 3 {
-                // Kept for a group this device does not expect (a DM it has not listed yet).
+                // Kept for a group this device does not expect (a DM it has not listed yet): reported once (channel.ts
+                // `reportUnexpected`), so the DM list is read and the group expected.
+                if self.st().unexpected_reported.insert(g) {
+                    self.hooks.unexpected_welcome(g);
+                }
                 continue;
             }
             if outcome == 1 && self.state_of(g).await != Some(2) {

@@ -160,6 +160,7 @@ fn offline_link(engine: Arc<Engine>, updates: mpsc::UnboundedSender<Update>) -> 
         gateway: Mutex::new(None),
         updates,
         app_offline: AtomicBool::new(false),
+        pre_connect: None,
     })
 }
 
@@ -641,6 +642,25 @@ async fn the_start_fails_closed_on_another_instance_signer_key() {
         check_instance_signer_pin(&core, &info(instance_id, other))
             .await
             .is_err()
+    );
+}
+
+/// Wave 2 H (controller.ts `mintTicket` and `checkInstanceSignerPin`): the check before each connection. An unreachable
+/// instance or a 5xx is tried again; a document that does not decode, a changed signer key or another instance stops
+/// the gateway, closed.
+#[test]
+fn the_pre_connect_pin_check_fails_closed() {
+    use crate::gateway::PreConnectVerdict as V;
+    let network = ApiError::local(0, "E_NETWORK", "down");
+    let unavailable = ApiError::local(503, "E_HTTP", "");
+    let garbled = ApiError::local(0, "E_DECODE", "a list");
+    assert_eq!(pin_verdict(Err(&network), None), V::Retry);
+    assert_eq!(pin_verdict(Err(&unavailable), None), V::Retry);
+    assert_eq!(pin_verdict(Err(&garbled), None), V::Refuse);
+    assert_eq!(pin_verdict(Ok(()), Some(Ok(()))), V::Go);
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_CORE_STATE".into())))),
+        V::Refuse
     );
 }
 

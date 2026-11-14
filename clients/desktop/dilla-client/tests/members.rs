@@ -1392,6 +1392,68 @@ mod live {
         sees(&owner, ch, ps[1].user_id, "after the timeout").await;
     }
 
+    /// e2e/web/timeout.spec.ts ("A timed out member can still remove their own message"), Task 28 item 13: the timed-out
+    /// path of a delete. Ada's own message from before her timeout is deleted while she is timed out: the delete is not
+    /// refused, and it reaches the owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+    async fn a_timed_out_member_still_deletes_their_own_message() {
+        let (_host, ps, c) = people("t28-timeout-delete", 2).await;
+        let c = CommunityId(c);
+        let (owner, ada) = (start(&ps[0]).await, start(&ps[1]).await);
+        listed(&owner, c, 2).await;
+        listed(&ada, c, 2).await;
+        let ada_id = UserId(ps[1].user_id);
+        let ch = general(&owner, c).await;
+        general(&ada, c).await;
+        owner.open_channel(ch).await.unwrap().expect("owner opens");
+        ada.open_channel(ch).await.unwrap().expect("ada joins");
+        sends(&ada, ch, "delete target").await;
+        sees(&owner, ch, ps[1].user_id, "delete target").await;
+        let msg = ada
+            .state()
+            .borrow()
+            .timelines
+            .get(&ch)
+            .and_then(|t| t.items.iter().find(|i| i.body == "delete target"))
+            .and_then(|i| i.msg_id)
+            .expect("her message's id");
+
+        owner
+            .moderation()
+            .timeout(c, ada_id, TimeoutLength::TenMinutes)
+            .await
+            .unwrap();
+        // The instance holds the timeout (it refuses her posts from here on, as the test above shows).
+        assert!(
+            owner
+                .moderation()
+                .timeout_of(c, ada_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        ada.messages()
+            .delete(ch, msg)
+            .await
+            .unwrap()
+            .expect("a timed-out member's own delete is not refused");
+        wait_for(
+            &owner,
+            Duration::from_secs(30),
+            "the delete at the owner",
+            |s| {
+                s.timelines.get(&ch).is_some_and(|t| {
+                    t.items
+                        .iter()
+                        .any(|i| i.msg_id == Some(msg) && i.state == TimelineItemState::Deleted)
+                })
+            },
+        )
+        .await;
+    }
+
     /// e2e/web/membership.spec.ts (`a kicked browser is told and loses the server, and after re-admission messages flow
     /// again`), client half: the kicked client loses the server; re-admitted with an invite, messages flow both ways.
     /// The "told" notice is the shell's removed-server banner (Task 8); Task 28 drives it end to end.
