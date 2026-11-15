@@ -8,6 +8,7 @@ pub mod edit_state;
 #[cfg(feature = "automation")]
 pub mod fixture;
 pub mod format;
+pub mod fullscreen;
 pub mod keys;
 pub mod native;
 pub mod per_window;
