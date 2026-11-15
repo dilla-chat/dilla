@@ -400,7 +400,9 @@ use dilla_client::testing::host::music::{
 /// measures the machine.
 static MUSIC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const COLD_RUNS: usize = 10;
-const REPEAT_RUNS: usize = 10;
+// 20, not bot-music.spec.ts's 10: a nearest-rank p95 of 10 samples is their maximum, so one stall of a shared runner
+// (CI: nine starts 257-342 ms and one 585 ms, measured alone) failed the budget; of 20 it is the 19th.
+const REPEAT_RUNS: usize = 20;
 const GAP_RUNS: usize = 3;
 
 /// bot-music.spec.ts `seatBoth`: Ada and Bea (each a started device) in `room`, muted, listening only.
