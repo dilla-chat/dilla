@@ -16,7 +16,7 @@ server's `/desktop-auth` routes; an older instance cannot take them, and the app
 
 The native client is written in Rust with the GPUI toolkit (`clients/desktop`) and draws the Signal screens at pixel
 parity with the web client on Linux. On Linux you install an alpha release; on macOS and Windows you build it from
-source. It has no updater and no tray yet. The list of what works, screen by screen, is in the
+source. It has no updater yet. The list of what works, screen by screen, is in the
 [README](../../README.md#the-native-desktop-client-gpui).
 
 ![The native client: Midgard Crew with the channel list, a conversation in #general and the members](screenshots/gpui-shell-conversation.png)
@@ -148,7 +148,11 @@ messages.
 The client does not do these yet. Most are planned after the screens: native integrations, capture,
 the updater and packaging.
 
-- **Tray and background:** no tray icon, close to tray, badge count, autostart.
+- **Tray and background:** the tray icon (its menu lists your open instances, "Start Dilla at login" and "Quit
+  Dilla"), close to tray, the unread count (the tray's tooltip; the dock badge on macOS; the launcher badge on KDE and
+  Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
+  extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
+  builds only. There is no menu button in the title bar yet; F11 (Control-⌘-F on macOS) toggles full screen.
 - **Deep links:** `dilla://invite/...` opens in the app when it is on the command line (or reaches a running app
   through a second launch, which hands everything over and exits), but the system does not send such links to the app
   until the installers register the `dilla:` scheme.
@@ -159,8 +163,11 @@ the updater and packaging.
   and macOS the system's own dialog chooses). A share's sound comes from one application (the share menu's sound
   section) on Linux only; macOS and Windows shares carry no sound yet. The camera works on Linux and Windows, not yet
   on macOS.
-- **Operating-system notifications:** none are raised, including for an incoming ring (the ring banner and sound
-  work while the window is open). The Notifications settings are kept for when they arrive.
+- **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and
+  Decline), and a click opens the conversation. On Linux a notification cannot be taken back once shown (an ended ring
+  stays in the notification list until it times out); on Windows the notifications need the installer's Start-menu
+  entry, and on macOS the app bundle, so a build run from source shows them on Linux only. A ring that arrives while
+  an instance has no window open raises none.
 - **Screen readers:** the app exposes itself to Orca, VoiceOver and NVDA through AccessKit: every control is named, the shell has
   its landmarks (servers, channels, the message log, the call controls), messages are read with their author and time,
   and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Tab reaches

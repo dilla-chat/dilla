@@ -70,12 +70,13 @@ measured). What works today, screen by screen:
 | Voice, rings and AFK | Join and leave voice channels, the people under a channel, the dock, the stage with a tile per person (a person's camera or screen share is drawn when they send one; a focused tile has Grid and full screen), the person menu on a tile (right-click or Shift+F10: a person's or a stream's volume, applied to what you hear, Mute for me, profile, message, copy username; your own: mute, deafen, Move to another voice channel, leave), your own camera (Linux, Windows) and screen or window share from a picker with thumbnails (the system's dialog on Wayland and macOS), the stream quality applied live, and on Linux one application's sound with the share, the call controls with the ping and ↑ ↓ kb/s, mute and deafen (Ctrl+Shift+M, Ctrl+Shift+D), push to talk while the window has focus (with the PTT tag on the mute button; AltGr with the key is refused on Linux too), Return to call in Settings, joining with no speaker or microphone (listening, as the Electron app did), DM calls with the incoming-ring banner (Enter answers, Escape declines), blocked calls and the comparison they offer, and the AFK channel's page and move notice. Calls are end-to-end encrypted. |
 | Voice settings | Input and output devices and volumes, the microphone test with its sensitivity meter, the input mode and the push-to-talk key (F13 to F24, Pause, Scroll Lock, Insert), noise suppression, echo cancellation, automatic gain, and the join, leave and ring sounds. |
 | Bot | The `/` command picker with named fields and greyed commands, private results, poll cards, reminders; in the server settings, the Bot page (its card with Restart and a menu to rename, refresh or disable the Bot, capabilities, health, Bot channels, webhooks, each change behind "Confirm it is you") and the Music page (which roles may DJ), with the Now playing row in the dock. |
-| Notifications | The settings rows only: the mode for the selected server and its @everyone switch, desktop notifications on this device, and one switch for the join, leave and ring sounds. The values are kept; nothing raises an operating-system notification yet. |
+| Notifications | The settings rows: the mode for the selected server and its @everyone switch, desktop notifications on this device, and one switch for the join, leave and ring sounds. Messages, mentions and rings raise operating-system notifications (a ring with Answer and Decline); a click opens the conversation. |
 | Search | The palette (Control/⌘+K or Ctrl+/) with Channels, People, Settings, Messages and Actions. Messages are found in this device's own decrypted history; the query never leaves the device. |
 | Diagnostics | Settings → Diagnostics: the connection, the slowest requests and the last 20 error codes, with Copy codes (codes only, nothing of your content). |
 | Onboarding | Sign-up with an invite (the account, the recovery key shown once), the second factor set-up, the done step, sign-in on a new device with the recovery key, a passkey or the instance's identity provider (in the system browser), create server, create channel (private from birth with the roles that may see it, or an announcement channel with the roles that may post), join by invite and the invite link. |
 | Second factor | Required for every account: the forced-factor screen, set-up of an authenticator app or a passkey, backup codes, and the step-up dialog. |
 | Several instances | One window and one client per instance, and the "Dilla - your instances" window to connect by address, join by invite, open or remove an instance (up to 32). |
+| Tray and background | The tray icon with your open instances, "Start Dilla at login" and "Quit Dilla"; closing the last window keeps Dilla running in the tray; the unread count in the tray's tooltip, the macOS dock and the Linux launcher; start at login opens no window. On macOS, the Dilla, Edit, View and Window menus. |
 
 ![The native preview: Midgard Crew, #general](docs/user/screenshots/gpui-shell-conversation.png)
 
@@ -128,8 +129,6 @@ As of 2026-10-22, in the web client:
 For the native desktop preview:
 
 - Application audio for a share on macOS and Windows, and the camera on macOS.
-- Tray, close to tray and badge count, autostart, and operating-system notifications (also for a ring, with Answer
-  and Decline).
 - The updater, and the macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
   alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand. Until the packages register it, the
   system does not open `dilla://invite` links in the app by itself (passing one on the command line works).

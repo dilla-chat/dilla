@@ -9,7 +9,7 @@ Every test title of `e2e/media` (read live) and of the retired `e2e/web`, `e2e/v
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of `e2e/media` and the frozen titles file and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 188 with a Rust test, 42 n/a (browser/phone only), 3 next plan (native), 0 TODO only (0 TODO tests proposed in all).
+Totals: 233 e2e tests; 189 with a Rust test, 42 n/a (browser/phone only), 2 next plan (native), 0 TODO only (0 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -178,7 +178,7 @@ Totals: 233 e2e tests; 188 with a Rust test, 42 n/a (browser/phone only), 3 next
 | `e2e/voice/phone-call.spec.ts` | on a phone without getDisplayMedia the stage offers no share button | n/a (browser/phone only): phone layout, the desktop client has no phone shell |
 | `e2e/voice/realtime-transport.spec.ts` | a live call sends coarse reports over the existing socket and defers an update until the call ends | dilla-client::tests/voice::coarse_reports_go_over_the_socket_in_a_live_call; next plan (native): the update a call defers is the signed feed's (Updater), and the quit that would install it asks first (Native integrations, quit guards) |
 | `e2e/voice/reload.spec.ts` | a reload mid-call leaves one tile for alice, and a reload without a rejoin leaves none within the sweep bound | dilla-client::tests/voice::voice_roster_follows_join_and_leave; dilla-desktop::tests/voice::closing_the_window_leaves_its_call |
-| `e2e/voice/ring.spec.ts` | answer: bob rings (banner, sound, one notification while hidden), answers, every ring artefact goes and both are ok | dilla-client::tests/ring::answer; dilla-desktop::tests/ring::enter_answers_the_ring_with_focus; next plan (native): the ring sound and the OS notification (Notifier trait) |
+| `e2e/voice/ring.spec.ts` | answer: bob rings (banner, sound, one notification while hidden), answers, every ring artefact goes and both are ok | dilla-client::tests/ring::answer; dilla-desktop::tests/ring::enter_answers_the_ring_with_focus; dilla-desktop::tests/ring::a_hidden_window_raises_one_os_ring_with_answer_and_decline; dilla-desktop::tests/ring::an_answer_from_the_notification_acts_only_on_the_current_ring |
 | `e2e/voice/ring.spec.ts` | decline: alice sees "bob declined." and bob's banner goes | dilla-client::tests/ring::decline; dilla-desktop::tests/ring::enter_on_decline_declines |
 | `e2e/voice/ring.spec.ts` | busy: a ring while bob is in voice shows the busy text, with no ring sound and no notification | dilla-client::tests/ring::busy |
 | `e2e/voice/ring.spec.ts` | blocked DM: a ring of a DM whose contact's identity changed never shows; a trusted typing and ring after it do | dilla-client::tests/ring::blocked_dm |
@@ -231,7 +231,7 @@ same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
 
 | File | Test title | Held by |
 | --- | --- | --- |
-| `packages/desktop/test/electron/00-mac-notifications.spec.ts` | macOS accepts a real native notification from the shipping sandboxed app | next plan (native): OS notifications behind the Notifier trait |
+| `packages/desktop/test/electron/00-mac-notifications.spec.ts` | macOS accepts a real native notification from the shipping sandboxed app | dilla-desktop::tests/notify::os_notifier_shows_through_the_platform |
 | `packages/desktop/test/electron/application-audio.spec.ts` | selected application reaches an encrypted listener while other applications and Dilla call audio stay excluded | dilla-media::tests/app_audio::only_the_chosen_app_reaches_the_listener_encrypted |
 | `packages/desktop/test/electron/application-audio.spec.ts` | native application audio without an authenticated source slot cannot fall back to plaintext | dilla-media::tests/app_audio::no_source_slot_sends_nothing |
 | `packages/desktop/test/electron/forwarding.spec.ts` | actual forwarding keeps worker bearer/body/response and omits the private session cookie | dilla-client::tests/http::the_request_is_what_the_typescript_client_sends; dilla-client::tests/http::credential_bodies_are_zeroizing_and_never_printed |
@@ -260,7 +260,7 @@ same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
 | `packages/desktop/test/electron/shell.spec.ts` | protected reload needs an explicit native confirmation and cancelling retains the document | n/a (browser/phone only): the web client reload, the native app has no document to reload |
 | `packages/desktop/test/electron/shell.spec.ts` | an explicit focused video action can enter and leave HTML fullscreen | n/a (browser/phone only): the HTML fullscreen API, native video opens in the system player |
 | `packages/desktop/test/electron/shell.spec.ts` | rejects malicious IPC and remote document navigation and keeps storage across reload | n/a (browser/phone only): Electron IPC and renderer navigation, the native app has neither |
-| `packages/desktop/test/electron/shell.spec.ts` | closing a window keeps the client alive for background work | dilla-desktop::tests/instances::closing_a_window_keeps_client_alive; next plan (native): close-to-tray |
+| `packages/desktop/test/electron/shell.spec.ts` | closing a window keeps the client alive for background work | dilla-desktop::tests/instances::closing_a_window_keeps_client_alive; dilla-desktop::tests/instances::closing_the_last_window_keeps_the_app_in_the_tray |
 | `packages/desktop/test/electron/shell.spec.ts` | forwards real API requests and POST bodies to the selected base path | dilla-client::tests/http::the_request_is_what_the_typescript_client_sends; dilla-client::src/features/signup::a_base_path_invite_names_its_instance |
 | `packages/desktop/test/electron/shell.spec.ts` | isolates storage for two complete URLs on the same host | dilla-desktop::tests/instances::two_instances_same_host_isolated; dilla-client::tests/instances::two_instances_same_host_isolated |
 | `packages/desktop/test/electron/shell.spec.ts` | short startup content keeps an opaque theme-matched background across window resizes | n/a (browser/phone only): the Electron startup flash, the GPUI window paints its own background |

@@ -40,6 +40,11 @@ pub enum Nav {
     Devices,
     /// The DM, open (after the picker opened or made it).
     Dm(ChannelId),
+    /// A server's channel, open (an OS notification's click, GPUI parity Package 4).
+    Channel {
+        community: dilla_client::state::CommunityId,
+        channel: ChannelId,
+    },
 }
 
 /// The shell's navigation, as the area calls it.

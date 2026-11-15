@@ -61,6 +61,9 @@ pub fn provide(env: RingEnv, window: &Window, cx: &mut App) {
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the windows whose banner read it forget
 /// their environment (the next render of a host provides a new one).
 pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
+    // Its notify engine and its badge watcher stop, and its OS notifications go (GPUI parity Packages 4 and 5).
+    crate::native::notifier::release(client, cx);
+    crate::native::badge::release(client, cx);
     let gone: Vec<WindowId> = cx
         .default_global::<Windows>()
         .0
@@ -227,6 +230,40 @@ pub fn ring_banner(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         .region(t("call.ring.region"))
         .into_any_element(),
     )
+}
+
+/// A ring's Answer or Decline from outside its banner (the OS notification, the tray; GPUI parity Package 4): it acts
+/// only while the ring `key` is still current in `window` (in its client's state now; with no client, in what the
+/// window drew last), as beta.5's `current()`. Answer brings the window forward. Answers whether it acted.
+pub fn act_on(window: WindowId, key: &SharedString, answer_it: bool, cx: &mut App) -> bool {
+    let Some(mut env) = cx.try_global::<Windows>().and_then(|w| {
+        w.0.iter()
+            .find(|(id, _, _)| *id == window)
+            .map(|(_, e, _)| e.clone())
+    }) else {
+        return false;
+    };
+    if let Some(client) = &env.ctx.client {
+        env.ctx.state = client.state().borrow().clone();
+    }
+    if find(&env.ctx.state, key).is_none() {
+        return false;
+    }
+    let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == window) else {
+        return false;
+    };
+    let acted = handle.update(cx, |_, w, cx| {
+        if answer_it {
+            w.activate_window();
+            answer(&env, key, w, cx);
+        } else {
+            decline(&env, key, w, cx);
+        }
+    });
+    if acted.is_ok() && answer_it {
+        cx.activate(true);
+    }
+    acted.is_ok()
 }
 
 fn find<'a>(state: &'a AppState, key: &SharedString) -> Option<&'a IncomingRing> {

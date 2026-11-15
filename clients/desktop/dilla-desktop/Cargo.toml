@@ -71,16 +71,25 @@ gpui-linux = { package = "gpui-pre-linux", version = "=0.3.12", default-features
 # over in. Both already in the lock (ashpd through gpui-pre-linux, rustix through several crates).
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "print"] }
 rustix = { version = "1", features = ["fs"] }
+# GPUI parity Package 5: the tray as a StatusNotifierItem (pure D-Bus on zbus, which ashpd already brings, on async-io
+# as ashpd does; no GTK, no libappindicator), and the launcher badge's Unity LauncherEntry signal on the same zbus.
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 # Printing on macOS (src/print.rs): AppKit's print operation, run on the main thread. All already in the lock (through
 # GPUI's macOS platform and cpal).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSData", "NSGeometry", "NSObject", "NSString"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSControl", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSControl", "NSDockTile", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow"] }
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 # The deallocator block of the NSData that owns the printed copy (already in the lock through objc2-foundation).
 block2 = "0.6.2"
+
+# GPUI parity Package 5: the tray (NSStatusItem on macOS, Shell_NotifyIcon on Windows) with muda menus, without its
+# Linux backends (Linux uses ksni above).
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = { version = "0.26.1", default-features = false }
 
 # Printing on Windows (src/print.rs): the system's print dialog and GDI. Already in the lock. The parity plan's
 # Package 6 (native/single_instance.rs: the handover's named pipe) adds Security, Storage_FileSystem, System_IO and

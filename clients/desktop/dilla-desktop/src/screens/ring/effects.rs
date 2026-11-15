@@ -5,7 +5,10 @@
 //! - The ring sound plays while any ring is neither busy nor quiet (useSounds.tsx: no sound while in a call or for a muted
 //!   DM), and stops when the last such ring ends.
 //! - A ring raises one notification while this window is not focused (flow 06: Ring.tsx `useRingNotifications`), closed
-//!   when the ring ends or the window is focused again; a busy or quiet ring raises none.
+//!   when the ring ends or the window is focused again; a busy or quiet ring raises none. It goes to the OS
+//!   (`native::notifier::show_ring`, with Answer and Decline) and to the in-app record ([`RingNotifier`]).
+//! - Every frame also keeps the client's message notifications and its unread badge running (`native::notifier::attach`,
+//!   `native::badge::attach`).
 
 use std::collections::HashSet;
 
@@ -33,6 +36,8 @@ pub fn audible(r: &IncomingRing) -> bool {
 /// Brings the sound and the notifications in line with the rings (called on every frame of the banner).
 pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
     let id = window.window_handle().window_id();
+    crate::native::notifier::attach(ctx, window, cx);
+    crate::native::badge::attach(ctx, window, cx);
     let rings = &ctx.state.ring.rings;
     let want_sound = rings.iter().any(audible);
     let visible = window.is_window_active();
@@ -77,10 +82,10 @@ pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
         stop_ring(cx);
     }
     for k in closed {
-        close_ring_notification(&k, cx);
+        close_ring_notification(id, &k, cx);
     }
     for r in raise {
-        ring_notification(&r, ctx, cx);
+        ring_notification(id, &r, ctx, cx);
     }
 }
 
@@ -115,7 +120,8 @@ pub fn stop_ring(cx: &mut App) {
     crate::screens::voice_settings::sounds::stop_ring(cx);
 }
 
-/// The app's notifier (Task 22's in-app [`RecordingNotifier`]: the OS delivery is the next plan's), one per app.
+/// The app's in-app record of ring notifications (Task 22's [`RecordingNotifier`]), one per app; the OS shows them through
+/// `native::notifier`.
 /// App-wide by design (final review sweep): the OS has one notification centre per app, and a ring notification names the window it
 /// rings in, not a client handle.
 #[derive(Default)]
@@ -132,9 +138,10 @@ pub fn release_notifier(cx: &mut App) {
 
 /// Raises the ring's notification through Task 22's notifier: `features::notify::ring_notification` decides (only while
 /// the window is hidden, with the permission granted, never for a busy or quiet ring or a DM whose mode is nothing), and
-/// the notifier shows it. Its click opens the DM (`Notification::channel`). Called only while the window is not focused.
-pub fn ring_notification(ring: &IncomingRing, ctx: &SlotCx, cx: &mut App) {
-    let Some(client) = &ctx.client else { return };
+/// the OS shows it with Answer and Decline (`native::notifier::show_ring`). Its click opens the DM
+/// (`Notification::channel`). Called only while the window is not focused. A window with no client (a test's) reads no
+/// stored settings; only a window the OS shell knows (an instance's) raises the OS notification.
+pub fn ring_notification(window: WindowId, ring: &IncomingRing, ctx: &SlotCx, cx: &mut App) {
     let input = RingInput {
         channel: ring.channel,
         call_id: ring.call_id.iter().map(|b| format!("{b:02x}")).collect(),
@@ -155,12 +162,29 @@ pub fn ring_notification(ring: &IncomingRing, ctx: &SlotCx, cx: &mut App) {
         roles: None,
     };
     let text = crate::screens::notify::text();
-    if let Some(n) = notify::ring_notification(&input, &notify_ctx, &client.prefs(), &text) {
+    let decided = match &ctx.client {
+        Some(client) => notify::ring_notification(&input, &notify_ctx, &client.prefs(), &text),
+        None => notify::ring_notification(
+            &input,
+            &notify_ctx,
+            &std::collections::HashMap::<String, String>::new(),
+            &text,
+        ),
+    };
+    if let Some(n) = decided {
         cx.default_global::<RingNotifier>().0.deliver(&n);
+        // Only an instance's window (one the OS shell knows) reaches the OS: a parity fixture's never does.
+        if matches!(
+            crate::native::notifier::Owner::of_window(window, cx),
+            crate::native::notifier::Owner::Instance(_)
+        ) {
+            crate::native::notifier::show_ring(window, super::ring_key(ring), &n, cx);
+        }
     }
 }
 
-/// Closes the notification of the ring `key` (tag `dilla-ring-<call>-<ts>`). The in-app notifier keeps what it showed
-/// (the e2e's record); a ring's next notification replaces it by its tag, so nothing is closed here until the OS delivery
-/// (the next plan) can withdraw one.
-pub fn close_ring_notification(_key: &SharedString, _cx: &mut App) {}
+/// Closes the notification of the ring `key` raised in `window`: the OS one is withdrawn; the in-app record keeps what
+/// it showed (the e2e's record).
+pub fn close_ring_notification(window: WindowId, key: &SharedString, cx: &mut App) {
+    crate::native::notifier::withdraw_ring(window, key, cx);
+}

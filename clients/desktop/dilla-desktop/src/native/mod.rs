@@ -10,7 +10,7 @@
 //! | [`tray`] | 5 | `install(cx)`: draws the OS tray from [`NativeShell::tray_menu`], re-drawn on [`NativeShell::on_tray_changed`] |
 //! | [`badge`] | 5 | `install(cx)`: a [`NativeShell::add_badge_sink`] that sets the dock, overlay or launcher count |
 //! | [`autostart`] | 5 | `hidden_start(argv)`, `install(cx)` (its tray section) |
-//! | [`menus`] | 5 | `prepare(app)` (`on_reopen`, before the run loop), `install(cx)` (`set_menus`, zoom) |
+//! | [`menus`] | 5 | `prepare(app)` (`on_reopen`, before the run loop), `install(cx)` (`set_menus`, full screen) |
 //! | [`notifier`] | 4 | `install(cx)`: the OS notifier; withdraws a window's notifications on [`WindowEvent::Closed`] |
 //! | [`links`] | 6 | `prepare(app)` (`on_open_urls`), `parse(raw)`, `install(cx)` (its [`NativeShell::on_link`] handler) |
 //! | [`single_instance`] | 6 | `claim(argv)` (before the run loop), `install(primary, cx)` (second launches) |
