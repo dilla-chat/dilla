@@ -451,3 +451,129 @@ mod live {
         );
     }
 }
+
+/// Package 10d (ServerSettings.tsx's access effect): the person's access changes while server settings are open on Bans.
+/// When ban members goes, the settings fall back to the first section still allowed, the unsaved draft goes, and
+/// `workspace.permissionChanged` is said once (a later state with the same access says nothing again); a lost read of the
+/// access says it too.
+#[gpui::test]
+fn permission_change_is_announced(cx: &mut gpui::TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use dilla_client::state::roles::CommunityAccess;
+    use dilla_client::state::{AppState, Community, CommunityId, UserId};
+    use dilla_desktop::screens::server_settings::{
+        AccessChange, ServerSettingsView, SettingsEvent, access_change,
+    };
+    use dilla_desktop::screens::shell::Clock;
+
+    let community = CommunityId([4; 16]);
+    let state_with = |access: CommunityAccess| {
+        let mut s = AppState::default();
+        s.communities.push(Community {
+            id: community,
+            name: "Crew".into(),
+            owner: UserId([1; 16]),
+            policy_version: 1,
+        });
+        s.roles.access.insert(community, access);
+        Arc::new(s)
+    };
+    let moderator = CommunityAccess {
+        loaded: true,
+        ban_members: true,
+        create_invite: true,
+        ..CommunityAccess::default()
+    };
+    let demoted = CommunityAccess {
+        ban_members: false,
+        ..moderator.clone()
+    };
+
+    // The rule alone.
+    let access = |a: &CommunityAccess| dilla_client::state::server_admin::Access::from(a);
+    assert_eq!(
+        access_change(
+            Some(ServerSection::Bans),
+            Some(ServerSection::Bans),
+            None,
+            &access(&demoted)
+        ),
+        AccessChange {
+            clear: true,
+            announce: true
+        }
+    );
+    assert_eq!(
+        access_change(
+            Some(ServerSection::Members),
+            Some(ServerSection::Bans),
+            Some(ServerSection::Bans),
+            &access(&demoted)
+        ),
+        AccessChange::default(),
+        "said once per lost section"
+    );
+    assert_eq!(
+        access_change(
+            Some(ServerSection::Bans),
+            Some(ServerSection::Bans),
+            None,
+            &access(&moderator)
+        ),
+        AccessChange::default()
+    );
+
+    // The open view.
+    cx.update(dilla_desktop::install);
+    let said = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (view, vcx) = cx.add_window_view(|window, cx| {
+        ServerSettingsView::new(
+            community,
+            state_with(moderator.clone()),
+            None,
+            Clock::Fixed {
+                now: 1_800_000_000,
+                utc: true,
+            },
+            Some(ServerSection::Bans),
+            window,
+            cx,
+        )
+    });
+    {
+        let said = said.clone();
+        vcx.update(|_, cx| {
+            cx.subscribe(&view, move |_, e: &SettingsEvent, _| {
+                if let SettingsEvent::Announce(m) = e {
+                    said.borrow_mut().push(m.clone());
+                }
+            })
+            .detach();
+        });
+    }
+    vcx.run_until_parked();
+    assert_eq!(
+        view.read_with(vcx, |v, _| v.active()),
+        Some(ServerSection::Bans)
+    );
+    let changed = dilla_desktop::strings::t("workspace.permissionChanged").to_owned();
+    view.update(vcx, |v, cx| v.set_state(state_with(demoted.clone()), cx));
+    vcx.run_until_parked();
+    assert_eq!(*said.borrow(), [changed.clone()]);
+    assert_eq!(
+        view.read_with(vcx, |v, _| v.active()),
+        Some(ServerSection::Members),
+        "the first section still allowed"
+    );
+    view.update(vcx, |v, cx| v.set_state(state_with(demoted.clone()), cx));
+    vcx.run_until_parked();
+    assert_eq!(said.borrow().len(), 1, "said once");
+    view.update(vcx, |v, cx| {
+        v.set_state(state_with(CommunityAccess::default()), cx)
+    });
+    vcx.run_until_parked();
+    assert_eq!(said.borrow().len(), 2, "a lost read says it too");
+}

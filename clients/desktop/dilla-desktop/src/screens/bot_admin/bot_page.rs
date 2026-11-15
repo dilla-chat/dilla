@@ -1233,6 +1233,7 @@ impl BotPage {
         .footer(
             Button::new("bot-rename-save", t("admin.bot.name.save"))
                 .variant(ButtonVariant::Accent)
+                .size(ButtonSize::Dialog)
                 .disabled(busy || draft_empty)
                 .on_click(move |_: &ClickEvent, window, cx| {
                     save.update(cx, |page, cx| page.save_name(window, cx));

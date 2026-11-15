@@ -92,7 +92,44 @@ pub struct ServerSettingsView {
     attached: Option<ServerSection>,
     /// The settings' root: it holds the focus when they open, so Tab and Escape reach them.
     focus: gpui::FocusHandle,
+    /// The section on show at the last state (ServerSettings.tsx `previousActive`), and the requested section whose loss
+    /// was already said (`announcedLossFor`).
+    last_active: Option<ServerSection>,
+    announced_loss: Option<ServerSection>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What a change of the person's access does to open server settings (ServerSettings.tsx's access effect).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AccessChange {
+    /// The section on show went (or the access is no longer read): the unsaved draft is dropped.
+    pub clear: bool,
+    /// `workspace.permissionChanged` is said: the access is no longer read, or the requested section is no longer
+    /// allowed (once per section).
+    pub announce: bool,
+}
+
+/// ServerSettings.tsx: compares the section on show before (`previous`) with what `access` allows now, for the
+/// `requested` section whose loss was said already (`announced`).
+pub fn access_change(
+    previous: Option<ServerSection>,
+    requested: Option<ServerSection>,
+    announced: Option<ServerSection>,
+    access: &dilla_client::state::server_admin::Access,
+) -> AccessChange {
+    if !access.loaded {
+        return AccessChange {
+            clear: previous.is_some(),
+            announce: previous.is_some(),
+        };
+    }
+    let allowed = |s: ServerSection| model::active_of(Some(s), access) == Some(s);
+    let lost = previous.is_some_and(|p| !allowed(p));
+    let requested_loss = requested.is_some_and(|r| !allowed(r) && announced != Some(r));
+    AccessChange {
+        clear: lost || requested_loss,
+        announce: requested_loss,
+    }
 }
 
 impl gpui::Focusable for ServerSettingsView {
@@ -156,6 +193,13 @@ impl ServerSettingsView {
                 BodyEvent::OpenSection(section) => this.leave(Leave::Server(*section), cx),
             },
         );
+        let last_active = {
+            let access = dilla_client::state::server_admin::access_in(&state, community);
+            access
+                .loaded
+                .then(|| model::active_of(requested, &access))
+                .flatten()
+        };
         Self {
             community,
             state,
@@ -166,6 +210,8 @@ impl ServerSettingsView {
             workspace: Workspace::new(),
             attached: None,
             focus: cx.focus_handle(),
+            last_active,
+            announced_loss: None,
             _subscriptions: vec![subscription],
         }
     }
@@ -173,9 +219,44 @@ impl ServerSettingsView {
     /// The window's newest state (the client's snapshot).
     pub fn set_state(&mut self, state: Arc<AppState>, cx: &mut Context<Self>) {
         self.state = state.clone();
+        self.follow_access(cx);
         let client = self.client.clone();
         self.body.update(cx, |b, cx| b.sync(state, client, cx));
         cx.notify();
+    }
+
+    /// ServerSettings.tsx's access effect: the person's access changed while the settings are open. A section that went
+    /// takes its unsaved draft with it, the view falls back to the first allowed section ([`Self::active`]), and a lost
+    /// requested section or a lost read says `workspace.permissionChanged` (Package 10d).
+    fn follow_access(&mut self, cx: &mut Context<Self>) {
+        let access = dilla_client::state::server_admin::access_in(&self.state, self.community);
+        let change = access_change(
+            self.last_active,
+            self.requested,
+            self.announced_loss,
+            &access,
+        );
+        if change.clear {
+            self.workspace.clear();
+            self.attached = None;
+        }
+        if change.announce {
+            if access.loaded {
+                self.announced_loss = self.requested;
+            }
+            cx.emit(SettingsEvent::Announce(
+                t("workspace.permissionChanged").to_owned(),
+            ));
+        } else if self
+            .requested
+            .is_none_or(|r| model::active_of(Some(r), &access) == Some(r))
+        {
+            self.announced_loss = None;
+        }
+        self.last_active = access
+            .loaded
+            .then(|| model::active_of(self.requested, &access))
+            .flatten();
     }
 
     /// The server the settings are for.
