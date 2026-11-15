@@ -63,6 +63,8 @@ pub enum VoiceNotice {
     EnhancedUnavailable,
     DevicesChanged,
     MicLost,
+    /// The OS denies the app the microphone: the call joined listen-only (Package 7, `voice.micDenied`).
+    MicDenied,
     SpeakerLost,
     EnhancedFailed,
     /// A share was asked for and the selection was cancelled: nothing was published.

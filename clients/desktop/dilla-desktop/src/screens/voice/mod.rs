@@ -2560,6 +2560,7 @@ fn notice(state: &AppState) -> AnyElement {
     let key = match state.voice.notice {
         None => return div().into_any_element(),
         Some(VoiceNotice::MicLost) => "voice.micMissing",
+        Some(VoiceNotice::MicDenied) => "voice.micDenied",
         Some(VoiceNotice::SpeakerLost) => "voice.outputFailed",
         Some(VoiceNotice::DevicesChanged) => "voice.outputFailed",
         Some(VoiceNotice::EnhancedUnavailable | VoiceNotice::EnhancedFailed) => "voice.micFailed",
