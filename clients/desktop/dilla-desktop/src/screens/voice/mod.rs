@@ -1446,6 +1446,9 @@ fn live_tag() -> Div {
 
 use gpui::prelude::FluentBuilder as _;
 
+/// The gap in a shared screen's application-audio row.
+const AUDIO_APP_GAP: f32 = 10.0;
+
 // ---- the dock -----------------------------------------------------------------------------------------------------
 
 /// The link's line (VoiceDock.tsx's line 2, VoiceView.tsx `StatsLine`): the ping, then what this device sends and receives
@@ -3722,7 +3725,7 @@ fn sound_row(ui: &VoiceUi) -> Option<AnyElement> {
         div()
             .flex()
             .items_center()
-            .gap(px(10.0))
+            .gap(px(AUDIO_APP_GAP))
             .child(
                 div()
                     .flex_1()

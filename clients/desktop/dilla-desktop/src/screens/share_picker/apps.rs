@@ -18,6 +18,11 @@ use gpui::{
 
 use crate::strings::t;
 
+/// The chooser body's gap between its sections (the web share picker's app list).
+const BODY_GAP: f32 = 8.0;
+/// The gap inside an application row (icon, name, state).
+const ROW_GAP: f32 = 6.0;
+
 /// Lists the applications (the real `dilla_media::app_audio::sources`; the tests' fake).
 pub type AppLister =
     std::sync::Arc<dyn Fn() -> Result<Vec<AppSource>, AppAudioError> + Send + Sync>;
@@ -111,7 +116,7 @@ pub fn close(window: WindowId, chosen: Option<AppSource>, cx: &mut App) {
 pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let id = window.window_handle().window_id();
     let list = cx.try_global::<AppChoosers>()?.open.get(&id)?.clone();
-    let mut body = div().flex().flex_col().gap(px(8.0));
+    let mut body = div().flex().flex_col().gap(px(BODY_GAP));
     match &list {
         Some(apps) if apps.is_empty() => {
             body = body.child(line(
@@ -140,7 +145,7 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
                 .a11y(Role::List, t("callStage.share.appChoose"))
                 .flex()
                 .flex_col()
-                .gap(px(6.0));
+                .gap(px(ROW_GAP));
             for app in apps {
                 let chosen = app.clone();
                 rows = rows.child(
