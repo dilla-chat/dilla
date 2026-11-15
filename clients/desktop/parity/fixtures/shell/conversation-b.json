@@ -1,0 +1,152 @@
+{
+  "name": "shell/conversation-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{harbour}/{harbour/night-shift-handover-notes}",
+  "clock": 1794481751,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "sven",
+        "display": "Sven"
+      },
+      {
+        "id": "kari",
+        "display": "Kari"
+      },
+      {
+        "id": "liv",
+        "display": "Liv"
+      },
+      {
+        "id": "glenn",
+        "display": "Glenn"
+      },
+      {
+        "id": "ines",
+        "display": "Ines"
+      },
+      {
+        "id": "ole",
+        "display": "Ole"
+      },
+      {
+        "id": "tove",
+        "display": "Tove"
+      },
+      {
+        "id": "ulf",
+        "display": "Ulf"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      },
+      {
+        "id": "harbour",
+        "name": "Harbour Watch and Long Nights Society",
+        "owner": "ada",
+        "members": [
+          "bjorn",
+          "ada",
+          "mira",
+          "sven",
+          "kari",
+          "liv",
+          "glenn",
+          "ines",
+          "ole",
+          "tove",
+          "ulf"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "night-shift-handover-notes",
+            "kind": "text",
+            "name": "night-shift-handover-notes"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "harbour-night-shift-handover-notes-1",
+        "channel": "harbour/night-shift-handover-notes",
+        "sender": "sven",
+        "ts": 1794481741,
+        "body": "the tide table for tonight is pinned in the old place"
+      },
+      {
+        "key": "harbour-night-shift-handover-notes-2",
+        "channel": "harbour/night-shift-handover-notes",
+        "sender": "kari",
+        "ts": 1794481741,
+        "body": "thanks, I will take the first watch and wake Liv at four"
+      },
+      {
+        "key": "harbour-night-shift-handover-notes-3",
+        "channel": "harbour/night-shift-handover-notes",
+        "sender": "bjorn",
+        "ts": 1794481741,
+        "body": "a very long line to check that the log wraps at the width of the column and that the list on the left keeps cutting the long channel name with an ellipsis instead of growing"
+      },
+      {
+        "key": "harbour-night-shift-handover-notes-4",
+        "channel": "harbour/night-shift-handover-notes",
+        "sender": "liv",
+        "ts": 1794481741,
+        "body": "four is fine"
+      }
+    ]
+  },
+  "steps": []
+}

@@ -1,0 +1,65 @@
+{
+  "name": "polls/card-b",
+  "window": [1440, 900],
+  "viewer": "mira",
+  "route": "/c/{asgard}/{asgard/war-council}",
+  "clock": 1794485338,
+  "world": {
+    "people": [
+      { "id": "ada", "display": "Ada" },
+      { "id": "bjorn", "display": "Björn" },
+      { "id": "mira", "display": "Mira" },
+      { "id": "liv", "display": "Liv Halvorsen-Strand, Navigator of the Northern Fjords" },
+      { "id": "sven", "display": "Sven" },
+      { "id": "kari", "display": "Kari" },
+      { "id": "dillabot", "display": "Dilla Bot", "bot": true }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira", "dillabot"],
+        "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
+          { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
+        ]
+      },
+      {
+        "id": "asgard",
+        "name": "Asgard Expedition Society",
+        "owner": "bjorn",
+        "members": ["ada", "bjorn", "mira", "liv", "sven", "kari", "dillabot"],
+        "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
+          { "id": "war-council", "kind": "text", "name": "war-council" },
+          { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
+        ]
+      }
+    ],
+    "messages": [
+      { "key": "m1", "channel": "asgard/war-council", "sender": "liv", "ts": 1794484000, "body": "the fjord route is shorter but the weather has been awful all week, so plan for the long way round" },
+      {
+        "key": "poll",
+        "channel": "asgard/war-council",
+        "sender": "dillabot",
+        "ts": 1794484200,
+        "body": "Mira asked:",
+        "poll": {
+          "question": "Which route do we take to the northern harbour once the ice breaks, given that the bridge troll is back and the fjord ferry only runs on Thursdays?",
+          "options": ["the long coastal road past the old lighthouse", "the fjord ferry", "over the mountain pass"],
+          "votes": [
+            { "option": 0, "by": "ada" },
+            { "option": 0, "by": "bjorn" },
+            { "option": 0, "by": "liv" },
+            { "option": 1, "by": "sven" },
+            { "option": 1, "by": "kari" },
+            { "option": 0, "by": "mira" },
+            { "option": 2, "by": "mira" }
+          ],
+          "closed": true
+        }
+      }
+    ]
+  }
+}

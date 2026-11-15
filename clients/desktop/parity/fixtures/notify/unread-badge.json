@@ -1,0 +1,114 @@
+{
+  "name": "notify/unread-badge",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "mira",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481800,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "lounge"
+          },
+          {
+            "id": "raids",
+            "kind": "category",
+            "name": "Raids"
+          },
+          {
+            "id": "loot",
+            "kind": "text",
+            "name": "loot",
+            "parent": "raids"
+          },
+          {
+            "id": "boats",
+            "kind": "category",
+            "name": "Boats"
+          },
+          {
+            "id": "harbour",
+            "kind": "voice",
+            "name": "harbour",
+            "parent": "boats"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "midgard-loot-1",
+        "channel": "midgard/loot",
+        "sender": "bjorn",
+        "ts": 1794481740,
+        "body": "the map from saturday, coffee stain included"
+      },
+      {
+        "key": "midgard-general-1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481770,
+        "body": "ok, 20:00 works, I will bring the shields"
+      },
+      {
+        "key": "midgard-general-2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481771,
+        "body": "bring the map from the loot channel, the one with the stain"
+      },
+      {
+        "key": "midgard-general-3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481772,
+        "body": "the map from saturday, coffee stain included"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "settle"
+    }
+  ]
+}

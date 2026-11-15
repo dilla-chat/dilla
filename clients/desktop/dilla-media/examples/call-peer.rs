@@ -11,9 +11,14 @@
 //!   epoch <epoch> <base key hex> <own leaf> <leaf>:<device hex>,...   the call group's keys
 //!   mute 0|1
 //!   mic <device id>                           switch the device microphone (prints {"event":"mic"})
-//!   stats                                     prints {"event":"stats",...}
+//!   stats                                     prints {"event":"stats",...,"rtt_ms":ms|null} (the link's ping)
+//!   listen                                    forgets the audio edges so far (prints {"event":"listening"})
+//!   edges                                     prints {"event":"edges","heard":[{"t","audible"}],"edges":[...]}:
+//!                                             the call's audio as a whole turning audible or quiet (any verified
+//!                                             stream audible), and each stream's own changes
+//!                                             ({"device","stream","t","audible"}), t in Unix ms
 //!   quit
-//! stdout: one JSON object per line ({"event": ...}).
+//! stdout: one JSON object per line ({"event": ...}); {"event":"ended","code":...} once the room ends on its own.
 
 use std::f64::consts::TAU;
 use std::sync::Arc;
@@ -94,6 +99,7 @@ async fn main() {
     let mut token = String::new();
     let mut tone: Option<f64> = None;
     let mut noise = NoiseMode::Off;
+    let mut muted = false;
     let mut args = std::env::args().skip(1);
     while let Some(k) = args.next() {
         let v = args.next().unwrap_or_else(|| panic!("{k} needs a value"));
@@ -101,6 +107,7 @@ async fn main() {
             "--url" => url = v,
             "--token" => token = v,
             "--tone" => tone = Some(v.parse().expect("--tone")),
+            "--muted" => muted = v == "1",
             "--noise" => {
                 noise = match v.as_str() {
                     "off" => NoiseMode::Off,
@@ -173,6 +180,8 @@ async fn main() {
             mic,
             playout: false,
             key_timeout: Duration::from_secs(30),
+            muted,
+            ..CallOptions::default()
         },
     )
     .await
@@ -183,7 +192,24 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // This peer is a measurement tool: it records the audio edges from the moment it connects, so `edges` before any
+    // `listen` answers the changes since the join (a late joiner's first audio). The app's calls record none until a
+    // measurement clears them (`Call::clear_audio_edges`, w2-bot-review M-C4).
+    call.clear_audio_edges();
     emit(json!({"event": "connected", "identity": call.identity()}));
+
+    // The room's end on its own (a voice takeover's removal, the room closed) is passed on once, as
+    // {"event":"ended","code":"E_REMOVED"|"E_CALL_ENDED"|"E_DISCONNECTED"}: the driver ends its call ("lost").
+    {
+        let mut ended = call.ended();
+        tokio::spawn(async move {
+            if let Ok(end) = ended.wait_for(Option::is_some).await
+                && let Some(end) = *end
+            {
+                emit(json!({"event": "ended", "code": end.code()}));
+            }
+        });
+    }
 
     while let Some(line) = lines.recv().await {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -193,8 +219,59 @@ async fn main() {
                 emit(json!({"event": "muted", "on": *on == "1"}));
             }
             ["mic", id] => {
-                let error = call.set_mic(id).err().map(|e| e.to_string());
+                let error = call
+                    .set_mic(Some(id), dilla_media::noise::NoiseMode::Standard)
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
                 emit(json!({"event": "mic", "error": error}));
+            }
+            ["share", kind] => {
+                let kind = if *kind == "camera" {
+                    dilla_media::ShareKind::Camera
+                } else {
+                    dilla_media::ShareKind::Screen
+                };
+                let source = dilla_media::TestPattern::new(kind, 320, 180, 15);
+                let error = call
+                    .publish_video(Box::new(source))
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+                emit(json!({"event": "share", "error": error}));
+            }
+            ["unshare", kind] => {
+                let kind = if *kind == "camera" {
+                    dilla_media::ShareKind::Camera
+                } else {
+                    dilla_media::ShareKind::Screen
+                };
+                call.unpublish_video(kind).await;
+                emit(json!({"event": "unshare"}));
+            }
+            ["videos"] => {
+                // Each verified remote stream: its frames so far, and whether its newest frame is the test pattern
+                // (the top row's eight bars, within the codec's error).
+                let videos: serde_json::Map<String, serde_json::Value> = call
+                    .remote_videos()
+                    .borrow()
+                    .iter()
+                    .map(|(k, f)| {
+                        let bars = (0..8u32).all(|i| {
+                            let x = (i * f.width / 8) + f.width / 16;
+                            let y = 2.min(f.height.saturating_sub(1));
+                            let at = ((y * f.width + x) * 4) as usize;
+                            let px = [f.rgba[at], f.rgba[at + 1], f.rgba[at + 2]];
+                            let (bar, d) = dilla_media::capture_source::nearest_bar(px);
+                            bar == i as usize && d < 150
+                        });
+                        (
+                            format!("{}:{:?}", k.device, k.kind),
+                            json!({"frames": f.frames, "width": f.width, "height": f.height, "bars": bars}),
+                        )
+                    })
+                    .collect();
+                emit(json!({"event": "videos", "videos": videos}));
             }
             ["stats"] => {
                 let stats = call.stats();
@@ -206,7 +283,30 @@ async fn main() {
                         Some((d.clone(), json!(peak_hz(&tail))))
                     })
                     .collect();
-                emit(json!({"event": "stats", "media": stats, "levels": levels, "peaks": peaks}));
+                let rtt_ms = call.rtt_ms().await;
+                emit(
+                    json!({"event": "stats", "media": stats, "levels": levels, "peaks": peaks, "rtt_ms": rtt_ms}),
+                );
+            }
+            // The receive-side first-audio measurement (Task 28 wave 2, the Bot music timing tests): `listen` starts
+            // over, `edges` answers each verified device's quiet/audible changes since, stamped with the wall clock.
+            ["listen"] => {
+                call.clear_audio_edges();
+                emit(json!({"event": "listening"}));
+            }
+            ["edges"] => {
+                let raw = call.remote_audio_edges();
+                let heard: Vec<serde_json::Value> = dilla_media::heard(&raw)
+                    .into_iter()
+                    .map(|(t, audible)| json!({"t": t, "audible": audible}))
+                    .collect();
+                let edges: Vec<serde_json::Value> = raw
+                    .into_iter()
+                    .map(|e| {
+                        json!({"device": e.device, "stream": e.stream, "t": e.at_ms, "audible": e.audible})
+                    })
+                    .collect();
+                emit(json!({"event": "edges", "heard": heard, "edges": edges}));
             }
             ["quit"] => break,
             _ => emit(json!({"event": "error", "line": line})),

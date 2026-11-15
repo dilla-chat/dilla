@@ -85,6 +85,11 @@ export async function generate() {
   out.push('/// Font families and weights (`--font-mono`, `--font-serif-italic`, `--weight-<name>`).', 'pub mod font {', '    use gpui::FontWeight;', '');
   out.push('    /// The family name the registered JetBrains Mono Variable font answers to.', '    pub const MONO: &str = "JetBrains Mono";');
   out.push('    /// The family name the registered DM Serif Display Italic font answers to.', '    pub const SERIF_ITALIC: &str = "DM Serif Display";');
+  out.push(
+    "    /// The face Chromium falls back to for a symbol the web's JetBrains Mono subset lacks (fontconfig's sans-serif on the",
+    '    /// Linux reference machine).',
+    '    pub const SYMBOL: &str = "DejaVu Sans";',
+  );
   for (const [key, value] of Object.entries(structural.weight)) out.push(`    /// \`--weight-${key}\`: ${value}`, `    pub const WEIGHT_${constName(key)}: FontWeight = FontWeight(${f(Number(value))});`);
   out.push('}', '');
   out.push('/// Durations (`--duration-<name>`).', 'pub mod motion {', '    use std::time::Duration;', '');

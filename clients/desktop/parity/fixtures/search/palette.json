@@ -1,0 +1,96 @@
+{
+  "name": "search/palette",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general",
+            "position": 0
+          },
+          {
+            "id": "harbour",
+            "kind": "voice",
+            "name": "harbour",
+            "position": 0
+          },
+          {
+            "id": "loot",
+            "kind": "text",
+            "name": "loot",
+            "position": 0
+          },
+          {
+            "id": "raids",
+            "kind": "voice",
+            "name": "raids",
+            "position": 0
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "morning, the loot list is in the pinned note"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "nice. who carries the rope this time?"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "key",
+      "chord": "ctrl-k"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

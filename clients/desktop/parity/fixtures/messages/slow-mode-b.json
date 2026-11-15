@@ -1,0 +1,119 @@
+{
+  "name": "messages/slow-mode-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general",
+            "slowmode": 3600
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "raid tonight at 20:00? bring the good shields"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "in. last time the bridge troll took everything we had"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "I'm in too. Packing list:\nrope\ntorches\nsnacks for Björn"
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "the map from saturday is in #loot, the one with the coffee stain"
+      },
+      {
+        "key": "m5",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "see you at the bridge"
+      },
+      {
+        "key": "m6",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "ok, 20:00 works, I'll bring the shields"
+      },
+      {
+        "key": "m7",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "this one is long enough to wrap over more than a single line of the log, which is what the second variation checks: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+        "key": "m8",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "42"
+      },
+      {
+        "key": "m9",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481733,
+        "body": "posted a bit ago"
+      }
+    ]
+  },
+  "steps": []
+}

@@ -1,0 +1,338 @@
+//! Area **onboarding** (Task 25): the create server and create channel flows, join by invite, the invite link and the
+//! add-server dialog (web `screens/{Create,JoinCommunity}.tsx`, ui `CreateServer`, `CreateChannel`, `AddServerDialog`),
+//! and the shell's empty state ("You are not in a server yet").
+//!
+//! The dialogs live in one [`CreateFlows`] entity per window, drawn over the shell by [`overlay`] (the shell's
+//! `overlays` slot). Any code with an `&mut App` opens one ([`open_add_server`], [`open_create_channel`], [`open`]); the
+//! window's running client and where to go after a create or a join come from [`attach`], which the app calls when the
+//! shell starts. A dialog opened before a client is attached (a fixture) draws, and its submit says so.
+//!
+//! Each flow sends one command at a time and says every refusal by its code, never by the instance's detail text.
+
+mod flows;
+
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use dilla_client::Client;
+use dilla_client::state::{ChannelId, CommunityId};
+use gpui::{AnyElement, App, AppContext as _, Entity, Global, IntoElement, Window, WindowId};
+
+use dilla_desktop_ui::components::empty_state::EmptyState;
+
+pub use flows::{CreateFlows, Dialog, join_refusal};
+
+use crate::slots::SlotCx;
+use crate::strings::t;
+use crate::tracked;
+
+/// Where the shell goes after a flow: the server it created or joined, and the channel to open in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Navigate {
+    pub community: CommunityId,
+    pub channel: Option<ChannelId>,
+}
+
+/// The shell's handler for [`Navigate`].
+pub type OnNavigate = Rc<dyn Fn(Navigate, &mut Window, &mut App)>;
+
+/// What a flow may open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Open {
+    /// The "+" tile's choice: join or create.
+    AddServer,
+    /// "Start a server".
+    CreateServer,
+    /// "Join a server", with an invite to show in its field (a pasted link handed in at launch, Task 27's
+    /// `Launch.invite`, or the join a sign-up was refused).
+    Join {
+        invite: Option<String>,
+        /// Why the join was refused before (a sign-up's join after its factor, App.tsx), shown as the field's error.
+        refusal: Option<String>,
+    },
+    /// "New channel in {server}", inside the category `parent` (its header's "+") or at the top level.
+    CreateChannel {
+        community: CommunityId,
+        parent: Option<ChannelId>,
+    },
+    /// "Invite people to {server}".
+    Invite { community: CommunityId },
+}
+
+/// The window's flows, its client and its navigation, by window.
+#[derive(Default)]
+struct Windows {
+    flows: HashMap<WindowId, Entity<CreateFlows>>,
+    pending: HashMap<WindowId, Open>,
+    attached: HashMap<WindowId, (Rc<Client>, OnNavigate)>,
+}
+
+impl Global for Windows {}
+
+fn windows(cx: &mut App) -> &mut Windows {
+    cx.default_global::<Windows>()
+}
+
+/// Opens `which` in the active window (on its next frame). A press in a window opens through [`open_in`] (final review
+/// M11: the active window may be another instance's, on another account's client).
+pub fn open(which: Open, cx: &mut App) {
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    windows(cx).pending.insert(window.window_id(), which);
+    cx.refresh_windows();
+}
+
+/// Opens `which` in `window` (on its next frame), whichever window is active: a press in a window opens its own flow.
+pub fn open_in(window: &Window, which: Open, cx: &mut App) {
+    windows(cx)
+        .pending
+        .insert(window.window_handle().window_id(), which);
+    cx.refresh_windows();
+}
+
+/// Opens the create-channel flow for `community`. The channel list's "+" (Task 8) calls it. Fixed signature.
+pub fn open_create_channel(community: CommunityId, cx: &mut App) {
+    open(
+        Open::CreateChannel {
+            community,
+            parent: None,
+        },
+        cx,
+    );
+}
+
+/// Opens the add-server dialog ("join a server" or "new server") in the active window.
+pub fn open_add_server(cx: &mut App) {
+    open(Open::AddServer, cx);
+}
+
+/// [`open_create_channel`] in `window` (the channel list's "+" of that window), whichever window is active.
+pub fn open_create_channel_in(window: &Window, community: CommunityId, cx: &mut App) {
+    open_in(
+        window,
+        Open::CreateChannel {
+            community,
+            parent: None,
+        },
+        cx,
+    );
+}
+
+/// [`open_add_server`] in `window` (the rail's "+" of that window), whichever window is active.
+pub fn open_add_server_in(window: &Window, cx: &mut App) {
+    open_in(window, Open::AddServer, cx);
+}
+
+/// Opens the join dialog with `invite` in its field (Task 27's pasted invite, the GPUI form of `/welcome?invite=`).
+pub fn open_join(invite: Option<String>, cx: &mut App) {
+    open(
+        Open::Join {
+            invite,
+            refusal: None,
+        },
+        cx,
+    );
+}
+
+/// [`open_join`] in `window`, whichever window is active: the window an invite was opened with joins through its own
+/// client, never through another instance's window that happens to be in front.
+pub fn open_join_in(window: &Window, invite: Option<String>, cx: &mut App) {
+    windows(cx).pending.insert(
+        window.window_handle().window_id(),
+        Open::Join {
+            invite,
+            refusal: None,
+        },
+    );
+    cx.refresh_windows();
+}
+
+/// The window's running client and the shell's navigation, for the flows' submits. The app calls it when the shell
+/// starts; a later call replaces it (a client restarted after a revocation).
+pub fn attach(window: &Window, client: Rc<Client>, on_navigate: OnNavigate, cx: &mut App) {
+    let id = window.window_handle().window_id();
+    windows(cx)
+        .attached
+        .insert(id, (client.clone(), on_navigate.clone()));
+    if let Some(flows) = windows(cx).flows.get(&id).cloned() {
+        flows.update(cx, |f, _| f.attach(client, on_navigate));
+    }
+}
+
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): each window it was attached to drops it,
+/// with that window's flows (made again on first use).
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    let w = windows(cx);
+    let gone: Vec<WindowId> = w
+        .attached
+        .iter()
+        .filter(|(_, (c, _))| Rc::ptr_eq(c, client))
+        .map(|(id, _)| *id)
+        .collect();
+    for id in gone {
+        w.attached.remove(&id);
+        w.flows.remove(&id);
+        w.pending.remove(&id);
+    }
+}
+
+/// `window` closed: its flows, its pending open and its client go (final review C1: an instance's Remove closes the
+/// window, and the attachment must not keep the client alive).
+pub fn window_closed(window: WindowId, cx: &mut App) {
+    if !cx.has_global::<Windows>() {
+        return;
+    }
+    let w = windows(cx);
+    w.attached.remove(&window);
+    w.flows.remove(&window);
+    w.pending.remove(&window);
+}
+
+/// The windows `client` is attached to (each shell window of it), for a release that clears what those windows keep.
+pub fn windows_of(client: &Rc<Client>, cx: &App) -> Vec<WindowId> {
+    cx.try_global::<Windows>().map_or_else(Vec::new, |w| {
+        w.attached
+            .iter()
+            .filter(|(_, (c, _))| Rc::ptr_eq(c, client))
+            .map(|(id, _)| *id)
+            .collect()
+    })
+}
+
+/// The window's flows entity, made on first use.
+fn flows_of(window: &mut Window, cx: &mut App) -> Entity<CreateFlows> {
+    let id = window.window_handle().window_id();
+    if let Some(flows) = windows(cx).flows.get(&id) {
+        return flows.clone();
+    }
+    let attached = windows(cx).attached.get(&id).cloned();
+    let flows = cx.new(|cx| CreateFlows::new(attached, window, cx));
+    windows(cx).flows.insert(id, flows.clone());
+    flows
+}
+
+/// The open dialog, drawn last in the window's root (the shell's `overlays` slot). Draws nothing while none is open.
+pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let id = window.window_handle().window_id();
+    let pending = windows(cx).pending.remove(&id);
+    let has = windows(cx).flows.contains_key(&id);
+    if pending.is_none() && !has {
+        return None;
+    }
+    let flows = flows_of(window, cx);
+    if let Some(which) = pending {
+        flows.update(cx, |f, cx| f.open(which, window, cx));
+    }
+    flows.read(cx).is_open().then(|| flows.into_any_element())
+}
+
+/// After the sign-up's "Open dilla" (App.tsx): a join that was refused after the factor opens the join dialog with the
+/// invite in its field and the refusal under it. Answers whether it opened one.
+pub fn offer_refused_join(
+    window: &Window,
+    result: &dilla_client::features::signup::SignupResult,
+    cx: &mut App,
+) -> bool {
+    let Some(error) = &result.join_error else {
+        return false;
+    };
+    open_in(
+        window,
+        Open::Join {
+            invite: result.invite.clone(),
+            refusal: Some(flows::join_refusal(&error.code)),
+        },
+        cx,
+    );
+    true
+}
+
+/// The window's flows entity, if one was made (tests read its refusal and field).
+pub fn flows(window: &Window, cx: &App) -> Option<Entity<CreateFlows>> {
+    cx.try_global::<Windows>()?
+        .flows
+        .get(&window.window_handle().window_id())
+        .cloned()
+}
+
+/// The dialog open in `window`, if any.
+pub fn current(window: &Window, cx: &App) -> Option<Dialog> {
+    cx.try_global::<Windows>()?
+        .flows
+        .get(&window.window_handle().window_id())?
+        .read(cx)
+        .dialog()
+}
+
+/// The shell's main column when the account is in no server (Shell.tsx `noServerState`): "Start a server" and "Join a
+/// server".
+pub fn empty_view(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> AnyElement {
+    tracked(
+        "create-empty",
+        EmptyState::new(
+            "create-empty",
+            t("shell.noServer.title"),
+            t("shell.noServer.body"),
+        )
+        // The press opens the flow in its own window (a window that is not the active one, a headless one, still opens).
+        .action(t("shell.noServer.create"), |_, window, cx| {
+            open_in(window, Open::CreateServer, cx)
+        })
+        .secondary(t("shell.noServer.action"), |_, window, cx| {
+            open_in(
+                window,
+                Open::Join {
+                    invite: None,
+                    refusal: None,
+                },
+                cx,
+            )
+        })
+        // Automation probes: "Start a server" and "Join a server".
+        .wrap_actions(|part, el| {
+            let id = if part == "action" {
+                "create-empty-start"
+            } else {
+                "create-empty-join"
+            };
+            crate::tracked_box(id, el).into_any_element()
+        }),
+    )
+    .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Blank;
+    impl gpui::Render for Blank {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    /// Review M3: an invite a window was opened with opens its join dialog in that window, not in the active one.
+    #[gpui::test]
+    fn an_invite_opens_its_join_in_its_own_window(cx: &mut gpui::TestAppContext) {
+        let a = cx.add_window(|_, _| Blank);
+        let b = cx.add_window(|_, _| Blank);
+        b.update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        a.update(cx, |_, window, cx| {
+            open_join_in(window, Some("https://dilla.test/i/AB12".into()), cx)
+        })
+        .unwrap();
+        let pending: Vec<WindowId> = cx.update(|cx| windows(cx).pending.keys().copied().collect());
+        assert_eq!(
+            pending,
+            [a.window_id()],
+            "the join waits in A, not in the active B"
+        );
+    }
+}

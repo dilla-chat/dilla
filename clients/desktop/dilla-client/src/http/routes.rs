@@ -128,6 +128,32 @@ impl<'de> Deserialize<'de> for Raw {
     }
 }
 
+/// A request body that carries a credential (a password, a server assertion, a second-factor code): built in one
+/// buffer sized up front and zeroized when dropped. The transport serializes it into the one copy it hands its HTTP
+/// stack (or a socket frame), which it cannot zeroize; no other copy is made. Its `Debug` prints only its length.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(pub Zeroizing<Vec<u8>>);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Secret({} bytes)", self.0.len())
+    }
+}
+
+impl Serialize for Secret {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(&self.0)
+    }
+}
+
+/// `[t0, t1]` of two texts, encoded into one buffer of its final size (no reallocation leaves a copy behind).
+fn secret_pair(t0: &str, t1: &str) -> Secret {
+    // Each text head is at most 9 bytes, the array head 1.
+    let mut e = Encoder::with_capacity(1 + 9 + t0.len() + 9 + t1.len());
+    e.array(2).text(t0).text(t1);
+    Secret(Zeroizing::new(e.into_vec()))
+}
+
 /// A request without a body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct NoBody;
@@ -424,18 +450,14 @@ typed_answer!(
     NegotiatedAnswer
 );
 
-/// The body of `POST /v1/auth/password/login`: `[username, password]`.
-pub fn password_login_body(username: &str, password: &str) -> Raw {
-    let mut e = Encoder::new();
-    e.array(2).text(username).text(password);
-    Raw(e.into_vec())
+/// The body of `POST /v1/auth/password/login`: `[username, password]`, zeroized when dropped.
+pub fn password_login_body(username: &str, password: &str) -> Secret {
+    secret_pair(username, password)
 }
 
-/// The body of `POST /v1/auth/totp/verify`: `[assertion, code]`.
-pub fn totp_verify_body(assertion: &str, code: &str) -> Raw {
-    let mut e = Encoder::new();
-    e.array(2).text(assertion).text(code);
-    Raw(e.into_vec())
+/// The body of `POST /v1/auth/totp/verify`: `[assertion, code]`, zeroized when dropped.
+pub fn totp_verify_body(assertion: &str, code: &str) -> Secret {
+    secret_pair(assertion, code)
 }
 
 // ---- the routes ----
@@ -478,7 +500,7 @@ macro_rules! routes {
 routes! {
     AcceptedManualWarning { "accepted_manual_warning", GET, "/v1/bot-runtime/installations/{installation_id}/moderation/warnings/{request_id}", None, Body, true, [], None, Socket, NoBody => Raw }
     ApplyRolePanelReaction { "apply_role_panel_reaction", POST, "/v1/communities/{community_id}/role-panels/{channel_id}/{message_seq}/reaction", Cbor, None, true, [204], Some(0), Socket, Raw => () }
-    ChangePassword { "change_password", POST, "/v1/auth/password", Cbor, None, true, [204], None, Socket, Raw => () }
+    ChangePassword { "change_password", POST, "/v1/auth/password", Cbor, None, true, [204], None, Socket, Secret => () }
     ConfigureBotInstallation { "configure_bot_installation", PUT, "/v1/communities/{community_id}/bot?v=2", Cbor, Body, true, [], None, Socket, Raw => Raw }
     ConfigureBotJoinRole { "configure_bot_join_role", PUT, "/v1/communities/{community_id}/bot-join-role", Cbor, Body, true, [], None, Socket, Raw => Raw }
     ConfigureSelfRoles { "configure_self_roles", PUT, "/v1/communities/{community_id}/self-roles/policy", Cbor, Body, true, [], None, Socket, Raw => Raw }
@@ -558,10 +580,10 @@ routes! {
     MarkBotChannel { "mark_bot_channel", PUT, "/v1/communities/{community_id}/channels/{channel_id}/bot-channel", None, None, true, [204], Some(0), Socket, NoBody => () }
     NegotiateSession { "negotiate_session", POST, "/v1/sessions/negotiate", Cbor, Body, true, [200], None, Http, Raw => NegotiatedAnswer }
     PasskeyLoginBegin { "passkey_login_begin", POST, "/v1/auth/passkey/login/begin", Cbor, Body, false, [], None, Http, Raw => Raw }
-    PasskeyLoginFinish { "passkey_login_finish", POST, "/v1/auth/passkey/login/finish", Cbor, Body, false, [], None, Http, Raw => Raw }
-    PasskeyRegisterBegin { "passkey_register_begin", POST, "/v1/auth/passkey/register/begin", Cbor, Body, true, [], None, Http, Raw => Raw }
+    PasskeyLoginFinish { "passkey_login_finish", POST, "/v1/auth/passkey/login/finish", Cbor, Body, false, [], None, Http, Secret => Raw }
+    PasskeyRegisterBegin { "passkey_register_begin", POST, "/v1/auth/passkey/register/begin", Cbor, Body, true, [], None, Http, Secret => Raw }
     PasskeyRegisterFinish { "passkey_register_finish", POST, "/v1/auth/passkey/register/finish", Cbor, Body, true, [], None, Http, Raw => Raw }
-    PasswordLogin { "password_login", POST, "/v1/auth/password/login", Cbor, Body, false, [], None, Http, Raw => PasswordLoginAnswer }
+    PasswordLogin { "password_login", POST, "/v1/auth/password/login", Cbor, Body, false, [], None, Http, Secret => PasswordLoginAnswer }
     PatchBotProfile { "patch_bot_profile", PATCH, "/v1/communities/{community_id}/bot/profile", Cbor, Body, true, [], None, Socket, Raw => Raw }
     PatchBotWebhook { "patch_bot_webhook", PATCH, "/v1/communities/{community_id}/bot/webhooks/{webhook_id}", Cbor, None, true, [204], Some(0), Socket, Raw => () }
     PatchChannel { "patch_channel", PATCH, "/v1/channels/{channel_id}", Cbor, None, true, [], None, Socket, Raw => () }
@@ -593,7 +615,7 @@ routes! {
     PutMemberTimeout { "put_member_timeout", PUT, "/v1/communities/{community_id}/members/{user_id}/timeout", Cbor, Body, true, [], None, Socket, Raw => Raw }
     PutOverwrite { "put_overwrite", PUT, "/v1/channels/{channel_id}/overwrites/{kind}/{target_id}", Cbor, None, true, [], None, Socket, Raw => () }
     ReAddBot { "re_add_bot", POST, "/v1/communities/{community_id}/channels/{channel_id}/bot-channel/re-add", None, Body, true, [], Some(64), Socket, NoBody => Raw }
-    RecoveryVerify { "recovery_verify", POST, "/v1/auth/recovery/verify", Cbor, Body, false, [], None, Http, Raw => Raw }
+    RecoveryVerify { "recovery_verify", POST, "/v1/auth/recovery/verify", Cbor, Body, false, [], None, Http, Secret => Raw }
     RegenerateBackupCodes { "regenerate_backup_codes", POST, "/v1/auth/recovery/codes", Cbor, Body, true, [], None, Socket, Raw => Raw }
     RegisterRolePanel { "register_role_panel", PUT, "/v1/communities/{community_id}/role-panels", Cbor, Body, true, [], None, Socket, Raw => Raw }
     RemoveFactor { "remove_factor", POST, "/v1/auth/factors/remove", Cbor, None, true, [204], None, Socket, Raw => () }
@@ -612,9 +634,9 @@ routes! {
     StepUp { "step_up", POST, "/v1/auth/stepup", Cbor, Body, true, [], None, Socket, Raw => Raw }
     StepUpPasskeyBegin { "step_up_passkey_begin", POST, "/v1/auth/stepup/passkey/begin", Cbor, Body, true, [], None, Socket, Raw => Raw }
     StepUpPasskeyFinish { "step_up_passkey_finish", POST, "/v1/auth/stepup/passkey/finish", Cbor, Body, true, [], None, Socket, Raw => Raw }
-    TotpConfirm { "totp_confirm", POST, "/v1/auth/totp/confirm", Cbor, Body, true, [], None, Http, Raw => Raw }
-    TotpEnroll { "totp_enroll", POST, "/v1/auth/totp/enroll", Cbor, Body, true, [], None, Http, Raw => Raw }
-    TotpVerify { "totp_verify", POST, "/v1/auth/totp/verify", Cbor, Body, false, [], None, Http, Raw => TotpVerifyAnswer }
+    TotpConfirm { "totp_confirm", POST, "/v1/auth/totp/confirm", Cbor, Body, true, [], None, Http, Secret => Raw }
+    TotpEnroll { "totp_enroll", POST, "/v1/auth/totp/enroll", Cbor, Body, true, [], None, Http, Secret => Raw }
+    TotpVerify { "totp_verify", POST, "/v1/auth/totp/verify", Cbor, Body, false, [], None, Http, Secret => TotpVerifyAnswer }
     TransferOwnership { "transfer_ownership", POST, "/v1/communities/{community_id}/owner", Cbor, None, true, [], None, Socket, Raw => () }
     UnmarkBotChannel { "unmark_bot_channel", DELETE, "/v1/communities/{community_id}/channels/{channel_id}/bot-channel", None, None, true, [204], Some(0), Socket, NoBody => () }
     UnshareCall { "unshare_call", DELETE, "/v1/calls/{call_id}/share", None, None, true, [204], None, Socket, NoBody => () }

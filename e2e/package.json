@@ -5,20 +5,16 @@
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "test": "node --test unit/peer-seed.test.mjs unit/totp.test.mjs unit/media-fixtures.test.mjs unit/signal-lifecycle.test.mjs unit/installed-packages.test.mjs unit/signal-wire.test.mjs unit/signal-close-guard.test.mjs unit/native-focus.test.mjs unit/axe-contrast.test.mjs unit/voice-fixture.test.mjs unit/native-linux-package-acceptance.test.mjs unit/native-stock-sandbox.test.mjs unit/mac-notification-diagnostics.test.mjs unit/wall-clock.test.mjs",
-    "test:e2e": "playwright test --config playwright.desktop.config.ts --project=electron-client",
+    "test": "node --test unit/peer-seed.test.mjs unit/totp.test.mjs unit/media-fixtures.test.mjs unit/signal-lifecycle.test.mjs unit/signal-close-guard.test.mjs unit/axe-contrast.test.mjs unit/voice-fixture.test.mjs unit/wall-clock.test.mjs",
     "test:e2e:matrix": "playwright test --config playwright.config.ts --project=chromium",
     "test:e2e:media": "playwright test --config playwright.media.config.ts --project=chromium-media",
     "test:e2e:spike": "playwright test --config playwright.media.config.ts --project=spike-chromium",
     "test:e2e:core": "playwright test --config playwright.core.config.ts --project=chromium-core",
-    "test:e2e:web": "playwright test --config playwright.desktop.config.ts --project=electron-client",
     "test:e2e:core:chromium": "playwright test --config playwright.core.config.ts --project=chromium-core",
     "test:e2e:core:firefox": "playwright test --config playwright.core.config.ts --project=firefox-core",
     "test:e2e:web:chromium": "playwright test --config playwright.web.config.ts --project=chromium-web",
     "test:e2e:web:firefox": "playwright test --config playwright.web.config.ts --project=firefox-web",
     "test:e2e:web:webkit": "playwright test --config playwright.web.config.ts --project=webkit-web",
-    "test:e2e:voice:chromium": "playwright test --config playwright.voice.config.ts --project=chromium-voice",
-    "test:e2e:voice:firefox": "playwright test --config playwright.voice.config.ts --project=firefox-voice",
     "test:e2e:music": "playwright test --config playwright.music.config.ts --project=chromium-music",
     "test:e2e:music:firefox": "playwright test --config playwright.music.config.ts --project=firefox-music",
     "demo:web": "playwright test --config playwright.demo.config.ts",
@@ -26,10 +22,8 @@
     "ux:world": "node ux/world.mjs",
     "ux:shots": "node ux/shots.mjs",
     "ux:sheets": "node ux/sheets.mjs",
-    "test:e2e:voice": "playwright test --config playwright.desktop-voice.config.ts --project=electron-voice",
     "test:voice-fixture": "node --test unit/voice-join-fixture.test.mjs",
-    "test:layout-source": "node --test unit/conversation-layout.test.mjs",
-    "test:e2e:desktop": "playwright test --config playwright.desktop.config.ts --project=electron-client"
+    "test:layout-source": "node --test unit/conversation-layout.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

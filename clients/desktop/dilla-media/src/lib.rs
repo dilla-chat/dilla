@@ -7,27 +7,57 @@
 //!   microphone; [`Call::set_mic`], [`Call::set_muted`], [`Call::leave`],
 //!   [`Call::remote_audio_levels`].
 //! - [`transform`]: the per-frame transform (the browser media worker's pipeline in Rust).
-//! - [`devices`]: the microphones and speakers.
+//! - [`devices`]: the microphones and speakers (cpal), listing and watching.
+//! - [`capture`], [`playout`], [`apm`]: the device microphone and speaker with echo cancellation
+//!   (libwebrtc's audio processing module, the render side fed by the speaker), and the enhanced
+//!   noise mode on the device microphone.
 //! - [`noise`]: the microphone's noise suppression modes (off, standard, enhanced).
 //!
 //! Fail closed everywhere: no PeerConnection exists without the hook, a frame that cannot be sealed
 //! is dropped, a frame that does not authenticate is never decoded.
 
+pub mod apm;
+pub mod capture;
+pub mod capture_source;
 pub mod devices;
 pub mod ffi;
 pub mod noise;
+pub mod playout;
+pub mod ring;
 pub mod room;
 pub mod transform;
 
-pub use room::{Call, CallOptions, LiveKitToken, Mic, RemoteLevels};
+pub use capture_source::{
+    CaptureSource, RgbaFrame, ShareKind, ShareOptions, ShareResolution, TestPattern,
+};
+pub use livekit::webrtc::peer_connection_factory::IceServer;
+pub use room::{
+    AUDIBLE_RMS, AudioEdge, Call, CallOptions, LiveKitToken, Mic, RemoteFrame, RemoteLevels,
+    RemoteVideos, RoomEnd, StreamKey, heard,
+};
+
+/// Something the audio devices did that the user should see (never swallowed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaEvent {
+    /// `NoiseMode::Enhanced` was asked for but its model did not load: `Standard` runs instead.
+    EnhancedUnavailable,
+    /// A microphone or speaker went away (or was never there) and the system default took over.
+    DevicesChanged,
+    /// The microphone is gone and there is no default to take over: nothing is captured.
+    MicLost,
+    /// The speaker is gone and there is no default to take over: nothing is played.
+    SpeakerLost,
+    /// The enhanced noise processor failed on a frame: that frame was silenced.
+    EnhancedFailed,
+}
 
 /// The call group's media keys, as `ClientCore::call_media_epoch` gives them for each epoch.
 pub trait EpochKeys: Send + Sync {
-    /// Registers `f`, called with `(epoch, base_key, roster as (leaf, device_id), own_leaf)` for
+    /// Registers `f`, called with `(epoch, &base_key, roster as (leaf, device_id), own_leaf)` for
     /// the current epoch at once (when one is known) and then for every later one. The call stops
     /// publishing until the first call.
     #[allow(clippy::type_complexity)]
-    fn on_epoch(&self, f: Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>);
+    fn on_epoch(&self, f: Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>);
 
     /// As [`on_epoch`](EpochKeys::on_epoch), for a registration that ends: `f` answers false once
     /// its call has ended, and an implementation that can drops it then ([`EpochFeed`] does). The
@@ -35,7 +65,7 @@ pub trait EpochKeys: Send + Sync {
     #[allow(clippy::type_complexity)]
     fn on_epoch_while(
         &self,
-        f: Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>,
+        f: Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>,
     ) {
         self.on_epoch(Box::new(move |e, k, r, l| {
             f(e, k, r, l);
@@ -43,8 +73,8 @@ pub trait EpochKeys: Send + Sync {
     }
 }
 
-type EpochCallback = Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>;
-type WhileCallback = Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>;
+type EpochCallback = Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>;
+type WhileCallback = Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>;
 
 /// One epoch's media keys: `ClientCore::call_media_epoch` decoded (dilla-client's `calls`).
 #[derive(Clone)]
@@ -78,7 +108,7 @@ impl EpochFeed {
         callbacks.retain(|f| {
             f(
                 epoch.epoch,
-                *epoch.base_key,
+                &epoch.base_key,
                 epoch.roster.clone(),
                 epoch.own_leaf,
             )
@@ -113,7 +143,7 @@ impl EpochKeys for EpochFeed {
     fn on_epoch_while(&self, f: WhileCallback) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(e) = &inner.0
-            && !f(e.epoch, *e.base_key, e.roster.clone(), e.own_leaf)
+            && !f(e.epoch, &e.base_key, e.roster.clone(), e.own_leaf)
         {
             return;
         }

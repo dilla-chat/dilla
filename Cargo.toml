@@ -57,3 +57,9 @@ webrtc-sys = { path = "core/vendor/webrtc-sys" }
 # LiveKit's libwebrtc 0.4.0 with a track's C++ handle public (Task 11), so a receiver is bound by
 # its own track object, never by a track id the SFU chose. core/vendor/README.md, "libwebrtc 0.4.0".
 libwebrtc = { path = "core/vendor/libwebrtc" }
+# GPUI's text system 0.3.12 with Noto Color Emoji allowed as a font family (R20): upstream skips any face whose cmap lacks
+# 'm', which drops the colour emoji face, so emoji drew as monochrome symbols. core/vendor/README.md, "gpui-pre-wgpu 0.3.12".
+gpui-pre-wgpu = { path = "core/vendor/gpui-pre-wgpu" }
+# GPUI 0.3.12 with box edges snapped to whole logical px (half up) at a whole scale factor, as Chromium paints the web
+# client's frames (Task 6c). core/vendor/README.md, "gpui-pre 0.3.12".
+gpui-pre = { path = "core/vendor/gpui-pre" }

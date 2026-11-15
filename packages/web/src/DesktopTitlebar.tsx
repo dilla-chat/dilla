@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { DesktopBridge, DesktopInfo } from '../../desktop/src/contract.ts';
+import type { DesktopBridge, DesktopInfo } from './desktop-contract.ts';
 import './DesktopTitlebar.css';
 
 /** The workspace header and compact card share a bounded window capability. */

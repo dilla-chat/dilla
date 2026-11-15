@@ -10,69 +10,6 @@
 //! - a sender's transformer is never replaced: `set_track` to another track is refused;
 //! - a cancelled join ends its media and frees the router; its key registration goes.
 
-#[test]
-fn a_join_dropped_while_it_waits_for_its_key_ends_its_media_and_frees_the_router() {
-    use dilla_media::{Call, CallOptions, EpochFeed, EpochKeys, LiveKitToken, MediaEpoch, Mic};
-
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let token = || LiveKitToken {
-        url: "ws://127.0.0.1:9".into(),
-        token: zeroize::Zeroizing::new("unused".into()),
-        ice_servers: Vec::new(),
-    };
-    let options = |secs| CallOptions {
-        mic: Mic::None,
-        playout: false,
-        key_timeout: Duration::from_secs(secs),
-    };
-    let feed = EpochFeed::new();
-    rt.block_on(async {
-        // The join waits for its first key; the caller gives up and drops the future.
-        let join = Call::join_with(token(), feed.clone() as Arc<dyn EpochKeys>, options(30));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), join)
-                .await
-                .is_err(),
-            "still waiting for the key"
-        );
-    });
-    // RED (review I1): the router stayed busy with the dropped join's media for the process life.
-    let media = CallMedia::new();
-    let router = Router::get().unwrap();
-    router
-        .begin(media.clone())
-        .expect("the dropped join's call has ended");
-    router.end(&media);
-    // The dropped call's registration goes at the next epoch: its keys are never installed.
-    assert_eq!(feed.registrations(), 1);
-    feed.publish(MediaEpoch {
-        epoch: 1,
-        base_key: zeroize::Zeroizing::new([7; 16]),
-        roster: ROSTER.to_vec(),
-        own_leaf: 0,
-    });
-    assert_eq!(
-        feed.registrations(),
-        0,
-        "an ended call's registration is dropped"
-    );
-    // A later join is not refused as busy (it fails on its own key timeout instead).
-    let again = rt.block_on(Call::join_with(
-        token(),
-        EpochFeed::new() as Arc<dyn EpochKeys>,
-        options(0),
-    ));
-    assert!(
-        matches!(again, Err(MediaError::NoEpoch)),
-        "{:?}",
-        again.err().map(|e| e.to_string())
-    );
-}
-
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -122,6 +59,14 @@ fn call() -> Fixture {
 }
 
 /// The peer's own sender (leaf 1): what the web client's MediaSender produces.
+/// The sequence part of a sealed Opus frame's SFrame CTR (no codec prefix).
+fn seq_of(frame: &[u8]) -> u64 {
+    dilla_core::sframe::peek_kid_ctr(0, frame)
+        .expect("an SFrame header")
+        .1
+        .seq()
+}
+
 fn peer_sender(epoch: u64, base: &[u8; NK]) -> SframeSender {
     SframeSender::new(base, 1, epoch, epoch).unwrap()
 }
@@ -314,6 +259,100 @@ fn the_microphone_sender_is_bound_as_it_attaches_and_an_unbound_sender_sends_not
     testing::release(other);
 }
 
+/// Task 17 fix (WB security I1, session.ts `dropKeys`): an epoch the core's gate refused drops every media key: nothing
+/// is sealed under the old epoch (a removed member must not keep hearing this device), and a received frame is not
+/// opened, until the next epoch is installed.
+#[test]
+fn dropped_keys_seal_and_open_nothing_until_the_next_epoch() {
+    let f = call();
+    f.media.expect_local("mic-drop", Slot::Microphone);
+    let tx = testing::attach(true, false, "mic-drop");
+    testing::frame(tx, "audio/opus", OPUS, false);
+    let first = testing::take_emitted(tx);
+    assert_eq!(first.len(), 1);
+    let sealed_before: u64 = f.media.stats().encrypted.values().sum();
+    f.media.drop_keys();
+    assert_eq!(f.media.sending_epoch(), None);
+    for _ in 0..3 {
+        testing::frame(tx, "audio/opus", OPUS, false);
+    }
+    assert!(
+        testing::take_emitted(tx).is_empty(),
+        "nothing sent without a key"
+    );
+    assert_eq!(
+        f.media.stats().encrypted.values().sum::<u64>(),
+        sealed_before,
+        "frames_encrypted stays flat"
+    );
+    // A peer's frame under the dropped epoch is not opened.
+    let rx = testing::attach(false, false, "TR_drop");
+    f.media.bind_remote(rx, PEER, Slot::Microphone).unwrap();
+    let frame = peer_sender(EPOCH, &BASE)
+        .encrypt(Codec::Opus, Slot::Microphone, 0, OPUS)
+        .unwrap();
+    testing::frame(rx, "audio/opus", &frame, false);
+    assert!(testing::take_emitted(rx).is_empty());
+    // Ruling R24: the refused epoch passing again resumes the suspended sender, its counter continued: the same
+    // plaintext seals to new bytes (no nonce repeat), and the peer opens it.
+    f.media.install_epoch(EPOCH, &BASE, &ROSTER, 0).unwrap();
+    assert_eq!(f.media.sending_epoch(), Some(EPOCH));
+    testing::frame(tx, "audio/opus", OPUS, false);
+    let resumed = testing::take_emitted(tx);
+    assert_eq!(resumed.len(), 1);
+    assert!(
+        f.media.stats().encrypted.values().sum::<u64>() > sealed_before,
+        "frames_encrypted rises again"
+    );
+    assert_ne!(resumed[0], first[0], "a new nonce: the counter went on");
+    assert_eq!(
+        seq_of(&resumed[0]),
+        seq_of(&first[0]) + 1,
+        "the resumed frame's CTR is the one after the last sealed before the suspend"
+    );
+    let mut peer_ring = KeyRing::new();
+    peer_ring.install_epoch(EPOCH, &BASE, &ROSTER, Some(1), 0);
+    for frame in [&first[0], &resumed[0]] {
+        let opened = peer_ring
+            .decrypt(Codec::Opus, frame, Some(&ME), Slot::Microphone, 0)
+            .unwrap();
+        assert_eq!(opened.frame, OPUS);
+    }
+    // Suspended again, then a newer epoch: the same sender (no second one) is rekeyed. Its counter starts over under
+    // the new epoch's own key (SframeSender keeps counters per epoch), so no nonce repeats either.
+    f.media.drop_keys();
+    f.media
+        .install_epoch(EPOCH + 1, &BASE2, &ROSTER, 0)
+        .unwrap();
+    assert_eq!(f.media.sending_epoch(), Some(EPOCH + 1));
+    testing::frame(tx, "audio/opus", OPUS, false);
+    let newer = testing::take_emitted(tx);
+    assert_eq!(newer.len(), 1);
+    assert_eq!(seq_of(&newer[0]), 0, "a fresh counter under a fresh key");
+    let mut next_ring = KeyRing::new();
+    next_ring.install_epoch(EPOCH + 1, &BASE2, &ROSTER, Some(1), 0);
+    let opened = next_ring
+        .decrypt(Codec::Opus, &newer[0], Some(&ME), Slot::Microphone, 0)
+        .unwrap();
+    assert_eq!(opened.frame, OPUS);
+    testing::release(tx);
+    testing::release(rx);
+}
+
+/// A call that ends while suspended drops the suspended key too: nothing holds a key after `close`.
+#[test]
+fn closing_a_suspended_call_drops_the_suspended_key() {
+    let f = call();
+    f.media.drop_keys();
+    assert!(f.media.holds_keys(), "suspended: the sender is kept aside");
+    f.media.close();
+    assert!(!f.media.holds_keys());
+    assert!(matches!(
+        f.media.install_epoch(EPOCH, &BASE, &ROSTER, 0),
+        Err(MediaError::Closed)
+    ));
+}
+
 #[test]
 fn after_the_call_ends_no_frame_is_sent_or_decoded() {
     let f = call();
@@ -372,4 +411,68 @@ fn a_sender_keeps_its_transformer_and_refuses_a_track_it_was_not_attached_for() 
         "its own track comes back under the same transformer"
     );
     pc.close();
+}
+
+#[test]
+fn a_join_dropped_while_it_waits_for_its_key_ends_its_media_and_frees_the_router() {
+    use dilla_media::{Call, CallOptions, EpochFeed, EpochKeys, LiveKitToken, MediaEpoch, Mic};
+
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let token = || LiveKitToken {
+        url: "ws://127.0.0.1:9".into(),
+        token: zeroize::Zeroizing::new("unused".into()),
+        ice_servers: Vec::new(),
+    };
+    let options = |secs| CallOptions {
+        mic: Mic::None,
+        playout: false,
+        key_timeout: Duration::from_secs(secs),
+        ..CallOptions::default()
+    };
+    let feed = EpochFeed::new();
+    rt.block_on(async {
+        // The join waits for its first key; the caller gives up and drops the future.
+        let join = Call::join_with(token(), feed.clone() as Arc<dyn EpochKeys>, options(30));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), join)
+                .await
+                .is_err(),
+            "still waiting for the key"
+        );
+    });
+    // RED (review I1): the router stayed busy with the dropped join's media for the process life.
+    let media = CallMedia::new();
+    let router = Router::get().unwrap();
+    router
+        .begin(media.clone())
+        .expect("the dropped join's call has ended");
+    router.end(&media);
+    // The dropped call's registration goes at the next epoch: its keys are never installed.
+    assert_eq!(feed.registrations(), 1);
+    feed.publish(MediaEpoch {
+        epoch: 1,
+        base_key: zeroize::Zeroizing::new([7; 16]),
+        roster: ROSTER.to_vec(),
+        own_leaf: 0,
+    });
+    assert_eq!(
+        feed.registrations(),
+        0,
+        "an ended call's registration is dropped"
+    );
+    // A later join is not refused as busy (it fails on its own key timeout instead).
+    let again = rt.block_on(Call::join_with(
+        token(),
+        EpochFeed::new() as Arc<dyn EpochKeys>,
+        options(0),
+    ));
+    assert!(
+        matches!(again, Err(MediaError::NoEpoch)),
+        "{:?}",
+        again.err().map(|e| e.to_string())
+    );
 }

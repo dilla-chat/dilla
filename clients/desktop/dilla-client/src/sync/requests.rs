@@ -14,10 +14,13 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
+use zeroize::Zeroizing;
 
 use crate::gateway::WsGateway;
 use crate::gateway::frames::{self, MAX_REQUEST_BODY, RequestFrame};
-use crate::seams::GatewayError;
+use crate::http::routes::{self, Transport};
+use crate::http::{BODY_CEILING, answer_of, body_of, fill_path};
+use crate::seams::{GatewayError, Http, HttpError, Route};
 
 use super::api::ApiError;
 
@@ -29,7 +32,7 @@ pub const RESEND_WINDOW: Duration = Duration::from_secs(4 * 60);
 pub const MAX_IN_FLIGHT: usize = 64;
 const BUSY_PAUSE_MS: u64 = 100;
 const BUSY_JITTER_MS: u64 = 100;
-const UNAVAILABLE_ATTEMPTS: u32 = 5;
+pub(crate) const UNAVAILABLE_ATTEMPTS: u32 = 5;
 const UNAVAILABLE_BASE_MS: u64 = 500;
 const UNAVAILABLE_CAP_MS: u64 = 8_000;
 const UNAVAILABLE_JITTER_MS: u64 = 250;
@@ -45,11 +48,18 @@ pub struct Answer {
     pub body: Vec<u8>,
 }
 
+/// Told the route pattern (`GET /v1/x/{id}`) and the round trip in ms of each request the instance answered (Task 24's
+/// diagnostics: `Diagnostics::record_route`).
+pub type RouteObserver = Arc<dyn Fn(&str, f64) + Send + Sync>;
+
 struct Pending {
     seq: u64,
     method: &'static str,
+    /// The route table's pattern (`GET /v1/x/{id}`), for the round-trip record; `None` for a request made by path only.
+    pattern: Option<String>,
     route: String,
-    body: Vec<u8>,
+    /// Zeroized when the request settles (a step-up token travels in one).
+    body: Zeroizing<Vec<u8>>,
     idem: Option<Vec<u8>>,
     tx: Option<oneshot::Sender<Result<Answer, ApiError>>>,
     unavailable: u32,
@@ -86,7 +96,7 @@ impl Pending {
 
 #[derive(Default)]
 struct Inner {
-    gateway: Option<Arc<WsGateway>>,
+    gateway: Option<Arc<dyn RequestSink>>,
     up: bool,
     queue: Vec<Pending>,
     in_flight: HashMap<u64, Pending>,
@@ -99,6 +109,19 @@ struct Inner {
     incarnation: Option<String>,
     stopped_with: Option<ApiError>,
     closed: bool,
+    observer: Option<RouteObserver>,
+}
+
+/// Where request frames are written: the gateway's socket ([`WsGateway::send_now`]), or a test's script.
+pub trait RequestSink: Send + Sync {
+    /// Queues one frame for the socket now, or says why not (as `WsGateway::send_now` does).
+    fn send_now(&self, frame: Vec<u8>) -> Result<(), GatewayError>;
+}
+
+impl RequestSink for WsGateway {
+    fn send_now(&self, frame: Vec<u8>) -> Result<(), GatewayError> {
+        WsGateway::send_now(self, frame)
+    }
 }
 
 /// The socket request transport of one client. The gateway it writes to is swapped by the sync engine
@@ -130,9 +153,19 @@ impl SocketRequests {
 
     /// The gateway requests are written to from now on (`None` while there is none).
     pub fn attach(&self, gateway: Option<Arc<WsGateway>>) {
+        self.attach_sink(gateway.map(|g| g as Arc<dyn RequestSink>));
+    }
+
+    /// [`SocketRequests::attach`] for any [`RequestSink`] (a test's scripted socket).
+    pub(crate) fn attach_sink(&self, sink: Option<Arc<dyn RequestSink>>) {
         let mut inner = lock(&self.inner);
-        inner.gateway = gateway;
+        inner.gateway = sink;
         inner.up = false;
+    }
+
+    /// Who is told each answered request's pattern and round trip ([`RouteObserver`]).
+    pub fn set_observer(&self, observer: Option<RouteObserver>) {
+        lock(&self.inner).observer = observer;
     }
 
     /// Whether a request can be written now.
@@ -141,12 +174,28 @@ impl SocketRequests {
         !inner.closed && inner.up
     }
 
-    /// One request; `idem` is required for every method but GET.
+    /// One request; `idem` is required for every method but GET. The body is a zeroizing buffer, and every copy the queue
+    /// makes of it is one too. The encoded frame is a plain buffer: it is written into a buffer sized for it (no growth), then
+    /// moved into the gateway's writer channel, where it lives in this crate until `write_loop` hands it to the websocket
+    /// library, which takes ownership of its bytes; it cannot be wiped there.
     pub async fn request(
         self: &Arc<Self>,
         method: &'static str,
         route: String,
-        body: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
+        idem: Option<Vec<u8>>,
+    ) -> Result<Answer, ApiError> {
+        self.request_route(method, None, route, body, idem).await
+    }
+
+    /// [`SocketRequests::request`] for a route of the route table: `pattern` (`GET /v1/x/{id}`) is what the round trip is
+    /// recorded under.
+    pub async fn request_route(
+        self: &Arc<Self>,
+        method: &'static str,
+        pattern: Option<String>,
+        route: String,
+        body: Zeroizing<Vec<u8>>,
         idem: Option<Vec<u8>>,
     ) -> Result<Answer, ApiError> {
         if method != "GET" && idem.as_ref().is_none_or(Vec::is_empty) {
@@ -181,6 +230,7 @@ impl SocketRequests {
             inner.queue.push(Pending {
                 seq,
                 method,
+                pattern,
                 route,
                 body,
                 idem,
@@ -249,6 +299,7 @@ impl SocketRequests {
         let Ok(r) = frames::decode_response(bytes) else {
             return;
         };
+        let mut timing = None;
         {
             let mut inner = lock(&self.inner);
             // An answer for a socket since replaced, a timed-out attempt, or a duplicate.
@@ -288,11 +339,21 @@ impl SocketRequests {
                     );
                     inner.waiting.insert(seq, p);
                 }
-                _ => p.settle(Ok(Answer {
-                    status: r.status,
-                    body: r.body,
-                })),
+                _ => {
+                    if let (Some(observer), Some(pattern)) = (&inner.observer, p.pattern.take()) {
+                        let ms = p.first_written_at.elapsed().as_secs_f64() * 1000.0;
+                        timing = Some((observer.clone(), pattern, ms));
+                    }
+                    p.settle(Ok(Answer {
+                        status: r.status,
+                        body: r.body,
+                    }));
+                }
             }
+        }
+        // Outside the lock: the observer publishes.
+        if let Some((observer, pattern, ms)) = timing {
+            observer(&pattern, ms);
         }
         self.pump();
     }
@@ -517,5 +578,146 @@ fn fail_all(inner: &mut Inner, error: Option<&ApiError>) {
             Some(e) => e.clone(),
         };
         p.settle(Err(e));
+    }
+}
+
+/// The [`Http`] seam over this gateway socket for the routes the instance serves only there (the route table's
+/// `Socket` rows, every call route among them), and over `H` for the rest: socket-routes.ts's split, exactly. A socket
+/// route never falls back to HTTP (the instance has no REST form of it): while the socket is down it waits in
+/// [`SocketRequests`]'s queue and is written once the gateway is ready again.
+///
+/// A socket route's answer is read as [`crate::http::ReqwestHttp`] reads an HTTP one (the row's accepted statuses, its
+/// body bound and its answer shape), and a refusal is [`HttpError::Status`] with the instance's `E_*` code. A route
+/// meter's 429 is waited out as `Api`'s socket routes wait it out (the body's delay, else 1 s; at most five attempts).
+/// A request the socket lost is [`HttpError::Transport`] naming `E_NETWORK` or, for a written mutation whose answer
+/// was lost, `E_OUTCOME_UNKNOWN`.
+pub struct SocketHttp<H> {
+    socket: Arc<SocketRequests>,
+    http: H,
+}
+
+impl<H> SocketHttp<H> {
+    pub fn new(socket: Arc<SocketRequests>, http: H) -> Self {
+        Self { socket, http }
+    }
+
+    /// The HTTP transport the non-socket routes take.
+    pub fn http(&self) -> &H {
+        &self.http
+    }
+}
+
+fn method_name(m: &http::Method) -> Option<&'static str> {
+    Some(match *m {
+        http::Method::GET => "GET",
+        http::Method::POST => "POST",
+        http::Method::PUT => "PUT",
+        http::Method::PATCH => "PATCH",
+        http::Method::DELETE => "DELETE",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+pub(crate) mod script;
+#[cfg(test)]
+mod tests;
+
+/// `Api::socket_call`'s attempts and its longest 429 wait (client.ts `RETRY`).
+const SOCKET_HTTP_ATTEMPTS: u32 = 5;
+const SOCKET_HTTP_MAX_WAIT_MS: u64 = 60_000;
+
+/// A fresh idempotency key (16 bytes from the OS CSPRNG), or `None` when the OS gives no randomness: a key is never
+/// a predictable one (all zeros would make the instance's replay record answer another request's write).
+pub(crate) fn random_idem() -> Option<Vec<u8>> {
+    let mut b = vec![0u8; 16];
+    getrandom::fill(&mut b).ok()?;
+    Some(b)
+}
+
+#[async_trait::async_trait]
+impl<H: Http> Http for SocketHttp<H> {
+    async fn call<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+    ) -> Result<R::Response, HttpError> {
+        self.call_with_idem::<R>(path_args, req, None).await
+    }
+}
+
+impl<H: Http> SocketHttp<H> {
+    /// [`Http::call`] with the caller's idempotency key for a socket mutation (`None`: a fresh random one). A caller
+    /// that writes the same request again after a lost answer (`E_OUTCOME_UNKNOWN`) passes the same key, so the
+    /// instance's replay record answers with the first write's outcome instead of applying it twice.
+    pub async fn call_with_idem<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+        idem: Option<[u8; 16]>,
+    ) -> Result<R::Response, HttpError> {
+        let entry = routes::lookup(&R::METHOD, R::PATH).ok_or_else(|| {
+            HttpError::Transport(format!(
+                "{} {} is not in the route table",
+                R::METHOD,
+                R::PATH
+            ))
+        })?;
+        if entry.transport == Transport::Http {
+            return self.http.call::<R>(path_args, req).await;
+        }
+        let route = fill_path(entry.path, path_args)?;
+        // Zeroized here; the copy each attempt hands the queue (and its frame) is the transport's, as over HTTP.
+        let body = zeroize::Zeroizing::new(body_of::<R>(&req, entry)?.unwrap_or_default());
+        drop(req);
+        let method = method_name(&entry.method).ok_or_else(|| {
+            HttpError::Transport(format!("{} is not a socket method", entry.method))
+        })?;
+        // One key for every attempt of this request, so a retry is answered from the instance's replay record.
+        let idem = if method == "GET" {
+            None
+        } else if let Some(idem) = idem {
+            Some(idem.to_vec())
+        } else {
+            Some(random_idem().ok_or_else(|| HttpError::Unanswered {
+                code: "E_RANDOM".into(),
+                detail: "no OS randomness for an idempotency key".into(),
+            })?)
+        };
+        for attempt in 1..=SOCKET_HTTP_ATTEMPTS {
+            let answer = self
+                .socket
+                .request(
+                    method,
+                    route.clone(),
+                    Zeroizing::new(body.to_vec()),
+                    idem.clone(),
+                )
+                .await
+                .map_err(|e| HttpError::Unanswered {
+                    code: e.code,
+                    detail: e.detail,
+                })?;
+            if entry.accepts(answer.status) {
+                let cap = entry.max_body.unwrap_or(BODY_CEILING);
+                if answer.body.len() as u64 > cap {
+                    return Err(HttpError::Decode(format!(
+                        "the response body is larger than {cap} bytes"
+                    )));
+                }
+                return answer_of::<R>(entry, answer.status, answer.body);
+            }
+            if answer.status == 429 && attempt < SOCKET_HTTP_ATTEMPTS {
+                let wait = ApiError::from_body(answer.status, &answer.body)
+                    .retry_after_ms
+                    .unwrap_or(1000);
+                if wait <= SOCKET_HTTP_MAX_WAIT_MS {
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    continue;
+                }
+            }
+            return Err(crate::http::refused(answer.status, Some(&answer.body)));
+        }
+        unreachable!("the loop returns on its last attempt")
     }
 }

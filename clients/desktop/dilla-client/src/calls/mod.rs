@@ -15,16 +15,41 @@
 
 pub mod controller;
 pub mod join;
+pub mod session;
 pub mod wire;
+
+#[cfg(test)]
+mod tests;
 
 use dilla_core::client::{ClientCore, ClientError};
 use zeroize::Zeroizing;
 
 use crate::seams::{Http, HttpError};
+use crate::sync::requests::SocketHttp;
 
-pub use controller::{leave_call, media_epoch, rotate_call};
-pub use join::{JoinHooks, JoinRefused, JoinTarget, Joined, join_call};
-pub use wire::{CallParticipant, CallStarted, ChannelCall, GroupSummary};
+pub use controller::{Left, RotateError, decline_ring, leave_call, media_epoch, rotate_call};
+pub use join::{
+    FROZEN_RETRY, JoinHooks, JoinRefused, JoinTarget, Joined, REJOIN_STEP, REJOIN_WAIT, join_call,
+};
+pub use session::{CallJoin, CallTarget, Calls, NoHttp, SocketCallRoutes};
+pub use wire::{CallParticipant, CallStarted, ChannelCall, GroupSummary, HandshakePage};
+
+/// Where a call of this device stands, as the join reports it ([`JoinHooks::phase`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CallPhase {
+    /// No call, or a join that ended without one.
+    #[default]
+    Idle,
+    /// The join is reading the call, registering or joining its group, or starting the call.
+    Joining,
+    /// A rejoin the instance refused with 409 `E_REMOVE_PENDING`: this device's earlier leaf is
+    /// still being removed, and the join waits (at most [`join::REJOIN_WAIT`]) until another member
+    /// commits that Remove or the call ends, then joins (join.ts `rejoining`).
+    WaitingForRemove,
+    /// Joined: the call group's member, with the join epoch's keys and the LiveKit token.
+    In,
+}
 
 /// The core, locked for one call. A poisoned lock (a panic inside the core) is a refusal: the core's
 /// state may be half-written, so nothing more is derived from it or posted for it.
@@ -63,6 +88,9 @@ pub struct RouteError {
     pub status: Option<u16>,
     pub code: Option<String>,
     pub detail: String,
+    /// The instance's `retry_after_ms` hint (a 425 `E_COMMIT_REQUIRED`'s commit deadline, a 429's
+    /// wait), when the refusal carries one.
+    pub retry_after_ms: Option<u64>,
 }
 
 impl RouteError {
@@ -75,6 +103,7 @@ impl RouteError {
             status: None,
             code: Some("E_CBOR_SHAPE".into()),
             detail: detail.into(),
+            retry_after_ms: None,
         }
     }
 }
@@ -82,20 +111,34 @@ impl RouteError {
 impl From<HttpError> for RouteError {
     fn from(e: HttpError) -> Self {
         match e {
-            HttpError::Status(s) => Self {
-                status: Some(s),
-                code: None,
-                detail: format!("status {s}"),
+            HttpError::Status {
+                status,
+                code,
+                retry_after_ms,
+                ..
+            } => Self {
+                status: Some(status),
+                detail: format!("status {status}"),
+                code,
+                retry_after_ms,
             },
             HttpError::Transport(t) => Self {
                 status: None,
                 code: None,
                 detail: t,
+                retry_after_ms: None,
             },
             HttpError::Decode(d) => Self {
                 status: None,
                 code: Some("E_CBOR_SHAPE".into()),
                 detail: d,
+                retry_after_ms: None,
+            },
+            HttpError::Unanswered { code, detail } => Self {
+                status: None,
+                code: Some(code),
+                detail,
+                retry_after_ms: None,
             },
         }
     }
@@ -238,10 +281,25 @@ pub trait CallRoutes: Send + Sync {
     async fn get_group_tree(&self, group: &[u8; 16]) -> Result<Vec<u8>, RouteError>;
     /// `POST /v1/groups/{id}/resync`: the commit's `seq`.
     async fn post_resync(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError>;
-    /// `POST /v1/groups/{id}/commit`: the commit's `seq`.
-    async fn post_commit(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError>;
+    /// `POST /v1/groups/{id}/commit`: the commit's `seq`. `idem` is the write's idempotency key: the
+    /// same commit written again after a lost answer carries the same key, so the instance's replay
+    /// record answers with the first write's outcome.
+    async fn post_commit(
+        &self,
+        group: &[u8; 16],
+        body: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, RouteError>;
     /// `POST /v1/groups/{id}/proposal`: the proposal's `seq`.
     async fn post_proposal(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError>;
+    /// `GET /v1/groups/{id}/handshakes?from=&limit=`: one page of handshake rows, decoded as a
+    /// rotation's reconciliation reads it.
+    async fn get_handshakes(
+        &self,
+        group: &[u8; 16],
+        from: u64,
+        limit: u64,
+    ) -> Result<wire::HandshakePage, RouteError>;
     /// L-HTTP-102 `POST /v1/channels/{id}/calls`.
     async fn start_call(&self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, RouteError>;
     /// `DELETE /v1/calls/{id}?if_alone=1`: true when the call ended, false when others are in it.
@@ -250,7 +308,19 @@ pub trait CallRoutes: Send + Sync {
     async fn decline_call(&self, call: &[u8; 16], ring_ts: u64) -> Result<(), RouteError>;
 }
 
-/// [`CallRoutes`] over the client's [`Http`] seam and its typed route table.
+/// The sync engine's catch-up of one group, as a rotation's reconciliation uses it
+/// ([`controller::rotate_call`]).
+#[async_trait::async_trait]
+pub trait CallCatchUp: Send + Sync {
+    /// Reads the group from this device's cursor to the instance's end and applies it (the sync
+    /// engine's catch-up): a pending commit of this device is adopted as its own when it arrives
+    /// (confirmed), and another member's commit of that epoch clears it. True when the read reached
+    /// the instance's end with the group still active.
+    async fn catch_up(&self, group: &[u8; 16]);
+}
+
+/// [`CallRoutes`] over the client's gateway socket ([`SocketHttp`]: every call route is a socket
+/// route) and its typed route table.
 pub struct HttpRoutes<H>(pub H);
 
 fn hex(b: &[u8]) -> String {
@@ -258,7 +328,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 #[async_trait::async_trait]
-impl<H: Http> CallRoutes for HttpRoutes<H> {
+impl<H: Http> CallRoutes for HttpRoutes<SocketHttp<H>> {
     async fn get_channel_call(&self, channel: &[u8; 16]) -> Result<ChannelCall, RouteError> {
         use crate::http::routes::{GetChannelCall, NoBody};
         let raw = self
@@ -285,10 +355,34 @@ impl<H: Http> CallRoutes for HttpRoutes<H> {
         let raw = self.0.call::<PostResync>(&[&hex(group)], Raw(body)).await?;
         wire::decode_seq(&raw.0, 0)
     }
-    async fn post_commit(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError> {
+    async fn post_commit(
+        &self,
+        group: &[u8; 16],
+        body: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, RouteError> {
         use crate::http::routes::{PostCommit, Raw};
-        let raw = self.0.call::<PostCommit>(&[&hex(group)], Raw(body)).await?;
+        let raw = self
+            .0
+            .call_with_idem::<PostCommit>(&[&hex(group)], Raw(body), Some(idem))
+            .await?;
         wire::decode_seq(&raw.0, 0)
+    }
+    async fn get_handshakes(
+        &self,
+        group: &[u8; 16],
+        from: u64,
+        limit: u64,
+    ) -> Result<wire::HandshakePage, RouteError> {
+        use crate::http::routes::{GetHandshakes, NoBody};
+        let raw = self
+            .0
+            .call::<GetHandshakes>(
+                &[&hex(group), &from.to_string(), &limit.to_string()],
+                NoBody,
+            )
+            .await?;
+        wire::decode_handshake_page(&raw.0)
     }
     async fn post_proposal(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError> {
         use crate::http::routes::{PostProposal, Raw};
@@ -310,8 +404,8 @@ impl<H: Http> CallRoutes for HttpRoutes<H> {
         use crate::http::routes::{EndCallIfAlone, NoBody};
         match self.0.call::<EndCallIfAlone>(&[&hex(call)], NoBody).await {
             Ok(()) => Ok(true),
-            // 409 E_CALL_NOT_ALONE is the only 409 of this route.
-            Err(HttpError::Status(409)) => Ok(false),
+            // routes.ts `endCallIfAlone`: others are in the call.
+            Err(e) if e.is(409, "E_CALL_NOT_ALONE") => Ok(false),
             Err(e) => Err(e.into()),
         }
     }

@@ -1501,9 +1501,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   `true`; with `join_request` (the `/rtc/v1` form), the `reconnect` field of the base64url
   `WrappedJoinRequest`'s `JoinRequest`, uncompressed or gzip. A `join_request` the SFU would refuse —
   not base64url, not protobuf, or larger than 1 MiB raw or once decompressed — is
-  `400 E_INVALID_REQUEST`. A join the checks above admit must also name signalling protocol 17 —
-  the `protocol` query parameter without `join_request`, the `JoinRequest`'s `client_info.protocol`
-  with it — and, with `join_request`, a `client_info.sdk` the SFU's enum names; any other value,
+  `400 E_INVALID_REQUEST`. A join the checks above admit must also name signalling protocol 17
+  (the web client and the Go SDK) or 18 (the desktop client's LiveKit Rust SDK) — the `protocol`
+  query parameter without `join_request`, the `JoinRequest`'s `client_info.protocol` with it —
+  and, with `join_request`, a `client_info.sdk` the SFU's enum names; any other value,
   including none, is `400 E_INVALID_REQUEST`, because the SFU labels its metrics with both. The
   paths are metered per client address on the `unauth` bucket of
   `[limits.rate]` (`429 E_RATE_LIMITED` with `retry_after_ms`). The instance removes a `publish`
@@ -1659,7 +1660,10 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   non-bot device whose external commit has just landed keeps the call (`409 E_CALL_NOT_ALONE`);
   the unconditional form is unchanged. A closed group answers as above
   (`403 E_LEAF_NOT_CURRENT` at a start), `GET /v1/channels/{id}/call` no longer names it, and the
-  next joiner registers a fresh call group. A start that read the group open and writes its call
+  next joiner registers a fresh call group. A joiner whose external commit reaches the group after
+  the close (it read the call just before the end) is refused `409 E_GROUP_CLOSED` (`02` § Errors);
+  it reads the call once more and, when that names no group, registers a fresh one through the same
+  steps as any first joiner, its join gate included. A start that read the group open and writes its call
   after the close is ended at once and answers `503 E_UNAVAILABLE` with `retry_after_ms`; a start whose
   call was written just before the close can instead answer `201` and see the call end at once. Either
   way the client retries with a fresh `GET /v1/channels/{id}/call`. So a call group that a member poisoned with a

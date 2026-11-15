@@ -3142,6 +3142,8 @@ export class ModelDs {
   private postCommit(d: string, id: Id, body: Uint8Array): { seq: bigint; epoch: bigint } {
     const g = this.must(id);
     if (!g.members.has(d)) throw httpError(403, 'E_LEAF_NOT_CURRENT');
+    // dillad commitPreflight: a closed group takes no commit, after the membership answer and before the epoch's.
+    if (g.closed) throw httpError(409, 'E_GROUP_CLOSED');
     const v = arr(decode(body), 5);
     if (u64(at(v, 0)) !== g.epoch) throw httpError(409, 'E_COMMIT_CONFLICT');
     const commit = bin(at(v, 1));
@@ -3173,6 +3175,8 @@ export class ModelDs {
     if (this.aclDeny.has(toHex(dev))) throw httpError(404, 'E_NOT_FOUND');
     if (this.denyJoin.has(toHex(dev))) throw httpError(403, 'E_FORBIDDEN');
     if (this.removeTarget.has(toHex(dev))) throw httpError(409, 'E_REMOVE_PENDING');
+    // dillad commitPreflight: an external commit to a closed group (the call ended as it was built) is refused as closed.
+    if (g.closed) throw httpError(409, 'E_GROUP_CLOSED');
     if (this.unlisted(toHex(dev))) throw httpError(422, 'E_COMMIT_INVALID', null, ['external_joiner']);
     const v = arr(decode(body), 2);
     const commit = bin(at(v, 0));

@@ -170,7 +170,10 @@ export interface CallKeys { groupId: string; epoch: string; baseKey: ArrayBuffer
 // No key bytes in a command result: the join epoch's CallKeys arrive as a `callKeys` push posted
 // immediately before this result's `ret` (same port, FIFO), carrying `epoch` below.
 export interface CallJoinResult { callId: string; groupId: string; livekitUrl: string; token: string;
-  iceServers: IceServerTuple[]; caps: [number, number, number]; epoch: string }
+  iceServers: IceServerTuple[]; caps: [number, number, number]; epoch: string;
+  /** Lane P (parity only): the instance carries dilla-testhost's parity-fixture marker (`Instance.parityFixture`, which
+   *  dillad never serves), so the page reads no live link (no ping, no kb/s) and a reference shot is deterministic. */
+  parityFixture?: true }
 export type CallStatsReport = [candidateType: number, relayProtocol: number | null, rttMs: number,
   fractionLostPermille: number, decryptFailures: number, framesEncrypted: number];
 // 'paused' (RV-3, Jonas): a mid-call identity change (E_UMK_CHANGED); still in the group and the room, no keys sent or installed.

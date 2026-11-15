@@ -1,5 +1,5 @@
-import { WORKSPACE_MINIMUM } from '../../desktop/src/window-layout.ts';
-import type { DesktopBridge } from '../../desktop/src/contract.ts';
+import { WORKSPACE_MINIMUM } from './desktop-contract.ts';
+import type { DesktopBridge } from './desktop-contract.ts';
 import type { NotificationCtor, NotificationHandle } from './notify.ts';
 
 export function desktopBridge(): DesktopBridge | undefined {
@@ -145,7 +145,7 @@ export function startDesktopLifecycle(bridge = desktopBridge()): () => void {
 
 /** Size the same native window for startup, authentication and the workspace.
  * Only natural card height crosses this capability; no arbitrary window bounds. */
-export function startDesktopWindowLayout(mode: import('../../desktop/src/window-layout.ts').WindowMode, bridge = desktopBridge(), ready?: () => void): () => void {
+export function startDesktopWindowLayout(mode: import('./desktop-contract.ts').WindowMode, bridge = desktopBridge(), ready?: () => void): () => void {
  if (!bridge) return () => {};
  document.documentElement.dataset.desktopWindow = mode;
  const card = mode === 'authentication' ? document.querySelector<HTMLElement>('.d-onboarding-frame__card') : null;

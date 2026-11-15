@@ -3,6 +3,10 @@
 #                                      max_delta (0..=255); fails if more than max_pct percent of all pixels differ.
 #   chrome_max_delta / chrome_max_pct: chrome gate, only pixels outside the text mask (assert_parity_masked);
 #                                      the percent is of the unmasked pixels.
+#   colour_max_delta / colour_radius / colour_max_pct:
+#                                      colour gate, only pixels outside the text mask: a pixel is right when its colour is
+#                                      within colour_max_delta of some reference pixel within colour_radius device pixels;
+#                                      fails if more than colour_max_pct percent of the unmasked pixels are not.
 # Linux numbers are measured (experiments/gpui-pixel-proof, Task 3; see TOLERANCES.md).
 # macOS and Windows stay exact placeholders until CI measures them (PENDING-CI).
 [linux]
@@ -10,15 +14,24 @@ max_delta = 64
 max_pct = 0.5
 chrome_max_delta = 16
 chrome_max_pct = 0.2
+colour_max_delta = 2
+colour_radius = 2
+colour_max_pct = 0.3
 
 [macos]
 max_delta = 0
 max_pct = 0.0
 chrome_max_delta = 0
 chrome_max_pct = 0.0
+colour_max_delta = 0
+colour_radius = 0
+colour_max_pct = 0.0
 
 [windows]
 max_delta = 0
 max_pct = 0.0
 chrome_max_delta = 0
 chrome_max_pct = 0.0
+colour_max_delta = 0
+colour_radius = 0
+colour_max_pct = 0.0

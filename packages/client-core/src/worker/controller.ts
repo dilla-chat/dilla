@@ -146,7 +146,7 @@ E_NOT_FOUND E_NOT_READY E_NOT_UPLOADER E_NO_ASSERTION E_NO_BACKUP E_OWN_UNKNOWN 
 E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER_MISMATCH E_SESSION_SCOPE
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
-E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE E_BOT_CAPABILITIES
+E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_GROUP_CLOSED E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE E_BOT_CAPABILITIES
 E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED
 E_BOT_OFFLINE E_BOT_DUPLICATE E_BOT_KEY_STALE E_BOT_STALE E_BOT_SIGNATURE E_BOT_CATALOG`.split(/\s+/));
 
@@ -947,6 +947,15 @@ export const REMOVALS_MAX = 8;
  *  the worker remembers for their notice. E_DEVICE_REVOKED is not one: a revoked device's row never opens, so nothing
  *  waits for it (trust.rs apply_verdict). */
 const HELD_REASONS: ReadonlySet<string> = new Set(['E_DEVICE_LIST_STALE', 'E_UMK_CHANGED', 'E_CREDENTIAL', 'E_DEVICE_UNLISTED', 'E_TIER_MISMATCH']);
+/** Task 6c (parity only): the diagnostics facts the page shows. Under dilla-testhost's fixture marker
+ *  (`Instance.parityFixture`, which dillad never serves) they carry no round trips and no key-package report, so a
+ *  reference shot of the section is the same on every run; otherwise they pass through unchanged. */
+export function diagnosticsFacts(parityFixture: boolean, keyPackages: DiagnosticsState['keyPackages'],
+  slowRoutes: DiagnosticsState['slowRoutes']): Pick<DiagnosticsState, 'keyPackages' | 'slowRoutes'> {
+  if (parityFixture) return { keyPackages: { count: null, lastAttempt: null, lastError: null }, slowRoutes: [] };
+  return { keyPackages, slowRoutes };
+}
+
 export const HELD_LIVE_MAX = 64;
 /** web3.8 R8: how long (elapsed ms) a live-held row keeps markRead one below it; one held longer stops holding the
  *  marker, so no badge sticks. */
@@ -1901,7 +1910,8 @@ export class Controller {
   private publishDiagnostics(): void {
     this.slices.set('diagnostics', { connection: this.connectionState.status, generation: this.connectionState.generation,
       instance: this.instance === null ? '' : toHex(this.instance.instanceId), devices: this.deviceCount,
-      errors: [...this.diagnosticsErrors], keyPackages: { ...this.keyPackages }, slowRoutes: this.routeRtt.slowest(5) });
+      errors: [...this.diagnosticsErrors],
+      ...diagnosticsFacts(this.instance?.parityFixture === true, { ...this.keyPackages }, this.routeRtt.slowest(5)) });
   }
 
   /** The gateway is being dropped: its queued and in-flight socket requests fail (E_NETWORK) rather than wait for ever. */
@@ -5579,7 +5589,16 @@ export class Controller {
         if (channel?.communityId !== null && channel?.communityId !== undefined) {
           const targetTimeline = this.slices.get(`timeline:${channelId}`);
           const target = targetTimeline?.items.find(item => item.msgId === toHex(posted.replyTo!));
-          if (confirmedSeq !== undefined && target?.state === 'ok' && target.seq !== null) {
+          // w2-bot-review I-B2 (Jonas: "Bot messages only"): only the community's Bot posts role panels, so only a
+          // reaction on a message with a Bot credential whose sender is the Bot user this device pinned is offered to the
+          // instance in plaintext. Every other reaction stays inside its group.
+          let pinnedBot: string | null = null;
+          if (target?.bot === true) {
+            try { const pinned = core.botUserPinned(fromHex(channel.communityId)); pinnedBot = pinned === null ? null : toHex(pinned); }
+            catch { pinnedBot = null; }
+          }
+          if (confirmedSeq !== undefined && target?.state === 'ok' && target.seq !== null
+            && pinnedBot !== null && target.senderUser === pinnedBot) {
             const key = PENDING_ROLE_PANEL_ACTION_PREFIX + toHex(posted.msgId);
             const action: PendingRolePanelAction = {
               communityId: channel.communityId, channelId, messageSeq: target.seq, groupId: toHex(g), eventSeq: confirmedSeq.toString(),

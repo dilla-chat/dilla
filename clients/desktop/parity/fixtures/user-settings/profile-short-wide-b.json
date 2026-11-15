@@ -1,0 +1,63 @@
+{
+  "name": "user-settings/profile-short-wide-b",
+  "window": [
+    1280,
+    560
+  ],
+  "viewer": "ada",
+  "route": "/settings/profile",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada",
+        "status": "Out until Monday",
+        "bio": "Short bio."
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      },
+      {
+        "id": "asgard",
+        "name": "Asgard Platform Engineering Working Group",
+        "owner": "mira",
+        "members": [
+          "ada",
+          "mira"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ]
+  }
+}

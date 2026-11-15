@@ -1,0 +1,47 @@
+{
+  "name": "dms/home-b",
+  "window": [1440, 900],
+  "viewer": "ada",
+  "route": "/dm",
+  "clock": 1794481751,
+  "world": {
+    "people": [
+      { "id": "ada", "display": "Ada" },
+      { "id": "mira", "display": "Mira Lindqvist-Sandberg, release coordination" },
+      { "id": "bjorn", "display": "Björn" },
+      { "id": "sol", "display": "Sol" }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira", "bjorn"],
+        "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
+          { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
+        ]
+      },
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "sol",
+        "members": ["ada", "sol"],
+        "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
+          { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
+        ]
+      }
+    ],
+    "dms": [
+      { "id": "mira", "members": ["ada", "mira"] },
+      { "id": "crew", "members": ["ada", "bjorn", "sol"] },
+      { "id": "sol", "members": ["ada", "sol"] }
+    ],
+    "messages": [
+      { "key": "d1", "channel": "dm/mira", "sender": "mira", "ts": 1794481700, "body": "the long-running discussion moved here" },
+      { "key": "d2", "channel": "dm/crew", "sender": "bjorn", "ts": 1794481710, "body": "group check-in at four" },
+      { "key": "d3", "channel": "dm/sol", "sender": "sol", "ts": 1794481720, "body": "welcome to the collective" }
+    ]
+  }
+}

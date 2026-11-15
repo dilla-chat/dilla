@@ -6,14 +6,8 @@
 //   switch that reports the page as hidden (a ring notifies only while the tab is hidden, flow 06);
 // - the project's media permissions (Chromium) and fake devices (both engines, from the config).
 // Init scripts are injected by the protocol, so the page's CSP never governs them.
-import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type LaunchOptions, type Locator, type Page, type TestInfo, type Worker } from '@playwright/test';
+import { test as base, expect, type Browser, type BrowserContext, type ConsoleMessage, type Locator, type Page, type TestInfo, type Worker } from '@playwright/test';
 import { copy, FIREFOX_FAVICON_LINE, isFirefoxBrowserFaviconViolation, recordNotifications } from '../../web/support/app';
-import { desktopE2E } from '../../web/support/electron.ts';
-import { desktopVoiceContext } from './desktop.ts';
-import { observeNativeNotifications } from './native-notifications.ts';
-import { writeFixtures } from '../../media/support/fixtures.ts';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { markSignalLifecycle } from './signal-lifecycle.ts';
 import { SFU_CUT_LINE, signalCloseGuard } from './signal-close-guard.ts';
 
@@ -373,7 +367,7 @@ export interface PeerBrowsers {
   /** Opens one person's context and page; at most a few per test, each closed by `close` (or the fixture's net). `browser`
    *  (web3.4 V4): a browser the spec launched with switches of its own, instead of the worker's; the spec closes it after
    *  closing the people it opened there. */
-  open(name: string, opts?: { viewport?: { width: number; height: number }; browser?: Browser; launchOptions?: LaunchOptions }): Promise<Person>;
+  open(name: string, opts?: { viewport?: { width: number; height: number }; browser?: Browser }): Promise<Person>;
   /** Leaves the call through the app's own leave, waits for the media worker to end, then closes the context. */
   close(person: Person): Promise<void>;
   /** Hands a native peer (anything with an idempotent close) to the fixture, which closes it after the people, whatever
@@ -434,16 +428,15 @@ type PeerBrowserOptions = {
   baseURL: string | undefined;
   permissions: string[] | undefined;
   viewport: { width: number; height: number } | null;
-  launchOptions: LaunchOptions;
-} & ({ desktop: true } | { desktop: false; browser: Browser });
+  browser: Browser;
+};
 
 async function withPeerBrowsers(options: PeerBrowserOptions, use: (people: PeerBrowsers) => Promise<void>, testInfo: TestInfo): Promise<void> {
-  const { baseURL, permissions, viewport, launchOptions } = options;
+  const { baseURL, permissions, viewport } = options;
   const guard = newGuard(testInfo.project.name);
   const open: Person[] = [];
   const peers: { close(): Promise<void> }[] = [];
   const leaveFailures: string[] = [];
-  let microphone = 0;
   const people: PeerBrowsers = {
     guard,
     track(peer) {
@@ -451,22 +444,10 @@ async function withPeerBrowsers(options: PeerBrowserOptions, use: (people: PeerB
       return peer;
     },
     async open(name, opts) {
-      if (options.desktop && opts?.browser) throw new Error('Browser tab capture requires a native application-audio counterpart');
-      let media = opts?.launchOptions ?? launchOptions;
-      if (options.desktop && !opts?.launchOptions) {
-        // Identical looped tones at both ends can be cancelled as echo by the
-        // shipping AEC, especially on macOS. Give independent desktop devices
-        // distinct capture sources, as the comparative call benchmark does.
-        const capture = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'), [1000, 600, 1400, 1800][microphone++ % 4]);
-        media = { ...media, args: media.args?.map(arg => arg.startsWith('--use-file-for-fake-audio-capture=') ? `--use-file-for-fake-audio-capture=${capture.wav}` : arg) };
-      }
-      const context = options.desktop
-        ? await desktopVoiceContext({ baseURL, permissions, launchOptions: media, viewport: opts?.viewport ?? viewport })
-        : await openContext(opts?.browser ?? options.browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
+      const context = await openContext(opts?.browser ?? options.browser, { baseURL, permissions, viewport: opts?.viewport ?? viewport });
       await guard.attach(context);
       await context.addInitScript(installRecorders);
-      if (options.desktop) await observeNativeNotifications(context);
-      else await recordNotifications(context);
+      await recordNotifications(context);
       const page = await context.newPage();
       const person = { name, context, page };
       open.push(person);
@@ -511,12 +492,7 @@ async function withPeerBrowsers(options: PeerBrowserOptions, use: (people: PeerB
 
 /** L-E2E-31 `peerBrowser`: the people of a test, each a browser context of their own. */
 export const test = base.extend<{ peerBrowser: PeerBrowsers }>({
-  // Playwright resolves callback arguments before running their bodies. Desktop
-  // uses Electron contexts and must not request the unused browser fixture.
-  peerBrowser: desktopE2E()
-    ? async ({ baseURL, permissions, viewport, launchOptions }, use, testInfo) =>
-      withPeerBrowsers({ desktop: true, baseURL, permissions, viewport, launchOptions }, use, testInfo)
-    : async ({ browser, baseURL, permissions, viewport, launchOptions }, use, testInfo) =>
-      withPeerBrowsers({ desktop: false, browser, baseURL, permissions, viewport, launchOptions }, use, testInfo),
+  peerBrowser: async ({ browser, baseURL, permissions, viewport }, use, testInfo) =>
+    withPeerBrowsers({ browser, baseURL, permissions, viewport }, use, testInfo),
 });
 export { expect };

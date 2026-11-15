@@ -19,7 +19,12 @@ export const MODERATION_REMOVALS_PAGE = 250;
 const BACKUP_TIMEOUT_MS = 120_000;
 
 export interface Instance { instanceId: Uint8Array; generation: bigint; name: string; registrationMode: 0 | 1 | 2;
-  authMethods: number[]; policyVersion: bigint; externalSenderPub: Uint8Array; }
+  authMethods: number[]; policyVersion: bigint; externalSenderPub: Uint8Array;
+  /** Task 6c (parity only): dilla-testhost in its fixture mode appends [`PARITY_FIXTURE_MARK`] as a twelfth element; the
+   *  diagnostics then report no live round trips. dillad never serves it. */
+  parityFixture?: true; }
+/** The twelfth element dilla-testhost's fixture mode (`-parity-fixture`) appends to GET /v1/instance. */
+export const PARITY_FIXTURE_MARK = 'dilla-testhost/parity-fixture';
 export interface InviteInfo { communityId: Uint8Array | null; communityName: string | null; expires: bigint; }
 export interface AccountCreated { userId: Uint8Array; deviceId: Uint8Array; token: string; expires: bigint; }
 export interface Challenge { nonce: Uint8Array; expires: bigint; }
@@ -431,7 +436,8 @@ export class Routes {
   async getInstance(): Promise<Instance> {
     const a = atLeast(decode(await this.body('GET', '/v1/instance', 'read', true)), 11);
     return { instanceId: bin(a[3], 16), generation: u64(a[4]), name: str(a[5]), registrationMode: oneOf(a[6], [0, 1, 2]),
-      authMethods: arr(a[7]).map(u53), policyVersion: u64(a[8]), externalSenderPub: bin(a[10], 32) };
+      authMethods: arr(a[7]).map(u53), policyVersion: u64(a[8]), externalSenderPub: bin(a[10], 32),
+      ...(a[11] === PARITY_FIXTURE_MARK ? { parityFixture: true as const } : {}) };
   }
   async getInvite(code: string): Promise<InviteInfo> {
     const a = atLeast(decode(await this.body('GET', '/i/' + encodeURIComponent(code), 'none', true,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DesktopBridge } from '../../../../desktop/src/contract.ts';
+import type { DesktopBridge } from '../../desktop-contract.ts';
 import { devicePlatformLabel, ownPlatformTag } from './device-platform.ts';
 
 const FIREFOX = 'Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0';

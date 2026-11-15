@@ -15,3 +15,5 @@ gpui = { package = "gpui-pre", version = "=0.3.12" }
 gpui-component = "=0.9.1"
 # Which characters the embedded mono face covers (its advance is then the web's width; text.rs). Already in the lock.
 ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }
+# Task 6 (plan R1, declared by Task 1 so Cargo.lock is settled once): the QrCode component's matrix.
+qrcodegen = "1.8.0"

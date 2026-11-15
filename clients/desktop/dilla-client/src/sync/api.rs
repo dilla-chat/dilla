@@ -42,24 +42,56 @@ pub async fn try_core<T: Send + 'static>(
     core: &CoreHandle,
     f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
 ) -> Result<T, CorePoisoned> {
+    core_call(core, f).await.map_err(|_| CorePoisoned)
+}
+
+/// Why a core call did not answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CoreFailure {
+    /// The lock is poisoned, or the call itself panicked.
+    Poisoned,
+    /// The runtime is shutting down (the client stops: `Client::stop`, Forget's close): the call never ran.
+    Stopped,
+}
+
+async fn core_call<T: Send + 'static>(
+    core: &CoreHandle,
+    f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
+) -> Result<T, CoreFailure> {
     let core = core.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut guard = core.lock().map_err(|_| CorePoisoned)?;
-        Ok(f(&mut guard))
-    })
-    .await
-    .unwrap_or(Err(CorePoisoned))
+    core_outcome(
+        tokio::task::spawn_blocking(move || {
+            let mut guard = core.lock().map_err(|_| CorePoisoned)?;
+            Ok(f(&mut guard))
+        })
+        .await,
+    )
+}
+
+/// A blocking core call's outcome: a call cancelled by the runtime's shutdown is the client stopping, not a poisoned core
+/// (review M1: Forget's close logged a false E_CORE_POISONED panic); a panic or a poisoned lock is.
+pub(crate) fn core_outcome<T>(
+    joined: Result<Result<T, CorePoisoned>, tokio::task::JoinError>,
+) -> Result<T, CoreFailure> {
+    match joined {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(CorePoisoned)) => Err(CoreFailure::Poisoned),
+        Err(e) if e.is_cancelled() => Err(CoreFailure::Stopped),
+        Err(_) => Err(CoreFailure::Poisoned),
+    }
 }
 
 /// [`try_core`] for the engine's jobs: a poisoned core ends the calling job (it unwinds; the engine reports itself
-/// stopped from then on, see `Engine::stopped`) instead of running on a core a panic may have left inconsistent.
+/// stopped from then on, see `Engine::stopped`) instead of running on a core a panic may have left inconsistent. A call
+/// the runtime's shutdown cancelled ends the job quietly: it waits for the runtime to drop it.
 pub async fn with_core<T: Send + 'static>(
     core: &CoreHandle,
     f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
 ) -> T {
-    match try_core(core, f).await {
+    match core_call(core, f).await {
         Ok(v) => v,
-        Err(e) => panic!("{e}"),
+        Err(CoreFailure::Stopped) => std::future::pending().await,
+        Err(CoreFailure::Poisoned) => panic!("{CorePoisoned}"),
     }
 }
 
@@ -122,9 +154,18 @@ impl ApiError {
 
     fn of_http(e: &HttpError) -> Self {
         match e {
-            HttpError::Status(s) => Self::local(*s, "E_HTTP", ""),
+            HttpError::Status {
+                status,
+                code,
+                retry_after_ms,
+            } => {
+                let mut e = Self::local(*status, code.as_deref().unwrap_or("E_HTTP"), "");
+                e.retry_after_ms = *retry_after_ms;
+                e
+            }
             HttpError::Transport(d) => Self::local(0, "E_NETWORK", d),
             HttpError::Decode(d) => Self::local(0, "E_DECODE", d),
+            HttpError::Unanswered { code, detail } => Self::local(0, code, detail),
         }
     }
 
@@ -167,6 +208,10 @@ pub struct HealState {
 /// What the client needs to know about a refusal right away (http client.ts `onRefusal`).
 pub type RefusalHook = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Called when a session established again over HTTP meets an instance that fails the signer pin (final review I1): the
+/// client stops its gateway and fails the account closed, as controller.ts `failInstanceSignerPin` does.
+pub type PinRefusedHook = Arc<dyn Fn() + Send + Sync>;
+
 /// Why a session could not be established.
 #[derive(Debug, Clone)]
 pub enum SessionError {
@@ -187,6 +232,8 @@ pub struct Api {
     auth: AuthToken,
     core: CoreHandle,
     on_refusal: RefusalHook,
+    /// Set once by the client ([`Api::on_pin_refused`]).
+    pin_refused: std::sync::OnceLock<PinRefusedHook>,
     /// One session establishment at a time (session.ts `inflight`).
     establishing: tokio::sync::Mutex<()>,
 }
@@ -199,12 +246,6 @@ fn jitter(max: u64) -> u64 {
 
 fn hex(b: &[u8]) -> String {
     crate::state::hex(b)
-}
-
-fn random_idem() -> Vec<u8> {
-    let mut b = vec![0u8; 16];
-    let _ = getrandom::fill(&mut b);
-    b
 }
 
 /// routes.ts `messageIdem`: SHA-256("dilla/message-idem/v1\0" || msg_id || body)[..16], so a send written again after a
@@ -231,18 +272,47 @@ impl Api {
             auth,
             core,
             on_refusal,
+            pin_refused: std::sync::OnceLock::new(),
             establishing: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// What runs when a session established again over HTTP fails the instance signer pin (set once; a later call is
+    /// ignored).
+    pub fn on_pin_refused(&self, hook: PinRefusedHook) {
+        let _ = self.pin_refused.set(hook);
+    }
+
+    /// controller.ts `failInstanceSignerPin`, the HTTP half: the new session goes (every later call asks for one again
+    /// and meets the same check), the refusal is recorded, and the client is told, so it stops the gateway and fails the
+    /// account closed. Answers the refusal to return.
+    pub(crate) fn refuse_pin(&self, code: &str) -> ApiError {
+        self.auth.clear();
+        let refused = ApiError::local(
+            0,
+            code,
+            "authenticated instance discovery does not match the pinned identity",
+        );
+        (self.on_refusal)(&refused.code);
+        if let Some(hook) = self.pin_refused.get() {
+            hook();
+        }
+        refused
     }
 
     pub fn socket(&self) -> &Arc<SocketRequests> {
         &self.socket
     }
 
+    /// Unix seconds by the instance's clock, as its HTTP answers' `Date` headers said (Task 20: `sent_at`).
+    pub fn server_now_s(&self) -> u64 {
+        self.http.server_now_s()
+    }
+
     // ---- the transports ----
 
     /// One socket route: `R`'s table row names its path, method, accepted statuses and body bound.
-    async fn socket_call<R: Route>(
+    pub(crate) async fn socket_call<R: Route>(
         &self,
         args: &[&str],
         body: Option<Vec<u8>>,
@@ -263,13 +333,34 @@ impl Api {
         let idem = if method == "GET" {
             None
         } else {
-            Some(idem.unwrap_or_else(random_idem))
+            match idem.or_else(super::requests::random_idem) {
+                Some(idem) => Some(idem),
+                None => {
+                    return Err(ApiError::local(
+                        0,
+                        "E_RANDOM",
+                        "no OS randomness for an idempotency key",
+                    ));
+                }
+            }
         };
-        let body = body.unwrap_or_default();
+        // One zeroizing path end to end (a body may carry a step-up token): the caller's buffer moves in, and every retry's
+        // copy is a zeroizing one too.
+        let body = Zeroizing::new(body.unwrap_or_default());
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
             let answer = self
                 .socket
-                .request(method, route.clone(), body.clone(), idem.clone())
+                .request_route(
+                    method,
+                    // The pattern without its query group: the diagnostics record only a path of literals and `{name}`s.
+                    Some(format!(
+                        "{method} {}",
+                        entry.path.split('?').next().unwrap_or("")
+                    )),
+                    route.clone(),
+                    body.clone(),
+                    idem.clone(),
+                )
                 .await?;
             if entry.accepts(answer.status) {
                 if let Some(cap) = entry.max_body
@@ -298,7 +389,7 @@ impl Api {
     }
 
     /// One HTTP route with client.ts's retries and its one re-authentication.
-    async fn http_call<R: Route>(
+    pub(crate) async fn http_call<R: Route>(
         &self,
         args: &[&str],
         req: R::Request,
@@ -307,17 +398,45 @@ impl Api {
     where
         R::Request: Clone,
     {
+        self.http_call_bounded::<R>(args, req, idempotent, None)
+            .await
+    }
+
+    /// [`Self::http_call`] with an optional per-call success body bound (client.ts `maxBodyBytes`).
+    async fn http_call_bounded<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+        cap: Option<u64>,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
         let auth = r::lookup(&R::METHOD, R::PATH).is_some_and(|e| e.auth);
         let mut reauthenticated = false;
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
-            let error = match self.http.call::<R>(args, req.clone()).await {
+            let answer = match cap {
+                Some(cap) => self.http.call_capped::<R>(args, req.clone(), cap).await,
+                None => self.http.call::<R>(args, req.clone()).await,
+            };
+            let error = match answer {
                 Ok(v) => return Ok(v),
                 Err(e) => ApiError::of_http(&e),
             };
             if error.status == 401 && auth && !reauthenticated {
                 reauthenticated = true;
-                if self.establish().await.is_ok() && attempt < RETRY_MAX_ATTEMPTS {
-                    continue;
+                if self.establish().await.is_ok() {
+                    // Review HL m2: held to the pin before anything more goes out over it, as the gateway's connect is.
+                    if let Err(refused) = self.pin_checked().await {
+                        if refused.status != 0 {
+                            (self.on_refusal)(&refused.code);
+                        }
+                        return Err(refused);
+                    }
+                    if attempt < RETRY_MAX_ATTEMPTS {
+                        continue;
+                    }
                 }
             }
             if (error.status == 429 || error.status == 503) && attempt < RETRY_MAX_ATTEMPTS {
@@ -339,6 +458,47 @@ impl Api {
             return Err(error);
         }
         unreachable!("the loop returns on its last attempt")
+    }
+
+    // ---- the Wave 1 areas' routes (Task 12: blobs and GIFs) ----
+
+    /// One HTTP row of the route table for an area feature, with [`Self::http_call`]'s retries and re-authentication.
+    pub(crate) async fn http_route<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
+        self.http_call::<R>(args, req, idempotent).await
+    }
+
+    /// [`Self::http_route`] with a success body bound of the caller's (routes.ts `getBlob(.., size + 16)`, `gifMedia`):
+    /// a longer body is `E_BODY_TOO_LARGE`, refused before the rest is read.
+    pub(crate) async fn http_route_capped<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+        cap: u64,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
+        self.http_call_bounded::<R>(args, req, idempotent, Some(cap))
+            .await
+    }
+
+    /// One gateway row of the route table for an area feature: the accepted answer's status and body.
+    pub(crate) async fn socket_route<R: Route>(
+        &self,
+        args: &[&str],
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, Vec<u8>), ApiError> {
+        let answer = self.socket_call::<R>(args, body, None, true).await?;
+        Ok((answer.status, answer.body))
     }
 
     // ---- the device session (session.ts) ----
@@ -413,7 +573,7 @@ impl Api {
             .await
         {
             Ok(answer) => Ok(Some(answer)),
-            Err(HttpError::Status(401)) => Ok(None),
+            Err(HttpError::Status { status: 401, .. }) => Ok(None),
             Err(e) => Err(SessionError::Api(ApiError::of_http(&e))),
         }
     }
@@ -452,13 +612,37 @@ impl Api {
     /// routes.ts `getInstance`: `[.., .., .., instance_id, generation, name, mode, methods, policy_version, .., external_sender_pub]`.
     pub async fn get_instance(&self) -> Result<InstanceInfo, ApiError> {
         let Raw(raw) = self.http_call::<r::GetInstance>(&[], NoBody, true).await?;
-        let v = value::decode(&raw).map_err(ApiError::decode)?;
-        let a = at_least(&v, 11).map_err(ApiError::decode)?;
-        Ok(InstanceInfo {
-            instance_id: bin16(&a[3]).map_err(ApiError::decode)?,
-            policy_version: uint(&a[8]).map_err(ApiError::decode)?,
-            external_sender_pub: bin32(&a[10]).map_err(ApiError::decode)?,
-        })
+        decode_instance(&raw)
+    }
+
+    /// controller.ts `reauthenticate` → `checkInstanceSignerPin` (review HL m2): after a session was established again
+    /// over HTTP, the instance's signer key is read over it (once, straight: no retry and no second re-establish) and held
+    /// to the pin ([`pin_after_establish`]). A refusal closes ([`Api::refuse_pin`]): the new session is dropped, and the
+    /// client stops its gateway and fails the account.
+    async fn pin_checked(&self) -> Result<(), ApiError> {
+        let read = match self.http.call::<r::GetInstance>(&[], NoBody).await {
+            Ok(Raw(raw)) => decode_instance(&raw),
+            Err(e) => Err(ApiError::of_http(&e)),
+        };
+        let pinned = match &read {
+            Ok(instance) => {
+                let (id, key) = (instance.instance_id, instance.external_sender_pub);
+                Some(
+                    with_core(&self.core, move |c| c.instance_signer_key_pin(&id, &key))
+                        .await
+                        .map_err(|e| e.code.to_string()),
+                )
+            }
+            Err(_) => None,
+        };
+        match pin_after_establish(read.as_ref().map(|_| ()), pinned) {
+            PinAfter::Go => Ok(()),
+            // The read's own refusal as it came (its status kept), else the core's code.
+            PinAfter::Fail(code) => Err(read
+                .err()
+                .unwrap_or_else(|| ApiError::local(0, &code, "the instance signer pin"))),
+            PinAfter::Refuse(code) => Err(self.refuse_pin(&code)),
+        }
     }
 
     /// routes.ts `getDeviceList`: `None` on 404.
@@ -720,6 +904,71 @@ impl Api {
             .await?;
         Ok(())
     }
+
+    // ---- account and devices (Task 16: Settings -> Profile and Devices) ----
+
+    /// routes.ts `getAccountMe`: the raw `[user_id, username, display, kind, flags, presence, status, bio]`.
+    pub async fn get_account_me(&self) -> Result<Vec<u8>, ApiError> {
+        let Raw(raw) = self.http_call::<r::GetAccountMe>(&[], NoBody, true).await?;
+        Ok(raw)
+    }
+
+    /// routes.ts `patchMe`: `[display|null, status_msg|null, bio|null]` -> 204.
+    pub async fn patch_me(&self, body: Vec<u8>) -> Result<(), ApiError> {
+        self.socket_call::<r::PatchMe>(&[], Some(body), None, true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `listDevices`: the account's devices, raw.
+    pub async fn list_devices(&self) -> Result<Vec<u8>, ApiError> {
+        Ok(self
+            .socket_call::<r::ListDevices>(&[], None, None, true)
+            .await?
+            .body)
+    }
+
+    /// routes.ts `patchDevice`: `[label|null]` -> 204.
+    pub async fn patch_device(&self, device: &[u8; 16], body: Vec<u8>) -> Result<(), ApiError> {
+        self.socket_call::<r::PatchDevice>(&[&hex(device)], Some(body), None, true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `deleteDevice`: removes a device no signed list names (no recovery key).
+    pub async fn delete_device(&self, device: &[u8; 16]) -> Result<(), ApiError> {
+        self.socket_call::<r::DeleteDevice>(&[&hex(device)], None, None, true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `getBackup`: `[object, created]`'s object, `None` on 404.
+    pub async fn get_backup(&self, kind: u8) -> Result<Option<Vec<u8>>, ApiError> {
+        let reply = self
+            .http_call::<r::GetBackup>(&[&kind.to_string()], NoBody, true)
+            .await?;
+        if reply.status == 404 {
+            return Ok(None);
+        }
+        let v = value::decode(&reply.body).map_err(ApiError::decode)?;
+        let a = at_least(&v, 2).map_err(ApiError::decode)?;
+        Ok(Some(value::bytes(&a[0]).map_err(ApiError::decode)?))
+    }
+
+    /// routes.ts `putBackup`: `[object]`.
+    pub async fn put_backup(&self, kind: u8, object: &[u8]) -> Result<(), ApiError> {
+        let mut e = dilla_core::cbor::Encoder::new();
+        e.array(1).bytes(object);
+        self.http_call::<r::PutBackup>(&[&kind.to_string()], Raw(e.into_vec()), true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `putDeviceList`: a 409 reaches the caller as [`ApiError::status`] 409 (a list race).
+    pub async fn put_device_list(&self, user: &[u8; 16], body: Vec<u8>) -> Result<(), ApiError> {
+        self.http_call::<r::PutDeviceList>(&[&hex(user)], Raw(body), false)
+            .await
+    }
 }
 
 fn seq_epoch(body: &[u8], n: usize) -> Result<(u64, u64), ApiError> {
@@ -780,9 +1029,82 @@ fn decode_session(raw: &[u8]) -> Option<(Zeroizing<String>, u64, u64)> {
     ))
 }
 
+/// What a session established again comes to once held to the instance signer pin ([`pin_after_establish`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PinAfter {
+    /// The pin holds: the call goes on.
+    Go,
+    /// The check could not run (the read failed, a core error other than a pin refusal): this call fails with the code.
+    Fail(String),
+    /// The pin is refused (controller.ts `failInstanceSignerPin`, `E_CORE_STATE`): closed.
+    Refuse(String),
+}
+
+/// controller.ts `checkInstanceSignerPin`'s verdict from the instance read (`Err`: its refusal) and, once read, the
+/// core's pin check (`Err`: its code): a document that does not decode, a changed key or another instance (the core's
+/// `E_CORE_STATE` / `E_CORE_INPUT`) refuse; anything else that failed rethrows.
+pub(crate) fn pin_after_establish(
+    read: Result<(), &ApiError>,
+    pinned: Option<Result<(), String>>,
+) -> PinAfter {
+    match (read, pinned) {
+        (Err(e), _) if e.code == "E_DECODE" => PinAfter::Refuse("E_CORE_STATE".into()),
+        (Err(e), _) => PinAfter::Fail(e.code.clone()),
+        (Ok(()), Some(Ok(()))) => PinAfter::Go,
+        (Ok(()), Some(Err(code))) if code == "E_CORE_STATE" || code == "E_CORE_INPUT" => {
+            PinAfter::Refuse("E_CORE_STATE".into())
+        }
+        (Ok(()), Some(Err(code))) => PinAfter::Fail(code),
+        (Ok(()), None) => PinAfter::Refuse("E_CORE_STATE".into()),
+    }
+}
+
+/// routes.ts `getInstance`'s document: the instance id, the policy version and the external sender's key.
+fn decode_instance(raw: &[u8]) -> Result<InstanceInfo, ApiError> {
+    let v = value::decode(raw).map_err(ApiError::decode)?;
+    let a = at_least(&v, 11).map_err(ApiError::decode)?;
+    Ok(InstanceInfo {
+        instance_id: bin16(&a[3]).map_err(ApiError::decode)?,
+        policy_version: uint(&a[8]).map_err(ApiError::decode)?,
+        external_sender_pub: bin32(&a[10]).map_err(ApiError::decode)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review HL m2 (controller.ts `reauthenticate` → `checkInstanceSignerPin`): a session established again over HTTP
+    /// is held to the instance signer pin before the call goes on. A pin the core refuses (a changed key, another
+    /// instance) or a document that does not decode refuses closed; a read that failed, or another core error, fails the
+    /// call (the web rethrows) without closing; a pin that holds lets it go on.
+    #[test]
+    fn a_reestablished_session_is_held_to_the_pin() {
+        let network = ApiError::local(0, "E_NETWORK", "down");
+        let garbled = ApiError::local(0, "E_DECODE", "a list");
+        let held = |code: &str| Some(Err(code.to_owned()));
+        assert_eq!(pin_after_establish(Ok(()), Some(Ok(()))), PinAfter::Go);
+        assert_eq!(
+            pin_after_establish(Ok(()), held("E_CORE_STATE")),
+            PinAfter::Refuse("E_CORE_STATE".into())
+        );
+        assert_eq!(
+            pin_after_establish(Ok(()), held("E_CORE_INPUT")),
+            PinAfter::Refuse("E_CORE_STATE".into())
+        );
+        assert_eq!(
+            pin_after_establish(Err(&garbled), None),
+            PinAfter::Refuse("E_CORE_STATE".into())
+        );
+        assert_eq!(
+            pin_after_establish(Err(&network), None),
+            PinAfter::Fail("E_NETWORK".into())
+        );
+        assert_eq!(
+            pin_after_establish(Ok(()), held("E_STORE")),
+            PinAfter::Fail("E_STORE".into())
+        );
+    }
 
     #[test]
     fn error_bodies_decode_as_errors_ts() {

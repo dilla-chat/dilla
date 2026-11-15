@@ -200,7 +200,7 @@ test('producer always builds current tooling, keeps Cargo feature scopes separat
   writeFileSync(compiler, `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path'), args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-const output = args.includes('-o') ? args[args.indexOf('-o') + 1] : (args.includes('--example') ? path.join(process.env.CARGO_TARGET_DIR, 'debug', 'examples', args[args.indexOf('--example') + 1]) : path.join(process.env.CARGO_TARGET_DIR, 'release', args[args.indexOf('-p') + 1]));
+const output = args.includes('-o') ? args[args.indexOf('-o') + 1] : (args.includes('--example') ? path.join(process.env.CARGO_TARGET_DIR, args.includes('--release') ? 'release' : 'debug', 'examples', args[args.indexOf('--example') + 1]) : path.join(process.env.CARGO_TARGET_DIR, 'release', args[args.indexOf('-p') + 1]));
 fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output, 'compiled ' + args.join(' '), { mode: 0o755 });
 `, { mode: 0o755 });
   const output = join(tools.root, 'bundle');
@@ -217,9 +217,9 @@ fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output
     ['build', '-p', 'dilla-testkit', '--release', '--locked'],
     ['-C', repoRoot, 'build', '-tags', 'dilla_testhost', '-o', join(output, 'dillabot'), './cmd/dillabot'],
     ['build', '-p', 'dilla-bot-core', '--release', '--locked'],
-    ['build', '-p', 'dilla-client', '--example', 'peer', '--locked'],
+    ['build', '-p', 'dilla-client', '--example', 'peer', '--release', '--locked'],
   ]);
-  assert.equal(readFileSync(paths.gpuiPeer, 'utf8'), 'compiled build -p dilla-client --example peer --locked');
+  assert.equal(readFileSync(paths.gpuiPeer, 'utf8'), 'compiled build -p dilla-client --example peer --release --locked');
   buildTestTools(output, options);
   assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 10, 'an existing bundle cannot bypass source builds');
 });

@@ -1,0 +1,438 @@
+//! Task 22's client tests for the notify area (standard procedure S2), against a real dillad.
+//!
+//! The ports of `e2e/web/badges.spec.ts` that this area's client answers, the DM ones over Task 13's `dms` area
+//! (Task 28). The unit tables (`features::notify::tests`) port the web's
+//! `notify.test.ts` rows; these tests prove the same decisions over what a real gateway delivers.
+//!
+//! Needs `target/dilla-testhost` and the WASI core, like `tests/sync.rs`; `#[ignore]`d so a plain `cargo test` needs no Go
+//! toolchain (the desktop-gpui CI job runs them with `--ignored`).
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use dilla_client::Client;
+use dilla_client::features::notify::{
+    DefaultChoice, NotifyEnv, NotifyMode, Presence, RecordingNotifier, Text, row_counts,
+    total_badge,
+};
+use dilla_client::state::{ChannelId, CommunityId};
+use dilla_client::testing::host::{
+    Host, Person, clear_session, community_with, hex, sign_up, start, start_host, wait_for,
+};
+
+const IGNORE: &str = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)";
+
+/// Alice (the viewer) and bob (the peer) in one community with #general, #random and #loot.
+async fn two_people(tag: &str) -> (Host, Person, Person, [u8; 16]) {
+    let host = tokio::task::spawn_blocking({
+        let tag = tag.to_owned();
+        move || start_host(&tag, "127.0.0.1:0", None)
+    })
+    .await
+    .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let a = sign_up(&host, &invite, "alice", "alice", tag).await;
+    let b = sign_up(&host, &invite, "bob", "bob", tag).await;
+    let (host, a, b, c) = tokio::task::spawn_blocking(move || {
+        let channels = [(0, "random", None), (0, "loot", None)];
+        let c = community_with(&host, &a, "gpui", &[&b], &channels);
+        clear_session(&a);
+        clear_session(&b);
+        (host, a, b, c)
+    })
+    .await
+    .unwrap();
+    (host, a, b, c)
+}
+
+async fn channel_named(client: &Client, community: [u8; 16], name: &'static str) -> ChannelId {
+    let community = CommunityId(community);
+    let state = wait_for(client, Duration::from_secs(30), "the channel list", |s| {
+        s.channel_named(community, name).is_some()
+    })
+    .await;
+    state.channel_named(community, name).unwrap().id
+}
+
+/// Both clients hold the groups of every channel: alice registers each, bob joins it (join-all, as the browser does).
+async fn all_in(a: &Client, b: &Client, channels: &[ChannelId]) {
+    for channel in channels {
+        a.open_channel(*channel)
+            .await
+            .unwrap()
+            .expect("alice opens the channel");
+        b.open_channel(*channel)
+            .await
+            .unwrap()
+            .expect("bob joins the channel");
+    }
+}
+
+struct Env {
+    on_screen: Mutex<Option<ChannelId>>,
+}
+
+impl NotifyEnv for Env {
+    fn visible(&self) -> bool {
+        true
+    }
+    fn on_screen(&self) -> Option<ChannelId> {
+        *self.on_screen.lock().unwrap()
+    }
+    fn presence(&self) -> Presence {
+        Presence::Online
+    }
+}
+
+/// The strings the notifier uses, as the web's `en.ts` has them.
+fn text() -> Text {
+    Arc::new(|key, vars| {
+        let src = match key {
+            "notify.title.channel" => "#{channel} · {server}",
+            "notify.title.dm" => "{sender}",
+            "activity.dm" => "Direct message",
+            "activity.newCount" => "{n} new",
+            "shell.message.mentionRole" => "a role",
+            "shell.message.mentionUnknown" => "@{id}",
+            other => panic!("no string for {other}"),
+        };
+        vars.iter().fold(src.to_owned(), |s, (k, v)| {
+            s.replace(&format!("{{{k}}}"), v)
+        })
+    })
+}
+
+/// `e2e/web/badges.spec.ts` test 1: unopened channels badge their unread messages and mentions, opening reads them, and a
+/// mute hides the count but not the mention.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn unopened_channels_badge_open_reads_mute_hides_count() {
+    let _ = IGNORE;
+    let (_host, pa, pb, c) = two_people("badges").await;
+    let (a, b) = (start(&pa).await, start(&pb).await);
+    let one = channel_named(&a, c, "general").await;
+    let two = channel_named(&a, c, "random").await;
+    let three = channel_named(&a, c, "loot").await;
+    channel_named(&b, c, "loot").await;
+    all_in(&a, &b, &[one, two, three]).await;
+    a.focus(Some(one));
+    let prefs = a.prefs();
+
+    // Quiet rows carry no badge.
+    let s = a.state().borrow().clone();
+    for ch in [one, two, three] {
+        assert_eq!(row_counts(&s, &prefs, ch), (0, 0));
+    }
+
+    b.send_text(two, "plain in two".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let s = wait_for(&a, Duration::from_secs(20), "one unread in two", |s| {
+        s.unread_of(two) == 1
+    })
+    .await;
+    assert_eq!(row_counts(&s, &prefs, two), (1, 0));
+
+    let mention = format!("<@{}> look here", hex(&pa.user_id));
+    b.send_text(three, mention).await.unwrap().unwrap();
+    let s = wait_for(&a, Duration::from_secs(20), "a mention in three", |s| {
+        s.unread.get(&three).is_some_and(|b| b.mentions == 1)
+    })
+    .await;
+    assert_eq!(row_counts(&s, &prefs, three), (1, 1));
+    assert_eq!(a.notify().total_badge(), 2);
+    let community = s.channel(two).unwrap().community_id;
+    assert_eq!(
+        dilla_client::features::notify::rail_counts(&s, &prefs, community),
+        (2, 1)
+    );
+
+    // Opening channel two reads it (markRead on open).
+    a.focus(Some(two));
+    let s = wait_for(&a, Duration::from_secs(20), "two read", |s| {
+        s.unread_of(two) == 0
+    })
+    .await;
+    assert_eq!(
+        dilla_client::features::notify::rail_counts(&s, &prefs, community),
+        (1, 1)
+    );
+
+    // Mute channel three: its count goes, its mention stays.
+    a.notify().set_channel_muted(three, true).unwrap();
+    let s = a.state().borrow().clone();
+    assert_eq!(row_counts(&s, &prefs, three), (0, 1));
+    assert_eq!(total_badge(&s, &prefs), 1, "only the mention counts");
+
+    // Device-local and kept: a second handle on the same preferences file reads the mute.
+    let reread = dilla_client::Prefs::instance(&pa.cfg.data_dir);
+    assert_eq!(row_counts(&s, &reread, three), (0, 1));
+}
+
+/// `e2e/web/badges.spec.ts` test 2, the client's half: the device-wide default is kept. The menu that sets it (the DM list
+/// head's) is the shell's (Tasks 8 and 13); here the handle writes it and a fresh read of the preferences finds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn dm_list_menu_sets_device_notify_default() {
+    let (_host, pa, _pb, _c) = two_people("default").await;
+    let a = start(&pa).await;
+    let settings =
+        |p: &dilla_client::Prefs| dilla_client::features::notify::Settings(p).default_choice();
+    assert_eq!(settings(&a.prefs()), DefaultChoice::DmsMentions);
+    a.notify().set_default(DefaultChoice::Everything).unwrap();
+    assert_eq!(settings(&a.prefs()), DefaultChoice::Everything);
+    drop(a);
+    let restarted = start(&pa).await;
+    assert_eq!(settings(&restarted.prefs()), DefaultChoice::Everything);
+}
+
+/// `e2e/web/badges.spec.ts` test 4: notifications follow the default and the channel on screen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn notifications_follow_default_and_channel_on_screen() {
+    let (_host, pa, pb, c) = two_people("notices").await;
+    let (a, b) = (start(&pa).await, start(&pb).await);
+    let one = channel_named(&a, c, "general").await;
+    let two = channel_named(&a, c, "random").await;
+    let three = channel_named(&a, c, "loot").await;
+    channel_named(&b, c, "loot").await;
+    all_in(&a, &b, &[one, two, three]).await;
+    a.focus(Some(one));
+
+    let recorder = RecordingNotifier::new();
+    let env = Arc::new(Env {
+        on_screen: Mutex::new(Some(one)),
+    });
+    let _task = a
+        .notify()
+        .start(&a, Arc::new(recorder.clone()), env.clone(), text());
+    let title = |channel: &str| format!("#{channel} · gpui");
+    let shown_tags = |r: &RecordingNotifier| r.tags();
+    let settle = || tokio::time::sleep(Duration::from_secs(2));
+
+    // (a) DMs and mentions: a plain message stays a badge, a mention notifies.
+    b.send_text(two, "plain".into()).await.unwrap().unwrap();
+    wait_for(&a, Duration::from_secs(20), "a badge in two", |s| {
+        s.unread_of(two) == 1
+    })
+    .await;
+    settle().await;
+    assert!(recorder.shown().is_empty());
+    let me = hex(&pa.user_id);
+    b.send_text(three, format!("<@{me}> look"))
+        .await
+        .unwrap()
+        .unwrap();
+    wait_for(&a, Duration::from_secs(20), "a mention in three", |s| {
+        s.unread.get(&three).is_some_and(|b| b.mentions == 1)
+    })
+    .await;
+    settle().await;
+    let shown = recorder.shown();
+    assert_eq!(shown_tags(&recorder), [format!("dilla:{}", three.hex())]);
+    assert_eq!(shown[0].notification.title, title("loot"));
+    assert_eq!(shown[0].notification.body, "@alice look");
+
+    // (b) Everything: the channel on screen stays quiet, another one notifies, and the click opens it.
+    a.notify().set_default(DefaultChoice::Everything).unwrap();
+    b.send_text(one, "on screen".into()).await.unwrap().unwrap();
+    settle().await;
+    assert_eq!(recorder.shown().len(), 1, "the channel on screen is quiet");
+    b.send_text(two, "plain again".into())
+        .await
+        .unwrap()
+        .unwrap();
+    settle().await;
+    assert_eq!(
+        shown_tags(&recorder),
+        [
+            format!("dilla:{}", three.hex()),
+            format!("dilla:{}", two.hex())
+        ]
+    );
+    assert_eq!(recorder.shown()[1].notification.title, title("random"));
+    assert_eq!(recorder.shown()[1].notification.body, "plain again");
+    assert_eq!(recorder.click(1), Some(two));
+    assert!(recorder.shown()[1].closed);
+
+    // (c) Nothing: a mention only counts; the control after switching back proves it raised nothing.
+    a.notify().set_default(DefaultChoice::Nothing).unwrap();
+    *env.on_screen.lock().unwrap() = Some(two);
+    b.send_text(three, format!("<@{me}> quiet"))
+        .await
+        .unwrap()
+        .unwrap();
+    wait_for(
+        &a,
+        Duration::from_secs(20),
+        "the second mention counted",
+        |s| s.unread.get(&three).is_some_and(|b| b.mentions == 2),
+    )
+    .await;
+    a.notify().set_default(DefaultChoice::Everything).unwrap();
+    b.send_text(one, "control".into()).await.unwrap().unwrap();
+    settle().await;
+    assert_eq!(
+        shown_tags(&recorder),
+        [
+            format!("dilla:{}", three.hex()),
+            format!("dilla:{}", two.hex()),
+            format!("dilla:{}", one.hex()),
+        ]
+    );
+
+    // A channel's own mode wins over the default: #random, set to nothing, stays quiet.
+    a.notify()
+        .set_channel_mode(two, Some(NotifyMode::Nothing))
+        .unwrap();
+    *env.on_screen.lock().unwrap() = Some(one);
+    b.send_text(two, "quiet by mode".into())
+        .await
+        .unwrap()
+        .unwrap();
+    settle().await;
+    assert_eq!(
+        recorder.shown().len(),
+        3,
+        "the channel set to nothing stays quiet"
+    );
+}
+
+/// The bodies of `channel`'s timeline.
+fn bodies(s: &dilla_client::state::AppState, channel: ChannelId) -> Vec<String> {
+    s.timelines
+        .get(&channel)
+        .map(|t| t.items.iter().map(|i| i.body.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// `e2e/web/badges.spec.ts` test 3: a direct message opened from the DMs tab reaches the peer, and the reply badges it
+/// until it is read: alice opens a DM with bob and says hello, bob's client has it; with another channel in front, bob's
+/// reply is one unread DM message and one notification titled with bob's name; opening the DM reads it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn dm_from_tab_reaches_peer_reply_badges_until_read() {
+    use dilla_client::features::notify::dm_counts;
+    use dilla_client::state::UserId;
+    let (_host, pa, pb, c) = two_people("dm-tab").await;
+    let (a, b) = (start(&pa).await, start(&pb).await);
+    let general = channel_named(&a, c, "general").await;
+    channel_named(&b, c, "general").await;
+    all_in(&a, &b, &[general]).await;
+    // The DM area runs as the shell starts it (dms/home.rs).
+    a.dms().start();
+    b.dms().start();
+    let recorder = RecordingNotifier::new();
+    let env = Arc::new(Env {
+        on_screen: Mutex::new(None),
+    });
+    let _task = a
+        .notify()
+        .start(&a, Arc::new(recorder.clone()), env.clone(), text());
+
+    let dm = a.dms().open_dm(UserId(pb.user_id)).await.unwrap().unwrap();
+    a.focus(Some(dm));
+    *env.on_screen.lock().unwrap() = Some(dm);
+    a.dms()
+        .send_text(dm, "hello".into())
+        .await
+        .unwrap()
+        .unwrap();
+    wait_for(&b, Duration::from_secs(30), "bob has the hello", |s| {
+        bodies(s, dm).contains(&"hello".to_owned())
+    })
+    .await;
+
+    a.focus(Some(general));
+    *env.on_screen.lock().unwrap() = Some(general);
+    b.dms()
+        .send_text(dm, "hi alice".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let s = wait_for(&a, Duration::from_secs(30), "one unread in the DM", |s| {
+        s.unread_of(dm) == 1
+    })
+    .await;
+    assert_eq!(dm_counts(&s, &a.prefs()), (1, 0));
+    let shown = wait_for_notices(&recorder, 1).await;
+    assert_eq!(recorder.tags(), [format!("dilla:{}", dm.hex())]);
+    assert_eq!(shown[0].notification.title, "bob");
+    assert_eq!(shown[0].notification.body, "hi alice");
+
+    a.focus(Some(dm));
+    wait_for(&a, Duration::from_secs(20), "the DM read", |s| {
+        s.unread_of(dm) == 0
+    })
+    .await;
+}
+
+/// Waits (at most 20 s) for the recorder to hold `n` notifications, answering them.
+async fn wait_for_notices(
+    recorder: &RecordingNotifier,
+    n: usize,
+) -> Vec<dilla_client::features::notify::Shown> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let shown = recorder.shown();
+        if shown.len() >= n {
+            return shown;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{n} notifications, not {shown:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// `e2e/web/badges.spec.ts` test 5: a DM the peer opens appears, badges and notifies without a restart: bob opens a DM
+/// with alice and writes in it; alice's client lists the DM, counts one unread DM message and shows one notification
+/// titled with bob's name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn dm_opened_by_peer_appears_badges_notifies_live() {
+    use dilla_client::features::notify::dm_counts;
+    use dilla_client::state::UserId;
+    let (host, pa, pb, c) = two_people("dm-peer").await;
+    // The instance's clock runs, as a real one does: the notifier's floor and the rows' receive times are on it.
+    host.follow_wall_clock();
+    let (a, b) = (start(&pa).await, start(&pb).await);
+    let general = channel_named(&a, c, "general").await;
+    channel_named(&b, c, "general").await;
+    all_in(&a, &b, &[general]).await;
+    a.dms().start();
+    b.dms().start();
+    a.focus(Some(general));
+    let recorder = RecordingNotifier::new();
+    let env = Arc::new(Env {
+        on_screen: Mutex::new(Some(general)),
+    });
+    let _task = a
+        .notify()
+        .start(&a, Arc::new(recorder.clone()), env.clone(), text());
+    // Settled before the DM exists: nothing to show yet.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(recorder.shown().is_empty());
+
+    let dm = b.dms().open_dm(UserId(pa.user_id)).await.unwrap().unwrap();
+    b.dms()
+        .send_text(dm, "dm from peer".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let s = wait_for(
+        &a,
+        Duration::from_secs(30),
+        "the DM listed and unread",
+        |s| s.dms.get(dm).is_some() && s.unread_of(dm) == 1,
+    )
+    .await;
+    assert_eq!(dm_counts(&s, &a.prefs()), (1, 0));
+    let shown = wait_for_notices(&recorder, 1).await;
+    assert_eq!(shown.len(), 1);
+    assert_eq!(recorder.tags(), [format!("dilla:{}", dm.hex())]);
+    assert_eq!(shown[0].notification.title, "bob");
+    assert_eq!(shown[0].notification.body, "dm from peer");
+}

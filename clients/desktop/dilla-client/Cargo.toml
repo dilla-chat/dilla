@@ -10,6 +10,14 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Task 5: what tests and the parity harness share (src/testing.rs). Never in a shipping build.
+# `testing`: the screen fixture schema (testing/spec.rs), pure data: the automation build of dilla-desktop reads it.
+testing = ["dep:sha2"]
+# `testing-host`: a real dillad and accounts made the way the app makes them (testing/host.rs). It links the testkit
+# (AGPL-3.0-or-later), so only tests, examples and the parity world enable it, through the dev-dependency below.
+testing-host = ["testing", "dep:dilla-testkit", "dep:hmac", "dep:sha1"]
+
 # Every dependency the later desktop tasks need is declared here so Cargo.lock is settled once.
 [dependencies]
 dilla-core = { path = "../../../core/dilla-core" }
@@ -39,12 +47,37 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # the platform's roots. Both already in the lock through tokio-tungstenite and reqwest.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 rustls-native-certs = "0.8"
+# Wave 1 (plan R1), declared by Task 1 so Cargo.lock is settled once:
+# - Task 26's system-browser ceremony opens the browser with `open`;
+# - Task 12's attachment thumbnails decode and scale images the way attachments/thumb.ts does.
+open = "5.4.5"
+# Task 16: profile text is NFC-normalised before it is checked and sent (already in the lock through url -> idna).
+icu_normalizer = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# Task 5: the testing helpers' own dependencies, behind the features above.
+sha2 = { version = "0.11", optional = true }
+dilla-testkit = { path = "../../../testkit", optional = true }
+hmac = { version = "0.13", optional = true }
+sha1 = { version = "0.11", optional = true }
+unicode-normalization = "0.1"
+
+# Task 25: the recovery key file is opened with O_NOFOLLOW (already in the lock).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
+# Tests and examples get the real-dillad helpers (src/testing/host.rs) without a feature flag, and every test target
+# builds with the `testing` feature (Client::snapshots, the feed fault hooks), so a plain `cargo test -p dilla-client`
+# and `clippy --all-targets` compile the tests gated on it instead of skipping them.
+dilla-client = { path = ".", features = ["testing", "testing-host"] }
 # The real-dillad tests enrol an account the way every native peer does.
 dilla-testkit = { path = "../../../testkit" }
 # RFC 6238 for the sign-in tests; both are already in the lock (the testkit's second factor uses them).
 hmac = "0.13"
 sha1 = "0.11"
+# Task 3: the rejoin wait's 30 s bound tested on tokio's paused clock (`start_paused`); Task 20: the sealed Bot path's
+# 5 s first-answer timeout too. Tests only.
+tokio = { version = "1", features = ["test-util"] }
 # The wss smoke test's local TLS server (already in the lock through tokio-tungstenite).
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }

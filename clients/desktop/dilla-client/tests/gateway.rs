@@ -358,7 +358,7 @@ async fn next_event(rx: &mut mpsc::Receiver<GatewayEvent>, within: Duration) -> 
 #[tokio::test]
 async fn heartbeat_timeout_reconnects() {
     let script = Script {
-        heartbeat_ms: 200,
+        heartbeat_ms: 500,
         max_frame_bytes: 131_584,
         ack_first: false,
         ..Script::default()
@@ -407,7 +407,7 @@ async fn heartbeat_timeout_reconnects() {
         panic!("expected Disconnected after the unanswered heartbeat");
     };
     assert_eq!(reason, DisconnectReason::Network);
-    // heartbeat every min(200 / 2, 15000) = 100 ms, the first unanswered one times out after 300 ms.
+    // heartbeat every min(500 / 2, 15000) = 250 ms (the floor), the first unanswered one times out after 300 ms.
     let down = t0.elapsed();
     assert!(down < Duration::from_secs(2), "took {down:?} to notice");
 
@@ -439,6 +439,126 @@ async fn heartbeat_timeout_reconnects() {
     }
     assert!(beats >= 1, "at least one heartbeat was written");
     gw.stop();
+}
+
+/// A pre-connect check answering `verdicts` in turn (then `Go`), counting its calls.
+fn checks(
+    verdicts: Vec<dilla_client::gateway::PreConnectVerdict>,
+) -> (
+    dilla_client::gateway::PreConnect,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let verdicts = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+        verdicts,
+    )));
+    let counted = calls.clone();
+    let check: dilla_client::gateway::PreConnect = Arc::new(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let v = verdicts
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(dilla_client::gateway::PreConnectVerdict::Go);
+        Box::pin(async move { v })
+    });
+    (check, calls)
+}
+
+/// Wave 2 H (recovery review, concern 4; controller.ts `mintTicket`): the instance signer pin is checked again before
+/// every connection attempt, the reconnects included. A check that cannot be made now (`Retry`, the instance unreachable)
+/// opens no socket and is tried again after the backoff.
+#[tokio::test]
+async fn the_pre_connect_check_runs_before_every_attempt() {
+    use dilla_client::gateway::PreConnectVerdict as V;
+    let script = Script {
+        heartbeat_ms: 500,
+        ack_first: false,
+        ..Script::default()
+    };
+    let (addr, mut seen) = scripted_server(script).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let options = GatewayOptions {
+        ack_timeout: Duration::from_millis(300),
+        ..GatewayOptions::default()
+    };
+    let (check, calls) = checks(vec![V::Retry, V::Go]);
+    let gw = WsGateway::connect_checked(base, AuthToken::new("tok-pin"), options, Some(check));
+    let mut events = gw.events();
+    let GatewayEvent::Connected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Connected");
+    };
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "checked before the first attempt and again before its retry"
+    );
+    let upgrades = std::iter::from_fn(|| seen.try_recv().ok())
+        .filter(|s| matches!(s, Seen::Upgrade { .. }))
+        .count();
+    assert_eq!(upgrades, 1, "the Retry opened no socket");
+    // The unanswered heartbeat drops the connection; the reconnect is checked first.
+    let GatewayEvent::Disconnected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Disconnected");
+    };
+    let GatewayEvent::Connected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Connected again");
+    };
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    gw.stop();
+}
+
+/// Wave 2 H: a pin the instance no longer matches stops the gateway for good (controller.ts `failInstanceSignerPin`:
+/// the gateway stops, the account fails closed), with no socket opened.
+#[tokio::test]
+async fn a_refused_pre_connect_check_stops_the_gateway() {
+    use dilla_client::gateway::{PreConnectVerdict as V, Refusal};
+    let (addr, mut seen) = scripted_server(Script::default()).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let (check, calls) = checks(vec![V::Refuse]);
+    let gw = WsGateway::connect_checked(
+        base,
+        AuthToken::new("tok-pin"),
+        GatewayOptions::default(),
+        Some(check),
+    );
+    let mut events = gw.events();
+    let GatewayEvent::Disconnected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Disconnected");
+    };
+    assert_eq!(gw.refusal(), Some(Refusal::InstanceSignerChanged));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(seen.try_recv().is_err(), "no socket was opened");
+}
+
+/// Review HL I1: a pre-connect check whose instance read was refused 401 (the device revoked while its socket was down)
+/// ends the gateway as revoked, with no socket opened, so the client's renewal and sign-out path runs.
+#[tokio::test]
+async fn a_revoked_pre_connect_check_ends_the_gateway_as_revoked() {
+    use dilla_client::gateway::{PreConnectVerdict as V, Refusal};
+    let (addr, mut seen) = scripted_server(Script::default()).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let (check, calls) = checks(vec![V::Revoked]);
+    let gw = WsGateway::connect_checked(
+        base,
+        AuthToken::new("tok-pin"),
+        GatewayOptions::default(),
+        Some(check),
+    );
+    let mut events = gw.events();
+    let GatewayEvent::Disconnected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Disconnected");
+    };
+    assert_eq!(gw.refusal(), Some(Refusal::Revoked));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(seen.try_recv().is_err(), "no socket was opened");
 }
 
 #[tokio::test]
@@ -500,7 +620,7 @@ async fn oversized_frame_refused() {
         id: 1,
         method: "POST".into(),
         route: "/v1/communities".into(),
-        body: vec![0x80; 200],
+        body: vec![0x80; 200].into(),
         idem: None,
     })
     .unwrap();
@@ -511,7 +631,7 @@ async fn oversized_frame_refused() {
         id: 2,
         method: "POST".into(),
         route: "/v1/x".into(),
-        body: vec![0; frames::MAX_REQUEST_BODY + 1],
+        body: vec![0; frames::MAX_REQUEST_BODY + 1].into(),
         idem: None,
     });
     assert!(matches!(body_over, Err(FrameError::Limit)));
@@ -564,7 +684,7 @@ fn heartbeats_seen(seen: &mut mpsc::UnboundedReceiver<Seen>) -> usize {
 #[tokio::test]
 async fn blocked_write_still_times_out() {
     let script = Script {
-        heartbeat_ms: 200,
+        heartbeat_ms: 500,
         max_frame_bytes: 4 << 20,
         ack_first: false,
         deaf_first: true,
@@ -607,7 +727,7 @@ async fn blocked_write_still_times_out() {
         panic!("expected Disconnected");
     };
     assert_eq!(reason, DisconnectReason::Network);
-    // One heartbeat interval (100 ms) plus the ack timeout, plus margin.
+    // One heartbeat interval (250 ms) plus the ack timeout, plus margin.
     let took = t0.elapsed();
     assert!(
         took < ack_timeout + Duration::from_millis(1_500),
@@ -621,29 +741,29 @@ async fn blocked_write_still_times_out() {
 #[tokio::test]
 async fn full_event_channel_keeps_heartbeats() {
     let script = Script {
-        heartbeat_ms: 100,
+        heartbeat_ms: 500,
         push: 50,
         ..Script::default()
     };
     let (addr, mut seen) = scripted_server(script).await;
     let base = url::Url::parse(&format!("http://{addr}")).unwrap();
     let options = GatewayOptions {
-        ack_timeout: Duration::from_millis(1_000),
+        ack_timeout: Duration::from_millis(2_000),
         event_capacity: 2,
         ..GatewayOptions::default()
     };
     let gw = WsGateway::connect_with(base, AuthToken::new("tok-slow"), options);
     let mut events = gw.events();
 
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    // A beat every 50 ms (heartbeat_ms / 2) while the channel is full.
+    tokio::time::sleep(Duration::from_millis(1_600)).await;
+    // A beat every 250 ms (heartbeat_ms / 2, the floor) while the channel is full.
     let beats = heartbeats_seen(&mut seen);
     assert!(
         beats >= 5,
         "only {beats} heartbeats while the event channel was full"
     );
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
     let mut log = Vec::new();
     let found = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(e) = events.recv().await {

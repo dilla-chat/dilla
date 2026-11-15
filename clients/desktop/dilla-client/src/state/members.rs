@@ -3,7 +3,9 @@
 
 use crate::sync::value::{DecodeError, Rows, at_least, bin16, text, u53};
 
-use super::UserId;
+use std::collections::HashMap;
+
+use super::{CommunityId, UserId};
 
 /// routes.ts `MEMBERS_PAGE`.
 pub const MEMBERS_PAGE: usize = 200;
@@ -55,4 +57,64 @@ pub(crate) fn decode_members(raw: &[u8]) -> Result<Vec<Member>, DecodeError> {
             })
         })
         .collect()
+}
+
+/// types.ts `PresenceStatus`: the wire's 0 offline, 1 online, 2 idle, 3 dnd.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Presence {
+    #[default]
+    Offline,
+    Online,
+    Idle,
+    Dnd,
+}
+
+impl Presence {
+    /// The wire's status number, or `None` outside 0..=3.
+    pub fn of_wire(n: u64) -> Option<Self> {
+        Some(match n {
+            0 => Self::Offline,
+            1 => Self::Online,
+            2 => Self::Idle,
+            3 => Self::Dnd,
+            _ => return None,
+        })
+    }
+}
+
+/// types.ts `BanSummary`: one ban of a community, as `GET .../bans` lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BanSummary {
+    pub user_id: UserId,
+    /// The banned account's display name, else its username ('' from an older instance).
+    pub name: String,
+    pub reason: String,
+    pub by_user: UserId,
+    /// Unix seconds.
+    pub created: u64,
+    /// Unix seconds; `None` is for ever.
+    pub expires: Option<u64>,
+}
+
+/// Task 14's slice of [`super::AppState`]: presence, bans and timeouts (the member lists stay in `AppState::members`, the
+/// sync engine's). [`Default`] is the empty slice.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PeopleState {
+    /// Each community's presence snapshot, kept current by op 48. Absent: not read yet (the pane says loading).
+    pub presence: HashMap<CommunityId, HashMap<UserId, Presence>>,
+    /// Each community's bans, once read (the Bans section reads them).
+    pub bans: HashMap<CommunityId, Vec<BanSummary>>,
+    /// The timeouts this device has read or set, by community and member: the expiry in Unix seconds.
+    pub timeouts: HashMap<CommunityId, HashMap<UserId, u64>>,
+}
+
+impl PeopleState {
+    /// The presence of `user` in `community`: offline when unknown.
+    pub fn presence_of(&self, community: CommunityId, user: UserId) -> Presence {
+        self.presence
+            .get(&community)
+            .and_then(|m| m.get(&user))
+            .copied()
+            .unwrap_or_default()
+    }
 }

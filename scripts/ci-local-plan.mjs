@@ -66,8 +66,6 @@ export const JOB_MAP = {
     changes: SHARED_JOBS.changes,
     'ci-watchdog': SHARED_JOBS['ci-watchdog'],
     'desktop-work-complete': { kind: 'aggregate', weight: 0 },
-    'linux-sandbox-foundation': { weight: 2, skip: 'requires disposable Ubuntu 22.04/24.04 native runners with privileged kernel fixtures' },
-    desktop: { weight: 4, skip: 'requires the Linux, Windows and macOS native platform acceptance runners in desktop.yml' },
     'core-integration': { weight: 2, group: 'e2e', ports: 'block' },
     // ci-areas.test.mjs's reader scan skips targets that do not exist: on a runner packages/web/dist never does when it runs.
     node: { weight: 2, locks: ['tracked-tree'], cleanTree: ['npm run test:ci-check'] },
@@ -112,6 +110,8 @@ export const EXTRA_JOBS = {
     weight: 3,
     script: [
       'node --test scripts/gen-gpui-tokens.test.mjs',
+      'node --test scripts/gen-gpui-strings.test.mjs',
+      'node --test scripts/behaviour-gates.test.mjs',
       // The test host and WASI core dilla-client's real-server tests start (desktop-gpui.yml's "Build the test host" step).
       'cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked',
       'go build -o target/dilla-testhost ./cmd/dilla-testhost',
@@ -119,10 +119,33 @@ export const EXTRA_JOBS = {
       'cargo build -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked',
       'cargo clippy -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked -- -D warnings',
       'cargo test -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --locked',
+      // dilla's real Bot for the Bot tests (desktop-gpui.yml's "Build the Bot for the Bot tests" step).
+      'go build -tags dilla_testhost -o target/dillabot ./cmd/dillabot',
+      'cargo build -p dilla-bot-core --release --locked',
       'cargo test -p dilla-parity --locked -- --ignored',
       'cargo test -p dilla-client --test gateway --locked -- --ignored',
       'cargo test -p dilla-client --test sync --locked -- --ignored',
       'cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
+      'cargo test -p dilla-client --test calls --locked -- --ignored',
+      'cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored',
+      'cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored',
+      'cargo test -p dilla-client --test notify --locked -- --ignored',
+      'cargo build -p dilla-testkit --bin dilla-testkit --locked',
+      'cargo test -p dilla-client --test dms --locked -- --ignored',
+      'cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
+      'cargo test -p dilla-client --test voice --locked -- --ignored',
+      'cargo test -p dilla-client --test ring --locked -- --ignored',
+      // The automation build's window, keyboard and fixture tests (review I4: CI built no automation, so the
+      // automation-gated suites never ran), and its lint.
+      'cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings',
+      'cargo test -p dilla-desktop --features automation --locked',
+      'cargo test -p dilla-desktop --features automation --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test sign_in --test user_settings --test voice_settings --locked -- --ignored --skip parity_',
+      'cargo test -p dilla-desktop --test integration --locked -- --ignored',
+      'cargo test -p dilla-desktop --test slice --locked -- --ignored',
+      // The media call tests' prerequisites (desktop-gpui.yml builds packages/media's wasm with clang 23 and installs Chromium).
+      'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
+      'npx playwright install chromium',
+      'cargo test -p dilla-media --test live --test call --test e2e_call --locked -- --ignored',
     ],
   },
 };
@@ -188,9 +211,6 @@ const APT_RUNS = [
   /^bash scripts\/ci-apt-cache\.sh (?:prepare|stash)$/,
 ];
 
-// The runner installs bsdtar through scripts/ci-apt-install.sh, retried on Ubuntu mirror/DNS outages; locally it is a
-// prerequisite.
-const LIBARCHIVE_INSTALL = "command -v bsdtar >/dev/null || node scripts/retry-on.mjs --attempts 6 --wait 60 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh libarchive-tools";
 const PLAYWRIGHT_INSTALL =/^(?:npx playwright|node node_modules\/playwright\/cli\.js) install --with-deps ((?:chromium|firefox|webkit)(?: (?:chromium|firefox|webkit))*)$/;
 const CLANG_STEP_NAME = /^clang (\d+) for the wasm C build$/;
 const PRLIMIT_LINE = /^sudo prlimit --pid "\$\$" --memlock=(\d+):(\d+)$/;
@@ -294,8 +314,6 @@ export function classifyStep(step, job = {}) {
     if (!version) throw new Error(`step "${step.name}" no longer checks a clang version`);
     return { kind: 'prereq', tool: 'llvm', version, reason: 'apt.llvm.org packages: the local LLVM of the same line stands in' };
   }
-  if (/^sudo apt-get update && sudo apt-get install -y libgtk-3-dev(?: pkg-config)?$/.test(script)) return { kind: 'prereq', tool: 'gtk', reason: 'GTK3 headers and pkg-config must be installed locally' };
-  if (script === LIBARCHIVE_INSTALL) return { kind: 'prereq', tool: 'bsdtar', reason: 'libarchive-tools: bsdtar must be installed locally' };
   if (APT_RUNS.some((re) => re.test(script))) return { kind: 'noop', reason: 'apt cache: no apt here' };
   // The runner's AppArmor strips capabilities from unprivileged user namespaces; a local host either allows them,
   // and the Bot keeper's tests run, or they skip with that reason (internal/botsupervisor/keeper_linux_test.go).

@@ -1,0 +1,102 @@
+{
+  "name": "threads/pane-open-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481700,
+        "body": "release plan for the preview build: the sealed-command retry fix goes first, then the voice e2e on all three platforms, and only then the tag and the notes for the homelab"
+      },
+      {
+        "key": "t1",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481709,
+        "body": "friday works for me, I will watch the macos run and report back here",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481711,
+        "body": "the linux and windows runs are already green",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t3",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481719,
+        "body": "great, ping me when macos is green and I will cut the tag",
+        "thread_of": "m1"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481727,
+        "body": "on it, give me ten minutes"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=button[name=\"3 replies\"s]",
+      "gpui": "thread-chip"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

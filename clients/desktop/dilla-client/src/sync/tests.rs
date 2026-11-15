@@ -235,3 +235,26 @@ async fn slow_decrypt_does_not_reconnect() {
     engine.stop();
     gateway.stop();
 }
+
+/// Wave 2 H (recovery re-review): a removal feed refused for an unjudged moderator reads the leaves again (controller.ts
+/// `onReady`'s `fetchedLeaves.clear()`), and keeps what earlier passes found: a contact not on their list stays so (no
+/// Compare, the warning shown) until a pass reads them again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_removal_retry_keeps_the_trust_annotations() {
+    let hooks = Arc::new(NoHooks {
+        ready: AtomicUsize::new(0),
+        down: AtomicUsize::new(0),
+    });
+    let engine = engine(hooks);
+    let user = [7u8; 16];
+    engine.trust.lock().await.mark_unlisted_for_test(user);
+    let before = super::trust::annotations_of(&engine).await;
+    assert!(before.unlisted.contains(&user));
+    engine.forget_before_removal_retry().await;
+    assert_eq!(
+        super::trust::annotations_of(&engine).await,
+        before,
+        "the annotations are kept"
+    );
+    engine.stop();
+}

@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, SliceTypes, TimelineItem } from '@dilla/client-core';
 import { SliceStore } from '../../../client-core/src/state/store.ts';
-import type { DesktopBridge, DesktopCommand, DesktopEvent } from '../../../desktop/src/contract.ts';
+import type { DesktopBridge, DesktopCommand, DesktopEvent } from '../desktop-contract.ts';
 import { CoreProvider } from '../core/context.tsx';
 import { startDesktopLifecycle } from '../desktop.ts';
 import { pushHistoryState, replaceHistoryState } from '../router.ts';

@@ -366,7 +366,7 @@ mod tests {
     /// its own crypto, so nothing in the testkit's tree links OpenSSL any more (before, SQLCipher's
     /// `bundled-sqlcipher-vendored-openssl` put it there).
     #[test]
-    fn no_websocket_tls_stack_is_in_the_lock_file() {
+    fn no_websocket_tls_stack_is_in_the_testkit_dependency_tree() {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
         let out = std::process::Command::new(cargo)
             .args(["tree", "-p", "dilla-testkit", "-e", "normal,build,dev"])

@@ -1,0 +1,361 @@
+{
+  "name": "members/moderation-dialog-b",
+  "window": [
+    1440,
+    900
+  ],
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada Lovelace-Byron of the Analytical Engine"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "sigrid",
+        "display": "Sigrid"
+      },
+      {
+        "id": "tove",
+        "display": "Tove"
+      },
+      {
+        "id": "leif",
+        "display": "Leif"
+      },
+      {
+        "id": "astrid",
+        "display": "Astrid"
+      },
+      {
+        "id": "ragnar",
+        "display": "Ragnar"
+      },
+      {
+        "id": "ingrid",
+        "display": "Ingrid"
+      },
+      {
+        "id": "ulf",
+        "display": "Ulf"
+      },
+      {
+        "id": "freya",
+        "display": "Freya"
+      },
+      {
+        "id": "gunnar",
+        "display": "Gunnar"
+      }
+    ],
+    "servers": [
+      {
+        "id": "harbour",
+        "name": "The Long Fellowship of the Northern Harbour",
+        "owner": "mira",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "sigrid",
+          "tove",
+          "leif",
+          "astrid",
+          "ragnar",
+          "ingrid",
+          "ulf",
+          "freya",
+          "gunnar"
+        ],
+        "roles": [
+          {
+            "id": "r00",
+            "name": "role number 01",
+            "colour": "#e9b6ec",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "mira"
+            ]
+          },
+          {
+            "id": "r01",
+            "name": "role number 02",
+            "colour": "#5aa8e6",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "bjorn"
+            ]
+          },
+          {
+            "id": "r02",
+            "name": "role number 03",
+            "colour": "#ffd16a",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "sigrid"
+            ]
+          },
+          {
+            "id": "r03",
+            "name": "role number 04",
+            "colour": "#7cff8e",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "tove"
+            ]
+          },
+          {
+            "id": "r04",
+            "name": "role number 05",
+            "colour": "#ff8a65",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "leif"
+            ]
+          },
+          {
+            "id": "r05",
+            "name": "role number 06",
+            "colour": "#b0bec5",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "astrid"
+            ]
+          },
+          {
+            "id": "r06",
+            "name": "role number 07",
+            "colour": "#e9b6ec",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "ragnar"
+            ]
+          },
+          {
+            "id": "r07",
+            "name": "role number 08",
+            "colour": "#5aa8e6",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "ingrid"
+            ]
+          },
+          {
+            "id": "r08",
+            "name": "role number 09",
+            "colour": "#ffd16a",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "ulf"
+            ]
+          },
+          {
+            "id": "r09",
+            "name": "role number 10",
+            "colour": "#7cff8e",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "freya"
+            ]
+          },
+          {
+            "id": "r10",
+            "name": "role number 11",
+            "colour": "#ff8a65",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "gunnar"
+            ]
+          },
+          {
+            "id": "r11",
+            "name": "role number 12",
+            "colour": "#b0bec5",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "mira"
+            ]
+          },
+          {
+            "id": "r12",
+            "name": "role number 13",
+            "colour": "#e9b6ec",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "bjorn"
+            ]
+          },
+          {
+            "id": "r13",
+            "name": "role number 14",
+            "colour": "#5aa8e6",
+            "permissions": [
+              "view",
+              "send",
+              "history",
+              "kick",
+              "ban",
+              "moderate",
+              "manageRoles"
+            ],
+            "members": [
+              "sigrid",
+              "ada"
+            ]
+          },
+          {
+            "id": "r14",
+            "name": "harbour masters of the northern fleet",
+            "colour": "#ffd16a",
+            "permissions": [
+              "view",
+              "send",
+              "history"
+            ],
+            "members": [
+              "tove"
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "harbour/general",
+        "sender": "mira",
+        "ts": 1794481678,
+        "body": "the tide turns at noon"
+      }
+    ]
+  },
+  "viewer": "ada",
+  "route": "/c/{harbour}/{harbour/general}",
+  "clock": 1794481738,
+  "steps": [
+    {
+      "do": "click",
+      "web": "css=.d-member-list__open:has-text(\"Gunnar\")",
+      "gpui": "member-Gunnar"
+    },
+    {
+      "do": "key",
+      "chord": "escape"
+    },
+    {
+      "do": "key",
+      "chord": "shift-f10"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "down"
+    },
+    {
+      "do": "key",
+      "chord": "enter"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

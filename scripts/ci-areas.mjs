@@ -50,24 +50,17 @@ export const PATH_RULES = [
     'scripts/gen-profile-text-tables.mjs', 'internal/auth/profile_tables.go', 'internal/auth/profile_text.go', 'internal/auth/testdata/rgi-zwj-sequences.txt',
     'packages/client-core/src/profile-tables.ts', 'packages/client-core/src/profile-text.ts',
   ] },
-  // The mobile apps (mobile.yml): the shell, the client it bundles and what that client is built from, the browser
-  // sign-in types it shares with desktop, and what the emulator smoke test runs beside the app: the test host's main
+  // The mobile apps (mobile.yml): the shell, the client it bundles and what that client is built from, and what the emulator smoke test runs beside the app: the test host's main
   // package and the HTTPS proxy in front of it (the testkit and the WASI core are core, which forces mobile). Any
   // other server-only (go) change does not run the mobile lane; the nightly mobile run covers it, as for desktop.
   // patches/ holds the Capacitor Android fix the app is compiled with.
   { areas: ['mobile'], patterns: [
     'packages/mobile/**', 'patches/**', 'packages/web/**', 'packages/client-core/**', 'packages/ui/**', 'packages/media/**',
-    'packages/core-wasm/**', 'packages/design-tokens/**', 'packages/desktop/src/browser-auth.ts',
+    'packages/core-wasm/**', 'packages/design-tokens/**',
     'package.json', 'package-lock.json', '.nvmrc', 'e2e/web/support/native-https-proxy.mjs', 'cmd/dilla-testhost/**',
   ] },
-  // Portable maintenance output privacy audit reads this exact native test source.
-  { areas: ['web'], patterns: ['internal/desktopsandbox/native_root_linux_test.go'] },
-  // internal/desktopsandbox/transaction_linux_test.go runs the frontend bootstrap for interop coverage.
-  { areas: ['go'], patterns: ['packages/desktop/native/linux-sandbox/frontend/bootstrap.py'] },
   // internal/web/downloads_test.go verifies the embedded brand against this desktop asset.
-  { areas: ['go'], patterns: ['packages/desktop/assets/tray.png'] },
-  // internal/desktopdownload/download_test.go holds the server's pinned feed keys to the desktop app's.
-  { areas: ['go'], patterns: ['packages/desktop/release-trust.json', 'packages/desktop/src/update-keys.ts'] },
+  { areas: ['go'], patterns: ['clients/desktop/assets/brand/tray.png'] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
   // internal/dillad/socket_routes_manifest_test.go holds the mux to the client's socket-route manifest.
@@ -145,8 +138,6 @@ export const JOB_GATES = {
     'browser-spike': ['e2e'],
     'browser-media': ['e2e'],
     'web-build': ['e2e'],
-    'linux-sandbox-foundation': ['e2e'],
-    desktop: ['e2e'],
     'core-integration': ['e2e'],
   },
   mobile: {

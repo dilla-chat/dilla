@@ -52,6 +52,8 @@ export interface HarnessOptions {
   extraDms?: number;
   /** v0.1.0-web3.1: no seeded server; the model lists what a test creates through the create commands. */
   created?: boolean;
+  /** Lane P: the instance carries dilla-testhost's parity-fixture marker (`Instance.parityFixture`). */
+  parityFixture?: boolean;
   /** web3.7 3a-client: runs before the worker starts (a leftover call group seeded, a boot read held or refused). */
   before?: (w: { ds: ModelDs; model: ModelCore; server: { hold(label: string): { release: () => void; reached: Promise<void> };
     refuseAll(label: string, status: number, code: string): void } }) => Promise<void> | void;
@@ -106,7 +108,7 @@ export async function harness(opts: HarnessOptions = {}) {
       listCommunities: () => Promise.resolve(LISTED.value ? [{ id: COMMUNITY, name: 'friends', owner: PEER.user, policyVersion: 1n }] : []),
       listChannels: () => Promise.resolve(opts.voiceChannel === true ? channelRows : []),
     }),
-    getInstance: () => Promise.resolve(INSTANCE),
+    getInstance: () => Promise.resolve(opts.parityFixture === true ? { ...INSTANCE, parityFixture: true as const } : INSTANCE),
     getLimits: () => Promise.resolve({ maxCiphertextBytes: 131_072, keypackagesPerDevice: 32, keypackageRefillThreshold: 0, heartbeatMs: 30_000, maxFrameBytes: 131_584 }),
     listMembers: () => Promise.resolve([ME, PEER, THIRD, FOURTH, ...LATE].map((p) => ({ userId: p.user, username: NAMES.get(toHex(p.user)) ?? '',
       display: NAMES.get(toHex(p.user)) ?? '', kind: 0 as const, nick: '', roleIds: [] }))),
@@ -460,6 +462,15 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(r).toMatchObject({ groupId: toHex(w.callGroup), callId: w.voice, token: expect.any(String) as string });
   });
 
+  // Lane P: only under dilla-testhost's parity-fixture marker (never from dillad) does the join tell the page so; the page
+  // then reads no live link, so a parity reference shows no live ping or rate.
+  it('marks the join only when the instance carries the parity-fixture marker', async () => {
+    const plain = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    expect((await plain.call(JOIN(plain)) as CallJoinResult).parityFixture).toBeUndefined();
+    const marked = await harness({ voiceChannel: true, callGroupBy: 'peer', parityFixture: true });
+    expect((await marked.call(JOIN(marked)) as CallJoinResult).parityFixture).toBe(true);
+  });
+
   // RV-1 (progress note of task 5): the core cannot stop a worker that posts a staged join without call_join_check, so the
   // worker must never do so. The double's join accepts anything the gate tolerates; its check refuses.
   it('never posts a staged join without call_join_check first', async () => {
@@ -618,6 +629,46 @@ describe('callJoin (L-TS-56 step 1)', () => {
     expect(v.pushes('callKeys')).toHaveLength(0);
   });
 
+  // The last member ends the call (DELETE ?if_alone=1 closes its group) while this device is joining: its external commit
+  // reaches the closed group and the instance refuses it as closed (409 E_GROUP_CLOSED), never as a stale epoch. The
+  // GroupInfo never changes again, so a stale-epoch retry could not help; the join reads the call once more and
+  // registers a fresh group through the same steps a first joiner takes (callGroupCreate, POST group, the join epoch's
+  // key through the gate), and nothing of the refused join is left behind.
+  it('a join whose external commit meets the call ended (409 E_GROUP_CLOSED) registers a fresh call group', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    const held = w.server.hold('POST resync');
+    const joined = w.call(JOIN(w));
+    await held.reached;
+    w.ds.closeCallGroup(w.callGroup);
+    held.release();
+    await joined;
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync',
+      'GET channel call', 'POST group', 'POST calls']);
+    expect(w.slice('call').phase).toBe('in');
+    const fresh = w.model.groups().filter((g) => g.kind === 1 && g.state === 2);
+    expect(fresh).toHaveLength(1);
+    expect(toHex(fresh[0].groupId)).not.toBe(toHex(w.callGroup));
+    expect(w.model.group(w.callGroup)).toBeUndefined();
+    expect(CALL_KEYS(w.pushes('callKeys')[0]).roster).toEqual([{ leaf: 0, deviceId: toHex(ME.device), userId: toHex(ME.user) }]);
+    expect(w.pushes('callKeys')).toHaveLength(1);
+  });
+
+  it('a second E_GROUP_CLOSED fails the join: the fresh read is taken once only', async () => {
+    const w = await harness({ voiceChannel: true, callGroupBy: 'peer' });
+    w.server.reset();
+    w.ds.closeCallGroup(w.callGroup);
+    // Both reads still name the closed group (an instance whose call read lags its close).
+    w.server.reply('GET channel call', { groupId: w.callGroup, callId: null, participants: [] });
+    w.server.reply('GET channel call', { groupId: w.callGroup, callId: null, participants: [] });
+    expect(await codeOf(w.call(JOIN(w)))).toBe('E_GROUP_CLOSED');
+    expect(w.server.routes()).toEqual(['GET channel call', 'GET group info', 'GET group tree', 'POST resync',
+      'GET channel call', 'GET group info', 'GET group tree', 'POST resync']);
+    expect(w.slice('call').phase).toBe('failed');
+    expect(w.model.group(w.callGroup)).toBeUndefined();
+    expect(w.pushes('callKeys')).toHaveLength(0);
+  });
+
   // Attacker: the instance (or a member) adds a forged device to the call group before this device joins. Nothing is
   // posted for that tree, and no state of the refused join is left behind.
   it('a block present at join time posts nothing and leaves no call group behind', async () => {
@@ -728,6 +779,76 @@ describe('keys after the join (L-TS-56 step 2)', () => {
     expect(w.pushes('callKeys')).toHaveLength(0);
     expect(w.slice('call').phase).toBe('blocked');
     expect(w.model.group(w.callGroup)?.state).toBe(4);
+  });
+
+  // The native follow_epochs rule (fix-call-trust 2c23780a1), as sendWithTrustRetry answers the same verdicts: a leaf
+  // verdict is judged against the cached signed list of the leaf's user, which predates a device that user added since (a
+  // known contact's new device joining the call). The keys are held, the group's leaves are read again, and the gate
+  // judges once more: a leaf the fresh read admits keeps the call (no leave, the new epoch keyed); one it does not still
+  // blocks and leaves.
+  it('a leaf verdict reads the leaves again before it leaves, and a leaf the read admits keeps the call', async () => {
+    const w = await joined();
+    // The leaves are read again while the verdict holds; meanwhile the new device's list is in (the test admits the leaf).
+    const refresh = w.server.hold('GET device list');
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await refresh.reached;
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    expect(w.pushes('callKeys')).toHaveLength(0);
+    expect(w.server.routes()).not.toContain('POST proposal');
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }]);
+    w.model.removeLeaf(w.callGroup, 2);
+    refresh.release();
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', error: null });
+    expect(w.pushes('callKeys')).toHaveLength(1);
+    expect(w.server.routes()).not.toContain('POST proposal');
+  });
+
+  // Final review M1: another trust refresh that ends while the verdict's leaves are still being read (onTrust → rekey)
+  // meets the same verdict at the epoch already marked; it waits for the read instead of blocking, so the one retry
+  // still decides.
+  it('a trust refresh during a leaf verdict\'s read keeps the hold, and the read decides', async () => {
+    const w = await joined();
+    const refresh = w.server.hold('GET device list');
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await refresh.reached;
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    (w.controller as unknown as { calls: { onTrust: () => void } }).calls.onTrust();
+    await Promise.resolve();
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    expect(w.server.routes()).not.toContain('POST proposal');
+    w.model.setCallTree(w.callGroup, [{ leafIndex: 0, user: PEER.user, device: PEER.device }]);
+    w.model.removeLeaf(w.callGroup, 2);
+    refresh.release();
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'in', error: null });
+    expect(w.pushes('callKeys')).toHaveLength(1);
+    expect(w.server.routes()).not.toContain('POST proposal');
+  });
+
+  // w2-fix2 re-review: a refresh that rejects (its contract is a Promise, whatever the worker's never-throws today) must
+  // not leave the call held until some later trust refresh: the gate judges again at once on what it has, and the leaf
+  // it still refuses blocks and leaves.
+  it('a leaf verdict whose leaves read rejects judges again at once and leaves', async () => {
+    const w = await joined();
+    let fail = (): void => {};
+    const worker = w.controller as unknown as { refreshCallLeaves: (g: Id) => Promise<void>; calls: { onTrust: () => void } };
+    worker.refreshCallLeaves = () => {
+      // From the verdict on, the only way back to the gate is the read's own answer (no other trust refresh re-judges).
+      worker.calls.onTrust = () => {};
+      return new Promise<void>((_resolve, reject) => { fail = () => { reject(new Error('the read failed')); }; });
+    };
+    w.model.addFailedLeaf(w.callGroup, 'E_DEVICE_UNLISTED');
+    await w.deliverHandshakes(w.callGroup);
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'paused', error: { code: 'E_DEVICE_UNLISTED' }, changedUser: null });
+    fail();
+    await settled(w);
+    expect(w.slice('call')).toMatchObject({ phase: 'blocked', changedUser: null });
+    expect(lastCallRoute(w)).toBe('POST proposal');
+    expect(w.pushes('callKeys')).toHaveLength(0);
   });
 
   it('an unlisted leaf mid-call still leaves (only an identity change pauses)', async () => {

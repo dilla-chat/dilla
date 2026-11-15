@@ -36,3 +36,28 @@ All four values are exact placeholders (0 / 0.0): PENDING-CI. The chrome pair mu
 ## How screens supply the mask
 
 The automation interface reports text element bounds (`ElementInfo`); a screen test converts them to device pixels (logical x scale) and builds `TextMask::from_rects`. `TextMask::from_bright_pixels_fixture_only` must not be used by screen tests.
+
+## Colour gate (Task 5)
+
+The chrome gate's delta of 16 cannot see a fill or border one design token off: the dark ladder steps by 3 to 5 (BG 8,9,11;
+BG_2 11,13,16; BG_3 13,16,20; HAIRLINE 26,29,35; HAIRLINE_2 35,40,49). The colour gate (`colour_*` in `tolerance.toml`, only
+outside the text mask) asks for each pixel: is its colour within `colour_max_delta` (2) of some reference pixel within
+`colour_radius` (2 device px) of it? A line or edge a pixel out of place still finds its colour; a wrong colour does not.
+Measured on the two shell fixtures, share of unmasked pixels with no such neighbour:
+
+| frame | % |
+|---|---|
+| channel-view, honest | 0.118 |
+| channel-view-b, honest | 0.092 |
+| channel-view, BG_2 surface recoloured to BG_3 | 27.6 |
+| channel-view-b, the same | 24.8 |
+| channel-view, hairlines recoloured to HAIRLINE_2 | 0.586 |
+| channel-view-b, the same | 0.614 |
+
+Chosen: `colour_max_pct = 0.3` (honest 2.5x under, a recoloured border 2x over, a recoloured surface 80x over). The
+honest numbers are the layout's real 1 px differences beyond the radius and anti-aliased curves; a border recoloured on
+only part of a screen moves the share less, so the gate sees whole-class errors (every hairline, every panel), not one
+divider. macOS and Windows are exact placeholders (PENDING-CI).
+
+The Task 3 evidence images in `tests/fixtures/` are cropped to the bottom 1000 rows (y 600..1600) of the 2560x1600 renders:
+the margins above were measured on the full frames, and the tests still hold on the crop.

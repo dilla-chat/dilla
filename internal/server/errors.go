@@ -44,6 +44,11 @@ const (
 	// caller's device is not the call group's only current leaf, so the call goes on and the caller
 	// just leaves. 409: it is the call's state, as "full" is.
 	CodeCallNotAlone Code = "E_CALL_NOT_ALONE"
+	// CodeGroupClosed refuses a commit to a closed group (a call group whose call ended, a deleted
+	// channel's group, one a restore replaced): no commit of it lands. A call joiner whose external
+	// commit came after the end reads the channel's call again and registers a fresh group. 409: it
+	// is the group's state.
+	CodeGroupClosed Code = "E_GROUP_CLOSED"
 	// CodeRemovePending is a member's own Remove of a leaf the instance is already removing
 	// (protocol/02 invariant 6): the member is being removed, withdraws its proposal and does not
 	// retry.
@@ -153,7 +158,7 @@ func (e *Error) Status() int {
 		return http.StatusForbidden
 	case CodeNotFound, CodeKeyPackagesExhausted:
 		return http.StatusNotFound
-	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone, CodeBotDuplicate, CodeNotBotChannel:
+	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone, CodeGroupClosed, CodeBotDuplicate, CodeNotBotChannel:
 		return http.StatusConflict
 	case CodePruned, CodeInviteInvalid, CodeBotKeyStale:
 		return http.StatusGone

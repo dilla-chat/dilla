@@ -7,7 +7,7 @@ import { socketRouteFor } from './socket-routes';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { messageIdem, HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
+import { messageIdem, HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, PARITY_FIXTURE_MARK, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -861,6 +861,22 @@ describe('Routes: the idempotency key of a mutation', () => {
     expect(first).toHaveLength(16);
     expect(second).toHaveLength(16);
     expect(first).not.toEqual(second);
+  });
+});
+
+// Task 6c (parity): dilla-testhost's fixture mode appends its marker as a twelfth element; dillad never serves one.
+describe('GET /v1/instance parity-fixture marker', () => {
+  it('is absent from the eleven-element document and from any other twelfth element', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, INSTANCE_DOC));
+    expect((await routes.getInstance()).parityFixture).toBeUndefined();
+    t.replies.push(cborReply(200, [...INSTANCE_DOC, 'something else']));
+    expect((await routes.getInstance()).parityFixture).toBeUndefined();
+  });
+  it('is read from the testhost\'s marker', async () => {
+    const { t, routes } = setup();
+    t.replies.push(cborReply(200, [...INSTANCE_DOC, PARITY_FIXTURE_MARK]));
+    expect((await routes.getInstance()).parityFixture).toBe(true);
   });
 });
 

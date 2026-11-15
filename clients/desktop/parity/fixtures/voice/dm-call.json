@@ -1,0 +1,111 @@
+{
+  "name": "voice/dm-call",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/dm/{dm/mira}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "Lounge"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "dms": [
+      {
+        "id": "mira",
+        "members": [
+          "ada",
+          "mira"
+        ]
+      }
+    ],
+    "calls": [
+      {
+        "channel": "dm/mira",
+        "participants": [
+          {
+            "person": "ada"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "textarea",
+      "gpui": "-"
+    },
+    {
+      "do": "key",
+      "chord": "ctrl-shift-enter"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

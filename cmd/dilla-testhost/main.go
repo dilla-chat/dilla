@@ -58,6 +58,8 @@ type options struct {
 	wire uint64
 	// bot runs the Bot as dillad does, supervised on a Unix socket (-bot, Bot v2 task 11).
 	bot botOptions
+	// parityFixture marks GET /v1/instance for the GPUI parity world's reference shots (-parity-fixture, Task 6c).
+	parityFixture bool
 }
 
 func parseFlags(args []string) (options, error) {
@@ -79,6 +81,7 @@ func parseFlags(args []string) (options, error) {
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
 	botRuntimeSecret := fs.String("bot-runtime-secret", "", "test only: create an operator runtime credential at this owner-only path")
 	wire := fs.Uint64("wire", 0, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only); unset, the host offers dillad's production list (wire 6, for people and managed Bots)")
+	parityFixtureFlag := fs.Bool("parity-fixture", false, "parity reference shots only: append the parity-fixture marker to GET /v1/instance, so the web client's diagnostics report no live round trips")
 	adminInvite := fs.Bool("admin-invite", false, "the first invite grants instance administration, one use, as the invite `dillad init` writes does")
 	withBot := fs.Bool("bot", false, "run the Bot as a supervised child on <data-dir>/bot/gateway.sock (dev_same_user); start and stop it with POST /debug/bot/start and /debug/bot/stop")
 	botExecutable := fs.String("bot-executable", "", "with -bot: the dillabot binary")
@@ -113,8 +116,9 @@ func parseFlags(args []string) (options, error) {
 	return options{public: *public, control: *control, dataDir: *dataDir, core: *core,
 		logLevel: *logLevel, webRoot: root, productionACL: *productionACL, webauthnOrigin: *webauthnOrigin,
 		botRuntimeSecret: *botRuntimeSecret, adminInvite: *adminInvite,
-		wire: *wire,
-		bot:  botOptions{enabled: *withBot, executable: *botExecutable, helper: *botHelper, wasi: *botWasi, stateDir: *botStateDir},
+		wire:          *wire,
+		parityFixture: *parityFixtureFlag,
+		bot:           botOptions{enabled: *withBot, executable: *botExecutable, helper: *botHelper, wasi: *botWasi, stateDir: *botStateDir},
 		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
@@ -213,12 +217,23 @@ func run(o options) error {
 	}
 
 	var requestDiagnostics instanceRequestDiagnostics
-	publicSrv := &http.Server{Handler: requestDiagnostics.public(host.Handler()), ReadHeaderTimeout: 10 * time.Second}
+	public := host.Handler()
+	if o.parityFixture {
+		public = parityFixture(public)
+	}
+	publicSrv := &http.Server{Handler: requestDiagnostics.public(public), ReadHeaderTimeout: 10 * time.Second}
 	control := dilladtest.ControlHandler(host)
 	if bot != nil {
 		mux := http.NewServeMux()
 		mux.Handle("/debug/bot/", dilladtest.BotControl(bot.runner))
 		mux.Handle("GET /debug/bot/installations", host.BotRuntimeInstallations())
+		mux.Handle("/", control)
+		control = mux
+	}
+	if o.parityFixture {
+		// The parity world's call and ring seeding (parity_calls.go): this host's control listener only.
+		mux := http.NewServeMux()
+		mux.Handle("/debug/parity/", parityCalls(func() parityDeliverer { return host.Server().Gateway() }))
 		mux.Handle("/", control)
 		control = mux
 	}

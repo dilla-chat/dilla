@@ -1,0 +1,25 @@
+{
+  "digest": "1b4f889030cc23b15471c9f0c3f00627fec00827f359b993d4d6c50f679a6a39",
+  "shift": 88669,
+  "hand_migrated": false,
+  "ids": {
+    "channel:harbour/afk": "22584be64ffb760ff67114576ba4339d",
+    "channel:harbour/general": "28c94cad5096206e470bda183bd06ce8",
+    "channel:harbour/night-shift-handover-notes": "66b89de308289cc7966c59f78f285b20",
+    "channel:midgard/afk": "79a535e2b524aba2778d4058aee0e8f7",
+    "channel:midgard/general": "54dbe33af435acbc2949ad4fe532f58a",
+    "person:ada": "23364d660e82a9a1f34f4dfd58f5146c",
+    "person:bjorn": "d0e03d3b0d6b55e28f743dcee227a12b",
+    "person:glenn": "3f6eca9e09c2f070eba6fed9af09cb33",
+    "person:ines": "389135be0132a7bafcab149232f55171",
+    "person:kari": "cd3afdfbdeb405ffe2fa3ca5662ee119",
+    "person:liv": "0c34f560f4b66a404a93b21cb1eaeb5f",
+    "person:mira": "b7c78d62742e3278f82bc34644a8d588",
+    "person:ole": "c29c9d5c2de0a5902d4e23290ce7e238",
+    "person:sven": "d19edf2e6396258290b7f8d0bf576519",
+    "person:tove": "15b1fedb063619473f2b171e2eb274ba",
+    "person:ulf": "44cfd069a57b9122fb1d06a69f2cbbe7",
+    "server:harbour": "2ca7df524f58ad549f966d425f2445a7",
+    "server:midgard": "9a9aab5678023ffe5190e39ee85754dc"
+  }
+}

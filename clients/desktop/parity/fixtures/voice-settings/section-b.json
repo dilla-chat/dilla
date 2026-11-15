@@ -1,0 +1,80 @@
+{
+  "name": "voice-settings/section-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/settings/voice",
+  "clock": 1794481761,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      },
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "mira",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=switch[name=\"Set sensitivity automatically\"]",
+      "gpui": "voice-auto"
+    },
+    {
+      "do": "key",
+      "chord": "tab"
+    },
+    {
+      "do": "key",
+      "chord": "right"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

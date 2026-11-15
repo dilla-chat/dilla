@@ -52,12 +52,298 @@ fn a_ready_never_undoes_a_verdict() {
 
 #[tokio::test]
 async fn an_action_that_unwinds_answers_stopped() {
-    let answer: Result<(), ClientError> = guarded(async { panic!("E_CORE_POISONED") }).await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let answer: Result<(), ClientError> = guarded(async { panic!("E_CORE_POISONED") }, &tx).await;
     assert!(matches!(answer, Err(ClientError::Stopped)), "{answer:?}");
+    assert!(matches!(rx.try_recv(), Ok(Update::Panicked)));
     assert!(matches!(
-        guarded(async { Ok::<_, ClientError>(7) }).await,
+        guarded(async { Ok::<_, ClientError>(7) }, &tx).await,
         Ok(7)
     ));
+    assert!(rx.try_recv().is_err(), "an answer is not a failure");
+}
+
+/// Integration-1 follow-up 4: a command that fails with the code the Api refusal hook already recorded is recorded once,
+/// not again by `guarded`; a failure the hook never saw (or with another code) is still recorded.
+#[tokio::test]
+async fn a_refused_command_is_recorded_once() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let applies = |rx: &mut mpsc::UnboundedReceiver<Update>| {
+        let mut n = 0;
+        while let Ok(u) = rx.try_recv() {
+            if matches!(u, Update::Apply(_)) {
+                n += 1;
+            }
+        }
+        n
+    };
+    let refused: Result<(), ClientError> = guarded(
+        async {
+            // What the Api refusal hook does: it records the code (one Apply) and marks it recorded.
+            let _ = tx.send(Update::Apply(Box::new(
+                crate::features::diagnostics::error_update("E_FORBIDDEN"),
+            )));
+            refusal_recorded("E_FORBIDDEN");
+            Err(ClientError::Sync("E_FORBIDDEN".into()))
+        },
+        &tx,
+    )
+    .await;
+    assert!(refused.is_err());
+    assert_eq!(applies(&mut rx), 1, "the refusal is recorded once");
+
+    let local: Result<(), ClientError> =
+        guarded(async { Err(ClientError::Sync("E_LOCAL".into())) }, &tx).await;
+    assert!(local.is_err());
+    assert_eq!(
+        applies(&mut rx),
+        1,
+        "a failure the hook never saw is recorded"
+    );
+
+    let other: Result<(), ClientError> = guarded(
+        async {
+            refusal_recorded("E_FORBIDDEN");
+            Err(ClientError::Sync("E_DECODE".into()))
+        },
+        &tx,
+    )
+    .await;
+    assert!(other.is_err());
+    assert_eq!(
+        applies(&mut rx),
+        1,
+        "another code than the refused one is still recorded"
+    );
+}
+
+/// An in-memory core, an API on an address nothing answers, and an engine whose hooks send to `tx`.
+fn offline_parts(tx: mpsc::UnboundedSender<Update>) -> (CoreHandle, Arc<Api>, Arc<Engine>) {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let core: CoreHandle = Arc::new(Mutex::new(
+        dilla_core::client::ClientCore::open(Arc::new(Mutex::new(conn))).unwrap(),
+    ));
+    let auth = AuthToken::new("token");
+    let http =
+        ReqwestHttp::new(url::Url::parse("http://127.0.0.1:9").unwrap(), auth.clone()).unwrap();
+    // The client's own Api, wired as `Client::start` wires it (re-review N3).
+    let api = client_api(http, SocketRequests::new(), auth, core.clone(), &tx);
+    let instance = crate::sync::api::InstanceInfo {
+        instance_id: [1; 16],
+        policy_version: 1,
+        external_sender_pub: [0; 32],
+    };
+    let engine = Engine::new(
+        core.clone(),
+        api.clone(),
+        Arc::new(Hooks {
+            tx,
+            inner: Arc::default(),
+        }),
+        instance,
+    );
+    (core, api, engine)
+}
+
+fn offline_link(engine: Arc<Engine>, updates: mpsc::UnboundedSender<Update>) -> Arc<Link> {
+    Arc::new(Link {
+        engine,
+        socket: SocketRequests::new(),
+        auth: AuthToken::new("token"),
+        server: url::Url::parse("http://127.0.0.1:9").unwrap(),
+        options: GatewayOptions::default(),
+        gateway: Mutex::new(None),
+        updates,
+        app_offline: AtomicBool::new(false),
+        pre_connect: None,
+    })
+}
+
+fn has_gateway(link: &Link) -> bool {
+    link.gateway.lock().unwrap().is_some()
+}
+
+/// The Link TOCTOU (screens plan Task 2): a renewal's restart checked `app_offline` before the app's disconnect landed;
+/// its connect then runs after the disconnect. The app's choice wins: the connect reads `app_offline` under the
+/// gateway's lock and connects nothing.
+#[tokio::test]
+async fn disconnect_during_connect_stays_offline() {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (_core, _api, engine) = offline_parts(tx.clone());
+    let link = offline_link(engine, tx);
+    link.connect();
+    assert!(has_gateway(&link));
+    // The restart's `disconnect` ran (its check of app_offline passed a moment before); then the app's disconnect
+    // (`Client::disconnect`: the flag first, then the gateway); then the restart's `connect`.
+    link.disconnect();
+    link.app_offline.store(true, Ordering::Release);
+    link.disconnect();
+    link.connect();
+    assert!(!has_gateway(&link), "the app took the connection down");
+    link.restart();
+    assert!(!has_gateway(&link));
+    // The app's own reconnect connects.
+    link.app_offline.store(false, Ordering::Release);
+    link.connect();
+    assert!(has_gateway(&link));
+    link.disconnect();
+}
+
+/// A refusal starts a renewal; before it ends, a gateway reaches ready (the app reconnected on a session the HTTP
+/// layer had already renewed). The renewal's verdict must not tear that working gateway down and connect again.
+#[test]
+fn renewed_token_after_ready_does_not_restart() {
+    let mut gate = RenewGate::default();
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    gate.ready();
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Stay);
+    // The next refusal is a new one: this ready re-armed the renewal, and it restarts as usual.
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Restart);
+    // A ready before a renewal starts is no reason to skip its restart.
+    let mut gate = RenewGate::default();
+    gate.ready();
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Restart);
+    // A device the instance refused is signed out whatever came meanwhile.
+    let mut gate = RenewGate::default();
+    gate.refused();
+    gate.ready();
+    assert_eq!(gate.done(Renewal::SignedOut, false), AfterRenewal::SignOut);
+}
+
+/// A publisher of a `Ready` account on the offline parts, its update queue and its published state.
+#[allow(clippy::type_complexity)]
+fn offline_publisher() -> (
+    Publisher,
+    mpsc::UnboundedReceiver<Update>,
+    watch::Receiver<Arc<AppState>>,
+    CoreHandle,
+    Arc<Engine>,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (core, api, engine) = offline_parts(tx.clone());
+    let link = offline_link(engine.clone(), tx.clone());
+    let (state_tx, state_rx) = watch::channel(Arc::new(AppState::default()));
+    let initial = AppState {
+        account: crate::state::AccountState {
+            phase: AccountPhase::Ready,
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+    let upkeep = Upkeep::new(
+        core.clone(),
+        api.clone(),
+        tokio::runtime::Handle::current(),
+        [1; 16],
+        [2; 16],
+    );
+    let publisher = Publisher {
+        state: initial,
+        tx: state_tx,
+        core: core.clone(),
+        engine: engine.clone(),
+        api,
+        link,
+        updates: tx,
+        own_user: [1; 16],
+        own_device: [2; 16],
+        focus: None,
+        not_member: HashSet::new(),
+        resyncing: HashSet::new(),
+        listed: None,
+        renew: RenewGate::default(),
+        upkeep,
+        inner: Arc::default(),
+        removals_due: false,
+        removals: RemovalGate::default(),
+        taps: Taps::default(),
+    };
+    (publisher, rx, state_rx, core, engine)
+}
+
+/// The security fix of the ready's backup pass: a refreshed own device list that leaves this device out signs it out
+/// (controller.ts `if (!own.listed) return this.enterRevoked()`), and the connection goes down.
+#[tokio::test]
+async fn an_unlisted_device_is_signed_out() {
+    let (publisher, rx, mut state_rx, _core, _engine) = offline_publisher();
+    let updates = publisher.updates.clone();
+    let link = publisher.link.clone();
+    link.connect();
+    tokio::spawn(publisher.run(rx));
+    updates.send(Update::Unlisted).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state_rx.borrow_and_update().account.phase == AccountPhase::Revoked {
+                return;
+            }
+            state_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the account is reported Revoked");
+    assert!(!has_gateway(&link), "the gateway is down");
+}
+
+/// Final review I1 (controller.ts `failInstanceSignerPin`): a session established again over HTTP whose instance fails
+/// the signer pin stops the gateway and fails the account closed, as the gateway's own pre-connect refusal does. Through
+/// the Api's refusal and the hook `client_api` (what `Client::start` builds) wires to it.
+#[tokio::test]
+async fn an_http_pin_refusal_stops_the_gateway_and_fails_the_account() {
+    let (publisher, rx, mut state_rx, _core, _engine) = offline_publisher();
+    let (api, link) = (publisher.api.clone(), publisher.link.clone());
+    link.connect();
+    assert!(has_gateway(&link));
+    tokio::spawn(publisher.run(rx));
+    let refused = api.refuse_pin("E_CORE_STATE");
+    assert_eq!(refused.code, "E_CORE_STATE");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state_rx.borrow_and_update().account.phase == AccountPhase::Failed {
+                return;
+            }
+            state_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the account is reported Failed");
+    assert_eq!(
+        state_rx.borrow().connection.status,
+        ConnectionStatus::Offline
+    );
+    assert!(!has_gateway(&link), "the gateway is down");
+}
+
+/// A panic in an engine job that does not poison the core (a bug in the engine, not the store): the engine stops and
+/// the client reports `Failed`, as for a poisoned core, instead of answering `Stopped` with the account still `Ready`.
+#[tokio::test]
+async fn engine_panic_reports_failed_not_stopped() {
+    let (publisher, rx, mut state_rx, core, engine) = offline_publisher();
+    let running = tokio::spawn(publisher.run(rx));
+    // A job on a lane, the way every frame, catch-up and commit runs.
+    let job = engine.watched(async {
+        let rows: Vec<u8> = Vec::new();
+        let _ = rows[3];
+    });
+    tokio::spawn(job).await.unwrap();
+    assert!(!core.is_poisoned(), "the panic did not hold the core");
+    assert!(engine.stopped(), "nothing more runs on the engine");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state_rx.borrow_and_update().account.phase == AccountPhase::Failed {
+                return;
+            }
+            state_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the account is reported Failed");
+    // The publisher ends, as for a poisoned core.
+    tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("the publisher stopped")
+        .unwrap();
 }
 
 fn quick(_: u32) -> Duration {
@@ -135,6 +421,26 @@ fn renewal_backoff_doubles_to_thirty_seconds() {
     assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
 }
 
+/// Review M1: a core call the runtime's shutdown cancelled is the client stopping, not a poisoned core (Forget's close
+/// logged a false E_CORE_POISONED panic); a call that panicked still is.
+#[tokio::test]
+async fn a_cancelled_core_call_is_a_stop_not_poison() {
+    use crate::sync::api::{CoreFailure, CorePoisoned, core_outcome};
+    let cancelled = tokio::spawn(std::future::pending::<Result<(), CorePoisoned>>());
+    cancelled.abort();
+    let joined = cancelled.await;
+    assert_eq!(core_outcome(joined), Err(CoreFailure::Stopped));
+    let panicked = tokio::spawn(async { panic!("a core call fails") }).await;
+    assert_eq!(
+        core_outcome::<()>(panicked.map(|()| Ok(()))),
+        Err(CoreFailure::Poisoned)
+    );
+    assert_eq!(
+        core_outcome::<()>(Ok(Err(CorePoisoned))),
+        Err(CoreFailure::Poisoned)
+    );
+}
+
 #[tokio::test]
 async fn a_poisoned_core_stops_the_engine_and_is_never_used_again() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -174,7 +480,15 @@ async fn a_poisoned_core_stops_the_engine_and_is_never_used_again() {
         policy_version: 1,
         external_sender_pub: [0; 32],
     };
-    let engine = Engine::new(core, api, Arc::new(Hooks { tx }), instance);
+    let engine = Engine::new(
+        core,
+        api,
+        Arc::new(Hooks {
+            tx,
+            inner: Arc::default(),
+        }),
+        instance,
+    );
     assert!(
         engine.stopped(),
         "the engine treats a poisoned core as stopped"
@@ -183,4 +497,237 @@ async fn a_poisoned_core_stops_the_engine_and_is_never_used_again() {
         engine.groups().await.is_empty(),
         "the publisher's read answers nothing, it does not unwind"
     );
+}
+
+fn transient(groups: &[[u8; 16]]) -> HashMap<[u8; 16], FeedFailure> {
+    groups
+        .iter()
+        .map(|g| (*g, FeedFailure::Transient("E_NETWORK".into())))
+        .collect()
+}
+
+fn refused(g: [u8; 16]) -> HashMap<[u8; 16], FeedFailure> {
+    HashMap::from([(
+        g,
+        FeedFailure::Terminal(TimelineUnavailable::FeedRefused {
+            status: 403,
+            code: "E_FORBIDDEN".into(),
+        }),
+    )])
+}
+
+/// Review fix (round 1): a ready's removal read carries its generation, so an older ready's answer cannot clear a newer
+/// one's gate; groups whose read failed stay unreadable and are retried with the key-package backoff until cleared.
+#[test]
+fn removal_gate_tokens_and_unread_groups() {
+    let (g1, g2) = ([1u8; 16], [2u8; 16]);
+    let mut gate = RemovalGate::default();
+    let (one, at_one) = gate.start();
+    let (two, at_two) = gate.start();
+    assert!(
+        !gate.read(one, (at_one, HashMap::new())),
+        "an older ready's answer"
+    );
+    assert!(!gate.readable(&g1), "the newer ready's read is still out");
+    assert!(gate.read(two, (at_two, transient(&[g2]))));
+    assert!(gate.readable(&g1));
+    assert!(!gate.readable(&g2), "its read failed");
+    let (wait, at, groups) = gate.next_retry().unwrap();
+    assert_eq!((wait, groups.clone()), (Duration::from_secs(5), vec![g2]));
+    assert!(gate.next_retry().is_none(), "one retry at a time");
+    gate.retried(&groups, (at, transient(&[g2])));
+    let (wait, at, groups) = gate.next_retry().unwrap();
+    assert_eq!(wait, Duration::from_secs(10));
+    // A retry that read the group takes it off.
+    gate.retried(&groups, (at, HashMap::new()));
+    assert!(gate.readable(&g2));
+    assert!(gate.next_retry().is_none());
+    assert_eq!(gate.delay_ms, 0, "the backoff starts again");
+}
+
+/// Review fix (round 2): a terminal failure (a permanent 403) is the channel's state and is not retried; a transient one
+/// still is. With tokio's clock paused and advanced past every backoff step, no retry is ever due for the refused group.
+#[tokio::test(start_paused = true)]
+async fn a_refused_feed_is_terminal_and_never_retried() {
+    let (g1, g2) = ([1u8; 16], [2u8; 16]);
+    let mut gate = RemovalGate::default();
+    let (generation, at) = gate.start();
+    let mut answers = refused(g1);
+    answers.extend(transient(&[g2]));
+    assert!(gate.read(generation, (at, answers)));
+    assert!(!gate.readable(&g1) && !gate.readable(&g2));
+    assert!(matches!(
+        gate.failed.get(&g1),
+        Some(TimelineUnavailable::FeedRefused { status: 403, .. })
+    ));
+    // Only the transient group is retried, however long the clock runs.
+    for _ in 0..12 {
+        let Some((wait, at, groups)) = gate.next_retry() else {
+            break;
+        };
+        assert_eq!(groups, vec![g2], "the refused group is never retried");
+        tokio::time::advance(wait).await;
+        gate.retried(&groups, (at, transient(&[g2])));
+    }
+    assert!(gate.failed.contains_key(&g1));
+    // A transient answer for g2 now refused for good stops its retries too.
+    gate.retried(&[], (gate.clock, refused(g2)));
+    assert!(gate.unread.is_empty());
+    assert!(gate.next_retry().is_none(), "nothing is retried any more");
+    // A later successful read (an apply, an open, the next ready) clears either.
+    gate.cleared(&g1);
+    assert!(gate.readable(&g1));
+}
+
+/// Review fix (round 2): an apply's own read can clear a group before the ready's read (which started earlier) reports
+/// it unread; that stale answer must not gate the group again.
+#[test]
+fn a_clearing_after_a_read_started_wins_over_its_answer() {
+    let g = [3u8; 16];
+    let mut gate = RemovalGate::default();
+    let (generation, started) = gate.start();
+    gate.cleared(&g);
+    assert!(gate.read(generation, (started, refused(g))));
+    assert!(gate.readable(&g), "the stale answer is skipped");
+    // A read that starts after the clearing is not stale.
+    let (generation, started) = gate.start();
+    assert!(gate.read(generation, (started, transient(&[g]))));
+    assert!(!gate.readable(&g));
+    // The same holds for a retry's answer.
+    let (_, at, groups) = gate.next_retry().unwrap();
+    gate.cleared(&g);
+    gate.retried(&groups, (at, transient(&[g])));
+    assert!(gate.readable(&g));
+}
+
+/// Review fix (round 3): a group that is not active (state 0, 1, 3) is a transient failure, so it stays gated through
+/// every retry and is released only by a feed read that succeeded.
+#[test]
+fn a_non_active_group_stays_gated_until_a_read() {
+    let g = [4u8; 16];
+    let not_active = HashMap::from([(g, FeedFailure::Transient("E_GROUP_NOT_ACTIVE".into()))]);
+    let mut gate = RemovalGate::default();
+    let (generation, started) = gate.start();
+    assert!(gate.read(generation, (started, not_active.clone())));
+    assert!(!gate.readable(&g));
+    for _ in 0..3 {
+        let (_, at, groups) = gate.next_retry().unwrap();
+        gate.retried(&groups, (at, not_active.clone()));
+        assert!(!gate.readable(&g), "a retry that could not read keeps it");
+    }
+    gate.cleared(&g);
+    assert!(gate.readable(&g));
+}
+
+/// controller.ts `checkInstanceSignerPin` at the start (a sign-in no longer swallows a pin failure, and the start checks
+/// the pin again as `enterReady` does): the key the instance serves now must be the one pinned at enrolment, for the
+/// instance the identity names; a changed key or another instance fails the start closed, and the pin is not replaced.
+#[tokio::test]
+async fn the_start_fails_closed_on_another_instance_signer_key() {
+    // Two valid Ed25519 points: the core tests' instance key and the curve's base point.
+    const PINNED: [u8; 32] = [
+        0xdb, 0x99, 0x5f, 0xe2, 0x51, 0x69, 0xd1, 0x41, 0xca, 0xb9, 0xbb, 0xba, 0x92, 0xba, 0xa0,
+        0x1f, 0x9f, 0x2e, 0x1e, 0xce, 0x7d, 0xf4, 0xcb, 0x2a, 0xc0, 0x51, 0x90, 0xf3, 0x7f, 0xcc,
+        0x1f, 0x9d,
+    ];
+    let mut other = [0x66u8; 32];
+    other[0] = 0x58;
+    let instance_id = [3u8; 16];
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut core =
+        dilla_core::client::ClientCore::open(Arc::new(Mutex::new(conn))).expect("an empty store");
+    core.signup_begin(&instance_id).expect("signup begin");
+    core.signup_complete(&[4u8; 16], "ada", 1_800_000_000, &PINNED)
+        .expect("signup complete pins the key");
+    let core: CoreHandle = Arc::new(Mutex::new(core));
+    let info = |instance_id, external_sender_pub| crate::sync::api::InstanceInfo {
+        instance_id,
+        policy_version: 1,
+        external_sender_pub,
+    };
+
+    check_instance_signer_pin(&core, &info(instance_id, PINNED))
+        .await
+        .expect("the pinned key starts");
+    for (what, served) in [
+        ("a changed key", info(instance_id, other)),
+        ("another instance", info([5u8; 16], PINNED)),
+    ] {
+        match check_instance_signer_pin(&core, &served).await {
+            Err(ClientError::Sync(code)) => assert_eq!(code, "E_CORE_STATE", "{what}"),
+            r => panic!("{what} must fail the start closed, got {r:?}"),
+        }
+    }
+    // The refusals replaced nothing: the pinned key still starts, the other one still does not.
+    check_instance_signer_pin(&core, &info(instance_id, PINNED))
+        .await
+        .expect("the pin is unchanged");
+    assert!(
+        check_instance_signer_pin(&core, &info(instance_id, other))
+            .await
+            .is_err()
+    );
+}
+
+/// Wave 2 H (controller.ts `mintTicket` and `checkInstanceSignerPin`): the check before each connection. An unreachable
+/// instance or a 5xx is tried again; a document that does not decode, a changed signer key or another instance stops
+/// the gateway, closed.
+#[test]
+fn the_pre_connect_pin_check_fails_closed() {
+    use crate::gateway::PreConnectVerdict as V;
+    let network = ApiError::local(0, "E_NETWORK", "down");
+    let unavailable = ApiError::local(503, "E_HTTP", "");
+    let garbled = ApiError::local(0, "E_DECODE", "a list");
+    assert_eq!(pin_verdict(Err(&network), None), V::Retry);
+    assert_eq!(pin_verdict(Err(&unavailable), None), V::Retry);
+    assert_eq!(pin_verdict(Err(&garbled), None), V::Refuse);
+    // Review HL I1: the read is an authenticated route; a 401 after `http_call`'s own re-establish failed is a device
+    // the instance no longer knows (revoked while asleep). It ends the gateway as revoked, so the renewal and sign-out
+    // path runs (controller.ts: a refused `establish` enters Revoked) instead of retrying forever.
+    let revoked = ApiError::local(401, "E_UNAUTHENTICATED", "revoked");
+    assert_eq!(pin_verdict(Err(&revoked), None), V::Revoked);
+    // A second factor owed stays a retry: `Update::FactorRequired` moves the phase already.
+    let factor = ApiError::local(403, "E_FACTOR_REQUIRED", "");
+    assert_eq!(pin_verdict(Err(&factor), None), V::Retry);
+    assert_eq!(pin_verdict(Ok(()), Some(Ok(()))), V::Go);
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_CORE_STATE".into())))),
+        V::Refuse
+    );
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_CORE_INPUT".into())))),
+        V::Refuse
+    );
+    // Review HL m1 (controller.ts `checkInstanceSignerPin` rethrows every other error to the gateway's retry): a
+    // transient core error during the pin write (a busy store) is tried again, never a failed account.
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Sync("E_STORE".into())))),
+        V::Retry
+    );
+    assert_eq!(
+        pin_verdict(Ok(()), Some(Err(ClientError::Stopped))),
+        V::Retry
+    );
+}
+
+/// signup.ts `publishDeviceList`'s 409 branch: a served list at the candidate's version (a PUT whose answer was lost) or
+/// newer is adopted; none, or an older one, is the list race the 409 says.
+#[test]
+fn a_409_adopts_a_served_list_at_or_past_the_candidate() {
+    assert_eq!(
+        list_conflict(Some(3), 3),
+        ListConflict::Adopt,
+        "the lost answer"
+    );
+    assert_eq!(
+        list_conflict(Some(4), 3),
+        ListConflict::Adopt,
+        "a later list"
+    );
+    assert_eq!(
+        list_conflict(Some(2), 3),
+        ListConflict::Race,
+        "an older list"
+    );
+    assert_eq!(list_conflict(None, 3), ListConflict::Race, "no list served");
 }

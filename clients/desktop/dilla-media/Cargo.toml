@@ -26,6 +26,9 @@ zeroize = "1"
 # crate: the weights are licensed like the code since upstream 7b14b89), on tract, pure Rust.
 deep-filter-rt = "=0.2.0"
 ndarray = "0.17"
+# Task 4 (plan R1, declared by Task 1 so Cargo.lock is settled once): device capture and playout. The cpal rodio uses
+# (dilla-desktop), so the lock holds one.
+cpal = "0.18.2"
 
 [dev-dependencies]
 # The hook's synthetic-frame test support (webrtc_sys::dilla_transform_testing): tests only, never in
@@ -42,4 +45,11 @@ openmls_basic_credential = "=0.6.0"
 tls_codec = { version = "=0.5.0", features = ["derive", "serde", "mls"] }
 # examples/call-peer.rs (the live tests' participant): its stdin/stdout line protocol.
 serde_json = "1.0.151"
+# tests/e2e_call.rs (screens wave 1, Task 3): two desktop clients' call signalling through a real dillad, the accounts
+# enrolled as dilla-client's tests enrol them (the testkit, an authenticator app over RFC 6238). All already in the lock.
+# Task 28 wave 2: tests/call.rs's Bot music timing tests use its real-dillad helpers (`testing::host::music`).
+dilla-client = { path = "../dilla-client", features = ["testing-host"] }
+dilla-testkit = { path = "../../../testkit" }
+hmac = "0.13"
+sha1 = "0.11"
 tokio = { version = "1", features = ["io-std", "io-util"] }

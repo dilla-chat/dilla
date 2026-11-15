@@ -197,6 +197,18 @@ func (*errMusicCallJoinHeld) Retryable() bool { return true }
 // Is makes a held join an admission refusal (music.ErrNotAdmitted): the track stays queued, paused.
 func (*errMusicCallJoinHeld) Is(target error) bool { return target == music.ErrNotAdmitted }
 
+// errMusicCallJoinFrozen is a resync the instance refused with 425 E_COMMIT_REQUIRED: the call group is frozen while an
+// instance Remove (a member's device that just left the call) waits for a member's commit, which lands within moments.
+// The staged join was discarded, so the next attempt stages afresh on the group as it is then. Before this the Bot gave
+// up on its first such refusal, and a /play right after someone left a call was never heard.
+type errMusicCallJoinFrozen struct {
+	err        error
+	retryAfter time.Duration
+}
+
+func (e *errMusicCallJoinFrozen) Error() string { return e.err.Error() }
+func (e *errMusicCallJoinFrozen) Unwrap() error { return e.err }
+
 // errMusicCallJoinUnjudged refuses a join whose staged group still has a leaf the trust cache could not judge. Like a
 // held join, it is an admission refusal (music.ErrNotAdmitted): the track stays queued, paused.
 var errMusicCallJoinUnjudged error = &musicNotAdmittedError{"music call-group trust: a leaf is still unjudged"}
@@ -223,10 +235,17 @@ func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, cor
 		}
 		var conflict *errMusicCallJoinConflict
 		var held *errMusicCallJoinHeld
-		if (!errors.As(err, &conflict) && !errors.As(err, &held)) || conflicts == len(delays) {
+		var frozen *errMusicCallJoinFrozen
+		isFrozen := errors.As(err, &frozen)
+		if (!errors.As(err, &conflict) && !errors.As(err, &held) && !isFrozen) || conflicts == len(delays) {
 			return err
 		}
-		if err = wait(ctx, delays[conflicts]); err != nil {
+		delay := delays[conflicts]
+		if isFrozen {
+			// The instance's own hint, bounded by the schedule's longest step.
+			delay = max(delay, min(frozen.retryAfter, delays[len(delays)-1]))
+		}
+		if err = wait(ctx, delay); err != nil {
 			return err
 		}
 		conflicts++
@@ -425,6 +444,13 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 		if errors.As(err, &apiErr) && apiErr.Outcome == client.OutcomeDefinitive {
 			if discardErr := timing.run("DiscardGroup", func() error { return core.DiscardGroup(ctx, operation, group) }); discardErr != nil {
 				return errors.Join(musicCallJoinStageError("resync", err), musicCallJoinStageError("discard", discardErr))
+			}
+			if apiErr.Status == 425 && apiErr.Code == "E_COMMIT_REQUIRED" {
+				var retryAfter time.Duration
+				if apiErr.RetryAfterMS != nil {
+					retryAfter = time.Duration(min(*apiErr.RetryAfterMS, math.MaxInt64/uint64(time.Millisecond))) * time.Millisecond
+				}
+				return &errMusicCallJoinFrozen{err: musicCallJoinStageError("resync", err), retryAfter: retryAfter}
 			}
 			return musicCallJoinStageError("resync", err)
 		}

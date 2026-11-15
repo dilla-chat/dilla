@@ -1,6 +1,6 @@
 name: desktop-gpui
-# The native GPUI desktop client (clients/desktop). Separate from desktop.yml / desktop-ci.yml, which are the
-# Electron client's; this one builds, lints and tests only the GPUI crates and the parity harness.
+# The native GPUI desktop client (clients/desktop). desktop-ci.yml (check desktop-ok) runs the shared web, UI and core
+# checks; this one builds, lints and tests only the GPUI crates and the parity harness.
 on:
   push:
     branches: [main]
@@ -13,7 +13,12 @@ on:
       - 'deny.toml'
       - 'packages/design-tokens/src/tokens.ts'
       - 'packages/ui/src/Icon/icons.ts'
+      - 'packages/web/src/strings/**'
+      - 'packages/media/**'
+      - 'scripts/gen-gpui-*.mjs'
+      - 'scripts/check-glibc-max.sh'
       - 'cmd/dilla-testhost/**'
+      - 'cmd/dillabot/**'
       - 'internal/**'
       - 'go.mod'
       - 'go.sum'
@@ -28,7 +33,12 @@ on:
       - 'deny.toml'
       - 'packages/design-tokens/src/tokens.ts'
       - 'packages/ui/src/Icon/icons.ts'
+      - 'packages/web/src/strings/**'
+      - 'packages/media/**'
+      - 'scripts/gen-gpui-*.mjs'
+      - 'scripts/check-glibc-max.sh'
       - 'cmd/dilla-testhost/**'
+      - 'cmd/dillabot/**'
       - 'internal/**'
       - 'go.mod'
       - 'go.sum'
@@ -40,6 +50,11 @@ concurrency:
   cancel-in-progress: true
 env:
   GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity
+  # The test binaries of five crates (libwebrtc, GPUI, wasmtime), each linked whole, with debug info filled the Linux and
+  # macOS runners' disks ("No space left on device" in cargo test, errno 28 in ld). A panic still names its location.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
 jobs:
   gpui:
     name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
@@ -58,6 +73,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # The hosted Linux image ships toolchains this job never uses; the GPUI build and its test binaries need the room.
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h /
+      - name: Free disk space (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          df -h /
+          keep="$(cd "$(xcode-select -p)/../.." && pwd -P)"  # the real app, also when Xcode.app is a link to it
+          for app in /Applications/Xcode*.app; do
+            if [ ! -L "$app" ] && [ "$(cd "$app" && pwd -P)" != "$keep" ]; then sudo rm -rf "$app"; fi
+          done
+          sudo rm -rf "$HOME/Library/Android" /usr/local/share/dotnet "$HOME/.dotnet" "$HOME/Library/Developer/CoreSimulator/Caches"
+          df -h /
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
@@ -73,7 +105,9 @@ jobs:
         run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       # GPUI's Linux build and the libwebrtc behind LiveKit need the X11, Wayland, xkbcommon, font, Vulkan and GBM
       # development packages and libclang (bindgen). mesa-vulkan-drivers is lavapipe, the software Vulkan adapter
-      # dilla-parity's headless screenshot test renders on. Retried only on mirror and DNS failures.
+      # dilla-parity's headless screenshot test renders on. ffmpeg (with libopus) makes the Bot's music fixtures and plays
+      # them for dilla-media's Bot music timing tests (testing::host::music, as e2e/media/support/fixtures.ts does).
+      # Retried only on mirror and DNS failures.
       # LiveKit's prebuilt libwebrtc on Windows links the static MSVC runtime (/MT); a dynamic-CRT Rust build gets
       # LNK2005/LNK1169 duplicate std symbols. .cargo/config.toml may not carry rustflags (workspace_policy), so the
       # Windows leg sets it here; local Windows builds need the same (documented in clients/desktop/README).
@@ -102,7 +136,7 @@ jobs:
           libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
           libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
-          libxfixes-dev libxcomposite-dev libxrandr-dev
+          libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg
       - run: rustup show active-toolchain
       - id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -114,7 +148,13 @@ jobs:
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       # Token freshness: the generated Rust tokens match the design tokens they come from.
       - run: node --test scripts/gen-gpui-tokens.test.mjs
+      # Strings freshness: dilla-desktop's generated strings.rs matches packages/web/src/strings/*.ts.
+      - run: node --test scripts/gen-gpui-strings.test.mjs
+      # Behaviour gates: every e2e test title has a row in clients/desktop/BEHAVIOUR-GATES.md (behaviour_gate_table_complete).
+      - run: node --test scripts/behaviour-gates.test.mjs
       # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
+      # The WASI core is rebuilt here on purpose, not taken from internal/mlswasi/testdata (git-ignored, absent on a fresh
+      # checkout): the client under test and the server it talks to must be the core of this very commit.
       - name: Build the test host and the WASI core
         shell: bash
         run: |
@@ -128,23 +168,11 @@ jobs:
           } >> "$GITHUB_ENV"
       - run: cargo build $GPUI_CRATES --all-targets --locked
         shell: bash
-      - run: cargo clippy $GPUI_CRATES --all-targets --locked -- -D warnings
+      - run: cargo clippy $GPUI_CRATES --all-targets --locked --keep-going -- -D warnings  # every crate's lints in one run
         shell: bash
       # The window test runs on GPUI's test platform, so it needs no display.
       - run: cargo test $GPUI_CRATES --locked --no-fail-fast  # every OS reports all its failing test binaries in one run
         shell: bash
-      # dilla-parity's only GPU test is #[ignore]d (release build has no automation, ~4 min), so the plain run above
-      # needs no adapter on any OS: macOS would use Metal and Windows has none, and neither runs the ignored test.
-      # Linux renders on lavapipe (mesa-vulkan-drivers, installed above) and runs it, plus dilla-client's real-dillad
-      # hello (it starts the dilla-testhost built above).
-      - name: Run the ignored tests (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          cargo test -p dilla-parity --locked -- --ignored
-          cargo test -p dilla-client --test gateway --locked -- --ignored
-          cargo test -p dilla-client --test sync --locked -- --ignored
-          cargo test -p dilla-client --test http_sign_in --locked -- --ignored
       # Saved even when a leg fails or is cancelled (actions/cache only saves on success): a cold Windows build
       # with the static CRT takes most of an hour, so the next run must start warm.
       - if: always() && steps.cache.outputs.cache-hit != 'true'
@@ -155,3 +183,182 @@ jobs:
             ~/.cargo/git
             target
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+  # dilla's real-server, Bot, parity and call tests (the #[ignore]d ones a plain `cargo test` skips), Linux only, in four
+  # parallel shards: one after another they took 50 minutes of a 76-minute job. Each shard builds what its tests need
+  # on the gpui job's cache.
+  gpui-linux:
+    name: gpui-linux-x64-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      # Every shard runs to the end, so one red suite does not hide another's result.
+      fail-fast: false
+      matrix:
+        shard: [client, bot, desktop, media]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h /
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
+      - name: Add the LLVM 21 apt repository
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
+      - name: Install the GPUI build dependencies
+        if: runner.os == 'Linux'
+        run: >-
+          node scripts/retry-on.mjs --attempts 6 --wait 60
+          --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
+          -- bash scripts/ci-apt-install.sh
+          clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
+          libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
+          libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+          mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
+          libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg
+      # Restore only: the gpui job's Linux leg saves this cache.
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
+      # The WASI core is rebuilt here on purpose, not taken from internal/mlswasi/testdata (git-ignored, absent on a fresh
+      # checkout): the client under test and the server it talks to must be the core of this very commit.
+      - name: Build the test host and the WASI core
+        shell: bash
+        run: |
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+          go build -o "target/dilla-testhost$exe" ./cmd/dilla-testhost
+          {
+            echo "DILLA_TESTHOST=$GITHUB_WORKSPACE/target/dilla-testhost$exe"
+            echo "DILLA_CORE_WASI=$GITHUB_WORKSPACE/target/wasm32-wasip1/release/dilla_core_wasi.wasm"
+          } >> "$GITHUB_ENV"
+      # dilla-media's live and web-interop call tests: dilla-testhost's in-process LiveKit SFU (no separate server), the
+      # WASI core built above, packages/media's wasm and Playwright's Chromium (the e2e media suite's prerequisites).
+      # The wasm C build (sqlite-wasm-rs) uses clang 23, as the browser jobs of desktop-ci.yml do.
+      - id: clang23-cache
+        if: runner.os == 'Linux' && !cancelled()
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-latest
+          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-
+      - id: clang23
+        name: clang 23 for the wasm C build (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        run: bash scripts/ci-llvm.sh install
+      - if: runner.os == 'Linux' && !cancelled() && steps.clang23.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}
+      - name: Build packages/media's wasm core (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        env:
+          CC_wasm32_unknown_unknown: /usr/bin/clang-23
+          AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
+        run: |
+          bash scripts/install-ci-tool.sh wasm-bindgen
+          bash scripts/install-ci-tool.sh wasm-pack
+          bash scripts/install-ci-tool.sh binaryen
+          export PATH="$RUNNER_TEMP/dilla-ci-tools:$PATH"
+          wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
+      # The runner has no sound card, and a call's media opens the default speaker (dilla-media's Speaker): without one
+      # the desktop's join fails (MediaFailed) and the call tests' peer never sees the other in the call. ALSA's null
+      # device stands in, for the ignored-tests step only (its ALSA_CONFIG_PATH): it never paces, so a Chromium
+      # AudioContext on it never renders, and the media call tests' page must keep Chromium's own fake output (the
+      # one it takes with no sound device at all). The media call tests' web peer (e2e/media/support/testhost.ts)
+      # reads the WASI core from internal/mlswasi/testdata, which is git-ignored: the core built above goes there.
+      - name: A null sound card and the WASI core for the call tests (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        shell: bash
+        run: |
+          printf 'pcm.!default {\n  type null\n}\n' > "$RUNNER_TEMP/asound-null.conf"
+          mkdir -p internal/mlswasi/testdata
+          cp target/wasm32-wasip1/release/dilla_core_wasi.wasm internal/mlswasi/testdata/
+      # Chromium for the media tests and for dilla-parity's web shooter (parity/shoot.mjs).
+      - name: Playwright Chromium (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        timeout-minutes: 8
+        run: npx playwright install --with-deps chromium
+      # dilla-parity's only GPU test is #[ignore]d (release build has no automation, ~4 min), so the plain run above
+      # needs no adapter on any OS: macOS would use Metal and Windows has none, and neither runs the ignored test.
+      # Linux renders on lavapipe (mesa-vulkan-drivers, installed above) and runs it, plus dilla-client's real-dillad
+      # hello (it starts the dilla-testhost built above).
+      # dilla's real Bot for the Bot tests (dilla-client tests/bot*, dilla-desktop tests/bot): dilla-testhost -bot supervises
+      # this dillabot (the dilla_testhost tag lets it read its music fixtures from its state directory) and its helper.
+      - name: Build the Bot for the Bot tests (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        shell: bash
+        run: |
+          go build -tags dilla_testhost -o target/dillabot ./cmd/dillabot
+          cargo build -p dilla-bot-core --release --locked
+      - name: Run the ignored tests (Linux, client)
+        if: matrix.shard == 'client' && !cancelled()
+        shell: bash
+        run: |
+          export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"
+          cargo test -p dilla-client --test gateway --locked -- --ignored
+          cargo test -p dilla-client --test sync --locked -- --ignored
+          cargo test -p dilla-client --test http_sign_in --locked -- --ignored
+          cargo test -p dilla-client --test calls --locked -- --ignored
+          cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored
+          cargo test -p dilla-client --test notify --locked -- --ignored
+          cargo build -p dilla-testkit --bin dilla-testkit --locked
+          cargo test -p dilla-client --test dms --locked -- --ignored
+          cargo test -p dilla-client --test voice --locked -- --ignored
+          cargo test -p dilla-client --test ring --locked -- --ignored
+      - name: Run the ignored tests (Linux, Bot)
+        if: matrix.shard == 'bot' && !cancelled()
+        shell: bash
+        run: |
+          export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"
+          cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored --skip enter_to_first_answer_is_within_rtt_plus_100ms_at_p95
+          # G2 is a latency budget: measured alone, not beside the other Bot tests' instances on the same four cores.
+          cargo test -p dilla-client --test bot --locked -- --ignored --exact enter_to_first_answer_is_within_rtt_plus_100ms_at_p95
+          cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings
+          cargo test -p dilla-desktop --features automation --locked
+          cargo test -p dilla-desktop --features automation --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test sign_in --test user_settings --test voice_settings --locked -- --ignored --skip parity_
+      - name: Run the ignored tests (Linux, desktop)
+        if: matrix.shard == 'desktop' && !cancelled()
+        shell: bash
+        run: |
+          export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"
+          cargo test -p dilla-parity --locked -- --ignored
+          cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_
+          cargo test -p dilla-desktop --test integration --locked -- --ignored
+          cargo test -p dilla-desktop --test slice --locked -- --ignored
+      # tests/call includes the Bot music timing tests (G3): they start the Bot built above with its SFU and the ffmpeg fixtures.
+      - name: Run the media call tests (Linux)
+        if: matrix.shard == 'media' && !cancelled()
+        shell: bash
+        run: |
+          cargo test -p dilla-media --test live --test call --test e2e_call --locked -- --ignored --skip bot_play_from_enter_to_first_audio_frame_meets_g3 --skip bot_next_queued_track_gap_is_under_150_ms --skip bot_repeated_track_starts_within_500_ms_at_p95
+          # The Bot music timing tests (G3) are latency budgets: measured one at a time, not beside a Bot restart or a browser call.
+          cargo test -p dilla-media --test call --locked -- --ignored --exact --test-threads=1 bot_play_from_enter_to_first_audio_frame_meets_g3 bot_next_queued_track_gap_is_under_150_ms bot_repeated_track_starts_within_500_ms_at_p95

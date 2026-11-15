@@ -13,7 +13,7 @@ import { DillaHttpError } from '../http/errors';
 import type { AFKSnapshot, DeviceRow } from '../http/routes';
 import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
-import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
+import { HELD_LIVE_MAX, HELD_READ_HOLD_MS, diagnosticsFacts } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
@@ -2774,6 +2774,29 @@ it('resign waits for cleanup after a refused send takes attachment references', 
   expect(w.core.pause).not.toHaveBeenCalled();
   gate.resolve();
   await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+// Task 6c (parity): under dilla-testhost's fixture marker the diagnostics carry no round trips and no key-package report,
+// so the web reference is deterministic; without it nothing changes.
+describe('diagnostics under the parity-fixture marker', () => {
+  const kp = { count: 32, lastAttempt: 1_700_000_000_000, lastError: null };
+  const routes = [{ pattern: '/v1/instance', p50: 4, p95: 9, count: 3 }];
+  it('passes the live round trips and key packages through without the marker', () => {
+    expect(diagnosticsFacts(false, kp, routes)).toEqual({ keyPackages: kp, slowRoutes: routes });
+  });
+  it('reports none of them with it', () => {
+    expect(diagnosticsFacts(true, kp, routes)).toEqual({ keyPackages: { count: null, lastAttempt: null, lastError: null }, slowRoutes: [] });
+  });
+  it('the controller reads the marker from the instance it discovered', async () => {
+    const w = world();
+    w.routes.getInstance.mockImplementation(() => Promise.resolve({ ...INSTANCE, parityFixture: true }));
+    await toReady(w);
+    w.call(95, { m: 'refreshDevices' });
+    await vi.waitFor(() => expect(w.ret(95)).toBeDefined());
+    const d = w.last<DiagnosticsState>('diagnostics');
+    expect(d?.slowRoutes).toEqual([]);
+    expect(d?.keyPackages).toEqual({ count: null, lastAttempt: null, lastError: null });
+  });
 });
 
 it('publishes only bounded diagnostics and code-only errors', async () => {
@@ -6217,9 +6240,9 @@ describe('call commands in the worker (task 6)', () => {
     expect(routeCalls(w)).toBe(before);
   });
 
-  it('lets the six call codes through sanitizeWorkerError', async () => {
+  it('lets the seven call codes through sanitizeWorkerError', async () => {
     const { sanitizeWorkerError } = await import('./controller');
-    for (const code of ['E_CALL_FULL', 'E_CALL_SHARERS_FULL', 'E_CALL_ACTIVE', 'E_REMOVE_PENDING', 'E_NO_CALL', 'E_DISCONNECTED']) {
+    for (const code of ['E_CALL_FULL', 'E_CALL_SHARERS_FULL', 'E_CALL_ACTIVE', 'E_GROUP_CLOSED', 'E_REMOVE_PENDING', 'E_NO_CALL', 'E_DISCONNECTED']) {
       const e = new DillaHttpError({ code, detail: 'secret detail', status: 409, retryAfterMs: null, extra: [] });
       expect(sanitizeWorkerError(e)).toEqual({ code, detail: '', status: 409, retryAfterMs: null });
     }
@@ -6630,6 +6653,52 @@ describe('slow mode slices (CB2)', () => {
 
 describe('pending role-panel actions', () => {
   afterEach(() => { vi.useRealTimers(); });
+
+  // w2-bot-review I-B2 (Jonas: "Bot messages only"): a confirmed own reaction is offered to the instance in plaintext
+  // (emoji and target seq) only when its message is the community's Bot's, i.e. a role panel.
+  describe('only reactions on the Bot\'s messages (I-B2)', () => {
+    const BOT = new Uint8Array(16).fill(0xb0);
+    const FRIEND = new Uint8Array(16).fill(0x22);
+    const TARGET = new Uint8Array(16).fill(0x70);
+    const REACTION = new Uint8Array(16).fill(0x71);
+    async function reacted(sender: Uint8Array, bot: boolean, pinned: Uint8Array | null): Promise<World> {
+      const w = world();
+      w.routes.listChannels.mockResolvedValue([{ id: CHANNEL, kind: 0, mode: 0, visibility: 0, parentId: null, name: 'general', topic: '',
+        position: 0, slowmode: 0, seq: 1n, textGroupId: GROUP }]);
+      await toReady(w);
+      await vi.waitFor(() => expect(w.channels()?.some((c) => c.id === toHex(CHANNEL))).toBe(true));
+      Object.assign(w.core, {
+        groupRow: () => ({ groupId: GROUP, targetId: CHANNEL }),
+        botUserPinned: () => pinned,
+      });
+      const store = (w.controller as unknown as { slices: { set(name: string, value: unknown): void } }).slices;
+      store.set(`timeline:${toHex(CHANNEL)}`, { channelId: toHex(CHANNEL), items: [{
+        key: 's7', state: 'ok', reason: '', senderUser: toHex(sender), senderDevice: null, own: false, web: false, bot,
+        ts: 1, body: 'React with the matching emoji to choose a role:', msgId: toHex(TARGET), seq: '7', edited: false,
+        reply: null, reactions: [], pinned: false, attachments: [], mention: false,
+      }] });
+      w.routes.applyRolePanelReaction.mockResolvedValue();
+      w.sync.deps!.onPosted(GROUP, 3, { msgId: REACTION, state: 1, error: '', created: 1n, body: '🍆', type: 3, replyTo: TARGET,
+        attachments: [] }, 9n);
+      return w;
+    }
+    const pendingKeys = (w: World) => Object.keys(w.state.settings).filter((k) => k.startsWith('rolePanel.pending.'));
+
+    it('a reaction on the pinned Bot\'s message is sent', async () => {
+      const w = await reacted(BOT, true, BOT);
+      await vi.waitFor(() => expect(w.routes.applyRolePanelReaction).toHaveBeenCalledTimes(1));
+      expect(w.routes.applyRolePanelReaction.mock.calls[0]).toContain('🍆');
+    });
+
+    it('a reaction on a friend\'s message sends nothing in plaintext', async () => {
+      for (const w of [await reacted(FRIEND, false, BOT), await reacted(FRIEND, true, BOT), await reacted(BOT, false, BOT),
+        await reacted(BOT, true, null)]) {
+        await Promise.resolve();
+        expect(w.routes.applyRolePanelReaction).not.toHaveBeenCalled();
+        expect(pendingKeys(w)).toEqual([]);
+      }
+    });
+  });
 
   it('retries a transient accepted-action failure online with backoff, then clears the journal', async () => {
     const w = world();

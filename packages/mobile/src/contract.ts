@@ -1,3 +1,6 @@
+/** The browser sign-in ceremony types, as in the former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/src/browser-auth.ts). */
+export type BrowserAuthRequest = { kind: 'get' | 'create' | 'oidc'; options: string };
+export type BrowserAuthResult = { response?: string; assertion?: string; needs: number; error?: string };
 export interface MobileInfo { platform: 'ios' | 'android'; version: string; instance: string }
 export type MobileCommand =
   | { type: 'badge'; count: number }
@@ -12,5 +15,5 @@ export interface MobileBridge {
   onEvent(listener: (event: MobileEvent) => void): () => void;
   notificationPermission(): Promise<NotificationPermission>;
   requestNotificationPermission(): Promise<NotificationPermission>;
-  browserAuth(request: import('../../desktop/src/browser-auth.ts').BrowserAuthRequest): Promise<import('../../desktop/src/browser-auth.ts').BrowserAuthResult>;
+  browserAuth(request: BrowserAuthRequest): Promise<BrowserAuthResult>;
 }

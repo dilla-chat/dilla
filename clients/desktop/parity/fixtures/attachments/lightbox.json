@@ -1,0 +1,104 @@
+{
+  "name": "attachments/lightbox",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "mira",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "the map from saturday is in #loot"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "see you at the bridge"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "the map from saturday, coffee stain included",
+        "attachments": [
+          {
+            "name": "map.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 320,
+            "height": 240
+          },
+          {
+            "name": "loot-list.txt",
+            "mime": "text/plain",
+            "size": 39
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "header-members"
+    },
+    {
+      "do": "click",
+      "web": "css=.d-attachment-card__open",
+      "gpui": "attachment-m3-0"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

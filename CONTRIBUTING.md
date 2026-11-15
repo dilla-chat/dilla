@@ -70,7 +70,7 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, 
 CI is three workflows, all run on every pull request and every push to main: `server` (`.github/workflows/server.yml`:
 the docs gates, the installer and Bot operation scripts that a release ships, the Go jobs, the Rust core checks and the
 release build), `desktop` (`.github/workflows/desktop-ci.yml`: the script gates, the UI, the wasm core, the
-integration suites and the `desktop.yml` acceptance) and `mobile` (`.github/workflows/mobile.yml`: the iOS and Android
+integration suites; the native client has its own workflow, `desktop-gpui.yml`) and `mobile` (`.github/workflows/mobile.yml`: the iOS and Android
 apps' unit tests, the mobile client build, the debug and release APKs with the release network-config check, the
 Android emulator smoke test and the iOS simulator build). Each reports one check, `server-ok`, `desktop-ok` and
 `mobile-ok`, so a failure in one never blocks a change to another. `server-ok`, `desktop-ok` and `mobile-ok` are the
@@ -90,11 +90,11 @@ per area:
 | core | `core/**` (Markdown included: a vendored crate compiles its README), `testkit/**`, `Cargo.*`, `protocol/vectors/**` | go, web, e2e, mobile |
 | web | `packages/**`, `package*.json`, `.nvmrc`, `docs/design/flows/**` (tests compare the copy tables with `en.ts`), `internal/sfu/testdata/**` (the LiveKit schema check) | e2e |
 | e2e | `e2e/**` | |
-| mobile | `packages/mobile/**` and what the bundled client is built from: `packages/{web,client-core,ui,media,core-wasm,design-tokens}/**`, `packages/desktop/src/browser-auth.ts`, `package*.json`, `.nvmrc`; what the emulator smoke test runs beside the app: `cmd/dilla-testhost/**`, `e2e/web/support/native-https-proxy.mjs` (the testkit and the WASI core are core) | |
+| mobile | `packages/mobile/**` and what the bundled client is built from: `packages/{web,client-core,ui,media,core-wasm,design-tokens}/**`, `package*.json`, `.nvmrc`; what the emulator smoke test runs beside the app: `cmd/dilla-testhost/**`, `e2e/web/support/native-https-proxy.mjs` (the testkit and the WASI core are core) | |
 | ci | `.github/**`, `scripts/**` | everything |
 
-The browser jobs in CI (`browser-spike`, `browser-media` and `core-integration`) run only Chromium projects; the desktop
-lane runs the Electron client. The Firefox and WebKit projects stay in the Playwright configs for local runs. A push to
+The browser jobs in CI (`browser-spike`, `browser-media` and `core-integration`) run only Chromium projects; the
+browser jobs are the only browser lanes. The Firefox and WebKit projects stay in the Playwright configs for local runs. A push to
 main runs everything, and so does a pull request whose diff cannot be computed or touches a path no rule names. A gate
 tests `!= 'false'`, so a missing output runs the job.
 Skipped jobs count as passed for required checks. Each `*-ok` job needs every other job of its workflow and is red
@@ -120,7 +120,7 @@ evidence exists.
 that concluded `failure`, when at least one job never got a runner and no job really failed. A run with a real failure
 is never re-run.
 
-A release needs a green push run of its own workflow on main for the tagged commit: `desktop` for the desktop release
-(`packages/desktop/RELEASING.md`), `server` for `release.yml` (`scripts/server-release-gate.mjs`, which waits up to
+A release needs a green push run of its own workflow on main for the tagged commit: `desktop` for a release of the
+native desktop client (none is released yet), `server` for `release.yml` (`scripts/server-release-gate.mjs`, which waits up to
 60 minutes for the commit's `server` run while it is still queued or in progress). A `v*` tag on a main
 commit from before this change runs that commit's own `release.yml`, which has no server gate.

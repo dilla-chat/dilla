@@ -10,7 +10,8 @@
 //!   every gap, so a device that was away gets exactly what it missed, once, in order.
 //! - **Sends** go through the core's outbox (`send_prepare` → `send_encrypt` → `POST message` → `send_confirm`), one
 //!   at a time per group, with send.ts's answers to a lost response (catch up, then wait for the echo before a resend),
-//!   429 (slow mode), 425 (a commit is due), 422 at a stale epoch (re-frame once), 403 (resync) and 401.
+//!   429 (slow mode), 425 (a commit is due), 422 at a stale epoch (re-frame once), 403 (resync) and 401. A leaf verdict
+//!   (`E_DEVICE_UNLISTED`, ...) at queueing or sealing reads the group's device lists again and tries once more.
 //! - **Membership**: Welcomes (ready, op 20, before every join), external joins of every expected group (join-all) and
 //!   of an opened channel, registration of a channel's first group, resync of a lost group.
 //! - **Commits** of pending proposals on `commit.needed` (op 17) or after the instance's backoff when this device
@@ -20,12 +21,18 @@
 //! ([`Engine::run_events`]) only decodes and hands work to lanes, so a slow decrypt never stalls the event stream (the
 //! gateway tears a connection down when an event is left untaken for its ack timeout).
 //!
-//! Not ported in this task (see the report): the moderation-removal feed recovery (removals.ts) that runs before a
-//! community group's timeline is published, attachments (`beforeSend`), DMs, calls and Bot groups.
+//! - **Moderation removals** ([`removals`]): a community group's signed removal feed is read before the group is
+//!   reported changed (every apply), on every `message.deleted`, when its channel is opened, and after every ready.
+//! - **Failure**: every job the engine spawns is watched; one that panics stops the engine and is reported
+//!   ([`SyncHooks::failed`]), never lost silently with its lane.
+//!
+//! Not ported here: attachments (`beforeSend`), DMs, calls and Bot groups (the screens plan's areas).
 
 pub mod api;
 pub mod lanes;
+pub mod removals;
 pub mod requests;
+pub mod route;
 pub mod timeline;
 pub mod trust;
 pub mod value;
@@ -68,13 +75,8 @@ pub const JOIN_ALL_RETRY: Duration = Duration::from_millis(60_000);
 /// engine.ts `HELD_MAX`: frames held per group while it registers or joins.
 pub const HELD_MAX: usize = 512;
 
-/// errors.ts `LEAF_VERDICTS`.
-const LEAF_VERDICTS: &[&str] = &[
-    "E_DEVICE_UNLISTED",
-    "E_DEVICE_REVOKED",
-    "E_CREDENTIAL",
-    "E_TIER_MISMATCH",
-];
+/// errors.ts `LEAF_VERDICTS`: one list, the trust refresh's.
+use trust::LEAF_VERDICTS;
 /// errors.ts `FAILED_LEAF`.
 const FAILED_LEAF: &[&str] = &[
     "E_DEVICE_UNLISTED",
@@ -232,6 +234,31 @@ pub trait SyncHooks: Send + Sync {
     fn connection(&self, event: ConnectionEvent);
     /// `community.changed` (op 54): the community's structure changed; the model reads it again.
     fn community_changed(&self, community: Gid);
+    /// A frame the engine does not consume, for the area [`route::route`] names (presence, typing, voice state, rings,
+    /// AFK, the app build, the Bot's frames). The client hands it to that area's feature.
+    fn area_frame(&self, _area: crate::features::Area, _frame: Frame) {}
+    /// A job of the engine panicked without poisoning the core (a bug in the engine, not the store): the engine has
+    /// stopped, and the client is to report itself failed rather than carry on with a lane that silently lost a job.
+    fn failed(&self) {}
+    /// A community group's removal feed was read to its end (the core holds every tombstone the instance has): its
+    /// timeline may be published again ([`Engine::recover_removals_all`] lists those whose read failed).
+    fn removals_read(&self, _group: Gid) {}
+    /// engine.ts `onUnexpectedWelcome`: a Welcome for a group this device does not expect was kept (a DM another person
+    /// just opened). Once per group until the expected set changes; the client reads its DM list again.
+    fn unexpected_welcome(&self, _group: Gid) {}
+    /// An own outbox row `msg` of `group` was stored at `seq` (engine.ts `onPosted`): its kind (3 and 4 are a reaction
+    /// added and removed), the message it folds onto and its body. The role panels area offers a reaction to the
+    /// instance as a panel action.
+    fn posted(
+        &self,
+        _group: Gid,
+        _msg: Gid,
+        _kind: u8,
+        _target: Option<Gid>,
+        _body: &str,
+        _seq: u64,
+    ) {
+    }
 }
 
 /// The gateway's lifecycle as the model sees it.
@@ -267,10 +294,15 @@ struct St {
     count425: HashMap<Gid, u32>,
     reframed_once: HashSet<(Gid, Gid)>,
     trust_retried: HashMap<(Gid, Gid), bool>,
+    /// Groups whose removal recovery already reset the trust memory for a moderator this ready (once per group per
+    /// ready, as `trust_retried` bounds a send's trust retry).
+    removal_trust_tried: HashSet<Gid>,
     resync_tried: HashSet<Gid>,
     recovery_generation: HashMap<Gid, u64>,
     quiet: HashSet<Gid>,
     lost_reported: HashSet<Gid>,
+    /// Unexpected groups already reported ([`SyncHooks::unexpected_welcome`]); cleared when the expected set changes.
+    unexpected_reported: HashSet<Gid>,
     volunteer: HashMap<Gid, AbortHandle>,
     cursor_timer: HashMap<Gid, AbortHandle>,
     timers: Vec<AbortHandle>,
@@ -287,7 +319,11 @@ pub struct Engine {
     st: Mutex<St>,
     stopped: AtomicBool,
     trust: tokio::sync::Mutex<trust::TrustMemory>,
+    /// The single-flight trust refresh and its revision (Task 13, `trust::TrustPass`).
+    trust_pass: trust::TrustPass,
     gateway: Mutex<Option<Arc<WsGateway>>>,
+    /// How many sends a leaf verdict refused and [`Engine::send_with_trust_retry`] queued again (tests read it).
+    trust_retries: std::sync::atomic::AtomicU64,
 }
 
 fn key(g: &Gid) -> String {
@@ -325,6 +361,8 @@ impl Engine {
             }),
             stopped: AtomicBool::new(false),
             trust: tokio::sync::Mutex::default(),
+            trust_pass: trust::TrustPass::default(),
+            trust_retries: std::sync::atomic::AtomicU64::new(0),
             gateway: Mutex::new(None),
         })
     }
@@ -381,18 +419,79 @@ impl Engine {
         self.instance
     }
 
+    /// `job`, watched: a panic in it stops the engine and is reported through [`SyncHooks::failed`] (a panic that
+    /// poisoned the core is the publisher's own `Failed` already). Every job the engine spawns runs through this.
+    pub(crate) fn watched<F>(self: &Arc<Self>, job: F) -> impl Future<Output = ()> + Send + 'static
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        use futures_util::FutureExt;
+        let this = Arc::clone(self);
+        async move {
+            if std::panic::AssertUnwindSafe(job)
+                .catch_unwind()
+                .await
+                .is_err()
+            {
+                this.panicked();
+            }
+        }
+    }
+
+    /// [`Engine::watched`] for a job with an answer: `None` when it panicked.
+    async fn watched_value<T>(self: &Arc<Self>, job: impl Future<Output = T>) -> Option<T> {
+        use futures_util::FutureExt;
+        match std::panic::AssertUnwindSafe(job).catch_unwind().await {
+            Ok(v) => Some(v),
+            Err(_) => {
+                self.panicked();
+                None
+            }
+        }
+    }
+
+    /// A job panicked: nothing more runs, and the client is told.
+    fn panicked(&self) {
+        self.stop();
+        self.hooks.failed();
+    }
+
+    /// [`Lanes::spawn`] of a watched job.
+    fn lane_spawn<F>(self: &Arc<Self>, key: &str, job: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.lanes.spawn(key, self.watched(job));
+    }
+
+    /// [`Lanes::coalesce`] of a watched job.
+    fn lane_coalesce<F>(self: &Arc<Self>, key: &str, tag: &'static str, job: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.lanes.coalesce(key, tag, self.watched(job))
+    }
+
+    /// `tokio::spawn` of a watched job.
+    fn spawn_watched<F>(self: &Arc<Self>, job: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        tokio::spawn(self.watched(job));
+    }
+
     fn arm<F, Fut>(self: &Arc<Self>, after: Duration, f: F) -> AbortHandle
     where
         F: FnOnce(Arc<Self>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let this = Arc::clone(self);
-        let handle = tokio::spawn(async move {
+        let handle = tokio::spawn(self.watched(async move {
             tokio::time::sleep(after).await;
             if !this.stopped() {
                 f(this).await;
             }
-        })
+        }))
         .abort_handle();
         let mut st = self.st();
         st.timers.retain(|t| !t.is_finished());
@@ -452,6 +551,11 @@ impl Engine {
             let mut st = self.st();
             let before: HashSet<Gid> = st.expected.iter().map(|g| g.group_id).collect();
             let gained = groups.iter().any(|g| !before.contains(&g.group_id));
+            let after: HashSet<Gid> = groups.iter().map(|g| g.group_id).collect();
+            // engine.ts `setExpected`: any change lets a kept unexpected Welcome be reported once more.
+            if before != after {
+                st.unexpected_reported.clear();
+            }
             st.expected = groups;
             gained && st.ready.is_some()
         };
@@ -531,7 +635,11 @@ impl Engine {
                     hex(&info.boot_id)
                 );
                 if let Some(h) = &hello {
-                    self.st().backoff = (h.backoff_ms, h.backoff_jitter_ms);
+                    use crate::gateway::bounded_server_wait;
+                    self.st().backoff = (
+                        bounded_server_wait(h.backoff_ms),
+                        bounded_server_wait(h.backoff_jitter_ms),
+                    );
                 }
                 self.api.socket().on_ready(incarnation);
                 self.hooks
@@ -555,6 +663,11 @@ impl Engine {
                         | crate::gateway::Refusal::SecondFactorRequired => {
                             ApiError::local(401, "E_UNAUTHENTICATED", "the session was revoked")
                         }
+                        crate::gateway::Refusal::InstanceSignerChanged => ApiError::local(
+                            0,
+                            "E_CORE_STATE",
+                            "the instance's signer key is not the pinned one",
+                        ),
                         _ => ApiError::local(
                             426,
                             "E_UPGRADE_REQUIRED",
@@ -581,6 +694,13 @@ impl Engine {
         if self.stopped() {
             return;
         }
+        // What the engine does not consume goes to its area (route.rs), or nowhere.
+        if !route::SYNC_CONSUMED.contains(&f.op) {
+            if let Some(area) = route::route(f.op) {
+                self.hooks.area_frame(area, f);
+            }
+            return;
+        }
         if f.op == Op::COMMUNITY_CHANGED {
             if let Ok(c) = frames::community_changed_of(&f) {
                 self.hooks.community_changed(c);
@@ -595,7 +715,7 @@ impl Engine {
                 };
                 let this = Arc::clone(self);
                 let gateway = gateway.clone();
-                tokio::spawn(async move {
+                self.spawn_watched(async move {
                     if this.state_of(g).await != Some(2) {
                         return;
                     }
@@ -615,18 +735,15 @@ impl Engine {
             }
             Op::HANDSHAKE | Op::MESSAGE_CT => {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn(&key(&g), async move { this.frame_job(f).await });
+                self.lane_spawn(&key(&g), async move { this.frame_job(f).await });
             }
             Op::MESSAGE_DELETED => {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn(&key(&g), async move { this.deleted_job(f).await });
+                self.lane_spawn(&key(&g), async move { this.deleted_job(f).await });
             }
             Op::WELCOME => {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn("w", async move { this.welcome_frame(f).await });
+                self.lane_spawn("w", async move { this.welcome_frame(f).await });
             }
             _ => {}
         }
@@ -644,9 +761,14 @@ impl Engine {
             st.quiet.clear();
             st.resync_tried.clear();
             st.heal_blocked.clear();
+            st.removal_trust_tried.clear();
         }
         let this = Arc::clone(self);
-        self.lanes.spawn("w", async move {
+        self.lane_spawn("w", async move {
+            // controller.ts `onReady`: the leaves already read are read again on a new connection; what the passes
+            // concluded about users (unlisted, history pending, an own leaf under another key) stays until a pass
+            // concludes otherwise. Cleared here, in the job whose last step is the refresh.
+            this.trust.lock().await.forget_read_leaves();
             let groups = this.groups().await;
             {
                 let mut st = this.st();
@@ -686,7 +808,7 @@ impl Engine {
                     }
                 } else if g.state == 3 && !this.st().resync_tried.contains(&id) {
                     let t = Arc::clone(&this);
-                    this.lanes.coalesce(&key(&id), "resync", async move {
+                    this.lane_coalesce(&key(&id), "resync", async move {
                         t.resync(id).await;
                     });
                 }
@@ -787,9 +909,16 @@ impl Engine {
             {
                 Ok(result) => {
                     let active = result.state == 2;
-                    self.clone().apply_hook(g, result, Source::Frame).await;
-                    if active {
-                        self.arm_cursor(g);
+                    match self.clone().apply_hook(g, result, Source::Frame).await {
+                        Ok(()) if active => self.arm_cursor(g),
+                        Ok(()) => {}
+                        // engine.ts frameJob: a core refusal reports what the core holds and catches up; any other
+                        // failure (the removal feed) leaves the group unpublished until the next apply or ready.
+                        Err(SyncError::Core(_)) => {
+                            self.report_current(g);
+                            self.request_catch_up(g);
+                        }
+                        Err(_) => {}
                     }
                 }
                 Err(_) => {
@@ -816,13 +945,19 @@ impl Engine {
         if self.row(g).await.is_none_or(|r| r.state == 4) {
             return;
         }
-        match with_core(&self.core, move |c| c.message_deleted(&g, seq)).await {
-            Ok(raw) => {
-                if ApplyResult::decode(&raw).is_ok_and(|r| !r.new_seqs.is_empty()) {
-                    self.hooks.group_changed(g);
-                }
-            }
-            Err(_) => self.report_current(g),
+        let mut changed = match with_core(&self.core, move |c| c.message_deleted(&g, seq)).await {
+            Ok(raw) => ApplyResult::decode(&raw).is_ok_and(|r| !r.new_seqs.is_empty()),
+            Err(_) => true,
+        };
+        // A removal frame (screens plan, Task 2): the signed feed entry behind a moderator's removal is ingested now,
+        // on this lane, so the tombstone is the core's durable record and not only this frame's.
+        if self.is_community_group(g).await
+            && let Ok(n) = self.recover_removals(g).await
+        {
+            changed |= n > 0;
+        }
+        if changed {
+            self.report_current(g);
         }
     }
 
@@ -837,8 +972,7 @@ impl Engine {
         let handle = self.arm(CURSOR_DEBOUNCE, move |this| async move {
             this.st().cursor_timer.remove(&g);
             let t = Arc::clone(&this);
-            this.lanes
-                .spawn(&key(&g), async move { t.cursor_step(g).await });
+            this.lane_spawn(&key(&g), async move { t.cursor_step(g).await });
         });
         self.st().cursor_timer.insert(g, handle);
     }
@@ -908,7 +1042,7 @@ impl Engine {
                             with_core(&self.core, move |c| c.group_apply(&g, &h, &m, through))
                                 .await?;
                         let result = ApplyResult::decode(&raw)?;
-                        self.clone().apply_hook(g, result, source).await;
+                        self.clone().apply_hook(g, result, source).await?;
                     }
                     carry = hs.last;
                     if self.state_of(g).await != Some(2) {
@@ -960,9 +1094,26 @@ impl Engine {
         }
     }
 
-    /// engine.ts `applyHook` (without the moderation-removal recovery; see the module doc).
-    fn apply_hook(self: Arc<Self>, g: Gid, r: ApplyResult, source: Source) -> BoxFut<()> {
+    /// engine.ts `applyHook`. A community group's removal feed is reconciled first (removals.rs): until it is, the
+    /// group is not reported changed, so a removed message's plaintext is never published. A failed reconciliation ends
+    /// the hook with its error, as the TS hook throws.
+    fn apply_hook(
+        self: Arc<Self>,
+        g: Gid,
+        r: ApplyResult,
+        source: Source,
+    ) -> BoxFut<Result<(), SyncError>> {
         Box::pin(async move {
+            // controller.ts `onGroupChanged`: a new epoch may have put another device at a leaf already read (a blank
+            // leaf a Remove left, taken by the user's next device while this device still caches the list it read for
+            // the old one). The pass keys a leaf by (group, index, user, cached version, reason), which that device's
+            // leaf repeats exactly, so the group's leaves are forgotten here and the refresh below reads them again.
+            if r.epoch_changed {
+                self.trust.lock().await.forget_group(&g);
+            }
+            if self.is_community_group(g).await {
+                self.recover_removals(g).await?;
+            }
             self.hooks.group_changed(g);
             if r.own_adopted {
                 let rows = self.outbox(g).await;
@@ -1013,9 +1164,146 @@ impl Engine {
             // A leaf the core cannot judge yet holds its rows: read its signed list now.
             if r.epoch_changed || !r.new_seqs.is_empty() {
                 let this = Arc::clone(&self);
-                tokio::spawn(async move { this.refresh_trust().await });
+                self.spawn_watched(async move { this.refresh_trust().await });
             }
+            Ok(())
         })
+    }
+
+    /// The trust memory's step before a removal feed is read again for an unjudged moderator: every leaf is read again
+    /// (controller.ts `onReady`'s `fetchedLeaves.clear()`, which is what the web relies on here), and the annotations
+    /// (unlisted, history pending, refused own leaves) are kept until a pass reads those users again.
+    pub(crate) async fn forget_before_removal_retry(&self) {
+        self.trust.lock().await.forget_read_leaves();
+    }
+
+    /// [`removals::recover_group`] for `g`. The core verifies a removal only against a moderator whose user key this
+    /// device pinned (a trust refresh of the moderator's leaf). A moderator this device has not judged yet (no message
+    /// from them read, a refresh that has not run since the ready) is refused `E_CORE_INPUT`: the pending leaves are
+    /// read once (the leaf refresh controller.ts runs on every ready) and the feed is read again. That refresh reports
+    /// no group changed: a group whose feed has not been read yet must not have its timeline published by it (the
+    /// caller reports `g` once its feed is in).
+    ///
+    /// The read leaves are forgotten at most once per group per ready (the annotations kept). A success is reported
+    /// ([`SyncHooks::removals_read`]).
+    async fn recover_removals(&self, g: Gid) -> Result<u64, SyncError> {
+        let read = match removals::recover_group(&self.core, &self.api, g).await {
+            Err(SyncError::Core(e))
+                if e.code == "E_CORE_INPUT"
+                    && !self.stopped()
+                    && self.st().removal_trust_tried.insert(g) =>
+            {
+                self.forget_before_removal_retry().await;
+                self.refresh_trust().await;
+                removals::recover_group(&self.core, &self.api, g).await
+            }
+            other => other,
+        };
+        if read.is_ok() {
+            self.hooks.removals_read(g);
+        }
+        read
+    }
+
+    /// An active, settled group bound to a community (kind 0 with a community id, no commit of its own pending): the
+    /// groups whose removal feed the core can ingest.
+    async fn is_community_group(&self, g: Gid) -> bool {
+        self.row(g).await.is_some_and(|r| {
+            r.kind == 0 && r.state == 2 && r.community_id.is_some() && !r.pending_commit
+        })
+    }
+
+    /// Reads every active community group's removal feed, each on its own lane, and answers once all of them have run:
+    /// a recovery that ingested anything reports its group changed. A failure is left for the next apply, ready or open.
+    pub async fn recover_removals_all(self: &Arc<Self>) -> HashMap<Gid, removals::FeedFailure> {
+        if self.stopped() {
+            return HashMap::new();
+        }
+        let groups = self
+            .groups()
+            .await
+            .into_iter()
+            .filter(|r| r.kind == 0 && r.community_id.is_some() && r.state != 4)
+            .map(|r| r.group_id)
+            .collect();
+        self.recover_removals_of(groups).await
+    }
+
+    /// Reads the removal feed of each of `groups` on its own lane; answers those whose feed is still unread, with why
+    /// ([`removals::FeedFailure`]). A group that is not active (registering, joining, waiting for a resync) is not read
+    /// now and stays held back (a transient failure, retried); its channel shows that state. A group with a commit of its own pending is a transient
+    /// failure (the core ingests only a settled group). A lost leaf (404 on an active group) is resynced and its feed
+    /// read once more (engine.ts `openChannel`). Each group read is reported changed.
+    pub async fn recover_removals_of(
+        self: &Arc<Self>,
+        groups: Vec<Gid>,
+    ) -> HashMap<Gid, removals::FeedFailure> {
+        let asked = groups.clone();
+        let jobs: Vec<_> = groups
+            .into_iter()
+            .map(|g| {
+                let this = Arc::clone(self);
+                async move {
+                    let lane = Arc::clone(&this.lanes);
+                    let read = lane.run(&key(&g), this.clone().feed_read(g)).await;
+                    read.err().map(|why| (g, why))
+                }
+            })
+            .collect();
+        // A read that panicked answers every group unread (never released without a read).
+        match self
+            .watched_value(futures_util::future::join_all(jobs))
+            .await
+        {
+            Some(answers) => answers.into_iter().flatten().collect(),
+            None => asked
+                .into_iter()
+                .map(|g| (g, removals::FeedFailure::Transient("E_PANICKED".into())))
+                .collect(),
+        }
+    }
+
+    /// One group's read for [`Engine::recover_removals_of`], on its lane.
+    async fn feed_read(self: Arc<Self>, g: Gid) -> Result<(), removals::FeedFailure> {
+        use removals::FeedFailure;
+        if self.stopped() {
+            return Err(FeedFailure::Transient("E_SYNC_STOPPED".into()));
+        }
+        let Some(row) = self.row(g).await else {
+            return Ok(());
+        };
+        if row.kind != 0 || row.community_id.is_none() || row.state == 4 {
+            return Ok(());
+        }
+        // Jonas (2026-11-13), stricter than the web: a community group that is registering, joining or waiting for a
+        // resync keeps its history hidden until its feed is read. Nothing is requested now (the core cannot ingest
+        // into it); the retry reads it once the group is active again. Its channel shows the group's state meanwhile.
+        if row.state != 2 {
+            return Err(FeedFailure::Transient("E_GROUP_NOT_ACTIVE".into()));
+        }
+        if row.pending_commit {
+            return Err(FeedFailure::Transient("E_COMMIT_PENDING".into()));
+        }
+        let read = match self.recover_removals(g).await {
+            Err(e) if self.membership_lost(g, &e).await => {
+                // engine.ts openChannel: a device that rejoined before its catch-up noticed its Remove is refused the
+                // member-only feed with the 404 of a lost leaf; one resync, then the feed is read again.
+                if !self.clone().resync_group(g, true).await {
+                    return Err(removals::classify(&e));
+                }
+                self.st().heal_blocked.remove(&g);
+                self.recover_removals(g).await
+            }
+            other => other,
+        };
+        match read {
+            Ok(_) => {
+                // Reported whatever was ingested: a trust refresh on the way may have released held rows.
+                self.hooks.group_changed(g);
+                Ok(())
+            }
+            Err(e) => Err(removals::classify(&e)),
+        }
     }
 
     pub fn request_catch_up(self: &Arc<Self>, g: Gid) {
@@ -1023,7 +1311,7 @@ impl Engine {
             return;
         }
         let this = Arc::clone(self);
-        self.lanes.coalesce(&key(&g), "catch-up", async move {
+        self.lane_coalesce(&key(&g), "catch-up", async move {
             this.catch_up_now(g, Source::CatchUp).await;
         });
     }
@@ -1033,8 +1321,7 @@ impl Engine {
             return;
         }
         let this = Arc::clone(self);
-        self.lanes
-            .coalesce(&key(&g), "drain", async move { this.drain_one(g).await });
+        self.lane_coalesce(&key(&g), "drain", async move { this.drain_one(g).await });
     }
 
     fn request_commit(self: &Arc<Self>, g: Gid, attempt: u32) {
@@ -1042,7 +1329,7 @@ impl Engine {
             return;
         }
         let this = Arc::clone(self);
-        self.lanes.coalesce(&key(&g), "commit", async move {
+        self.lane_coalesce(&key(&g), "commit", async move {
             this.commit_now(g, attempt).await;
         });
     }
@@ -1116,7 +1403,7 @@ impl Engine {
                 }
                 let raw = with_core(&self.core, move |c| c.commit_confirm(&g)).await?;
                 let result = ApplyResult::decode(&raw)?;
-                self.clone().apply_hook(g, result, Source::Commit).await;
+                self.clone().apply_hook(g, result, Source::Commit).await?;
                 Ok(())
             }
             .await;
@@ -1208,7 +1495,61 @@ impl Engine {
             }
             self.request_catch_up(g);
             self.request_drain(g);
+            // A community group gated while it was not active (registering, joining, waiting for a resync) is read now,
+            // not at the publisher's next backoff tick.
+            self.request_removal_read(g);
         })
+    }
+
+    /// Reads `g`'s removal feed on its lane now (coalesced). A read that succeeds releases its timeline
+    /// ([`SyncHooks::removals_read`]); one that fails leaves the group to the publisher's retry.
+    pub fn request_removal_read(self: &Arc<Self>, g: Gid) {
+        if self.stopped() {
+            return;
+        }
+        let this = Arc::clone(self);
+        self.lane_coalesce(&key(&g), "removal-read", async move {
+            let _ = this.feed_read(g).await;
+        });
+    }
+
+    /// engine.ts `rejoined`: the account is in `community` again (a kick, a lifted ban or a leave, then a join) with
+    /// no reconnect. A resync is tried once per ready, and one refused while the account was out would stand as
+    /// not-member until the next ready, so each of the community's text groups may resync again from here: one that
+    /// last reported not-member, or still in state 3, resyncs at once on its lane; a loss no read has met yet resyncs
+    /// when one does.
+    pub fn rejoined(self: &Arc<Self>, community: Gid) {
+        if self.stopped() {
+            return;
+        }
+        let this = Arc::clone(self);
+        self.spawn_watched(async move {
+            for row in this.groups().await {
+                if row.kind != 0 || row.community_id != Some(community) {
+                    continue;
+                }
+                let g = row.group_id;
+                this.st().resync_tried.remove(&g);
+                if !this.lost(g).await {
+                    continue;
+                }
+                let t = Arc::clone(&this);
+                this.lane_coalesce(&key(&g), "resync", async move {
+                    if t.lost(g).await && t.clone().resync_group(g, true).await {
+                        t.st().heal_blocked.remove(&g);
+                    }
+                });
+            }
+        });
+    }
+
+    /// [`Self::rejoined`]'s lost group: waiting for a resync, or active but last reported not-member.
+    async fn lost(&self, g: Gid) -> bool {
+        match self.state_of(g).await {
+            Some(3) => true,
+            Some(2) => self.st().lost_reported.contains(&g),
+            _ => false,
+        }
     }
 
     /// engine.ts `resync`.
@@ -1245,8 +1586,15 @@ impl Engine {
             policy_version: self.instance.policy_version,
         };
         match self.clone().external_join(eg, &mut 0).await {
-            Ok(()) => true,
+            Ok(()) => {
+                // The rejoin ends the resync (controller.ts `onGroupChanged`: a state-2 apply ends `resyncing`; here the
+                // publisher hears it as a member report, as the hooks carry no apply result).
+                self.report_membership(g, Membership::Member);
+                true
+            }
             Err(e) => {
+                #[cfg(feature = "testing")]
+                probes::resync_refused(g);
                 // A refusal before the join leaves an active row in state 2; it is never discarded.
                 if self.state_of(g).await == Some(1) {
                     let _ = with_core(&self.core, move |c| c.group_discard(&g)).await;
@@ -1393,7 +1741,11 @@ impl Engine {
                 continue;
             };
             if outcome == 3 {
-                // Kept for a group this device does not expect (a DM it has not listed yet).
+                // Kept for a group this device does not expect (a DM it has not listed yet): reported once (channel.ts
+                // `reportUnexpected`), so the DM list is read and the group expected.
+                if self.st().unexpected_reported.insert(g) {
+                    self.hooks.unexpected_welcome(g);
+                }
                 continue;
             }
             if outcome == 1 && self.state_of(g).await != Some(2) {
@@ -1402,8 +1754,7 @@ impl Engine {
             let _ = self.api.delete_welcome(id).await;
             if outcome == 0 {
                 let this = Arc::clone(self);
-                self.lanes
-                    .spawn(&key(&g), async move { this.activate(g).await });
+                self.lane_spawn(&key(&g), async move { this.activate(g).await });
             }
         }
     }
@@ -1434,7 +1785,7 @@ impl Engine {
             st.join_all.running = true;
         }
         let this = Arc::clone(self);
-        tokio::spawn(async move { this.join_all_pass().await });
+        self.spawn_watched(async move { this.join_all_pass().await });
     }
 
     async fn join_all_pass(self: Arc<Self>) {
@@ -1536,7 +1887,70 @@ impl Engine {
         let this = Arc::clone(self);
         self.lanes
             .run(&format!("c:{}", hex(&channel)), async move {
-                this.open_channel_flow(community, channel, text_group).await
+                let g = this
+                    .open_channel_flow(community, channel, text_group)
+                    .await?;
+                if community.is_some() {
+                    this.open_removals(g).await?;
+                }
+                Ok(g)
+            })
+            .await
+    }
+
+    /// engine.ts `openChannel`: an opened community group's removal feed is read on its lane before the caller
+    /// publishes its timeline. A device that rejoined before its catch-up noticed its Remove is refused the feed with
+    /// the 404 of a lost leaf: the group is resynced once on its lane and the feed read again.
+    async fn open_removals(self: &Arc<Self>, g: Gid) -> Result<(), SyncError> {
+        let observed = self.st().recovery_generation.get(&g).copied().unwrap_or(0);
+        let this = Arc::clone(self);
+        let first = self
+            .lanes
+            .run(&key(&g), async move {
+                if this.stopped() {
+                    return Err(SyncError::Stopped);
+                }
+                if !this.is_community_group(g).await {
+                    return Ok(());
+                }
+                this.recover_removals(g).await.map(|_| ())
+            })
+            .await;
+        let Err(e) = first else { return Ok(()) };
+        if !self.membership_lost(g, &e).await {
+            return Err(e);
+        }
+        let this = Arc::clone(self);
+        let resynced = self
+            .lanes
+            .run(&key(&g), async move {
+                if this.stopped() {
+                    return Err(SyncError::Stopped);
+                }
+                // A proposal or catch-up on this lane may have replaced the leaf after the failed read: read again.
+                if this.st().recovery_generation.get(&g).copied().unwrap_or(0) != observed {
+                    return Ok(true);
+                }
+                let joined = this.clone().resync_group(g, true).await;
+                if joined {
+                    this.st().heal_blocked.remove(&g);
+                }
+                Ok(joined)
+            })
+            .await?;
+        if !resynced {
+            return Err(e);
+        }
+        let this = Arc::clone(self);
+        self.lanes
+            .run(&key(&g), async move {
+                if this.stopped() {
+                    return Err(SyncError::Stopped);
+                }
+                if !this.is_community_group(g).await {
+                    return Ok(());
+                }
+                this.recover_removals(g).await.map(|_| ())
             })
             .await
     }
@@ -1718,20 +2132,77 @@ impl Engine {
 
     // ---- sending (send.ts) ----
 
-    /// send.ts `sendMessage`: queues a text post (type 0) in the group's outbox and asks for a drain. The core's refusal
-    /// is answered at once and nothing else runs.
+    /// send.ts `sendMessage` behind controller.ts `sendWithTrustRetry`: queues a text post (type 0) in the group's
+    /// outbox and asks for a drain.
+    ///
+    /// The core refuses to queue into a group holding a failed leaf. A device that joined before the list naming it was
+    /// ingested fails against the cached list (`E_DEVICE_UNLISTED` and the other leaf verdicts) until a refresh ingests
+    /// the newer one, so the group's leaves are read again and the post is queued once more; the core alone decides the
+    /// second answer, which is the caller's. A changed key (`E_UMK_CHANGED`) is not retried.
     pub async fn send_text(self: &Arc<Self>, g: Gid, text: String) -> Result<Gid, SyncError> {
-        if self.stopped() {
-            return Err(SyncError::Stopped);
-        }
+        self.send_request(g, 0, None, text).await
+    }
+
+    /// send.ts `sendRequest` behind controller.ts `sendWithTrustRetry` (Task 9: edits, deletes and pins go through it too,
+    /// as the web's `fold`): queues an envelope of `kind` (0 post, 1 edit, 2 delete, 3 and 4 reaction, 5 pin, 6 unpin)
+    /// aimed at `target` (a fold's message) in the group's outbox and asks for a drain. A leaf verdict reads the group's
+    /// leaves again and queues once more (see [`Engine::send_text`]); any other refusal is answered at once.
+    pub async fn send_request(
+        self: &Arc<Self>,
+        g: Gid,
+        kind: u8,
+        target: Option<Gid>,
+        body: String,
+    ) -> Result<Gid, SyncError> {
         let request = Value::Array(vec![
-            Value::Uint(0),
-            Value::Null,
-            Value::Text(text),
+            Value::Uint(u64::from(kind)),
+            target.map_or(Value::Null, |t| Value::Bytes(t.to_vec())),
+            Value::Text(body),
             Value::Array(Vec::new()),
             Value::Null,
         ])
         .encode();
+        self.send_with_trust_retry(g, zeroize::Zeroizing::new(request))
+            .await
+    }
+
+    /// controller.ts `sendWithTrustRetry` for an encoded send request (`[type, reply_to, body, [attachments],
+    /// thread_id]`, the core's `send_prepare`): every send goes through it (posts, replies, thread replies, posts with
+    /// files, folds). A leaf verdict reads the group's leaves again and queues once more, once; the core alone decides
+    /// the second answer. A changed key (`E_UMK_CHANGED`) and every other refusal are answered at once. The request is
+    /// held zeroized (a post with files carries their keys), its copy for the retry too.
+    pub async fn send_with_trust_retry(
+        self: &Arc<Self>,
+        g: Gid,
+        request: zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Gid, SyncError> {
+        match self.send_prepared(g, request.clone()).await {
+            Err(SyncError::Core(e)) if LEAF_VERDICTS.contains(&e.code) => {
+                self.trust_retries
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.refresh_group_trust(g).await;
+                self.send_prepared(g, request).await
+            }
+            other => other,
+        }
+    }
+
+    /// How many sends were queued again after a leaf verdict (feature `testing`: the tests prove the retry ran).
+    #[cfg(feature = "testing")]
+    pub fn trust_retries(&self) -> u64 {
+        self.trust_retries
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// send.ts `sendRequest`'s queueing: the core's refusal is answered at once and nothing else runs.
+    async fn send_prepared(
+        self: &Arc<Self>,
+        g: Gid,
+        request: zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Gid, SyncError> {
+        if self.stopped() {
+            return Err(SyncError::Stopped);
+        }
         let now = now_s();
         let raw = with_core(&self.core, move |c| c.send_prepare(&g, &request, now)).await?;
         let v = value::decode(&raw)?;
@@ -1740,6 +2211,16 @@ impl Engine {
         self.hooks.group_changed(g);
         self.request_drain(g);
         Ok(msg)
+    }
+
+    /// Sends a frame on the current gateway (typing, Task 9; voice, Task 17). `false`: no connection is ready, nothing was sent.
+    pub fn send_gateway_frame(&self, frame: Vec<u8>) -> bool {
+        let gateway = self
+            .gateway
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        gateway.is_some_and(|g| g.send_now(frame).is_ok())
     }
 
     /// send.ts `afterLostResponse`.
@@ -1762,7 +2243,7 @@ impl Engine {
     fn arm_echo_wait(self: &Arc<Self>, g: Gid, msg: Gid) {
         let handle = self.arm(ECHO_WAIT, move |this| async move {
             let t = Arc::clone(&this);
-            this.lanes.spawn(&key(&g), async move {
+            this.lane_spawn(&key(&g), async move {
                 let reached = t.clone().catch_up_now(g, Source::CatchUp).await;
                 let fresh = t.outbox(g).await.into_iter().find(|x| x.msg_id == msg);
                 if fresh.as_ref().is_some_and(|r| r.state == 1) && !reached {
@@ -1873,8 +2354,8 @@ impl Engine {
                 // The leaf may be listed in a newer list than the cached one: refresh the group's trust once.
                 self.st().trust_retried.insert(reframe, true);
                 let this = Arc::clone(&self);
-                tokio::spawn(async move {
-                    this.refresh_trust().await;
+                self.spawn_watched(async move {
+                    this.refresh_group_trust(g).await;
                     if let Some(p) = this.st().trust_retried.get_mut(&reframe) {
                         *p = false;
                     }
@@ -1903,6 +2384,10 @@ impl Engine {
                 if self.stopped() {
                     return;
                 }
+                // The seq the instance gave the row (engine.ts `onPosted`'s `confirmedSeq`).
+                let confirmed_seq = value::decode(&answer)
+                    .ok()
+                    .and_then(|v| v.as_array().and_then(|a| a.first()?.as_uint()));
                 if with_core(&self.core, move |c| c.send_confirm(&msg, &answer))
                     .await
                     .is_err()
@@ -1928,6 +2413,10 @@ impl Engine {
                     st.count425.remove(&msg);
                     st.queued.retain(|q| *q != msg);
                     st.slowed.remove(&msg);
+                }
+                if let Some(seq) = confirmed_seq {
+                    self.hooks
+                        .posted(g, msg, row.kind, row.reply_to, &row.body, seq);
                 }
                 self.hooks.group_changed(g);
                 self.request_drain(g);
@@ -2063,20 +2552,15 @@ impl Engine {
     /// The controller's `refreshTrust`: reads the signed device lists of the leaves the core cannot judge yet, and
     /// releases the rows they held.
     pub async fn refresh_trust(&self) {
-        if self.stopped() {
-            return;
-        }
-        if trust::refresh_once(&self.api, &self.core, &self.trust, now_s()).await {
-            self.hooks.trust_changed();
-            for g in self.groups().await.iter().filter(|g| g.state == 2) {
-                self.hooks.group_changed(g.group_id);
-            }
-        }
+        trust::refresh(self, now_s()).await;
     }
 
-    /// Forgets which leaves were fetched, so the next refresh reads them all again (a new ready).
-    pub async fn reset_trust_memory(&self) {
-        *self.trust.lock().await = trust::TrustMemory::default();
+    /// controller.ts `refreshGroupTrust`: forgets which leaves of `g` were already fetched and waits for a trust pass
+    /// that reads them again. A pass already running (it may have taken those leaves and not ingested them yet) is
+    /// waited out first, so this never returns before the group's leaves were read after the call.
+    pub async fn refresh_group_trust(&self, g: Gid) {
+        self.trust.lock().await.forget_group(&g);
+        self.refresh_trust().await;
     }
 }
 
@@ -2086,6 +2570,36 @@ pub enum Source {
     Frame,
     CatchUp,
     Commit,
+}
+
+/// Test-only probes (feature `testing`): what the engine did that no published state shows.
+#[cfg(feature = "testing")]
+pub mod probes {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static REFUSED: Mutex<Option<HashMap<[u8; 16], u32>>> = Mutex::new(None);
+
+    fn refused() -> std::sync::MutexGuard<'static, Option<HashMap<[u8; 16], u32>>> {
+        REFUSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn resync_refused(group: [u8; 16]) {
+        *refused()
+            .get_or_insert_with(HashMap::new)
+            .entry(group)
+            .or_default() += 1;
+    }
+
+    /// How many resyncs of `group` were refused so far, in this process.
+    pub fn resyncs_refused(group: [u8; 16]) -> u32 {
+        refused()
+            .as_ref()
+            .and_then(|m| m.get(&group).copied())
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]

@@ -1,12 +1,13 @@
 //! `Button` (packages/ui/src/Button): 32px (22px small) tall, 1px control edge, radius `md`, four variants, a toggle mark.
 
 use gpui::{
-    App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    App, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement,
+    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::icon::Icon;
 use crate::icon_names::IconName;
+use crate::metrics::{OPACITY_DISABLED, focus_ring};
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
 
@@ -27,6 +28,15 @@ pub enum ButtonSize {
     /// In a bar (ChannelHeader.css `.d-channel-header__actions .d-btn`): 28px, 8px across, a 6px gap, `--text-xs`, no
     /// border.
     Bar,
+    /// A dialog's footer button (`Dialog.css`): 34px, 14px across (16px for the accent and danger action), `--text-ui`,
+    /// no edge, radius `--r-seg`; the action is filled and bold, Cancel is `--fg-chip` on nothing.
+    Dialog,
+    /// A panel's accent action (`InvitePanel.css` `.d-invite-panel__primary`, Make invite link and Copy): 36px, 14px
+    /// across, a 6px gap, `--text-ui` at the display weight, no edge, radius `--r-seg`, a 13px icon.
+    Panel,
+    /// A list row's small action (`.d-invite-panel__revoke`): 28px of content in its 1px edge, 10px across, `--text-xs` at
+    /// the body weight, radius `md`; a danger one is edged in `--danger-edge`.
+    Row,
 }
 
 /// The colours of one state, resolved from the variant.
@@ -92,6 +102,36 @@ pub(crate) fn palette(variant: ButtonVariant, pressed: bool, disabled: bool) -> 
     }
 }
 
+/// `Dialog.css`'s footer buttons: Cancel (ghost) is `--fg-chip` over the hover fill; the action is the accent fill, or for
+/// danger `--danger` with `--danger-ink` text (hover `--danger-hover`); a disabled danger action is `--fg-3` on nothing.
+pub(crate) fn dialog_palette(variant: ButtonVariant, disabled: bool) -> Palette {
+    let clear = gpui::transparent_black();
+    match variant {
+        ButtonVariant::Ghost | ButtonVariant::Default => Palette {
+            fg: color::FG_CHIP,
+            bg: clear,
+            border: clear,
+            hover_fg: color::FG_CHIP,
+            hover_bg: color::HOVER,
+        },
+        ButtonVariant::Danger if disabled => Palette {
+            fg: color::FG_3,
+            bg: clear,
+            border: color::HAIRLINE,
+            hover_fg: color::FG_3,
+            hover_bg: clear,
+        },
+        ButtonVariant::Danger => Palette {
+            fg: color::DANGER_INK,
+            bg: color::DANGER,
+            border: color::DANGER,
+            hover_fg: color::DANGER_INK,
+            hover_bg: color::DANGER_HOVER,
+        },
+        ButtonVariant::Accent => palette(ButtonVariant::Accent, false, disabled),
+    }
+}
+
 pub(crate) type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
@@ -104,7 +144,9 @@ pub struct Button {
     key_hint: Option<SharedString>,
     pressed: Option<bool>,
     disabled: bool,
+    blocked: bool,
     on_click: Option<ClickHandler>,
+    focus: Option<FocusHandle>,
 }
 
 impl Button {
@@ -118,8 +160,23 @@ impl Button {
             key_hint: None,
             pressed: None,
             disabled: false,
+            blocked: false,
             on_click: None,
+            focus: None,
         }
+    }
+
+    /// `aria-disabled="true"`: the button draws at 0.4 opacity in its own colours (not the `:disabled` palette) and stays a
+    /// focusable, clickable control, so a press can say why it is blocked (a key dialog's confirm before the key is whole).
+    pub fn blocked(mut self, blocked: bool) -> Self {
+        self.blocked = blocked;
+        self
+    }
+
+    /// Tracks `handle` as this button's focus, for a host that moves focus to it (a dialog's Cancel).
+    pub fn focus_handle(mut self, handle: &FocusHandle) -> Self {
+        self.focus = Some(handle.clone());
+        self
     }
 
     pub fn variant(mut self, variant: ButtonVariant) -> Self {
@@ -166,12 +223,32 @@ impl Button {
 
 impl RenderOnce for Button {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let p = palette(self.variant, self.pressed == Some(true), self.disabled);
+        let mut p = palette(self.variant, self.pressed == Some(true), self.disabled);
+        let dialog = self.size == ButtonSize::Dialog;
+        if dialog {
+            p = dialog_palette(self.variant, self.disabled);
+        }
         let (height, pad, gap, size) = match self.size {
             ButtonSize::Sm => (22.0, 7.0, 8.0, text::XS),
             ButtonSize::Md => (32.0, 12.0, 8.0, text::BTN),
             ButtonSize::Bar => (28.0, 8.0, 6.0, text::XS),
+            ButtonSize::Dialog => (
+                34.0,
+                if matches!(self.variant, ButtonVariant::Accent | ButtonVariant::Danger) {
+                    16.0
+                } else {
+                    14.0
+                },
+                6.0,
+                text::UI,
+            ),
+            ButtonSize::Panel => (36.0, 14.0, 6.0, text::UI),
+            ButtonSize::Row => (30.0, 10.0, 8.0, text::XS),
         };
+        if self.size == ButtonSize::Row && self.variant == ButtonVariant::Danger {
+            p.border = color::DANGER_EDGE;
+            p.hover_bg = color::DANGER_FAINT;
+        }
         let mut base = div()
             .id(self.id)
             .flex()
@@ -185,12 +262,24 @@ impl RenderOnce for Button {
             .font_weight(font::WEIGHT_BTN)
             .text_color(p.fg)
             .bg(p.bg)
-            .rounded(radius::MD);
-        if self.size != ButtonSize::Bar {
+            .rounded(if dialog || self.size == ButtonSize::Panel {
+                radius::SEG
+            } else {
+                radius::MD
+            });
+        if !matches!(
+            self.size,
+            ButtonSize::Bar | ButtonSize::Dialog | ButtonSize::Panel
+        ) {
             base = base.border_1().border_color(p.border);
         }
         if let Some(icon) = self.icon {
-            base = base.child(Icon::new(icon).size(px(14.0)).color(p.fg));
+            let glyph = if self.size == ButtonSize::Panel {
+                13.0
+            } else {
+                14.0
+            };
+            base = base.child(Icon::new(icon).size(px(glyph)).color(p.fg));
         }
         if self.pressed.is_some() {
             base = base.child(div().child(if self.pressed == Some(true) {
@@ -199,8 +288,17 @@ impl RenderOnce for Button {
                 "[ ]"
             }));
         }
-        base = base
-            .child(line(self.label, size, line_height(size, 1.5), p.fg).weight(font::WEIGHT_BTN));
+        let weight = if (dialog
+            && matches!(self.variant, ButtonVariant::Accent | ButtonVariant::Danger))
+            || self.size == ButtonSize::Panel
+        {
+            font::WEIGHT_DISPLAY
+        } else if self.size == ButtonSize::Row {
+            font::WEIGHT_BODY
+        } else {
+            font::WEIGHT_BTN
+        };
+        base = base.child(line(self.label, size, line_height(size, 1.5), p.fg).weight(weight));
         if let Some(hint) = self.key_hint {
             base = base.child(
                 div()
@@ -214,11 +312,21 @@ impl RenderOnce for Button {
             );
         }
         if self.disabled {
-            return base.opacity(0.4).cursor_not_allowed();
+            return base.opacity(OPACITY_DISABLED).cursor_not_allowed();
         }
+        if self.blocked {
+            base = base.opacity(OPACITY_DISABLED);
+        }
+        // Focusable, with the accent focus ring (`.d-root :focus-visible`); Enter and Space click it, as GPUI does for any
+        // focused element with a click handler.
+        base = match &self.focus {
+            Some(handle) => base.track_focus(handle).tab_stop(true),
+            None => base.tab_index(0),
+        };
         base = base
             .cursor_pointer()
-            .hover(move |s| s.bg(p.hover_bg).text_color(p.hover_fg));
+            .hover(move |s| s.bg(p.hover_bg).text_color(p.hover_fg))
+            .focus_visible(|s| s.shadow(focus_ring()));
         match self.on_click {
             Some(handler) => base.on_click(handler),
             None => base,

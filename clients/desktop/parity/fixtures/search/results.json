@@ -1,0 +1,104 @@
+{
+  "name": "search/results",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general",
+            "position": 0
+          },
+          {
+            "id": "harbour",
+            "kind": "voice",
+            "name": "harbour",
+            "position": 0
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "morning, the release branch is green again"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "see you at the bridge"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "the bridge is quiet tonight"
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "in. last time the bridge troll took everything we had"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "key",
+      "chord": "ctrl-k"
+    },
+    {
+      "do": "type",
+      "web": "role=combobox[name=\"Search channels, people and messages\"]",
+      "gpui": "search-input",
+      "text": "bridge"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

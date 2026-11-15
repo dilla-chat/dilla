@@ -1,0 +1,14 @@
+{
+  "digest": "933de550bb02e4d1190125e376dee032c23dc836f57f1dd33262e94ba91e7d8f",
+  "shift": 37195,
+  "hand_migrated": false,
+  "ids": {
+    "channel:midgard/general": "7f1953319b5043cb469f5a608e88ff09",
+    "channel:northern/general": "93f44954e9c8d3eea5e354feaea2ab82",
+    "person:ada": "f7ba5fbeb78902532e037643a1294359",
+    "person:bjorn": "13f103bb43e92d0bba25e19148e53a90",
+    "person:mira": "556ac0d5e09afeb6a00026ee36dc811a",
+    "server:midgard": "92a32319a2f2617cc8c7642ef5670ed3",
+    "server:northern": "86b7e138a33c673454ebd54e545c828d"
+  }
+}

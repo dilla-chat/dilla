@@ -111,6 +111,9 @@ type musicJoinCallsFake struct {
 	channel, group      id.ID
 	reads, infos, trees int
 	epoch               uint64
+	// frozen resyncs answer 425 E_COMMIT_REQUIRED (an instance Remove awaiting its commit) before one is accepted.
+	frozen, resyncs int
+	retryAfterMS    *uint64
 }
 
 func (f *musicJoinCallsFake) ChannelCall(context.Context, id.ID) (client.ChannelCallState, error) {
@@ -127,6 +130,10 @@ func (f *musicJoinCallsFake) GroupTree(context.Context, id.ID) (client.GroupTree
 	return client.GroupTree{Epoch: f.epoch, TreeHash: []byte{1}, Tree: []byte{3}}, nil
 }
 func (f *musicJoinCallsFake) Resync(context.Context, id.ID, []byte, []byte) (client.SequenceResult, error) {
+	f.resyncs++
+	if f.resyncs <= f.frozen {
+		return client.SequenceResult{}, &client.APIError{Status: 425, Code: "E_COMMIT_REQUIRED", Outcome: client.OutcomeDefinitive, RetryAfterMS: f.retryAfterMS}
+	}
 	return client.SequenceResult{Sequence: 1}, nil
 }
 
@@ -198,6 +205,34 @@ func TestMusicCallJoinConflictRefetchesAndSucceeds(t *testing.T) {
 		t.Fatal("retry did not use refreshed epoch")
 	}
 }
+
+// A resync refused while the group is frozen (425 E_COMMIT_REQUIRED: an instance Remove of a device that just left the
+// call waits for its commit) discards the staged join and joins again, waiting at least the instance's retry hint.
+func TestMusicCallJoinFrozenResyncRetriesAndSucceeds(t *testing.T) {
+	hint := uint64(600)
+	calls := &musicJoinCallsFake{channel: id.New(), group: id.New(), frozen: 1, retryAfterMS: &hint}
+	core := &musicJoinCoreFake{}
+	var delays []time.Duration
+	wait := func(_ context.Context, d time.Duration) error { delays = append(delays, d); return nil }
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1, wait)
+	if err != nil || core.discards != 1 || core.joins != 2 || core.resolved != 1 || calls.resyncs != 2 || len(delays) != 1 || delays[0] != 600*time.Millisecond {
+		t.Fatalf("err=%v core=%+v resyncs=%d delays=%v", err, core, calls.resyncs, delays)
+	}
+}
+
+// A group that stays frozen gives up after the conflict schedule, with the 425 still visible to the caller.
+func TestMusicCallJoinPersistentFreezeGivesUpOnSchedule(t *testing.T) {
+	calls := &musicJoinCallsFake{channel: id.New(), group: id.New(), frozen: 10}
+	core := &musicJoinCoreFake{}
+	var delays []time.Duration
+	wait := func(_ context.Context, d time.Duration) error { delays = append(delays, d); return nil }
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1, wait)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 425 || calls.resyncs != 4 || core.discards != 4 || len(delays) != 3 {
+		t.Fatalf("err=%v resyncs=%d discards=%d delays=%v", err, calls.resyncs, core.discards, delays)
+	}
+}
+
 func TestMusicCallJoinPersistentConflictRemainsRetryable(t *testing.T) {
 	calls := &musicJoinCallsFake{channel: id.New(), group: id.New()}
 	core := &musicJoinCoreFake{conflicts: 4}

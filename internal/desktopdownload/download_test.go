@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -252,44 +250,23 @@ func TestPlainHTTPFeedIsRefused(t *testing.T) {
 	refused(t, mux)
 }
 
-// The pins must be the keys the desktop app verifies its own updates with.
-func TestPinnedKeysMatchTheDesktopApp(t *testing.T) {
-	var trust struct {
-		MetadataPublicKeys []string `json:"metadataPublicKeys"`
+// The server pins exactly the desktop release metadata key published in the
+// beta.5 trust file; a rotation changes this literal and keys.go together.
+func TestPinnedKeysAreTheReleaseKeys(t *testing.T) {
+	want := []string{
+		"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAPT530pTGlCCbjSNbXeajnERzU1k9JL2KjSYupHPZjrw=\n-----END PUBLIC KEY-----\n",
 	}
-	raw, err := os.ReadFile("../../packages/desktop/release-trust.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, &trust); err != nil {
-		t.Fatal(err)
-	}
-	ts, err := os.ReadFile("../../packages/desktop/src/update-keys.ts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := regexp.MustCompile(`(?s)RELEASE_PUBLIC_KEYS: readonly string\[\] = Object\.freeze\((\[.*?\])\);`).FindSubmatch(ts)
-	if m == nil {
-		t.Fatal("update-keys.ts no longer declares RELEASE_PUBLIC_KEYS")
-	}
-	var app []string
-	if err := json.Unmarshal(m[1], &app); err != nil {
-		t.Fatal(err)
-	}
-	pinned, err := desktopdownload.ParseKeys(trust.MetadataPublicKeys)
+	pinned, err := desktopdownload.ParseKeys(want)
 	if err != nil || len(pinned) == 0 {
-		t.Fatalf("release-trust.json keys: %v", err)
-	}
-	if !slices.Equal(app, trust.MetadataPublicKeys) {
-		t.Fatal("update-keys.ts and release-trust.json pin different keys")
+		t.Fatalf("expected keys: %v", err)
 	}
 	got := desktopdownload.PinnedKeys()
 	if len(got) != len(pinned) {
-		t.Fatalf("server pins %d keys, the desktop app %d", len(got), len(pinned))
+		t.Fatalf("server pins %d keys, want %d", len(got), len(pinned))
 	}
 	for i := range got {
 		if !got[i].Equal(pinned[i]) {
-			t.Fatalf("pinned key %d differs from packages/desktop/release-trust.json", i)
+			t.Fatalf("pinned key %d differs from the release key", i)
 		}
 	}
 }

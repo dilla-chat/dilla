@@ -153,7 +153,7 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 	if err != nil {
 		t.Fatalf("read WASI core: %v", err)
 	}
-	deviceListRuntime, err := mlswasi.New(context.Background(), wasm, mlswasi.Options{PoolSize: 1, CacheDir: apiWasmCacheDir(t)})
+	deviceListRuntime, err := mlswasi.New(context.Background(), wasm, mlswasi.Options{PoolSize: 2, CacheDir: apiWasmCacheDir(t)})
 	if err != nil {
 		t.Fatalf("start WASI validators: %v", err)
 	}

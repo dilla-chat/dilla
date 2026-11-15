@@ -8,9 +8,11 @@ use std::collections::{HashMap, HashSet};
 use crate::gateway::frames::Value;
 
 use super::api::{Api, CoreHandle, with_core};
-use super::value::{self, DecodeError, Rows, arr, bin16, text, u53, uint};
+use super::value::{self, DecodeError, Rows, arr, bin16, bin32, opt, text, u53, uint};
 
 const MAX_VERSIONS: u64 = 1024;
+/// trust.ts `MAX_REPLY_ROWS`: the most rows a core answer (pending leaves, trust state) is read with.
+const MAX_REPLY_ROWS: usize = 4096;
 const MAX_BYTES: usize = 4_194_304;
 const PAGE: usize = 64;
 const MAX_HEAD: usize = 1_048_576;
@@ -26,8 +28,17 @@ pub struct PendingLeaf {
     pub reason: String,
 }
 
+/// trust.ts `decodeBoundedArray`: a top-level array of at most [`MAX_REPLY_ROWS`] rows.
+fn bounded(raw: &[u8]) -> Result<Rows, DecodeError> {
+    let rows = Rows::of(raw)?;
+    if rows.iter().len() > MAX_REPLY_ROWS {
+        return Err(DecodeError("limit"));
+    }
+    Ok(rows)
+}
+
 pub fn decode_pending_leaves(raw: &[u8]) -> Result<Vec<PendingLeaf>, DecodeError> {
-    Rows::of(raw)?
+    bounded(raw)?
         .iter()
         .map(|row| {
             let a = arr(row, 5)?;
@@ -42,6 +53,41 @@ pub fn decode_pending_leaves(raw: &[u8]) -> Result<Vec<PendingLeaf>, DecodeError
                 user_id: bin16(&a[2])?,
                 cached_version: uint(&a[3])?,
                 reason,
+            })
+        })
+        .collect()
+}
+
+/// core-port.ts `TrustRecord`: one `trust_state` row (ABI 8), public keys only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustRecord {
+    pub user_id: [u8; 16],
+    pub umk: [u8; 32],
+    pub first_seen: u64,
+    pub verified: bool,
+    pub changed_umk: Option<[u8; 32]>,
+    /// The stored verdict of the user's leaves still in an active group (`E_UMK_CHANGED` wins), as the core spelt it.
+    pub blocked: Option<String>,
+}
+
+/// trust.ts `decodeTrustState`: `[[user_id, umk, first_seen, verified 0|1, changed_umk|null, blocked|null]]`. The
+/// five-element row of ABI 7 is refused, as is a verified bit other than 0 or 1.
+pub fn decode_trust_state(raw: &[u8]) -> Result<Vec<TrustRecord>, DecodeError> {
+    bounded(raw)?
+        .iter()
+        .map(|row| {
+            let a = arr(row, 6)?;
+            let verified = u53(&a[3])?;
+            if verified > 1 {
+                return Err(DecodeError("verified bit"));
+            }
+            Ok(TrustRecord {
+                user_id: bin16(&a[0])?,
+                umk: bin32(&a[1])?,
+                first_seen: uint(&a[2])?,
+                verified: verified == 1,
+                changed_umk: opt(&a[4], bin32)?,
+                blocked: opt(&a[5], text)?,
             })
         })
         .collect()
@@ -77,19 +123,20 @@ pub fn head_attestation(head: &[u8]) -> Result<Option<Vec<u8>>, Stale> {
     }
 }
 
-/// trust.ts `historyFrom`: the rows of `history` from `version` on, or `None` when it holds none.
+/// trust.ts `historyFrom`: the rows of `history` from `version` on, or `None` when it holds none. One malformed row
+/// (trust.ts `arr(row, 4)`) makes the whole slice `None`, never a partial one.
 pub fn history_from(history: &[u8], version: u64) -> Option<Vec<u8>> {
     let rows = Rows::of(history).ok()?;
-    let kept: Vec<Value> = rows
-        .iter()
-        .filter(|row| {
-            row.as_array()
-                .and_then(|r| r.first())
-                .and_then(Value::as_uint)
-                .is_some_and(|v| v >= version)
-        })
-        .cloned()
-        .collect();
+    if rows.iter().len() as u64 > MAX_VERSIONS {
+        return None;
+    }
+    let mut kept: Vec<Value> = Vec::new();
+    for row in rows.iter() {
+        let v = uint(&arr(row, 4).ok()?[0]).ok()?;
+        if v >= version {
+            kept.push(row.clone());
+        }
+    }
     (!kept.is_empty()).then(|| Value::Array(kept).encode())
 }
 
@@ -211,23 +258,175 @@ async fn ingest_account_kind(core: &CoreHandle, user: [u8; 16], head: &[u8]) {
     let _ = with_core(core, move |c| c.account_kind_ingest(&user, &attestation)).await;
 }
 
+/// controller.ts `LEAF_VERDICTS` (sync/errors.ts): the core's own leaf verdicts, the only refusals that say a device is
+/// off its list. A stale read or a limit says nothing about the device.
+pub(crate) const LEAF_VERDICTS: &[&str] = &[
+    "E_DEVICE_UNLISTED",
+    "E_DEVICE_REVOKED",
+    "E_CREDENTIAL",
+    "E_TIER_MISMATCH",
+];
+
 /// What the trust refresh remembers between passes: the leaves already fetched (controller `fetchedLeaves`), so a leaf
-/// is read once per (group, leaf, user, cached version, reason) until something about it changes.
+/// is read once per (group, leaf, user, cached version, reason) until something about it changes; and the controller's
+/// annotations of the trust slice the core stores nothing for (`unlistedUsers`, `historyFailedUsers`, `pendingUsers`,
+/// `ownRefusedLeaves`).
 #[derive(Default)]
 pub struct TrustMemory {
     fetched: HashSet<String>,
+    unlisted: HashSet<[u8; 16]>,
+    history_failed: HashSet<[u8; 16]>,
+    pending: HashSet<[u8; 16]>,
+    own_refused: HashSet<([u8; 16], u32)>,
+}
+
+/// The refresh's annotations the trust slice reads (controller.ts `publishTrust`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Annotations {
+    /// A leaf verdict refused the user's history (`unlistedUsers`).
+    pub unlisted: HashSet<[u8; 16]>,
+    /// The user's history read has not completed: failed, or never accepted (`pendingUsers`).
+    pub pending: HashSet<[u8; 16]>,
+    /// An own-user leaf whose history the core refused as under another key (`ownRefusedLeaves` is non-empty).
+    pub own_refused: bool,
+}
+
+impl TrustMemory {
+    pub fn annotations(&self) -> Annotations {
+        Annotations {
+            unlisted: self.unlisted.clone(),
+            pending: self.pending.clone(),
+            own_refused: !self.own_refused.is_empty(),
+        }
+    }
+
+    /// controller.ts `verifyContact`: the user's leaves are fetched again on the next pass.
+    pub fn forget_user(&mut self, user: &[u8; 16]) {
+        let hex = crate::state::hex(user);
+        self.fetched
+            .retain(|key| key.split(':').nth(2) != Some(hex.as_str()));
+    }
+
+    /// controller.ts `onReady`'s `fetchedLeaves.clear()`: every leaf is read again by the next pass. The annotations
+    /// (unlisted, history pending, refused own leaves) are kept: only a pass that reads the user again changes them.
+    pub fn forget_read_leaves(&mut self) {
+        self.fetched.clear();
+    }
+
+    /// A user an earlier pass found not on their list (the tests seed it).
+    #[cfg(test)]
+    pub(crate) fn mark_unlisted_for_test(&mut self, user: [u8; 16]) {
+        self.unlisted.insert(user);
+    }
+
+    /// controller.ts `refreshGroupTrust`'s first half: forgets the leaves of `group` already fetched, so the next pass
+    /// reads them again.
+    pub fn forget_group(&mut self, group: &[u8; 16]) {
+        let prefix = format!("{}:", crate::state::hex(group));
+        self.fetched.retain(|k| !k.starts_with(&prefix));
+    }
+}
+
+/// One engine's trust refresh: a single pass at a time (controller.ts `trustRefresh` and `trustRefreshAgain`), and the
+/// revision its passes move whenever they changed what the trust slice shows, so the slice is read again even when
+/// nothing was ingested.
+pub struct TrustPass {
+    revision: tokio::sync::watch::Sender<u64>,
+    /// Held while a pass runs; a later request waits on it.
+    running: tokio::sync::Mutex<()>,
+    /// A pass was asked for that no running pass has started on yet.
+    again: std::sync::atomic::AtomicBool,
+}
+
+impl Default for TrustPass {
+    fn default() -> Self {
+        Self {
+            revision: tokio::sync::watch::channel(0).0,
+            running: tokio::sync::Mutex::new(()),
+            again: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl TrustPass {
+    /// Runs `pass` unless a pass already running absorbs the request: a request during a pass makes exactly one more pass
+    /// run after it, however many came meanwhile. Returns once a pass that began after the request has finished.
+    pub async fn run<F, Fut>(&self, mut pass: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use std::sync::atomic::Ordering;
+        self.again.store(true, Ordering::SeqCst);
+        let _running = self.running.lock().await;
+        while self.again.swap(false, Ordering::SeqCst) {
+            pass().await;
+        }
+    }
+
+    /// Wakes on every pass that changed what the trust slice shows.
+    pub fn revisions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision.subscribe()
+    }
+
+    fn bump(&self) {
+        self.revision.send_modify(|n| *n = n.wrapping_add(1));
+    }
+}
+
+/// `Engine::refresh_trust`: one single-flight pass ([`TrustPass::run`]) of [`refresh_once`]; an ingest tells the hooks
+/// and marks every active group changed, as before.
+pub(crate) async fn refresh(engine: &super::Engine, now_s: u64) {
+    engine
+        .trust_pass
+        .run(|| async {
+            if engine.stopped() {
+                return;
+            }
+            if refresh_once(
+                &engine.api,
+                &engine.core,
+                &engine.trust,
+                &engine.trust_pass,
+                now_s,
+            )
+            .await
+            {
+                engine.hooks.trust_changed();
+                for g in engine.groups().await.iter().filter(|g| g.state == 2) {
+                    engine.hooks.group_changed(g.group_id);
+                }
+            }
+        })
+        .await;
+}
+
+/// The engine's trust revision, for the trust area's watcher.
+pub(crate) fn revisions_of(engine: &super::Engine) -> tokio::sync::watch::Receiver<u64> {
+    engine.trust_pass.revisions()
 }
 
 /// A user's served device-list head and the signed rows read up to it.
 type Signed = (Vec<u8>, Vec<u8>);
 
-/// controller.ts `refreshTrustOnce`, without the UI's bookkeeping (unlisted and changed-key notices): every pending leaf's
-/// user history is read once per pass from the oldest version any of its leaves caches, ingested for that leaf, and the
-/// leaf's held rows are revalidated. Answers whether anything was ingested.
+/// The own user of the core, if it has one.
+async fn own_user(core: &CoreHandle) -> Option<[u8; 16]> {
+    with_core(core, |c| c.identity())
+        .await
+        .ok()
+        .and_then(|raw| super::api::Identity::decode(&raw))
+        .and_then(|i| i.user_id)
+}
+
+/// controller.ts `refreshTrustOnce`: every pending leaf's user history is read once per pass from the oldest version any
+/// of its leaves caches, ingested for that leaf, and the leaf's held rows are revalidated; the annotations the trust slice
+/// shows (unlisted, history pending, an own leaf under another key) are kept in `memory`. Answers whether anything was
+/// ingested.
 pub async fn refresh_once(
     api: &Api,
     core: &CoreHandle,
     memory: &tokio::sync::Mutex<TrustMemory>,
+    pass: &TrustPass,
     now_s: u64,
 ) -> bool {
     let Ok(Ok(leaves)) = with_core(core, |c| {
@@ -237,6 +436,24 @@ pub async fn refresh_once(
     else {
         return false;
     };
+    let own = own_user(core).await;
+    let before = memory.lock().await.annotations();
+    {
+        let mut m = memory.lock().await;
+        // A user the core no longer reports in any active group has no history left to wait for.
+        let present: HashSet<[u8; 16]> = leaves.iter().map(|l| l.user_id).collect();
+        m.history_failed.retain(|u| present.contains(u));
+        // A refused own leaf the core no longer reports has left the group (a validated Remove).
+        let current: HashSet<([u8; 16], u32)> =
+            leaves.iter().map(|l| (l.group_id, l.leaf_index)).collect();
+        m.own_refused.retain(|l| current.contains(l));
+    }
+    // Users with a leaf whose signed history the core has never accepted; a successful ingest below caches their list.
+    let mut unknown: HashSet<[u8; 16]> = leaves
+        .iter()
+        .filter(|l| l.reason == "unknown")
+        .map(|l| l.user_id)
+        .collect();
     let mut oldest: HashMap<[u8; 16], u64> = HashMap::new();
     for leaf in &leaves {
         let v = oldest.entry(leaf.user_id).or_insert(leaf.cached_version);
@@ -260,7 +477,14 @@ pub async fn refresh_once(
         let user = leaf.user_id;
         if let std::collections::hash_map::Entry::Vacant(slot) = histories.entry(user) {
             let from = oldest.get(&user).copied().unwrap_or(leaf.cached_version);
-            slot.insert(read_device_list_history(api, &user, from).await.ok());
+            let read = read_device_list_history(api, &user, from).await.ok();
+            let mut m = memory.lock().await;
+            if read.is_some() {
+                m.history_failed.remove(&user);
+            } else {
+                m.history_failed.insert(user);
+            }
+            slot.insert(read);
         }
         let Some(Some((head, history))) = histories.get(&user).cloned() else {
             continue;
@@ -274,9 +498,20 @@ pub async fn refresh_once(
             c.device_list_ingest(&g, index, &user, &history, &head_list, now_s)
         })
         .await;
-        // A refusal (a leaf verdict, a stale read) keeps the leaf untrusted; the next ready retries.
-        let Ok(verdict) = verdict else {
-            continue;
+        // A refusal (a leaf verdict, a stale read) keeps the leaf untrusted; the next ready retries. Only the core's own
+        // leaf verdicts mark the user unlisted; an own-user history under another key is an own-trust signal instead.
+        let verdict = match verdict {
+            Ok(v) => v,
+            Err(e) => {
+                let mut m = memory.lock().await;
+                if LEAF_VERDICTS.contains(&e.code) {
+                    m.unlisted.insert(user);
+                }
+                if e.code == "E_UMK_CHANGED" && own == Some(user) {
+                    m.own_refused.insert((g, index));
+                }
+                continue;
+            }
         };
         let version = value::decode(&verdict).ok().and_then(|v| {
             v.as_array()
@@ -290,10 +525,35 @@ pub async fn refresh_once(
         {
             histories.insert(user, Some((head, rest)));
         }
+        {
+            let mut m = memory.lock().await;
+            m.unlisted.remove(&user);
+            m.own_refused.remove(&(g, index));
+        }
+        unknown.remove(&user);
         let _ = with_core(core, move |c| c.revalidate_pending(&g, index, 256)).await;
         ingested = true;
     }
+    let after = {
+        let mut m = memory.lock().await;
+        let pending: HashSet<[u8; 16]> = m.history_failed.union(&unknown).copied().collect();
+        m.pending = pending;
+        m.annotations()
+    };
+    if ingested || after != before {
+        pass.bump();
+    }
     ingested
+}
+
+/// The engine's trust memory, for the trust area (`crate::features::trust`): the annotations it publishes and the
+/// user a verification asks to read again.
+pub(crate) async fn annotations_of(engine: &super::Engine) -> Annotations {
+    engine.trust.lock().await.annotations()
+}
+
+pub(crate) async fn forget_user(engine: &super::Engine, user: &[u8; 16]) {
+    engine.trust.lock().await.forget_user(user);
 }
 
 #[cfg(test)]
@@ -323,5 +583,251 @@ mod tests {
             Some(Value::Array(vec![row(2), row(3)]).encode())
         );
         assert_eq!(history_from(&history, 4), None);
+    }
+
+    fn id16(n: u8) -> Value {
+        Value::Bytes(vec![n; 16])
+    }
+    fn key32(n: u8) -> Value {
+        Value::Bytes(vec![n; 32])
+    }
+    fn trust_row(verified: u64, changed: Value, blocked: Value) -> Value {
+        Value::Array(vec![
+            id16(2),
+            key32(4),
+            Value::Uint(12),
+            Value::Uint(verified),
+            changed,
+            blocked,
+        ])
+    }
+
+    // trust.test.ts "bounds core-owned pending and trust rows before copying".
+    #[test]
+    fn bounds_core_owned_pending_and_trust_rows() {
+        let leaf = || {
+            Value::Array(vec![
+                id16(1),
+                Value::Uint(0),
+                id16(2),
+                Value::Uint(0),
+                Value::Text("unknown".into()),
+            ])
+        };
+        let one = decode_pending_leaves(&Value::Array(vec![leaf()]).encode()).unwrap();
+        assert_eq!((one[0].leaf_index, one[0].reason.as_str()), (0, "unknown"));
+        let many = Value::Array((0..4097).map(|_| leaf()).collect()).encode();
+        assert!(decode_pending_leaves(&many).is_err());
+        let rows = decode_trust_state(
+            &Value::Array(vec![trust_row(0, Value::Null, Value::Null)]).encode(),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                rows[0].first_seen,
+                rows[0].verified,
+                rows[0].blocked.clone()
+            ),
+            (12, false, None)
+        );
+        let short_key = Value::Array(vec![Value::Array(vec![
+            id16(2),
+            Value::Bytes(vec![0; 31]),
+            Value::Uint(12),
+            Value::Uint(0),
+            Value::Null,
+            Value::Null,
+        ])])
+        .encode();
+        assert!(decode_trust_state(&short_key).is_err());
+    }
+
+    // trust.test.ts "reads the ABI-8 blocked verdict of a trust row and refuses the ABI-7 five-element row".
+    #[test]
+    fn reads_the_blocked_verdict_and_refuses_abi_7_rows() {
+        use crate::state::trust::TrustBlock;
+        for code in [
+            "E_UMK_CHANGED",
+            "E_CREDENTIAL",
+            "E_DEVICE_UNLISTED",
+            "E_TIER_MISMATCH",
+        ] {
+            let rows = decode_trust_state(
+                &Value::Array(vec![trust_row(1, Value::Null, Value::Text(code.into()))]).encode(),
+            )
+            .unwrap();
+            assert!(rows[0].verified);
+            assert_eq!(rows[0].blocked.as_deref(), Some(code));
+        }
+        let rows = decode_trust_state(
+            &Value::Array(vec![trust_row(
+                0,
+                key32(5),
+                Value::Text("E_UMK_CHANGED".into()),
+            )])
+            .encode(),
+        )
+        .unwrap();
+        assert_eq!(rows[0].changed_umk, Some([5; 32]));
+        // A code the page has no copy for fails closed as a failed identity check.
+        let rows = decode_trust_state(
+            &Value::Array(vec![trust_row(
+                1,
+                Value::Null,
+                Value::Text("E_SOMETHING_NEW".into()),
+            )])
+            .encode(),
+        )
+        .unwrap();
+        assert_eq!(
+            TrustBlock::of(rows[0].blocked.as_deref().unwrap()),
+            TrustBlock::Credential
+        );
+        let five = Value::Array(vec![Value::Array(vec![
+            id16(2),
+            key32(4),
+            Value::Uint(12),
+            Value::Uint(0),
+            Value::Null,
+        ])])
+        .encode();
+        assert!(decode_trust_state(&five).is_err());
+        assert!(
+            decode_trust_state(
+                &Value::Array(vec![trust_row(0, Value::Null, Value::Uint(7))]).encode()
+            )
+            .is_err()
+        );
+        assert!(
+            decode_trust_state(
+                &Value::Array(vec![trust_row(2, Value::Null, Value::Null)]).encode()
+            )
+            .is_err()
+        );
+    }
+
+    // trust.test.ts "answers null, never a partial or empty slice, for an input that leaves nothing to slice".
+    #[test]
+    fn history_slices_are_all_or_nothing() {
+        let row = |v: u64| {
+            Value::Array(vec![
+                Value::Uint(v),
+                Value::Bytes(vec![v as u8]),
+                Value::Bytes(vec![0; 64]),
+                key32(v as u8),
+            ])
+        };
+        assert_eq!(history_from(&Value::Array(vec![]).encode(), 0), None);
+        let two = Value::Array(vec![row(1), row(2)]).encode();
+        assert_eq!(history_from(&two, 3), None);
+        assert_eq!(
+            history_from(&two, 2),
+            Some(Value::Array(vec![row(2)]).encode())
+        );
+        let malformed = Value::Array(vec![
+            row(1),
+            Value::Array(vec![Value::Uint(2), Value::Bytes(vec![2])]),
+        ])
+        .encode();
+        assert_eq!(history_from(&malformed, 1), None);
+        assert_eq!(history_from(&Value::Uint(7).encode(), 0), None);
+        assert_eq!(history_from(&[0xff], 1), None);
+    }
+    // Review fix 3 (controller.ts `trustRefresh` / `trustRefreshAgain`): one pass at a time; a request during a pass
+    // runs exactly one more pass after it, however many came, and every caller returns after a pass that began after
+    // its request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn refresh_passes_are_single_flight_with_one_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let pass = std::sync::Arc::new(TrustPass::default());
+        let (running, most, runs) = (
+            std::sync::Arc::new(AtomicUsize::new(0)),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        );
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let (pass, running, most, runs) =
+                (pass.clone(), running.clone(), most.clone(), runs.clone());
+            tasks.push(tokio::spawn(async move {
+                pass.run(|| async {
+                    let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    running.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await;
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(most.load(Ordering::SeqCst), 1, "never two passes at once");
+        let n = runs.load(Ordering::SeqCst);
+        assert!(
+            (1..=3).contains(&n),
+            "the burst of 8 coalesced into {n} passes"
+        );
+        // Idle again: the next request runs its own pass.
+        pass.run(|| async {
+            runs.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+        assert_eq!(runs.load(Ordering::SeqCst), n + 1);
+    }
+
+    #[test]
+    fn each_engine_has_its_own_revision() {
+        let (a, b) = (TrustPass::default(), TrustPass::default());
+        let (ra, rb) = (a.revisions(), b.revisions());
+        a.bump();
+        assert!(ra.has_changed().unwrap());
+        assert!(
+            !rb.has_changed().unwrap(),
+            "one engine's pass does not wake another's watcher"
+        );
+    }
+
+    /// controller.ts `onReady` clears only `fetchedLeaves`: a new connection reads every leaf again, and a user an earlier
+    /// pass found unlisted or still pending stays so (no Verify, sends blocked) until a pass reads them again.
+    #[test]
+    fn a_ready_forgets_the_read_leaves_and_keeps_the_annotations() {
+        let (user, other) = ([7u8; 16], [8u8; 16]);
+        let mut m = TrustMemory::default();
+        m.fetched.insert(format!(
+            "{}:1:{}:3:ready-refresh",
+            crate::state::hex(&[1; 16]),
+            crate::state::hex(&user)
+        ));
+        m.unlisted.insert(user);
+        m.pending.insert(other);
+        m.history_failed.insert(other);
+        m.own_refused.insert(([1; 16], 2));
+        let before = m.annotations();
+        m.forget_read_leaves();
+        assert!(m.fetched.is_empty(), "every leaf is read again");
+        assert_eq!(m.annotations(), before, "the annotations are kept");
+        assert!(m.history_failed.contains(&other));
+    }
+
+    #[test]
+    fn forgetting_a_group_keeps_the_other_groups_leaves() {
+        let (g, other) = ([1u8; 16], [2u8; 16]);
+        let mut m = TrustMemory::default();
+        for (group, leaf) in [(g, 1), (g, 2), (other, 1)] {
+            m.fetched.insert(format!(
+                "{}:{leaf}:{}:3:unknown",
+                crate::state::hex(&group),
+                crate::state::hex(&[9; 16])
+            ));
+        }
+        m.forget_group(&g);
+        assert_eq!(m.fetched.len(), 1);
+        assert!(
+            m.fetched
+                .iter()
+                .all(|k| k.starts_with(&crate::state::hex(&other)))
+        );
     }
 }

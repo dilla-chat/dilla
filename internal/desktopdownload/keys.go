@@ -7,10 +7,10 @@ import (
 	"fmt"
 )
 
-// pinnedMetadataKeys are the desktop release metadata public keys, exactly as
-// packages/desktop/release-trust.json (metadataPublicKeys) and
-// packages/desktop/src/update-keys.ts pin them. TestPinnedKeysMatchTheDesktopApp
-// fails when they differ, so a key rotation updates all three together.
+// pinnedMetadataKeys are the desktop release metadata public keys, as the
+// former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/release-trust.json)
+// pinned them. TestPinnedKeysAreTheReleaseKeys pins the literal, so a key
+// rotation updates both together.
 var pinnedMetadataKeys = []string{
 	"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAPT530pTGlCCbjSNbXeajnERzU1k9JL2KjSYupHPZjrw=\n-----END PUBLIC KEY-----\n",
 }

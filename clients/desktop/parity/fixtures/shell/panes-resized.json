@@ -1,0 +1,138 @@
+{
+  "name": "shell/panes-resized",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "mira",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "lounge"
+          },
+          {
+            "id": "raids",
+            "kind": "category",
+            "name": "raids"
+          },
+          {
+            "id": "loot",
+            "kind": "text",
+            "name": "loot",
+            "parent": "raids"
+          },
+          {
+            "id": "boats",
+            "kind": "category",
+            "name": "boats"
+          },
+          {
+            "id": "harbour",
+            "kind": "voice",
+            "name": "harbour",
+            "parent": "boats"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "midgard-general-1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "raid tonight at 20:00? bring the good shields"
+      },
+      {
+        "key": "midgard-general-2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "in. last time the bridge troll took everything we had"
+      },
+      {
+        "key": "midgard-general-3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "I'm in too. Packing list:\nrope\ntorches\nsnacks for Björn"
+      },
+      {
+        "key": "midgard-general-4",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "the map from saturday is in #loot, the one with the coffee stain"
+      },
+      {
+        "key": "midgard-general-5",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "see you at the bridge"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "css=[role=\"separator\"][aria-label=\"resize the channel list\"]",
+      "gpui": "splitter-sidebar"
+    },
+    {
+      "do": "key",
+      "chord": "shift-right"
+    },
+    {
+      "do": "key",
+      "chord": "right"
+    },
+    {
+      "do": "key",
+      "chord": "right"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

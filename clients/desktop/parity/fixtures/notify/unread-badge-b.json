@@ -1,0 +1,119 @@
+{
+  "name": "notify/unread-badge-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{northern}/{northern/release}",
+  "clock": 1794481800,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      },
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "release",
+            "kind": "text",
+            "name": "release"
+          },
+          {
+            "id": "design",
+            "kind": "text",
+            "name": "design"
+          },
+          {
+            "id": "weekly",
+            "kind": "text",
+            "name": "weekly-triage-notes-for-the-whole-collective"
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "northern-release-1",
+        "channel": "northern/release",
+        "sender": "ada",
+        "ts": 1794481780,
+        "body": "the release branch is green again"
+      },
+      {
+        "key": "northern-release-2",
+        "channel": "northern/release",
+        "sender": "mira",
+        "ts": 1794481781,
+        "body": "tagging it this afternoon"
+      },
+      {
+        "key": "northern-general-1",
+        "channel": "northern/general",
+        "sender": "mira",
+        "ts": 1794481500,
+        "body": "status note 1: the build is still running"
+      },
+      {
+        "key": "northern-design-1",
+        "channel": "northern/design",
+        "sender": "mira",
+        "ts": 1794481600,
+        "body": "new icon set is in the shared folder"
+      },
+      {
+        "key": "northern-weekly-1",
+        "channel": "northern/weekly",
+        "sender": "bjorn",
+        "ts": 1794481650,
+        "body": "notes are up"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "settle"
+    }
+  ]
+}

@@ -12,6 +12,9 @@ const EXACT: Tolerance = Tolerance {
     max_pct: 0.0,
     chrome_max_delta: 0,
     chrome_max_pct: 0.0,
+    colour_max_delta: 0,
+    colour_radius: 0,
+    colour_max_pct: 0.0,
 };
 
 fn workspace_root() -> PathBuf {
@@ -30,6 +33,13 @@ fn reference_file(dir: &Path, image: &RgbaImage) -> PathBuf {
     image.save(&path).unwrap();
     path
 }
+
+/// What marks an automation build: the marker string and the module's symbol path in both manglings.
+const AUTOMATION_NEEDLES: [&str; 3] = [
+    "dilla-automation-interface",
+    "dilla_desktop::automation",
+    "dilla_desktop10automation",
+];
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
@@ -60,14 +70,28 @@ fn release_build_has_no_automation() {
     assert!(status.success(), "release build failed");
     let binary = std::fs::read(target_dir().join("release/dilla-desktop")).unwrap();
     // The marker string and the module's symbol path exist only in an automation build.
-    for needle in [
-        "dilla-automation-interface",
-        "dilla_desktop::automation",
-        "dilla_desktop10automation",
-    ] {
+    for needle in AUTOMATION_NEEDLES {
         assert!(
             !contains(&binary, needle.as_bytes()),
             "release binary contains `{needle}`"
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "symbol names differ in a PDB build")]
+fn symbol_needles_positive_control() {
+    // The release test greps for these needles; this proves each one can be found in an automation build at all (a
+    // needle that never matches would make that test pass for nothing).
+    let _ = Driver::launch_harness();
+    // The binary the driver ran: `DILLA_AUTOMATION_BIN` when it overrides the build.
+    let binary = std::env::var_os("DILLA_AUTOMATION_BIN")
+        .map_or_else(|| target_dir().join("debug/dilla-desktop"), PathBuf::from);
+    let automation = std::fs::read(binary).unwrap();
+    for needle in AUTOMATION_NEEDLES {
+        assert!(
+            contains(&automation, needle.as_bytes()),
+            "`{needle}` is not in the automation binary: the release check would pass vacuously"
         );
     }
 }
@@ -89,6 +113,9 @@ fn one_pixel_over_tolerance_fails() {
         max_pct: 0.0,
         chrome_max_delta: 0,
         chrome_max_pct: 0.0,
+        colour_max_delta: 0,
+        colour_radius: 0,
+        colour_max_pct: 0.0,
     };
 
     let mut within = grey(40, 30, 120);
@@ -112,6 +139,9 @@ fn one_pixel_over_tolerance_fails() {
         max_pct: 0.1,
         chrome_max_delta: 0,
         chrome_max_pct: 0.0,
+        colour_max_delta: 0,
+        colour_radius: 0,
+        colour_max_pct: 0.0,
     };
     assert_parity_with(&over, &reference, lenient).unwrap();
 }
@@ -150,6 +180,9 @@ fn tolerance_file_ships_measured_linux_and_exact_placeholders() {
             max_pct: 0.5,
             chrome_max_delta: 16,
             chrome_max_pct: 0.2,
+            colour_max_delta: 2,
+            colour_radius: 2,
+            colour_max_pct: 0.3,
         }
     );
     let dir = tempfile::tempdir().unwrap();
@@ -168,7 +201,9 @@ fn click_and_read_element() {
 
     let root = driver.element("root").expect("the root element exists");
     assert_eq!(root.id, "root");
-    assert_eq!((root.width, root.height), (1280.0, 800.0));
+    // A data root opens the shipping window (Task 8): the start window grown, in place, to the compact authentication
+    // shape, 400x620 (`screens/shell/window.rs`: COMPACT_WIDTH, AUTH_HEIGHT), which lays out at that size.
+    assert_eq!((root.width, root.height), (400.0, 620.0));
     assert_eq!((root.x, root.y), (0.0, 0.0));
     assert!(driver.element("no-such-element").is_none());
 
@@ -180,6 +215,6 @@ fn click_and_read_element() {
     );
 
     let shot = driver.screenshot();
-    // The headless platform renders at scale 2.0, so the 1280x800 window is 2560x1600 device pixels.
-    assert_eq!(shot.dimensions(), (2560, 1600));
+    // The headless platform renders at scale 2.0, so the 400x620 window is 800x1240 device pixels.
+    assert_eq!(shot.dimensions(), (800, 1240));
 }

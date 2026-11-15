@@ -44,3 +44,8 @@ pub(crate) fn receiver_handle_video(track: &RtcVideoTrack) -> Option<u64> {
 pub(crate) fn sender_handle_audio(track: &RtcAudioTrack) -> Option<u64> {
     webrtc_sys::dilla_transform::sender_handle(&track.sys_handle())
 }
+
+/// The sender transformer attached for exactly this local video track object (a camera or a screen share).
+pub(crate) fn sender_handle_video(track: &RtcVideoTrack) -> Option<u64> {
+    webrtc_sys::dilla_transform::sender_handle(&track.sys_handle())
+}

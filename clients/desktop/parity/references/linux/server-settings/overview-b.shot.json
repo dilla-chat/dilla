@@ -1,0 +1,24 @@
+{
+  "digest": "3270763c7b90c5f3f6087da970fc57058e279bade8364969e50481057ab10701",
+  "shift": 88569,
+  "hand_migrated": false,
+  "ids": {
+    "channel:midgard/afk": "e95058fcdbd823d0b85e9ce915c698e1",
+    "channel:midgard/general": "6c993570e31e21769a61f14d17223484",
+    "channel:valhalla/afk": "22caaa96412b3eec13bf0245bdc9b0f3",
+    "channel:valhalla/general": "eb0717041708fbdafa16950e459fa7dc",
+    "person:ada": "08dafbc8d8b394293256d7627f742225",
+    "person:bjorn": "0b3e071ebb1e20a1518b48334f3d0314",
+    "person:kai": "6e1bc5ff747797bbc223a00976c056ac",
+    "person:lena": "e2f1e43eeb035debca08b76416d657eb",
+    "person:mira": "32810295c34b849fe7f7ab88739cfb9c",
+    "person:oskar": "93f2573126f954e3d44de5847339554f",
+    "person:saga": "3f0eed8dc37fc3c617cb59a0c9b3d8b9",
+    "person:tor": "b9bc28a72869a7a797d8a4e4d3d1876c",
+    "person:ulla": "07936d67604387632151b8a4b77d6ea6",
+    "person:vidar": "2885591345a6d12561038e6fbf67777b",
+    "person:yrsa": "14c90ce3751957e029a529d258feb588",
+    "server:midgard": "ae45a6be9c001b2c14a3ff75e0c08af8",
+    "server:valhalla": "87cb7b2d09416a7eb1f99532f59c4f72"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "create/empty",
+  "window": [
+    1280,
+    800
+  ],
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      }
+    ],
+    "servers": [],
+    "messages": []
+  },
+  "viewer": "ada",
+  "route": "/",
+  "phase": "ready",
+  "clock": 1794481738,
+  "steps": [
+    {
+      "do": "settle"
+    }
+  ]
+}

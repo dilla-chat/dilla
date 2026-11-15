@@ -23,7 +23,7 @@ use routes::{Answer, BodyEncoding, Entry, Transport};
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The bound on a success body for a route client.ts gives no `maxBodyBytes` (a blob or a GIF, at most 25 MiB, or a
 /// caller-chosen bound): the TypeScript client reads those unbounded, this one never reads more than this.
-const BODY_CEILING: u64 = 32 * 1024 * 1024;
+pub(crate) const BODY_CEILING: u64 = 32 * 1024 * 1024;
 /// A backup is capped but sits on the sign-up, sign-in and revoke paths: a longer bound than the default.
 const BACKUP_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -54,6 +54,79 @@ pub struct ReqwestHttp {
     base: String,
     auth: AuthToken,
     client: reqwest::Client,
+    /// The instance's clock as its last `Date` header said (Task 20: a sealed Bot command's `sent_at`).
+    clock: std::sync::Arc<ServerClock>,
+}
+
+/// The most the instance's clock is believed to be off this device's.
+const MAX_OFFSET_S: i64 = 86_400;
+
+/// The offset of the instance's clock from this device's, from the `Date` header of each HTTP answer (whole seconds).
+#[derive(Debug, Default)]
+pub struct ServerClock {
+    /// Instance seconds minus local seconds; `i64::MIN` while no answer carried a date.
+    offset: std::sync::atomic::AtomicI64,
+}
+
+fn local_now_s() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+impl ServerClock {
+    fn new() -> Self {
+        Self {
+            offset: std::sync::atomic::AtomicI64::new(i64::MIN),
+        }
+    }
+
+    /// Records an answer's `Date` header.
+    pub fn observe(&self, date: &str) {
+        // A date more than a day off this device's clock is no clock reading (a proxy's cache, a broken header).
+        if let Some(at) = parse_http_date(date)
+            && (at - local_now_s()).abs() <= MAX_OFFSET_S
+        {
+            self.offset
+                .store(at - local_now_s(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Unix seconds by the instance's clock, else this device's (no answer seen yet).
+    pub fn now_s(&self) -> u64 {
+        let offset = self.offset.load(std::sync::atomic::Ordering::Relaxed);
+        let offset = if offset == i64::MIN { 0 } else { offset };
+        u64::try_from(local_now_s().saturating_add(offset)).unwrap_or(0)
+    }
+}
+
+/// An RFC 9110 IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) as unix seconds.
+pub fn parse_http_date(text: &str) -> Option<i64> {
+    let p: Vec<&str> = text.split_whitespace().collect();
+    if p.len() != 6 || p[5] != "GMT" {
+        return None;
+    }
+    let day: i64 = p[1].parse().ok()?;
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|m| *m == p[2])? as i64
+        + 1;
+    let year: i64 = p[3].parse().ok()?;
+    let hms: Vec<i64> = p[4]
+        .split(':')
+        .map(|x| x.parse().ok())
+        .collect::<Option<_>>()?;
+    if hms.len() != 3 || !(1..=31).contains(&day) || hms[0] > 23 || hms[1] > 59 || hms[2] > 60 {
+        return None;
+    }
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + hms[0] * 3600 + hms[1] * 60 + hms[2])
 }
 
 fn transport(e: reqwest::Error) -> HttpError {
@@ -62,6 +135,11 @@ fn transport(e: reqwest::Error) -> HttpError {
 }
 
 impl ReqwestHttp {
+    /// Unix seconds by the instance's clock (its last `Date` header), else this device's.
+    pub fn server_now_s(&self) -> u64 {
+        self.clock.now_s()
+    }
+
     /// A transport for the instance at `base`. It fails only when the TLS backend cannot start.
     pub fn new(base: Url, auth: AuthToken) -> Result<Self, HttpError> {
         let client = reqwest::Client::builder()
@@ -73,6 +151,7 @@ impl ReqwestHttp {
             base: base.as_str().trim_end_matches('/').to_owned(),
             auth,
             client,
+            clock: std::sync::Arc::new(ServerClock::new()),
         })
     }
 }
@@ -105,6 +184,20 @@ fn slot_of(name: &str) -> Slot {
     }
 }
 
+/// The check a path slot gets, by the slot's name: `id`, `digest`, `count`, `kind`, `gif` or `free` (the names
+/// `tests/support/dump-routes.mjs` gives the routes.ts validators: `id()`, `digest()`, `count()`, `kindOf()`, the GIF
+/// id's own check, and a free segment). `route_table_matches_ts` holds this to the TypeScript source.
+pub fn slot_check(name: &str) -> &'static str {
+    match slot_of(name) {
+        Slot::Id => "id",
+        Slot::Digest => "digest",
+        Slot::Count => "count",
+        Slot::Kind => "kind",
+        Slot::Gif => "gif",
+        Slot::Free => "free",
+    }
+}
+
 fn is_lower_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
@@ -116,7 +209,13 @@ fn check_segment(name: &str, arg: &str) -> Result<(), HttpError> {
         && match slot_of(name) {
             Slot::Id => is_lower_hex(arg, 32),
             Slot::Digest => is_lower_hex(arg, 64),
-            Slot::Count => (1..=20).contains(&arg.len()) && arg.bytes().all(|b| b.is_ascii_digit()),
+            // A positive count in its one decimal spelling: no `0` (no seq, message seq or welcome id is 0) and no
+            // leading zero.
+            Slot::Count => {
+                (1..=20).contains(&arg.len())
+                    && !arg.starts_with('0')
+                    && arg.bytes().all(|b| b.is_ascii_digit())
+            }
             Slot::Kind => matches!(arg, "0" | "1"),
             Slot::Gif => {
                 (1..=64).contains(&arg.len()) && arg.bytes().all(|b| b.is_ascii_alphanumeric())
@@ -192,8 +291,19 @@ fn encode_into(out: &mut String, arg: &str) {
 
 /// The success body of `response`, at most `cap` bytes (`maxBodyBytes` in client.ts): a longer `Content-Length` is refused
 /// before a byte is read, and a body that outgrows the cap while streaming stops being read.
-async fn read_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8>, HttpError> {
-    let too_large = || HttpError::Decode(format!("the response body is larger than {cap} bytes"));
+async fn read_capped(response: reqwest::Response, cap: u64) -> Result<Vec<u8>, HttpError> {
+    read_capped_or(response, cap, || {
+        HttpError::Decode(format!("the response body is larger than {cap} bytes"))
+    })
+    .await
+}
+
+/// [`read_capped`] with the caller's error for a body over `cap`.
+async fn read_capped_or(
+    mut response: reqwest::Response,
+    cap: u64,
+    too_large: impl Fn() -> HttpError,
+) -> Result<Vec<u8>, HttpError> {
     if response.content_length().is_some_and(|n| n > cap) {
         return Err(too_large());
     }
@@ -207,8 +317,12 @@ async fn read_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8
     Ok(body)
 }
 
-/// The body a request serializes to: `None` for [`routes::NoBody`], the bytes of a [`routes::Raw`].
-fn body_of<R: Route>(req: &R::Request, entry: &Entry) -> Result<Option<Vec<u8>>, HttpError> {
+/// The body a request serializes to: `None` for [`routes::NoBody`], the bytes of a [`routes::Raw`] or a
+/// [`routes::Secret`] (whose copy here is the one the transport takes over; see [`routes::Secret`]).
+pub(crate) fn body_of<R: Route>(
+    req: &R::Request,
+    entry: &Entry,
+) -> Result<Option<Vec<u8>>, HttpError> {
     let value = Value::serialized(req).map_err(|e| HttpError::Decode(format!("request: {e}")))?;
     match (value, entry.request) {
         (Value::Null, BodyEncoding::None) => Ok(None),
@@ -220,12 +334,24 @@ fn body_of<R: Route>(req: &R::Request, entry: &Entry) -> Result<Option<Vec<u8>>,
     }
 }
 
-#[async_trait::async_trait]
-impl Http for ReqwestHttp {
-    async fn call<R: Route>(
+impl ReqwestHttp {
+    /// [`Http::call`] with a success body bound of the caller's (client.ts `maxBodyBytes` given per call, as routes.ts
+    /// `getBlob(.., size + 16)` and `gifMedia` give it). A longer body is refused as soon as the bound is passed,
+    /// before the rest is read, as `Status { code: E_BODY_TOO_LARGE }` (client.ts's `DillaHttpError` with that code).
+    pub async fn call_capped<R: Route>(
         &self,
         path_args: &[&str],
         req: R::Request,
+        cap: u64,
+    ) -> Result<R::Response, HttpError> {
+        self.call_bounded::<R>(path_args, req, Some(cap)).await
+    }
+
+    async fn call_bounded<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+        cap: Option<u64>,
     ) -> Result<R::Response, HttpError> {
         let entry = routes::lookup(&R::METHOD, R::PATH).ok_or_else(|| {
             HttpError::Transport(format!(
@@ -273,19 +399,136 @@ impl Http for ReqwestHttp {
         }
 
         let response = request.send().await.map_err(transport)?;
+        if let Some(date) = response
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|d| d.to_str().ok())
+        {
+            self.clock.observe(date);
+        }
         let status = response.status().as_u16();
         if !entry.accepts(status) {
-            // The refusal's body is never read: the status is the whole error.
-            return Err(HttpError::Status(status));
+            // client.ts reads a refusal's body up to ERROR_BODY_CAP for its code; a body it cannot read is E_HTTP.
+            let body = read_capped(response, ERROR_BODY_CAP).await.ok();
+            return Err(refused(status, body.as_deref()));
         }
-        let body = read_capped(response, entry.max_body.unwrap_or(BODY_CEILING)).await?;
-        let value = match entry.answer {
-            Answer::None => Value::Null,
-            Answer::Body => Value::Bytes(body),
-            Answer::Status => Value::Array(vec![Value::Integer(status.into()), Value::Bytes(body)]),
+        let body = match cap {
+            Some(cap) => {
+                read_capped_or(response, cap, || HttpError::Status {
+                    status,
+                    code: Some("E_BODY_TOO_LARGE".to_owned()),
+                    retry_after_ms: None,
+                })
+                .await?
+            }
+            None => read_capped(response, entry.max_body.unwrap_or(BODY_CEILING)).await?,
         };
-        value
-            .deserialized()
-            .map_err(|e| HttpError::Decode(e.to_string()))
+        answer_of::<R>(entry, status, body)
+    }
+}
+
+#[async_trait::async_trait]
+impl Http for ReqwestHttp {
+    async fn call<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+    ) -> Result<R::Response, HttpError> {
+        self.call_bounded::<R>(path_args, req, None).await
+    }
+}
+
+/// client.ts `ERROR_BODY_CAP`: the most of a refusal's body that is read for its code.
+pub const ERROR_BODY_CAP: u64 = 64 * 1024;
+
+/// The instance's `E_*` code in a refusal's body, as http/errors.ts `decodeErrorBody` reads it: the body is
+/// `[code, detail, delay|null, ...extra]` with `code` matching `^E_[A-Z0-9_]{1,64}$`, `detail` a text and `delay` an
+/// integer or null. Any other body (not CBOR, not such an array, an empty one) has no code (`E_HTTP` in errors.ts).
+pub fn error_code(body: &[u8]) -> Option<String> {
+    // One decoder: the socket transport's (`ApiError::from_body`), whose fallback code is E_HTTP.
+    let e = crate::sync::api::ApiError::from_body(0, body);
+    (e.code != "E_HTTP").then_some(e.code)
+}
+
+/// A refusal with `status` and its `body` (`None`: unread): its `E_*` code and delay, as errors.ts `decodeErrorBody`.
+pub(crate) fn refused(status: u16, body: Option<&[u8]>) -> HttpError {
+    let e = body.map(|b| crate::sync::api::ApiError::from_body(0, b));
+    HttpError::Status {
+        status,
+        code: e
+            .as_ref()
+            .filter(|e| e.code != "E_HTTP")
+            .map(|e| e.code.clone()),
+        retry_after_ms: e.and_then(|e| e.retry_after_ms),
+    }
+}
+
+/// `R`'s answer from an accepted `status` and its `body`, read as the route's table row says.
+pub(crate) fn answer_of<R: Route>(
+    entry: &Entry,
+    status: u16,
+    body: Vec<u8>,
+) -> Result<R::Response, HttpError> {
+    let value = match entry.answer {
+        Answer::None => Value::Null,
+        Answer::Body => Value::Bytes(body),
+        Answer::Status => Value::Array(vec![Value::Integer(status.into()), Value::Bytes(body)]),
+    };
+    value
+        .deserialized()
+        .map_err(|e| HttpError::Decode(e.to_string()))
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn an_imf_fixdate_is_read_as_unix_seconds() {
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(
+            parse_http_date("Fri, 13 Nov 2026 01:19:41 GMT"),
+            Some(1_794_532_781)
+        );
+        assert_eq!(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT"), None);
+        let clock = ServerClock::new();
+        let local = clock.now_s();
+        clock.observe("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert!(clock.now_s() >= local, "a date decades off is ignored");
+        let an_hour_ahead = local_now_s() + 3600;
+        let date = chrono_free_date(an_hour_ahead);
+        clock.observe(&date);
+        let ahead = clock.now_s();
+        assert!(
+            (3599..=3601).contains(&(ahead as i64 - local_now_s())),
+            "an hour ahead is taken: {date}"
+        );
+    }
+
+    fn chrono_free_date(t: i64) -> String {
+        let days = t.div_euclid(86_400);
+        let rem = t.rem_euclid(86_400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        let months = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        format!(
+            "Mon, {d:02} {} {y} {:02}:{:02}:{:02} GMT",
+            months[(m - 1) as usize],
+            rem / 3600,
+            rem % 3600 / 60,
+            rem % 60
+        )
     }
 }

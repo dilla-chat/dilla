@@ -56,6 +56,73 @@ pub struct GroupSummary {
     pub kind: u64,
     pub target_id: [u8; 16],
     pub state: u64,
+    pub epoch: u64,
+    /// This device's cursor: the first seq it has not applied.
+    pub next_seq: u64,
+    /// A commit of this device is pending (built, neither confirmed nor aborted).
+    pub pending_commit: bool,
+}
+
+/// The handshake kinds that take an epoch (`KindCommit`, `KindExternalJoin`); 0 is a proposal.
+const COMMIT_KINDS: [u64; 2] = [1, 2];
+
+/// A `GET /v1/groups/{id}/handshakes` page (rows `[seq, epoch, kind, sender|null, blob]`, in seq
+/// order), as a rotation's reconciliation reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandshakePage {
+    /// The page's commits, in seq order: `(seq, epoch, blob)`, where `epoch` is the row's epoch, the
+    /// one the commit opened. The commit that took epoch `n` is the row of epoch `n + 1`; the cursor
+    /// does not move past a commit this device confirmed from its answer, so rows of epochs it
+    /// already holds can precede it.
+    pub commits: Vec<(u64, u64, Vec<u8>)>,
+    pub rows: usize,
+    /// The seq of the page's last row.
+    pub last: Option<u64>,
+}
+
+pub fn decode_handshake_page(body: &[u8]) -> Result<HandshakePage, RouteError> {
+    let rows = match parse(body)? {
+        Value::Array(rows) => rows,
+        _ => return Err(shape("handshake page")),
+    };
+    let mut page = HandshakePage {
+        rows: rows.len(),
+        ..HandshakePage::default()
+    };
+    for row in rows {
+        let r = at_least(row, 5, "handshake row")?;
+        let seq = uint(&r[0], "handshake seq")?;
+        page.last = Some(seq);
+        if COMMIT_KINDS.contains(&uint(&r[2], "handshake kind")?) {
+            let epoch = uint(&r[1], "handshake epoch")?;
+            match &r[4] {
+                Value::Bytes(b) => page.commits.push((seq, epoch, b.clone())),
+                _ => return Err(shape("handshake blob")),
+            }
+        }
+    }
+    Ok(page)
+}
+
+/// A commit body the core built (`commit_build`/`call_rotate`: `[epoch, commit, group_info,
+/// welcomes, null]`): the epoch it commits from and the MLS commit the instance stores as the
+/// handshake's blob.
+pub fn decode_commit_body(body: &[u8]) -> Result<(u64, Vec<u8>), String> {
+    decode_strict(body, |d| {
+        d.array(5)?;
+        let epoch = d.uint()?;
+        let commit = d.bytes()?.to_vec();
+        d.bytes()?;
+        let n = d.array_len()?;
+        for _ in 0..n {
+            d.array(2)?;
+            d.bytes()?;
+            d.bytes()?;
+        }
+        d.null()?;
+        Ok((epoch, commit))
+    })
+    .map_err(|e| format!("E_CBOR_SHAPE: {e:?}"))
 }
 
 fn shape(what: &str) -> RouteError {
@@ -178,12 +245,22 @@ pub fn decode_call_started(status: u16, body: &[u8]) -> Result<CallStarted, Rout
 }
 
 /// `ClientCore::call_media_epoch`: `[epoch, base_key(16), own_leaf, [[leaf, device_id, user_id]],
-/// code]`, decoded strictly; the key goes straight into a zeroizing buffer.
+/// code]`, decoded strictly. The key is copied once, from the (caller's zeroizing) body straight
+/// into the zeroizing buffer the answer holds: no temporary array of it is left on the stack, and a
+/// refused body drops that buffer zeroized.
 pub fn decode_media_epoch(body: &[u8]) -> Result<MediaEpoch, String> {
-    decode_strict(body, |d| {
+    let mut base_key = Zeroizing::new([0u8; 16]);
+    let (epoch, own_leaf, roster, code) = decode_strict(body, |d| {
         d.array(5)?;
         let epoch = d.uint()?;
-        let base_key = Zeroizing::new(d.bytes_exact::<16>()?);
+        let key = d.bytes()?;
+        if key.len() != 16 {
+            return Err(dilla_core::cbor::CborError::WrongByteLen {
+                expected: 16,
+                actual: key.len(),
+            });
+        }
+        base_key.copy_from_slice(key);
         let own_leaf = d.uint()?;
         let n = d.array_len()?;
         let mut roster = Vec::with_capacity(n.min(CALL_PARTICIPANTS_MAX));
@@ -193,21 +270,19 @@ pub fn decode_media_epoch(body: &[u8]) -> Result<MediaEpoch, String> {
             roster.push((leaf, d.bytes_exact::<16>()?, d.bytes_exact::<16>()?));
         }
         let code = d.text()?.to_owned();
-        Ok((epoch, base_key, own_leaf, roster, code))
+        Ok((epoch, own_leaf, roster, code))
     })
-    .map_err(|e| format!("E_CBOR_SHAPE: {e:?}"))
-    .and_then(|(epoch, base_key, own_leaf, roster, code)| {
-        let leaf = |l: u64| u16::try_from(l).map_err(|_| "E_CBOR_RANGE: leaf".to_owned());
-        Ok(MediaEpoch {
-            epoch,
-            base_key,
-            own_leaf: leaf(own_leaf)?,
-            roster: roster
-                .into_iter()
-                .map(|(l, d, u)| Ok((leaf(l)?, d, u)))
-                .collect::<Result<_, String>>()?,
-            code,
-        })
+    .map_err(|e| format!("E_CBOR_SHAPE: {e:?}"))?;
+    let leaf = |l: u64| u16::try_from(l).map_err(|_| "E_CBOR_RANGE: leaf".to_owned());
+    Ok(MediaEpoch {
+        epoch,
+        base_key,
+        own_leaf: leaf(own_leaf)?,
+        roster: roster
+            .into_iter()
+            .map(|(l, d, u)| Ok((leaf(l)?, d, u)))
+            .collect::<Result<_, String>>()?,
+        code,
     })
 }
 
@@ -224,14 +299,18 @@ pub fn decode_groups(body: &[u8]) -> Result<Vec<GroupSummary>, String> {
             d.opt_bytes_exact::<16>()?;
             let target_id = d.bytes_exact::<16>()?;
             let state = d.uint()?;
-            for _ in 0..4 {
-                d.uint()?;
-            }
+            let epoch = d.uint()?;
+            let next_seq = d.uint()?;
+            d.uint()?;
+            let pending_commit = d.uint()? == 1;
             out.push(GroupSummary {
                 group_id,
                 kind,
                 target_id,
                 state,
+                epoch,
+                next_seq,
+                pending_commit,
             });
         }
         Ok(out)

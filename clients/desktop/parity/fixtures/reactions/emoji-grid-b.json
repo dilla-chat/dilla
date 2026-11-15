@@ -1,0 +1,91 @@
+{
+  "name": "reactions/emoji-grid-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "morning, the release branch is green again"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "nice. did the voice e2e pass on all three platforms?"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "linux and windows yes, macos is still running"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "css=[data-emoji-toggle]",
+      "gpui": "composer-emoji"
+    },
+    {
+      "do": "type",
+      "web": "css=input[type=search][aria-label=\"Search emoji\"]",
+      "gpui": "emoji-grid-search",
+      "text": "co"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

@@ -18,3 +18,6 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "2"
 tempfile = "3"
+serde_json = "1.0.151"
+# The screen fixture schema, shared with the app (dilla-client src/testing/spec.rs).
+dilla-client = { path = "../dilla-client", features = ["testing"] }

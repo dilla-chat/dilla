@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { acquireApplicationAudio } from './app-audio.ts';
-import type { DesktopEvent } from '../../../desktop/src/contract.ts';
+import type { DesktopEvent } from '../desktop-contract.ts';
 
 vi.mock('./app-audio-worklet.ts?worker&url', () => ({ default: '/application-audio-worklet.js' }));
 afterEach(() => { vi.unstubAllGlobals(); });
