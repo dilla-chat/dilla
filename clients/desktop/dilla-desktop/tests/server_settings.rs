@@ -562,7 +562,7 @@ fn permission_change_is_announced(cx: &mut gpui::TestAppContext) {
     let changed = dilla_desktop::strings::t("workspace.permissionChanged").to_owned();
     view.update(vcx, |v, cx| v.set_state(state_with(demoted.clone()), cx));
     vcx.run_until_parked();
-    assert_eq!(*said.borrow(), [changed.clone()]);
+    assert_eq!(*said.borrow(), [changed]);
     assert_eq!(
         view.read_with(vcx, |v, _| v.active()),
         Some(ServerSection::Members),

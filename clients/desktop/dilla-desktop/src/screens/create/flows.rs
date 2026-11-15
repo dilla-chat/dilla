@@ -56,7 +56,7 @@ pub fn offered_roles<'a>(
         .iter()
         .filter(|r| Some(r.id) != access.everyone_id && (access.owner || r.position < access.top))
         .collect();
-    out.sort_by(|a, b| b.position.cmp(&a.position));
+    out.sort_by_key(|r| std::cmp::Reverse(r.position));
     out
 }
 

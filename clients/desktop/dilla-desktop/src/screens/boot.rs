@@ -185,7 +185,9 @@ pub fn fatal_code(error: &ClientError) -> String {
 /// The detail's `max-width` in characters (Splash.css `46ch`).
 const DETAIL_COLUMNS: f32 = 46.0;
 
-type Press = Rc<dyn Fn(&mut Window, &mut App)>;
+pub type Press = Rc<dyn Fn(&mut Window, &mut App)>;
+/// Opens (`true`) or closes a confirmation.
+pub type Toggle = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
 /// The splash: the brand, the status and detail, and the action when there is one. It fills its parent.
 pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>) -> AnyElement {
@@ -265,7 +267,7 @@ pub struct FailureActions {
     pub on_retry: Press,
     pub on_sign_in: Press,
     /// Opens (`true`) or closes the reset's confirmation.
-    pub on_confirming: Rc<dyn Fn(bool, &mut Window, &mut App)>,
+    pub on_confirming: Toggle,
     /// The confirmed Forget or Reset.
     pub on_reset: Press,
 }
