@@ -186,6 +186,13 @@ pub struct MessageUi {
     pub ctx: Option<SlotCx>,
     /// The log's focus: PageUp and PageDown act while it holds the focus.
     pub log_focus: Option<gpui::FocusHandle>,
+    /// The log's active row (Conversation.tsx `activeKey`): the row that is the log's one tab stop; the newest when
+    /// it is `None` or no longer in the log.
+    pub active: Option<String>,
+    /// Each row's focus handle, by the message's key (kept while the row is in the log).
+    pub row_focus: std::collections::HashMap<String, gpui::FocusHandle>,
+    /// A row the arrow keys moved to that the log still has to bring into view (no flash, the least scroll).
+    pub reveal: Option<String>,
     /// The conversation's notice and the channel it is about (Conversation.tsx `notice`): a jump to a message the log
     /// has not loaded says so.
     notice: Option<(ChannelId, &'static str)>,

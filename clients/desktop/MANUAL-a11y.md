@@ -40,7 +40,10 @@ text channel `general` and a voice channel `lounge`.
 3. Arrow keys in the channel list move between channels and the reader names each.
 4. Type a message in the composer and press Enter. Nothing is announced for your own message.
 5. Have B send "hello" to `#general`: the reader announces "B, 10:42: hello" once, without moving the focus.
-6. With the reader's own cursor (Orca flat review, VO+arrows, NVDA object navigation) the log's messages read as
+6. Tab to the log: the newest message is read ("B, 10:42: hello", article). Up, Down, Home and End step through the
+   messages, each read the same way; Tab goes to that message's actions ("react", "reply", "reply in thread",
+   "more actions"); Escape goes back to the message, Escape again to the composer.
+7. With the reader's own cursor (Orca flat review, VO+arrows, NVDA object navigation) the log's messages read as
    "author, time: text", one per message.
 
 ## 3. Join a call

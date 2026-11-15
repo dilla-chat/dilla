@@ -158,10 +158,9 @@ the updater and packaging.
   is kept per channel), and the operating system's microphone prompt is the system's own.
 - **Screen readers:** the app exposes itself to Orca, VoiceOver and NVDA through AccessKit: every control is named, the shell has
   its landmarks (servers, channels, the message log, the call controls), messages are read with their author and time,
-  and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Not yet:
-  messages cannot be stepped through one by one with the arrow keys (a reader's own cursor reads them), the recovery
-  key and an authenticator secret are not read out (use Copy), and a few hover-only controls (a category's "+", the
-  message toolbar) are reached only by the pointer or a reader's cursor.
+  and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Tab reaches
+  the newest message; Up, Down, Home and End step through the messages, Tab reaches the focused message's actions and
+  Escape goes back to the composer. Not yet: the recovery key and an authenticator secret are not read out (use Copy).
 - **Push to talk outside the window:** the key works only while the app has focus. Operating-system-wide push to talk
   comes after the switch.
 - **Video player menu:** the browser player's ⋮ menu (download, playback speed, picture in picture) is not there; save

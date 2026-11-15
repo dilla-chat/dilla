@@ -109,10 +109,17 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
                         .size(Pixels::from(css::GLYPH))
                         .color(color::FG_3),
                 )
+                // The conversation's `<h1>`: its name.
                 .child(
-                    line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
-                        .weight(font::WEIGHT_DISPLAY)
-                        .ellipsis(),
+                    dilla_desktop_ui::a11y::heading(
+                        1,
+                        name.clone(),
+                        line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
+                            .weight(font::WEIGHT_DISPLAY)
+                            .ellipsis(),
+                    )
+                    .flex()
+                    .min_w_0(),
                 ),
         )
         .child(
@@ -168,10 +175,17 @@ fn dm_bar(name: String, topic: Option<String>) -> impl IntoElement {
                         .size(Pixels::from(css::GLYPH))
                         .color(color::FG_3),
                 )
+                // The conversation's `<h1>`: its name.
                 .child(
-                    line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
-                        .weight(font::WEIGHT_DISPLAY)
-                        .ellipsis(),
+                    dilla_desktop_ui::a11y::heading(
+                        1,
+                        name.clone(),
+                        line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
+                            .weight(font::WEIGHT_DISPLAY)
+                            .ellipsis(),
+                    )
+                    .flex()
+                    .min_w_0(),
                 ),
         )
         .children(topic.map(|topic| {

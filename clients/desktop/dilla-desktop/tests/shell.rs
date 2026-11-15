@@ -220,7 +220,7 @@ fn keyboard_shell_focus_order() {
     let mut app = launch("shell/categories");
     app.wait_idle();
     let mut seen = Vec::new();
-    for _ in 0..16 {
+    for _ in 0..32 {
         app.press("tab");
         if let Some(id) = app.focused()
             && seen.last() != Some(&id)

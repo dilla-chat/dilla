@@ -98,12 +98,14 @@ impl RenderOnce for EmptyState {
             .gap(px(8.0))
             .px(px(24.0))
             .py(px(48.0))
-            .child(
+            .child(crate::a11y::heading(
+                2,
+                self.title.clone(),
                 line(self.title, text::LG, line_height(text::LG, 1.5), color::FG)
                     .weight(font::WEIGHT_DISPLAY),
-            )
+            ))
             .child(
-                div()
+                crate::a11y::paragraph(self.body.clone(), div())
                     .flex()
                     .flex_col()
                     .items_center()

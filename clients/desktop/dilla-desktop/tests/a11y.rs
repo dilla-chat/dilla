@@ -346,3 +346,111 @@ fn sign_in_onboarding_and_factor_pass_the_tree_lint() {
         lint_fixture(name);
     }
 }
+
+/// Presses Tab until the focus is on a node with `role`, at most `max` times; answers the tree there.
+fn tab_to(app: &mut Driver, role: &str, max: usize) -> Tree {
+    for _ in 0..max {
+        app.press("tab");
+        let tree = app.a11y_tree();
+        if tree.focused().is_some_and(|n| n.role == role) {
+            return tree;
+        }
+    }
+    panic!("no {role} in the first {max} tab stops");
+}
+
+fn focused_name(tree: &Tree) -> (String, String) {
+    let n = tree.focused().expect("a node holds the focus");
+    (n.role.clone(), n.name().unwrap_or_default().to_owned())
+}
+
+/// Conversation.tsx `rowKey` (web-2b): the log's messages are one tab stop, the newest; Up and Down step through them,
+/// Home and End go to the first and the newest, Escape goes to the composer. The focused row shows its toolbar, whose
+/// buttons Tab reaches (MessageRow.css `:focus-within`).
+#[test]
+fn messages_are_stepped_through_with_the_arrow_keys() {
+    let mut app = launch("shell/conversation");
+    app.a11y_tree();
+    let at_newest = tab_to(&mut app, "Article", 30);
+    let newest = focused_name(&at_newest);
+    assert!(
+        at_newest.by_role("Article").count() >= 3,
+        "the log's rows are in the tree"
+    );
+    app.press("up");
+    let above = focused_name(&app.a11y_tree());
+    assert_eq!(above.0, "Article");
+    assert_ne!(above.1, newest.1, "Up moves to the message above");
+    app.press("down");
+    assert_eq!(focused_name(&app.a11y_tree()), newest, "Down comes back");
+    app.press("down");
+    assert_eq!(
+        focused_name(&app.a11y_tree()),
+        newest,
+        "the newest is the last stop"
+    );
+    app.press("home");
+    let first = focused_name(&app.a11y_tree());
+    assert_eq!(first.0, "Article");
+    assert_ne!(first.1, newest.1, "Home goes to the first message");
+    app.press("end");
+    assert_eq!(
+        focused_name(&app.a11y_tree()),
+        newest,
+        "End goes to the newest"
+    );
+    // The focused row's toolbar is reachable: Tab goes into it.
+    app.press("tab");
+    let tool = focused_name(&app.a11y_tree());
+    assert_eq!(tool.0, "Button", "Tab from a row reaches its toolbar");
+    assert!(
+        ["react", "reply", "reply in thread", "more"].contains(&tool.1.as_str()),
+        "a toolbar button, not {tool:?}"
+    );
+    // Escape on a toolbar button goes back to its row, and on the row to the composer.
+    app.press("escape");
+    assert_eq!(focused_name(&app.a11y_tree()), newest);
+    app.press("escape");
+    let composer = focused_name(&app.a11y_tree());
+    assert_eq!(
+        composer.0, "MultilineTextInput",
+        "Escape goes to the composer"
+    );
+}
+
+/// ChannelList.css: a category's "+" is a button the keyboard reaches (it shows while it has the focus).
+#[test]
+fn a_categorys_add_button_is_reached_by_tab() {
+    let mut app = launch("notify/dm-badge");
+    let tree = app.a11y_tree();
+    let add = tree
+        .nodes
+        .iter()
+        .find(|n| n.role == "Button" && n.name().is_some_and(|l| l.starts_with("new channel in")))
+        .unwrap_or_else(|| {
+            let buttons: Vec<&str> = tree.by_role("Button").filter_map(|n| n.name()).collect();
+            panic!("no category's + among the buttons {buttons:?}")
+        });
+    assert!(add.focus, "the + takes the keyboard's focus");
+}
+
+/// The text the web exposed: the conversation's heading, a settings section's heading, a row's label and hint.
+#[test]
+fn headings_and_hints_have_nodes() {
+    let mut app = launch("shell/conversation");
+    let tree = app.a11y_tree();
+    assert!(
+        tree.has("Heading", "general"),
+        "the channel header's heading"
+    );
+    let mut app = launch("user-settings/appearance");
+    let tree = app.a11y_tree();
+    assert!(
+        tree.by_role("Heading").count() >= 1,
+        "the section's heading is in the tree"
+    );
+    assert!(
+        tree.by_role("Label").any(|n| n.name().is_some()),
+        "a settings row's label is in the tree"
+    );
+}
