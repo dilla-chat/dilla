@@ -24,6 +24,8 @@ pub mod row;
 pub mod segmented;
 pub mod select;
 pub mod settings;
+// The screen-share picker (GPUI parity plan Package 2).
+pub mod share_picker;
 pub mod state_dot;
 pub mod tag;
 pub mod text_field;

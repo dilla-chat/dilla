@@ -587,3 +587,19 @@ fn a_handled_key_down_between_cancels_an_armed_activation(cx: &mut TestAppContex
     press_and_release(vcx, "space");
     assert_eq!(clicks.get(), 1, "Space alone still clicks");
 }
+
+/// gpui-pre-linux's DILLA PATCH (Package 9): AltGr's state, which gpui's `Modifiers` cannot carry, is kept for the app on
+/// the thread that handles the keyboard, starting let go.
+#[cfg(target_os = "linux")]
+#[test]
+fn altgr_s_state_is_kept_for_the_app() {
+    assert!(!gpui_linux::level3_shift_active(), "let go at the start");
+    gpui_linux::set_level3_shift_active(true);
+    assert!(gpui_linux::level3_shift_active());
+    let other = std::thread::spawn(gpui_linux::level3_shift_active)
+        .join()
+        .unwrap();
+    assert!(!other, "kept on its own thread");
+    gpui_linux::set_level3_shift_active(false);
+    assert!(!gpui_linux::level3_shift_active());
+}

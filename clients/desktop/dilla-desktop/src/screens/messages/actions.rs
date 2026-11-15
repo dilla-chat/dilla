@@ -154,6 +154,7 @@ mod tests {
             pinned,
             attachments: Vec::new(),
             mention: false,
+            actions: Vec::new(),
         }
     }
 

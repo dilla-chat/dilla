@@ -247,6 +247,76 @@ mod behaviour {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// e2e/voice/media-attachments.spec.ts, "bob plays alice's webm … inline" (parity plan Package 12): a real VP8 and
+    /// Opus WebM goes through a real dillad, bob's copy plays in its card through the app's own path (libwebrtc's VP8
+    /// decoder, Opus through rodio): its pictures advance with the clock, its sound plays and pause holds.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    async fn webm_plays_inline() {
+        use dilla_desktop::screens::attachments::video::{self, VideoPlayback};
+
+        let (_host, pa, pb, c) = two_people("p12-video").await;
+        let (alice, bob) = (start(&pa).await, start(&pb).await);
+        let channel = general(&alice, c).await;
+        general(&bob, c).await;
+        alice.open_channel(channel).await.unwrap().unwrap();
+        bob.open_channel(channel).await.unwrap().unwrap();
+
+        let clip =
+            include_bytes!("../src/screens/attachments/testdata/video-vp8-opus.webm").to_vec();
+        let tray = alice.attachments().tray(channel);
+        tray.add(vec![NewFile::from_bytes(
+            "clip.webm",
+            "video/webm",
+            clip.clone(),
+        )])
+        .await
+        .unwrap();
+        let d = tray.take_all().unwrap();
+        alice
+            .attachments()
+            .send(channel, "the clip".into(), d, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let s = wait_for(&bob, WAIT, "alice's clip", |s| {
+            row(s, channel, "the clip").is_some_and(|r| r.attachments.len() == 1)
+        })
+        .await;
+        let seq = row(&s, channel, "the clip").unwrap().seq.unwrap();
+        let opened = bob
+            .attachments()
+            .open(channel, seq, 0, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.bytes.as_slice(), clip.as_slice());
+
+        let video =
+            video::open(Arc::new(opened.bytes), "video/webm").expect("the WebM plays inline");
+        assert!(video.has_audio());
+        assert_eq!((video.poster.width, video.poster.height), (96, 64));
+        let (mut p, out) = VideoPlayback::start_detached(video);
+        // The sound: the tone comes out of the detached player (CI has no device).
+        let samples: Vec<f32> = out.expect("a sound track").take(24_000).collect();
+        let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt();
+        assert!(rms > 0.05, "the tone plays (rms {rms})");
+        // The pictures follow the clock.
+        let start = std::time::Instant::now();
+        while p.frame().pts < Duration::from_millis(500) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the pictures advance"
+            );
+            let _ = p.tick();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        p.pause();
+        let held = p.position();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(p.position(), held, "pause holds the clock");
+    }
+
     /// The former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/test/electron/shell.spec.ts), "downloads a decrypted local attachment while refusing blob document
     /// navigation", for the native shell (it has no document to navigate): the card's Save opens bob's copy of alice's
     /// file, asks the save dialog for a path, and writes the decrypted bytes there, and nothing before the person picks

@@ -33,6 +33,7 @@ fn item() -> TimelineItem {
         pinned: false,
         attachments: Vec::new(),
         mention: false,
+        actions: Vec::new(),
     }
 }
 

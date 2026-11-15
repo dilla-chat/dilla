@@ -2,6 +2,9 @@
 //! its Restart, the capability switches, the voice access row, then (while it is enabled) the health line with the command
 //! key, the Bot channels, and the webhooks.
 //!
+//! The card's menu (its right click, Shift+F10, the Menu key, or the `⋯` beside Restart) renames the Bot, reads its status
+//! again and disables it (BotSection.tsx `glennMenuItems`).
+//!
 //! A webhook's address carries its secret: it is shown once, in its dialog, from a [`Zeroizing`] string that is dropped
 //! (and wiped) when the dialog closes; it is never kept in the slice and never logged. It is turned into text only inside
 //! the dialog's render, as an element of its own. GPUI's text system keeps a shared copy of the shown string (a plain
@@ -18,6 +21,7 @@ use dilla_client::state::bot_admin::{BotWebhook, Installation, health_line};
 use dilla_client::state::{ChannelId, CommunityId};
 use dilla_client::{Client, ClientError};
 use dilla_desktop_ui::IconName;
+use dilla_desktop_ui::components::action_menu::MenuItem;
 use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
 use dilla_desktop_ui::components::dialog::{Dialog, InitialFocus};
 use dilla_desktop_ui::components::select::Select;
@@ -139,6 +143,47 @@ pub struct BotPage {
     re_adding: Option<ChannelId>,
     re_add_note: Option<(ChannelId, String)>,
     restarting: bool,
+    /// The rename dialog: open, its field and its refusal.
+    renaming: bool,
+    bot_name: Entity<InputState>,
+    name_error: Option<String>,
+    /// The name a rename saved, for the Bot's account (BotSection.tsx `botNameOverride`): the member row keeps the
+    /// community nickname the Bot joined with, so the page names the Bot by the saved name.
+    name_override: Option<(dilla_client::state::UserId, String)>,
+    /// A status read from the menu is in flight.
+    refreshing: bool,
+}
+
+/// The card menu's entries (BotSection.tsx `glennMenuItems`): Rename for a manager once the Bot is a member, Refresh
+/// status once there is an installation, Disable (danger, after a separator) for a manager while it is enabled.
+pub fn card_menu(
+    bot_member: bool,
+    manager: bool,
+    installation: Option<&Installation>,
+    bot: &str,
+) -> Vec<MenuItem> {
+    let enabled = installation.is_some_and(|i| i.state != 4);
+    let mut items = Vec::new();
+    if bot_member && manager {
+        items.push(MenuItem::new("rename", t("serverSettings.bot.menu.rename")));
+    }
+    if installation.is_some() {
+        items.push(MenuItem::new(
+            "refresh",
+            t("serverSettings.bot.menu.refresh"),
+        ));
+    }
+    if enabled && manager {
+        items.push(
+            MenuItem::new(
+                "disable",
+                tf("serverSettings.bot.menu.disable", &[("bot", bot)]),
+            )
+            .danger()
+            .sep(),
+        );
+    }
+    items
 }
 
 impl BotPage {
@@ -160,6 +205,11 @@ impl BotPage {
             re_adding: None,
             re_add_note: None,
             restarting: false,
+            renaming: false,
+            bot_name: cx.new(|cx| InputState::new(window, cx)),
+            name_error: None,
+            name_override: None,
+            refreshing: false,
         }
     }
 
@@ -338,6 +388,115 @@ impl BotPage {
         });
     }
 
+    /// The Bot's member row (the installation's user), when the member list holds it.
+    fn bot_member(&self) -> Option<&dilla_client::state::Member> {
+        let community = self.ctx.community?;
+        let user = self.installation()?.user_id?;
+        self.ctx
+            .state
+            .members
+            .get(&community)?
+            .iter()
+            .find(|m| m.user_id == user)
+    }
+
+    /// The card menu's pick.
+    fn menu_pick(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match id {
+            "rename" => self.open_rename(window, cx),
+            "refresh" => self.refresh(window, cx),
+            "disable" => self.disable(window, cx),
+            _ => {}
+        }
+    }
+
+    /// Opens the rename dialog with the Bot's name in its field.
+    fn open_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bot_member().is_none() {
+            return;
+        }
+        let current = self.bot_name();
+        self.name_error = None;
+        self.renaming = true;
+        self.bot_name
+            .update(cx, |input, cx| input.set_value(current, window, cx));
+        cx.notify();
+    }
+
+    /// BotSection.tsx `saveBotName`: a blank name is refused in place; the saved name closes the dialog.
+    fn save_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(admin), Some(community)) = (self.admin(), self.ctx.community) else {
+            return;
+        };
+        if self.busy || !self.is_manager() || self.bot_member().is_none() {
+            return;
+        }
+        let display = self.bot_name.read(cx).value().trim().to_owned();
+        if display.is_empty() {
+            self.name_error = Some(t("admin.bot.name.invalid").to_owned());
+            cx.notify();
+            return;
+        }
+        self.busy = true;
+        self.name_error = None;
+        let user = self.bot_member().map(|m| m.user_id);
+        let rx = admin.rename_bot(community, &display);
+        self.run(rx, window, cx, move |this, answer, window, cx| {
+            this.busy = false;
+            match answer {
+                Ok(saved) => {
+                    this.renaming = false;
+                    this.name_override = user.map(|u| (u, saved.clone()));
+                    this.bot_name
+                        .update(cx, |input, cx| input.set_value(saved, window, cx));
+                }
+                Err(e) => this.name_error = Some(error_line(&e)),
+            }
+        });
+    }
+
+    /// BotSection.tsx `refreshStatus`: reads the installation and the Bot's status again; a failed read says why.
+    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(admin), Some(community)) = (self.admin(), self.ctx.community) else {
+            return;
+        };
+        if self.refreshing {
+            return;
+        }
+        self.refreshing = true;
+        self.error = None;
+        drop(admin.refresh_status(community));
+        let rx = admin.refresh_installation(community);
+        self.run(rx, window, cx, |this, answer, _, _| {
+            this.refreshing = false;
+            if let Err(e) = answer {
+                this.error = Some(error_line(&e));
+            }
+        });
+    }
+
+    /// BotSection.tsx `disable`: disables the installation at the revision the page holds.
+    fn disable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(admin), Some(community), Some(installation)) =
+            (self.admin(), self.ctx.community, self.installation())
+        else {
+            return;
+        };
+        if self.busy || !self.is_manager() {
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        let rx = admin.disable_installation(community, request_id(), installation.revision);
+        self.run(rx, window, cx, |this, answer, _, _| {
+            this.busy = false;
+            match answer {
+                Ok(_) => this.edited = None,
+                Err(e) => this.error = Some(error_line(&e)),
+            }
+        });
+    }
+
     /// Saves the capability switches, behind a fresh second factor.
     fn save_capabilities(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(admin), Some(community)) = (self.admin(), self.ctx.community) else {
@@ -416,6 +575,11 @@ impl BotPage {
             return t("serverSettings.bot.fallbackName").to_owned();
         };
         let user = self.installation().and_then(|i| i.user_id);
+        if let Some((saved_for, saved)) = &self.name_override
+            && Some(*saved_for) == user
+        {
+            return saved.clone();
+        }
         self.ctx
             .state
             .members
@@ -479,13 +643,30 @@ impl Render for BotPage {
             let (restarting, installation) = (self.restarting, installation.clone());
             let this = cx.entity();
             let bot_name = bot.clone();
+            let menu = card_menu(
+                self.bot_member().is_some(),
+                manager,
+                installation.as_ref(),
+                &bot,
+            );
+            let picker = cx.entity();
             rows.push(Box::new(move |position| {
-                let mut row = SettingsRow::new("bot-glenn", bot_name)
+                let mut row = SettingsRow::new("bot-glenn", bot_name.clone())
                     .full_measure()
                     .icon(IconName::Bot)
                     .tag(t("serverSettings.bot.tag"))
                     .hint(card_hint)
                     .position(position);
+                if !menu.is_empty() {
+                    row = row.menu(
+                        tf("serverSettings.bot.menu", &[("bot", &bot_name)]),
+                        menu,
+                        Some(&tf("serverSettings.bot.moreActions", &[("bot", &bot_name)])),
+                        move |id, window, cx| {
+                            picker.update(cx, |page, cx| page.menu_pick(id, window, cx));
+                        },
+                    );
+                }
                 if enabled {
                     let target = installation.clone();
                     row = row.child(
@@ -1024,10 +1205,52 @@ impl BotPage {
                 }
             });
         });
+        // The rename dialog (BotSection.tsx: `serverSettings.bot.rename.title`, the display-name field, Save bot name).
+        let (save, close_rename) = (cx.entity(), cx.entity());
+        let mut field = TextField::new(
+            "bot-display-name",
+            t("admin.bot.name.label"),
+            &self.bot_name,
+        );
+        if let Some(e) = &self.name_error {
+            field = field.error(e.clone());
+        }
+        let draft_empty = self.bot_name.read(cx).value().trim().is_empty();
+        let rename = Dialog::new(
+            "bot-rename",
+            tf(
+                "serverSettings.bot.rename.title",
+                &[("bot", &self.bot_name())],
+            ),
+            t("admin.cancel"),
+        )
+        .open(self.renaming)
+        .initial_focus(InitialFocus::Handle(gpui::Focusable::focus_handle(
+            &self.bot_name,
+            cx,
+        )))
+        .body(field)
+        .footer(
+            Button::new("bot-rename-save", t("admin.bot.name.save"))
+                .variant(ButtonVariant::Accent)
+                .size(ButtonSize::Dialog)
+                .disabled(busy || draft_empty)
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    save.update(cx, |page, cx| page.save_name(window, cx));
+                }),
+        )
+        .on_close(move |_, cx| {
+            close_rename.update(cx, |page, cx| {
+                page.renaming = false;
+                page.name_error = None;
+                cx.notify();
+            });
+        });
         div()
             .child(create)
             .child(address)
             .child(delete)
+            .child(rename)
             .into_any_element()
     }
 }

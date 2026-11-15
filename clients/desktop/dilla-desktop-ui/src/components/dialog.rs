@@ -21,6 +21,7 @@ use gpui::{
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
+use crate::a11y::Accessible;
 use crate::metrics::shadow_3;
 use crate::text::line_height;
 use crate::tokens::{color, font, radius, text};
@@ -187,6 +188,10 @@ pub struct Dialog {
     on_close: Option<CloseHandler>,
     on_backdrop: Option<CloseHandler>,
     in_section: bool,
+    /// A wider form dialog's own width (`min(width, 100vw - 24px)`), as a component's CSS widens `.d-dialog` (the
+    /// screen-share picker's 680px).
+    wide: Option<f32>,
+    a11y_description: Option<SharedString>,
 }
 
 impl Dialog {
@@ -213,7 +218,15 @@ impl Dialog {
             on_close: None,
             on_backdrop: None,
             in_section: false,
+            wide: None,
+            a11y_description: None,
         }
+    }
+
+    /// `.d-dialog:has(...) { width: min(<width>px, calc(100vw - 24px)) }`: a form dialog wider than 520px.
+    pub fn width(mut self, width: f32) -> Self {
+        self.wide = Some(width);
+        self
     }
 
     /// The web renders this dialog's `<dialog>` as a child of a settings section (`.d-settings-frame__body > section`, a
@@ -244,6 +257,12 @@ impl Dialog {
     /// Drawn under the title, in the head (a confirmation's body).
     pub fn description(mut self, description: impl IntoElement) -> Self {
         self.description = Some(description.into_any_element());
+        self
+    }
+
+    /// What a screen reader says after the dialog's name (`aria-describedby`): a confirmation's body text.
+    pub fn a11y_description(mut self, text: impl Into<SharedString>) -> Self {
+        self.a11y_description = Some(text.into());
         self
     }
 
@@ -423,14 +442,26 @@ impl RenderOnce for Dialog {
         }
         footer = footer.children(self.footer);
 
-        let mut panel_el = div()
-            .id((self.id.clone(), "panel"))
+        // `<dialog aria-modal aria-labelledby=title>`; a confirm is an alert dialog (it asks before something happens).
+        let panel_el = div().id((self.id.clone(), "panel"));
+        let mut panel_el = if confirm {
+            panel_el.modal_alert(self.title.clone())
+        } else {
+            panel_el.modal_dialog(self.title.clone())
+        };
+        if let Some(text) = self.a11y_description.clone() {
+            panel_el = panel_el.aria_description(text);
+        }
+        let mut panel_el = panel_el
             .track_focus(&panel)
             .key_context(OVERLAY_CONTEXT)
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(self.kind.width(f32::from(viewport.width))))
+            .w(px(self.wide.map_or_else(
+                || self.kind.width(f32::from(viewport.width)),
+                |w| w.min(f32::from(viewport.width) - 24.0),
+            )))
             .max_h(viewport.height - px(top_offset(f32::from(viewport.height)) + 20.0))
             .bg(color::SURFACE)
             .border_1()

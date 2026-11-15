@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use super::dialog::{MENU_CONTEXT, MenuNext, MenuPrevious};
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring, shadow_menu};
@@ -23,6 +24,7 @@ use crate::roving::menu_next;
 pub use crate::roving::opens_context_menu;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
+use gpui::accesskit::HasPopup;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuItem {
@@ -275,8 +277,12 @@ impl RenderOnce for ActionMenu {
             };
             let click_open = open_with.clone();
             let label = self.label.clone();
+            // `aria-haspopup="menu" aria-expanded`.
             let mut button = div()
                 .id((self.id.clone(), "trigger"))
+                .a11y(Role::Button, self.label.clone())
+                .aria_expanded(open)
+                .node_props(|n| n.set_has_popup(HasPopup::Menu))
                 .track_focus(&trigger)
                 .tab_stop(true)
                 .flex()
@@ -320,6 +326,7 @@ impl RenderOnce for ActionMenu {
         // The popup.
         let mut popup = div()
             .id((self.id.clone(), "popup"))
+            .a11y(Role::Menu, self.label.clone())
             .flex()
             .flex_col()
             .min_w(px(176.0))
@@ -381,22 +388,24 @@ impl RenderOnce for ActionMenu {
                 }
             });
         for (i, item) in self.items.iter().enumerate() {
+            // ActionMenu.tsx: the rule, then the heading, then the item.
+            if item.sep {
+                popup = popup.child(div().h(px(1.0)).mx(px(6.0)).my(px(4.0)).bg(color::HAIRLINE));
+            }
             if let Some(heading) = &item.heading {
                 popup = popup.child(
                     div().px(px(8.0)).pt(px(6.0)).pb(px(2.0)).child(
                         line(
                             heading.to_uppercase(),
                             text::MICRO,
-                            line_height(text::MICRO, 1.5),
+                            // The web's heading is 21px tall: 6 + its line at 1.3 (13) + 2.
+                            line_height(text::MICRO, 1.3),
                             color::FG_3,
                         )
                         .weight(font::WEIGHT_LABEL)
                         .tracking(LABEL_TRACKING_WIDE),
                     ),
                 );
-            }
-            if item.sep {
-                popup = popup.child(div().h(px(1.0)).mx(px(6.0)).my(px(4.0)).bg(color::HAIRLINE));
             }
             popup = popup.child(menu_row(
                 (self.id.clone(), format!("item-{}", item.id)),
@@ -520,6 +529,22 @@ fn menu_row(
                     .color(color::ACCENT),
             ),
         );
+    }
+    // `menuitem`, `menuitemcheckbox` (an on/off item) or `menuitemradio` (a single choice), named with its hint (a
+    // shortcut or a head count) as the description.
+    let role = if item.check.is_some() {
+        Role::MenuItemCheckBox
+    } else if item.checked.is_some() {
+        Role::MenuItemRadio
+    } else {
+        Role::MenuItem
+    };
+    row = row.a11y(role, item.label.clone());
+    if let Some(on) = item.check.or(item.checked) {
+        row = row.toggled(on);
+    }
+    if let Some(hint) = &item.hint {
+        row = row.aria_description(hint.clone());
     }
     let (id, keeps_open) = (item.id.clone(), item.keeps_open());
     row.on_click(move |_, window, cx| {

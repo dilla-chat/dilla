@@ -58,10 +58,17 @@ fn main() {
         "src/packet_trailer.rs",
         // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
         "src/dilla_transform.rs",
+        // DILLA PATCH: the inline attachment player's standalone video decoder (core/vendor/README.md).
+        "src/dilla_video_decoder.rs",
     ];
 
     if is_desktop {
         rust_files.push("src/desktop_capturer.rs");
+    }
+    // DILLA PATCH: the desktop client's camera (libwebrtc's VideoCaptureModule: V4L2, DirectShow).
+    let dilla_camera = target_os == "linux" || target_os == "windows";
+    if dilla_camera {
+        rust_files.push("src/dilla_camera.rs");
     }
     // DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.
     let dilla_test_frames = env::var("CARGO_FEATURE_DILLA_TEST_FRAMES").is_ok();
@@ -108,14 +115,23 @@ fn main() {
         "src/packet_trailer_av1.cpp",
         // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
         "src/dilla_transform.cpp",
+        // DILLA PATCH: the inline attachment player's standalone video decoder (core/vendor/README.md).
+        "src/dilla_video_decoder.cpp",
     ]);
 
     if is_desktop {
         builder.file("src/desktop_capturer.cpp");
     }
+    if dilla_camera {
+        builder.file("src/dilla_camera.cpp");
+    }
     if dilla_test_frames {
         builder.file("src/dilla_transform_testing.cpp");
         builder.define("DILLA_TEST_FRAMES", None);
+    }
+    // DILLA PATCH: VideoToolbox for the attachment player's H.264/H.265, only on request (see Cargo.toml).
+    if env::var("CARGO_FEATURE_DILLA_VIDEO_TOOLBOX").is_ok() {
+        builder.define("DILLA_VIDEO_TOOLBOX", None);
     }
 
     let webrtc_dir = webrtc_sys_build::webrtc_dir();

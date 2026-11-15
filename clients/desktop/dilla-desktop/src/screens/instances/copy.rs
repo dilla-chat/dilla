@@ -49,4 +49,3 @@ pub const ERROR_CHANGED: &str =
     "Your instances changed in another window. Check the list and try again.";
 pub const ERROR_WRONG_INSTANCE: &str =
     "This window belongs to another instance. Sign in to its own address.";
-pub const KEY_MISSING: &str = "This instance's key is gone from the system keychain, so its data on this device cannot be read. Remove it in \"Your instances\" and connect again.";

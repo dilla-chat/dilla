@@ -15,6 +15,7 @@ pub mod keys;
 pub mod markdown;
 pub mod mentions;
 pub mod moderation;
+pub mod send_state;
 pub mod slow;
 pub mod toolbar;
 pub mod typing;

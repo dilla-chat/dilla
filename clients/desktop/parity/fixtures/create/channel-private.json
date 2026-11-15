@@ -1,0 +1,130 @@
+{
+  "name": "create/channel-private",
+  "window": [
+    1280,
+    800
+  ],
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "roles": [
+          {
+            "id": "crew",
+            "name": "crew",
+            "colour": "#5aa8e6",
+            "permissions": [
+              "view",
+              "send",
+              "history",
+              "react"
+            ],
+            "members": [
+              "mira"
+            ]
+          },
+          {
+            "id": "watch",
+            "name": "night watch",
+            "colour": "#ffd16a",
+            "permissions": [
+              "view",
+              "send",
+              "history",
+              "react"
+            ],
+            "members": [
+              "bjorn"
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481678,
+        "body": "morning, crew"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481708,
+        "body": "morning! who is on watch today?"
+      }
+    ]
+  },
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=button[name=\"new channel\"s]",
+      "gpui": "channel-list-add-button"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "key",
+      "chord": "tab"
+    },
+    {
+      "do": "key",
+      "chord": "space"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "key",
+      "chord": "tab"
+    },
+    {
+      "do": "key",
+      "chord": "space"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

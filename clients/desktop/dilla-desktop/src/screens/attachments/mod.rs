@@ -8,6 +8,7 @@
 pub mod keys;
 pub mod media;
 pub mod ui;
+pub mod video;
 
 use std::rc::Rc;
 
@@ -22,6 +23,9 @@ use dilla_desktop_ui::components::attachments::card::{
 };
 use dilla_desktop_ui::components::attachments::player::{MediaCardProps, PlayerState, media_card};
 use dilla_desktop_ui::components::attachments::tray::{Preview, Step, TrayEntry};
+use dilla_desktop_ui::components::attachments::video::{
+    MenuView, PipMode, VideoView, video_fullscreen,
+};
 use dilla_desktop_ui::components::attachments::{
     OnClick, ROW_GAP, drop_overlay, gif_picker, lightbox, tray as tray_view,
 };
@@ -294,7 +298,13 @@ pub fn attachment_cards(
                 ));
                 let el = div()
                     .relative()
-                    .child(image_tile(id, w, shown, badge, open))
+                    .child(image_tile(
+                        id,
+                        w,
+                        shown,
+                        badge,
+                        open.map(|o| (tf("shell.attachment.open", &[("name", &name)]).into(), o)),
+                    ))
                     .child(probe)
                     .into_any_element();
                 cards.push(with_state(el, w, tile_height(w), state_text));
@@ -314,6 +324,32 @@ pub fn attachment_cards(
                         position: p.position(),
                         duration: p.duration(),
                     },
+                    Some(Player::Video(v)) => PlayerState::Ready {
+                        playing: !v.playback.is_paused() && !v.playback.ended(),
+                        position: v.playback.position(),
+                        duration: v.playback.duration(),
+                    },
+                };
+                let in_pip = ui::ui(cx).pip.as_ref().is_some_and(|p| p.key == k);
+                let video_view = match ui::ui(cx).players.get_mut(&k) {
+                    Some(Player::Video(v)) => {
+                        // The ⋮ menu's Download is this card's save.
+                        let (c, n) = (ctx.client.clone(), save_name.clone());
+                        v.save = Some(Rc::new(move |cx: &mut App| {
+                            if let Some(c) = &c {
+                                ui::save(c, k, &n, cx)
+                            }
+                        }));
+                        let pip = if in_pip {
+                            PipMode::Elsewhere {
+                                notice: t("media.control.pipActive").into(),
+                            }
+                        } else {
+                            PipMode::Inline
+                        };
+                        Some(video_view(k, v, false, &name, pip))
+                    }
+                    _ => None,
                 };
                 let mime = a.mime.clone();
                 let props = MediaCardProps {
@@ -337,6 +373,7 @@ pub fn attachment_cards(
                             ui::save(c, k, &save_name, cx)
                         }
                     })),
+                    video_view,
                 };
                 let width =
                     dilla_desktop_ui::components::attachments::player::media_card_width(&props);
@@ -349,6 +386,8 @@ pub fn attachment_cards(
             }
             _ => {
                 let meta = card::file_meta(&name, &size);
+                let save_label: SharedString =
+                    tf("shell.attachment.save", &[("name", &name)]).into();
                 let save = key.filter(|_| !too_large).map(|k| {
                     let client = ctx.client.clone();
                     click(move |_, cx| {
@@ -363,6 +402,7 @@ pub fn attachment_cards(
                         - state
                             .as_ref()
                             .map_or(0.0, |_| STATE_GAP + state_line_height());
+                    let save = save.map(|s| (save_label, s));
                     let el = file_card(id, name, meta, save, own.max(file_card_height()));
                     match state {
                         None => el,
@@ -617,6 +657,13 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                 .into_any_element(),
         );
     }
+    if let Some(element) = fullscreen_overlay(here, window, cx) {
+        out.push(
+            deferred(anchored().position(gpui::Point::default()).child(element))
+                .with_priority(4)
+                .into_any_element(),
+        );
+    }
     if let Some(element) = lightbox_overlay(here, cx) {
         let full = div()
             .w(viewport.width)
@@ -693,6 +740,164 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
         );
     }
     out
+}
+
+/// A ready video's picture and controls, wired to its card's player.
+fn video_view(
+    key: CardKey,
+    v: &ui::VideoState,
+    fullscreen: bool,
+    name: &str,
+    pip: PipMode,
+) -> VideoView {
+    let p = &v.playback;
+    let frame = p.frame();
+    let place = match (&pip, fullscreen) {
+        (PipMode::Window { .. }, _) => "-pip",
+        (_, true) => "-full",
+        _ => "",
+    };
+    VideoView {
+        id: format!(
+            "video-{}-{}-{}-{}{place}",
+            key.client, key.channel, key.seq, key.index,
+        )
+        .into(),
+        image: frame.image.clone(),
+        picture: (frame.width, frame.height),
+        playing: !p.is_paused() && !p.ended(),
+        position: p.position(),
+        duration: p.duration(),
+        volume: p.volume(),
+        muted: p.muted(),
+        sound: p.has_audio(),
+        controls: v.controls(),
+        fullscreen,
+        label: name.to_owned().into(),
+        play_label: t("media.control.play").into(),
+        pause_label: t("media.control.pause").into(),
+        mute_label: t("media.control.mute").into(),
+        unmute_label: t("media.control.unmute").into(),
+        fullscreen_label: t("media.control.fullscreen").into(),
+        exit_fullscreen_label: t("media.control.exitFullscreen").into(),
+        on_toggle: click(move |_, cx| ui::toggle(key, cx)),
+        on_mute: click(move |_, cx| ui::toggle_video_mute(key, cx)),
+        on_fullscreen: click(move |w, cx| ui::toggle_video_fullscreen(key, w, cx)),
+        on_seek: Rc::new(move |f, _, cx| ui::seek_video(key, f, cx)),
+        on_volume: Rc::new(move |f, _, cx| ui::set_video_volume(key, f, cx)),
+        on_motion: Rc::new(move |_, cx| ui::video_motion(key, cx)),
+        menu: MenuView {
+            open: v.menu.open,
+            at: v.menu.at,
+            speed_page: v.menu.speed_page,
+            speed: p.speed(),
+            more_label: t("media.control.more").into(),
+            download_label: t("media.control.download").into(),
+            speed_label: t("media.control.speed").into(),
+            normal_label: t("media.control.speedNormal").into(),
+            pip_label: t("media.control.pip").into(),
+            on_open: Rc::new(move |open, at, _, cx| ui::open_video_menu(key, open, at, cx)),
+            on_pick: Rc::new(move |id, _, cx| ui::pick_video_menu(key, id, cx)),
+        },
+        pip,
+    }
+}
+
+/// The picture-in-picture window's view: the card's video filling the window, with play or pause, back to the card and
+/// close; it closes itself when the player goes (a released client, a replaced player).
+pub struct PipView {
+    pub key: CardKey,
+}
+
+impl gpui::Render for PipView {
+    fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let key = self.key;
+        let size = window.viewport_size();
+        let view = match ui::ui(cx).players.get(&key) {
+            Some(Player::Video(v)) => Some(video_view(
+                key,
+                v,
+                true,
+                "",
+                PipMode::Window {
+                    back_label: t("media.control.backToTab").into(),
+                    close_label: t("media.control.closePip").into(),
+                    on_back: click(|_, cx| ui::close_pip(cx)),
+                    on_close: click(move |_, cx| {
+                        with_paused(key, cx);
+                        ui::close_pip(cx)
+                    }),
+                },
+            )),
+            _ => None,
+        };
+        let Some(view) = view else {
+            if ui::ui(cx).pip.as_ref().is_some_and(|p| p.key == key) {
+                ui::ui(cx).pip = None;
+            }
+            window.remove_window();
+            return div().into_any_element();
+        };
+        div()
+            .id("video-pip")
+            .size_full()
+            .bg(gpui::black())
+            // Dragging the picture moves the window, where the platform lets an app move its own.
+            .on_mouse_down(gpui::MouseButton::Left, |_, w, _| w.start_window_move())
+            .child(video_fullscreen(
+                view,
+                f32::from(size.width),
+                f32::from(size.height),
+            ))
+            .into_any_element()
+    }
+}
+
+/// Chromium's close of the picture-in-picture window pauses the video; back to tab does not.
+fn with_paused(key: CardKey, cx: &mut App) {
+    if let Some(Player::Video(v)) = ui::ui(cx).players.get_mut(&key) {
+        v.playback.pause();
+    }
+}
+
+/// The video shown full screen in this window: the whole window, Escape goes back to the card.
+fn fullscreen_overlay(
+    here: gpui::WindowId,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    let (key, focus) = {
+        let f = ui::ui(cx).fullscreen.as_ref().filter(|f| f.owner == here)?;
+        (f.key, f.focus.clone())
+    };
+    let view = match ui::ui(cx).players.get(&key) {
+        Some(Player::Video(v)) => video_view(key, v, true, "", PipMode::Inline),
+        // The player went (released, or its client signed out): full screen ends with it, and the window with it.
+        _ => {
+            ui::end_video_fullscreen(cx);
+            return None;
+        }
+    };
+    let size = window.viewport_size();
+    Some(
+        div()
+            .id("video-fullscreen")
+            .track_focus(&focus)
+            .w(size.width)
+            .h(size.height)
+            .on_key_down(|e: &gpui::KeyDownEvent, w, cx| {
+                if e.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    ui::exit_video_fullscreen(w, cx);
+                }
+            })
+            .child(video_fullscreen(
+                view,
+                f32::from(size.width),
+                f32::from(size.height),
+            ))
+            .into_any_element(),
+    )
 }
 
 fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
@@ -825,7 +1030,11 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
             .border_color(color::HAIRLINE_2)
             .rounded(radius::MD)
             .text_size(text::INPUT)
-            .child(gpui_component::input::Input::new(&input).appearance(false))
+            .child(
+                gpui_component::input::Input::new(&input)
+                    .aria_label(t("gif.search"))
+                    .appearance(false),
+            )
             .into_any_element(),
         powered: t("gif.powered").into(),
         tiles,

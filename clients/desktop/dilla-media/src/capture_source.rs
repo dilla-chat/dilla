@@ -1,10 +1,11 @@
-//! Where a call's camera and screen-share video come from: a [`CaptureSource`] hands RGBA frames at its own pace, and
+//! Where a call's camera and screen-share video come from: a [`CaptureSource`] hands frames at its own pace, and
 //! [`crate::Call::publish_video`] encodes them under the call's `dilla-sframe/1` keys (the camera slot or the screen
 //! slot), exactly as the microphone is.
 //!
-//! The real screen and camera sources come with the next plan. Until then the only source is [`TestPattern`], the
-//! moving test pattern the tests (and the automation build) share; a cancelled selection is a source that never starts
-//! ([`crate::Call::publish_video`] is simply not called), so nothing is published.
+//! The real sources are [`crate::sources`]: the screens and windows of libwebrtc's desktop capturer (the XDG portal on
+//! Wayland) and the camera of its video capture module. [`TestPattern`] is the moving test pattern the tests (and the
+//! automation build) share. A cancelled selection is a source that never opens ([`crate::Call::publish_video`] is
+//! simply not called), so nothing is published.
 
 use std::time::Duration;
 
@@ -15,18 +16,117 @@ pub enum ShareKind {
     Screen,
 }
 
-/// One captured frame: `width * height` RGBA pixels, row after row.
+/// How a [`Frame`]'s bytes are laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// R, G, B, A bytes per pixel, `stride` bytes per row.
+    Rgba,
+    /// B, G, R, A (or X) bytes per pixel, `stride` bytes per row: what the desktop capturer hands over.
+    Bgra,
+    /// Planar I420, packed: the Y plane (`stride` bytes per row), then U and V (`(width + 1) / 2` bytes per row, `(height +
+    /// 1) / 2` rows each).
+    I420,
+}
+
+/// One captured frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RgbaFrame {
+pub struct Frame {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    pub format: PixelFormat,
+    /// Bytes per row of the first plane.
+    pub stride: u32,
+    pub data: Vec<u8>,
+}
+
+impl Frame {
+    /// A tightly packed RGBA frame.
+    pub fn rgba(width: u32, height: u32, data: Vec<u8>) -> Frame {
+        Frame {
+            width,
+            height,
+            format: PixelFormat::Rgba,
+            stride: width * 4,
+            data,
+        }
+    }
+
+    /// Whether the bytes cover what the size, stride and format say (a frame that does not is never encoded).
+    pub fn is_whole(&self) -> bool {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let stride = self.stride as usize;
+        if w == 0 || h == 0 {
+            return false;
+        }
+        match self.format {
+            PixelFormat::Rgba | PixelFormat::Bgra => {
+                stride >= w * 4 && self.data.len() >= stride * (h - 1) + w * 4
+            }
+            PixelFormat::I420 => {
+                let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+                stride >= w && self.data.len() >= stride * h + 2 * cw * ch
+            }
+        }
+    }
+
+    /// The frame as tightly packed RGBA (a thumbnail, a test's check).
+    pub fn to_rgba(&self) -> Vec<u8> {
+        let (w, h, stride) = (
+            self.width as usize,
+            self.height as usize,
+            self.stride as usize,
+        );
+        let mut out = Vec::with_capacity(w * h * 4);
+        match self.format {
+            PixelFormat::Rgba | PixelFormat::Bgra => {
+                for y in 0..h {
+                    for px in self.data[y * stride..y * stride + w * 4].as_chunks::<4>().0 {
+                        if self.format == PixelFormat::Rgba {
+                            out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                        } else {
+                            out.extend_from_slice(&[px[2], px[1], px[0], 255]);
+                        }
+                    }
+                }
+            }
+            PixelFormat::I420 => {
+                let cw = w.div_ceil(2);
+                let (u0, v0) = (stride * h, stride * h + cw * h.div_ceil(2));
+                for y in 0..h {
+                    for x in 0..w {
+                        let luma = f32::from(self.data[y * stride + x]) - 16.0;
+                        let u = f32::from(self.data[u0 + (y / 2) * cw + x / 2]) - 128.0;
+                        let v = f32::from(self.data[v0 + (y / 2) * cw + x / 2]) - 128.0;
+                        let c = |f: f32| f.round().clamp(0.0, 255.0) as u8;
+                        out.extend_from_slice(&[
+                            c(1.164 * luma + 1.596 * v),
+                            c(1.164 * luma - 0.392 * u - 0.813 * v),
+                            c(1.164 * luma + 2.017 * u),
+                            255,
+                        ]);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// What a source has now.
+#[derive(Debug)]
+pub enum Pull {
+    /// A frame not handed over before.
+    Frame(Frame),
+    /// Nothing new since the last pull (the screen did not change, the camera is between frames).
+    Idle,
+    /// The source ended (the person stopped it from the system, the window or the camera went away): the track ends.
+    Ended,
 }
 
 /// A source of video frames for one share.
 pub trait CaptureSource: Send + 'static {
     fn kind(&self) -> ShareKind;
-    /// The frame size the encoder is opened with.
+    /// The size of the source's frames when it opened (a window can change it later; each frame carries its own).
     fn size(&self) -> (u32, u32);
     /// The frames per second the source delivers at most.
     fn fps(&self) -> u32;
@@ -34,8 +134,13 @@ pub trait CaptureSource: Send + 'static {
     fn has_audio(&self) -> bool {
         false
     }
-    /// The next frame, or `None` once the source ended (the person stopped it from the system, the window closed).
-    fn next_frame(&mut self) -> Option<RgbaFrame>;
+    /// The newest frame, if any.
+    fn pull(&mut self) -> Pull;
+    /// The person changed the stream quality of the running share (beta.5 `configure-screen-capture`): the source
+    /// captures at most `fps` from now on. The frame bound is the encoder side's.
+    fn set_fps(&mut self, fps: u32) {
+        let _ = fps;
+    }
 
     /// The interval between two frames.
     fn interval(&self) -> Duration {
@@ -85,6 +190,23 @@ impl TestPattern {
         self
     }
 
+    /// The next frame of the pattern, `None` once it ended.
+    pub fn next_frame(&mut self) -> Option<Frame> {
+        if self.limit.is_some_and(|l| self.frame >= l) {
+            return None;
+        }
+        let n = self.frame;
+        self.frame += 1;
+        let mut rgba = Vec::with_capacity((self.width * self.height * 4) as usize);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let [r, g, b] = self.pixel(n, x, y);
+                rgba.extend_from_slice(&[r, g, b, 255]);
+            }
+        }
+        Some(Frame::rgba(self.width, self.height, rgba))
+    }
+
     /// The colour of the pattern at `(x, y)` of frame `n`.
     pub fn pixel(&self, n: u64, x: u32, y: u32) -> [u8; 3] {
         let side = (self.height / 8).max(2);
@@ -108,24 +230,8 @@ impl CaptureSource for TestPattern {
     fn fps(&self) -> u32 {
         self.fps
     }
-    fn next_frame(&mut self) -> Option<RgbaFrame> {
-        if self.limit.is_some_and(|l| self.frame >= l) {
-            return None;
-        }
-        let n = self.frame;
-        self.frame += 1;
-        let mut rgba = Vec::with_capacity((self.width * self.height * 4) as usize);
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let [r, g, b] = self.pixel(n, x, y);
-                rgba.extend_from_slice(&[r, g, b, 255]);
-            }
-        }
-        Some(RgbaFrame {
-            width: self.width,
-            height: self.height,
-            rgba,
-        })
+    fn pull(&mut self) -> Pull {
+        self.next_frame().map_or(Pull::Ended, Pull::Frame)
     }
 }
 
@@ -250,12 +356,12 @@ mod tests {
         let mut p = TestPattern::new(ShareKind::Screen, 160, 96, 15);
         let a = p.next_frame().unwrap();
         let b = p.next_frame().unwrap();
-        assert_eq!((a.width, a.height, a.rgba.len()), (160, 96, 160 * 96 * 4));
+        assert_eq!((a.width, a.height, a.data.len()), (160, 96, 160 * 96 * 4));
         // The top row has no square: bar i spans x in [i*20, i*20+20).
         for i in 0..8u32 {
             let at = ((i * 20 + 10) * 4) as usize;
             assert_eq!(
-                nearest_bar([a.rgba[at], a.rgba[at + 1], a.rgba[at + 2]]).0,
+                nearest_bar([a.data[at], a.data[at + 1], a.data[at + 2]]).0,
                 i as usize
             );
         }

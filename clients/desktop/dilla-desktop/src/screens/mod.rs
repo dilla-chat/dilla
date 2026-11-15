@@ -24,6 +24,8 @@ pub mod ring;
 pub mod search;
 pub mod server_settings;
 pub mod settings_host;
+// The screen-share picker (GPUI parity plan Package 2).
+pub mod share_picker;
 pub mod threads;
 pub mod user_settings;
 pub mod voice;
@@ -40,6 +42,7 @@ pub mod factor;
 pub mod sign_in;
 // Task 27 (instances).
 pub mod instances;
+pub mod read_aloud;
 
 use gpui::{App, IntoElement, KeyBinding, ParentElement, Pixels, Styled, actions, div};
 

@@ -414,6 +414,12 @@ pub enum NotificationKind {
 /// ring notifications go through it. Fixed signature: change it only with the controller.
 pub trait Notifier: Send + Sync {
     fn deliver(&self, notification: &Notification);
+
+    /// Takes back the notification `tag` delivered earlier, if it still shows (GPUI parity Package 4: a ring that
+    /// ended, a closed window). A notifier that cannot take one back ignores it.
+    fn withdraw(&self, tag: &str) {
+        let _ = tag;
+    }
 }
 
 /// One notification the recording notifier holds, and whether it was closed (clicked).
@@ -489,6 +495,15 @@ impl Notifier for RecordingNotifier {
                 // A ring buffer: the newest `RECORDED_MAX`, the oldest dropped first.
                 let over = shown.len().saturating_sub(RECORDED_MAX);
                 shown.drain(..over);
+            }
+        }
+    }
+
+    /// A withdrawn notification is closed (the record keeps it, as a clicked one).
+    fn withdraw(&self, tag: &str) {
+        for s in self.lock().iter_mut() {
+            if !tag.is_empty() && s.notification.tag == tag {
+                s.closed = true;
             }
         }
     }
@@ -1675,6 +1690,7 @@ mod tests {
             pinned: false,
             attachments: vec![],
             mention,
+            actions: Vec::new(),
         }
     }
 

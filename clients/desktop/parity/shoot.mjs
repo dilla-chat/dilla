@@ -248,7 +248,7 @@ async function shoot(args, fixture, text) {
     const args2 = process.platform === 'linux' ? ['--font-render-hinting=none', '--enable-font-subpixel-positioning', ...media] : media;
     browser = await chromium.launch({ args: args2 });
     const context = await browser.newContext({ viewport, deviceScaleFactor: 2, reducedMotion: 'reduce', timezoneId: 'UTC', locale: 'en-US' });
-    const page = await context.newPage();
+    let page = await context.newPage();
     page.setDefaultTimeout(WAIT);
     await page.clock.setFixedTime(state.now * 1000);
     await page.goto(`${state.publicUrl}/welcome`);
@@ -272,9 +272,37 @@ async function shoot(args, fixture, text) {
     }
     world.child.stdin.write('post\n');
     await world.ready;
+    // Package 10d: a device the instance no longer accepts (the world removed the browser's device) or whose store's key
+    // wrapper is gone (e2e/web/support/app.ts `clearKek`) starts again and draws its boot splash; the route is not
+    // opened (the boot never gets that far).
+    const boot = fixture.phase === 'revoked' || fixture.phase === 'store_lost';
+    if (fixture.phase === 'store_lost') {
+      await page.evaluate(() => new Promise((done, fail) => {
+        const open = indexedDB.open('dilla-device', 1);
+        open.onerror = () => fail(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const tx = db.transaction('kek', 'readwrite');
+          tx.objectStore('kek').clear();
+          tx.oncomplete = () => { db.close(); done(); };
+          tx.onerror = () => fail(tx.error);
+        };
+      }));
+    }
+    if (boot) {
+      await page.close();
+      page = await context.newPage();
+      page.setDefaultTimeout(WAIT);
+      await page.clock.setFixedTime(state.now * 1000);
+      await page.goto(`${state.publicUrl}/`);
+      const status = fixture.phase === 'revoked' ? 'This browser was signed out' : 'This browser can no longer open its saved data';
+      await page.getByText(status, { exact: true }).waitFor();
+    }
     // The route: in-app, with the real ids.
     const route = resolveRoute(fixture.route, (kind, local) => state.ids[`${kind}:${local}`]);
-    if (signedOut && new URL(page.url()).pathname !== route.split('?')[0]) {
+    if (boot) {
+      // The boot splash is the frame.
+    } else if (signedOut && new URL(page.url()).pathname !== route.split('?')[0]) {
       await page.goto(`${state.publicUrl}${route}`);
     } else if (new URL(page.url()).pathname !== route.split('?')[0]) {
       await page.evaluate((p) => { history.pushState({}, '', p); dispatchEvent(new PopStateEvent('popstate')); }, route);
@@ -282,7 +310,7 @@ async function shoot(args, fixture, text) {
     // The last message of the route's own channel is on screen before the frame.
     const target = [...fixture.route.matchAll(/\{([^}/]+\/[^}]+)\}/g)].map((m) => m[1]).at(-1);
     const last = (fixture.world.messages ?? []).filter((m) => m.channel === target).at(-1);
-    if (last) await page.getByText(last.body, { exact: true }).first().waitFor();
+    if (last && !boot) await page.getByText(last.body, { exact: true }).first().waitFor();
     for (const step of fixture.steps ?? []) await replayStep(page, step, state);
     if (!(fixture.steps ?? []).some((s) => s.do === 'hover')) {
       await page.mouse.move(viewport.width - 2, viewport.height - 2);

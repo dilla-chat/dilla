@@ -6,6 +6,7 @@ use dilla_client::testing::host::Person;
 use dilla_client::testing::spec::ScreenFixture;
 
 mod attachments;
+mod boot;
 mod calls;
 mod diagnostics;
 mod dms;
@@ -85,6 +86,7 @@ pub async fn seed(
     ids: &std::collections::BTreeMap<String, String>,
 ) {
     attachments::seed(f, people).await;
+    boot::seed(f, people, clients).await;
     calls::seed(f, host, ids).await;
     diagnostics::seed(f, people).await;
     dms::seed(f, people).await;

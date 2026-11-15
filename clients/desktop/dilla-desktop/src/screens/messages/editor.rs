@@ -113,6 +113,7 @@ pub fn editor(
         .child(super::textarea_origin(
             // The textarea's own size sets 14px text; the field's 13px on 20px lines are set on it, which wins.
             Textarea::new(input)
+                .aria_label(crate::strings::t("shell.edit.label"))
                 .appearance(false)
                 .text_size(text::INPUT)
                 .line_height(px(LINE))

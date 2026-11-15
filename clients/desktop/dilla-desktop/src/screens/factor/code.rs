@@ -11,6 +11,8 @@ use gpui::{
 };
 use zeroize::Zeroizing;
 
+use crate::strings::t;
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::factor::{CODE_LENGTH, COMPLETE_DELAY, CodeBoxes, code_digits};
 
 /// What the field tells its host.
@@ -188,8 +190,11 @@ impl CodeField {
 impl Render for CodeField {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus.is_focused(window);
+        // A text field named "Code from the app"; the digits typed are not put in the tree (a one-time code).
         div()
             .id(self.id)
+            .a11y(Role::TextInput, t("factor.totp.code"))
+            .aria_description(t("factor.totp.codeHint"))
             .track_focus(&self.focus)
             .w_full()
             .cursor_text()

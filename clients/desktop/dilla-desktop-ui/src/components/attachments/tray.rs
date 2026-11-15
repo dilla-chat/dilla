@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use super::OnClick;
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{TRACKING_TAG, focus_ring};
@@ -217,6 +218,7 @@ fn card(e: TrayEntry) -> AnyElement {
                 .id(gpui::ElementId::Name(
                     format!("tray-remove-{}", e.id).into(),
                 ))
+                .a11y(Role::Button, e.remove_label.clone())
                 .absolute()
                 .top(px(4.0))
                 .right(px(4.0))

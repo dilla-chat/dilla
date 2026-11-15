@@ -1010,3 +1010,52 @@ fn removing_an_open_instance_releases_its_client(cx: &mut TestAppContext) {
     assert!(!cx.update(|cx| windows::held_here(cx, id)));
     cx.update(windows::release_all);
 }
+
+/// From `shell.spec.ts` "closing a window keeps the client alive for background work", its close-to-tray part (GPUI
+/// parity Package 5, beta.5 `window-all-closed` does not quit): with the tray up, closing the last window leaves the app
+/// running with no window; the tray still offers "Your instances…" and "Quit Dilla", and its "Quit Dilla" quits.
+#[gpui::test]
+fn closing_the_last_window_keeps_the_app_in_the_tray(cx: &mut TestAppContext) {
+    use dilla_desktop::native::NativeShell;
+    use dilla_desktop::native::tray::{self, Recorder, Row, TrayEvent};
+
+    let root = root();
+    let launch = dilla_desktop::Launch::live(Some(root), Arc::new(MemoryKeychain::new()));
+    let recorder = Recorder::default();
+    cx.update(|cx| {
+        dilla_desktop::install(cx);
+        tray::install_sections(cx);
+        tray::set_backend(Box::new(recorder.clone()), cx);
+        NativeShell::set_background(true, cx);
+        dilla_desktop::windows::open_manager(cx, &launch, false).expect("the manager opens");
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 1);
+    let window = cx.windows()[0];
+    window
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.windows().is_empty(), "no window");
+    assert!(
+        !cx.update(|cx| NativeShell::is_quitting(cx)),
+        "the app stays in the tray"
+    );
+    let shown = recorder.0.borrow().last().cloned().unwrap();
+    let quit = shown
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Action { label, .. } if label == tray::QUIT_DILLA))
+        .expect("Quit Dilla");
+    assert!(matches!(&shown.rows[0], Row::Action { label, .. } if label == tray::YOUR_INSTANCES));
+    cx.update(|cx| {
+        tray::handle(
+            TrayEvent::Choose {
+                generation: shown.generation,
+                path: vec![quit],
+            },
+            cx,
+        )
+    });
+    assert!(cx.update(|cx| NativeShell::is_quitting(cx)));
+}

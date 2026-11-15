@@ -291,3 +291,108 @@ fn the_bot_pages_lead_to_the_bot_and_roles_sections(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     assert_eq!(active(vcx), Some(ServerSection::Roles), "Roles");
 }
+
+// ---- Package 10c: the Bot card's menu, against the real Bot ----
+
+/// BotSection.tsx `glennMenuItems` (e2e/web/bot-runtime.spec.ts "a bot enabled through server settings reaches ready"):
+/// with no installation the card has no menu; a ready Bot offers Rename, Refresh status and Disable to its manager.
+/// Rename stores a trimmed display name that the member list then shows (a blank one is refused before it is sent),
+/// Refresh status reads the installation again, and Disable takes it to disabled, after which the menu has no Disable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn rename_refresh_disable() {
+    use std::time::Duration;
+
+    use dilla_client::features::bot_admin::new_request_id;
+    use dilla_client::state::CommunityId;
+    use dilla_client::testing::host::bot::enable_bot;
+    use dilla_client::testing::host::{
+        clear_session, community, sign_up, start, start_bot_host, wait_for,
+    };
+    use dilla_desktop::screens::bot_admin::bot_page::card_menu;
+
+    let tag = "p10c-glenn";
+    let host = tokio::task::spawn_blocking(move || start_bot_host(tag, "127.0.0.1:0"))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let pa = sign_up(&host, &invite, "alice", "alice", tag).await;
+    let (_host, pa, c) = tokio::task::spawn_blocking(move || {
+        let c = community(&host, &pa, "gpui", &[]);
+        clear_session(&pa);
+        (host, pa, c)
+    })
+    .await
+    .unwrap();
+    let a = start(&pa).await;
+    let community_id = CommunityId(c);
+    let ids = |items: Vec<dilla_desktop_ui::components::action_menu::MenuItem>| {
+        items
+            .into_iter()
+            .map(|i| i.id.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(card_menu(false, true, None, "Glenn").is_empty());
+
+    let installation = enable_bot(&a, c, 0).await;
+    let bot_user = installation.user_id.expect("the Bot's account");
+    a.members().reload(community_id).await.unwrap();
+    wait_for(
+        &a,
+        Duration::from_secs(30),
+        "the Bot in the member list",
+        |s| {
+            s.members
+                .get(&community_id)
+                .is_some_and(|m| m.iter().any(|m| m.user_id == bot_user))
+        },
+    )
+    .await;
+    assert_eq!(
+        ids(card_menu(true, true, Some(&installation), "Glenn")),
+        ["rename", "refresh", "disable"]
+    );
+    // A member who does not manage the community only refreshes.
+    assert_eq!(
+        ids(card_menu(true, false, Some(&installation), "Glenn")),
+        ["refresh"]
+    );
+
+    let admin = a.bot_admin();
+    assert!(
+        admin
+            .rename_bot(community_id, "   ")
+            .await
+            .unwrap()
+            .is_err(),
+        "a blank name is refused"
+    );
+    let saved = admin
+        .rename_bot(community_id, "  Robo  ")
+        .await
+        .unwrap()
+        .expect("the name is stored");
+    // The instance stores the trimmed name on the Bot's account; the member row keeps the community nickname, so the page
+    // shows the saved name from its own answer (BotSection.tsx `botNameOverride`).
+    assert_eq!(saved, "Robo");
+
+    let refreshed = admin
+        .refresh_installation(community_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("an installation");
+    assert_eq!(refreshed.state, 3);
+    let disabled = admin
+        .disable_installation(community_id, new_request_id(), refreshed.revision)
+        .await
+        .unwrap()
+        .expect("disabled");
+    assert_eq!(disabled.state, 4);
+    assert_eq!(
+        ids(card_menu(true, true, Some(&disabled), "Robo")),
+        ["rename", "refresh"],
+        "a disabled Bot is not offered Disable"
+    );
+    a.stop();
+}

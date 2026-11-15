@@ -11,6 +11,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::{Badge, BadgeKind};
 use dilla_desktop_ui::metrics::focus_ring;
 use dilla_desktop_ui::roving::{Roving, focus_handles};
@@ -164,6 +165,8 @@ pub fn render(
         let on_key = handlers.on_home.clone();
         let mut tile = div()
             .id("rail-home")
+            .a11y(Role::Button, t("nav.tab.dms"))
+            .aria_selected(model.home_selected)
             .track_focus(&tab_stop(0))
             .flex_none()
             .rounded_full()
@@ -208,6 +211,8 @@ pub fn render(
         let (unread, mentions) = counts(state, c.id, model.muted);
         let mut tile = div()
             .id(SharedString::from(format!("server-{}", c.id.hex())))
+            .a11y(Role::Button, item_label(&c.name, unread, mentions))
+            .aria_selected(picked)
             .track_focus(&tab_stop(i + 1))
             .relative()
             .flex_none()
@@ -268,6 +273,7 @@ pub fn render(
         let (on_add, on_key) = (handlers.on_add.clone(), handlers.on_add.clone());
         let add = div()
             .id("rail-add")
+            .a11y(Role::Button, t("layout.rail.add"))
             .track_focus(&tab_stop(count - 1))
             .flex_none()
             .rounded_full()
@@ -302,6 +308,7 @@ pub fn render(
 
     let rail = div()
         .id("rail")
+        .landmark(Role::Navigation, t("shell.rail.label"))
         .flex_none()
         .w(layout::RAIL)
         .h_full()

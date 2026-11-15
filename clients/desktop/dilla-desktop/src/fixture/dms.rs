@@ -82,6 +82,7 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state:
                 pinned: m.pinned,
                 attachments: Vec::new(),
                 mention: false,
+                actions: Vec::new(),
             })
             .collect();
         state.timelines.insert(

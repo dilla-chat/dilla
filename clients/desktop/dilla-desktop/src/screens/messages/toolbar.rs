@@ -11,8 +11,10 @@ use gpui::{
 
 use dilla_desktop_ui::Icon;
 use dilla_desktop_ui::IconName;
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::tokens::{color, radius};
+use gpui::prelude::FluentBuilder as _;
 
 use super::ui::{self, MessageUi};
 use crate::screens::messages::css::len;
@@ -53,10 +55,12 @@ pub fn width(buttons: usize) -> f32 {
 }
 
 /// The toolbar for `item`, `None` when no area offers an action. `group` is the row's hover group.
+#[allow(clippy::too_many_arguments)]
 pub fn toolbar(
     item: &TimelineItem,
     index: usize,
     group: &str,
+    focused: bool,
     ctx: &SlotCx,
     ui: &gpui::Entity<MessageUi>,
     window: &mut Window,
@@ -95,6 +99,12 @@ pub fn toolbar(
                 .items_center()
                 .justify_center()
                 .rounded(radius::SM)
+                // A `<button>`: named by its action, reached by Tab from its row (it shows while the row holds focus).
+                .when(focused || menu_open, |d| {
+                    d.a11y(Role::Button, t(a.label))
+                        .tab_index(0)
+                        .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
+                })
                 .cursor_pointer()
                 .hover(|s| s.bg(color::HOVER_HI))
                 .child(Icon::new(direct_icon(a)).size(len(14.)).color(color::FG_2))
@@ -150,7 +160,7 @@ pub fn toolbar(
                 ),
         );
     }
-    // Shown while the row is hovered (or the menu is open); hidden otherwise.
+    // Shown while the row is hovered or holds the focus (MessageRow.css `:focus-within`), or the menu is open.
     let shown = div()
         .absolute()
         .top(len(-12.))
@@ -158,7 +168,7 @@ pub fn toolbar(
         .child(bar)
         .child(super::probe(super::id_of("message-toolbar", index)));
     let _ = ui::handle;
-    Some(if menu_open {
+    Some(if menu_open || focused {
         shown.into_any_element()
     } else {
         shown

@@ -13,6 +13,7 @@ use gpui::{
     Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::{Row, RowKind};
 use dilla_desktop_ui::metrics::focus_ring;
@@ -308,6 +309,33 @@ enum Key {
     Menu,
 }
 
+/// A channel row's accessible name (`shell.channels.rowLabel` / `rowLabelMuted`): the bare name, or the name and what is
+/// new in it; a voice row the device is in says so (`voice.row.joined`).
+pub fn row_label(name: &str, unread: u32, mentions: u32, muted: bool, joined: bool) -> String {
+    let mut label = if muted {
+        tf(
+            "shell.channels.rowLabelMuted",
+            &[("name", name), ("mentions", &mentions.to_string())],
+        )
+    } else if unread > 0 || mentions > 0 {
+        tf(
+            "shell.channels.rowLabel",
+            &[
+                ("name", name),
+                ("unread", &unread.to_string()),
+                ("mentions", &mentions.to_string()),
+            ],
+        )
+    } else {
+        name.to_owned()
+    };
+    if joined {
+        label.push_str(", ");
+        label.push_str(t("voice.row.joined"));
+    }
+    label
+}
+
 #[allow(clippy::too_many_arguments)]
 fn row(
     c: &Channel,
@@ -343,6 +371,16 @@ fn row(
     let roves = roves.clone();
     let wrapper = div()
         .id(SharedString::from(format!("channel-focus-{}", c.id.hex())))
+        .a11y(
+            Role::Link,
+            row_label(&c.name, badge.0, badge.1, muted, voice.1),
+        )
+        .aria_selected(active)
+        // The row inside takes the pointer's click; a screen reader's "activate" lands here.
+        .a11y_activate({
+            let on_select = handlers.on_select.clone();
+            move |window, cx| on_select(id, window, cx)
+        })
         .track_focus(&focus)
         .relative()
         .rounded(radius::ROW)
@@ -453,6 +491,8 @@ fn category(
     };
     let head = div()
         .id(SharedString::from(format!("category-{}", c.name)))
+        .a11y(Role::Button, c.name.clone())
+        .aria_expanded(!folded)
         .track_focus(&focus)
         .relative()
         .w_full()
@@ -516,11 +556,17 @@ fn category(
                 .h(layout::ROW_H_SUB)
                 .flex()
                 .items_center()
-                .opacity(0.0)
-                .group_hover(group, |s| s.opacity(1.0))
                 .child(
+                    // ChannelList.css: shown while the head is hovered, and while the "+" itself has the keyboard's
+                    // focus (a `<button>` on the web, reached by Tab).
                     div()
                         .id(SharedString::from(format!("category-add-{}", c.name)))
+                        .a11y(Role::Button, label.clone())
+                        .tab_index(0)
+                        .rounded(radius::MD)
+                        .opacity(0.0)
+                        .group_hover(group, |s| s.opacity(1.0))
+                        .focus_visible(|s| s.opacity(1.0).shadow(focus_ring()))
                         .size(Pixels::from(css::ADD_HIT))
                         .flex_none()
                         .flex()
@@ -582,23 +628,36 @@ pub fn render(
             ),
         )
         .children(model.can_add.then(|| {
-            div()
-                .id("channel-list-add")
-                .cursor_pointer()
-                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
-                    tf(
-                        "create.channel.title",
-                        &[("server", title_for_tip.as_str())],
-                    ),
-                    &[],
-                ))
-                .on_click(move |_: &ClickEvent, window, cx| on_add(None, window, cx))
-                .child(centred(
-                    Pixels::from(css::ADD_HIT),
-                    Icon::new(IconName::Plus)
-                        .size(Pixels::from(css::GLYPH))
-                        .color(color::FG_2),
-                ))
+            crate::tracked_box(
+                "channel-list-add-button",
+                div()
+                    .id("channel-list-add")
+                    .tab_index(0)
+                    .rounded(radius::MD)
+                    .focus_visible(|s| s.shadow(focus_ring()))
+                    .a11y(
+                        Role::Button,
+                        tf(
+                            "create.channel.title",
+                            &[("server", title_for_tip.as_str())],
+                        ),
+                    )
+                    .cursor_pointer()
+                    .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+                        tf(
+                            "create.channel.title",
+                            &[("server", title_for_tip.as_str())],
+                        ),
+                        &[],
+                    ))
+                    .on_click(move |_: &ClickEvent, window, cx| on_add(None, window, cx))
+                    .child(centred(
+                        Pixels::from(css::ADD_HIT),
+                        Icon::new(IconName::Plus)
+                            .size(Pixels::from(css::GLYPH))
+                            .color(color::FG_2),
+                    )),
+            )
         }))
         .child(crate::tracked_box(
             "server-settings-open",

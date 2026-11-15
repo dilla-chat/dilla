@@ -67,9 +67,14 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
         "header-members-tip",
         members_tip,
         &[],
-        BarButton::new(SharedString::from(members_label), IconName::Users, count)
-            .pressed(model.aside == Some(AsideKind::Members))
-            .on_click(move |_: &ClickEvent, window, cx| members(AsideKind::Members, window, cx)),
+        BarButton::new(
+            SharedString::from(members_label.clone()),
+            IconName::Users,
+            count,
+        )
+        .a11y_label(members_label)
+        .pressed(model.aside == Some(AsideKind::Members))
+        .on_click(move |_: &ClickEvent, window, cx| members(AsideKind::Members, window, cx)),
     )
     .delay(TIP_DELAY);
     #[cfg(feature = "automation")]
@@ -104,10 +109,17 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
                         .size(Pixels::from(css::GLYPH))
                         .color(color::FG_3),
                 )
+                // The conversation's `<h1>`: its name.
                 .child(
-                    line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
-                        .weight(font::WEIGHT_DISPLAY)
-                        .ellipsis(),
+                    dilla_desktop_ui::a11y::heading(
+                        1,
+                        name.clone(),
+                        line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
+                            .weight(font::WEIGHT_DISPLAY)
+                            .ellipsis(),
+                    )
+                    .flex()
+                    .min_w_0(),
                 ),
         )
         .child(
@@ -163,10 +175,17 @@ fn dm_bar(name: String, topic: Option<String>) -> impl IntoElement {
                         .size(Pixels::from(css::GLYPH))
                         .color(color::FG_3),
                 )
+                // The conversation's `<h1>`: its name.
                 .child(
-                    line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
-                        .weight(font::WEIGHT_DISPLAY)
-                        .ellipsis(),
+                    dilla_desktop_ui::a11y::heading(
+                        1,
+                        name.clone(),
+                        line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
+                            .weight(font::WEIGHT_DISPLAY)
+                            .ellipsis(),
+                    )
+                    .flex()
+                    .min_w_0(),
                 ),
         )
         .children(topic.map(|topic| {

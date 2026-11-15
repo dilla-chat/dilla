@@ -102,7 +102,7 @@ pub struct Extra {
 }
 
 /// Under a message's body (after its attachments slot): the attachments (12), the poll card (20), the reactions (10),
-/// the thread count (11), in this order, each [`EXTRA_GAP`] below what is above it, but the attachments, which are the
+/// the thread count (11), a failed send's or an unreadable row's state (Package 10a), in this order, each [`EXTRA_GAP`] below what is above it, but the attachments, which are the
 /// slot's content (MessageRow.tsx `.d-message-row__attachments`: the timeline's slot already holds its grid gap and
 /// margin). Answers the stack and its height (the sum of the parts'; 0 when every guest has nothing), which the timeline
 /// adds to the row's height.
@@ -117,6 +117,7 @@ pub fn message_extras(
         commands::poll_card(item, ctx, window, cx),
         reactions::reaction_bar(item, ctx, window, cx),
         threads::thread_count(item, ctx, window, cx),
+        crate::screens::messages::send_state::send_state(item, ctx, window, cx),
     ];
     stack_after(slot, parts.into_iter().flatten())
 }
@@ -252,7 +253,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 /// (the shell's guard).
 pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = [
-        crate::screens::create::overlay(window, cx),
+        crate::screens::create::overlay(&ctx.state, window, cx),
         search::palette(window, cx),
         dms::picker_overlay(&ctx.state, window, cx),
         dms::compare_overlay(&ctx.state, window, cx),
@@ -265,6 +266,8 @@ pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyEleme
     out.extend(messages::overlays(window, cx));
     // The moderation commands' confirmation (Task 28 wave 2).
     out.extend(commands::confirm::overlay(ctx, window, cx));
+    // The screen-share picker (parity Package 2), over everything of its window.
+    out.extend(crate::screens::share_picker::overlay(window, cx));
     out
 }
 
