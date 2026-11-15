@@ -2368,7 +2368,10 @@ export const GPUI_PINNED_STEPS = {
     '- name: Run the media call tests (Linux)',
     "  if: runner.os == 'Linux' && !cancelled()",
     '  shell: bash',
-    '  run: cargo test -p dilla-media --test live --test call --test e2e_call --locked -- --ignored',
+    '  run: |',
+    '    cargo test -p dilla-media --test live --test call --test e2e_call --locked -- --ignored --skip bot_play_from_enter_to_first_audio_frame_meets_g3 --skip bot_next_queued_track_gap_is_under_150_ms --skip bot_repeated_track_starts_within_500_ms_at_p95',
+    '    # The Bot music timing tests (G3) are latency budgets: measured one at a time, not beside a Bot restart or a browser call.',
+    '    cargo test -p dilla-media --test call --locked -- --ignored --exact --test-threads=1 bot_play_from_enter_to_first_audio_frame_meets_g3 bot_next_queued_track_gap_is_under_150_ms bot_repeated_track_starts_within_500_ms_at_p95',
   ].join('\n'),
 };
 
