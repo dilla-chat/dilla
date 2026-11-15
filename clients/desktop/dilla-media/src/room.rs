@@ -441,6 +441,14 @@ impl EndOfShare {
     }
 }
 
+/// The application sound being published (the screen-audio slot).
+struct LocalAppAudio {
+    sid: TrackSid,
+    feeder: JoinHandle<()>,
+    /// Dropping it stops the capture.
+    _capture: crate::app_audio::AppCapture,
+}
+
 /// A local share being published.
 struct LocalShare {
     sid: TrackSid,
@@ -583,6 +591,9 @@ pub struct Call {
     apm_flags: ApmFlags,
     videos: watch::Receiver<RemoteVideos>,
     shares: Shares,
+    app_audio: Arc<Mutex<Option<LocalAppAudio>>>,
+    app_audio_ended: mpsc::UnboundedSender<()>,
+    app_audio_ended_rx: Mutex<Option<mpsc::UnboundedReceiver<()>>>,
     shares_ended: mpsc::UnboundedSender<ShareKind>,
     shares_ended_rx: Mutex<Option<mpsc::UnboundedReceiver<ShareKind>>>,
     ended: watch::Receiver<Option<RoomEnd>>,
@@ -743,6 +754,7 @@ impl Call {
         let (levels_tx, levels) = watch::channel(RemoteLevels::new());
         let (videos_tx, videos) = watch::channel(RemoteVideos::new());
         let (shares_ended, shares_ended_rx) = mpsc::unbounded_channel();
+        let (app_audio_ended, app_audio_ended_rx) = mpsc::unbounded_channel();
         let tails: Tails = Arc::default();
         let screen_sound: ScreenSound = Arc::default();
         let muted = Arc::new(AtomicBool::new(options.muted));
@@ -774,6 +786,9 @@ impl Call {
             apm_flags: options.apm_flags,
             videos,
             shares: Shares::default(),
+            app_audio: Arc::default(),
+            app_audio_ended,
+            app_audio_ended_rx: Mutex::new(Some(app_audio_ended_rx)),
             shares_ended,
             shares_ended_rx: Mutex::new(Some(shares_ended_rx)),
             ended,
@@ -1259,6 +1274,130 @@ impl Call {
         }
     }
 
+    /// Publishes the sound of the application `source` as this device's screen-share audio (parity plan Package 3): a
+    /// 48 kHz stereo Opus track whose sender transformer is bound to the screen-audio slot before its first frame. Fail
+    /// closed: a sender that cannot be bound is unpublished and nothing is captured; a capture that does not start
+    /// unpublishes the track. A running application sound is replaced. Answers the application's name.
+    pub async fn publish_app_audio(
+        &self,
+        source: &crate::app_audio::AppSource,
+    ) -> Result<String, MediaError> {
+        self.unpublish_app_audio().await;
+        let rtc = NativeAudioSource::new(
+            AudioSourceOptions {
+                echo_cancellation: false,
+                noise_suppression: false,
+                auto_gain_control: false,
+            },
+            crate::app_audio::RATE,
+            crate::app_audio::CHANNELS,
+            100,
+        );
+        let track = LocalAudioTrack::create_audio_track(
+            "screen-audio",
+            RtcAudioSource::Native(rtc.clone()),
+        );
+        let track_id = track.rtc_track().id();
+        self.media.expect_local(&track_id, Slot::ScreenAudio);
+        let publication = self
+            .room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track.clone()),
+                TrackPublishOptions {
+                    source: TrackSource::ScreenshareAudio,
+                    // protocol/05 "No plaintext path", as the microphone.
+                    dtx: false,
+                    red: false,
+                    preconnect_buffer: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| MediaError::Room(e.to_string()))?;
+        let sid = publication.sid();
+        let bound = match ffi::sender_handle_audio(&track.rtc_track()) {
+            Some(handle) => match self.media.bind_local(handle, Slot::ScreenAudio) {
+                Ok(()) | Err(MediaError::AlreadyBound(_)) => Ok(()),
+                Err(e) => Err(e),
+            },
+            None => Err(MediaError::Room(
+                "the application sound has no sender transformer".into(),
+            )),
+        };
+        if let Err(e) = bound {
+            let _ = self.room.local_participant().unpublish_track(&sid).await;
+            return Err(e);
+        }
+        let (tx, rx) = mpsc::channel::<Vec<f32>>(50);
+        let capture = crate::app_audio::start(
+            source,
+            Box::new(move |frame| {
+                // A slow encoder drops the newest frame, never blocks the audio server's thread.
+                let _ = tx.try_send(frame);
+            }),
+            Box::new(|| {}),
+        );
+        let capture = match capture {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = self.room.local_participant().unpublish_track(&sid).await;
+                return Err(MediaError::Audio(e.to_string()));
+            }
+        };
+        let label = capture.label().to_owned();
+        let feeder = tokio::spawn(feed_app_audio(
+            rx,
+            rtc,
+            (
+                self.room.local_participant(),
+                sid.clone(),
+                self.app_audio.clone(),
+                self.app_audio_ended.clone(),
+            ),
+        ));
+        *self.app_audio.lock().unwrap_or_else(|p| p.into_inner()) = Some(LocalAppAudio {
+            sid,
+            feeder,
+            _capture: capture,
+        });
+        Ok(label)
+    }
+
+    /// Stops the application sound (nothing when there is none): the capture first, then the track.
+    pub async fn unpublish_app_audio(&self) {
+        let current = self
+            .app_audio
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(a) = current {
+            a.feeder.abort();
+            let sid = a.sid.clone();
+            drop(a);
+            if let Err(e) = self.room.local_participant().unpublish_track(&sid).await {
+                log::warn!("dilla-media: unpublish the application sound: {e}");
+            }
+        }
+    }
+
+    /// Whether an application's sound is published now.
+    pub fn app_audio_live(&self) -> bool {
+        self.app_audio
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+    }
+
+    /// Told once each time the application sound ends on its own (the application quit or closed its stream, the audio
+    /// server ended the capture). Taken once.
+    pub fn app_audio_ended(&self) -> Option<mpsc::UnboundedReceiver<()>> {
+        self.app_audio_ended_rx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
     /// Stops every share: its feeder, and its source at once (the screen, window or camera is let go).
     fn stop_shares(&self) {
         let shares: Vec<LocalShare> = self
@@ -1277,6 +1416,14 @@ impl Call {
                     .unwrap_or_else(|p| p.into_inner())
                     .take(),
             );
+        }
+        if let Some(a) = self
+            .app_audio
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            a.feeder.abort();
         }
     }
 
@@ -1357,6 +1504,50 @@ async fn feed_pcm(
         if source.capture_frame(&frame).await.is_err() {
             break;
         }
+    }
+}
+
+/// The application sound's feeder: each 10 ms stereo frame to the encoder. When the capture ends (its frames stop: the
+/// application went away), the track is unpublished, the call's slot freed (unless a newer one replaced it) and the end
+/// told.
+async fn feed_app_audio(
+    mut frames: mpsc::Receiver<Vec<f32>>,
+    source: NativeAudioSource,
+    (participant, sid, slot, ended): (
+        LocalParticipant,
+        TrackSid,
+        Arc<Mutex<Option<LocalAppAudio>>>,
+        mpsc::UnboundedSender<()>,
+    ),
+) {
+    while let Some(samples) = frames.recv().await {
+        if samples.len() != crate::app_audio::FRAME_SAMPLES {
+            continue;
+        }
+        let frame = AudioFrame {
+            data: crate::app_audio::to_i16(&samples).into(),
+            sample_rate: crate::app_audio::RATE,
+            num_channels: crate::app_audio::CHANNELS,
+            samples_per_channel: (crate::app_audio::FRAME_SAMPLES / 2) as u32,
+        };
+        if source.capture_frame(&frame).await.is_err() {
+            break;
+        }
+    }
+    let mine = {
+        let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|a| a.sid == sid) {
+            slot.take()
+        } else {
+            None
+        }
+    };
+    if let Some(a) = mine {
+        drop(a);
+        if let Err(e) = participant.unpublish_track(&sid).await {
+            log::warn!("dilla-media: unpublish an ended application sound: {e}");
+        }
+        let _ = ended.send(());
     }
 }
 

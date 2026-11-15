@@ -1128,6 +1128,27 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
     session.share(kind, true, options);
 }
 
+/// The application sound of `window`'s running screen share (parity plan Package 3): the application the person chose
+/// from `dilla_media::app_audio::sources()` (`None` stops the sound). A start needs a press on the focused window in a
+/// live call that shares its screen; only that window's media session hears of it. The control that offers it waits for
+/// Jonas's call on its design (beta.5's Signal UI had dropped the sound-source pick, "Fix round 1").
+pub fn share_app_audio(
+    source: Option<dilla_media::app_audio::AppSource>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(ui) = ui_of(wid(window), cx) else {
+        return;
+    };
+    let live = ui.state.voice.call.phase == CallPhase::In && ui.state.voice.share.screen;
+    if source.is_some() && (!window.is_window_active() || !live) {
+        return;
+    }
+    if let Some(s) = &ui.session {
+        s.app_audio(source);
+    }
+}
+
 /// The picker's choice: `window`'s call shares `source` at `options` (only that window's media session).
 pub fn share_source(
     window: WindowId,

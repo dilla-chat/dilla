@@ -109,8 +109,9 @@ the updater and packaging.
 - **Updater and packaging:** no automatic update, DMG, Windows installer, AppImage, deb, rpm or AUR package. Build
   from source.
 - **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
-  the system's own dialog chooses), but there is no per-application audio yet, so a share carries no sound. The camera
-  works on Linux and Windows, not yet on macOS.
+  and macOS the system's own dialog chooses), but a share carries no sound yet: application audio is built for Linux
+  and has no control in the app, and macOS and Windows have none. The camera works on Linux and Windows, not yet on
+  macOS.
 - **Operating-system notifications:** none are raised, including for an incoming ring (the ring banner and sound
   work while the window is open). The Notifications settings are kept for when they arrive.
 - **Quit guards and permission prompts:** quitting does not warn about an active call or an unsent draft (the draft

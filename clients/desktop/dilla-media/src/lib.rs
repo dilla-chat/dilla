@@ -17,6 +17,7 @@
 //! is dropped, a frame that does not authenticate is never decoded.
 
 pub mod apm;
+pub mod app_audio;
 pub mod capture;
 pub mod capture_source;
 pub mod devices;

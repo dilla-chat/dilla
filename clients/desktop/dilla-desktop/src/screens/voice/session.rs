@@ -106,6 +106,8 @@ pub enum Command {
     ShareSource(DesktopSource, ShareOptions),
     /// The stream quality changed while sharing: the running screen share goes on at it (the same source).
     Quality(ShareOptions),
+    /// The running screen share carries the sound of this application from now on (`None`: no sound).
+    AppAudio(Option<dilla_media::app_audio::AppSource>),
 }
 
 /// The link's ping read (session.ts `linkTick`), polled beside the call loop's other arms rather than awaited in one, so
@@ -312,6 +314,11 @@ impl MediaSession {
         let _ = self.commands.send(Command::ShareSource(source, options));
     }
 
+    /// Shares the sound of `source` with the running screen share (`None` stops it). Nothing while no screen is shared.
+    pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>) {
+        let _ = self.commands.send(Command::AppAudio(source));
+    }
+
     /// Applies a new stream quality to the running screen share.
     pub fn quality(&self, options: ShareOptions) {
         let _ = self.commands.send(Command::Quality(options));
@@ -496,6 +503,7 @@ async fn in_call(
     let mut videos = call.remote_videos();
     let mut events = call.events();
     let mut ended = call.shares_ended();
+    let mut app_ended = call.app_audio_ended();
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
@@ -557,12 +565,20 @@ async fn in_call(
                 set_kind(&mut share, kind, false);
                 let _ = ctx.voice.set_share(share).await;
             }
+            Some(()) = async { match app_ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                // The application went away: the share goes on without sound, and says so.
+                let mut share = ctx.states.borrow().voice.share;
+                share.screen_audio = false;
+                let _ = ctx.voice.set_share(share).await;
+                ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+            }
             Some(cmd) = commands.recv() => match cmd {
                 Command::Share(kind, false, _) => stop_share(ctx, &call, &mut opens, kind).await,
                 Command::Share(kind, true, options) => opens.start(ctx, &opened_tx, kind, None, options),
                 Command::ShareSource(source, options) => {
                     opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
                 }
+                Command::AppAudio(source) => app_audio(ctx, &call, source).await,
                 Command::Quality(options) => {
                     if ctx.states.borrow().voice.share.screen
                         && let Err(e) = call.configure_video(ShareKind::Screen, options).await
@@ -711,12 +727,42 @@ impl Opens {
     }
 }
 
+/// Starts or stops the screen share's application sound (parity plan Package 3). Only with a running screen share; the
+/// instance's sharing slot says whether the share carries sound. A capture that cannot start leaves the share silent and
+/// says so.
+async fn app_audio(ctx: &Ctx, call: &Call, source: Option<dilla_media::app_audio::AppSource>) {
+    let mut share = ctx.states.borrow().voice.share;
+    let Some(source) = source.filter(|_| share.screen) else {
+        call.unpublish_app_audio().await;
+        if share.screen_audio {
+            share.screen_audio = false;
+            let _ = ctx.voice.set_share(share).await;
+        }
+        return;
+    };
+    match call.publish_app_audio(&source).await {
+        Ok(_) => {
+            share.screen_audio = true;
+            let _ = ctx.voice.set_share(share).await;
+            ctx.voice.set_notice(None);
+        }
+        Err(e) => {
+            log::warn!("voice: the application sound did not start: {e}");
+            ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+        }
+    }
+}
+
 /// Stops a share: a selection in flight is withdrawn, the track is unpublished (its source let go) and the instance's
 /// sharing slot is freed.
 async fn stop_share(ctx: &Ctx, call: &Call, opens: &mut Opens, kind: ShareKind) {
     opens.withdraw(kind);
     let mut next = ctx.states.borrow().voice.share;
     call.unpublish_video(kind).await;
+    if kind == ShareKind::Screen {
+        // The share's sound goes with it.
+        call.unpublish_app_audio().await;
+    }
     set_kind(&mut next, kind, false);
     let _ = ctx.voice.set_share(next).await;
 }

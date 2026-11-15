@@ -147,6 +147,15 @@ pub struct Peer {
 
 impl Peer {
     pub fn start(url: &str, token: &str, tone: u32) -> Peer {
+        Self::start_with(url, token, &["--tone", &tone.to_string()])
+    }
+
+    /// A peer that publishes no microphone (listen only), and whatever else it is told to.
+    pub fn listening(url: &str, token: &str) -> Peer {
+        Self::start_with(url, token, &[])
+    }
+
+    pub fn start_with(url: &str, token: &str, extra: &[&str]) -> Peer {
         let exe = std::env::current_exe().unwrap();
         let bin = exe
             .parent()
@@ -170,7 +179,8 @@ impl Peer {
             );
         });
         let mut child = Command::new(bin)
-            .args(["--url", url, "--token", token, "--tone", &tone.to_string()])
+            .args(["--url", url, "--token", token])
+            .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

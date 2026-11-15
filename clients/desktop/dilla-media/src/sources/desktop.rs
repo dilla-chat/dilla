@@ -41,32 +41,33 @@ pub const START_WAIT: Duration = Duration::from_secs(15);
 /// The longest the portal's own dialog may stay open (beta.5 `PICKER_DEADLINE_MS`).
 pub const PORTAL_WAIT: Duration = Duration::from_secs(120);
 
-/// Whether the system portal chooses the source (Linux on Wayland), as beta.5's `screenPortal`.
+/// Whether the system chooses the source instead of Dilla's picker: Linux on Wayland (the XDG portal, beta.5's
+/// `screenPortal`), and macOS (ScreenCaptureKit's own picker: libwebrtc's ScreenCaptureKit capturer lists no displays
+/// without it, so there is nothing to draw thumbnails of).
 pub fn portal() -> bool {
     portal_in(|k| std::env::var(k).ok())
 }
 
 fn portal_in(env: impl Fn(&str) -> Option<String>) -> bool {
-    cfg!(target_os = "linux")
-        && (env("XDG_SESSION_TYPE").as_deref() == Some("wayland")
-            || env("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()))
+    cfg!(target_os = "macos")
+        || (cfg!(target_os = "linux")
+            && (env("XDG_SESSION_TYPE").as_deref() == Some("wayland")
+                || env("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())))
 }
 
 fn options(kind: Option<SourceKind>) -> DesktopCapturerOptions {
     let source_type = match kind {
         Some(SourceKind::Screen) => DesktopCaptureSourceType::Screen,
         Some(SourceKind::Window) => DesktopCaptureSourceType::Window,
-        // The portal's one dialog offers screens and windows together (Chromium's "generic" capture).
-        #[cfg(target_os = "linux")]
+        // The system's one dialog offers screens and windows together (Chromium's "generic" capture): the XDG portal,
+        // ScreenCaptureKit's picker (allowed by default in `DesktopCapturerOptions`).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         None => DesktopCaptureSourceType::Generic,
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         None => DesktopCaptureSourceType::Screen,
     };
     let mut o = DesktopCapturerOptions::new(source_type);
     o.set_include_cursor(true);
-    // macOS: the sources are listed here and chosen in Dilla's picker, not in the system's.
-    #[cfg(target_os = "macos")]
-    o.set_sck_system_picker(false);
     o
 }
 
@@ -298,7 +299,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_portal_chooses_on_wayland_only() {
+    fn the_system_chooses_on_wayland_and_macos_only() {
         let env = |pairs: &'static [(&'static str, &'static str)]| {
             move |k: &str| {
                 pairs
@@ -308,13 +309,20 @@ mod tests {
             }
         };
         let linux = cfg!(target_os = "linux");
-        assert_eq!(portal_in(env(&[("XDG_SESSION_TYPE", "wayland")])), linux);
-        assert_eq!(portal_in(env(&[("WAYLAND_DISPLAY", "wayland-0")])), linux);
-        assert!(!portal_in(env(&[
-            ("XDG_SESSION_TYPE", "x11"),
-            ("DISPLAY", ":0")
-        ])));
-        assert!(!portal_in(env(&[("WAYLAND_DISPLAY", "")])));
+        let mac = cfg!(target_os = "macos");
+        assert_eq!(
+            portal_in(env(&[("XDG_SESSION_TYPE", "wayland")])),
+            linux || mac
+        );
+        assert_eq!(
+            portal_in(env(&[("WAYLAND_DISPLAY", "wayland-0")])),
+            linux || mac
+        );
+        assert_eq!(
+            portal_in(env(&[("XDG_SESSION_TYPE", "x11"), ("DISPLAY", ":0")])),
+            mac
+        );
+        assert_eq!(portal_in(env(&[("WAYLAND_DISPLAY", "")])), mac);
     }
 
     #[test]

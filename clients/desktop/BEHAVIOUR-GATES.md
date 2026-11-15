@@ -9,7 +9,7 @@ Every test title of `e2e/media` (read live) and of the retired `e2e/web`, `e2e/v
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of `e2e/media` and the frozen titles file and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 181 with a Rust test, 42 n/a (browser/phone only), 10 next plan (native), 0 TODO only (0 TODO tests proposed in all).
+Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next plan (native), 0 TODO only (0 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -232,8 +232,8 @@ same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
 | File | Test title | Held by |
 | --- | --- | --- |
 | `packages/desktop/test/electron/00-mac-notifications.spec.ts` | macOS accepts a real native notification from the shipping sandboxed app | next plan (native): OS notifications behind the Notifier trait |
-| `packages/desktop/test/electron/application-audio.spec.ts` | selected application reaches an encrypted listener while other applications and Dilla call audio stay excluded | next plan (native): per-application audio capture |
-| `packages/desktop/test/electron/application-audio.spec.ts` | native application audio without an authenticated source slot cannot fall back to plaintext | next plan (native): per-application audio capture |
+| `packages/desktop/test/electron/application-audio.spec.ts` | selected application reaches an encrypted listener while other applications and Dilla call audio stay excluded | dilla-media::tests/app_audio::only_the_chosen_app_reaches_the_listener_encrypted |
+| `packages/desktop/test/electron/application-audio.spec.ts` | native application audio without an authenticated source slot cannot fall back to plaintext | dilla-media::tests/app_audio::no_source_slot_sends_nothing |
 | `packages/desktop/test/electron/forwarding.spec.ts` | actual forwarding keeps worker bearer/body/response and omits the private session cookie | dilla-client::tests/http::the_request_is_what_the_typescript_client_sends; dilla-client::tests/http::credential_bodies_are_zeroizing_and_never_printed |
 | `packages/desktop/test/electron/forwarding.spec.ts` | actual forwarding preserves the worker redirect-error policy | dilla-client::tests/http::a_redirect_is_not_followed |
 | `packages/desktop/test/electron/media.spec.ts` | the real media worker encrypts and decrypts video in Electron | dilla-media::tests/live::desktop_to_desktop_through_the_sfu_with_client_core_keys_and_an_epoch_change |

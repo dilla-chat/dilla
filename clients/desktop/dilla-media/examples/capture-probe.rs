@@ -4,6 +4,7 @@
 //! capture-probe screens|windows        lists the sources, then captures the first one for 3 seconds
 //! capture-probe portal                  (Wayland) opens the system portal's dialog and captures the choice
 //! capture-probe camera                  lists the cameras and captures the first one for 3 seconds
+//! capture-probe apps                    lists the applications that play sound (application audio)
 //! ```
 //!
 //! It prints each source, then each frame's size and how many frames came; a source that ends says so.
@@ -44,6 +45,20 @@ fn main() {
     let result = match what.as_str() {
         "portal" => open(None, desktop::PORTAL_WAIT),
         "camera" => camera(),
+        "apps" => {
+            match dilla_media::app_audio::sources() {
+                Ok(list) => {
+                    for s in &list {
+                        println!(
+                            "application {} (pid {}, stream {})",
+                            s.label, s.pid, s.serial
+                        );
+                    }
+                }
+                Err(e) => println!("no application audio: {e}"),
+            }
+            return;
+        }
         kind => {
             let kind = if kind == "windows" {
                 SourceKind::Window

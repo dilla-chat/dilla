@@ -55,3 +55,8 @@ dilla-testkit = { path = "../../../testkit" }
 hmac = "0.13"
 sha1 = "0.11"
 tokio = { version = "1", features = ["io-std", "io-util"] }
+
+# Application audio on Linux (parity plan Package 3): the PipeWire client (registry, links, a capture stream), as beta.5's
+# native/linux.cpp used libpipewire. Needs libpipewire-0.3-dev to build (CI installs it).
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "=0.9.2"

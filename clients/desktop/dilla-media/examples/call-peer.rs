@@ -22,6 +22,9 @@
 //!   unshare camera|screen
 //!   quality <720p|1080p|1440p|source> <fps>   the running screen share's new stream quality (the same source)
 //!   ended                                     prints {"event":"shares_ended","kinds":[...]}: the shares whose source ended
+//!   appaudio <pid>                            publishes the sound of the playing application with that process id
+//!                                             (prints {"event":"appaudio","label":...,"error":...})
+//!   unappaudio                                stops it (prints {"event":"unappaudio"})
 //!   sent                                      prints {"event":"sent","video":[[mime,bytes],...]}: the outbound video
 //!   videos                                    prints each verified remote video stream
 //!   quit
@@ -272,6 +275,31 @@ async fn main() {
                     }
                 }
                 emit(json!({"event": "shares_ended", "kinds": kinds}));
+            }
+            ["appaudio", pid] => {
+                let pid: u32 = pid.parse().unwrap_or(0);
+                let found = dilla_media::app_audio::sources()
+                    .map_err(|e| e.to_string())
+                    .and_then(|list| {
+                        list.into_iter()
+                            .find(|s| s.pid == pid)
+                            .ok_or_else(|| "no such application".to_owned())
+                    });
+                let answer = match found {
+                    Ok(source) => call
+                        .publish_app_audio(&source)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(e),
+                };
+                match answer {
+                    Ok(label) => emit(json!({"event": "appaudio", "label": label, "error": null})),
+                    Err(e) => emit(json!({"event": "appaudio", "error": e})),
+                }
+            }
+            ["unappaudio"] => {
+                call.unpublish_app_audio().await;
+                emit(json!({"event": "unappaudio"}));
             }
             ["sent"] => {
                 emit(json!({"event": "sent", "video": call.sent_video().await}));
