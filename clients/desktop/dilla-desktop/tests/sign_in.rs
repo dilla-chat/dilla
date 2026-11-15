@@ -219,3 +219,9 @@ fn parity_create_server() {
 fn parity_create_join() {
     parity("create/join");
 }
+
+/// Package 10b: the create-channel dialog of an owner, private on, one role ticked (Create.tsx).
+#[test]
+fn parity_create_channel_private() {
+    parity("create/channel-private");
+}

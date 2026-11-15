@@ -146,6 +146,8 @@ pub struct CreateFlows {
     community: Option<CommunityId>,
     parent: Option<ChannelId>,
     can_announce: bool,
+    /// The shell's newest state ([`super::overlay`]): what the dialog reads roles and access from.
+    state: std::sync::Arc<AppState>,
     /// The private-channel switch and the roles ticked under it; the roles ticked for an announcement channel.
     private: bool,
     ticked: Vec<RoleId>,
@@ -209,6 +211,7 @@ impl CreateFlows {
             community: None,
             parent: None,
             can_announce: false,
+            state: std::sync::Arc::default(),
             private: false,
             ticked: Vec::new(),
             announce_ticked: Vec::new(),
@@ -248,17 +251,30 @@ impl CreateFlows {
     }
 
     fn community_name(&self, community: CommunityId) -> String {
-        self.client
-            .as_ref()
-            .and_then(|c| {
-                c.state()
-                    .borrow()
-                    .communities
-                    .iter()
-                    .find(|s| s.id == community)
-                    .map(|s| s.name.clone())
-            })
+        let held = |s: &AppState| {
+            s.communities
+                .iter()
+                .find(|c| c.id == community)
+                .map(|c| c.name.clone())
+        };
+        held(&self.state)
+            .or_else(|| self.client.as_ref().and_then(|c| held(&c.state().borrow())))
             .unwrap_or_default()
+    }
+
+    /// The shell's newest state (the create-channel dialog's roles and access).
+    pub fn set_state(&mut self, state: std::sync::Arc<AppState>) {
+        self.state = state;
+    }
+
+    /// Whether the announcement kind is offered: the instance's answer, or the roles slice's access (Create.tsx
+    /// `canCreateAnnouncement`: manage channels and manage roles), which is all a fixture has.
+    fn can_announce(&self) -> bool {
+        self.can_announce
+            || self.community.is_some_and(|c| {
+                let a = self.state.roles.access_of(c);
+                a.loaded && a.manage_channels && a.manage_roles
+            })
     }
 
     pub fn open(&mut self, which: Open, window: &mut Window, cx: &mut Context<Self>) {
@@ -543,7 +559,7 @@ impl CreateFlows {
 
     fn kind(&self) -> NewChannelKind {
         // A chosen announcement kind falls back to text when the right to create one is lost.
-        if self.kind == NewChannelKind::Announcement && !self.can_announce {
+        if self.kind == NewChannelKind::Announcement && !self.can_announce() {
             NewChannelKind::Text
         } else {
             self.kind
@@ -664,10 +680,10 @@ impl CreateFlows {
     /// but not manage roles, why there is no announcement kind; else, for one who may manage roles, the private switch
     /// and, when it is on, the roles that may see the channel (Create.tsx's children of `CreateChannel`).
     fn channel_access(&self, width: f32, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        let (Some(community), Some(client)) = (self.community, self.client.clone()) else {
+        let Some(community) = self.community else {
             return Vec::new();
         };
-        let state = client.state().borrow().clone();
+        let state = self.state.clone();
         let (offered, access) = Self::offered(&state, community);
         let refs: Vec<&RoleSummary> = offered.iter().collect();
         // `.d-select__hint`: `--text-sm`, `--fg-3`.
@@ -711,7 +727,7 @@ impl CreateFlows {
             out.push(hint(t("announce.hint")));
             return out;
         }
-        if access.loaded && !self.can_announce && access.manage_channels && !access.manage_roles {
+        if access.loaded && !self.can_announce() && access.manage_channels && !access.manage_roles {
             out.push(hint(t("announce.needsRoles")));
             return out;
         }
@@ -1064,7 +1080,7 @@ impl Render for CreateFlows {
                     ("text", t("create.channel.text")),
                     ("voice", t("create.channel.voice")),
                 ];
-                if self.can_announce {
+                if self.can_announce() {
                     kinds.push(("announcement", t("announce.kind")));
                 }
                 let value = match self.kind() {
@@ -1100,19 +1116,12 @@ impl Render for CreateFlows {
                     .flex()
                     .flex_col()
                     .gap(forms::CHANNEL_GAP)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(forms::LABEL_GAP)
-                            .child(line(
-                                t("create.channel.kind"),
-                                text::XS,
-                                line_height(text::XS, 1.5),
-                                color::FG_2,
-                            ))
-                            .child(tracked_box("create-channel-kind", segmented)),
-                    )
+                    // `.d-create-channel__kind`: the group alone, at the start (`justify-items: start`); the kind's label
+                    // names the radio group for a screen reader and is not drawn (CreateChannel.tsx).
+                    .child(div().flex().flex_col().items_start().child(tracked_box(
+                        "create-channel-kind",
+                        segmented.label(t("create.channel.kind")),
+                    )))
                     .child(tracked_focus(
                         "create-channel-name",
                         &field_focus,

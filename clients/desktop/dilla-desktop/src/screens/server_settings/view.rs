@@ -96,6 +96,9 @@ pub struct ServerSettingsView {
     /// was already said (`announcedLossFor`).
     last_active: Option<ServerSection>,
     announced_loss: Option<ServerSection>,
+    /// `workspace.permissionChanged`, waiting for the next frame to be read to a screen reader (ServerSettings.tsx's
+    /// polite live region: never drawn).
+    pending_announce: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -212,6 +215,7 @@ impl ServerSettingsView {
             focus: cx.focus_handle(),
             last_active,
             announced_loss: None,
+            pending_announce: false,
             _subscriptions: vec![subscription],
         }
     }
@@ -244,9 +248,8 @@ impl ServerSettingsView {
             if access.loaded {
                 self.announced_loss = self.requested;
             }
-            cx.emit(SettingsEvent::Announce(
-                t("workspace.permissionChanged").to_owned(),
-            ));
+            self.pending_announce = true;
+            cx.notify();
         } else if self
             .requested
             .is_none_or(|r| model::active_of(Some(r), &access) == Some(r))
@@ -443,6 +446,9 @@ pub fn open_section(section: ServerSection, window: &mut Window, cx: &mut gpui::
 
 impl Render for ServerSettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.pending_announce) {
+            dilla_desktop_ui::a11y::announce(t("workspace.permissionChanged"), window, cx);
+        }
         let me = cx.entity().downgrade();
         let hosts = &mut cx.default_global::<OpenHosts>().0;
         hosts.retain(|_, h| h.upgrade().is_some());

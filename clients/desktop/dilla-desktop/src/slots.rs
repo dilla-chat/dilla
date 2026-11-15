@@ -253,7 +253,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 /// (the shell's guard).
 pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = [
-        crate::screens::create::overlay(window, cx),
+        crate::screens::create::overlay(&ctx.state, window, cx),
         search::palette(window, cx),
         dms::picker_overlay(&ctx.state, window, cx),
         dms::compare_overlay(&ctx.state, window, cx),

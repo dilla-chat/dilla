@@ -140,6 +140,9 @@ enum Screen {
     Fatal(ClientError, InstanceConfig),
     /// A revoked device's Forget, or a lost store's Reset, is wiping the instance's data (`boot.resetting`).
     Resetting,
+    /// A fixture's failed start (Package 10d): the splash `boot::fatal` draws for the error, with nothing behind it.
+    #[cfg(feature = "automation")]
+    FixtureBoot(ClientError),
     SignIn(Entity<SignInView>),
     /// The sign-up's steps 1 to 3 (Task 25).
     Signup(Entity<SignupView>),
@@ -171,6 +174,8 @@ impl Screen {
     fn mode(&self) -> WindowMode {
         match self {
             Screen::Starting | Screen::Fatal(..) | Screen::Resetting => WindowMode::Starting,
+            #[cfg(feature = "automation")]
+            Screen::FixtureBoot(_) => WindowMode::Starting,
             Screen::SignIn(_) | Screen::Signup(_) | Screen::Factor(_) => WindowMode::Authentication,
             Screen::Shell(_) | Screen::Done(_) | Screen::ServerSettings { .. } => {
                 WindowMode::Workspace
@@ -304,6 +309,13 @@ impl AppView {
                     this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
+                }
+                crate::fixture::FixtureScreen::Boot { store_lost } => {
+                    this.screen = Screen::FixtureBoot(if store_lost {
+                        ClientError::Store("the database key is missing from the keychain".into())
+                    } else {
+                        ClientError::Revoked
+                    });
                 }
                 crate::fixture::FixtureScreen::Welcome(start) => {
                     this.show_pre_account(start, &fixture, window, cx)
@@ -1213,6 +1225,8 @@ impl AppView {
             Screen::Starting => "starting",
             Screen::Fatal(..) => "fatal",
             Screen::Resetting => "resetting",
+            #[cfg(feature = "automation")]
+            Screen::FixtureBoot(_) => "fatal",
             Screen::SignIn(_) => "sign-in",
             Screen::Signup(_) => "signup",
             Screen::Done(_) => "done",
@@ -1580,6 +1594,21 @@ impl Render for AppView {
                 )
             }
             Screen::Resetting => boot::resetting(),
+            #[cfg(feature = "automation")]
+            Screen::FixtureBoot(error) => {
+                let noop: boot::Press = Rc::new(|_, _| {});
+                boot::fatal(
+                    error,
+                    self.boot_confirming,
+                    f32::from(window.viewport_size().width),
+                    boot::FailureActions {
+                        on_retry: noop.clone(),
+                        on_sign_in: noop.clone(),
+                        on_confirming: Rc::new(|_, _, _| {}),
+                        on_reset: noop,
+                    },
+                )
+            }
             Screen::SignIn(view) => view.clone().into_any_element(),
             Screen::Signup(view) => view.clone().into_any_element(),
             Screen::Done(view) => view.clone().into_any_element(),

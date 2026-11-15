@@ -1223,6 +1223,7 @@ mod tests {
             pinned: false,
             attachments: Vec::new(),
             mention: false,
+            actions: Vec::new(),
         }
     }
 

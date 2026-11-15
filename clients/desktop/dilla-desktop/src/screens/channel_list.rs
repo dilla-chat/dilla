@@ -623,33 +623,36 @@ pub fn render(
             ),
         )
         .children(model.can_add.then(|| {
-            div()
-                .id("channel-list-add")
-                .tab_index(0)
-                .rounded(radius::MD)
-                .focus_visible(|s| s.shadow(focus_ring()))
-                .a11y(
-                    Role::Button,
-                    tf(
-                        "create.channel.title",
-                        &[("server", title_for_tip.as_str())],
-                    ),
-                )
-                .cursor_pointer()
-                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
-                    tf(
-                        "create.channel.title",
-                        &[("server", title_for_tip.as_str())],
-                    ),
-                    &[],
-                ))
-                .on_click(move |_: &ClickEvent, window, cx| on_add(None, window, cx))
-                .child(centred(
-                    Pixels::from(css::ADD_HIT),
-                    Icon::new(IconName::Plus)
-                        .size(Pixels::from(css::GLYPH))
-                        .color(color::FG_2),
-                ))
+            crate::tracked_box(
+                "channel-list-add-button",
+                div()
+                    .id("channel-list-add")
+                    .tab_index(0)
+                    .rounded(radius::MD)
+                    .focus_visible(|s| s.shadow(focus_ring()))
+                    .a11y(
+                        Role::Button,
+                        tf(
+                            "create.channel.title",
+                            &[("server", title_for_tip.as_str())],
+                        ),
+                    )
+                    .cursor_pointer()
+                    .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+                        tf(
+                            "create.channel.title",
+                            &[("server", title_for_tip.as_str())],
+                        ),
+                        &[],
+                    ))
+                    .on_click(move |_: &ClickEvent, window, cx| on_add(None, window, cx))
+                    .child(centred(
+                        Pixels::from(css::ADD_HIT),
+                        Icon::new(IconName::Plus)
+                            .size(Pixels::from(css::GLYPH))
+                            .color(color::FG_2),
+                    )),
+            )
         }))
         .child(crate::tracked_box(
             "server-settings-open",
