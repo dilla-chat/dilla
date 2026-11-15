@@ -1640,11 +1640,27 @@ impl Render for AppView {
         // The focus outside the root (none, or a stale one on a control that went away) lets push to talk go and, while
         // the call is on, comes back to the root (review B; a stale focus is judged on the next frame, re-review B2).
         crate::screens::voice::guard_focus(w, &self.root_focus, window, cx);
+        // A splash (starting, a failed start) holds no focus of its own: the root takes it, so the keyboard's Tab (bound
+        // on the root below) reaches the splash's buttons (Package 11).
+        let splash = matches!(
+            self.screen,
+            Screen::Starting | Screen::Fatal(..) | Screen::Resetting
+        );
+        #[cfg(feature = "automation")]
+        let splash = splash || matches!(self.screen, Screen::FixtureBoot(_));
+        if splash && window.focused(cx).is_none() {
+            let root = self.root_focus.clone();
+            window.defer(cx, move |window, cx| root.focus(window, cx));
+        }
         // "Quit Dilla" from a focused window (the menu's key, Package 5) asks the quit guards first (the OS shell).
         crate::screens::voice::ptt_keys(
             w,
             div()
                 .track_focus(&self.root_focus)
+                // Tab from nowhere (a splash with no focus yet) walks the screen's controls (Package 11): the screens'
+                // own roots hold these too, for when the focus is inside them.
+                .on_action(|_: &crate::screens::FocusNext, window, cx| window.focus_next(cx))
+                .on_action(|_: &crate::screens::FocusPrevious, window, cx| window.focus_prev(cx))
                 .on_action(|_: &crate::native::Quit, _, cx| {
                     crate::native::NativeShell::request_quit(cx)
                 })

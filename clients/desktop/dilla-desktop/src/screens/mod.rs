@@ -40,6 +40,7 @@ pub mod factor;
 pub mod sign_in;
 // Task 27 (instances).
 pub mod instances;
+pub mod read_aloud;
 
 use gpui::{App, IntoElement, KeyBinding, ParentElement, Pixels, Styled, actions, div};
 

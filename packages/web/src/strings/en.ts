@@ -203,6 +203,17 @@ export const en = {
   'onboarding.keys.acknowledge': 'I saved my recovery key somewhere safe',
   'onboarding.keys.ackHint': 'Tick the box to continue.',
   'onboarding.keys.print': 'Print',
+  // Read aloud (native desktop, Package 11, Jonas 2026-11-15): the recovery key and the setup key are not in the
+  // accessibility tree; a press reads them out once, in groups, with the characters that look alike spelled.
+  'readAloud.recoveryKey': 'Read the recovery key aloud',
+  'readAloud.setupKey': 'Read the setup key aloud',
+  'readAloud.label': 'Read aloud',
+  'readAloud.intro': '{name}, in groups of four.',
+  'readAloud.group': 'Group {n}: {chars}.',
+  'readAloud.capital': 'capital {letter}',
+  'readAloud.lower': 'lower case {letter}',
+  'readAloud.zero': 'zero',
+  'readAloud.one': 'one',
   'onboarding.keys.save': 'Save as file',
   'onboarding.keys.printTitle': 'dilla recovery key for {instance}. You need it to add another browser to your account.',
   'onboarding.keys.fileName': 'dilla-recovery-key-{instance}.txt',

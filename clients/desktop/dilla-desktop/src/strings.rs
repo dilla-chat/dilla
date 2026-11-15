@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2186] = [
+pub static STRINGS: [(&str, &str); 2195] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -1306,6 +1306,15 @@ pub static STRINGS: [(&str, &str); 2186] = [
     ("profile.saving", "Saving…"),
     ("profile.status.label", "Status message"),
     ("profile.title", "Profile"),
+    ("readAloud.capital", "capital {letter}"),
+    ("readAloud.group", "Group {n}: {chars}."),
+    ("readAloud.intro", "{name}, in groups of four."),
+    ("readAloud.label", "Read aloud"),
+    ("readAloud.lower", "lower case {letter}"),
+    ("readAloud.one", "one"),
+    ("readAloud.recoveryKey", "Read the recovery key aloud"),
+    ("readAloud.setupKey", "Read the setup key aloud"),
+    ("readAloud.zero", "zero"),
     ("reload.action", "reload"),
     ("reminder.ambiguous", "This local time occurs twice. Choose which time you mean."),
     ("reminder.badge", "{count} due"),
