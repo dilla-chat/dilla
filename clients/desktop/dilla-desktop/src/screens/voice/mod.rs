@@ -135,6 +135,9 @@ mod m {
     pub const METER_GAP: f32 = 1.5;
     pub const CAPTION_CHIP_PAD_X: f32 = 7.0;
     pub const STAT_RIGHT: f32 = 8.0;
+    /// CallStage.css, the focused caption: 24px high, 8px in.
+    pub const FOCUSED_CAPTION_H: f32 = 24.0;
+    pub const FOCUSED_CAPTION_PAD_X: f32 = 8.0;
     /// `.d-call-tile__tools`: 10px in from the focused tile's top right (its stat 10px in from the bottom right), 4px
     /// apart; each tool 28px; Grid 9px in, its 13px glyph 6px before the word; full screen's glyph 14px.
     pub const TOOLS_INSET: f32 = 10.0;
@@ -202,6 +205,9 @@ pub struct VoiceUi {
     pub focused: Option<TileKey>,
     /// The tile the arrows move to.
     pub selected: usize,
+    /// The selection came from a pointer press, not the keyboard: no selection edge is drawn (the web's tile button shows
+    /// its ring only on `:focus-visible`).
+    pub pointer: bool,
     stage_focus: Option<FocusHandle>,
     images: HashMap<StreamKey, (u64, Arc<RenderImage>)>,
     /// Each stream's frame rate, measured over the last second: `(at, frames then, fps)`.
@@ -1702,6 +1708,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let keys = tiles(&state, channel.id);
     let focused = ui.focused.clone().filter(|k| keys.contains(k));
     let selected = ui.selected.min(keys.len().saturating_sub(1));
+    let pointer = ui.pointer;
     let joined = joined(&state, channel.id);
     // VoiceView.tsx `Stage`: a channel this device's call is not in (nor joining) shows the preview, no tiles and no bar.
     let in_call =
@@ -1715,7 +1722,11 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 &state,
                 channel,
                 k,
-                (stage_focused && i == selected, focused.as_ref(), false),
+                (
+                    stage_focused && !pointer && i == selected,
+                    focused.as_ref(),
+                    false,
+                ),
                 (&images, &stats),
                 (values.as_ref(), &bounds),
             )
@@ -1735,7 +1746,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         );
         let size = window.viewport_size();
         deferred(
-            anchored().position(gpui::point(px(0.0), px(0.0))).child(
+            anchored().position(gpui::Point::default()).child(
                 div()
                     .id("voice-tile-fullscreen-view")
                     .a11y(Role::Region, name_of(&state, Some(channel), k.user))
@@ -1771,7 +1782,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 color::FG_2,
             ))
             .into_any_element()
-    } else if let Some(f) = &focused {
+    } else if let Some(f) = focused.as_ref().filter(|_| keys.len() > 1) {
+        // CallStage.tsx `focusedLayout`: the focus layout needs another tile; a lone focused tile keeps its grid place
+        // (and its focused caption, face and tools).
         let at = keys.iter().position(|k| k == f).unwrap_or(0);
         let mut views = tile_views;
         let main = views.remove(at);
@@ -1889,6 +1902,7 @@ fn stage_key(key: &str, n: usize, window: WindowId, cx: &mut App) {
     }
     let channel = ui.state.voice.call.channel;
     let ui = ui_mut(window, cx);
+    ui.pointer = false;
     match key {
         "right" | "down" => ui.selected = (ui.selected + 1).min(n - 1),
         "left" | "up" => ui.selected = ui.selected.saturating_sub(1),
@@ -2034,6 +2048,8 @@ fn tile(
     let is_focused = focused == Some(k);
     let face = if focused.is_some() && !is_focused {
         AvatarSize::Confirm
+    } else if is_focused {
+        AvatarSize::StageFocused
     } else {
         AvatarSize::Stage
     };
@@ -2075,18 +2091,32 @@ fn tile(
     } else {
         m::TILE_EDGE
     };
-    let caption = div()
-        .absolute()
-        .left(px(m::CAPTION_INSET - edge))
-        .bottom(px(m::CAPTION_INSET - edge))
-        .h(px(m::CAPTION_H))
+    // CallStage.css: the focused tile's caption is 24px over its top left (10px in), 8px in, on the tile scrim.
+    let caption = if is_focused {
+        div()
+            .absolute()
+            .left(px(m::TOOLS_INSET - edge))
+            .top(px(m::TOOLS_INSET - edge))
+            .h(px(m::FOCUSED_CAPTION_H))
+            .px(px(m::FOCUSED_CAPTION_PAD_X))
+            .rounded(radius::MD)
+            .bg(color::SCRIM_TILE)
+    } else {
+        div()
+            .absolute()
+            .left(px(m::CAPTION_INSET - edge))
+            .bottom(px(m::CAPTION_INSET - edge))
+            .h(px(m::CAPTION_H))
+            .px(px(m::CAPTION_CHIP_PAD_X))
+            .rounded(radius::ROW)
+            .bg(color::SCRIM_CAPTION)
+    };
+    let caption_text = if is_focused { text::BTN } else { text::XS };
+    let caption = caption
         .overflow_hidden()
         .flex()
         .items_center()
         .gap(px(m::CAPTION_GAP))
-        .px(px(m::CAPTION_CHIP_PAD_X))
-        .rounded(radius::ROW)
-        .bg(color::SCRIM_CAPTION)
         // CallTile.tsx's stage caption: the mute glyph, the name, then the three-bar live meter (drawn while speaking; it
         // holds its room otherwise).
         .when(deafened, |d| {
@@ -2104,8 +2134,13 @@ fn tile(
             )
         })
         .child(
-            line(title, text::XS, line_height(text::XS, LINE), color::FG)
-                .weight(font::WEIGHT_LABEL),
+            line(
+                title,
+                caption_text,
+                line_height(caption_text, LINE),
+                color::FG,
+            )
+            .weight(font::WEIGHT_LABEL),
         )
         .child(
             div()
@@ -2118,6 +2153,10 @@ fn tile(
                 .children((0..3).map(|_| div().w(px(m::METER_W)).h(px(m::METER_H)).bg(color::OK))),
         )
         .children(volume.map(menu::volume_chip));
+    #[cfg(feature = "automation")]
+    let probe = (own && !k.screen).then(|| crate::automation::bounds_probe("voice-tile-own"));
+    #[cfg(not(feature = "automation"))]
+    let probe: Option<Div> = None;
     let key = k.clone();
     let menu_key = k.clone();
     let bounds_key = k.clone();
@@ -2156,10 +2195,12 @@ fn tile(
                 },
                 |_, (), _, _| {},
             )
+            // The tile's outer box (the web's `li`), border included: absolute children sit inside the border.
             .absolute()
-            .top_0()
-            .left_0()
-            .size_full(),
+            .top(px(-edge))
+            .left(px(-edge))
+            .right(px(-edge))
+            .bottom(px(-edge)),
         )
         .on_click(move |e, window, cx| {
             let w = wid(window);
@@ -2170,12 +2211,28 @@ fn tile(
                 return;
             }
             if ui_of(w, cx).is_some() {
+                // CallTile.tsx: the tile is a focus button: a press moves the keyboard there too (the arrows, Enter
+                // and Shift+F10 then act on it).
+                let stage = ui_of(w, cx).and_then(|u| u.stage_focus.clone());
                 let ui = ui_mut(w, cx);
+                if let Some(at) = ui
+                    .state
+                    .voice
+                    .call
+                    .channel
+                    .and_then(|ch| tiles(&ui.state, ch).iter().position(|t| *t == key))
+                {
+                    ui.selected = at;
+                }
+                ui.pointer = true;
                 ui.focused = if ui.focused.as_ref() == Some(&key) {
                     None
                 } else {
                     Some(key.clone())
                 };
+                if let Some(stage) = stage {
+                    window.focus(&stage, cx);
+                }
                 window.refresh();
             }
         })
@@ -2196,6 +2253,7 @@ fn tile(
             d.child(at.child(line(stat, size, line_height(size, LINE), color::FG_3)))
         })
         .when(is_focused, |d| d.child(tile_tools(edge, k.clone(), full)))
+        .children(probe)
         .into_any_element()
 }
 

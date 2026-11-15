@@ -40,7 +40,12 @@ mod m {
     pub const VOLUME_PAD_T: f32 = 6.0;
     pub const VOLUME_PAD_B: f32 = 8.0;
     pub const VOLUME_GAP: f32 = 4.0;
+    /// CallTile.css `.d-call-tile__chip`: 0.375rem in.
+    pub const CHIP_PAD_X: f32 = 6.0;
 }
+
+/// contextMenuTrigger.ts: a menu opened from the keyboard sits this far in from its element's left edge.
+const KEY_MENU_IN: f32 = 8.0;
 
 /// The id prefix of a Move to room.
 const MOVE: &str = "move:";
@@ -64,11 +69,14 @@ pub fn open(w: WindowId, key: TileKey, at: Point<Pixels>, cx: &mut App) {
     }
 }
 
-/// Opens the person menu of `key`'s tile from the keyboard: under the tile's top left, as the web places it for a key.
+/// Opens the person menu of `key`'s tile from the keyboard: 8px in from the tile's bottom left, as the web places it for
+/// a key (contextMenuTrigger.ts `box.left + 8, box.bottom`).
 pub fn open_from_key(w: WindowId, key: TileKey, cx: &mut App) {
     let at = ui_of(w, cx)
         .and_then(|u| u.menu.bounds.borrow().get(&key).copied())
-        .map_or(point(px(0.0), px(0.0)), |b| b.bottom_left());
+        .map_or(Point::default(), |b| {
+            b.bottom_left() + point(px(KEY_MENU_IN), Pixels::ZERO)
+        });
     open(w, key, at, cx);
 }
 
@@ -453,7 +461,7 @@ fn message(w: WindowId, user: UserId, window: &mut Window, cx: &mut App) {
 pub fn volume_chip(level: u32) -> AnyElement {
     div()
         .flex_none()
-        .px(px(6.0))
+        .px(px(m::CHIP_PAD_X))
         .rounded(dilla_desktop_ui::tokens::radius::MD)
         .bg(color::SURFACE_HI)
         .child(line(

@@ -2386,4 +2386,6 @@ parity! {
     parity_voice_stage => "stage",
     parity_voice_stage_b => "stage-b",
     parity_voice_dm_call => "dm-call",
+    parity_voice_stage_focused => "stage-focused",
+    parity_voice_person_menu => "person-menu",
 }

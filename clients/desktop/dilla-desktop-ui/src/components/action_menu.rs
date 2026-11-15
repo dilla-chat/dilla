@@ -388,22 +388,24 @@ impl RenderOnce for ActionMenu {
                 }
             });
         for (i, item) in self.items.iter().enumerate() {
+            // ActionMenu.tsx: the rule, then the heading, then the item.
+            if item.sep {
+                popup = popup.child(div().h(px(1.0)).mx(px(6.0)).my(px(4.0)).bg(color::HAIRLINE));
+            }
             if let Some(heading) = &item.heading {
                 popup = popup.child(
                     div().px(px(8.0)).pt(px(6.0)).pb(px(2.0)).child(
                         line(
                             heading.to_uppercase(),
                             text::MICRO,
-                            line_height(text::MICRO, 1.5),
+                            // The web's heading is 21px tall: 6 + its line at 1.3 (13) + 2.
+                            line_height(text::MICRO, 1.3),
                             color::FG_3,
                         )
                         .weight(font::WEIGHT_LABEL)
                         .tracking(LABEL_TRACKING_WIDE),
                     ),
                 );
-            }
-            if item.sep {
-                popup = popup.child(div().h(px(1.0)).mx(px(6.0)).my(px(4.0)).bg(color::HAIRLINE));
             }
             popup = popup.child(menu_row(
                 (self.id.clone(), format!("item-{}", item.id)),
