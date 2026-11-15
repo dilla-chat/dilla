@@ -13,8 +13,8 @@
 #   ubuntu-upgrade  beta.5's deb, then this deb over it: the version moves up, /opt/Dilla holds only the GPUI files,
 #                   the old app data is kept, dilla-desktop --version works through /usr/bin
 #   fedora-upgrade  the same with beta.5's rpm (its %postun must not break the upgrade)
-#   launch          the AppImage starts under Xvfb on lavapipe with a GNOME Keyring in a D-Bus session, is still
-#                   alive after 10 s, and exits on SIGTERM
+#   launch          the AppImage starts under Xvfb on lavapipe with a GNOME Keyring in a D-Bus session, has its
+#                   window (class dev.dilla.desktop) up and is still alive after 10 s, and exits on SIGTERM
 # The upgrade checks read beta.5's packages from <beta5-dir>, checked against their pinned SHA-256 here.
 #
 # Usage: desktop-gpui-smoke-linux.sh <check> <version> <assets-dir> [<beta5-dir>]
@@ -153,7 +153,7 @@ case "$check" in
   launch)
     apt_install xvfb xauth dbus dbus-x11 gnome-keyring mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri \
       libxkbcommon-x11-0 libxkbcommon0 libxcb1 libasound2t64 libwayland-client0 libx11-6 libx11-xcb1 libdrm2 libgbm1 \
-      fonts-dejavu-core xdg-utils procps
+      fonts-dejavu-core xdg-utils procps x11-utils
     cp "$assets/$base.AppImage" /tmp/dilla.AppImage
     chmod +x /tmp/dilla.AppImage
     cat > /tmp/launch.sh <<'EOS'
@@ -165,6 +165,8 @@ APPIMAGE_EXTRACT_AND_RUN=1 /tmp/dilla.AppImage >/tmp/dilla.log 2>&1 &
 pid=$!
 sleep 10
 if ! kill -0 "$pid" 2>/dev/null; then echo "the app exited within 10 s:"; cat /tmp/dilla.log; exit 1; fi
+# Its window is mapped, with the app id as its class (the desktop entry's StartupWMClass).
+if ! xwininfo -root -tree | grep -F '"dev.dilla.desktop"'; then echo "no window of class dev.dilla.desktop:"; xwininfo -root -tree; cat /tmp/dilla.log; kill -KILL "$pid"; exit 1; fi
 kill -TERM "$pid"
 for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
 if kill -0 "$pid" 2>/dev/null; then echo "the app ignored SIGTERM:"; cat /tmp/dilla.log; kill -KILL "$pid"; exit 1; fi
