@@ -1666,6 +1666,141 @@ export function checkDesktopGpuiWorkflow(root) {
 }
 
 /**
+ * desktop-gpui-release.yml (GPUI release plan, Milestone 1): a desktop-gpui-v* tag run, so the tag's own workflow file.
+ * Pinned: the tag gate (tag shape, ref, main ancestry, green desktop-gpui push run, Cargo version, no release yet), a
+ * clean build (no cache action or setup cache, `--locked`, default features only, pinned libwebrtc), the glibc and
+ * release-binary guards, the pinned packaging tools, attestations over exactly the five assets, the smoke job before
+ * publishing, and a draft-then-publish release. No secret and no environment anywhere (review focus 3).
+ */
+export const GPUI_RELEASE_JOBS = ['tag', 'build-linux', 'smoke', 'publish'];
+export const GPUI_RELEASE_NEEDS = { 'build-linux': ['tag'], smoke: ['tag', 'build-linux'], publish: ['tag', 'build-linux', 'smoke'] };
+export const GPUI_RELEASE_ASSET_EXTS = ['AppImage', 'tar.gz', 'deb', 'rpm', 'aur.tar.gz'];
+export const GPUI_SMOKE_CHECKS = ['ubuntu-deb', 'debian-deb', 'fedora-rpm', 'arch-aur', 'ubuntu-upgrade', 'fedora-upgrade', 'launch'];
+export const GPUI_RELEASE_STEPS = {
+  tag: [
+    '[[ "$tag" =~ ^desktop-gpui-v([0-9]+\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+)$ ]]',
+    'test "$GITHUB_REF" = "refs/tags/$tag"',
+    'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
+    'run: node scripts/server-release-gate.mjs --workflow=desktop-gpui "$TAG_SHA"',
+    'cargo metadata --no-deps --format-version 1 --locked',
+    'test "$cargo_version" = "$VERSION"',
+    'if gh release view "$TAG" >/dev/null 2>&1; then',
+  ],
+  'build-linux': [
+    'test "$(git rev-parse HEAD)" = "$SHA"',
+    'run: bash scripts/fetch-libwebrtc.sh x86_64-unknown-linux-gnu "$RUNNER_TEMP/libwebrtc" >> "$GITHUB_ENV"',
+    'run: cargo build --release --locked -p dilla-desktop',
+    'test "$got" = "Dilla $VERSION (${SHA:0:12})"',
+    'bash scripts/check-glibc-max.sh 2.39 target/release/dilla-desktop',
+    'bash scripts/check-desktop-release-binary.sh target/release/dilla-desktop',
+    'bash scripts/install-ci-tool.sh appimagetool',
+    'bash scripts/install-ci-tool.sh appimage-runtime',
+    'bash scripts/install-ci-tool.sh nfpm',
+    'bash scripts/desktop-gpui-package-linux.sh "$VERSION" target/release/dilla-desktop dist',
+    'sha256sum --check --strict SHA256SUMS',
+  ],
+  smoke: [
+    'sha256sum --check --strict SHA256SUMS',
+    'docker run --rm -v "$PWD:/w:ro" -w /w "$IMAGE" bash scripts/desktop-gpui-smoke-linux.sh "$CHECK" "$VERSION" dist beta5',
+  ],
+  publish: [
+    'sha256sum --check --strict SHA256SUMS',
+    'run: node scripts/desktop-gpui-release-notes.mjs "$VERSION" "$SHA" > "$RUNNER_TEMP/notes.md"',
+    'gh release create "$TAG" --verify-tag --draft --prerelease',
+    'gh release download "$TAG" --dir "$RUNNER_TEMP/check"',
+    'cmp SHA256SUMS "$GITHUB_WORKSPACE/dist/SHA256SUMS"',
+    'run: gh release edit "$TAG" --draft=false',
+  ],
+};
+const GPUI_RELEASE_PERMISSIONS = {
+  tag: { contents: 'read', actions: 'read' },
+  'build-linux': { contents: 'read', 'id-token': 'write', attestations: 'write' },
+  publish: { contents: 'write' },
+};
+
+export function checkDesktopGpuiReleaseWorkflow(root) {
+  const file = 'desktop-gpui-release.yml';
+  const problems = [];
+  const fail = (message) => problems.push(`${file}: ${message}`);
+  let text, doc;
+  try {
+    text = readFileSync(join(root, '.github', 'workflows', file), 'utf8');
+    doc = yaml.load(text);
+  } catch (error) { return [`${file}: ${error.code === 'ENOENT' ? 'missing' : `invalid YAML (${error.message.split('\n')[0]})`}`]; }
+  const code = text.replace(/^\s*#.*$/gm, '');
+  text.split('\n').forEach((line, i) => {
+    checkActionReference(line, file, i + 1, problems);
+    for (const { re, what } of FORBIDDEN) {
+      if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — a release is fail-closed (R22)`);
+    }
+    if (/\$\{\{\s*(?:github\.event\.)?inputs\./.test(line) && !/^\s+[A-Z_]+: \$\{\{\s*(?:github\.event\.)?inputs\.[a-z_]+\s*\}\}\s*$/.test(line)) {
+      problems.push(`${file}:${i + 1}: a workflow_dispatch input is expanded outside an env: key; pass it through env to the script`);
+    }
+    if (/^\s*run:.*\$\{\{/.test(line)) problems.push(`${file}:${i + 1}: an expression is interpolated inline in a run command; pass it through env`);
+  });
+  if (!drSame(doc?.on?.push, { tags: ['desktop-gpui-v*'] })) fail("must run on a push of tags 'desktop-gpui-v*' only");
+  if (Object.keys(doc?.on ?? {}).some((event) => !['push', 'workflow_dispatch'].includes(event))) fail('runs only on a tag push and workflow_dispatch');
+  if (!drSame(doc?.on?.workflow_dispatch?.inputs?.tag?.required, true)) fail('workflow_dispatch takes a required tag input');
+  if (!drSame(doc?.permissions, { contents: 'read' })) fail('the workflow permissions must be exactly contents: read');
+  if (doc?.concurrency?.['cancel-in-progress'] !== false) fail('a release run is never cancelled by another (cancel-in-progress: false)');
+  for (const expr of expressions(text)) {
+    if (/\bsecrets\b/.test(expr)) fail(`names secrets (\${{${expr}}}); a tag run's workflow file reads no secret`);
+  }
+  if (/\bsecrets\./.test(code)) fail('names secrets; a tag run\'s workflow file reads no secret');
+  if (/uses:\s*actions\/cache[@/]/.test(code)) fail('restores or saves a cache; the release build is clean');
+  const jobs = doc?.jobs ?? {};
+  if (!drSame(Object.keys(jobs), GPUI_RELEASE_JOBS)) fail(`jobs must be exactly ${GPUI_RELEASE_JOBS.join(', ')}, in that order`);
+  const stepText = (job) => (job?.steps ?? []).map((step) => [step?.name, step?.run, step?.uses, ...Object.values(step?.with ?? {})].filter((v) => typeof v === 'string').join('\n')).join('\n');
+  for (const [name, job] of Object.entries(jobs)) {
+    if (Object.hasOwn(job ?? {}, 'environment')) fail(`job "${name}" enters an environment; a tag run's workflow file is the tag's, so it holds none (M2 signs on main)`);
+    if (typeof job?.if === 'string' && STATUS_CHECK.test(job.if)) fail(`job "${name}" has a job-level if: with a status check (${job.if}), which runs it past a failed need`);
+    const needs = [job?.needs ?? []].flat();
+    if (Object.hasOwn(GPUI_RELEASE_NEEDS, name) && !drSame([...needs].sort(), [...GPUI_RELEASE_NEEDS[name]].sort())) fail(`job "${name}" must need exactly ${GPUI_RELEASE_NEEDS[name].join(', ')}`);
+    const perms = job?.permissions;
+    if (Object.hasOwn(GPUI_RELEASE_PERMISSIONS, name) ? !drSame(perms, GPUI_RELEASE_PERMISSIONS[name]) : perms !== undefined) {
+      fail(`job "${name}" permissions must be ${JSON.stringify(GPUI_RELEASE_PERMISSIONS[name] ?? 'the workflow\'s (contents: read)')}`);
+    }
+    for (const step of job?.steps ?? []) {
+      if (isCheckout(step) && Object.hasOwn(step.with ?? {}, 'ref')) fail(`job "${name}" checks out ref ${step.with.ref}; a release builds the tagged commit only`);
+      if (isCheckout(step) && step.with?.['persist-credentials'] !== false) fail(`job "${name}" keeps the checkout's credentials; set persist-credentials: false`);
+      if (typeof step?.uses === 'string' && /^actions\/setup-(node|go)@/.test(step.uses) && Object.hasOwn(step.with ?? {}, 'cache')) fail(`job "${name}" turns on ${step.uses.split('@')[0]}'s cache; the release build is clean`);
+    }
+    const steps = stepText(job);
+    for (const pin of GPUI_RELEASE_STEPS[name] ?? []) {
+      if (!steps.includes(pin.replace(/^run: /, '')) || (pin.startsWith('run: ') && !(job?.steps ?? []).some((s) => s?.run === pin.slice(5)))) fail(`job "${name}" lost its pinned step: ${pin}`);
+    }
+  }
+  // The build: one cargo build, of dilla-desktop alone with its default features, --locked.
+  const builds = (jobs['build-linux']?.steps ?? []).filter((s) => typeof s?.run === 'string' && /\bcargo (build|install|rustc)\b/.test(s.run));
+  if (builds.length !== 1 || builds[0].run !== 'cargo build --release --locked -p dilla-desktop') fail('build-linux runs exactly one `cargo build --release --locked -p dilla-desktop` (default features only)');
+  if (/--features|--all-features|automation|test-hooks/.test(builds.map((s) => s.run).join('\n'))) fail('the release build turns on a feature; it builds default features only');
+  if (jobs['build-linux']?.['timeout-minutes'] !== 90) fail('build-linux has timeout-minutes: 90');
+  const uploads = (jobs['build-linux']?.steps ?? []).filter((st) => typeof st?.uses === 'string' && st.uses.startsWith('actions/upload-artifact@'));
+  if (uploads.length !== 1 || uploads[0].with?.path !== 'dist/' || uploads[0].with?.['if-no-files-found'] !== 'error') fail('build-linux uploads dist/ once, with if-no-files-found: error');
+  // The build-provenance attestation names exactly the five assets.
+  const attest = (jobs['build-linux']?.steps ?? []).filter((s) => typeof s?.uses === 'string' && s.uses.startsWith('actions/attest-build-provenance@'));
+  const subjects = String(attest[0]?.with?.['subject-path'] ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+  const wanted = GPUI_RELEASE_ASSET_EXTS.map((ext) => `dist/dilla-\${{ needs.tag.outputs.version }}-linux-x64.${ext}`);
+  if (attest.length !== 1 || !drSame([...subjects].sort(), [...wanted].sort())) fail(`build-linux attests exactly the five assets (${wanted.join(', ')})`);
+  // Smoke runs every check, and publish only after it.
+  const checks = (jobs.smoke?.strategy?.matrix?.include ?? []).map((m) => m?.check);
+  if (!drSame([...checks].sort(), [...GPUI_SMOKE_CHECKS].sort())) fail(`smoke runs exactly the checks ${GPUI_SMOKE_CHECKS.join(', ')}`);
+  if (jobs.smoke?.strategy?.['fail-fast'] !== false) fail('smoke runs every distribution to the end (fail-fast: false)');
+  // Publish: the draft holds every asset before it is published.
+  const publishRuns = (jobs.publish?.steps ?? []).map((s) => s?.run ?? '').join('\n');
+  const create = publishRuns.indexOf('gh release create');
+  const verify = publishRuns.indexOf('gh release download');
+  const publish = publishRuns.indexOf('gh release edit "$TAG" --draft=false');
+  if (!(create >= 0 && verify > create && publish > verify)) fail('publish creates a draft, re-downloads and checks it, and only then publishes it');
+  for (const ext of GPUI_RELEASE_ASSET_EXTS) {
+    if (!publishRuns.includes(`"$base.${ext}"`)) fail(`publish does not attach the .${ext} asset`);
+  }
+  if (!publishRuns.includes('dist/SHA256SUMS')) fail('publish does not attach SHA256SUMS');
+  if (/aur\.archlinux\.org|ssh:\/\/aur@/.test(code)) fail('publishes to the AUR; the recipe is a release asset only (D4)');
+  return problems;
+}
+
+/**
  * ci-rerun-starved.yml holds `actions: write` on a workflow_run event, so it is pinned as a privileged workflow:
  * it fires only on a completed server or desktop run, its sole permission is actions: write (contents: read at most), it
  * re-runs attempt 1 only, checks out the default branch and never the triggering run's code, and takes the
@@ -1724,7 +1859,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkDesktopGpuiReleaseWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

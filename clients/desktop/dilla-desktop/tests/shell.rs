@@ -290,7 +290,7 @@ fn desktop_home_title_is_not_server_name(cx: &mut TestAppContext) {
         })
         .expect("the main window opens");
     let mut window_cx = VisualTestContext::from_window(handle.into(), cx);
-    assert_eq!(window_cx.window_title().as_deref(), Some("Dilla Preview"));
+    assert_eq!(window_cx.window_title().as_deref(), Some("Dilla"));
 }
 
 fn bounds(width: f32, height: f32) -> gpui::Bounds<gpui::Pixels> {

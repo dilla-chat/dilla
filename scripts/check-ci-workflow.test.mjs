@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -711,7 +711,7 @@ function fixture(body, gated = GATED) {
   writeFileSync(join(dir, '.github', 'workflows', 'mobile-release.yml'), readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile-release.yml'), 'utf8'));
   // ... and the other workflows the CLI checks.
   releaseRoots.push(dir);
-  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /ci-rerun-starved\.yml$|desktop-gpui\.yml$/.test(path))) {
+  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /ci-rerun-starved\.yml$|desktop-gpui(?:-release)?\.yml$/.test(path))) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
     writeFileSync(join(dir, file), readFileSync(join(REPO_ROOT, file), 'utf8'));
   }
@@ -2735,4 +2735,70 @@ test('parity tests parked until the shared-component pass need no --ignored run,
   writeFileSync(join(dir, 'parked.rs'), linuxOnly('needs dillad'));
   assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-only forwarded other reason still needs its run line');
   rmSync(root, { recursive: true, force: true });
+});
+
+// desktop-gpui-release.yml (GPUI release plan, Milestone 1): the Linux alpha release, a tag run reading no secret.
+const GPUI_RELEASE = '.github/workflows/desktop-gpui-release.yml';
+const REAL_GPUI_RELEASE = readFileSync(join(REPO_ROOT, GPUI_RELEASE), 'utf8');
+function gpuiReleaseProblems(edit) {
+  const edited = edit(REAL_GPUI_RELEASE);
+  assert.notEqual(edited, REAL_GPUI_RELEASE, 'the edit changed nothing; the fixture drifted from desktop-gpui-release.yml');
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-gpui-release-'));
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(dir, GPUI_RELEASE), edited);
+  return checkDesktopGpuiReleaseWorkflow(dir);
+}
+
+test('the real GPUI release workflow passes every rule, and the CLI runs the check', () => {
+  assert.deepEqual(checkDesktopGpuiReleaseWorkflow(REPO_ROOT), []);
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-gpui-release-missing-'));
+  assert.deepEqual(checkDesktopGpuiReleaseWorkflow(dir), ['desktop-gpui-release.yml: missing']);
+  assert.match(readFileSync(SCRIPT_PATH, 'utf8'), /\.\.\.checkDesktopGpuiReleaseWorkflow\(root\)/);
+});
+
+test('the GPUI release workflow reads no secret and enters no environment', () => {
+  assertReported(gpuiReleaseProblems((t) => t.replace('GH_TOKEN: ${{ github.token }}\n          TAG: ${{ steps.tag.outputs.tag }}', 'GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}\n          TAG: ${{ steps.tag.outputs.tag }}')), 'reads no secret');
+  assertReported(gpuiReleaseProblems((t) => t.replace('  publish:\n    runs-on: ubuntu-24.04\n', '  publish:\n    runs-on: ubuntu-24.04\n    environment: desktop-release\n')), 'enters an environment');
+});
+
+test('the GPUI release build is clean: no cache, --locked, default features only', () => {
+  assertReported(gpuiReleaseProblems((t) => t.replace('      - run: rustup show active-toolchain\n', '      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: target\n          key: k\n      - run: rustup show active-toolchain\n')), 'restores or saves a cache');
+  assertReported(gpuiReleaseProblems((t) => t.replace('          node-version-file: .nvmrc\n      # LiveKit', '          node-version-file: .nvmrc\n          cache: npm\n      # LiveKit')), "turns on actions/setup-node's cache");
+  assertReported(gpuiReleaseProblems((t) => t.replace('run: cargo build --release --locked -p dilla-desktop', 'run: cargo build --release -p dilla-desktop')), 'cargo build --release --locked -p dilla-desktop');
+  assertReported(gpuiReleaseProblems((t) => t.replace('run: cargo build --release --locked -p dilla-desktop', 'run: cargo build --release --locked -p dilla-desktop --features automation')), 'default features only');
+});
+
+test('every pinned step of the GPUI release workflow is enforced', () => {
+  for (const [job, pins] of Object.entries(GPUI_RELEASE_STEPS)) {
+    for (const pin of pins) {
+      const needle = pin.replace(/^run: /, '');
+      if (!REAL_GPUI_RELEASE.includes(needle)) assert.fail(`the pin is not in the workflow: ${pin}`);
+      const problems = gpuiReleaseProblems((t) => t.split(needle).join('true'));
+      assert.ok(problems.some((p) => p.includes(`job "${job}" lost its pinned step`) || p.includes(job)), `${job}: ${pin}\n${problems.join('\n')}`);
+    }
+  }
+});
+
+test('the GPUI release attests exactly the five assets', () => {
+  assertReported(gpuiReleaseProblems((t) => t.replace('            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.rpm\n', '')), 'attests exactly the five assets');
+  assertReported(gpuiReleaseProblems((t) => t.replace('            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.rpm\n', '            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.rpm\n            dist/*\n')), 'attests exactly the five assets');
+});
+
+test('the GPUI release publishes only after the smoke tests, from a checked draft', () => {
+  assertReported(gpuiReleaseProblems((t) => t.replace('    needs: [tag, build-linux, smoke]\n', '    needs: [tag, build-linux]\n')), 'job "publish" must need exactly');
+  assertReported(gpuiReleaseProblems((t) => t.replace("          - { check: arch-aur, image: 'archlinux:latest' }\n", '')), 'smoke runs exactly the checks');
+  assertReported(gpuiReleaseProblems((t) => t.replace('--verify-tag --draft --prerelease', '--verify-tag --prerelease')), 'lost its pinned step');
+  assertReported(gpuiReleaseProblems((t) => t.replace('"$base.deb" "$base.rpm" "$base.aur.tar.gz" dist/SHA256SUMS', '"$base.rpm" "$base.aur.tar.gz" dist/SHA256SUMS')), 'does not attach the .deb asset');
+  assertReported(gpuiReleaseProblems((t) => t.replace("        if: matrix.check == 'ubuntu-upgrade'", "        if: always() && matrix.check == 'ubuntu-upgrade'")), 'forbidden "if: always()"');
+  assertReported(gpuiReleaseProblems((t) => t.replace("  publish:\n    runs-on: ubuntu-24.04\n", "  publish:\n    if: success() || failure()\n    runs-on: ubuntu-24.04\n")), 'status check');
+});
+
+test('the GPUI release tag gate, permissions and triggers are enforced', () => {
+  assertReported(gpuiReleaseProblems((t) => t.replace("tags: ['desktop-gpui-v*']", "tags: ['desktop-v*']")), "tags 'desktop-gpui-v*' only");
+  assertReported(gpuiReleaseProblems((t) => t.replace('on:\n  push:\n', 'on:\n  pull_request:\n  push:\n')), 'runs only on a tag push');
+  assertReported(gpuiReleaseProblems((t) => t.replace('    permissions:\n      contents: write\n', '    permissions:\n      contents: write\n      actions: write\n')), 'job "publish" permissions');
+  assertReported(gpuiReleaseProblems((t) => t.replace('      id-token: write\n', '')), 'job "build-linux" permissions');
+  assertReported(gpuiReleaseProblems((t) => t.replace('          INPUT_TAG: ${{ inputs.tag }}\n', '').replace('tag="${INPUT_TAG:-$GITHUB_REF_NAME}"', 'tag="${{ inputs.tag }}"')), 'workflow_dispatch input is expanded outside an env');
+  assertReported(gpuiReleaseProblems((t) => t.replace('uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8', 'uses: actions/attest-build-provenance@v4')), 'must use a 40-hex commit SHA');
+  assertReported(gpuiReleaseProblems((t) => t.replace('          persist-credentials: false\n      - name: The checkout is the tagged commit', '          persist-credentials: false\n          ref: main\n      - name: The checkout is the tagged commit')), 'checks out ref main');
 });
