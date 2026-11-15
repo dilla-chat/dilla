@@ -1,7 +1,8 @@
 //! `MediaPlayer` inside its `AttachmentCard` (packages/ui/src/{MediaPlayer,AttachmentCard}): the name and size, the
 //! inline player and save. Idle is one play button; loading is the state text; ready is the audio control bar (play or
-//! pause, the time, the position and the volume); error is the error text and save. A video never plays inline in
-//! this task (Jonas 2026-11-12): its card is the 16:9 stage tile whose play button opens the system player.
+//! pause, the time, the position and the volume); error is the error text and save. A ready video is the picture with
+//! Chromium's controls over it ([`super::video`], parity plan Package 12); a video this cannot decode is still the
+//! 16:9 stage tile whose play button opens the system player.
 
 use std::time::Duration;
 
@@ -38,7 +39,7 @@ const ERROR_GAP: f32 = 6.0;
 const BAR_H: f32 = 54.0;
 const BAR_W: f32 = 186.0;
 /// `.d-media-player` video frame: at most 30rem wide, 16:9.
-const VIDEO_W: f32 = 480.0;
+const VIDEO_W: f32 = super::video::VIDEO_W;
 
 /// `MediaPlayerProps.state`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +70,8 @@ pub struct MediaCardProps {
     pub on_play: OnClick,
     pub on_toggle: OnClick,
     pub on_save: Option<OnClick>,
+    /// A ready video's picture and controls (with [`PlayerState::Ready`] on a video card).
+    pub video_view: Option<super::video::VideoView>,
 }
 
 /// `m:ss`, as the audio control shows a time.
@@ -84,7 +87,9 @@ fn meta_h() -> f32 {
 fn player_h(video: bool, state: PlayerState) -> f32 {
     let error_h = line_height(text::UI, LEADING) + GAP;
     match (video, state) {
-        (true, PlayerState::Idle | PlayerState::Loading) => VIDEO_W * 9.0 / 16.0,
+        (true, PlayerState::Idle | PlayerState::Loading | PlayerState::Ready { .. }) => {
+            VIDEO_W * 9.0 / 16.0
+        }
         (_, PlayerState::Idle) => CONTROL_H,
         (_, PlayerState::Loading) => line_height(text::UI, LEADING),
         (_, PlayerState::Ready { .. }) => BAR_H,
@@ -125,7 +130,7 @@ fn control_w(label: &str, glyph: bool) -> f32 {
 pub fn media_card_width(p: &MediaCardProps) -> f32 {
     let meta = mono_w(&p.name, text::SM) + META_GAP + mono_w(&p.size, text::XS);
     let player = match (p.video, p.state) {
-        (true, PlayerState::Idle | PlayerState::Loading) => VIDEO_W,
+        (true, PlayerState::Idle | PlayerState::Loading | PlayerState::Ready { .. }) => VIDEO_W,
         (_, PlayerState::Idle) => control_w(&p.play_label, true),
         (_, PlayerState::Loading) => mono_w(&p.loading_label, text::UI),
         (_, PlayerState::Ready { .. }) => BAR_W,
@@ -242,11 +247,15 @@ fn audio_bar(
 }
 
 /// The media card and its height.
-pub fn media_card(p: MediaCardProps) -> (AnyElement, f32) {
+pub fn media_card(mut p: MediaCardProps) -> (AnyElement, f32) {
     let h = media_card_height(p.video, p.state, p.on_save.is_some());
     let w = media_card_width(&p);
     let ui_h = line_height(text::UI, LEADING);
+    let view = p.video_view.take();
     let player: AnyElement = match (p.video, p.state) {
+        (true, PlayerState::Ready { .. }) if view.is_some() => {
+            super::video::video_frame(view.expect("checked"), VIDEO_W, VIDEO_W * 9.0 / 16.0)
+        }
         (true, PlayerState::Idle | PlayerState::Loading) => div()
             .w(px(VIDEO_W))
             .max_w_full()
@@ -370,6 +379,7 @@ mod tests {
             on_play: noop.clone(),
             on_toggle: noop.clone(),
             on_save: Some(noop),
+            video_view: None,
         };
         // 22 characters at 6.9px: 151.8, ceiled onto the 1/64px layout unit.
         let label = (22.0f32 * 11.5 * 0.6 * 64.0 - 1e-3).ceil() / 64.0;

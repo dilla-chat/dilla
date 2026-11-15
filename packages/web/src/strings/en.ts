@@ -724,6 +724,14 @@ export const en = {
   'media.loading': 'loading',
   'media.error': 'This browser cannot play this file.',
   'media.save': 'save',
+  // The native desktop's inline video controls (parity Package 12): the accessible names Chromium's own <video controls>
+  // gave the same buttons. The web keeps using Chromium's.
+  'media.control.play': 'play',
+  'media.control.pause': 'pause',
+  'media.control.mute': 'mute',
+  'media.control.unmute': 'unmute',
+  'media.control.fullscreen': 'enter full screen',
+  'media.control.exitFullscreen': 'exit full screen',
   'settings.nav.voice': 'Voice',
   'settings.voice.section': 'Voice',
   'settings.voice.input': 'Input device',
