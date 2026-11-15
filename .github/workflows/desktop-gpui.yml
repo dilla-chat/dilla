@@ -306,7 +306,11 @@ jobs:
       - name: Playwright Chromium (Linux)
         if: runner.os == 'Linux' && !cancelled()
         timeout-minutes: 8
-        run: npx playwright install --with-deps chromium
+        # --with-deps runs apt-get update over the apt.llvm.org source added above, which can be briefly unreachable.
+        run: >-
+          node scripts/retry-on.mjs --attempts 4 --wait 30
+          --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch|Network is unreachable|no longer has a Release file'
+          -- npx playwright install --with-deps chromium
       # dilla-parity's only GPU test is #[ignore]d (release build has no automation, ~4 min), so the plain run above
       # needs no adapter on any OS: macOS would use Metal and Windows has none, and neither runs the ignored test.
       # Linux renders on lavapipe (mesa-vulkan-drivers, installed above) and runs it, plus dilla-client's real-dillad
