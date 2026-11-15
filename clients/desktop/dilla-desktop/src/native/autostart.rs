@@ -35,7 +35,7 @@ pub fn hidden_start(argv: &[String]) -> bool {
 /// doubled, `\`, `"`, `` ` `` and `$` escaped with a backslash, then every backslash escaped again for the key-value
 /// layer. A relative path, or one with a line break or NUL, is refused.
 pub fn desktop_entry(executable: &str) -> Result<String, String> {
-    if !Path::new(executable).is_absolute() || executable.contains(['\r', '\n', '\0']) {
+    if !executable.starts_with('/') || executable.contains(['\r', '\n', '\0']) {
         return Err("Invalid autostart executable".into());
     }
     let mut quoted = String::new();
@@ -82,7 +82,7 @@ fn xml(s: &str) -> String {
 
 /// The macOS LaunchAgent for `executable`: label `label`, run at load with `--hidden`.
 pub fn launch_agent(label: &str, executable: &str) -> Result<String, String> {
-    if !Path::new(executable).is_absolute() || executable.contains('\0') {
+    if !executable.starts_with('/') || executable.contains('\0') {
         return Err("Invalid autostart executable".into());
     }
     Ok(format!(
