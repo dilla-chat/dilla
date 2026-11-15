@@ -126,7 +126,7 @@ pub fn set_log_width(window: gpui::WindowId, width: f32, cx: &mut App) {
 }
 
 /// How wide the message column is: the log less the row's gutter columns and right padding.
-fn column_width(window: &Window, cx: &App) -> f32 {
+pub(crate) fn column_width(window: &Window, cx: &App) -> f32 {
     let log = crate::per_window::get::<LogWidth>(window.window_handle().window_id(), cx)
         .map_or_else(
             || f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR),

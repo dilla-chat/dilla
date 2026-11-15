@@ -469,6 +469,18 @@ impl Placer {
         );
     }
 
+    /// [`Self::block`] at the fractional position (an inline glyph inside a text run).
+    fn block_exact(&mut self, x: f32, top: f32, element: impl IntoElement) {
+        self.out.push(
+            div()
+                .absolute()
+                .left(px(x))
+                .top(px(top))
+                .child(element)
+                .into_any_element(),
+        );
+    }
+
     /// The welcome at `top`; answers its height.
     fn welcome(&mut self, top: f32, glyph: IconName, title: Vec<Line>, body: Vec<Line>) -> f32 {
         self.block(
@@ -587,12 +599,24 @@ fn draw_marks(
         placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
         x += w + HEAD_GAP;
     }
-    for mark in head_marks(item) {
-        let tone = if item.state == TimelineItemState::Failed {
-            color::DANGER
-        } else {
-            meta_color
-        };
+    let marks = head_marks(item);
+    let last = marks.len().saturating_sub(1);
+    for (n, mark) in marks.into_iter().enumerate() {
+        // The send state is the last mark; a failed one is the danger tone after the x glyph (MessageRow.css `::before`:
+        // 0.875em, 0.25em right of it, its bottom 0.125em under the baseline), so the state is never colour alone.
+        let failed = n == last && item.state == TimelineItemState::Failed;
+        let tone = if failed { color::DANGER } else { meta_color };
+        if failed {
+            let em = f32::from(text::META);
+            let baseline = meta_top + chromium_baseline(Face::Mono, em, meta_line());
+            let glyph = 0.875 * em;
+            placer.block_exact(
+                x,
+                baseline + 0.125 * em - glyph,
+                Icon::new(IconName::X).size(px(glyph)).color(tone),
+            );
+            x += glyph + 0.25 * em;
+        }
         let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
         placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
         x += w + HEAD_GAP;
@@ -870,7 +894,8 @@ pub fn render(
         let body_color = match item.state {
             TimelineItemState::Ok => color::FG_BODY,
             TimelineItemState::Pending => color::FG_2,
-            TimelineItemState::Failed => color::DANGER,
+            // MessageRow.css colours only a pending body; a failed one keeps `--fg-body` (its head mark is the danger).
+            TimelineItemState::Failed => color::FG_BODY,
             _ => color::FG_3,
         };
         let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
