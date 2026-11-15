@@ -1208,6 +1208,10 @@ impl Render for ShellView {
             Rc::new(move |to, _, cx| {
                 let route = match to {
                     dms::Nav::Dm(dm) => Route::Dm(dm),
+                    dms::Nav::Channel { community, channel } => Route::Channel {
+                        community,
+                        channel: Some(channel),
+                    },
                     dms::Nav::Privacy => Route::Settings(Some(UserSection::Privacy)),
                     dms::Nav::Devices => Route::Settings(Some(UserSection::Devices)),
                 };

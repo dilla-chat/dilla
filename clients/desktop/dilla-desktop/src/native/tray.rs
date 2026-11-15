@@ -14,7 +14,47 @@
 //! [`TraySlot::Instances`]: super::TraySlot::Instances
 //! [`TraySlot::Quit`]: super::TraySlot::Quit
 
+use dilla_client::seams::InstanceId;
 use gpui::App;
+
+use super::NativeShell;
 
 /// Called once by [`super::install`]. Task 0: nothing yet.
 pub fn install(_cx: &mut App) {}
+
+/// Brings instance `id`'s window forward, or opens it when it has none (closed to the tray). Nothing while the app
+/// quits.
+pub fn show_instance(id: InstanceId, cx: &mut App) {
+    if NativeShell::is_quitting(cx) || NativeShell::is_asking_quit(cx) {
+        return;
+    }
+    let window = NativeShell::open_windows(cx)
+        .into_iter()
+        .find(|(_, i)| *i == Some(id))
+        .map(|(w, _)| w);
+    if let Some(window) = window
+        && let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == window)
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        cx.activate(true);
+        return;
+    }
+    let Some(host) = NativeShell::host(cx) else {
+        return;
+    };
+    let Some(cfg) = host
+        .launch
+        .root
+        .as_deref()
+        .and_then(|root| dilla_client::instances::Instances::load(root).ok())
+        .and_then(|list| list.get(id).cloned())
+    else {
+        return;
+    };
+    if let Err(e) = crate::windows::open_instance(cx, &host.launch, cfg, None, host.allow_loopback)
+    {
+        log::warn!("dilla-desktop: instance {} did not open: {e}", id.0);
+    }
+}

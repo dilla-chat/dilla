@@ -167,3 +167,203 @@ fn keyboard_notify_focus_order(cx: &mut TestAppContext) {
         "Shift+Tab goes back the same way"
     );
 }
+
+// ---- OS notifications (GPUI parity Package 4: beta.5 `main.ts` `notify`, `dismiss-notification`) ----
+
+mod os {
+    use std::sync::Arc;
+
+    use dilla_client::features::notify::{Notification, NotificationKind, Notifier};
+    use dilla_client::seams::InstanceId;
+    use dilla_client::state::{
+        AppState, Channel, ChannelGroupState, ChannelId, Community, CommunityId, UserId,
+    };
+    use dilla_desktop::native::NativeShell;
+    use dilla_desktop::native::notifier::{self, MAX_LIVE, Owner};
+    use dilla_desktop::router::Route;
+    use dilla_desktop::screens::shell::{Clock, ShellView};
+    use gpui::{SystemNotificationResponse, TestAppContext};
+
+    const SERVER: CommunityId = CommunityId([0x51; 16]);
+    const GENERAL: ChannelId = ChannelId([0x61; 16]);
+    const RANDOM: ChannelId = ChannelId([0x62; 16]);
+
+    fn note(tag: &str, channel: Option<ChannelId>) -> Notification {
+        let mut n = Notification::new(NotificationKind::Mention, "#general · Midgard", "hi");
+        n.tag = tag.into();
+        n.channel = channel;
+        n
+    }
+
+    fn server() -> AppState {
+        let mut s = AppState::default();
+        s.communities.push(Community {
+            id: SERVER,
+            name: "Midgard".into(),
+            owner: UserId([9; 16]),
+            policy_version: 0,
+        });
+        s.channels = [(GENERAL, "general"), (RANDOM, "random")]
+            .into_iter()
+            .zip(0u32..)
+            .map(|((id, name), position)| Channel {
+                id,
+                community_id: SERVER,
+                kind: 0,
+                mode: 0,
+                name: name.into(),
+                topic: String::new(),
+                parent_id: None,
+                position,
+                slowmode: 0,
+                text_group_id: None,
+                group: ChannelGroupState::Active,
+            })
+            .collect();
+        s
+    }
+
+    fn installed(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            dilla_desktop::install(cx);
+            notifier::install(cx);
+        });
+    }
+
+    /// `00-mac-notifications.spec.ts` (its platform part): what the engine delivers on its own thread reaches the
+    /// platform's notification centre through the UI thread, under the app's identity.
+    #[gpui::test]
+    fn os_notifier_shows_through_the_platform(cx: &mut TestAppContext) {
+        installed(cx);
+        let n = cx.update(|cx| notifier::os_notifier(InstanceId(1), cx));
+        std::thread::spawn(move || n.deliver(&note("dilla:c1", Some(GENERAL))))
+            .join()
+            .unwrap();
+        cx.run_until_parked();
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].tag.as_ref(), "dilla:1:dilla:c1");
+        assert_eq!(shown[0].title.as_ref(), "#general · Midgard");
+        assert!(shown[0].actions.is_empty(), "a message has no buttons");
+        assert_eq!(
+            cx.app_identity().map(|(id, _)| id),
+            Some(dilla_desktop::APP_ID.into())
+        );
+    }
+
+    /// beta.5 `notification-click`: the body brings the instance's window forward and opens the conversation; the
+    /// notification is gone after.
+    #[gpui::test]
+    fn a_click_focuses_the_window_and_opens_the_conversation(cx: &mut TestAppContext) {
+        installed(cx);
+        let (shell, vcx) = cx.add_window_view(|window, cx| {
+            ShellView::new(
+                Arc::new(server()),
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        shell.update(vcx, |s, cx| {
+            s.navigate(
+                Route::Channel {
+                    community: SERVER,
+                    channel: Some(GENERAL),
+                },
+                cx,
+            )
+        });
+        vcx.deactivate_window();
+        vcx.run_until_parked();
+        let window = vcx.update(|window, _| window.window_handle().window_id());
+        let tag = vcx.update(|_, cx| {
+            NativeShell::window_opened(window, Some(InstanceId(4)), cx);
+            notifier::show(
+                Owner::Instance(InstanceId(4)),
+                &note("dilla:c2", Some(RANDOM)),
+                cx,
+            )
+        });
+        vcx.cx.update(|cx| {
+            notifier::respond(
+                SystemNotificationResponse {
+                    tag: tag.clone(),
+                    action_id: None,
+                },
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|window, _| window.is_window_active()),
+            "the window came forward"
+        );
+        assert_eq!(
+            shell.read_with(vcx, |s, _| s.route().clone()),
+            Route::Channel {
+                community: SERVER,
+                channel: Some(RANDOM)
+            }
+        );
+        assert!(vcx.update(|_, cx| notifier::live_tags(cx)).is_empty());
+    }
+
+    /// beta.5 `closeNotices`: closing an instance's window withdraws that instance's notifications, and only those.
+    #[gpui::test]
+    fn closing_the_window_withdraws_its_notifications(cx: &mut TestAppContext) {
+        installed(cx);
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            NativeShell::window_opened(w, Some(InstanceId(1)), cx);
+            notifier::show(Owner::Instance(InstanceId(1)), &note("a", None), cx);
+            notifier::show(Owner::Instance(InstanceId(2)), &note("b", None), cx);
+            notifier::show(Owner::Instance(InstanceId(1)), &note("c", None), cx);
+            NativeShell::window_closed(w, cx);
+            assert_eq!(notifier::live_tags(cx), ["dilla:2:b"]);
+        });
+        assert_eq!(
+            cx.dismissed_system_notifications(),
+            ["dilla:1:a", "dilla:1:c"]
+        );
+        assert_eq!(cx.delivered_system_notifications().len(), 1);
+    }
+
+    /// beta.5's 64 live notifications: the oldest message goes to make room (GPUI reports no close, so refusing the
+    /// 65th as beta.5 did would silence the app for good); a live ring outlasts the messages.
+    #[gpui::test]
+    fn at_most_64_live(cx: &mut TestAppContext) {
+        installed(cx);
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            let mut ring = Notification::new(
+                NotificationKind::Ring,
+                "Bob is calling",
+                "Open dilla to answer.",
+            );
+            ring.tag = "dilla-ring-1".into();
+            let ring_tag = notifier::show_ring(w, "k".into(), &ring, cx);
+            for i in 0..MAX_LIVE + 5 {
+                notifier::show(
+                    Owner::Instance(InstanceId(1)),
+                    &note(&format!("m{i}"), None),
+                    cx,
+                );
+            }
+            let live = notifier::live_tags(cx);
+            assert_eq!(live.len(), MAX_LIVE);
+            assert_eq!(live[0], ring_tag, "the ring stays");
+            assert_eq!(
+                live[1].as_ref(),
+                "dilla:1:m6",
+                "the oldest messages went first"
+            );
+        });
+        assert_eq!(cx.dismissed_system_notifications().len(), 6);
+    }
+}

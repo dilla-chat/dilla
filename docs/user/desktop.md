@@ -111,8 +111,11 @@ the updater and packaging.
 - **Screen capture and camera:** the camera and screen-share buttons are drawn but start nothing (the share is
   treated as cancelled), and there is no screen picker or per-application audio. You still see other people's camera
   and screen shares, and hear and speak in calls.
-- **Operating-system notifications:** none are raised, including for an incoming ring (the ring banner and sound
-  work while the window is open). The Notifications settings are kept for when they arrive.
+- **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and
+  Decline), and a click opens the conversation. On Linux a notification cannot be taken back once shown (an ended ring
+  stays in the notification list until it times out); on Windows the notifications need the installer's Start-menu
+  entry, and on macOS the app bundle, so a build run from source shows them on Linux only. A ring that arrives while
+  an instance has no window open raises none.
 - **Quit guards and permission prompts:** quitting does not warn about an active call or an unsent draft (the draft
   is kept per channel), and the operating system's microphone prompt is the system's own.
 - **Screen readers:** not supported yet. They come after the switch, with AccessKit.
