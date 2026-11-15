@@ -339,6 +339,16 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     // The decrypted images, the cards' state and the players the client opened go too (re-review N3: by owner, so a
     // DM's, a left channel's and a thread's go as well): a released account's media is not left in the process.
     forget_owner(owner, cx);
+    // A video shown full screen whose player went with the client: the window comes back out of full screen now, not
+    // only once it draws again.
+    let u = ui(cx);
+    let gone = u
+        .fullscreen
+        .as_ref()
+        .is_some_and(|f| !u.players.contains_key(&f.key));
+    if gone {
+        end_video_fullscreen(cx);
+    }
 }
 
 /// `window` closed: its composer target, and the lightbox, GIF picker and DM GIF notice drawn in it, go with their
@@ -1009,10 +1019,7 @@ pub fn toggle_video_fullscreen(key: CardKey, window: &mut Window, cx: &mut App) 
     if !matches!(ui(cx).players.get(&key), Some(Player::Video(_))) {
         return;
     }
-    let made = !window.is_fullscreen();
-    if made {
-        window.toggle_fullscreen();
-    }
+    let made = crate::fullscreen::enter(window);
     let focus = cx.focus_handle();
     window.focus(&focus, cx);
     ui(cx).fullscreen = Some(Fullscreen {
@@ -1026,13 +1033,17 @@ pub fn toggle_video_fullscreen(key: CardKey, window: &mut Window, cx: &mut App) 
 
 /// Escape, or the button again: the video goes back to its card, and the window out of full screen if it went in for
 /// the video.
-pub fn exit_video_fullscreen(window: &mut Window, cx: &mut App) {
+pub fn exit_video_fullscreen(_window: &mut Window, cx: &mut App) {
+    end_video_fullscreen(cx);
+}
+
+/// The full-screen video goes back to its card however it ends (Escape, its button, its player released with its
+/// client): the window leaves full screen if it went in for the video.
+pub fn end_video_fullscreen(cx: &mut App) {
     let Some(f) = ui(cx).fullscreen.take() else {
         return;
     };
-    if f.made_window_fullscreen && f.owner == window_id(window) && window.is_fullscreen() {
-        window.toggle_fullscreen();
-    }
+    crate::fullscreen::leave(f.owner, f.made_window_fullscreen, cx);
     cx.refresh_windows();
 }
 

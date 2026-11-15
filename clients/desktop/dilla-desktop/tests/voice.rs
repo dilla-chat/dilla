@@ -223,6 +223,119 @@ fn the_focused_tile_offers_grid_and_full_screen(cx: &mut TestAppContext) {
     assert_eq!(area(cx, |ui| ui.focused.clone()), None, "back to the grid");
 }
 
+/// Voice-2 (CallTile.tsx `toggleFullscreen`): the tile's full screen makes the window full screen with that tile alone
+/// in it; Escape gives the stage back and the window leaves full screen. A window already full screen (the app's own full
+/// screen, layout unchanged) stays so when the tile leaves.
+#[gpui::test]
+fn a_tile_s_full_screen_shows_only_it_and_escape_returns(cx: &mut TestAppContext) {
+    let cx = host(cx, state(3));
+    let focus = stage_focus(cx);
+    cx.update(|window, cx| focus.focus(window, cx));
+    press(cx, "enter");
+    // The tool's action (this host's focused tile runs past the window's edge, so the action is taken directly).
+    assert!(cx.debug_bounds("voice-tile-fullscreen").is_some());
+    let key = area(cx, |ui| ui.focused.clone()).expect("a focused tile");
+    let toggle = |cx: &mut VisualTestContext| {
+        let key = key.clone();
+        cx.update(|window, cx| voice::toggle_tile_fullscreen(key, window, cx));
+        cx.run_until_parked();
+    };
+    toggle(cx);
+    let w = cx.update(|window, _| voice::wid(window));
+    assert!(cx.update(|_, cx| voice::fullscreen_tile(w, cx)).is_some());
+    assert!(
+        cx.update(|window, _| window.is_fullscreen()),
+        "the window went full screen for the tile"
+    );
+    press(cx, "escape");
+    assert!(cx.update(|_, cx| voice::fullscreen_tile(w, cx)).is_none());
+    assert!(
+        !cx.update(|window, _| window.is_fullscreen()),
+        "and back out"
+    );
+
+    // The app's own full screen first: the tile's leaves it as it was.
+    cx.update(|window, _| window.toggle_fullscreen());
+    toggle(cx);
+    assert!(cx.update(|_, cx| voice::fullscreen_tile(w, cx)).is_some());
+    press(cx, "escape");
+    assert!(
+        cx.update(|window, _| window.is_fullscreen()),
+        "the app's full screen stays"
+    );
+}
+
+/// Voice-2: a tile shown full screen whose client is released (sign-out, Forget) gives the window back out of full
+/// screen, though nothing draws the stage any more.
+#[gpui::test]
+fn releasing_the_client_mid_full_screen_restores_the_window(cx: &mut TestAppContext) {
+    let cx = host(cx, state(3));
+    let focus = stage_focus(cx);
+    cx.update(|window, cx| focus.focus(window, cx));
+    press(cx, "enter");
+    let key = area(cx, |ui| ui.focused.clone()).unwrap();
+    cx.update(|window, cx| voice::toggle_tile_fullscreen(key, window, cx));
+    cx.run_until_parked();
+    assert!(cx.update(|window, _| window.is_fullscreen()));
+    // The area goes as a released client's does (no client in this host: the window's area is let go directly).
+    let w = cx.update(|window, _| voice::wid(window));
+    cx.update(|_, cx| voice::window_released_for_tests(w, cx));
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|window, _| window.is_fullscreen()),
+        "the window is back"
+    );
+}
+
+/// Voice-2 (Shell.tsx `onProfile`, ProfileCard `placement="below"`): the person menu's Profile opens the profile card
+/// under the tile it was opened on, not the member list's.
+#[gpui::test]
+fn profile_opens_the_card_under_the_tile(cx: &mut TestAppContext) {
+    let mut s = (*state(3)).clone();
+    s.communities.push(dilla_client::state::Community {
+        id: COMMUNITY,
+        name: "Midgard".into(),
+        owner: UserId([0; 16]),
+        policy_version: 0,
+    });
+    let cx = host(cx, Arc::new(s));
+    let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
+    let tile = area(cx, |ui| ui.menu.bounds.borrow().get(&tiles[1]).copied()).unwrap();
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: tile.center(),
+        modifiers: gpui::Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.run_until_parked();
+    let item = cx
+        .debug_bounds("menu-item-profile")
+        .expect("Profile")
+        .center();
+    cx.simulate_click(item, gpui::Modifiers::none());
+    cx.run_until_parked();
+    let card = cx.debug_bounds("voice-profile-card").expect("the card");
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert!(
+        card.top() >= tile.bottom()
+            || card.bottom() <= tile.top()
+            || card.bottom() >= viewport.height - gpui::px(9.0),
+        "beside the tile: {card:?} / {tile:?}"
+    );
+    // A press outside closes it.
+    cx.simulate_mouse_down(
+        gpui::point(gpui::px(4.0), gpui::px(4.0)),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("voice-profile-card").is_none(),
+        "a press outside closes it"
+    );
+}
+
 /// Package 8c (VoiceChannelRow.tsx): a bot in a voice channel's row says "playback only" after its name; a person does not.
 #[gpui::test]
 fn a_bot_s_voice_row_says_playback_only(cx: &mut TestAppContext) {

@@ -25,7 +25,7 @@ use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
     IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
-    Window, WindowId, div, img, px, relative,
+    Window, WindowId, anchored, deferred, div, img, px, relative,
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
@@ -224,6 +224,8 @@ pub struct VoiceUi {
     ptt_key: Option<(String, u32)>,
     /// The DM call box's tile grid's width, logical px, as last laid out ([`dm_call_box`]): its column count follows it.
     dm_grid_w: f32,
+    /// The tile shown full screen ([`toggle_tile_fullscreen`]).
+    pub fullscreen: Option<TileFullscreen>,
     /// The stage's person menu ([`menu`]).
     pub menu: menu::MenuState,
     /// The shell's way to open a voice channel (Move to), set as it draws ([`set_open_voice`]).
@@ -345,15 +347,95 @@ fn prune(keep: WindowId, cx: &mut App) {
     }
 }
 
+/// A tile filling its window (CallTile.tsx `toggleFullscreen`: the web's element full screen): which, whether the window
+/// went full screen for it ([`crate::fullscreen`]), and the focus that takes Escape.
+pub struct TileFullscreen {
+    pub key: TileKey,
+    made_window: bool,
+    focus: FocusHandle,
+}
+
+/// The tile's full-screen action: `key` fills the window (the window full screen, only the tile drawn), or, shown
+/// already, goes back to the stage.
+pub fn toggle_tile_fullscreen(key: TileKey, window: &mut Window, cx: &mut App) {
+    let w = wid(window);
+    if ui_of(w, cx).is_none() {
+        return;
+    }
+    if ui_of(w, cx)
+        .and_then(|u| u.fullscreen.as_ref())
+        .is_some_and(|f| f.key == key)
+    {
+        exit_tile_fullscreen(w, cx);
+        return;
+    }
+    exit_tile_fullscreen(w, cx);
+    let made_window = crate::fullscreen::enter(window);
+    let focus = cx.focus_handle();
+    window.focus(&focus, cx);
+    let ui = ui_mut(w, cx);
+    ui.focused = Some(key.clone());
+    ui.fullscreen = Some(TileFullscreen {
+        key,
+        made_window,
+        focus,
+    });
+    window.refresh();
+}
+
+/// The full-screen tile goes back to the stage (Escape, its button, the stream gone, the call ended), and the window out
+/// of full screen if it went in for the tile.
+pub fn exit_tile_fullscreen(w: WindowId, cx: &mut App) {
+    let Some(f) = ui_of(w, cx)
+        .is_some()
+        .then(|| ui_mut(w, cx).fullscreen.take())
+        .flatten()
+    else {
+        return;
+    };
+    crate::fullscreen::leave(w, f.made_window, cx);
+    cx.refresh_windows();
+}
+
+/// The tile `w` shows full screen, if any.
+pub fn fullscreen_tile(w: WindowId, cx: &App) -> Option<TileKey> {
+    ui_of(w, cx)?.fullscreen.as_ref().map(|f| f.key.clone())
+}
+
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): every window area that holds it goes,
 /// with its media session (the call was left by the caller first; this is not `windows::on_closed`, which leaves it).
 pub fn release(client: &Rc<Client>, cx: &mut App) {
     if !cx.has_global::<VoiceAreas>() {
         return;
     }
-    cx.global_mut::<VoiceAreas>()
-        .windows
-        .retain(|_, ui| !ui.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
+    let_go(cx, |_, ui| {
+        ui.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client))
+    });
+}
+
+/// Test hook: `window`'s voice area is let go as a released client's is.
+#[cfg(feature = "test-hooks")]
+pub fn window_released_for_tests(window: WindowId, cx: &mut App) {
+    let_go(cx, |w, _| *w == window);
+}
+
+/// Lets go of the voice areas `gone` picks; a tile one showed full screen gives its window back out of full screen.
+fn let_go(cx: &mut App, gone: impl Fn(&WindowId, &VoiceUi) -> bool) {
+    if !cx.has_global::<VoiceAreas>() {
+        return;
+    }
+    let mut restore = Vec::new();
+    cx.global_mut::<VoiceAreas>().windows.retain(|w, ui| {
+        let keep = !gone(w, ui);
+        // A tile shown full screen goes with its client: the window comes back out of full screen.
+        if !keep && let Some(f) = ui.fullscreen.take() {
+            restore.push((*w, f.made_window));
+        }
+        keep
+    });
+    for (w, made) in restore {
+        crate::fullscreen::leave(w, made, cx);
+    }
 }
 
 /// The shell's way to open a voice channel's stage (Shell.tsx `openVoice`).
@@ -604,6 +686,12 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     {
         // The call ended: push to talk lets go (review I1).
         release_ptt(window, cx);
+    }
+    if ui_mut(window, cx).state.voice.call.phase != CallPhase::Idle
+        && state.voice.call.phase == CallPhase::Idle
+    {
+        // The call ended: a tile shown full screen goes, and the window with it.
+        exit_tile_fullscreen(window, cx);
     }
     let ui = ui_mut(window, cx);
     if ui.state.voice.call.phase != CallPhase::Idle && state.voice.call.phase == CallPhase::Idle {
@@ -1595,7 +1683,18 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .unwrap_or_default();
     let menu = ui_of(w, cx).and_then(share_menu);
     let person_menu = menu::person_menu(w, channel, cx);
+    let profile_card = menu::profile_card(w, channel, window, cx);
     let values = client_of(w, cx).map(|c| c.voice_prefs().values());
+    // A tile shown full screen whose stream is gone (or a stage that is not the call's) goes back, and the window with it.
+    if let Some(k) = fullscreen_tile(w, cx) {
+        let here = ui_of(w, cx).is_some_and(|u| {
+            u.state.voice.call.channel == Some(channel.id)
+                && tiles(&u.state, channel.id).contains(&k)
+        });
+        if !here {
+            exit_tile_fullscreen(w, cx);
+        }
+    }
     let ui = ui_of(w, cx)?;
     let bounds = ui.menu.bounds.clone();
     let state = ui.state.clone();
@@ -1616,12 +1715,47 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 &state,
                 channel,
                 k,
-                (stage_focused && i == selected, focused.as_ref()),
+                (stage_focused && i == selected, focused.as_ref(), false),
                 (&images, &stats),
                 (values.as_ref(), &bounds),
             )
         })
         .collect();
+    // The tile shown full screen fills the window over everything else (CallTile.tsx `requestFullscreen` on the tile);
+    // Escape gives the stage back.
+    let full_view = ui.fullscreen.as_ref().map(|f| {
+        let k = f.key.clone();
+        let view = tile(
+            &state,
+            channel,
+            &k,
+            (false, Some(&k), true),
+            (&images, &stats),
+            (values.as_ref(), &bounds),
+        );
+        let size = window.viewport_size();
+        deferred(
+            anchored().position(gpui::point(px(0.0), px(0.0))).child(
+                div()
+                    .id("voice-tile-fullscreen-view")
+                    .a11y(Role::Region, name_of(&state, Some(channel), k.user))
+                    .track_focus(&f.focus)
+                    .w(size.width)
+                    .h(size.height)
+                    .bg(gpui::black())
+                    .occlude()
+                    .on_key_down(|e: &gpui::KeyDownEvent, window, cx| {
+                        if e.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            exit_tile_fullscreen(wid(window), cx);
+                        }
+                    })
+                    .child(view),
+            ),
+        )
+        .with_priority(6)
+        .into_any_element()
+    });
     let body = if !in_call {
         preview(&state, channel)
     } else if keys.is_empty() {
@@ -1741,7 +1875,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         )
         .when(in_call, |d| d.child(call_bar(&state, channel, wide)))
         .children(menu)
-        .children(person_menu);
+        .children(person_menu)
+        .children(profile_card)
+        .children(full_view);
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
 
@@ -1842,7 +1978,7 @@ fn tile(
     state: &AppState,
     channel: &Channel,
     k: &TileKey,
-    (selected, focused): (bool, Option<&TileKey>),
+    (selected, focused, full): (bool, Option<&TileKey>, bool),
     (images, stats): (&TileImages, &TileStats),
     (values, bounds): (
         Option<&dilla_client::features::voice_prefs::values::VoiceValues>,
@@ -2030,7 +2166,7 @@ fn tile(
             // CallTile.tsx: a double-click on a tile with media goes full screen (the second click of it focuses
             // nothing more).
             if e.click_count() == 2 && has_media {
-                window.toggle_fullscreen();
+                toggle_tile_fullscreen(key.clone(), window, cx);
                 return;
             }
             if ui_of(w, cx).is_some() {
@@ -2059,14 +2195,14 @@ fn tile(
             let size = if is_focused { text::MICRO } else { text::CHIP };
             d.child(at.child(line(stat, size, line_height(size, LINE), color::FG_3)))
         })
-        .when(is_focused, |d| d.child(tile_tools(edge)))
+        .when(is_focused, |d| d.child(tile_tools(edge, k.clone(), full)))
         .into_any_element()
 }
 
 /// The focused tile's tools over its top right (CallTile.tsx `__tools`, 10px in, 4px apart): Grid (back to the grid; 28px
 /// high, 9px in, the 13px glyph 6px before its word) and full screen (28 x 28, a 14px glyph, `--accent` while on: the
-/// window full screen, where the web's tile went full screen).
-fn tile_tools(edge: f32) -> AnyElement {
+/// tile alone fills the window).
+fn tile_tools(edge: f32, key: TileKey, full: bool) -> AnyElement {
     let tool = |id: &'static str| {
         div()
             .id(id)
@@ -2088,6 +2224,8 @@ fn tile_tools(edge: f32) -> AnyElement {
         .gap(px(m::TOOLS_GAP))
         .child(
             tool("voice-tile-grid")
+                .a11y(Role::Button, t("callStage.grid"))
+                .tab_index(0)
                 .debug_selector(|| "voice-tile-grid".into())
                 .px(px(m::GRID_TOOL_PAD_X))
                 .gap(px(m::GRID_TOOL_GAP))
@@ -2098,6 +2236,7 @@ fn tile_tools(edge: f32) -> AnyElement {
                 .on_click(|_, window, cx| {
                     cx.stop_propagation();
                     let w = wid(window);
+                    exit_tile_fullscreen(w, cx);
                     if ui_of(w, cx).is_some() {
                         ui_mut(w, cx).focused = None;
                     }
@@ -2117,35 +2256,33 @@ fn tile_tools(edge: f32) -> AnyElement {
         )
         .child(
             tool("voice-tile-fullscreen")
+                .a11y(Role::Button, t("stage.fullscreen"))
+                .toggled(full)
+                .tab_index(0)
                 .debug_selector(|| "voice-tile-fullscreen".into())
                 .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
                     t("stage.fullscreen"),
                     &[],
                 ))
-                .on_click(|_, window, cx| {
+                .on_click(move |_, window, cx| {
                     cx.stop_propagation();
-                    window.toggle_fullscreen();
+                    toggle_tile_fullscreen(key.clone(), window, cx);
                 })
-                .child(FullscreenGlyph),
+                .child(
+                    Icon::new(if full {
+                        IconName::Minimize
+                    } else {
+                        IconName::Maximize
+                    })
+                    .size(px(m::FULLSCREEN_GLYPH))
+                    .color(if full {
+                        color::ACCENT
+                    } else {
+                        color::FG_STRONG
+                    }),
+                ),
         )
         .into_any_element()
-}
-
-/// The full-screen tool's glyph: maximize, or minimize in `--accent` while the window is full screen (read as it paints).
-#[derive(IntoElement)]
-struct FullscreenGlyph;
-
-impl gpui::RenderOnce for FullscreenGlyph {
-    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let on = window.is_fullscreen();
-        Icon::new(if on {
-            IconName::Minimize
-        } else {
-            IconName::Maximize
-        })
-        .size(px(m::FULLSCREEN_GLYPH))
-        .color(if on { color::ACCENT } else { color::FG_STRONG })
-    }
 }
 
 // ---- the DM call box ----------------------------------------------------------------------------------------------

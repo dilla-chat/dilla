@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use dilla_client::features::voice_prefs::values::{Setting, VoiceValues};
 use dilla_client::state::{AppState, Channel, ChannelId, UserId};
 use gpui::{
-    AnyElement, App, Bounds, IntoElement, ParentElement, Pixels, Point, Styled, Window, WindowId,
-    div, point, px,
+    AnyElement, App, Bounds, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Styled,
+    Window, WindowId, anchored, deferred, div, point, px,
 };
 
 use dilla_desktop_ui::IconName;
@@ -49,6 +49,8 @@ const MOVE: &str = "move:";
 #[derive(Default)]
 pub struct MenuState {
     pub open: Option<(TileKey, Point<Pixels>)>,
+    /// The profile card the menu's Profile opened, beside whose tile.
+    pub card: Option<TileKey>,
     /// Mute for me's volume to go back to, by (stream, user).
     before_mute: HashMap<(bool, UserId), u32>,
     /// Each tile's bounds as last laid out: a key opens the menu under its tile.
@@ -297,6 +299,7 @@ pub fn person_menu(w: WindowId, channel: &Channel, cx: &mut App) -> Option<AnyEl
             "callStage.menu.volume"
         });
         let value = tf("callStage.menu.value", &[("n", &level.to_string())]);
+        let label_for_slider = label.to_owned();
         head = head.child(
             div()
                 .flex()
@@ -319,6 +322,7 @@ pub fn person_menu(w: WindowId, channel: &Channel, cx: &mut App) -> Option<AnyEl
                 )
                 .child(
                     Slider::new("voice-person-menu-volume", level as i32, 0, 200)
+                        .label(label_for_slider)
                         .step(10)
                         .page(50)
                         .on_change(move |v, _commit, _window, cx| {
@@ -351,7 +355,7 @@ pub fn person_menu(w: WindowId, channel: &Channel, cx: &mut App) -> Option<AnyEl
             }
         })
         .on_select(move |id, window, cx| {
-            choose(w, id, user, stream, &username, &room_names, window, cx);
+            choose(w, id, &key, stream, &username, &room_names, window, cx);
         })
         .into_any_element(),
     )
@@ -361,13 +365,14 @@ pub fn person_menu(w: WindowId, channel: &Channel, cx: &mut App) -> Option<AnyEl
 fn choose(
     w: WindowId,
     id: &str,
-    user: UserId,
+    key: &TileKey,
     stream: bool,
     username: &str,
     rooms: &HashMap<String, (ChannelId, String)>,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let user = key.user;
     let close = |cx: &mut App| {
         if ui_of(w, cx).is_some() {
             ui_mut(w, cx).menu.open = None;
@@ -398,8 +403,9 @@ fn choose(
         }
         "profile" => {
             close(cx);
-            let at = window.mouse_position();
-            crate::screens::members::open_card(w, user, at, cx);
+            if ui_of(w, cx).is_some() {
+                ui_mut(w, cx).menu.card = Some(key.clone());
+            }
         }
         "message" => {
             close(cx);
@@ -457,4 +463,63 @@ pub fn volume_chip(level: u32) -> AnyElement {
             color::FG_2,
         ))
         .into_any_element()
+}
+
+/// GAP of ProfileCard.tsx: the card 8px under its tile (above it when there is no room below), 8px from the window's
+/// edges.
+const CARD_GAP: f32 = 8.0;
+
+/// The profile card the person menu's Profile opened (Shell.tsx `onProfile`: the card anchored to the tile,
+/// `placement="below"`): under the tile at its left edge, above it when there is no room below, inside the window. A
+/// press outside it or Escape closes it.
+pub fn profile_card(
+    w: WindowId,
+    channel: &Channel,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    let ui = ui_of(w, cx)?;
+    let key = ui.menu.card.clone()?;
+    let tile = ui.menu.bounds.borrow().get(&key).copied();
+    let ctx = super::stage_ctx(ui, channel);
+    let Some(tile) = tile else {
+        ui_mut(w, cx).menu.card = None;
+        return None;
+    };
+    let card = crate::screens::members::profile_card(w, &ctx, channel.community_id, key.user)?;
+    let viewport = window.viewport_size();
+    let gap = px(CARD_GAP);
+    let card_w = dilla_desktop_ui::components::members::space::CARD_OUTER_W;
+    let x = tile.origin.x.min(viewport.width - card_w - gap).max(gap);
+    // Below the tile; `anchored` keeps it inside the window when there is no room under it.
+    let below = point(x, tile.bottom() + gap);
+    let close = move |cx: &mut App| {
+        if ui_of(w, cx).is_some() {
+            ui_mut(w, cx).menu.card = None;
+        }
+        cx.refresh_windows();
+    };
+    Some(
+        deferred(
+            anchored()
+                .position(below)
+                .snap_to_window_with_margin(gap)
+                .child(
+                    div()
+                        .id("voice-profile-card")
+                        .debug_selector(|| "voice-profile-card".into())
+                        .occlude()
+                        .on_mouse_down_out(move |_, _, cx| close(cx))
+                        .on_key_down(move |e: &gpui::KeyDownEvent, _, cx| {
+                            if e.keystroke.key == "escape" {
+                                cx.stop_propagation();
+                                close(cx);
+                            }
+                        })
+                        .child(card),
+                ),
+        )
+        .with_priority(2)
+        .into_any_element(),
+    )
 }

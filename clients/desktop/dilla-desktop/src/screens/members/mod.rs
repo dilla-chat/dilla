@@ -491,15 +491,6 @@ fn action_label(a: MenuAction, name: &str) -> String {
 }
 
 /// Runs a chosen action on `user` (the card's buttons and the person menu's items).
-/// Opens `user`'s profile card at `at`, with the member list it sits beside (the stage's person menu's Profile).
-pub fn open_card(w: WindowId, user: UserId, at: Point<Pixels>, cx: &mut App) {
-    let u = ui(w, cx);
-    u.open = true;
-    u.menu = None;
-    u.card = Some((user, at));
-    cx.refresh_windows();
-}
-
 fn choose(w: WindowId, community: CommunityId, user: UserId, id: &str, cx: &mut App) {
     let Some(ctx) = ui(w, cx).ctx.clone() else {
         return;
@@ -556,6 +547,38 @@ fn card_overlay(
 ) -> Option<AnyElement> {
     let w = window.window_handle().window_id();
     let (user, at) = ui(w, cx).card?;
+    let view = profile_card(w, ctx, community, user)?;
+    // ProfileCard.tsx (the prototype's rule): right of the pointer by 14px, else left of it; 24px above it; 8px from the
+    // window's edges.
+    let viewport = window.viewport_size();
+    let mut x = at.x + space::POINTER_GAP;
+    if x + space::CARD_OUTER_W > viewport.width - space::CARD_EDGE {
+        x = at.x - space::CARD_OUTER_W - space::POINTER_GAP;
+    }
+    let x = x.max(space::CARD_EDGE);
+    let y = (at.y - space::POINTER_RISE).max(space::CARD_EDGE);
+    // The bottom clamp uses the card's laid-out height, as the web's `box.height - h - GAP`: anchored snaps it inside
+    // the window, 8px from its edges.
+    Some(
+        deferred(
+            anchored()
+                .position(point(x, y))
+                .snap_to_window_with_margin(space::CARD_EDGE)
+                .child(view),
+        )
+        .with_priority(1)
+        .into_any_element(),
+    )
+}
+
+/// `user`'s profile card in `community` (MemberCardHost.tsx), for a host that places it: the member list beside its
+/// row, the stage's person menu under the tile (Profile). Its actions are this area's.
+pub fn profile_card(
+    w: WindowId,
+    ctx: &SlotCx,
+    community: CommunityId,
+    user: UserId,
+) -> Option<ProfileCard> {
     let state = &ctx.state;
     let member = state
         .members
@@ -608,27 +631,7 @@ fn card_overlay(
     if card.actions.contains(&MenuAction::Message) {
         view = view.message(t("members.menu.message"));
     }
-    // ProfileCard.tsx (the prototype's rule): right of the pointer by 14px, else left of it; 24px above it; 8px from the
-    // window's edges.
-    let viewport = window.viewport_size();
-    let mut x = at.x + space::POINTER_GAP;
-    if x + space::CARD_OUTER_W > viewport.width - space::CARD_EDGE {
-        x = at.x - space::CARD_OUTER_W - space::POINTER_GAP;
-    }
-    let x = x.max(space::CARD_EDGE);
-    let y = (at.y - space::POINTER_RISE).max(space::CARD_EDGE);
-    // The bottom clamp uses the card's laid-out height, as the web's `box.height - h - GAP`: anchored snaps it inside
-    // the window, 8px from its edges.
-    Some(
-        deferred(
-            anchored()
-                .position(point(x, y))
-                .snap_to_window_with_margin(space::CARD_EDGE)
-                .child(view),
-        )
-        .with_priority(1)
-        .into_any_element(),
-    )
+    Some(view)
 }
 
 fn menu_overlay(

@@ -775,9 +775,9 @@ fn fullscreen_overlay(
     };
     let view = match ui::ui(cx).players.get(&key) {
         Some(Player::Video(v)) => video_view(key, v, true, ""),
-        // The player went (released, or its client signed out): full screen ends with it.
+        // The player went (released, or its client signed out): full screen ends with it, and the window with it.
         _ => {
-            ui::ui(cx).fullscreen = None;
+            ui::end_video_fullscreen(cx);
             return None;
         }
     };
