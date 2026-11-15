@@ -16,6 +16,7 @@ use gpui::{
 };
 use gpui_component::input::InputState;
 
+use crate::a11y::{Accessible, Role};
 use crate::components::text_field::TextField;
 use crate::components::toggle::{Fit, Toggle};
 use crate::icon::Icon;
@@ -337,6 +338,9 @@ impl RenderOnce for RoleEditor {
             if let Some(h) = handle(i) {
                 row = row.track_focus(&h.tab_stop(true));
             }
+            row = row
+                .a11y(Role::Button, format!("{}, {}", role.name, role.count))
+                .aria_selected(selected);
             if let Some(f) = self.on_select.clone() {
                 let key = role.id.clone();
                 row = row.on_click(move |_: &ClickEvent, window, cx| f(&key, window, cx));
@@ -396,7 +400,8 @@ impl RenderOnce for RoleEditor {
                 ))
                 .relative()
                 .children(self.probe.as_ref().map(|p| p("role-new")))
-                .on_click(move |_: &ClickEvent, window, cx| on_new(window, cx));
+                .on_click(move |_: &ClickEvent, window, cx| on_new(window, cx))
+                .a11y(Role::Button, self.labels.new_role.clone());
             if let Some(h) = handle(i) {
                 row = row.track_focus(&h.tab_stop(true));
             }
@@ -438,6 +443,8 @@ impl RenderOnce for RoleEditor {
                 let c: gpui::Hsla = rgb(value).into();
                 let mut swatch = div()
                     .id(SharedString::from(format!("role-colour-{value:06x}")))
+                    .a11y(Role::RadioButton, name.clone())
+                    .toggled(value == chosen)
                     .flex_none()
                     .size(SWATCH)
                     .rounded(radius::MD)

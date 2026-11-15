@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use super::shadow_popover;
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_MUTED, focus_ring};
@@ -179,6 +180,8 @@ impl RenderOnce for RemindersPopover {
             let (on_click, on_key) = (self.on_tab.clone(), self.on_tab.clone());
             let mut tab = div()
                 .id(which.id())
+                .a11y(Role::Tab, format!("{label}, {count}"))
+                .aria_selected(selected)
                 .relative()
                 .flex()
                 .items_center()

@@ -31,7 +31,7 @@ pub mod voice_prefs;
 
 pub use channels::{Channel, ChannelGroupState, Community};
 pub use members::Member;
-pub use messages::{TIMELINE_PAGE, Timeline, TimelineItem, TimelineItemState};
+pub use messages::{PendingAction, TIMELINE_PAGE, Timeline, TimelineItem, TimelineItemState};
 pub use unread::BadgeState;
 
 macro_rules! id16 {

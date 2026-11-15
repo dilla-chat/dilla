@@ -8,7 +8,7 @@ fn opens_and_closes(cx: &mut TestAppContext) {
     assert_eq!(cx.windows().len(), 1);
 
     let mut window_cx = VisualTestContext::from_window(handle.into(), cx);
-    assert_eq!(window_cx.window_title().as_deref(), Some("Dilla Preview"));
+    assert_eq!(window_cx.window_title().as_deref(), Some("Dilla"));
 
     handle
         .update(cx, |_, window, _| window.remove_window())

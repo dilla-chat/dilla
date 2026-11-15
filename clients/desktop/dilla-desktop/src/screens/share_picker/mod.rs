@@ -8,6 +8,7 @@
 //! a choice is checked against the sources of the latest enumeration (a window that closed since is refused), and it
 //! goes to the media session of the window that opened the picker, never another's.
 
+pub mod apps;
 mod view;
 
 use std::collections::HashMap;
@@ -232,7 +233,7 @@ pub fn enumerated(window: WindowId, cx: &App) -> bool {
     picker_of(window, cx).is_some_and(|p| p.tiles.is_some())
 }
 
-fn refresh(window: WindowId, cx: &mut App) {
+pub(crate) fn refresh(window: WindowId, cx: &mut App) {
     if let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == window) {
         let _ = handle.update(cx, |_, window, _| window.refresh());
     }

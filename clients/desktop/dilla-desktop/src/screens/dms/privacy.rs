@@ -8,6 +8,7 @@
 use dilla_client::state::trust::privacy_row;
 use gpui::{AnyElement, App, InteractiveElement, IntoElement, ParentElement, Styled, Window, div};
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::dms::{
     TrustAlert, TrustTone, privacy::body_text, trust_key, trust_state,
 };
@@ -15,6 +16,7 @@ use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
 use dilla_desktop_ui::components::{Button, ButtonVariant};
 use dilla_desktop_ui::metrics::Density;
+use gpui::StatefulInteractiveElement as _;
 
 use crate::slots::SlotCx;
 use crate::strings::{t, tf};
@@ -122,6 +124,8 @@ pub fn section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
         .child(
             div()
                 .id("privacy-heading")
+                .a11y(Role::Heading, t("privacy.section"))
+                .aria_level(1)
                 .track_focus(&heading)
                 .child(section_header(t("privacy.section"), None)),
         )

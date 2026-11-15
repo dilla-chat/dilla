@@ -473,3 +473,59 @@ fn no_picker_without_a_press_on_a_focused_window(cx: &mut TestAppContext) {
     assert_eq!(rec.listed(), 0, "nothing was listed");
     assert_eq!(rec.opened(), 0);
 }
+
+/// The share menu's sound section (Jonas 2026-11-15: where the web's "Also share system audio" is): switching it on
+/// opens the application chooser over the focused window only, which lists the playing applications; a choice becomes
+/// the window's share sound, Cancel leaves none, and switching it off clears it.
+#[gpui::test]
+fn the_sound_section_chooses_an_application_for_the_share(cx: &mut TestAppContext) {
+    use dilla_desktop::screens::share_picker::apps;
+    use dilla_media::app_audio::AppSource;
+    cx.update(dilla_desktop::install);
+    let music = AppSource {
+        serial: 40,
+        pid: 4000,
+        label: "Music".to_owned(),
+    };
+    let listed = music.clone();
+    cx.update(|cx| apps::set_lister(Arc::new(move || Ok(vec![listed.clone()])), cx));
+    let w = cx.add_window(|_, _| Host);
+    let id = w.window_id();
+    cx.update(|cx| voice::sync(id, Arc::new(AppState::default()), None, cx));
+    // Not the focused window: no chooser.
+    let opened = w
+        .update(cx, |_, window, cx| apps::open(window, cx))
+        .unwrap();
+    assert!(!opened && !cx.read(|cx| apps::is_open(id, cx)));
+    focus(cx, &w);
+    assert!(
+        w.update(cx, |_, window, cx| apps::open(window, cx))
+            .unwrap()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while cx.read(|cx| apps::listed(id, cx)).is_none() {
+        cx.run_until_parked();
+        assert!(Instant::now() < deadline, "never listed");
+    }
+    assert_eq!(
+        cx.read(|cx| apps::listed(id, cx)),
+        Some(vec![music.clone()])
+    );
+    cx.update(|cx| apps::close(id, None, cx));
+    assert!(
+        cx.read(|cx| voice::ui_of(id, cx).unwrap().share_app.is_none()),
+        "Cancel chooses nothing"
+    );
+    assert!(
+        w.update(cx, |_, window, cx| apps::open(window, cx))
+            .unwrap()
+    );
+    cx.update(|cx| apps::close(id, Some(music.clone()), cx));
+    assert!(!cx.read(|cx| apps::is_open(id, cx)));
+    assert_eq!(
+        cx.read(|cx| voice::ui_of(id, cx).unwrap().share_app.clone()),
+        Some(music)
+    );
+    cx.update(|cx| voice::set_share_app(id, None, cx));
+    assert!(cx.read(|cx| voice::ui_of(id, cx).unwrap().share_app.is_none()));
+}

@@ -9,6 +9,7 @@ pub mod gif_picker;
 pub mod lightbox;
 pub mod player;
 pub mod tray;
+pub mod video;
 
 use gpui::{App, ClickEvent, Window};
 

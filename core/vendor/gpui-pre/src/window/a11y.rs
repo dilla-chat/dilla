@@ -294,6 +294,19 @@ impl A11y {
         update
     }
 
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the fifth change): what the platform adapter's activation
+    /// callback does, for a test window that has no adapter.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn activate_for_test(&mut self) {
+        self.active_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// DILLA PATCH (the fifth change): the last frame's tree update.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn last_tree_update(&self) -> Option<TreeUpdate> {
+        self.debug.last_tree_update()
+    }
+
     pub(crate) fn debug_tree_json(&self) -> Option<String> {
         self.debug.to_json()
     }

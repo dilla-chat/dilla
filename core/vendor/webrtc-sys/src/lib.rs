@@ -31,6 +31,8 @@ pub mod dilla_transform;
 // DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.
 #[cfg(feature = "dilla-test-frames")]
 pub mod dilla_transform_testing;
+// DILLA PATCH: the inline attachment player's standalone video decoder (core/vendor/README.md).
+pub mod dilla_video_decoder;
 pub mod frame_cryptor;
 pub mod helper;
 pub mod jsep;

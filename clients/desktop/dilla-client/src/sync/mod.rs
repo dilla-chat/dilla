@@ -2213,6 +2213,86 @@ impl Engine {
         Ok(msg)
     }
 
+    /// The group whose outbox holds `msg`, and the row (send.ts `owner`).
+    async fn outbox_owner(&self, msg: Gid) -> Option<(Gid, crate::state::messages::OutboxRow)> {
+        for g in self.groups().await {
+            if let Some(row) = self
+                .outbox(g.group_id)
+                .await
+                .into_iter()
+                .find(|x| x.msg_id == msg)
+            {
+                return Some((g.group_id, row));
+            }
+        }
+        None
+    }
+
+    /// send.ts `retrySend`: a failed row is queued again (the core refuses any other row), its slow-mode and reframe
+    /// memories are cleared and the group's duties are asked for again, as a ready does. A row a leaf verdict failed is
+    /// sealed again only after the group's leaves were read again; that refresh is its one, so a second refusal fails it.
+    pub async fn retry_send(self: &Arc<Self>, msg: Gid) -> Result<(), SyncError> {
+        let owner = self.outbox_owner(msg).await;
+        with_core(&self.core, move |c| c.send_retry(&msg)).await?;
+        {
+            let mut st = self.st();
+            st.count425.remove(&msg);
+            st.slowed.remove(&msg);
+        }
+        let Some((g, failed)) = owner else {
+            return Ok(());
+        };
+        let reframe = (g, msg);
+        {
+            let mut st = self.st();
+            st.reframed_once.remove(&reframe);
+            st.trust_retried.remove(&reframe);
+            st.resync_tried.remove(&g);
+            st.quiet.remove(&g);
+        }
+        self.hooks.group_changed(g);
+        if LEAF_VERDICTS.contains(&failed.error.as_str()) {
+            // Held (drain waits while the refresh is out), refreshed once, then drained again.
+            self.st().trust_retried.insert(reframe, true);
+            let this = Arc::clone(self);
+            self.spawn_watched(async move {
+                this.refresh_group_trust(g).await;
+                if let Some(p) = this.st().trust_retried.get_mut(&reframe) {
+                    *p = false;
+                }
+                if !this.stopped() {
+                    this.request_drain(g);
+                }
+            });
+            return Ok(());
+        }
+        self.request_drain(g);
+        Ok(())
+    }
+
+    /// send.ts `discardSend`: a queued or failed row leaves the outbox. Answers the channel (the group's target) and the
+    /// blob ids of the row's attachments, whose references the caller deletes (controller.ts `onDiscarded`); a message
+    /// id no outbox holds calls nothing.
+    pub async fn discard_send(
+        self: &Arc<Self>,
+        msg: Gid,
+    ) -> Result<Option<(Gid, Vec<[u8; 32]>)>, SyncError> {
+        let Some((g, row)) = self.outbox_owner(msg).await else {
+            return Ok(None);
+        };
+        with_core(&self.core, move |c| c.send_discard(&msg)).await?;
+        {
+            let mut st = self.st();
+            st.reframed_once.remove(&(g, msg));
+            st.trust_retried.remove(&(g, msg));
+            st.slowed.remove(&msg);
+            st.queued.retain(|q| *q != msg);
+        }
+        self.hooks.group_changed(g);
+        let target = self.row(g).await.map_or(g, |r| r.target_id);
+        Ok(Some((target, row.blobs)))
+    }
+
     /// Sends a frame on the current gateway (typing, Task 9; voice, Task 17). `false`: no connection is ready, nothing was sent.
     pub fn send_gateway_frame(&self, frame: Vec<u8>) -> bool {
         let gateway = self

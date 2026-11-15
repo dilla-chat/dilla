@@ -8,7 +8,9 @@ pub mod edit_state;
 #[cfg(feature = "automation")]
 pub mod fixture;
 pub mod format;
+pub mod fullscreen;
 pub mod keys;
+pub mod native;
 pub mod per_window;
 pub mod print;
 pub mod release;
@@ -29,10 +31,13 @@ use screens::shell::window::{
 
 pub use app::{AppView, Launch};
 
-/// The window title and product name of the preview build.
-pub const PRODUCT_NAME: &str = "Dilla Preview";
-/// The application id (Wayland app id, desktop-entry name) of the preview build.
-pub const APP_ID: &str = "dev.dilla.desktop.preview";
+/// The window title and product name: plain "Dilla", as beta.5 (release plan D3). The data root keeps its own name
+/// ([`dilla_client::instances::PRODUCT_DIR`]).
+pub const PRODUCT_NAME: &str = "Dilla";
+/// The application id (Wayland app id, desktop-entry name `dev.dilla.desktop.desktop`, the packages' `StartupWMClass`):
+/// beta.5's id, since the release replaces it (release plan D3). The data root and the keychain service keep their
+/// preview names, so GPUI data never mixes with Electron's.
+pub const APP_ID: &str = "dev.dilla.desktop";
 
 /// Gives `child` the element id `id`, which the test-only automation interface looks up by name.
 /// Without the `automation` feature this is a plain id-carrying wrapper.

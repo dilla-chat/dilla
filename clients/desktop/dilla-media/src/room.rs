@@ -96,7 +96,8 @@ pub enum Mic {
 pub struct CallOptions {
     pub mic: Mic,
     /// Play the call through the system's speakers ([`Speaker`], which also gives the echo canceller
-    /// its reference). Off for a headless participant.
+    /// its reference). Off for a headless participant. With no output device the call still joins
+    /// and plays nowhere until one appears ([`Speaker::open_waiting`]).
     pub playout: bool,
     /// How long the join waits for the first epoch key before it gives up (nothing published).
     pub key_timeout: Duration,
@@ -449,6 +450,61 @@ struct LocalAppAudio {
     _capture: crate::app_audio::AppCapture,
 }
 
+/// One read of the link (stats.ts `countersOf` over both peer connections): the ping, and the byte counter of each RTP
+/// stream sent and received, by stream id.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LinkRead {
+    pub rtt_ms: Option<u32>,
+    pub sent: HashMap<String, u64>,
+    pub received: HashMap<String, u64>,
+}
+
+impl LinkRead {
+    /// The counters of the publisher's and the subscriber's reports (an inbound stream listed in both counts once).
+    pub fn of(
+        publisher: &[livekit::webrtc::stats::RtcStats],
+        subscriber: &[livekit::webrtc::stats::RtcStats],
+    ) -> LinkRead {
+        use livekit::webrtc::stats::RtcStats;
+        let mut read = LinkRead {
+            rtt_ms: rtt_ms_of(publisher).or_else(|| rtt_ms_of(subscriber)),
+            ..LinkRead::default()
+        };
+        for s in publisher.iter().chain(subscriber) {
+            match s {
+                RtcStats::OutboundRtp(o) => {
+                    read.sent.insert(o.rtc.id.clone(), o.sent.bytes_sent);
+                }
+                RtcStats::InboundRtp(i) => {
+                    read.received
+                        .entry(i.rtc.id.clone())
+                        .or_insert(i.inbound.bytes_received);
+                }
+                _ => {}
+            }
+        }
+        read
+    }
+
+    /// stats.ts `linkSample`'s rates: what was sent and received since `before`, `ms` earlier, in whole kb/s. Only the
+    /// streams in both reads count (one that appeared or ended adds nothing), and a counter that went down counts from 0.
+    pub fn rate_since(&self, before: &LinkRead, ms: f64) -> Option<(u32, u32)> {
+        if ms <= 0.0 {
+            return None;
+        }
+        let delta = |now: &HashMap<String, u64>, was: &HashMap<String, u64>| -> u64 {
+            now.iter()
+                .filter_map(|(id, n)| was.get(id).map(|w| if n >= w { n - w } else { *n }))
+                .sum()
+        };
+        let kbps = |bytes: u64| ((bytes as f64) * 8.0 / ms).round() as u32;
+        Some((
+            kbps(delta(&self.sent, &before.sent)),
+            kbps(delta(&self.received, &before.received)),
+        ))
+    }
+}
+
 /// A local share being published.
 struct LocalShare {
     sid: TrackSid,
@@ -578,8 +634,6 @@ pub struct Call {
     router: Arc<Router>,
     media: Arc<CallMedia>,
     local: Option<LocalAudioTrack>,
-    apm: Apm,
-    host: Arc<dyn AudioHost>,
     capture: Option<Arc<capture::Mic>>,
     speaker: Option<Arc<Speaker>>,
     events_tx: mpsc::UnboundedSender<MediaEvent>,
@@ -588,7 +642,6 @@ pub struct Call {
     tails: Tails,
     screen_sound: ScreenSound,
     muted: Arc<AtomicBool>,
-    apm_flags: ApmFlags,
     videos: watch::Receiver<RemoteVideos>,
     shares: Shares,
     app_audio: Arc<Mutex<Option<LocalAppAudio>>>,
@@ -598,6 +651,16 @@ pub struct Call {
     shares_ended_rx: Mutex<Option<mpsc::UnboundedReceiver<ShareKind>>>,
     ended: watch::Receiver<Option<RoomEnd>>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+/// The join's microphone once its device (if any) is open.
+enum PreparedMic {
+    None,
+    Device(capture::Mic),
+    Pcm {
+        frames: mpsc::Receiver<Vec<i16>>,
+        noise: NoiseMode,
+    },
 }
 
 /// Ends a call's media when dropped while armed (a failed or cancelled join).
@@ -735,9 +798,11 @@ impl Call {
 
         let apm = Apm::default();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
-        // The speaker first: it gives the microphone's echo canceller its reference.
+        // The speaker first: it gives the microphone's echo canceller its reference. No output
+        // device does not fail the join (beta.5 joined and played nowhere): the speaker waits for
+        // one, and the person can still talk and be heard.
         let speaker = if options.playout {
-            Some(Arc::new(Speaker::open_with(
+            Some(Arc::new(Speaker::open_waiting(
                 host.clone(),
                 apm.clone(),
                 Some(events_tx.clone()),
@@ -745,6 +810,24 @@ impl Call {
             )?))
         } else {
             None
+        };
+
+        // A device microphone opens before the room is entered: one that is not there (or refused) fails the join
+        // before this device was ever in the room, so a listen-only join that follows is its only presence there (a
+        // room left at once would read as this device leaving the call).
+        let mic = match options.mic {
+            Mic::Device { id, noise } => PreparedMic::Device(capture::Mic::open_with(
+                CaptureConfig {
+                    host: host.clone(),
+                    apm: apm.clone(),
+                    model: Arc::new(embedded_model),
+                    flags: options.apm_flags,
+                },
+                id.map(DeviceId),
+                noise,
+            )?),
+            Mic::Pcm { frames, noise } => PreparedMic::Pcm { frames, noise },
+            Mic::None => PreparedMic::None,
         };
 
         let (room, events) = Room::connect(&token.url, &token.token, room_options)
@@ -773,8 +856,6 @@ impl Call {
             router,
             media,
             local: None,
-            apm,
-            host,
             capture: None,
             speaker,
             events_tx,
@@ -783,7 +864,6 @@ impl Call {
             tails,
             screen_sound,
             muted,
-            apm_flags: options.apm_flags,
             videos,
             shares: Shares::default(),
             app_audio: Arc::default(),
@@ -794,7 +874,7 @@ impl Call {
             ended,
             tasks: Vec::new(),
         };
-        match call.publish_mic(options.mic, &mut tasks).await {
+        match call.publish_mic(mic, &mut tasks).await {
             Ok(()) => {
                 call.tasks = tasks;
                 Ok(call)
@@ -810,22 +890,12 @@ impl Call {
 
     async fn publish_mic(
         &mut self,
-        mic: Mic,
+        mic: PreparedMic,
         tasks: &mut Vec<JoinHandle<()>>,
     ) -> Result<(), MediaError> {
         let (track, feeder) = match mic {
-            Mic::None => return Ok(()),
-            Mic::Device { id, noise } => {
-                let mut mic = capture::Mic::open_with(
-                    CaptureConfig {
-                        host: self.host.clone(),
-                        apm: self.apm.clone(),
-                        model: Arc::new(embedded_model),
-                        flags: self.apm_flags,
-                    },
-                    id.map(DeviceId),
-                    noise,
-                )?;
+            PreparedMic::None => return Ok(()),
+            PreparedMic::Device(mut mic) => {
                 let frames = mic
                     .take_frames()
                     .ok_or_else(|| MediaError::Audio("the microphone has no frames".into()))?;
@@ -850,7 +920,7 @@ impl Call {
                     Some((frames, NoiseProcessor::new(NoiseMode::Off)?, source)),
                 )
             }
-            Mic::Pcm { frames, noise } => {
+            PreparedMic::Pcm { frames, noise } => {
                 let processor = NoiseProcessor::new(noise)?;
                 let source = native_source();
                 let track = LocalAudioTrack::create_audio_track(
@@ -939,6 +1009,20 @@ impl Call {
         tokio::task::spawn_blocking(move || speaker.switch(device))
             .await
             .map_err(|e| MediaError::Audio(e.to_string()))?
+    }
+
+    /// Plays `device`'s (hex) voice, or its screen share's sound with `stream`, at `gain` (the
+    /// per-person volume times the output volume, call/volume.ts `gainOf`; 0 is silence). Kept for
+    /// tracks that start later.
+    pub fn set_gain(&self, device: &str, stream: bool, gain: f32) {
+        if let Some(speaker) = &self.speaker {
+            speaker.sink().set_gain(&gain_group(device, stream), gain);
+        }
+    }
+
+    /// The call plays through an output device (false with playout off, or while there is none).
+    pub fn is_playing(&self) -> bool {
+        self.speaker.as_ref().is_some_and(|s| s.is_playing())
     }
 
     /// What the audio devices did that the user should see ([`MediaEvent`]), once.
@@ -1045,6 +1129,15 @@ impl Call {
 
     /// The link's ping now (session.ts `readLink`: the publisher's connection, else the subscriber's), in ms; `None`
     /// while no round trip is measured or the stats cannot be read. It never goes to the server.
+    /// One read of the link ([`LinkRead`]): the ping and the RTP byte counters, `None` when the stats could not be read.
+    pub async fn link(&self) -> Option<LinkRead> {
+        let stats = self.room.get_stats().await.ok()?;
+        Some(LinkRead::of(
+            &stats.publisher_stats,
+            &stats.subscriber_stats,
+        ))
+    }
+
     pub async fn rtt_ms(&self) -> Option<u32> {
         let stats = self.room.get_stats().await.ok()?;
         rtt_ms_of(&stats.publisher_stats).or_else(|| rtt_ms_of(&stats.subscriber_stats))
@@ -1553,6 +1646,11 @@ async fn feed_app_audio(
 
 /// Binds each subscribed track and measures each verified device's audio. The room's end on its own (its
 /// `Disconnected`, or its events stopping) is said on `ended`.
+/// The playout gain group of a device's voice (`stream` false) or of its screen share's sound.
+pub fn gain_group(device: &str, stream: bool) -> String {
+    format!("{device}:{}", if stream { "stream" } else { "voice" })
+}
+
 async fn remote_tracks(
     mut events: mpsc::UnboundedReceiver<RoomEvent>,
     media: Arc<CallMedia>,
@@ -1632,6 +1730,9 @@ async fn remote_tracks(
                             .insert(hex(&device));
                     }
                     let key = format!("{}:{}", hex(&device), publication.sid().as_str());
+                    if let Some(p) = &playout {
+                        p.group(&key, &gain_group(&hex(&device), slot == Slot::ScreenAudio));
+                    }
                     let reader = tokio::spawn(read_audio(
                         t.rtc_track(),
                         (hex(&device), key.clone()),
@@ -2166,6 +2267,28 @@ mod rtt_tests {
 
     /// stats.ts `rttOf`: the transport's selected pair's current round-trip time (else a nominated, succeeded pair), in
     /// whole ms; a report with no pair, or a pair never answered, knows none.
+    /// Package 8c (stats.ts `linkSample`): the dock's rate is the byte delta of the streams in both reads, as kb/s; a
+    /// stream that appeared adds nothing, a counter that went down counts from 0.
+    #[test]
+    fn the_link_rate_is_the_byte_delta_of_the_streams_in_both_reads() {
+        let read = |sent: &[(&str, u64)], received: &[(&str, u64)]| LinkRead {
+            rtt_ms: Some(20),
+            sent: sent.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+            received: received
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), *v))
+                .collect(),
+        };
+        let before = read(&[("a", 1_000)], &[("x", 10_000), ("y", 500)]);
+        let now = read(
+            &[("a", 6_000), ("new", 90_000)],
+            &[("x", 20_000), ("y", 100)],
+        );
+        // 5 000 bytes in 2 s up: 20 kb/s; down 10 000 + 100 (y restarted) bytes: 40.4 -> 40 kb/s.
+        assert_eq!(now.rate_since(&before, 2_000.0), Some((20, 40)));
+        assert_eq!(now.rate_since(&before, 0.0), None);
+    }
+
     #[test]
     fn the_ping_is_the_selected_pair_s_round_trip() {
         let report = [

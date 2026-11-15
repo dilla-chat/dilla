@@ -15,6 +15,7 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::components::avatar::{Avatar, AvatarShape, AvatarSize};
 use crate::components::toast::show_toast_in;
 use crate::icon::Icon;
@@ -220,8 +221,16 @@ impl NowPlaying {
             _ => (color::FG_STRONG, gpui::transparent_black()),
         };
         let fg = if toggle && compact { color::FG } else { fg };
+        // Named by what it does (NowPlaying.tsx's `aria-label`s); the play button says pause while playing.
+        let label = match icon {
+            IconName::SkipForward => self.labels.skip.clone(),
+            IconName::Square => self.labels.stop.clone(),
+            IconName::Pause => self.labels.pause.clone(),
+            _ => self.labels.play.clone(),
+        };
         let mut button = div()
             .id(id)
+            .a11y(Role::Button, label)
             .flex()
             .flex_none()
             .items_center()
@@ -509,6 +518,8 @@ impl NowPlaying {
         let toggle_fg = if open { color::ACCENT } else { color::FG_2 };
         let queue_toggle = div()
             .id((self.id.clone(), "queue-toggle"))
+            .a11y(Role::Button, self.labels.queue.clone())
+            .aria_expanded(open)
             .flex()
             .items_center()
             .gap(px(6.0))
@@ -541,8 +552,17 @@ impl NowPlaying {
             });
         controls = controls.child(div().flex_1()).child(queue_toggle);
 
+        // The card is one tab stop (Space plays and pauses): named by its state and the track.
+        let card_name = format!(
+            "{}: {}",
+            self.state_label(),
+            self.track
+                .as_ref()
+                .map_or_else(|| self.labels.idle.clone(), |t| t.title.clone())
+        );
         let mut card = div()
             .id(self.id.clone())
+            .a11y(Role::Group, card_name)
             .track_focus(&handle)
             .flex()
             .flex_col()

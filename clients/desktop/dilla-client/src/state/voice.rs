@@ -63,6 +63,8 @@ pub enum VoiceNotice {
     EnhancedUnavailable,
     DevicesChanged,
     MicLost,
+    /// The OS denies the app the microphone: the call joined listen-only (Package 7, `voice.micDenied`).
+    MicDenied,
     SpeakerLost,
     EnhancedFailed,
     /// A share was asked for and the selection was cancelled: nothing was published.
@@ -91,6 +93,9 @@ pub struct OwnCall {
     /// The link's ping to the SFU in ms (session.ts `link.rttMs`), read by the media every few seconds; `None` until
     /// one is measured (the dock and the call bar say "— ms").
     pub ping_ms: Option<u32>,
+    /// What this device sends and receives, kb/s (stats.ts `linkSample`'s `upKbps` / `downKbps`), from the media's link
+    /// reads; `None` until two reads gave a rate (the dock and the call bar then say the ping alone).
+    pub rate_kbps: Option<(u32, u32)>,
 }
 
 /// What this device publishes besides its microphone.

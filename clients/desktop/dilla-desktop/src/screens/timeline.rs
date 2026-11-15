@@ -13,13 +13,14 @@
 //! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
 use dilla_client::state::{
-    AppState, Channel, CommunityId, Member, TimelineItem, TimelineItemState,
+    AppState, Channel, ChannelId, CommunityId, Member, TimelineItem, TimelineItemState,
 };
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
 use dilla_desktop_ui::text::{
@@ -66,6 +67,8 @@ const HEAD_GAP: f32 = 8.0;
 /// border and the title's 10px margin; the day divider's 4px 20px padding and 10px gap.
 const LOG_TOP: f32 = 12.0;
 const LOG_BOTTOM: f32 = 6.0;
+/// What the arrows keep between the row they move to and the log's edge when they scroll it into view.
+const REVEAL_MARGIN: f32 = 8.0;
 const WELCOME_TOP: f32 = 16.0;
 const WELCOME_X: f32 = 20.0;
 const WELCOME_BOTTOM: f32 = 18.0;
@@ -359,6 +362,74 @@ fn body_parts(
     }
 }
 
+/// The body as a screen reader reads it: the text with each mention as its pill's label (`@name`), code as written.
+pub fn spoken_body(parts: &[Body]) -> String {
+    fn walk(parts: &[Body], out: &mut String) {
+        for p in parts {
+            match p {
+                Body::Text(s) | Body::Code(s) | Body::CodeBlock { text: s, .. } => out.push_str(s),
+                Body::Link { href } => out.push_str(href),
+                Body::Mention(pill) => out.push_str(&pill.label),
+                Body::Strong(c) | Body::Em(c) | Body::Strike(c) | Body::Quote(c) => walk(c, out),
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(parts, &mut out);
+    out
+}
+
+/// A message row's accessible name: MessageRow.tsx labels the `<article>` by its head (the author and the time), then
+/// the body follows; here both are the name, as the row's text has no nodes of its own.
+fn spoken_row(name: &str, time: &str, body: &str) -> String {
+    format!("{name}, {time}: {body}")
+}
+
+/// [`spoken_row`] of `item`: its author as the log names them, its time in the log's zone, its body as read.
+pub fn spoken_item(
+    state: &AppState,
+    members: &[Member],
+    community: CommunityId,
+    item: &TimelineItem,
+    clock: Clock,
+) -> String {
+    let name = author(state, members, item);
+    let zone = |secs: i64| zone_of(clock, secs);
+    let time = format::time_in(item.ts, &zone);
+    let parts = body_parts(state, members, community, item);
+    spoken_row(&name, &time, &spoken_body(&parts))
+}
+
+/// What the log reads out as it arrives (MessageLog.tsx `aria-live="polite" aria-relevant="additions"`): the newest
+/// readable message of the open log when it is someone else's and newer than `seen`, the key last spoken (or the tail
+/// when the log opened). Returns the key to remember and, when there is one, the text to announce.
+pub fn arrival(
+    state: &AppState,
+    channel: &Channel,
+    clock: Clock,
+    seen: Option<&(ChannelId, String)>,
+) -> Option<((ChannelId, String), Option<String>)> {
+    let items = &state.timelines.get(&channel.id)?.items;
+    let last = items.last()?;
+    let key = (channel.id, last.key.clone());
+    match seen {
+        Some(s) if *s == key => None,
+        // Another log (or the first look at this one): its tail is what was already there.
+        Some((c, _)) if *c != channel.id => Some((key, None)),
+        None => Some((key, None)),
+        Some(_) if last.own || !readable(last) => Some((key, None)),
+        Some(_) => {
+            let members = state
+                .members
+                .get(&channel.community_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let text = spoken_item(state, members, channel.community_id, last, clock);
+            Some((key, Some(text)))
+        }
+    }
+}
+
 /// A follow-up whose head shows a mark (a webhook's "via", edited, pinned, the send state) keeps a head line of its marks
 /// (MessageRow.css: a grouped head leaves the flow only when everything in it is for a screen reader).
 fn marks_head(state: &AppState, community: CommunityId, item: &TimelineItem) -> bool {
@@ -408,6 +479,18 @@ fn row_height(grouped: bool, marks: bool, last: bool, before: f32, body: f32, ex
 
 /// The welcome's lines, wrapped to the log's width less its padding (Shell.tsx `welcome`): a channel's "Welcome to
 /// #name" over "This is the start of #name.", a DM's name over "This is the start of your conversation.".
+/// The welcome's title and body as text (MessageLog.tsx's `<h2>` and `<p>`), for the reader's nodes.
+fn welcome_text(channel: &str, dm: bool) -> (String, String) {
+    if dm {
+        (channel.to_owned(), t("shell.log.welcomeDmBody").to_owned())
+    } else {
+        (
+            tf("shell.log.welcome", &[("channel", channel)]),
+            tf("shell.log.welcomeBody", &[("channel", channel)]),
+        )
+    }
+}
+
 fn welcome_lines(channel: &str, dm: bool, width: f32) -> (Vec<Line>, Vec<Line>) {
     let inner = width - 2.0 * WELCOME_X;
     let (title, body) = if dm {
@@ -469,8 +552,27 @@ impl Placer {
         );
     }
 
+    /// [`Self::block`] at the fractional position (an inline glyph inside a text run).
+    fn block_exact(&mut self, x: f32, top: f32, element: impl IntoElement) {
+        self.out.push(
+            div()
+                .absolute()
+                .left(px(x))
+                .top(px(top))
+                .child(element)
+                .into_any_element(),
+        );
+    }
+
     /// The welcome at `top`; answers its height.
-    fn welcome(&mut self, top: f32, glyph: IconName, title: Vec<Line>, body: Vec<Line>) -> f32 {
+    fn welcome(
+        &mut self,
+        top: f32,
+        glyph: IconName,
+        (title, body): (Vec<Line>, Vec<Line>),
+        (title_text, body_text): (String, String),
+        width: f32,
+    ) -> f32 {
         self.block(
             WELCOME_X,
             top + WELCOME_TOP,
@@ -487,6 +589,22 @@ impl Placer {
         );
         let height = welcome_height(title.len(), body.len());
         let mut y = top + WELCOME_TOP + WELCOME_TILE + WELCOME_TITLE_GAP;
+        // The heading and the paragraph a reader finds, over the lines they are painted as.
+        let (title_h, body_h) = (
+            title.len() as f32 * line_height(text::WELCOME, 1.5),
+            body.len() as f32 * line_height(text::UI, 1.5),
+        );
+        let inner = (width - 2.0 * WELCOME_X).max(1.0);
+        self.block(
+            WELCOME_X,
+            y,
+            dilla_desktop_ui::a11y::heading(2, title_text, div().w(px(inner)).h(px(title_h))),
+        );
+        self.block(
+            WELCOME_X,
+            y + title_h,
+            dilla_desktop_ui::a11y::paragraph(body_text, div().w(px(inner)).h(px(body_h))),
+        );
         for l in title {
             self.line(l, WELCOME_X, y);
             y += line_height(text::WELCOME, 1.5);
@@ -549,6 +667,10 @@ struct RowCx<'a> {
     community: CommunityId,
     clock: Clock,
     width: f32,
+    /// Every row's key in the log's order: the arrow keys step through it (Conversation.tsx `rowKey`).
+    order: std::rc::Rc<Vec<String>>,
+    /// The active row's key: the log's one tab stop.
+    active: Option<String>,
 }
 
 /// The shaped width of meta text (a webhook's name is the admin's: wide glyphs and emoji are measured, not counted;
@@ -587,12 +709,24 @@ fn draw_marks(
         placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
         x += w + HEAD_GAP;
     }
-    for mark in head_marks(item) {
-        let tone = if item.state == TimelineItemState::Failed {
-            color::DANGER
-        } else {
-            meta_color
-        };
+    let marks = head_marks(item);
+    let last = marks.len().saturating_sub(1);
+    for (n, mark) in marks.into_iter().enumerate() {
+        // The send state is the last mark; a failed one is the danger tone after the x glyph (MessageRow.css `::before`:
+        // 0.875em, 0.25em right of it, its bottom 0.125em under the baseline), so the state is never colour alone.
+        let failed = n == last && item.state == TimelineItemState::Failed;
+        let tone = if failed { color::DANGER } else { meta_color };
+        if failed {
+            let em = f32::from(text::META);
+            let baseline = meta_top + chromium_baseline(Face::Mono, em, meta_line());
+            let glyph = 0.875 * em;
+            placer.block_exact(
+                x,
+                baseline + 0.125 * em - glyph,
+                Icon::new(IconName::X).size(px(glyph)).color(tone),
+            );
+            x += glyph + 0.25 * em;
+        }
         let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
         placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
         x += w + HEAD_GAP;
@@ -765,21 +899,92 @@ fn draw_row(
     // The row's box: the hover fill and bar, the mention tint, the flash; the toolbar over its top edge.
     let group = shown.group.clone();
     let flash = ui.read(cx).flashing(&item.key);
+    // MessageRow.tsx's `<article>`: one node per message, named by its author, time and text. Its id is the message's
+    // key, so a row keeps its node while earlier messages load above it.
+    let spoken = spoken_item(
+        cx_row.state,
+        cx_row.members,
+        cx_row.community,
+        item,
+        cx_row.clock,
+    );
+    // The keyboard (Conversation.tsx `rowKey`, MessageRow.css): the active row is the log's one tab stop; Up and Down
+    // step to the row above and below, Home and End to the first and the newest, Escape goes to the composer. A row
+    // that holds the focus, or a control in it, shows its toolbar and the inset focus outline.
+    let key = item.key.clone();
+    let handle = ui.update(cx, |u, cx| {
+        u.row_focus
+            .entry(key.clone())
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    });
+    let stop = cx_row.active.as_deref() == Some(key.as_str());
+    let focused_in = handle.contains_focused(window, cx);
+    if focused_in && !stop {
+        // The pointer (or a jump) put the focus on another row: it becomes the active one.
+        let k = key.clone();
+        ui.update(cx, |u, _| u.active = Some(k));
+    }
+    let keys = {
+        let (order, ui, own) = (cx_row.order.clone(), ui.clone(), handle.clone());
+        move |event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut App| {
+            let k = &event.keystroke;
+            let m = &k.modifiers;
+            if m.alt || m.control || m.platform || m.shift || m.function {
+                return;
+            }
+            if k.key == "escape" {
+                cx.stop_propagation();
+                if own.is_focused(window) {
+                    window.dispatch_action(Box::new(FocusComposer), cx);
+                } else {
+                    own.focus(window, cx);
+                }
+                return;
+            }
+            if !own.is_focused(window) {
+                return;
+            }
+            let Some(from) = order.iter().position(|o| *o == key) else {
+                return;
+            };
+            let Some(to) = arrow_target(k.key.as_str(), from, order.len()) else {
+                return;
+            };
+            cx.stop_propagation();
+            let next = order[to].clone();
+            let h = ui.update(cx, |u, cx| {
+                u.active = Some(next.clone());
+                u.reveal = Some(next.clone());
+                cx.notify();
+                u.row_focus
+                    .entry(next.clone())
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            });
+            window.focus(&h, cx);
+        }
+    };
     let mut row = div()
-        .id(gpui::SharedString::from(format!(
-            "message-row-{}",
-            shown.index
-        )))
+        .id(gpui::SharedString::from(format!("message-{}", item.key)))
+        .a11y(Role::Article, spoken)
+        .track_focus(&handle.tab_stop(stop))
+        .on_key_down(keys)
         .absolute()
         .left(len(0.))
         .top(px(base))
         .w(px(cx_row.width))
         .h(px(snap_px(top + height) - base))
         .group(group.clone());
+    if focused_in {
+        row = row.shadow(inset_ring());
+    }
     row = if flash {
         row.bg(color::ACCENT_FLASH)
     } else if item.mention {
         row.bg(color::WARN_SOFT)
+    } else if focused_in {
+        row.bg(color::BG_3)
     } else {
         row.hover(|s| s.bg(color::BG_3))
     };
@@ -810,15 +1015,40 @@ fn draw_row(
                 .group_hover(group.clone(), |s| s.visible()),
         ),
     };
-    row = row
-        .child(crate::screens::messages::probe(
-            crate::screens::messages::id_of("message-row", shown.index),
-        ))
-        .children(placer.out);
-    if let Some(bar) = toolbar::toolbar(item, shown.index, &group, ctx, ui, window, cx) {
+    row = row.child(crate::screens::messages::probe(
+        crate::screens::messages::id_of("message-row", shown.index),
+    ));
+    // MessageRow.tsx's keyboard map: the toolbar comes right after the row itself (before the body, the attachments and
+    // the reactions), so Tab from a focused row reaches its actions first.
+    if let Some(bar) = toolbar::toolbar(item, shown.index, &group, focused_in, ctx, ui, window, cx)
+    {
         row = row.child(bar);
     }
-    row.into_any_element()
+    row.children(placer.out).into_any_element()
+}
+
+/// Where Up, Down, Home and End move from row `from` of `count` (Conversation.tsx `rowKey`: the arrows stop at the
+/// ends), `None` for any other key.
+pub fn arrow_target(key: &str, from: usize, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    match key {
+        "up" => Some(from.saturating_sub(1)),
+        "down" => Some((from + 1).min(count - 1)),
+        "home" => Some(0),
+        "end" => Some(count - 1),
+        _ => None,
+    }
+}
+
+/// MessageRow.css `:focus-visible { outline-offset: -2px }`: the focus ring drawn inside the row.
+fn inset_ring() -> Vec<gpui::BoxShadow> {
+    let mut ring = dilla_desktop_ui::metrics::focus_ring();
+    for s in &mut ring {
+        s.inset = true;
+    }
+    ring
 }
 
 /// The log of `channel`, `width` wide, kept at its end through `scroll` while `pinned`. Each row's
@@ -870,7 +1100,8 @@ pub fn render(
         let body_color = match item.state {
             TimelineItemState::Ok => color::FG_BODY,
             TimelineItemState::Pending => color::FG_2,
-            TimelineItemState::Failed => color::DANGER,
+            // MessageRow.css colours only a pending body; a failed one keeps `--fg-body` (its head mark is the danger).
+            TimelineItemState::Failed => color::FG_BODY,
             _ => color::FG_3,
         };
         let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
@@ -955,7 +1186,13 @@ pub fn render(
     let mut placer = Placer { out: Vec::new() };
     let mut y = lift + LOG_TOP;
     let glyph = if dm { IconName::AtSign } else { IconName::Hash };
-    y += placer.welcome(y, glyph, title, body_lines);
+    y += placer.welcome(
+        y,
+        glyph,
+        (title, body_lines),
+        welcome_text(&channel.name, dm),
+        width,
+    );
     let (tops, rows_bottom) = row_tops(y, &shapes);
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
     // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.
@@ -976,7 +1213,47 @@ pub fn render(
     let jumped = jump
         .as_deref()
         .and_then(|key| shown.iter().position(|s| s.item.key == key));
-    if let Some(at) = jumped {
+    // The keyboard's row (Package 11): the log's order, its active row (the newest unless one was chosen), and a row
+    // the arrows moved to brought into view with the least scroll.
+    let order: std::rc::Rc<Vec<String>> =
+        std::rc::Rc::new(shown.iter().map(|s| s.item.key.clone()).collect());
+    let active = ui.update(cx, |u, _| {
+        u.row_focus.retain(|k, _| order.contains(k));
+        u.active
+            .clone()
+            .filter(|k| order.contains(k))
+            .or_else(|| order.last().cloned())
+    });
+    let reveal = ui.update(cx, |u, _| u.reveal.take());
+    let revealed = reveal.as_deref().and_then(|key| {
+        let i = shown.iter().position(|s| s.item.key == key)?;
+        let r = &shapes[i];
+        let (top, bottom) = (
+            tops[i],
+            tops[i] + row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras),
+        );
+        let now = -f32::from(scroll.offset().y);
+        let max = (inner - viewport).max(0.0);
+        let to = if top < now {
+            Some((top - REVEAL_MARGIN).max(0.0))
+        } else if bottom > now + viewport {
+            Some((bottom - viewport + REVEAL_MARGIN).min(max))
+        } else {
+            None
+        };
+        Some((to, i + 1 == shown.len()))
+    });
+    if let Some((to, last)) = revealed {
+        if let Some(to) = to {
+            scroll.set_offset(gpui::point(len(0.), px(-to)));
+        }
+        // Away from the newest message the log leaves the end; on it, it follows the end again (as the wheel does).
+        let follow = on_wheel.clone();
+        cx.defer(move |cx| follow(!last, cx));
+    }
+    if revealed.is_some() {
+        // The keyboard's row set the offset above; the end is not re-pinned under it.
+    } else if let Some(at) = jumped {
         let target = (tops[at] - 48.0).max(0.0);
         let max = (inner - viewport).max(0.0);
         scroll.set_offset(gpui::point(len(0.), px(-target.min(max))));
@@ -995,9 +1272,11 @@ pub fn render(
         community: channel.community_id,
         clock,
         width,
+        order: order.clone(),
+        active: active.clone(),
     };
     // Only the rows near the viewport are drawn (a screen above and below it): the rest keep their height from the memo.
-    let at = if jumped.is_some() {
+    let at = if jumped.is_some() || revealed.is_some() {
         -f32::from(scroll.offset().y)
     } else if pinned && viewport > 0.0 {
         (height - viewport).max(0.0)
@@ -1019,7 +1298,9 @@ pub fn render(
                 s.extras_height,
             );
         let editing = matches!(s.body, Plan::Editor(_));
-        if viewport > 0.0 && !editing && (bottom < from || top > to) {
+        // The active row is always drawn: it is the log's tab stop wherever the log is scrolled.
+        let keyed = active.as_deref() == Some(s.item.key.as_str());
+        if viewport > 0.0 && !editing && !keyed && (bottom < from || top > to) {
             continue;
         }
         let base = snap_px(top);
@@ -1049,8 +1330,19 @@ pub fn render(
         u.log_focus.get_or_insert_with(|| cx.focus_handle()).clone()
     });
     let to_focus = focus.clone();
+    // MessageLog.tsx: `role="log"` named "messages in #general" (a DM's by its name). A new message from someone else
+    // in the open log is read out through the window's announcer (`announce_new`), as the web's `aria-live`.
+    let target = if state.dms.get(channel.id).is_some() {
+        channel.name.clone()
+    } else {
+        format!("#{}", channel.name)
+    };
     div()
         .id("message-log")
+        .a11y(
+            Role::Log,
+            t("shell.log.label").replace("#{channel}", &target),
+        )
         .key_context("MessageLog")
         .track_focus(&focus)
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
@@ -1067,6 +1359,33 @@ pub fn render(
         .on_scroll(move |event, _window, cx| {
             on_wheel(event.delta.pixel_delta(len(20.)).y > len(0.), cx);
         })
+        // The log itself focused (a press on its surface): Up and Down go to its active row, as the web's log does.
+        .on_key_down({
+            let (ui, active) = (ui.clone(), active.clone());
+            let log = focus.clone();
+            move |event, window, cx| {
+                let k = &event.keystroke;
+                if !log.is_focused(window)
+                    || k.modifiers.modified()
+                    || !matches!(k.key.as_str(), "up" | "down")
+                {
+                    return;
+                }
+                let Some(key) = active.clone() else {
+                    return;
+                };
+                cx.stop_propagation();
+                let h = ui.update(cx, |u, cx| {
+                    u.reveal = Some(key.clone());
+                    cx.notify();
+                    u.row_focus
+                        .entry(key)
+                        .or_insert_with(|| cx.focus_handle())
+                        .clone()
+                });
+                window.focus(&h, cx);
+            }
+        })
         .on_action(move |_: &PageUp, _, _| page(&pager, -1.0))
         .on_action({
             let pager = scroll.clone();
@@ -1075,7 +1394,7 @@ pub fn render(
         .child(div().relative().w_full().h(px(inner)).children(placer.out))
 }
 
-gpui::actions!(message_log, [PageUp, PageDown]);
+gpui::actions!(message_log, [PageUp, PageDown, FocusComposer]);
 
 /// PageUp and PageDown scroll the log by a viewport less a few lines.
 fn page(scroll: &ScrollHandle, direction: f32) {
@@ -1111,6 +1430,7 @@ mod tests {
             pinned: false,
             attachments: Vec::new(),
             mention: false,
+            actions: Vec::new(),
         }
     }
 

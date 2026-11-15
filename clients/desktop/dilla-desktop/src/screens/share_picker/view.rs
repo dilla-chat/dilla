@@ -6,8 +6,11 @@ use gpui::{AnyElement, App, IntoElement, Window};
 
 use crate::strings::t;
 
-/// The picker of `window`, when one is open (the shell's overlays).
+/// The picker of `window`, or its application chooser, when one is open (the shell's overlays).
 pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    if let Some(chooser) = super::apps::overlay(window, cx) {
+        return Some(chooser);
+    }
     let id = window.window_handle().window_id();
     let picker = super::picker_of(id, cx)?;
     let tiles: Vec<PickerTile> = picker

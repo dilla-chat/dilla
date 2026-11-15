@@ -62,12 +62,12 @@ impl Render for OverlayHost {
             .size_full()
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
-            .children(create::overlay(window, cx))
+            .children(create::overlay(&std::sync::Arc::default(), window, cx))
     }
 }
 
 fn dialog_open(cx: &mut VisualTestContext) -> bool {
-    cx.update(|window, cx| create::overlay(window, cx).is_some())
+    cx.update(|window, cx| create::overlay(&std::sync::Arc::default(), window, cx).is_some())
 }
 
 /// A frame whose body is `tall` px of content, with a probe at its foot that keeps where it was painted.

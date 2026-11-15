@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render,
-    Styled, Window, div,
+    SharedString, Styled, Window, div,
 };
 
 use dilla_desktop_ui::IconName;
@@ -40,6 +40,8 @@ pub enum Dest {
     Close,
     /// A section of the server whose group follows "You" (its settings open in place of these).
     Server(ServerSection),
+    /// Out of the settings, to this device's call (the activity bar's Return to call, Shell.tsx `callTarget`).
+    Call(Route),
 }
 
 /// The guard of the open settings host, as the sections see it.
@@ -224,6 +226,10 @@ impl UserSettingsHost {
                 self.workspace.borrow_mut().detach();
                 cx.emit(SettingsEvent::Navigate(self.from.clone()));
             }
+            Dest::Call(route) => {
+                self.workspace.borrow_mut().detach();
+                cx.emit(SettingsEvent::Navigate(route));
+            }
             Dest::Server(section) => {
                 if let Some(community) = nav_community(&self.ctx.state, self.opened_over) {
                     self.workspace.borrow_mut().detach();
@@ -267,18 +273,25 @@ impl Render for UserSettingsHost {
         let this = cx.entity();
         let community = nav_community(&self.ctx.state, self.opened_over);
         let items = nav_items_with(&self.ctx.state, community);
-        let nav = SettingsNav::new("user-settings-nav", items, section.id()).on_select({
-            let this = this.clone();
-            move |id, _, cx| {
-                let dest = match id.strip_prefix("server:") {
-                    Some(s) => ServerSection::from_id(s).map(Dest::Server),
-                    None => UserSection::from_id(id).map(Dest::Section),
-                };
-                if let Some(dest) = dest {
-                    this.update(cx, |h, cx| h.request(dest, cx));
+        // The dialog is named by its open section (SettingsFrame.tsx `aria-labelledby` its title).
+        let title = items.iter().find(|i| i.id == section.id()).map_or_else(
+            || SharedString::from(t("settings.title")),
+            |i| i.label.clone(),
+        );
+        let nav = SettingsNav::new("user-settings-nav", items, section.id())
+            .label(t("settings.nav.label"))
+            .on_select({
+                let this = this.clone();
+                move |id, _, cx| {
+                    let dest = match id.strip_prefix("server:") {
+                        Some(s) => ServerSection::from_id(s).map(Dest::Server),
+                        None => UserSection::from_id(id).map(Dest::Section),
+                    };
+                    if let Some(dest) = dest {
+                        this.update(cx, |h, cx| h.request(dest, cx));
+                    }
                 }
-            }
-        });
+            });
 
         // Each host hands its own guard to its sections, so several windows never share one.
         let ctx = SlotCx {
@@ -296,6 +309,7 @@ impl Render for UserSettingsHost {
             (ws.footer(), ws.prompt())
         };
         let mut frame = SettingsFrame::new("user-settings", t("settings.close"))
+            .title(title)
             .nav(nav)
             .wide(matches!(
                 section,
@@ -305,6 +319,22 @@ impl Render for UserSettingsHost {
                 let this = this.clone();
                 move |_, cx| this.update(cx, |h, cx| h.request(Dest::Close, cx))
             });
+        // Shell.tsx `settingsActivity`: while this device is in a call, the bar over the section offers the way back to it.
+        if let Some(route) = crate::screens::voice::call_route(&self.ctx.state) {
+            let back = this.clone();
+            frame = frame.activity(
+                div()
+                    .debug_selector(|| "settings-return-call".into())
+                    .child(
+                        Button::new("settings-return-call", t("workspace.returnCall")).on_click(
+                            move |_, _, cx| {
+                                let route = route.clone();
+                                back.update(cx, |h, cx| h.request(Dest::Call(route), cx));
+                            },
+                        ),
+                    ),
+            );
+        }
         if let Some(f) = footer {
             let (reset, save) = (this.clone(), this.clone());
             frame = frame.footer(

@@ -1,6 +1,7 @@
 //! The desktop client's GPUI views.
 #![forbid(unsafe_code)]
 
+pub mod a11y;
 pub mod components;
 pub mod icon;
 #[rustfmt::skip]

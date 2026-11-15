@@ -9,7 +9,7 @@
 //!
 //! Each flow sends one command at a time and says every refusal by its code, never by the instance's detail text.
 
-mod flows;
+pub mod flows;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -213,7 +213,11 @@ fn flows_of(window: &mut Window, cx: &mut App) -> Entity<CreateFlows> {
 }
 
 /// The open dialog, drawn last in the window's root (the shell's `overlays` slot). Draws nothing while none is open.
-pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+pub fn overlay(
+    state: &std::sync::Arc<dilla_client::state::AppState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
     let id = window.window_handle().window_id();
     let pending = windows(cx).pending.remove(&id);
     let has = windows(cx).flows.contains_key(&id);
@@ -221,10 +225,22 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         return None;
     }
     let flows = flows_of(window, cx);
+    // The shell's state: the roles and access the create-channel dialog offers (a fixture's, when no client runs).
+    flows.update(cx, |f, _| f.set_state(state.clone()));
     if let Some(which) = pending {
         flows.update(cx, |f, cx| f.open(which, window, cx));
     }
-    flows.read(cx).is_open().then(|| flows.into_any_element())
+    // Over the shell, never in its flow (the shell lays its overlays out after its body in a column).
+    flows.read(cx).is_open().then(|| {
+        use gpui::{ParentElement as _, Styled as _};
+        gpui::div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(flows)
+            .into_any_element()
+    })
 }
 
 /// After the sign-up's "Open dilla" (App.tsx): a join that was refused after the factor opens the join dialog with the

@@ -9,7 +9,7 @@ Every test title of `e2e/media` (read live) and of the retired `e2e/web`, `e2e/v
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of `e2e/media` and the frozen titles file and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next plan (native), 0 TODO only (0 TODO tests proposed in all).
+Totals: 233 e2e tests; 188 with a Rust test, 42 n/a (browser/phone only), 3 next plan (native), 0 TODO only (0 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -26,7 +26,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/afk.spec.ts` | 7. with view_channel left out of his roles community-wide, Björn still sees Idle, and a click lists him away there with no call | dilla-client::tests/members::a_base_without_view_stays_0_and_the_afk_channel_grants_view_and_connect |
 | `e2e/web/afk.spec.ts` | 8. Q2 (revised, AW2 final): his last connection closing keeps Björn away through the 30 s grace, then takes him off the roster; back, nothing joins | dilla-client::tests/ring::the_last_connection_closing_keeps_a_member_away_through_the_grace_then_drops_him |
 | `e2e/web/afk.spec.ts` | 9. a web3.8 pick: after the upgrade the server has a new AFK, and lounge and Idle are ordinary | dilla-client::tests/ring::the_builtin_afk_channel_is_found_by_id_else_by_the_reservation |
-| `e2e/web/afk.spec.ts` | 10. accessible: the channel list, the AFK row with its away roster and server settings | next plan (native): axe and CSP checks of the browser DOM, so native screen readers (AccessKit) come after the switch |
+| `e2e/web/afk.spec.ts` | 10. accessible: the channel list, the AFK row with its away roster and server settings | dilla-desktop::tests/a11y::afk_channel_list_and_server_settings |
 | `e2e/web/badges.spec.ts` | unopened channels badge their unread messages and mentions, opening reads them, and a mute hides the count but not the mention | dilla-client::tests/notify::unopened_channels_badge_open_reads_mute_hides_count |
 | `e2e/web/badges.spec.ts` | the DM list head’s menu sets the device-wide notify default, and it is kept | dilla-client::tests/notify::dm_list_menu_sets_device_notify_default |
 | `e2e/web/badges.spec.ts` | a direct message opened from the DMs tab reaches the peer, and the reply badges it until it is read | dilla-client::tests/notify::dm_from_tab_reaches_peer_reply_badges_until_read |
@@ -38,7 +38,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/bot-commands.spec.ts` | /remind round trip | dilla-client::tests/bot::remind_round_trip_through_sealed_commands |
 | `e2e/web/bot-commands.spec.ts` | Enter to first answer is within RTT + 100 ms at p95 | dilla-client::tests/bot::enter_to_first_answer_is_within_rtt_plus_100ms_at_p95 |
 | `e2e/web/bot-runtime.spec.ts` | the Firefox web guard exempts only its browser-chrome favicon refusal | n/a (browser/phone only): the Firefox browser-chrome console guard of the web e2e |
-| `e2e/web/bot-runtime.spec.ts` | a bot enabled through server settings reaches ready through the native runtime | dilla-client::tests/bot_admin::a_bot_enabled_in_server_settings_reaches_ready |
+| `e2e/web/bot-runtime.spec.ts` | a bot enabled through server settings reaches ready through the native runtime | dilla-client::tests/bot_admin::a_bot_enabled_in_server_settings_reaches_ready; dilla-desktop::tests/bot_admin::rename_refresh_disable |
 | `e2e/web/bot-runtime.spec.ts` | literal music command text never executes through the native runtime | dilla-client::tests/bot::literal_music_command_text_never_executes |
 | `e2e/web/bot-runtime.spec.ts` | the moderation log reads through sealed Bot commands on each device, across a Bot restart | dilla-desktop::src/screens/members/modlog::the_log_reads_pages_as_the_web_does |
 | `e2e/web/bot-runtime.spec.ts` | a Roles-enabled bot applies the configured join role on join and rejoin | dilla-client::tests/bot_admin::a_roles_bot_applies_the_join_role_on_join_and_rejoin |
@@ -59,8 +59,8 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/core-worker.spec.ts` | a real core registers a DM call group and maps the SFU-less 501 to failed after its self-Remove | dilla-client::tests/calls::the_first_join_registers_the_call_group_then_starts_the_call |
 | `e2e/web/create.spec.ts` | from an empty instance: start a server, invite a friend through a link, reply, DM and add a channel | dilla-client::tests/onboarding::empty_instance_start_server_invite_reply_dm_add_channel |
 | `e2e/web/csp-axe.spec.ts` | the host serves the built client with the headers, types, cache rules and policy of the embed | n/a (browser/phone only): the headers, types and CSP of the web client the host serves |
-| `e2e/web/csp-axe.spec.ts` | every state of the slice passes axe with target-size, in the Signal theme, without a CSP violation | next plan (native): axe and CSP checks of the browser DOM, so native screen readers (AccessKit) come after the switch |
-| `e2e/web/enrol.spec.ts` | a second browser joins the account by password and recovery key, and the first can remove it | dilla-client::tests/onboarding::enrol_by_password_and_recovery_key |
+| `e2e/web/csp-axe.spec.ts` | every state of the slice passes axe with target-size, in the Signal theme, without a CSP violation | dilla-desktop::tests/a11y::every_slice_state_passes_the_tree_lint |
+| `e2e/web/enrol.spec.ts` | a second browser joins the account by password and recovery key, and the first can remove it | dilla-client::tests/onboarding::enrol_by_password_and_recovery_key; dilla-desktop::tests/shell::revoked_device_boot_explains_and_resets |
 | `e2e/web/enrol.spec.ts` | a wrong recovery key is refused in place, and the right one typed in lower case with hyphens works after it | dilla-client::tests/onboarding::wrong_recovery_key_refused_lowercase_hyphens_ok |
 | `e2e/web/enrol.spec.ts` | sign out and remove takes this browser out of the account and out of the group | dilla-client::tests/user_settings::sign_out_and_remove_leaves_account_and_group |
 | `e2e/web/enrol.spec.ts` | the peer’s enrolled device enters and leaves the group while the browser keeps talking | dilla-client::tests/onboarding::peer_enrolled_device_enters_and_leaves_group |
@@ -90,7 +90,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/phone.spec.ts` | the sign-in fields stay at 16 px and unzoomed on a phone | n/a (browser/phone only): phone layout, the desktop client has no phone shell |
 | `e2e/web/phone.spec.ts` | a landscape phone (844 x 390) gets the phone layout | n/a (browser/phone only): phone layout, the desktop client has no phone shell |
 | `e2e/web/private-window.spec.ts` | an ephemeral WebKit context shows the unsupported screen, not E_INTERNAL | n/a (browser/phone only): the WebKit private-window storage refusal of the browser client |
-| `e2e/web/private.spec.ts` | private channels run from an empty instance: create, gain, lose, make private and public, the lockout and a muted server | dilla-client::tests/server_settings::private_channels_client_gain_lose_toggle_lockout |
+| `e2e/web/private.spec.ts` | private channels run from an empty instance: create, gain, lose, make private and public, the lockout and a muted server | dilla-client::tests/server_settings::private_channels_client_gain_lose_toggle_lockout; dilla-desktop::tests/server_settings::create_private_channel_with_roles |
 | `e2e/web/realtime-transport.spec.ts` | wire 6 (Bot v2) stays free of periodic version/activity/stats HTTP for fifteen idle minutes and reconciles reconnects | dilla-desktop::tests/diagnostics::idle_socket_no_periodic_http |
 | `e2e/web/reload-mid-sync.spec.ts` | messages that reach a second device mid-sync are readable after it reloads, in every group it joined | dilla-desktop::tests/integration::restart_mid_sync_reads_every_group |
 | `e2e/web/required-factor.spec.ts` | a sign-up left at the factor choice meets the forced screen on reopening | dilla-client::tests/onboarding::the_pending_join_survives_a_restart_at_the_factor; dilla-desktop::tests/factors::abandoned_factor_choice_meets_forced_screen |
@@ -99,7 +99,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/required-factor.spec.ts` | the forced screen’s Forget this browser clears this browser and leaves the account’s device listed | dilla-client::tests/factors::forget_signs_the_device_out_on_the_instance |
 | `e2e/web/required-factor.spec.ts` | a second tab takes dilla over from a tab on the forced screen | dilla-desktop::tests/instances::an_open_instance_is_held_until_released |
 | `e2e/web/required-factor.spec.ts` | after a reset, a fresh browser takes the password and then the set-up, not a code | dilla-client::tests/factors::after_a_reset_a_fresh_device_takes_the_password_then_the_setup |
-| `e2e/web/roles.spec.ts` | roles run from an empty instance: make, assign, pin by right, mention, demote and delete | dilla-client::tests/members::roles_make_assign_demote_delete_and_refusal |
+| `e2e/web/roles.spec.ts` | roles run from an empty instance: make, assign, pin by right, mention, demote and delete | dilla-client::tests/members::roles_make_assign_demote_delete_and_refusal; dilla-desktop::tests/members::custom_colour_is_listed; dilla-desktop::tests/server_settings::permission_change_is_announced |
 | `e2e/web/search-settings.spec.ts` | native edit is searched by prefix and deleted text disappears after a positive result | dilla-client::tests/search::edit_found_by_prefix_deleted_text_gone |
 | `e2e/web/search-settings.spec.ts` | Privacy, Keyboard and Diagnostics open on a phone with the nav as chips and close with Escape | n/a (browser/phone only): phone layout, the desktop client has no phone shell |
 | `e2e/web/search-settings.spec.ts` | the search palette finds a setting and opens its section | dilla-desktop::tests/search::palette_finds_setting_opens_section |
@@ -108,7 +108,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/search-settings.spec.ts` | scopes and keyboard selection stay on the textbox until a target is chosen | dilla-desktop::tests/search::scopes_and_selection_stay_on_textbox |
 | `e2e/web/search-settings.spec.ts` | typing is audience-scoped, expires by server time and is not replayed | dilla-client::tests/messages::typing_is_sent_and_received; dilla-desktop::src/screens/messages/typing::an_expired_row_and_an_empty_list_say_nothing |
 | `e2e/web/search-settings.spec.ts` | switching channel with an unsent draft shows no error banner | dilla-desktop::src/screens/messages/composing::a_draft_belongs_to_one_channel_under_the_drafts_prefix |
-| `e2e/web/search-settings.spec.ts` | desktop, phone and reflow keep controls accessible in Signal | next plan (native): axe and CSP checks of the browser DOM, so native screen readers (AccessKit) come after the switch |
+| `e2e/web/search-settings.spec.ts` | desktop, phone and reflow keep controls accessible in Signal | dilla-desktop::tests/a11y::search_and_settings_pass_the_tree_lint |
 | `e2e/web/search-settings.spec.ts` | settings rows align their controls, and the sign-out button holds its text | dilla-desktop::tests/voice_settings::parity_voice_settings_section; dilla-desktop::tests/components::every_component_renders_in_every_state |
 | `e2e/web/second-factor.spec.ts` | second factor: sign-up step 5, a code and a backup code on new browsers, a wrong code, Settings → Sign-in | dilla-client::tests/factors::step_up_backup_codes_remove_and_password; dilla-desktop::tests/factors::password_then_factor_then_recovery_key_backup_code_waits; dilla-desktop::tests/factors::signup_factor_code_backup_code_wrong_code_settings; dilla-desktop::tests/factors::signup_factor_step_takes_typed_digits_and_says_a_wrong_code |
 | `e2e/web/second-tab.spec.ts` | a second tab waits while the first holds the device and takes over when it closes | dilla-desktop::tests/instances::an_open_instance_is_held_until_released; dilla-desktop::tests/instances::a_released_hold_lasts_until_the_client_stopped |
@@ -125,7 +125,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/socket-only.spec.ts` | joining and leaving voice goes over the socket | dilla-client::tests/calls::call_signalling_uses_socket_when_up |
 | `e2e/web/spike-joinall.spec.ts` | SP-W201: join-all and the load-free core at 200 groups | n/a (browser/phone only): the join-all load spike of the wasm core in a browser worker |
 | `e2e/web/support.spec.ts` | the test host serves the client root same-origin, with its headers, to a persistent profile | n/a (browser/phone only): the test host serving the web client with its headers |
-| `e2e/web/support.spec.ts` | axe evaluates under the served CSP without a policy violation | next plan (native): axe and CSP checks of the browser DOM, so native screen readers (AccessKit) come after the switch |
+| `e2e/web/support.spec.ts` | axe evaluates under the served CSP without a policy violation | dilla-desktop::tests/a11y::the_tree_lint_runs_on_every_fixture |
 | `e2e/web/support.spec.ts` | the native peer enrols and builds its community through the public routes | dilla-client::tests/onboarding::empty_instance_start_server_invite_reply_dm_add_channel |
 | `e2e/web/support.spec.ts` | the harness build is served by its manifest: the wasm as application/wasm, immutable, and unknown paths fall back to index.html | n/a (browser/phone only): the web e2e harness serving the browser build |
 | `e2e/web/support.spec.ts` | totp() reproduces the RFC 6238 SHA-1 vectors | n/a (browser/phone only): the TypeScript totp() helper of the e2e harness |
@@ -136,14 +136,14 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/web/threads.spec.ts` | a thread opens from the pin of a reply | dilla-desktop::tests/integration::thread_opens_from_pin_of_reply |
 | `e2e/web/threads.spec.ts` | on a phone the thread is a full-screen sheet, the system back closes it and the channel remains | n/a (browser/phone only): phone layout, the desktop client has no phone shell |
 | `e2e/web/threads.spec.ts` | two people thread in a DM | dilla-client::tests/threads::two_people_thread_in_a_dm |
-| `e2e/web/timeout.spec.ts` | manual text timeout blocks community writes and recovers while read, voice, DMs and own deletion continue | dilla-client::tests/members::timeout_blocks_community_writes_and_recovers; dilla-client::tests/members::a_timed_out_member_still_deletes_their_own_message |
+| `e2e/web/timeout.spec.ts` | manual text timeout blocks community writes and recovers while read, voice, DMs and own deletion continue | dilla-client::tests/members::timeout_blocks_community_writes_and_recovers; dilla-client::tests/members::a_timed_out_member_still_deletes_their_own_message; dilla-desktop::tests/messages::timed_out_member_sees_until; dilla-desktop::tests/messages::a_failed_send_retries; dilla-desktop::tests/messages::discard_removes_the_failed_message; dilla-desktop::tests/messages::a_failed_edit_is_not_saved_and_retries |
 | `e2e/web/trust-polish.spec.ts` | rotation keeps already visible text; an independent trusted group still works | dilla-client::tests/dms::rotation_keeps_visible_text_independent_group_works |
 | `e2e/web/trust-polish.spec.ts` | Copy alone does not approve; explicit exact-key comparison admits new traffic | dilla-client::tests/dms::copy_alone_does_not_approve_exact_compare_admits |
 | `e2e/web/trust-polish.spec.ts` | after a reload Privacy has names and Compare; a changed contact can be compared and verified | dilla-client::tests/dms::privacy_names_and_compare_after_restart |
 | `e2e/web/trust-polish.spec.ts` | a validated Remove of the changed device restores sending here only; the contact stays changed | dilla-client::tests/dms::remove_changed_device_restores_sending_here_only |
 | `e2e/web/version-reload.spec.ts` | a tab older than the host is refused two ways: banner, no reconnect, and Reload keeps the draft | dilla-desktop::tests/diagnostics::older_client_refused_banner_no_reconnect_keeps_draft |
 | `e2e/web/z/reload.spec.ts` | a relaunched profile comes back from its stored device key, even after its session expired | dilla-client::tests/sync::expired_session_reauthenticates; dilla-client::tests/store::first_open_creates_key_and_reopens |
-| `e2e/web/z/reload.spec.ts` | a profile whose device key wrapper is gone says so and can start over after a confirmation | dilla-client::tests/store::database_without_key_is_refused_and_left_alone; dilla-desktop::tests/factors::forget_after_the_shell_closes_and_wipes_the_store |
+| `e2e/web/z/reload.spec.ts` | a profile whose device key wrapper is gone says so and can start over after a confirmation | dilla-client::tests/store::database_without_key_is_refused_and_left_alone; dilla-desktop::tests/factors::forget_after_the_shell_closes_and_wipes_the_store; dilla-desktop::tests/shell::lost_key_boot_offers_reset |
 
 ## e2e/voice
 
@@ -161,7 +161,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/voice/bot-music.spec.ts` | a device that joins while the Bot plays hears it | dilla-media::tests/call::a_device_joining_while_the_bot_plays_hears_it |
 | `e2e/voice/bot-music.spec.ts` | a new device uses /play within its first session | dilla-media::tests/call::a_new_device_uses_play_within_its_first_session |
 | `e2e/voice/controls.spec.ts` | Control+Shift+M and Control+Shift+D show alice muted and deafened to bob; push to talk sends only while held | dilla-desktop::tests/voice::push_to_talk_opens_the_mic_outside_text_fields; dilla-desktop::tests/voice::push_to_talk_is_off_in_a_text_field; dilla-desktop::tests/voice::control_shift_m_and_d_show_muted_and_deafened_to_the_peer |
-| `e2e/voice/csp-axe.spec.ts` | the ring, the call, a player and Settings → Voice pass axe in three themes and at 360×740, with no CSP violation | next plan (native): axe and CSP checks of the browser DOM, so native screen readers (AccessKit) come after the switch |
+| `e2e/voice/csp-axe.spec.ts` | the ring, the call, a player and Settings → Voice pass axe in three themes and at 360×740, with no CSP violation | dilla-desktop::tests/a11y::ring_call_player_voice_settings_pass_the_tree_lint |
 | `e2e/voice/enhanced-fallback.spec.ts` | a missing enhanced model visibly falls back; Off avoids all enhancement assets | dilla-desktop::tests/voice_settings::missing_model_falls_back_visibly_off_loads_nothing; dilla-media::tests/audio::missing_model_falls_back_visibly |
 | `e2e/voice/enhanced-latency.spec.ts` | the enhanced microphone reaches the encrypted sender within the 80 ms budget under load | dilla-media::tests/audio::enhanced_within_80ms_budget |
 | `e2e/voice/enhanced-noise.spec.ts` | Automatic enhances the local test and encrypted calls, enforces PTT, and remains stable under load | dilla-desktop::tests/voice_settings::automatic_enhances_test_and_call_enforces_ptt; dilla-media::tests/audio::enhanced_lowers_noise_10db_on_device_path |
@@ -171,7 +171,7 @@ Totals: 233 e2e tests; 183 with a Rust test, 42 n/a (browser/phone only), 8 next
 | `e2e/voice/join-talk.spec.ts` | two browsers join one voice channel, see each other ok and hear each other; no key in a ret or a slice | dilla-client::tests/voice::two_clients_join_see_and_hear_no_key_in_state; dilla-media::tests/call::desktop_and_web_in_one_call |
 | `e2e/voice/leave-reload.spec.ts` | a reload mid-call is a leave bob sees, the rejoin is a fresh leaf, and leave returns focus to the voice row | dilla-client::tests/calls::a_leave_ends_the_call_when_alone_then_proposes_its_remove_and_forgets; dilla-desktop::tests/voice::closing_the_window_leaves_its_call |
 | `e2e/voice/leave-reload.spec.ts` | a rejoin whose Remove nobody has committed yet waits, says so, and joins the same call once it is committed | dilla-client::tests/calls::a_rejoin_refused_while_its_remove_stands_waits_then_joins_the_same_group_once_it_moves |
-| `e2e/voice/media-attachments.spec.ts` | bob plays alice's webm and WAV inline; a truncated file shows the error and save; every blob: URL is revoked after | dilla-desktop::src/screens/attachments/media::truncated_and_garbage_audio_never_panics; dilla-desktop::tests/attachments::audio_attachment_plays |
+| `e2e/voice/media-attachments.spec.ts` | bob plays alice's webm and WAV inline; a truncated file shows the error and save; every blob: URL is revoked after | dilla-desktop::src/screens/attachments/media::truncated_and_garbage_audio_never_panics; dilla-desktop::tests/attachments::audio_attachment_plays; dilla-desktop::tests/attachments::webm_plays_inline |
 | `e2e/voice/microphone-test.spec.ts` | Let’s check plays you back live, shows the level and releases the microphone when it stops | dilla-desktop::tests/voice_settings::lets_check_plays_back_shows_level_releases_mic |
 | `e2e/voice/noise-beta.spec.ts` | beta requires opt-in, enhances preview and encrypted calls, and can be left during a call | dilla-desktop::tests/voice_settings::enhanced_opt_in_preview_and_call_leave_during_call |
 | `e2e/voice/phone-call.spec.ts` | on a phone the call bar opens the stage, which holds the one mute button, and back closes it | n/a (browser/phone only): phone layout, the desktop client has no phone shell |

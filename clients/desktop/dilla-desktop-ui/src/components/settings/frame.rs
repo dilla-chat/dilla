@@ -21,6 +21,7 @@ use gpui::{
 use super::super::dialog::{
     HasOpenFocus, OVERLAY_CONTEXT, OpenFocus, TrapNext, TrapPrevious, sync_open_focus, trap_tab,
 };
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
@@ -58,6 +59,8 @@ pub struct SettingsFrame {
     footer: Option<AnyElement>,
     wide: bool,
     on_close: Option<CloseHandler>,
+    /// The dialog's accessible name (the web's `aria-labelledby` title).
+    title: SharedString,
 }
 
 impl SettingsFrame {
@@ -74,7 +77,14 @@ impl SettingsFrame {
             footer: None,
             wide: false,
             on_close: None,
+            title: SharedString::default(),
         }
+    }
+
+    /// Names the settings dialog for a screen reader: the open section's title (SettingsFrame.tsx `aria-labelledby`).
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = title.into();
+        self
     }
 
     pub fn open(mut self, open: bool) -> Self {
@@ -143,23 +153,37 @@ pub fn sub_measure() -> f32 {
 }
 
 fn header_at(title: impl Into<SharedString>, sub: Option<&str>, measure: f32) -> gpui::Div {
-    let mut head = div().flex().flex_col().pb(px(22.0)).child(
-        line(
-            title,
-            text::HEADING,
-            line_height(text::HEADING, 1.5),
-            color::FG,
-        )
-        .weight(font::WEIGHT_DISPLAY),
-    );
+    // The section's `<h2>` and its intro `<p>`, as nodes a reader finds.
+    let title: SharedString = title.into();
+    let mut head = div()
+        .flex()
+        .flex_col()
+        .pb(px(22.0))
+        .child(crate::a11y::heading(
+            2,
+            title.clone(),
+            line(
+                title,
+                text::HEADING,
+                line_height(text::HEADING, 1.5),
+                color::FG,
+            )
+            .weight(font::WEIGHT_DISPLAY),
+        ));
     if let Some(sub) = sub {
-        head = head.child(div().pt(px(4.0)).flex().flex_col().children(paragraph(
-            sub,
-            text::UI,
-            line_height(text::UI, 1.5),
-            color::FG_2,
-            measure,
-        )));
+        head = head.child(
+            crate::a11y::paragraph(sub.to_owned(), div())
+                .pt(px(4.0))
+                .flex()
+                .flex_col()
+                .children(paragraph(
+                    sub,
+                    text::UI,
+                    line_height(text::UI, 1.5),
+                    color::FG_2,
+                    measure,
+                )),
+        );
     }
     head
 }
@@ -211,16 +235,19 @@ impl Section {
 
 /// A group's micro heading (10px 600, 0.12em, uppercase, `--fg-3`): 22px under the block above, 8px over its group.
 pub fn group_heading(text_: impl Into<SharedString>) -> gpui::Div {
-    div().pt(px(22.0)).pb(px(8.0)).child(
+    let text_: SharedString = text_.into();
+    div().pt(px(22.0)).pb(px(8.0)).child(crate::a11y::heading(
+        3,
+        text_.clone(),
         line(
-            text_.into().to_uppercase(),
+            text_.to_uppercase(),
             text::MICRO,
             line_height(text::MICRO, 1.5),
             color::FG_3,
         )
         .weight(font::WEIGHT_LABEL)
         .tracking(LABEL_TRACKING_WIDE),
-    )
+    ))
 }
 
 impl RenderOnce for SettingsFrame {
@@ -328,6 +355,8 @@ impl RenderOnce for SettingsFrame {
         let close_click = close_with.clone();
         let close = div()
             .id((self.id.clone(), "close"))
+            .a11y(Role::Button, self.close_label.clone())
+            .aria_keyshortcuts("Escape")
             .absolute()
             .top(px(22.0))
             .right(px(16.0))
@@ -373,6 +402,7 @@ impl RenderOnce for SettingsFrame {
             .child(
                 div()
                     .id((self.id.clone(), "panel"))
+                    .modal_dialog(self.title.clone())
                     .track_focus(&panel)
                     .key_context(OVERLAY_CONTEXT)
                     .relative()

@@ -1,0 +1,288 @@
+name: desktop gpui release
+# A GitHub prerelease of the native Dilla desktop app (clients/desktop, crate dilla-desktop) for a tag
+# desktop-gpui-v<X.Y.Z>-alpha.<N> (GPUI release plan, Milestone 1: Linux x86_64 alpha). Its assets:
+#   dilla-<v>-linux-x64.AppImage, .tar.gz, .deb, .rpm, .aur.tar.gz (the AUR recipe, a release asset only: nothing here
+#   or anywhere publishes it to the AUR) and SHA256SUMS over the five, each with a GitHub build-provenance attestation.
+#
+# M1 is keyless. A tag run uses the workflow file at the tagged commit, so this workflow reads no secret and enters no
+# environment; the signed feed, macOS and Windows (M2) come from main's own workflow_run workflow.
+#
+# The jobs, in order, each needing the ones before it:
+#   tag          the tag is the ref the run is on and names the version; its commit is on main, has a green
+#                desktop-gpui push run on main (scripts/server-release-gate.mjs --workflow=desktop-gpui), and
+#                dilla-desktop's Cargo version equals the tag's; no release exists for it yet
+#   build-linux  a clean release build on ubuntu-24.04 (glibc 2.39 floor): no cache, --locked, default features only,
+#                clang 21, libwebrtc pinned by SHA-256 (scripts/fetch-libwebrtc.sh); the release-binary guards; the
+#                five assets (scripts/desktop-gpui-package-linux.sh with the pinned appimagetool, runtime and nfpm);
+#                SHA256SUMS; build-provenance attestations over the five assets
+#   smoke        installs each asset in a clean Ubuntu 24.04, Debian 13, Fedora 41 or Arch container and runs
+#                `dilla-desktop --version`; upgrades beta.5's deb and rpm in place; launches the AppImage under Xvfb
+#                (scripts/desktop-gpui-smoke-linux.sh)
+#   publish      a draft prerelease with the six files, re-downloaded and checked against SHA256SUMS, and only then
+#                published: releases here are immutable once published, so nothing is published half-uploaded
+#
+# workflow_dispatch rebuilds the release of an existing tag that has none yet (say, after a failed run): choose the
+# tag itself as the ref in "Use workflow from" and type the same tag; the tag job refuses a mismatch. A release that
+# already exists (draft or published) is refused; delete a draft first to rebuild it (clients/desktop/RELEASING.md).
+on:
+  push:
+    tags: ['desktop-gpui-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the existing tag to release, e.g. desktop-gpui-v0.2.0-alpha.1 (run the workflow from that tag)
+        required: true
+        type: string
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    # actions: read lists the desktop-gpui workflow's runs for the gate step; a job-level block replaces the workflow's.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      sha: ${{ steps.tag.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The release tag is the ref the workflow runs on, on a commit of main
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          [[ "$tag" =~ ^desktop-gpui-v([0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+)$ ]] || { echo "GPUI release tags look like desktop-gpui-v0.2.0-alpha.1, got: $tag"; exit 1; }
+          version="${BASH_REMATCH[1]}"
+          test "$GITHUB_REF" = "refs/tags/$tag" || { echo "run the workflow from the tag $tag itself, not from $GITHUB_REF"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$tag points at $GITHUB_SHA, which is not on main; only main is released"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: The tagged commit has a green desktop-gpui push run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_SHA: ${{ github.sha }}
+        run: node scripts/server-release-gate.mjs --workflow=desktop-gpui "$TAG_SHA"
+      - name: dilla-desktop's Cargo version is the tag's
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          cargo_version="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "dilla-desktop") | .version')"
+          test "$cargo_version" = "$VERSION" || { echo "dilla-desktop is version $cargo_version in Cargo.toml, the tag says $VERSION"; exit 1; }
+      - name: No release exists for the tag yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists; delete its draft first to rebuild it"; exit 1; fi
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    needs: [tag]
+    timeout-minutes: 90
+    # id-token and attestations: write sign the build-provenance attestations (Sigstore, GitHub's attestation store).
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: The checkout is the tagged commit
+        env:
+          SHA: ${{ needs.tag.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$SHA"
+      # The hosted Linux image ships toolchains this job never uses; the release build needs the room.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h /
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      # LiveKit's prebuilt libwebrtc ships a hermetic libc++ that needs clang 21+; ubuntu-24.04 has clang 18.
+      # LLVM's own apt repository, verified by its signing key (as desktop-gpui.yml).
+      - name: Add the LLVM 21 apt repository
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
+      # desktop-gpui.yml's build dependencies, without the test-only ones (ffmpeg, the lavapipe driver), plus the
+      # packaging checks appimagetool runs (appstreamcli, desktop-file-validate) and unzip for the libwebrtc archive.
+      - name: Install the GPUI build dependencies
+        run: >-
+          node scripts/retry-on.mjs --attempts 6 --wait 60
+          --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
+          -- bash scripts/ci-apt-install.sh
+          clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
+          libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
+          libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+          libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
+          libxfixes-dev libxcomposite-dev libxrandr-dev
+          appstream desktop-file-utils unzip
+      - run: rustup show active-toolchain
+      # LiveKit's prebuilt libwebrtc, checked against its pinned SHA-256; webrtc-sys links it and downloads nothing.
+      - name: Fetch the pinned libwebrtc
+        run: bash scripts/fetch-libwebrtc.sh x86_64-unknown-linux-gnu "$RUNNER_TEMP/libwebrtc" >> "$GITHUB_ENV"
+      # A clean build: no cache restored, the lock file as committed, default features only (no automation, no test hooks).
+      - name: Build the release binary
+        env:
+          DILLA_BUILD_SHA: ${{ needs.tag.outputs.sha }}
+        run: cargo build --release --locked -p dilla-desktop
+      - name: The binary says the release's version and commit
+        env:
+          SHA: ${{ needs.tag.outputs.sha }}
+        run: |
+          got="$(target/release/dilla-desktop --version)"
+          echo "$got"
+          test "$got" = "Dilla $VERSION (${SHA:0:12})"
+      - name: The binary runs on glibc 2.39 and carries no test-only code
+        run: |
+          bash scripts/check-glibc-max.sh 2.39 target/release/dilla-desktop
+          bash scripts/check-desktop-release-binary.sh target/release/dilla-desktop
+      - name: Install the pinned packaging tools
+        run: |
+          bash scripts/install-ci-tool.sh appimagetool
+          bash scripts/install-ci-tool.sh appimage-runtime
+          bash scripts/install-ci-tool.sh nfpm
+      - name: Package the five Linux assets
+        run: |
+          export DILLA_APPIMAGE_RUNTIME="$RUNNER_TEMP/dilla-ci-tools/appimage-runtime-x86_64"
+          bash scripts/desktop-gpui-package-linux.sh "$VERSION" target/release/dilla-desktop dist
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          base="dilla-$VERSION-linux-x64"
+          sha256sum "$base.AppImage" "$base.tar.gz" "$base.deb" "$base.rpm" "$base.aur.tar.gz" > SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+          test "$(ls | wc -l)" -eq 6
+          cat SHA256SUMS
+      - name: Build-provenance attestations over the five assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.AppImage
+            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.tar.gz
+            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.deb
+            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.rpm
+            dist/dilla-${{ needs.tag.outputs.version }}-linux-x64.aur.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-desktop-linux-x64
+          path: dist/
+          if-no-files-found: error
+
+  smoke:
+    runs-on: ubuntu-24.04
+    needs: [tag, build-linux]
+    timeout-minutes: 30
+    strategy:
+      # Every distribution runs to the end, so one red install does not hide another's result.
+      fail-fast: false
+      matrix:
+        include:
+          - { check: ubuntu-deb, image: 'ubuntu:24.04' }
+          - { check: debian-deb, image: 'debian:trixie' }
+          - { check: fedora-rpm, image: 'fedora:41' }
+          - { check: arch-aur, image: 'archlinux:latest' }
+          - { check: ubuntu-upgrade, image: 'ubuntu:24.04' }
+          - { check: fedora-upgrade, image: 'fedora:41' }
+          - { check: launch, image: 'ubuntu:24.04' }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Fetch the Linux assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-linux-x64
+          path: dist
+      - name: The assets match SHA256SUMS
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS
+      # beta.5's deb and rpm for the upgrade checks; the smoke script checks them against their pinned SHA-256.
+      - name: Fetch beta.5's packages (upgrade checks)
+        if: matrix.check == 'ubuntu-upgrade' || matrix.check == 'fedora-upgrade'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download desktop-v0.1.0-beta.5 --dir beta5 --pattern 'dilla-0.1.0-beta.5-linux-x64.deb' --pattern 'dilla-0.1.0-beta.5-linux-x64.rpm'
+      - name: Smoke test (${{ matrix.check }} in ${{ matrix.image }})
+        env:
+          CHECK: ${{ matrix.check }}
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          mkdir -p beta5
+          docker run --rm -v "$PWD:/w:ro" -w /w "$IMAGE" bash scripts/desktop-gpui-smoke-linux.sh "$CHECK" "$VERSION" dist beta5
+
+  publish:
+    runs-on: ubuntu-24.04
+    needs: [tag, build-linux, smoke]
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Fetch the Linux assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-desktop-linux-x64
+          path: dist
+      - name: The assets match SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum --check --strict SHA256SUMS
+          test "$(ls | wc -l)" -eq 6
+      - name: Release notes
+        env:
+          SHA: ${{ needs.tag.outputs.sha }}
+        run: node scripts/desktop-gpui-release-notes.mjs "$VERSION" "$SHA" > "$RUNNER_TEMP/notes.md"
+      # A draft first: a published release is immutable, so it is published only once every file is attached and
+      # re-downloaded intact.
+      - name: Create the draft prerelease with every asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists; delete its draft first to rebuild it"; exit 1; fi
+          base="dist/dilla-$VERSION-linux-x64"
+          gh release create "$TAG" --verify-tag --draft --prerelease --title "Dilla desktop $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+            "$base.AppImage" "$base.tar.gz" "$base.deb" "$base.rpm" "$base.aur.tar.gz" dist/SHA256SUMS
+      - name: The draft's files are the built ones
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --dir "$RUNNER_TEMP/check"
+          cd "$RUNNER_TEMP/check"
+          test "$(ls | wc -l)" -eq 6
+          cmp SHA256SUMS "$GITHUB_WORKSPACE/dist/SHA256SUMS"
+          sha256sum --check --strict SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --draft=false

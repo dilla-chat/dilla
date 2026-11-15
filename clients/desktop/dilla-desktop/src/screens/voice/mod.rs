@@ -8,6 +8,7 @@
 //! newest remote frames.
 
 pub mod keys;
+pub mod menu;
 pub mod session;
 
 use std::collections::HashMap;
@@ -24,9 +25,10 @@ use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
     IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
-    Window, WindowId, div, img, px, relative,
+    Window, WindowId, anchored, deferred, div, img, px, relative,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
 use dilla_desktop_ui::metrics::focus_ring;
@@ -133,6 +135,18 @@ mod m {
     pub const METER_GAP: f32 = 1.5;
     pub const CAPTION_CHIP_PAD_X: f32 = 7.0;
     pub const STAT_RIGHT: f32 = 8.0;
+    /// CallStage.css, the focused caption: 24px high, 8px in.
+    pub const FOCUSED_CAPTION_H: f32 = 24.0;
+    pub const FOCUSED_CAPTION_PAD_X: f32 = 8.0;
+    /// `.d-call-tile__tools`: 10px in from the focused tile's top right (its stat 10px in from the bottom right), 4px
+    /// apart; each tool 28px; Grid 9px in, its 13px glyph 6px before the word; full screen's glyph 14px.
+    pub const TOOLS_INSET: f32 = 10.0;
+    pub const TOOLS_GAP: f32 = 4.0;
+    pub const TOOL: f32 = 28.0;
+    pub const GRID_TOOL_PAD_X: f32 = 9.0;
+    pub const GRID_TOOL_GAP: f32 = 6.0;
+    pub const GRID_GLYPH: f32 = 13.0;
+    pub const FULLSCREEN_GLYPH: f32 = 14.0;
     pub const STAT_TOP: f32 = 7.0;
     /// The stream-quality menu: 320px wide, 72px over the stage's foot (the bar and its gap), 12px in, 8px gaps.
     pub const MENU_BOTTOM: f32 = 72.0;
@@ -191,6 +205,9 @@ pub struct VoiceUi {
     pub focused: Option<TileKey>,
     /// The tile the arrows move to.
     pub selected: usize,
+    /// The selection came from a pointer press, not the keyboard: no selection edge is drawn (the web's tile button shows
+    /// its ring only on `:focus-visible`).
+    pub pointer: bool,
     stage_focus: Option<FocusHandle>,
     images: HashMap<StreamKey, (u64, Arc<RenderImage>)>,
     /// Each stream's frame rate, measured over the last second: `(at, frames then, fps)`.
@@ -199,6 +216,8 @@ pub struct VoiceUi {
     pub share_menu: bool,
     /// The stream quality the next (or the running) screen share uses.
     pub share_options: ShareOptions,
+    /// The application whose sound the screen share carries (the sound section's choice), `None`: no sound.
+    pub share_app: Option<dilla_media::app_audio::AppSource>,
     video_seq: u64,
     /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
     told_in_call: Option<Option<String>>,
@@ -213,6 +232,12 @@ pub struct VoiceUi {
     ptt_key: Option<(String, u32)>,
     /// The DM call box's tile grid's width, logical px, as last laid out ([`dm_call_box`]): its column count follows it.
     dm_grid_w: f32,
+    /// The tile shown full screen ([`toggle_tile_fullscreen`]).
+    pub fullscreen: Option<TileFullscreen>,
+    /// The stage's person menu ([`menu`]).
+    pub menu: menu::MenuState,
+    /// The shell's way to open a voice channel (Move to), set as it draws ([`set_open_voice`]).
+    open_voice: Option<OpenVoice>,
     /// The DM box's call code disclosure is open (CallStage.tsx's `<details>`), and its summary's focus.
     pub code_open: bool,
     code_focus: Option<FocusHandle>,
@@ -336,15 +361,110 @@ fn prune(keep: WindowId, cx: &mut App) {
     }
 }
 
+/// A tile filling its window (CallTile.tsx `toggleFullscreen`: the web's element full screen): which, whether the window
+/// went full screen for it ([`crate::fullscreen`]), and the focus that takes Escape.
+pub struct TileFullscreen {
+    pub key: TileKey,
+    made_window: bool,
+    focus: FocusHandle,
+}
+
+/// The tile's full-screen action: `key` fills the window (the window full screen, only the tile drawn), or, shown
+/// already, goes back to the stage.
+pub fn toggle_tile_fullscreen(key: TileKey, window: &mut Window, cx: &mut App) {
+    let w = wid(window);
+    if ui_of(w, cx).is_none() {
+        return;
+    }
+    if ui_of(w, cx)
+        .and_then(|u| u.fullscreen.as_ref())
+        .is_some_and(|f| f.key == key)
+    {
+        exit_tile_fullscreen(w, cx);
+        return;
+    }
+    exit_tile_fullscreen(w, cx);
+    let made_window = crate::fullscreen::enter(window);
+    let focus = cx.focus_handle();
+    window.focus(&focus, cx);
+    let ui = ui_mut(w, cx);
+    ui.focused = Some(key.clone());
+    ui.fullscreen = Some(TileFullscreen {
+        key,
+        made_window,
+        focus,
+    });
+    window.refresh();
+}
+
+/// The full-screen tile goes back to the stage (Escape, its button, the stream gone, the call ended), and the window out
+/// of full screen if it went in for the tile.
+pub fn exit_tile_fullscreen(w: WindowId, cx: &mut App) {
+    let Some(f) = ui_of(w, cx)
+        .is_some()
+        .then(|| ui_mut(w, cx).fullscreen.take())
+        .flatten()
+    else {
+        return;
+    };
+    crate::fullscreen::leave(w, f.made_window, cx);
+    cx.refresh_windows();
+}
+
+/// The tile `w` shows full screen, if any.
+pub fn fullscreen_tile(w: WindowId, cx: &App) -> Option<TileKey> {
+    ui_of(w, cx)?.fullscreen.as_ref().map(|f| f.key.clone())
+}
+
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): every window area that holds it goes,
 /// with its media session (the call was left by the caller first; this is not `windows::on_closed`, which leaves it).
 pub fn release(client: &Rc<Client>, cx: &mut App) {
     if !cx.has_global::<VoiceAreas>() {
         return;
     }
-    cx.global_mut::<VoiceAreas>()
-        .windows
-        .retain(|_, ui| !ui.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
+    let_go(cx, |_, ui| {
+        ui.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client))
+    });
+}
+
+/// Test hook: `window`'s voice area is let go as a released client's is.
+#[cfg(feature = "test-hooks")]
+pub fn window_released_for_tests(window: WindowId, cx: &mut App) {
+    let_go(cx, |w, _| *w == window);
+}
+
+/// Lets go of the voice areas `gone` picks; a tile one showed full screen gives its window back out of full screen.
+fn let_go(cx: &mut App, gone: impl Fn(&WindowId, &VoiceUi) -> bool) {
+    if !cx.has_global::<VoiceAreas>() {
+        return;
+    }
+    let mut restore = Vec::new();
+    cx.global_mut::<VoiceAreas>().windows.retain(|w, ui| {
+        let keep = !gone(w, ui);
+        // A tile shown full screen goes with its client: the window comes back out of full screen.
+        if !keep && let Some(f) = ui.fullscreen.take() {
+            restore.push((*w, f.made_window));
+        }
+        keep
+    });
+    for (w, made) in restore {
+        crate::fullscreen::leave(w, made, cx);
+    }
+}
+
+/// The shell's way to open a voice channel's stage (Shell.tsx `openVoice`).
+pub type OpenVoice = Rc<dyn Fn(ChannelId, &mut App)>;
+
+/// `window`'s shell's way to open a voice channel, set on each render of the shell.
+pub fn set_open_voice(window: WindowId, open: OpenVoice, cx: &mut App) {
+    ui_mut(window, cx).open_voice = Some(open);
+}
+
+/// Opens `channel`'s stage in `window` (the person menu's Move to), through its shell.
+pub fn open_voice(window: WindowId, channel: ChannelId, cx: &mut App) {
+    if let Some(open) = ui_of(window, cx).and_then(|u| u.open_voice.clone()) {
+        open(channel, cx);
+    }
 }
 
 /// `window`'s shell's way out of the AFK page (Shell.tsx `onLeaveAfk`), set on each render of the shell.
@@ -388,6 +508,7 @@ fn afk_stage(channel: &Channel, w: WindowId, cx: &mut App) -> Option<AnyElement>
     let page = crate::screens::ring::afk_page(&ctx, community, come_back)?;
     let stage = div()
         .id("voice-stage")
+        .a11y_unnamed(Role::Region)
         .relative()
         .size_full()
         .flex()
@@ -556,7 +677,10 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
         let sources = cx
             .try_global::<ShareSources>()
             .map_or_else(session::default_sources, |s| s.0.clone());
-        let session = MediaSession::start(client, sources)
+        let host = cx
+            .try_global::<AudioHostChoice>()
+            .map_or_else(dilla_media::devices::system, |h| h.0.clone());
+        let session = MediaSession::start_on(client, sources, host)
             .map(Rc::new)
             .map_err(|e| log::warn!("voice: no media session: {e}"))
             .ok();
@@ -580,6 +704,12 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
         // The call ended: push to talk lets go (review I1).
         release_ptt(window, cx);
     }
+    if ui_mut(window, cx).state.voice.call.phase != CallPhase::Idle
+        && state.voice.call.phase == CallPhase::Idle
+    {
+        // The call ended: a tile shown full screen goes, and the window with it.
+        exit_tile_fullscreen(window, cx);
+    }
     let ui = ui_mut(window, cx);
     if ui.state.voice.call.phase != CallPhase::Idle && state.voice.call.phase == CallPhase::Idle {
         ui.focused = None;
@@ -591,6 +721,17 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
         ui.repainting = true;
         repaint_on_video(window, cx);
     }
+}
+
+/// The audio host a call's media opens its devices on: the system's unless a test chose another.
+struct AudioHostChoice(Arc<dyn dilla_media::devices::AudioHost>);
+
+impl Global for AudioHostChoice {}
+
+/// Test hook: the media sessions started from here on open their devices on `host` (a fake with no speaker, say).
+#[cfg(feature = "test-hooks")]
+pub fn use_audio_host(host: Arc<dyn dilla_media::devices::AudioHost>, cx: &mut App) {
+    cx.set_global(AudioHostChoice(host));
 }
 
 /// What a repaint loop does on a tick.
@@ -1149,6 +1290,24 @@ pub fn share_app_audio(
     }
 }
 
+/// The sound section's choice for `window` (the chooser's application, or `None` when the switch goes off): kept for
+/// the next share, and sent to the running one.
+pub fn set_share_app(
+    window: WindowId,
+    source: Option<dilla_media::app_audio::AppSource>,
+    cx: &mut App,
+) {
+    let Some(ui) = ui_of(window, cx) else { return };
+    let (session, live) = (
+        ui.session.clone(),
+        ui.state.voice.call.phase == CallPhase::In,
+    );
+    ui_mut(window, cx).share_app = source.clone();
+    if live && let Some(s) = session {
+        s.app_audio(source);
+    }
+}
+
 /// The picker's choice: `window`'s call shares `source` at `options` (only that window's media session).
 pub fn share_source(
     window: WindowId,
@@ -1161,8 +1320,13 @@ pub fn share_source(
     if ui.state.voice.call.phase != CallPhase::In {
         return;
     }
+    let app = ui.share_app.clone();
     if let Some(s) = ui.session.clone() {
         s.share_source(source, options);
+        // The sound section's application comes with the share.
+        if app.is_some() {
+            s.app_audio(app);
+        }
     }
 }
 
@@ -1245,6 +1409,18 @@ fn person_row(p: &Person) -> Div {
             15.0,
             color::FG_STRONG,
         )))
+        // VoiceChannelRow.tsx: a bot's row says "playback only" after the name (its rounded-square avatar marks it).
+        .when(p.bot, |d| {
+            d.child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "voice-person-playback-only".into())
+                    .child(dilla_desktop_ui::components::tag::Tag::new(
+                        ElementId::Name(format!("voice-person-tag-{}", p.user.hex()).into()),
+                        dilla_desktop_ui::components::tag::TagKind::PlaybackOnly,
+                    )),
+            )
+        })
         .child(div().flex_1())
         .when_some(p.video.then_some(()), |d, ()| {
             d.child(
@@ -1272,6 +1448,22 @@ use gpui::prelude::FluentBuilder as _;
 
 // ---- the dock -----------------------------------------------------------------------------------------------------
 
+/// The link's line (VoiceDock.tsx's line 2, VoiceView.tsx `StatsLine`): the ping, then what this device sends and receives
+/// ("24 ms · ↑ 38 ↓ 71 kb/s") once a rate was read.
+pub fn link_text(ms: Option<u32>, rate: Option<(u32, u32)>) -> String {
+    let ping = ping_text(ms);
+    match rate {
+        Some((up, down)) => format!(
+            "{ping} · {}",
+            tf(
+                "voice.dock.rate",
+                &[("up", &up.to_string()), ("down", &down.to_string())]
+            )
+        ),
+        None => ping,
+    }
+}
+
 /// VoiceView.tsx `Dock`'s ping of the link (`call.ping_ms`, the media's read): "— ms" until one is read (a parity
 /// fixture's call has none), "<1 ms" under a millisecond, else "{ms} ms".
 pub fn ping_text(ms: Option<u32>) -> String {
@@ -1294,7 +1486,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     // VoiceView.tsx `Dock`'s `where`: the channel, or "the call with {name}" for a DM.
     let name = call_place(&state).unwrap_or_default();
     let where_ = match call.phase {
-        CallPhase::In => ping_text(call.ping_ms),
+        CallPhase::In => link_text(call.ping_ms, call.rate_kbps),
         CallPhase::WaitingForRemove => t("voice.announce.rejoining").to_owned(),
         _ => t("voice.dock.connecting").to_owned(),
     };
@@ -1326,7 +1518,10 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             line_height(text::META, 1.3),
             color::FG_3,
         ));
+    // VoiceDock.tsx: `role="region" aria-label="voice controls"`.
     let card = div()
+        .id("voice-dock-region")
+        .landmark(Role::Region, t("voice.dock.region"))
         .flex()
         .flex_col()
         .gap(px(m::DOCK_GAP))
@@ -1440,6 +1635,20 @@ pub fn release_ptt(window: WindowId, cx: &mut App) {
 /// acts while one holds the focus (ptt.ts `isEditable`).
 const TEXT_FIELD_CONTEXT: &str = "Input";
 
+/// AltGr is held (ptt.ts `getModifierState('AltGraph')`). On Linux xkb's Level3 is none of gpui's modifiers, so the
+/// vendored platform keeps its state on the side (core/vendor/README.md, "gpui-pre-linux 0.3.12"); elsewhere AltGr comes
+/// as Control+Alt, which the modifiers already refuse.
+fn altgr_held() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        gpui_linux::level3_shift_active()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// The push-to-talk key's handlers, on the window's root element (review I1): an ancestor of whatever holds the focus,
 /// so a key is heard on every screen. The key counts while this window's call is on.
 pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
@@ -1468,6 +1677,7 @@ pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
             || m.shift
             || m.platform
             || m.function
+            || altgr_held()
             || stack.iter().any(|c| c.contains(TEXT_FIELD_CONTEXT))
         {
             return;
@@ -1568,12 +1778,27 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .unwrap_or_default();
     let menu = ui_of(w, cx).and_then(share_menu);
     let sound = screen_sound_of(w, cx);
+    let person_menu = menu::person_menu(w, channel, cx);
+    let profile_card = menu::profile_card(w, channel, window, cx);
+    let values = client_of(w, cx).map(|c| c.voice_prefs().values());
+    // A tile shown full screen whose stream is gone (or a stage that is not the call's) goes back, and the window with it.
+    if let Some(k) = fullscreen_tile(w, cx) {
+        let here = ui_of(w, cx).is_some_and(|u| {
+            u.state.voice.call.channel == Some(channel.id)
+                && tiles(&u.state, channel.id).contains(&k)
+        });
+        if !here {
+            exit_tile_fullscreen(w, cx);
+        }
+    }
     let ui = ui_of(w, cx)?;
+    let bounds = ui.menu.bounds.clone();
     let state = ui.state.clone();
     let focus = ui.stage_focus.clone()?;
     let keys = tiles(&state, channel.id);
     let focused = ui.focused.clone().filter(|k| keys.contains(k));
     let selected = ui.selected.min(keys.len().saturating_sub(1));
+    let pointer = ui.pointer;
     let joined = joined(&state, channel.id);
     // VoiceView.tsx `Stage`: a channel this device's call is not in (nor joining) shows the preview, no tiles and no bar.
     let in_call =
@@ -1587,13 +1812,53 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 &state,
                 channel,
                 k,
-                (stage_focused && i == selected, focused.as_ref()),
-                &images,
-                &stats,
+                (
+                    stage_focused && !pointer && i == selected,
+                    focused.as_ref(),
+                    false,
+                ),
+                (&images, &stats),
+                (values.as_ref(), &bounds),
                 silent(&state, k, &sound),
             )
         })
         .collect();
+    // The tile shown full screen fills the window over everything else (CallTile.tsx `requestFullscreen` on the tile);
+    // Escape gives the stage back.
+    let full_view = ui.fullscreen.as_ref().map(|f| {
+        let k = f.key.clone();
+        let view = tile(
+            &state,
+            channel,
+            &k,
+            (false, Some(&k), true),
+            (&images, &stats),
+            (values.as_ref(), &bounds),
+            silent(&state, &k, &sound),
+        );
+        let size = window.viewport_size();
+        deferred(
+            anchored().position(gpui::Point::default()).child(
+                div()
+                    .id("voice-tile-fullscreen-view")
+                    .a11y(Role::Region, name_of(&state, Some(channel), k.user))
+                    .track_focus(&f.focus)
+                    .w(size.width)
+                    .h(size.height)
+                    .bg(gpui::black())
+                    .occlude()
+                    .on_key_down(|e: &gpui::KeyDownEvent, window, cx| {
+                        if e.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            exit_tile_fullscreen(wid(window), cx);
+                        }
+                    })
+                    .child(view),
+            ),
+        )
+        .with_priority(6)
+        .into_any_element()
+    });
     let body = if !in_call {
         preview(&state, channel)
     } else if keys.is_empty() {
@@ -1609,7 +1874,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 color::FG_2,
             ))
             .into_any_element()
-    } else if let Some(f) = &focused {
+    } else if let Some(f) = focused.as_ref().filter(|_| keys.len() > 1) {
+        // CallStage.tsx `focusedLayout`: the focus layout needs another tile; a lone focused tile keeps its grid place
+        // (and its focused caption, face and tools).
         let at = keys.iter().position(|k| k == f).unwrap_or(0);
         let mut views = tile_views;
         let main = views.remove(at);
@@ -1673,6 +1940,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let wide = f32::from(window.viewport_size().width) >= m::BAR_WORDS_MIN_W;
     let stage = div()
         .id("voice-stage")
+        .landmark(Role::Region, channel.name.clone())
         .relative()
         .track_focus(&focus)
         .size_full()
@@ -1680,7 +1948,22 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .flex_col()
         .bg(color::BG)
         .on_key_down(move |e, window, cx| {
-            stage_key(&e.keystroke.key, n, wid(window), cx);
+            if dilla_desktop_ui::components::action_menu::opens_context_menu(&e.keystroke) {
+                // Shift+F10 or the Menu key: the selected tile's person menu.
+                let w = wid(window);
+                let key = ui_of(w, cx).and_then(|u| {
+                    let ch = u.state.voice.call.channel?;
+                    let keys = tiles(&u.state, ch);
+                    keys.get(u.selected.min(keys.len().saturating_sub(1)))
+                        .cloned()
+                });
+                if let Some(key) = key {
+                    cx.stop_propagation();
+                    menu::open_from_key(w, key, cx);
+                }
+            } else {
+                stage_key(&e.keystroke.key, n, wid(window), cx);
+            }
             window.refresh();
         })
         .child(title)
@@ -1696,7 +1979,10 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .child(body),
         )
         .when(in_call, |d| d.child(call_bar(&state, channel, wide)))
-        .children(menu);
+        .children(menu)
+        .children(person_menu)
+        .children(profile_card)
+        .children(full_view);
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
 
@@ -1708,6 +1994,7 @@ fn stage_key(key: &str, n: usize, window: WindowId, cx: &mut App) {
     }
     let channel = ui.state.voice.call.channel;
     let ui = ui_mut(window, cx);
+    ui.pointer = false;
     match key {
         "right" | "down" => ui.selected = (ui.selected + 1).min(n - 1),
         "left" | "up" => ui.selected = ui.selected.saturating_sub(1),
@@ -1789,13 +2076,20 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
     out
 }
 
+type TileImages = HashMap<StreamKey, Arc<RenderImage>>;
+type TileStats = HashMap<StreamKey, (u32, u32)>;
+type TileBounds = Rc<std::cell::RefCell<HashMap<TileKey, gpui::Bounds<gpui::Pixels>>>>;
+
 fn tile(
     state: &AppState,
     channel: &Channel,
     k: &TileKey,
-    (selected, focused): (bool, Option<&TileKey>),
-    images: &HashMap<StreamKey, Arc<RenderImage>>,
-    stats: &HashMap<StreamKey, (u32, u32)>,
+    (selected, focused, full): (bool, Option<&TileKey>, bool),
+    (images, stats): (&TileImages, &TileStats),
+    (values, bounds): (
+        Option<&dilla_client::features::voice_prefs::values::VoiceValues>,
+        &TileBounds,
+    ),
     silent: bool,
 ) -> AnyElement {
     let p = state
@@ -1814,6 +2108,7 @@ fn tile(
         },
     };
     let video = images.get(&stream).cloned();
+    let has_media = video.is_some();
     let own = p.is_some_and(|p| p.own);
     // VoiceView.tsx `withTileStats`: a screen says its frames; the own person tile what its microphone sends (this
     // client's capture is always Opus at 48 kHz: `dilla_media`), once the call is up.
@@ -1838,9 +2133,16 @@ fn tile(
     };
     let muted = p.is_some_and(|p| p.muted() || p.deafened());
     let deafened = p.is_some_and(VoiceParticipant::deafened);
+    // CallTile.tsx: another person's tile says their volume while it is not 100 (the own tile and a screen have none).
+    let volume = values
+        .filter(|_| !own && !k.screen)
+        .map(|v| menu::volume_of(v, k.user, false))
+        .filter(|v| *v != 100);
     let is_focused = focused == Some(k);
     let face = if focused.is_some() && !is_focused {
         AvatarSize::Confirm
+    } else if is_focused {
+        AvatarSize::StageFocused
     } else {
         AvatarSize::Stage
     };
@@ -1882,18 +2184,32 @@ fn tile(
     } else {
         m::TILE_EDGE
     };
-    let caption = div()
-        .absolute()
-        .left(px(m::CAPTION_INSET - edge))
-        .bottom(px(m::CAPTION_INSET - edge))
-        .h(px(m::CAPTION_H))
+    // CallStage.css: the focused tile's caption is 24px over its top left (10px in), 8px in, on the tile scrim.
+    let caption = if is_focused {
+        div()
+            .absolute()
+            .left(px(m::TOOLS_INSET - edge))
+            .top(px(m::TOOLS_INSET - edge))
+            .h(px(m::FOCUSED_CAPTION_H))
+            .px(px(m::FOCUSED_CAPTION_PAD_X))
+            .rounded(radius::MD)
+            .bg(color::SCRIM_TILE)
+    } else {
+        div()
+            .absolute()
+            .left(px(m::CAPTION_INSET - edge))
+            .bottom(px(m::CAPTION_INSET - edge))
+            .h(px(m::CAPTION_H))
+            .px(px(m::CAPTION_CHIP_PAD_X))
+            .rounded(radius::ROW)
+            .bg(color::SCRIM_CAPTION)
+    };
+    let caption_text = if is_focused { text::BTN } else { text::XS };
+    let caption = caption
         .overflow_hidden()
         .flex()
         .items_center()
         .gap(px(m::CAPTION_GAP))
-        .px(px(m::CAPTION_CHIP_PAD_X))
-        .rounded(radius::ROW)
-        .bg(color::SCRIM_CAPTION)
         // CallTile.tsx's stage caption: the mute glyph, the name, then the three-bar live meter (drawn while speaking; it
         // holds its room otherwise).
         .when(deafened, |d| {
@@ -1919,8 +2235,13 @@ fn tile(
             )
         })
         .child(
-            line(title, text::XS, line_height(text::XS, LINE), color::FG)
-                .weight(font::WEIGHT_LABEL),
+            line(
+                title,
+                caption_text,
+                line_height(caption_text, LINE),
+                color::FG,
+            )
+            .weight(font::WEIGHT_LABEL),
         )
         .child(
             div()
@@ -1931,8 +2252,16 @@ fn tile(
                 .h(px(m::METER_H))
                 .when(!speaking, |d| d.invisible())
                 .children((0..3).map(|_| div().w(px(m::METER_W)).h(px(m::METER_H)).bg(color::OK))),
-        );
+        )
+        .children(volume.map(menu::volume_chip));
+    #[cfg(feature = "automation")]
+    let probe = (own && !k.screen).then(|| crate::automation::bounds_probe("voice-tile-own"));
+    #[cfg(not(feature = "automation"))]
+    let probe: Option<Div> = None;
     let key = k.clone();
+    let menu_key = k.clone();
+    let bounds_key = k.clone();
+    let bounds = bounds.clone();
     div()
         .id(ElementId::Name(
             format!(
@@ -1956,34 +2285,162 @@ fn tile(
             color::HAIRLINE
         })
         .cursor_pointer()
-        .on_click(move |_, window, cx| {
+        .on_mouse_down(gpui::MouseButton::Right, move |e, window, cx| {
+            menu::open(wid(window), menu_key.clone(), e.position, cx);
+            window.refresh();
+        })
+        .child(
+            gpui::canvas(
+                move |b, _, _| {
+                    bounds.borrow_mut().insert(bounds_key.clone(), b);
+                },
+                |_, (), _, _| {},
+            )
+            // The tile's outer box (the web's `li`), border included: absolute children sit inside the border.
+            .absolute()
+            .top(px(-edge))
+            .left(px(-edge))
+            .right(px(-edge))
+            .bottom(px(-edge)),
+        )
+        .on_click(move |e, window, cx| {
             let w = wid(window);
+            // CallTile.tsx: a double-click on a tile with media goes full screen (the second click of it focuses
+            // nothing more).
+            if e.click_count() == 2 && has_media {
+                toggle_tile_fullscreen(key.clone(), window, cx);
+                return;
+            }
             if ui_of(w, cx).is_some() {
+                // CallTile.tsx: the tile is a focus button: a press moves the keyboard there too (the arrows, Enter
+                // and Shift+F10 then act on it).
+                let stage = ui_of(w, cx).and_then(|u| u.stage_focus.clone());
                 let ui = ui_mut(w, cx);
+                if let Some(at) = ui
+                    .state
+                    .voice
+                    .call
+                    .channel
+                    .and_then(|ch| tiles(&ui.state, ch).iter().position(|t| *t == key))
+                {
+                    ui.selected = at;
+                }
+                ui.pointer = true;
                 ui.focused = if ui.focused.as_ref() == Some(&key) {
                     None
                 } else {
                     Some(key.clone())
                 };
+                if let Some(stage) = stage {
+                    window.focus(&stage, cx);
+                }
                 window.refresh();
             }
         })
         .child(media)
         .child(caption)
         .when_some(stat, |d, stat| {
-            d.child(
-                div()
-                    .absolute()
-                    .top(px(m::STAT_TOP - edge))
+            // `.d-call-stage__tile[data-focused] .d-call-tile__stat`: the focused tile's stat sits 10px over its bottom
+            // right in 10px, under the tools.
+            let at = div().absolute();
+            let at = if is_focused {
+                at.bottom(px(m::TOOLS_INSET - edge))
+                    .right(px(m::TOOLS_INSET - edge))
+            } else {
+                at.top(px(m::STAT_TOP - edge))
                     .right(px(m::STAT_RIGHT - edge))
-                    .child(line(
-                        stat,
-                        text::CHIP,
-                        line_height(text::CHIP, LINE),
-                        color::FG_3,
-                    )),
-            )
+            };
+            let size = if is_focused { text::MICRO } else { text::CHIP };
+            d.child(at.child(line(stat, size, line_height(size, LINE), color::FG_3)))
         })
+        .when(is_focused, |d| d.child(tile_tools(edge, k.clone(), full)))
+        .children(probe)
+        .into_any_element()
+}
+
+/// The focused tile's tools over its top right (CallTile.tsx `__tools`, 10px in, 4px apart): Grid (back to the grid; 28px
+/// high, 9px in, the 13px glyph 6px before its word) and full screen (28 x 28, a 14px glyph, `--accent` while on: the
+/// tile alone fills the window).
+fn tile_tools(edge: f32, key: TileKey, full: bool) -> AnyElement {
+    let tool = |id: &'static str| {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .justify_center()
+            .h(px(m::TOOL))
+            .min_w(px(m::TOOL))
+            .rounded(radius::MD)
+            .bg(color::SCRIM_TILE)
+            .cursor_pointer()
+            .focus_visible(|s| s.shadow(focus_ring()))
+    };
+    div()
+        .absolute()
+        .top(px(m::TOOLS_INSET - edge))
+        .right(px(m::TOOLS_INSET - edge))
+        .flex()
+        .gap(px(m::TOOLS_GAP))
+        .child(
+            tool("voice-tile-grid")
+                .a11y(Role::Button, t("callStage.grid"))
+                .tab_index(0)
+                .debug_selector(|| "voice-tile-grid".into())
+                .px(px(m::GRID_TOOL_PAD_X))
+                .gap(px(m::GRID_TOOL_GAP))
+                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+                    t("callStage.grid"),
+                    &[],
+                ))
+                .on_click(|_, window, cx| {
+                    cx.stop_propagation();
+                    let w = wid(window);
+                    exit_tile_fullscreen(w, cx);
+                    if ui_of(w, cx).is_some() {
+                        ui_mut(w, cx).focused = None;
+                    }
+                    window.refresh();
+                })
+                .child(
+                    Icon::new(IconName::LayoutGrid)
+                        .size(px(m::GRID_GLYPH))
+                        .color(color::FG_STRONG),
+                )
+                .child(line(
+                    t("callStage.grid"),
+                    text::XS,
+                    line_height(text::XS, LINE),
+                    color::FG_STRONG,
+                )),
+        )
+        .child(
+            tool("voice-tile-fullscreen")
+                .a11y(Role::Button, t("stage.fullscreen"))
+                .toggled(full)
+                .tab_index(0)
+                .debug_selector(|| "voice-tile-fullscreen".into())
+                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+                    t("stage.fullscreen"),
+                    &[],
+                ))
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    toggle_tile_fullscreen(key.clone(), window, cx);
+                })
+                .child(
+                    Icon::new(if full {
+                        IconName::Minimize
+                    } else {
+                        IconName::Maximize
+                    })
+                    .size(px(m::FULLSCREEN_GLYPH))
+                    .color(if full {
+                        color::ACCENT
+                    } else {
+                        color::FG_STRONG
+                    }),
+                ),
+        )
         .into_any_element()
 }
 
@@ -2248,6 +2705,8 @@ fn code_disclosure(w: WindowId, code: &str, cx: &mut App) -> AnyElement {
                 "dm-call-code".to_owned()
             }
         })
+        .a11y(Role::Button, t("voice.code"))
+        .aria_expanded(open)
         .track_focus(&focus.clone().tab_stop(true))
         .h(px(m::CODE_H))
         .px(px(m::CODE_PAD_X))
@@ -2577,6 +3036,8 @@ fn toolbar_control(
     };
     let button = div()
         .id(id)
+        .a11y(Role::Button, label.to_owned())
+        .toggled(pressed)
         .tab_index(0)
         .relative()
         .flex_none()
@@ -2643,6 +3104,7 @@ fn notice(state: &AppState) -> AnyElement {
     let key = match state.voice.notice {
         None => return div().into_any_element(),
         Some(VoiceNotice::MicLost) => "voice.micMissing",
+        Some(VoiceNotice::MicDenied) => "voice.micDenied",
         Some(VoiceNotice::SpeakerLost) => "voice.outputFailed",
         Some(VoiceNotice::DevicesChanged) => "voice.outputFailed",
         Some(VoiceNotice::EnhancedUnavailable | VoiceNotice::EnhancedFailed) => "voice.micFailed",
@@ -2652,6 +3114,8 @@ fn notice(state: &AppState) -> AnyElement {
     };
     notice_box(t(key).to_owned())
         .id("voice-notice")
+        .a11y(Role::Status, t(key))
+        .live(dilla_desktop_ui::a11y::Live::Polite)
         .child(
             IconButton::new(
                 "voice-notice-close",
@@ -2739,6 +3203,7 @@ fn preview(state: &AppState, channel: &Channel) -> AnyElement {
             "voice-join",
             div()
                 .id("voice-join-b")
+                .a11y(Role::Button, t("voice.join"))
                 .tab_index(0)
                 .h(px(m::JOIN_H))
                 .px(px(m::JOIN_PAD_X))
@@ -2849,6 +3314,7 @@ fn bar_control(
     let words = wide || leave;
     let button = div()
         .id(id)
+        .a11y(Role::Button, word.to_owned())
         .tab_index(0)
         .flex_none()
         .h(px(m::BAR_BUTTON_H))
@@ -2938,7 +3404,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
         )
         .child(
             line(
-                ping_text(v.call.ping_ms),
+                link_text(v.call.ping_ms, v.call.rate_kbps),
                 text::META,
                 line_height(text::META, BAR_LINE),
                 color::FG_3,
@@ -2977,6 +3443,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
                 "voice-share-quality",
                 div()
                     .id("voice-share-quality-b")
+                    .a11y(Role::Button, t("callStage.share.quality"))
                     .tab_index(0)
                     .w(px(m::QUALITY_W))
                     .h(px(m::BAR_BUTTON_H))
@@ -3018,6 +3485,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
         });
     div()
         .id("voice-call-bar")
+        .landmark(Role::Region, t("voice.controls.region"))
         .flex_none()
         .min_h(px(m::CONTROLS_H))
         .flex()
@@ -3192,6 +3660,7 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                 }
             }),
         )
+        .when_some(sound_row(ui), |d, row| d.child(row))
         .child(line(
             estimate,
             text::XS,
@@ -3233,6 +3702,63 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
             .flex()
             .justify_center()
             .child(panel)
+            .into_any_element(),
+    )
+}
+
+/// SharePicker.tsx's sound row on the desktop (`.d-share-picker__audio`: the 12px label over its 10.5px `--fg-3`
+/// note, the switch at the right): one application's sound with the share. On, it opens the application chooser; off,
+/// the share goes on without sound. Only where application audio exists (Linux).
+fn sound_row(ui: &VoiceUi) -> Option<AnyElement> {
+    if !crate::screens::share_picker::apps::available_now() {
+        return None;
+    }
+    let on = ui.share_app.is_some();
+    let note = match &ui.share_app {
+        Some(app) => tf("callStage.share.audioAppOf", &[("app", app.label.as_str())]),
+        None => t("callStage.share.audioAppNote").to_owned(),
+    };
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(line(
+                        t("callStage.share.audioApp"),
+                        text::UI,
+                        line_height(text::UI, 1.35),
+                        color::FG,
+                    ))
+                    .child(line(
+                        note,
+                        text::META,
+                        line_height(text::META, 1.35),
+                        color::FG_3,
+                    )),
+            )
+            .child(
+                dilla_desktop_ui::components::toggle::Toggle::new(
+                    "voice-share-audio",
+                    t("callStage.share.audioApp"),
+                    on,
+                )
+                .show_label(false)
+                .on_change(|next, window, cx| {
+                    let w = wid(window);
+                    if next {
+                        crate::screens::share_picker::apps::open(window, cx);
+                    } else {
+                        set_share_app(w, None, cx);
+                    }
+                    window.refresh();
+                }),
+            )
             .into_any_element(),
     )
 }
@@ -3361,6 +3887,12 @@ mod tests {
         assert_eq!(ping_text(None), "— ms");
         assert_eq!(ping_text(Some(0)), "<1 ms");
         assert_eq!(ping_text(Some(42)), "42 ms");
+        // Package 8c: the rate follows the ping once one was read.
+        assert_eq!(link_text(Some(24), None), "24 ms");
+        assert_eq!(
+            link_text(Some(24), Some((38, 71))),
+            "24 ms · ↑ 38 ↓ 71 kb/s"
+        );
     }
 
     fn state_with(people: &[(u8, u8, u8)]) -> (AppState, Channel) {

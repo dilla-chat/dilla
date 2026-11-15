@@ -8,6 +8,7 @@ use gpui::{
 
 use super::button::ClickHandler;
 use super::tooltip::{SHOW_DELAY, tooltip};
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_DISABLED, focus_ring};
@@ -137,7 +138,14 @@ impl RenderOnce for IconButton {
             .size(self.size.side())
             .rounded(radius::MD)
             .text_color(fg)
+            .a11y(Role::Button, self.label.clone())
             .child(Icon::new(self.icon).size(self.size.glyph()).color(fg));
+        if let Some(on) = self.pressed {
+            button = button.toggled(on);
+        }
+        if !self.keys.is_empty() {
+            button = button.aria_keyshortcuts(self.keys.join(" "));
+        }
         if pressed {
             button = button.child(
                 div()
@@ -150,7 +158,10 @@ impl RenderOnce for IconButton {
             );
         }
         if self.disabled {
-            return button.opacity(OPACITY_DISABLED).cursor_not_allowed();
+            return button
+                .opacity(OPACITY_DISABLED)
+                .cursor_not_allowed()
+                .node_props(|n| n.set_disabled());
         }
         let refs: Vec<&str> = self.keys.iter().map(String::as_str).collect();
         let mut button = button

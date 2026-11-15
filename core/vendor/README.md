@@ -178,6 +178,14 @@ into an RTCP PLI to the publisher.
 
 Remove this copy when upstream exposes an equivalent custom frame transformer.
 
+Also added (GPUI parity plan Package 12, inline video): a standalone video decoder for the desktop's attachment
+player, wholly dilla's: `include/livekit/dilla_video_decoder.h`, `src/dilla_video_decoder.{cpp,rs}`
+(`webrtc_sys::dilla_video_decoder::VideoDecoder`), built and exported from `build.rs` and `src/lib.rs`. It makes a
+decoder through LiveKit's own `VideoDecoderFactory` (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg H.264 on Linux and
+Windows, VideoToolbox H.264/H.265 on macOS), feeds it access units Rust demuxed from the decrypted file, and converts
+each picture to BGRA with libyuv (the colour matrix the bitstream names, BT.601 when it names none), scaled down to
+fit the box Rust gives. No PeerConnection, transformer or network is involved, and nothing in libwebrtc is rebuilt.
+
 ## libwebrtc 0.4.0
 
 Upstream: <https://github.com/livekit/rust-sdks> (`libwebrtc/`; `.cargo_vcs_info.json` has the
@@ -230,6 +238,23 @@ side, so a 135deg band on a 258 x 52 box ran almost left to right (the profile p
 end; the colour gate failed at 0.63 %). Test: `parity_user_settings_profile` in `clients/desktop/dilla-desktop/tests/
 user_settings.rs` (the band against the web's). Linux only (see above): the DirectX renderer of Windows and the Metal
 renderer of macOS keep upstream's stretched geometry until their ports' tolerances are measured.
+
+## gpui-pre-linux 0.3.12
+
+Upstream: <https://crates.io/crates/gpui-pre-linux> (Zed's GPUI, the Linux platform: Wayland, X11, xkb). Apache-2.0. The
+copy is the published crate minus `.cargo-ok` and `Cargo.lock`. Linux only (nothing else builds it).
+
+One change (Package 9, 2026-11-15), marked `DILLA PATCH`: AltGr's state is kept for the app. xkb's Level3
+(ISO_Level3_Shift) is none of gpui's `Modifiers`, so AltGr with a key arrived as the bare key, and push to talk (which
+refuses Control, Alt, Shift and Super with its key, as the web's ptt.ts refuses those and `AltGraph`) opened the microphone.
+`src/linux/platform.rs` `modifiers_from_xkb`, which both backends call on every modifier change, records whether
+`LevelThree` (or `Mod5`, for libxkbcommon before 1.8) is active in a thread-local on the thread that handles the keyboard's
+events (the app's); `level3_shift_active()` reads it and `set_level3_shift_active()` sets it (tests), both re-exported from
+`src/linux.rs` and `src/gpui_linux.rs`. gpui's own key handling is unchanged: AltGr still types its characters in text
+fields. Test: `altgr_with_the_ptt_key_does_not_open_the_mic` in `clients/desktop/dilla-desktop/tests/voice.rs` and
+`altgr_s_state_is_kept_for_the_app` in `clients/desktop/dilla-desktop/tests/vendored_patches.rs`.
+
+Keep this patch until gpui reports AltGr itself (a Level3 modifier on `Modifiers`).
 
 ## Retired: sqlite-wasm-vfs 0.2.0
 
@@ -319,3 +344,12 @@ A fourth change (final review I7, 2026-11-14), marked `DILLA PATCH`: `Scene` gai
 `Window::painted_scale_factor` (test support) reads it back. The wgpu renderer (gpui-pre-wgpu, above) hands it to its
 shader to measure dashed borders in CSS px; the Metal and DirectX renderers ignore it. Test:
 `the_scene_carries_the_scale_it_was_painted_at` in `clients/desktop/dilla-desktop/tests/vendored_patches.rs`.
+
+A fifth change (Package 11, screen readers, 2026-11-15), marked `DILLA PATCH`, test support only: the test platform's
+window has no AccessKit adapter, so nothing ever switches its accessibility tree on and no test could see one.
+`Window::activate_a11y_for_test` does what a platform adapter's activation callback does (`A11y::activate_for_test` sets
+the window's active flag) and refreshes; `Window::a11y_tree_update` hands back the last frame's `TreeUpdate`
+(`A11y::last_tree_update`, from the copy `A11yDebug` already keeps for `debug_a11y_tree_json`). Both are
+`#[cfg(any(test, feature = "test-support"))]` (`src/window.rs`, `src/window/a11y.rs`, `src/window/a11y/debug.rs`), so a
+release build has neither. The automation build's `a11y` command reads the tree through them and
+`clients/desktop/dilla-desktop/tests/a11y.rs` lints it per screen. Keep it until upstream's test window can be activated.

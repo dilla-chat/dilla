@@ -21,6 +21,7 @@ use gpui::{
 
 use super::button::{Button, ButtonSize, ButtonVariant};
 use super::dialog::{Dialog, InitialFocus};
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
@@ -186,7 +187,13 @@ impl RenderOnce for SharePicker {
         let on_share = self.on_share.clone();
 
         // The tabs: Screens, Windows; the arrows, Home and End move between them (and show the other kind).
+        let tab_name = match self.tab {
+            TileKind::Screen => self.labels.screens.clone(),
+            TileKind::Window => self.labels.windows.clone(),
+        };
         let mut tabs = div()
+            .id((id.clone(), "tabs"))
+            .a11y(Role::TabList, self.labels.title.clone())
             .flex()
             .gap(px(16.0))
             .border_b_1()
@@ -202,6 +209,8 @@ impl RenderOnce for SharePicker {
             tabs = tabs.child(
                 div()
                     .id((id.clone(), format!("tab-{i}")))
+                    .a11y(Role::Tab, label.clone())
+                    .aria_selected(open)
                     .track_focus(&tab_handles[i].clone().tab_stop(open))
                     .mb(px(-1.0))
                     .pb(px(8.0))
@@ -259,7 +268,12 @@ impl RenderOnce for SharePicker {
                 color::FG_3,
             ))
         } else {
-            let mut grid = div().flex().flex_wrap().gap(px(GAP));
+            let mut grid = div()
+                .id((id.clone(), "grid"))
+                .a11y(Role::ListBox, tab_name.clone())
+                .flex()
+                .flex_wrap()
+                .gap(px(GAP));
             let tab_stop = selected
                 .clone()
                 .or_else(|| shown.first().map(|t| t.key.clone()));
@@ -311,7 +325,10 @@ impl RenderOnce for SharePicker {
                 let stop = tab_stop.as_ref() == Some(&tile.key);
                 grid = grid.child(
                     div()
-                        .id((id.clone(), format!("tile-{index}")))
+                        // The tile's own key: an id that stays with its source across refreshes.
+                        .id((id.clone(), format!("tile-{}", tile.key)))
+                        .a11y(Role::ListBoxOption, tile.name.clone())
+                        .aria_selected(chosen)
                         .track_focus(&tile_handles[index].clone().tab_stop(stop))
                         .w(px(tile_w))
                         .flex()
@@ -375,6 +392,7 @@ impl RenderOnce for SharePicker {
         let body = div().flex().flex_col().gap(px(12.0)).child(tabs).child(
             div()
                 .id((id.clone(), "panel"))
+                .a11y(Role::TabPanel, tab_name.clone())
                 .max_h(px(panel_max_height(f32::from(viewport.height))))
                 .overflow_y_scroll()
                 .p(px(2.0))
