@@ -53,6 +53,33 @@ case "$tool" in
     prefix=
     binaries=(sqlc)
     ;;
+  # The GPUI desktop release (desktop-gpui-release.yml). appimagetool is itself an AppImage (a single file, run with
+  # APPIMAGE_EXTRACT_AND_RUN=1 where there is no FUSE). Its 1.9.1 release asset reports "continuous build (git version
+  # 8c8c91f)" but is the dated 1.9.1 release, never the moving `continuous` tag. appimagetool would fetch the AppImage
+  # runtime from type2-runtime's `continuous` release at build time; appimage-runtime pins the dated one instead, and
+  # the package script hands it over with --runtime-file.
+  appimagetool)
+    version=1.9.1
+    archive_name=appimagetool-x86_64.AppImage
+    url=https://github.com/AppImage/appimagetool/releases/download/1.9.1/$archive_name
+    sha256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+    single=appimagetool
+    ;;
+  appimage-runtime)
+    version=20251108
+    archive_name=runtime-x86_64
+    url=https://github.com/AppImage/type2-runtime/releases/download/20251108/$archive_name
+    sha256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+    single=appimage-runtime-x86_64
+    ;;
+  nfpm)
+    version=2.48.0
+    archive_name=nfpm_2.48.0_Linux_x86_64.tar.gz
+    url=https://github.com/goreleaser/nfpm/releases/download/v2.48.0/$archive_name
+    sha256=6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
+    prefix=
+    binaries=(nfpm)
+    ;;
   *) echo "unapproved CI tool: $tool" >&2; exit 1 ;;
 esac
 
@@ -76,11 +103,15 @@ printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --status || {
 
 bin_dir=${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dilla-ci-tools
 mkdir -p "$bin_dir"
-for binary in "${binaries[@]}"; do
-  name=${binary##*/}
-  tar -xOf "$archive" "${prefix:+$prefix/}$binary" > "$tmp/$name"
-  install -m 0755 "$tmp/$name" "$bin_dir/$name"
-done
+if [[ -n ${single:-} ]]; then
+  install -m 0755 "$archive" "$bin_dir/$single"
+else
+  for binary in "${binaries[@]}"; do
+    name=${binary##*/}
+    tar -xOf "$archive" "${prefix:+$prefix/}$binary" > "$tmp/$name"
+    install -m 0755 "$tmp/$name" "$bin_dir/$name"
+  done
+fi
 if [[ -n ${GITHUB_PATH:-} ]]; then
   printf '%s\n' "$bin_dir" >> "$GITHUB_PATH"
 fi
@@ -92,4 +123,7 @@ case "$tool" in
   cargo-deny) "$bin_dir/cargo-deny" --version | grep -Fx "cargo-deny $version" ;;
   golangci-lint) "$bin_dir/golangci-lint" version | grep -F "version $version" ;;
   sqlc) "$bin_dir/sqlc" version | grep -Fx "v$version" ;;
+  appimagetool) APPIMAGE_EXTRACT_AND_RUN=1 "$bin_dir/appimagetool" --version 2>&1 | grep -F "(git version 8c8c91f)" ;;
+  appimage-runtime) ;;  # not a program: the digest above is its whole check
+  nfpm) "$bin_dir/nfpm" --version | grep -Fx "GitVersion:    $version" ;;
 esac
