@@ -9,7 +9,7 @@
 //!
 //! Each flow sends one command at a time and says every refusal by its code, never by the instance's detail text.
 
-mod flows;
+pub mod flows;
 
 use std::collections::HashMap;
 use std::rc::Rc;

@@ -418,8 +418,20 @@ impl Render for PaneView {
         let focus = self.focus_handle(cx);
         let focused = focus.is_focused(window);
         let value_empty = self.input.read(cx).value().is_empty();
-        let blocked = !ctx.state.threads.can_send(open.channel);
-        let placeholder = if blocked {
+        // ThreadView `blocked`: the viewer's own timeout in the community first (Shell.tsx `timeoutReason`).
+        let timed_out = ctx.state.channel(open.channel).and_then(|c| {
+            crate::screens::messages::composing::timed_out(&ctx.state, c, ctx.clock.now())
+        });
+        let blocked = timed_out.is_some() || !ctx.state.threads.can_send(open.channel);
+        let placeholder = if let Some(expires) = timed_out {
+            tf(
+                "shell.composer.timedOut",
+                &[(
+                    "time",
+                    &crate::screens::threads::time_of(expires, ctx.clock),
+                )],
+            )
+        } else if blocked {
             tf(
                 "chperm.cannotSend",
                 &[(

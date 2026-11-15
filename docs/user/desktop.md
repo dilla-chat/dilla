@@ -159,7 +159,6 @@ the updater and packaging.
 - **Screen readers:** not supported yet. They come after the switch, with AccessKit.
 - **Push to talk outside the window:** the key works only while the app has focus. Operating-system-wide push to talk
   comes after the switch.
-- **Other people's messages:** the Delete action is only offered on your own messages.
 - **Video player menu:** the browser player's ⋮ menu (download, playback speed, picture in picture) is not there; save
   a video with the card's **save**.
 

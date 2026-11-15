@@ -24,6 +24,7 @@ use gpui::{
 use super::bot_page::error_line;
 use crate::slots::SlotCx;
 use crate::strings::{t, tf};
+use dilla_client::state::roles::{CommunityAccess, RoleId, RoleSummary};
 
 /// The provider row's hint (`youtubeHint`): what the status is, as the person reads it.
 pub fn provider_hint(
@@ -154,6 +155,43 @@ impl MusicPage {
     }
 }
 
+/// BotSection.tsx `djRoles`: the roles whose allow holds Control music, in the order the roles slice lists them.
+pub fn dj_roles(roles: &[RoleSummary]) -> Vec<&RoleSummary> {
+    roles
+        .iter()
+        .filter(|r| r.allow & dilla_client::features::roles::perm::CONTROL_MUSIC != 0)
+        .collect()
+}
+
+/// The Who-can-DJ row's hint: the DJ roles by name (@everyone as `roles.everyone`), or that none has the permission.
+pub fn dj_hint(roles: &[RoleSummary], access: &CommunityAccess) -> String {
+    let dj = dj_roles(roles);
+    if dj.is_empty() {
+        return t("serverSettings.music.djNone").to_owned();
+    }
+    let names = dj
+        .iter()
+        .map(|r| {
+            if Some(r.id) == access.everyone_id {
+                t("roles.everyone").to_owned()
+            } else {
+                r.name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    tf("serverSettings.music.djRoles", &[("roles", &names)])
+}
+
+/// BotSection.tsx `editDjRoles`: the role Edit in Roles opens, the first DJ role that is not @everyone (else @everyone).
+pub fn dj_role_to_open(roles: &[RoleSummary], access: &CommunityAccess) -> Option<RoleId> {
+    let dj = dj_roles(roles);
+    dj.iter()
+        .find(|r| Some(r.id) != access.everyone_id)
+        .or(dj.first())
+        .map(|r| r.id)
+}
+
 impl Render for MusicPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = window;
@@ -201,16 +239,39 @@ impl Render for MusicPage {
             .cloned();
 
         let mut rows: Vec<Box<dyn FnOnce(GroupPosition) -> AnyElement>> = Vec::new();
-        rows.push(Box::new(|position| {
+        let (dj_hint, dj_open) = community.map_or_else(
+            || (t("serverSettings.music.djNone").to_owned(), None),
+            |id| {
+                let roles = self.ctx.state.roles.roles_of(id);
+                let access = self.ctx.state.roles.access_of(id);
+                (dj_hint(roles, &access), dj_role_to_open(roles, &access))
+            },
+        );
+        rows.push(Box::new(move |position| {
             SettingsRow::new("music-dj", t("serverSettings.music.dj"))
                 .full_measure()
                 .icon(IconName::Disc3)
-                .hint(t("serverSettings.music.djNone"))
+                .hint(dj_hint)
                 .position(position)
-                .child(Button::new(
-                    "music-dj-edit",
-                    t("serverSettings.music.djEdit"),
-                ))
+                .child(
+                    Button::new("music-dj-edit", t("serverSettings.music.djEdit")).on_click(
+                        move |_, window, cx| {
+                            // Roles, with the first DJ role open in its editor.
+                            if let Some(role) = dj_open {
+                                crate::screens::members::roles::select_role(
+                                    window.window_handle().window_id(),
+                                    role,
+                                    cx,
+                                );
+                            }
+                            crate::screens::server_settings::open_section(
+                                crate::router::ServerSection::Roles,
+                                window,
+                                cx,
+                            );
+                        },
+                    ),
+                )
                 .into_any_element()
         }));
         {
@@ -366,5 +427,52 @@ impl Render for MusicPage {
             );
         }
         page
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dilla_client::features::roles::perm::CONTROL_MUSIC;
+
+    fn role(id: u8, name: &str, allow: u32) -> RoleSummary {
+        RoleSummary {
+            id: [id; 16],
+            name: name.into(),
+            color: 0,
+            position: u32::from(id),
+            hoist: false,
+            mentionable: false,
+            allow,
+            deny: 0,
+            members: 0,
+        }
+    }
+
+    /// BotSection.tsx `djRoles`, `djNames` and `editDjRoles`: the hint names every role with Control music (@everyone as
+    /// "@everyone"), says none has it otherwise, and Edit in Roles opens the first DJ role that is not @everyone.
+    #[test]
+    fn the_dj_row_names_the_roles_with_control_music() {
+        let access = CommunityAccess {
+            everyone_id: Some([0; 16]),
+            ..CommunityAccess::default()
+        };
+        let none = [role(0, "@everyone", 1), role(1, "crew", 1)];
+        assert_eq!(dj_hint(&none, &access), t("serverSettings.music.djNone"));
+        assert_eq!(dj_role_to_open(&none, &access), None);
+        let some = [
+            role(0, "@everyone", CONTROL_MUSIC),
+            role(1, "crew", 1),
+            role(2, "djs", CONTROL_MUSIC | 1),
+        ];
+        assert_eq!(
+            dj_hint(&some, &access),
+            tf(
+                "serverSettings.music.djRoles",
+                &[("roles", &format!("{}, djs", t("roles.everyone")))]
+            )
+        );
+        assert_eq!(dj_role_to_open(&some, &access), Some([2; 16]));
+        assert_eq!(dj_role_to_open(&some[..1], &access), Some([0; 16]));
     }
 }

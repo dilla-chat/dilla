@@ -7,6 +7,8 @@
 //!   client test, `dilla-client/tests/messages.rs`);
 //! - the keyboard tests drive the automation build on a fixture (`--features automation`).
 
+mod support;
+
 use dilla_client::state::{
     AppState, Channel, ChannelGroupState, ChannelId, Community, CommunityId, DeviceId, MessageId,
     TimelineItem, TimelineItemState, UserId,
@@ -365,4 +367,244 @@ fn keyboard_page_up_and_down_are_bound_in_the_log(cx: &mut gpui::TestAppContext)
         assert_eq!(keys(&PageUp), ["pageup"]);
         assert_eq!(keys(&PageDown), ["pagedown"]);
     });
+}
+
+/// Package 10a: a failed send's retry and discard and the timed-out composer, against a real dillad. The failure is the
+/// instance's own refusal of a timed-out member's post (postpolicy.go: `E_FORBIDDEN` "member is timed out").
+mod live {
+    use std::time::Duration;
+
+    use dilla_client::Client;
+    use dilla_client::features::moderation::TimeoutLength;
+    use dilla_client::state::{
+        AppState, ChannelId, CommunityId, MessageId, TimelineItem, TimelineItemState, UserId,
+    };
+    use dilla_desktop::screens::messages::composing::{self, Blocked};
+    use dilla_desktop::screens::messages::send_state;
+
+    use super::support::world;
+
+    const WITHIN: Duration = Duration::from_secs(30);
+
+    /// The owner, Ada (a member) and their community's #general, both clients in its group.
+    struct Room {
+        host: world::Host,
+        owner: Client,
+        ada: Client,
+        ada_id: UserId,
+        community: CommunityId,
+        general: ChannelId,
+    }
+
+    async fn room(tag: &'static str) -> Room {
+        let host = tokio::task::spawn_blocking(move || world::start_host(tag, "127.0.0.1:0", None))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let olof = world::sign_up(&host, &invite, "olof", "Olof", tag).await;
+        let ada = world::sign_up(&host, &invite, "ada", "Ada", tag).await;
+        let (host, olof, ada, c) = tokio::task::spawn_blocking(move || {
+            let c = world::community(&host, &olof, "crew", &[&ada]);
+            world::clear_session(&olof);
+            world::clear_session(&ada);
+            (host, olof, ada, CommunityId(c))
+        })
+        .await
+        .unwrap();
+        let ada_id = UserId(ada.user_id);
+        let (owner, ada) = (world::start(&olof).await, world::start(&ada).await);
+        let mut general = None;
+        for client in [&owner, &ada] {
+            let s = world::wait_for(client, WITHIN, "#general", |s| {
+                s.channel_named(c, "general").is_some()
+                    && s.members.get(&c).is_some_and(|m| m.len() == 2)
+            })
+            .await;
+            let ch = s.channel_named(c, "general").unwrap().id;
+            client
+                .open_channel(ch)
+                .await
+                .unwrap()
+                .expect("opens #general");
+            general = Some(ch);
+        }
+        Room {
+            host,
+            owner,
+            ada,
+            ada_id,
+            community: c,
+            general: general.unwrap(),
+        }
+    }
+
+    fn item<'a>(s: &'a AppState, ch: ChannelId, body: &str) -> Option<&'a TimelineItem> {
+        s.timelines
+            .get(&ch)
+            .and_then(|t| t.items.iter().find(|i| i.body == body))
+    }
+
+    /// The owner times Ada out; Ada's client reads her own timeout (the composer's advisory read).
+    async fn time_out(r: &Room) -> u64 {
+        r.owner
+            .moderation()
+            .timeout(r.community, r.ada_id, TimeoutLength::TenMinutes)
+            .await
+            .unwrap();
+        let expires = r
+            .ada
+            .moderation()
+            .timeout_of(r.community, r.ada_id)
+            .await
+            .unwrap()
+            .expect("timed out");
+        world::wait_for(&r.ada, WITHIN, "the own timeout", |s| {
+            s.people
+                .timeouts
+                .get(&r.community)
+                .and_then(|m| m.get(&r.ada_id))
+                == Some(&expires)
+        })
+        .await;
+        expires
+    }
+
+    /// Ada posts `body` while timed out: the instance refuses it, and her log holds it failed, with its reason under it
+    /// and retry and discard offered.
+    async fn refused(r: &Room, body: &str) -> MessageId {
+        r.ada
+            .send_text(r.general, body.to_owned())
+            .await
+            .unwrap()
+            .expect("queued");
+        let s = world::wait_for(&r.ada, WITHIN, "the refused send", |s| {
+            item(s, r.general, body).is_some_and(|i| i.state == TimelineItemState::Failed)
+        })
+        .await;
+        let failed = item(&s, r.general, body).unwrap();
+        assert!(
+            send_state::offers_retry(failed),
+            "a failed send offers retry and discard"
+        );
+        assert!(!failed.reason.is_empty());
+        assert_eq!(
+            send_state::detail(failed).as_deref(),
+            Some(failed.reason.as_str()),
+            "its reason is shown under it"
+        );
+        failed.msg_id.unwrap()
+    }
+
+    async fn lift(r: &Room) {
+        r.owner
+            .moderation()
+            .timeout(r.community, r.ada_id, TimeoutLength::Clear)
+            .await
+            .unwrap();
+        r.ada
+            .moderation()
+            .timeout_of(r.community, r.ada_id)
+            .await
+            .unwrap();
+    }
+
+    /// e2e/web/timeout.spec.ts and MessageItem.tsx `retry`: a post the instance refused is failed on Ada's device; once
+    /// her timeout is lifted, Retry sends that same message and the owner reads it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+    async fn a_failed_send_retries() {
+        let r = room("p10a-retry").await;
+        time_out(&r).await;
+        let msg = refused(&r, "sent again").await;
+        lift(&r).await;
+        r.ada.messages().retry(msg).await.unwrap().unwrap();
+        world::wait_for(&r.owner, WITHIN, "the retried message", |s| {
+            item(s, r.general, "sent again").is_some_and(|i| i.state == TimelineItemState::Ok)
+        })
+        .await;
+        let s = world::wait_for(&r.ada, WITHIN, "the stored retry", |s| {
+            item(s, r.general, "sent again").is_some_and(|i| i.state == TimelineItemState::Ok)
+        })
+        .await;
+        let sent = item(&s, r.general, "sent again").unwrap();
+        assert_eq!(sent.msg_id, Some(msg), "the retry sends the same message");
+        assert!(!send_state::offers_retry(sent));
+        assert_eq!(
+            s.timelines[&r.general]
+                .items
+                .iter()
+                .filter(|i| i.body == "sent again")
+                .count(),
+            1
+        );
+    }
+
+    /// MessageItem.tsx `discard`: the failed post leaves Ada's log and never reaches the owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+    async fn discard_removes_the_failed_message() {
+        let r = room("p10a-discard").await;
+        time_out(&r).await;
+        let msg = refused(&r, "thrown away").await;
+        r.ada.messages().discard(msg).await.unwrap().unwrap();
+        world::wait_for(&r.ada, WITHIN, "the discarded row gone", |s| {
+            item(s, r.general, "thrown away").is_none()
+        })
+        .await;
+        // A second discard (a double click) calls nothing.
+        r.ada.messages().discard(msg).await.unwrap().unwrap();
+        lift(&r).await;
+        r.ada
+            .send_text(r.general, "after".to_owned())
+            .await
+            .unwrap()
+            .expect("queued");
+        let s = world::wait_for(&r.owner, WITHIN, "the next message", |s| {
+            item(s, r.general, "after").is_some_and(|i| i.state == TimelineItemState::Ok)
+        })
+        .await;
+        assert!(
+            item(&s, r.general, "thrown away").is_none(),
+            "a discarded post never reaches the community"
+        );
+    }
+
+    /// Shell.tsx `timeoutReason`: a timed-out member's composer says until when (`shell.composer.timedOut`), in a text
+    /// channel of that community only, and opens again when the timeout is lifted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+    async fn timed_out_member_sees_until() {
+        let r = room("p10a-timed-out").await;
+        let s = r.ada.state().borrow().clone();
+        let ch = s.channel(r.general).unwrap().clone();
+        assert_eq!(
+            composing::blocked_at(&s, &ch, world::clock_now(&r.host)),
+            None
+        );
+        let expires = time_out(&r).await;
+        let s = r.ada.state().borrow().clone();
+        assert_eq!(
+            composing::blocked_at(&s, &ch, expires - 60),
+            Some(Blocked::TimedOut(expires))
+        );
+        // Past the expiry the line goes by itself (Shell.tsx's expiry timer); a voice channel has no composer line.
+        assert_eq!(composing::blocked_at(&s, &ch, expires), None);
+        let mut voice = ch.clone();
+        voice.kind = 1;
+        assert_eq!(composing::timed_out(&s, &voice, expires - 60), None);
+        let line = dilla_desktop::strings::tf(
+            "shell.composer.timedOut",
+            &[("time", &dilla_desktop::format::time(expires))],
+        );
+        assert!(line.starts_with("You cannot post messages in this community until "));
+        lift(&r).await;
+        let s = world::wait_for(&r.ada, WITHIN, "the lifted timeout", |s| {
+            s.people
+                .timeouts
+                .get(&r.community)
+                .is_none_or(|m| !m.contains_key(&r.ada_id))
+        })
+        .await;
+        assert_eq!(composing::blocked_at(&s, &ch, expires - 60), None);
+    }
 }
