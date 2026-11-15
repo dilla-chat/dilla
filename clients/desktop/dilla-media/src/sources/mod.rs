@@ -74,7 +74,8 @@ impl Latest {
         self.lock().ended
     }
 
-    /// When the newest frame arrived.
+    /// When the newest frame arrived (the camera's stall check; macOS has no camera source yet).
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub(crate) fn last(&self) -> Option<Instant> {
         self.lock().last
     }
