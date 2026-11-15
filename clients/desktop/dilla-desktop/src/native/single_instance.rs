@@ -5,12 +5,16 @@
 //! on Windows; the OS lets go when the process ends, however it ends). The process that holds it is the app.
 //!
 //! **The handover.** The app listens on a per-user endpoint:
-//! - Unix: a socket `<data root>/ipc/handover.sock`, in a directory of mode 0700, the socket of mode 0600, so only
-//!   the same user reaches it;
-//! - Windows: a named pipe `\\.\pipe\dilla-desktop-<hash of the data root>` (the data root is per user), inbound only
-//!   and refusing remote clients, its first instance created by the app (`FILE_FLAG_FIRST_PIPE_INSTANCE`).
+//! - Unix: a socket `<data root>/ipc/handover.sock` (or, for a data root too deep for a socket address, a short
+//!   `dilla-<hash>` directory in `$XDG_RUNTIME_DIR` or the temporary directory), in a directory of mode 0700 owned by
+//!   this user, the socket of mode 0600. Both ends check the other's user id (`SO_PEERCRED` / `getpeereid`);
+//! - Windows (`pipe_windows.rs`): a named pipe `\\.\pipe\dilla-desktop-<user SID>-<hash of the data root>` with a DACL
+//!   that admits the current user only, inbound only and refusing remote clients, its first instance created by the
+//!   app (`FILE_FLAG_FIRST_PIPE_INSTANCE`); a second launch writes only after checking the serving process runs as
+//!   its own SID.
 //!
-//! A second launch finds the lock taken, sends its argv there and exits ([`Claim::HandedOver`]). The app accepts only
+//! A second launch finds the lock taken, sends its argv there and exits ([`Claim::HandedOver`]). When the endpoint
+//! turns out to be another user's, nothing is sent and the launch starts on its own, with a logged error. The app accepts only
 //! argv-shaped messages ([`decode`]: a fixed header, at most [`MAX_ARGS`] UTF-8 arguments, [`MAX_MESSAGE`] bytes in
 //! all); anything else is dropped unread. On the UI thread a handed-over argv with a `dilla://` link opens the link
 //! (beta.5: the first one), and one without brings the app forward ([`super::NativeShell::show_app`]: the oldest
@@ -112,13 +116,27 @@ pub fn claim_at(root: &Path, argv: &[String]) -> Claim {
             })
         }
         Err(std::fs::TryLockError::WouldBlock) => {
-            if let Err(e) = hand_over(root, argv) {
-                // beta.5's second instance quit whatever happened; the running app stays as it is.
-                eprintln!(
-                    "dilla-desktop: Dilla is already running and did not take this launch: {e}"
-                );
+            match hand_over(root, argv) {
+                Ok(()) => Claim::HandedOver,
+                // The endpoint is another user's: nothing was sent to it. This launch starts on its own (each
+                // instance's store lock still keeps two clients off one instance).
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                    log::error!(
+                        "dilla-desktop: the handover endpoint is not this user's, starting alone: {e}"
+                    );
+                    eprintln!(
+                        "dilla-desktop: the handover endpoint is not this user's, starting alone: {e}"
+                    );
+                    Claim::Primary(Primary::default())
+                }
+                Err(e) => {
+                    // beta.5's second instance quit whatever happened; the running app stays as it is.
+                    eprintln!(
+                        "dilla-desktop: Dilla is already running and did not take this launch: {e}"
+                    );
+                    Claim::HandedOver
+                }
             }
-            Claim::HandedOver
         }
         Err(std::fs::TryLockError::Error(e)) => {
             log::warn!("dilla-desktop: the single-instance lock failed: {e}");
@@ -262,13 +280,75 @@ fn socket_path(root: &Path) -> PathBuf {
 fn check_private(dir: &Path, root: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt as _;
     let (d, r) = (std::fs::symlink_metadata(dir)?, std::fs::metadata(root)?);
-    if !d.is_dir() || d.uid() != r.uid() || d.mode() & 0o077 != 0 {
-        return Err(io::Error::other(format!(
-            "{} is not this user's private directory",
-            dir.display()
-        )));
+    if !d.is_dir() || d.uid() != r.uid() || d.uid() != own_uid() || d.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is not this user's private directory", dir.display()),
+        ));
     }
     Ok(())
+}
+
+/// This process's real user id.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn own_uid() -> u32 {
+    // SAFETY: getuid cannot fail.
+    unsafe { libc::getuid() }
+}
+
+/// The user id of the process at the other end of `stream` (`SO_PEERCRED` on Linux, `getpeereid` elsewhere).
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn peer_uid(stream: &std::os::unix::net::UnixStream) -> io::Result<u32> {
+    use std::os::fd::AsRawFd as _;
+    let fd = stream.as_raw_fd();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: u32::MAX,
+            gid: u32::MAX,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: `cred` is a ucred of `len` bytes for the kernel to fill.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(cred.uid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let (mut uid, mut gid) = (u32::MAX, u32::MAX);
+        // SAFETY: two out-parameters for the kernel to fill.
+        if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(uid)
+    }
+}
+
+/// The other end runs as this user, or `PermissionDenied`.
+#[cfg(unix)]
+fn check_peer(stream: &std::os::unix::net::UnixStream) -> io::Result<()> {
+    let uid = peer_uid(stream)?;
+    if uid == own_uid() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("the other end runs as user {uid}"),
+        ))
+    }
 }
 
 #[cfg(unix)]
@@ -298,6 +378,10 @@ impl Endpoint {
             .spawn(move || {
                 for stream in self.listener.incoming() {
                     let Ok(mut stream) = stream else { continue };
+                    if let Err(e) = check_peer(&stream) {
+                        log::warn!("dilla-desktop: a handover from another user was refused: {e}");
+                        continue;
+                    }
                     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
                     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
                     match read_message(&mut stream) {
@@ -329,10 +413,14 @@ fn hand_over(root: &Path, argv: &[String]) -> io::Result<()> {
     let mut stream = loop {
         match check_private(dir, root).and_then(|()| UnixStream::connect(&path)) {
             Ok(stream) => break stream,
+            // Another user's directory: never retried, never written to.
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
             Err(e) if Instant::now() >= deadline => return Err(e),
             Err(_) => std::thread::sleep(Duration::from_millis(50)),
         }
     };
+    // Nothing is written before the listener is known to be this user's.
+    check_peer(&stream)?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.write_all(&encode(argv))?;
@@ -347,103 +435,43 @@ fn hand_over(root: &Path, argv: &[String]) -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Windows: a named pipe per data root (so per user)
+// Windows: a named pipe only this user may open (native/pipe_windows.rs)
 // ---------------------------------------------------------------------------------------------------------------------
 
 #[cfg(windows)]
 struct Endpoint {
-    name: Vec<u16>,
-    /// The first pipe instance, made at claim time so a name already taken is known before the run loop.
-    first: windows_sys::Win32::Foundation::HANDLE,
+    listener: super::pipe_windows::Listener,
 }
 
-// SAFETY: the handle is a kernel object handle, usable from any thread; only the serving thread uses it.
+/// `\\.\pipe\dilla-desktop-<user SID>-<FNV-1a of the data root>` and the user's SID.
 #[cfg(windows)]
-#[allow(unsafe_code)]
-unsafe impl Send for Endpoint {}
-
-/// `\\.\pipe\dilla-desktop-<FNV-1a of the data root>`.
-#[cfg(windows)]
-fn pipe_name(root: &Path) -> String {
+fn pipe_of(root: &Path) -> io::Result<(String, String)> {
+    let sid = super::pipe_windows::user_sid()?;
     let hash = root_hash(&root.to_string_lossy().to_lowercase());
-    format!(r"\\.\pipe\dilla-desktop-{hash:016x}")
+    Ok((super::pipe_windows::pipe_name(&sid, hash), sid))
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
-fn create_pipe(name: &[u16], first: bool) -> io::Result<windows_sys::Win32::Foundation::HANDLE> {
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND,
-    };
-    use windows_sys::Win32::System::Pipes::{
-        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-    };
-    let open_mode = PIPE_ACCESS_INBOUND
-        | if first {
-            FILE_FLAG_FIRST_PIPE_INSTANCE
-        } else {
-            0
-        };
-    // SAFETY: `name` is NUL-terminated UTF-16; no security attributes (the default DACL: the creator, SYSTEM and
-    // administrators write; others may only read, and the pipe is inbound, so they have nothing to read).
-    let handle = unsafe {
-        CreateNamedPipeW(
-            name.as_ptr(),
-            open_mode,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_UNLIMITED_INSTANCES,
-            0,
-            MAX_MESSAGE as u32,
-            0,
-            std::ptr::null(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(handle)
-    }
-}
-
-#[cfg(windows)]
-#[allow(unsafe_code)]
 impl Endpoint {
     fn listen(root: &Path) -> io::Result<Self> {
-        let name: Vec<u16> = pipe_name(root).encode_utf16().chain([0]).collect();
-        let first = create_pipe(&name, true)?;
-        Ok(Self { name, first })
+        let (name, sid) = pipe_of(root)?;
+        Ok(Self {
+            listener: super::pipe_windows::Listener::listen(&name, &sid)?,
+        })
     }
 
-    fn serve(self, tx: mpsc::UnboundedSender<Vec<String>>) {
+    fn serve(mut self, tx: mpsc::UnboundedSender<Vec<String>>) {
         let spawned = std::thread::Builder::new()
             .name("dilla-handover".into())
             .spawn(move || {
-                use std::os::windows::io::FromRawHandle as _;
-                use windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED;
-                use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
-                let mut next = Some(self.first);
                 loop {
-                    let handle = match next.take() {
-                        Some(h) => h,
-                        None => match create_pipe(&self.name, false) {
-                            Ok(h) => h,
-                            Err(e) => {
-                                log::warn!("dilla-desktop: the handover pipe stopped: {e}");
-                                return;
-                            }
-                        },
+                    let pipe = match self.listener.accept() {
+                        Ok(pipe) => pipe,
+                        Err(e) => {
+                            log::warn!("dilla-desktop: a handover connection failed: {e}");
+                            continue;
+                        }
                     };
-                    // SAFETY: a pipe handle of ours, waited on synchronously.
-                    let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) } != 0
-                        || io::Error::last_os_error().raw_os_error()
-                            == Some(ERROR_PIPE_CONNECTED as i32);
-                    // SAFETY: the handle is ours and is closed once, by the File.
-                    let pipe = unsafe { File::from_raw_handle(handle as _) };
-                    if !connected {
-                        continue;
-                    }
                     match read_message(&pipe) {
                         Ok(Some(argv)) => {
                             if tx.send(argv).is_err() {
@@ -465,11 +493,13 @@ impl Endpoint {
 
 #[cfg(windows)]
 fn hand_over(root: &Path, argv: &[String]) -> io::Result<()> {
-    let name = pipe_name(root);
+    let (name, sid) = pipe_of(root)?;
     let deadline = Instant::now() + CONNECT_FOR;
     let mut pipe = loop {
-        match OpenOptions::new().write(true).open(&name) {
+        match super::pipe_windows::connect(&name, &sid) {
             Ok(pipe) => break pipe,
+            // Served by another user's process, or one we may not open: nothing is written to it.
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
             Err(e) if Instant::now() >= deadline => return Err(e),
             Err(_) => std::thread::sleep(Duration::from_millis(50)),
         }
@@ -556,6 +586,40 @@ mod tests {
         let socket = socket_path(&root);
         assert_eq!(mode(socket.parent().unwrap()), 0o700);
         assert_eq!(mode(&socket), 0o600);
+    }
+
+    /// Both ends see the other's user id, and it is this user's.
+    #[cfg(unix)]
+    #[test]
+    fn the_peer_is_this_user() {
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        assert_eq!(peer_uid(&a).unwrap(), own_uid());
+        assert!(check_peer(&b).is_ok());
+    }
+
+    /// An endpoint directory that is not this user's private one gets nothing written to it: the launch starts on its
+    /// own instead of handing over (and does not wait out the retries).
+    #[cfg(unix)]
+    #[test]
+    fn an_endpoint_not_private_to_this_user_gets_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = super::super::links::tests::temp_root("single-open");
+        let (_primary, received) = primary_at(&root);
+        let dir = socket_path(&root).parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        assert!(matches!(
+            claim_at(
+                &root,
+                &argv(&["dilla-desktop", "dilla://invite/a.example/X"])
+            ),
+            Claim::Primary(_)
+        ));
+        assert!(started.elapsed() < CONNECT_FOR);
+        assert!(
+            received.recv_timeout(Duration::from_millis(300)).is_err(),
+            "nothing was handed over"
+        );
     }
 
     /// A data root too deep for a socket address gets a short private directory of its own; one another user made
