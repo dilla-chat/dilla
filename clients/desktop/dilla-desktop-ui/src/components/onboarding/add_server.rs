@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use super::frame::{Click, pressable};
+use crate::a11y::{Accessible, Role};
 use crate::text::{line, line_height};
 use crate::tokens::{color, radius, text};
 
@@ -47,6 +48,7 @@ impl RenderOnce for AddServerChoice {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let base = div()
             .id(self.id)
+            .a11y(Role::Button, self.label.clone())
             .w_full()
             .min_h(px(44.0))
             .px(px(12.0))

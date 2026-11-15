@@ -12,6 +12,7 @@ use gpui::{
     ParentElement, Pixels, Point, RenderOnce, SharedString, Styled, Window, div, px,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem, opens_context_menu};
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::settings::row::GroupPosition;
@@ -307,7 +308,20 @@ impl RenderOnce for DeviceRow {
         if self.menu.is_some() {
             let key_set = set.clone();
             let mouse_set = set.clone();
+            // A row with a menu is one tab stop (Shift+F10 opens it): named by the device and its state.
             row = row
+                .a11y(
+                    Role::Group,
+                    [
+                        Some(self.name.clone()),
+                        self.own_label.clone(),
+                        self.state.clone(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                )
                 .track_focus(&focus)
                 .tab_stop(true)
                 .focus_visible(|s| s.shadow(focus_ring()))

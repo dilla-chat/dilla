@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use super::{LEADING, OnClick};
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
@@ -55,7 +56,8 @@ pub fn image_tile(
     width: f32,
     thumb: Option<Arc<Image>>,
     badge: Option<SharedString>,
-    on_open: Option<OnClick>,
+    // What it opens, named for a screen reader (`shell.attachment.open`), and the open itself.
+    on_open: Option<(SharedString, OnClick)>,
 ) -> AnyElement {
     let h = tile_height(width);
     let inner: AnyElement = match thumb {
@@ -97,8 +99,9 @@ pub fn image_tile(
                 ),
         );
     }
-    if let Some(on_open) = on_open {
+    if let Some((label, on_open)) = on_open {
         tile = tile
+            .a11y(Role::Button, label)
             .tab_index(0)
             .cursor_pointer()
             .focus_visible(|s| s.shadow(focus_ring()))
@@ -119,7 +122,8 @@ pub fn file_card(
     id: impl Into<SharedString>,
     name: impl Into<SharedString>,
     meta: impl Into<SharedString>,
-    on_save: Option<OnClick>,
+    // The download, named for a screen reader (`shell.attachment.save`), and the save itself.
+    on_save: Option<(SharedString, OnClick)>,
     height: f32,
 ) -> AnyElement {
     let id: SharedString = id.into();
@@ -173,7 +177,7 @@ pub fn file_card(
                     color::FG_3,
                 )),
         );
-    if let Some(on_save) = on_save {
+    if let Some((label, on_save)) = on_save {
         card = card.child(
             div()
                 .id(gpui::ElementId::Name(format!("{id}-save").into()))
@@ -183,6 +187,7 @@ pub fn file_card(
                 .items_center()
                 .justify_center()
                 .rounded(radius::MD)
+                .a11y(Role::Button, label)
                 .tab_index(0)
                 .cursor_pointer()
                 .hover(|s| s.bg(color::SURFACE_HI))

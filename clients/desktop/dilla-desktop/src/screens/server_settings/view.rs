@@ -325,6 +325,7 @@ impl ServerSettingsView {
             .into();
         let view = cx.entity().downgrade();
         SettingsNav::new("server-settings-nav", items, active_id)
+            .label(t("settings.nav.label"))
             .on_select(move |id: &str, _window: &mut Window, app: &mut App| {
                 let to = match id.strip_prefix("server:") {
                     Some(s) => ServerSection::from_id(s).map(Leave::Server),
@@ -501,6 +502,10 @@ impl Render for ServerSettingsView {
         let footer = self.footer(cx);
         let close_view = cx.entity().downgrade();
         let mut frame = SettingsFrame::new("server-settings", t("settings.close"))
+            .title(active.map_or_else(
+                || t("admin.title").to_owned(),
+                |s| model::label_of(s).to_string(),
+            ))
             .nav(nav)
             .wide(active.is_some_and(model::wide))
             .on_close(move |_window, app| {

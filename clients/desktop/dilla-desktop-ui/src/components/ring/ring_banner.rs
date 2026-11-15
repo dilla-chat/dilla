@@ -15,6 +15,7 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, actions, div, point, px,
 };
 
+use crate::a11y::{Accessible, Live, Role};
 use crate::components::avatar::{Avatar, AvatarSize};
 use crate::metrics::focus_ring;
 use crate::text::{line, line_height};
@@ -87,6 +88,8 @@ pub struct RingBanner {
     decline: SharedString,
     on_answer: OnRing,
     on_decline: OnRing,
+    /// The region's name (`call.ring.region`, "incoming calls").
+    region: SharedString,
 }
 
 impl RingBanner {
@@ -106,7 +109,14 @@ impl RingBanner {
             decline: decline.into(),
             on_answer,
             on_decline,
+            region: SharedString::default(),
         }
+    }
+
+    /// Names the banner's region for a screen reader (`call.ring.region`).
+    pub fn region(mut self, label: impl Into<SharedString>) -> Self {
+        self.region = label.into();
+        self
     }
 }
 
@@ -130,6 +140,7 @@ fn button(
     };
     div()
         .id(id)
+        .a11y(Role::Button, label.clone())
         .track_focus(focus)
         .tab_stop(true)
         .flex()
@@ -181,8 +192,12 @@ impl RenderOnce for RingBanner {
                     inset: false,
                 }]);
             }
+            // A ring is read out at once as it arrives (the web's ring region is `aria-live`; a ring interrupts).
             let mut row = div()
                 .id(SharedString::from(format!("ring-{key}")))
+                .a11y(Role::Alert, ring.text.clone())
+                .aria_value(ring.text.clone())
+                .live(Live::Assertive)
                 .key_context(CONTEXT)
                 .track_focus(&ring.focus.row)
                 .on_action(move |_: &Answer, window, cx| answer_on(&answer_key, window, cx))
@@ -242,6 +257,7 @@ impl RenderOnce for RingBanner {
         });
         div()
             .id(self.id)
+            .landmark(Role::Region, self.region)
             .w_full()
             .bg(color::SURFACE_2)
             .border_1()

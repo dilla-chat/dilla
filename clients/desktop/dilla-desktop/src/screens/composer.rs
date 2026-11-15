@@ -25,6 +25,7 @@ use gpui::{
 };
 use gpui_component::input::{Enter, InputEvent, MoveDown, MoveUp, Textarea, TextareaState};
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
 use dilla_desktop_ui::text::{line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
@@ -643,6 +644,12 @@ impl Composer {
     }
 }
 
+/// The field's accessible name (`shell.composer.label`, "message #general"): the target is the channel's `#name` or the
+/// DM's `@name`, put where the web's `#{channel}` is.
+fn composer_label(target: &str) -> String {
+    t("shell.composer.label").replace("#{channel}", target)
+}
+
 /// A 26x24 tool button of the foot with a 14px icon.
 fn tool(icon: IconName) -> impl IntoElement {
     div()
@@ -833,6 +840,7 @@ impl Render for Composer {
                             // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which
                             // wins.
                             Textarea::new(&self.input)
+                                .aria_label(composer_label(&self.target))
                                 .appearance(false)
                                 .disabled(blocked.is_some())
                                 .text_size(text::INPUT)
@@ -860,6 +868,11 @@ impl Render for Composer {
         };
         let send = div()
             .id("composer-send")
+            .a11y(Role::Button, t("shell.composer.send"))
+            .aria_keyshortcuts("Enter")
+            // A `<button>` on the web: the keyboard reaches it too.
+            .tab_index(0)
+            .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
             .flex_none()
             .h(len(28.))
             .px(len(10.))
@@ -900,6 +913,10 @@ impl Render for Composer {
             .child(send);
         let code = div()
             .id("composer-code")
+            .a11y(Role::Button, t("shell.composer.code"))
+            .tab_index(0)
+            .rounded(radius::SM)
+            .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
             .child(tool(IconName::CodeXml))
             .on_click(cx.listener(|this, _, window, cx| {
                 if this.blocked().is_some() {

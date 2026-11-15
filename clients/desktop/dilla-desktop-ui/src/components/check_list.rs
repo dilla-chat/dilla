@@ -9,6 +9,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, OPACITY_MUTED, focus_ring};
@@ -192,6 +193,8 @@ impl RenderOnce for CheckList {
             ));
             let mut row = div()
                 .id((self.id.clone(), format!("row-{}", item.id)))
+                .a11y(Role::CheckBox, item.label.clone())
+                .toggled(item.checked)
                 .flex()
                 .flex_wrap()
                 .items_center()

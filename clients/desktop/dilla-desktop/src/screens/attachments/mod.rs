@@ -296,7 +296,13 @@ pub fn attachment_cards(
                 ));
                 let el = div()
                     .relative()
-                    .child(image_tile(id, w, shown, badge, open))
+                    .child(image_tile(
+                        id,
+                        w,
+                        shown,
+                        badge,
+                        open.map(|o| (tf("shell.attachment.open", &[("name", &name)]).into(), o)),
+                    ))
                     .child(probe)
                     .into_any_element();
                 cards.push(with_state(el, w, tile_height(w), state_text));
@@ -361,6 +367,8 @@ pub fn attachment_cards(
             }
             _ => {
                 let meta = card::file_meta(&name, &size);
+                let save_label: SharedString =
+                    tf("shell.attachment.save", &[("name", &name)]).into();
                 let save = key.filter(|_| !too_large).map(|k| {
                     let client = ctx.client.clone();
                     click(move |_, cx| {
@@ -375,6 +383,7 @@ pub fn attachment_cards(
                         - state
                             .as_ref()
                             .map_or(0.0, |_| STATE_GAP + state_line_height());
+                    let save = save.map(|s| (save_label, s));
                     let el = file_card(id, name, meta, save, own.max(file_card_height()));
                     match state {
                         None => el,
@@ -924,7 +933,11 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
             .border_color(color::HAIRLINE_2)
             .rounded(radius::MD)
             .text_size(text::INPUT)
-            .child(gpui_component::input::Input::new(&input).appearance(false))
+            .child(
+                gpui_component::input::Input::new(&input)
+                    .aria_label(t("gif.search"))
+                    .appearance(false),
+            )
             .into_any_element(),
         powered: t("gif.powered").into(),
         tiles,

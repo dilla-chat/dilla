@@ -9,10 +9,12 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, RenderOnce, Styled, Window, div, px,
+    MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, px,
 };
 
 use super::slider::{SetFn, pointer_layer, value_at, value_for_key};
+use crate::a11y::{Accessible, Role};
 use crate::metrics::focus_ring;
 use crate::text::{line, line_height};
 use crate::tokens::{color, text};
@@ -89,6 +91,8 @@ pub struct SensitivityMeter {
     testing: bool,
     focus: Option<FocusHandle>,
     on_threshold: Option<ChangeHandler>,
+    /// The threshold's accessible name (the web's range `aria-label`).
+    label: SharedString,
 }
 
 impl SensitivityMeter {
@@ -107,7 +111,14 @@ impl SensitivityMeter {
             testing,
             focus: None,
             on_threshold: None,
+            label: SharedString::default(),
         }
+    }
+
+    /// Names the threshold for a screen reader.
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = label.into();
+        self
     }
 
     /// Tracks `handle` as the line's focus.
@@ -208,8 +219,13 @@ impl RenderOnce for SensitivityMeter {
                 color::FG,
             )));
 
+        // The threshold is a range (dB): a slider with its value and bounds.
         let mut meter = div()
             .id((self.id.clone(), "meter"))
+            .a11y(Role::Slider, self.label.clone())
+            .aria_numeric_value(f64::from(self.threshold_db.round()))
+            .aria_min_numeric_value(f64::from(MIN))
+            .aria_max_numeric_value(f64::from(MAX))
             .relative()
             .py(px(6.0))
             .focus_visible(|s| s.shadow(focus_ring()))

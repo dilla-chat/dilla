@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use super::{LEADING, OnClick};
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
@@ -155,6 +156,7 @@ pub fn media_card_width(p: &MediaCardProps) -> f32 {
 fn control_button(id: SharedString, label: SharedString, glyph: bool, f: OnClick) -> AnyElement {
     let mut b = div()
         .id(gpui::ElementId::Name(id))
+        .a11y(Role::Button, label.clone())
         .flex()
         .flex_none()
         .items_center()
@@ -185,6 +187,7 @@ fn control_button(id: SharedString, label: SharedString, glyph: bool, f: OnClick
 
 fn audio_bar(
     id: &SharedString,
+    label: &SharedString,
     playing: bool,
     position: Duration,
     duration: Option<Duration>,
@@ -208,6 +211,8 @@ fn audio_bar(
         .child(
             div()
                 .id(gpui::ElementId::Name(format!("{id}-toggle").into()))
+                .a11y(Role::Button, label.clone())
+                .toggled(playing)
                 .flex_none()
                 .tab_index(0)
                 .cursor_pointer()
@@ -294,7 +299,14 @@ pub fn media_card(mut p: MediaCardProps) -> (AnyElement, f32) {
                 position,
                 duration,
             },
-        ) => audio_bar(&p.id, playing, position, duration, p.on_toggle.clone()),
+        ) => audio_bar(
+            &p.id,
+            &p.play_label,
+            playing,
+            position,
+            duration,
+            p.on_toggle.clone(),
+        ),
         (_, PlayerState::Error) => {
             let save = p.on_save.clone();
             let mut col = div().flex().flex_col().gap(px(GAP)).child(

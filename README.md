@@ -132,7 +132,8 @@ For the native desktop preview:
   autostart, and operating-system notifications (also for a ring, with Answer and Decline).
 - The updater, and the macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
   alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand.
-- Screen readers (they come after the switch) and push to talk while another window has focus.
+- Push to talk while another window has focus. Screen readers are supported (AccessKit), but
+  messages cannot yet be stepped through with the arrow keys and the recovery key is not read out.
 
 Beyond the web client: the native [desktop client](docs/user/desktop.md) has Linux alpha releases and is built from
 source on macOS and Windows; the Electron app is discontinued at `desktop-v0.1.0-beta.5`. The browser client is deprecated. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no

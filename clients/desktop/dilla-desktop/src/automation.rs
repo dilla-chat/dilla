@@ -21,6 +21,8 @@
 //!                                                                60 frames without that is an error)
 //! text-bounds             -> ok [<x> <y> <w> <h>[;<x> <y> <w> <h>]...]   (every painted text line, logical pixels)
 //! fixture                 -> ok <fixture line> | none           (what the screen was drawn from: `ScreenFixture::fixture_line`)
+//! a11y                    -> ok <json> | none                   (the accessibility tree a screen reader gets: see `a11y_json`;
+//!                                                                the first call switches accessibility on, as a reader does)
 //! log                     -> ok [<entry>[;<entry>]...]          (the harness view's received events; see `--harness`)
 //! screenshot <path>       -> ok <width> <height>                (PNG of the rendered frame, device pixels)
 //! quit                    -> ok, then the process exits
@@ -630,6 +632,27 @@ impl Session {
             .expect("the window exists")
     }
 
+    /// The window's accessibility tree, as a screen reader would get it (Package 11): accessibility is switched on the
+    /// first time (as an assistive technology connecting does), then a frame is drawn and its tree serialized by
+    /// [`a11y_json`].
+    fn a11y(&mut self) -> String {
+        let window = self.window();
+        let _ = self
+            .cx
+            .update_window(window, |_, window, _| window.activate_a11y_for_test());
+        self.frame();
+        self.cx
+            .update_window(window, |_, window, _| {
+                let scale = window.scale_factor();
+                window
+                    .a11y_tree_update()
+                    .map(|update| a11y_json(&update, scale))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
     fn text_bounds(&mut self) -> Vec<Bounds<Pixels>> {
         self.frame();
         TEXT.lock().expect("text registry").clone()
@@ -730,6 +753,57 @@ fn unhex(hex: &str) -> Option<String> {
     String::from_utf8(bytes?).ok()
 }
 
+/// One frame's accessibility tree as one line of JSON (`a11y`): `{"root", "focus", "nodes": [...]}`, each node with its
+/// AccessKit id, role, name (`label`), `value`, `description`, `placeholder`, `children`, `bounds` (logical px, window
+/// coordinates), the actions it takes (`click`, `focus`) and its states (`modal`, `live`, `toggled`, `selected`,
+/// `expanded`, `disabled`). The tree lint (`tests/a11y.rs`) reads it.
+fn a11y_json(update: &gpui::accesskit::TreeUpdate, scale: f32) -> String {
+    use gpui::accesskit::{Action, Live};
+    let scale = f64::from(scale);
+    let nodes: Vec<serde_json::Value> = update
+        .nodes
+        .iter()
+        .map(|(id, node)| {
+            let bounds = node.bounds().map(|r| {
+                [
+                    r.x0 / scale,
+                    r.y0 / scale,
+                    (r.x1 - r.x0) / scale,
+                    (r.y1 - r.y0) / scale,
+                ]
+            });
+            serde_json::json!({
+                "id": id.0,
+                "role": format!("{:?}", node.role()),
+                "label": node.label(),
+                "value": node.value(),
+                "description": node.description(),
+                "placeholder": node.placeholder(),
+                "children": node.children().iter().map(|c| c.0).collect::<Vec<_>>(),
+                "bounds": bounds,
+                "click": node.supports_action(Action::Click),
+                "focus": node.supports_action(Action::Focus),
+                "modal": node.is_modal(),
+                "live": match node.live() {
+                    None | Some(Live::Off) => None,
+                    Some(Live::Polite) => Some("polite"),
+                    Some(Live::Assertive) => Some("assertive"),
+                },
+                "toggled": node.toggled().map(|t| format!("{t:?}")),
+                "selected": node.is_selected(),
+                "expanded": node.is_expanded(),
+                "disabled": node.is_disabled(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "root": update.tree.as_ref().map(|t| t.root.0),
+        "focus": update.focus.0,
+        "nodes": nodes,
+    })
+    .to_string()
+}
+
 fn rect(b: &Bounds<Pixels>) -> String {
     format!(
         "{} {} {} {}",
@@ -785,6 +859,10 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
             let rects: Vec<String> = session.text_bounds().iter().map(rect).collect();
             format!("ok {}", rects.join(";")).trim_end().to_owned()
         }
+        (Some("a11y"), None, None) => match session.a11y() {
+            json if json.is_empty() => "none".to_owned(),
+            json => format!("ok {json}"),
+        },
         (Some("fixture"), None, None) => match &session.fixture {
             Some(line) => format!("ok {line}"),
             None => "none".to_owned(),

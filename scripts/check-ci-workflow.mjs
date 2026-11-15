@@ -1519,7 +1519,7 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-client --test bot --locked -- --ignored --exact enter_to_first_answer_is_within_rtt_plus_100ms_at_p95',
     '    cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings',
     '    cargo test -p dilla-desktop --features automation --locked',
-    '    cargo test -p dilla-desktop --features automation --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test sign_in --test user_settings --test voice_settings --locked -- --ignored --skip parity_',
+    '    cargo test -p dilla-desktop --features automation --test a11y --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test sign_in --test user_settings --test voice_settings --locked -- --ignored --skip parity_',
   ].join('\n'),
   ignoredDesktop: [
     '- name: Run the ignored tests (Linux, desktop)',

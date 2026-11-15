@@ -130,6 +130,7 @@ fn reason_label(m: &Moderating) -> AnyElement {
                     .overflow_hidden()
                     .child(super::textarea_origin(
                         Textarea::new(&m.reason)
+                            .aria_label(t("shell.moderation.reason"))
                             .appearance(false)
                             .text_size(len(SIZE))
                             .line_height(len(LINE))

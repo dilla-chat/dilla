@@ -28,6 +28,7 @@ use gpui::{
     Window, WindowId, div, img, px, relative,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
 use dilla_desktop_ui::metrics::focus_ring;
@@ -411,6 +412,7 @@ fn afk_stage(channel: &Channel, w: WindowId, cx: &mut App) -> Option<AnyElement>
     let page = crate::screens::ring::afk_page(&ctx, community, come_back)?;
     let stage = div()
         .id("voice-stage")
+        .a11y_unnamed(Role::Region)
         .relative()
         .size_full()
         .flex()
@@ -1333,7 +1335,10 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             line_height(text::META, 1.3),
             color::FG_3,
         ));
+    // VoiceDock.tsx: `role="region" aria-label="voice controls"`.
     let card = div()
+        .id("voice-dock-region")
+        .landmark(Role::Region, t("voice.dock.region"))
         .flex()
         .flex_col()
         .gap(px(m::DOCK_GAP))
@@ -1696,6 +1701,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let wide = f32::from(window.viewport_size().width) >= m::BAR_WORDS_MIN_W;
     let stage = div()
         .id("voice-stage")
+        .landmark(Role::Region, channel.name.clone())
         .relative()
         .track_focus(&focus)
         .size_full()
@@ -2399,6 +2405,8 @@ fn code_disclosure(w: WindowId, code: &str, cx: &mut App) -> AnyElement {
                 "dm-call-code".to_owned()
             }
         })
+        .a11y(Role::Button, t("voice.code"))
+        .aria_expanded(open)
         .track_focus(&focus.clone().tab_stop(true))
         .h(px(m::CODE_H))
         .px(px(m::CODE_PAD_X))
@@ -2724,6 +2732,8 @@ fn toolbar_control(
     };
     let button = div()
         .id(id)
+        .a11y(Role::Button, label.to_owned())
+        .toggled(pressed)
         .tab_index(0)
         .relative()
         .flex_none()
@@ -2799,6 +2809,8 @@ fn notice(state: &AppState) -> AnyElement {
     };
     notice_box(t(key).to_owned())
         .id("voice-notice")
+        .a11y(Role::Status, t(key))
+        .live(dilla_desktop_ui::a11y::Live::Polite)
         .child(
             IconButton::new(
                 "voice-notice-close",
@@ -2886,6 +2898,7 @@ fn preview(state: &AppState, channel: &Channel) -> AnyElement {
             "voice-join",
             div()
                 .id("voice-join-b")
+                .a11y(Role::Button, t("voice.join"))
                 .tab_index(0)
                 .h(px(m::JOIN_H))
                 .px(px(m::JOIN_PAD_X))
@@ -2996,6 +3009,7 @@ fn bar_control(
     let words = wide || leave;
     let button = div()
         .id(id)
+        .a11y(Role::Button, word.to_owned())
         .tab_index(0)
         .flex_none()
         .h(px(m::BAR_BUTTON_H))
@@ -3124,6 +3138,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
                 "voice-share-quality",
                 div()
                     .id("voice-share-quality-b")
+                    .a11y(Role::Button, t("callStage.share.quality"))
                     .tab_index(0)
                     .w(px(m::QUALITY_W))
                     .h(px(m::BAR_BUTTON_H))
@@ -3165,6 +3180,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
         });
     div()
         .id("voice-call-bar")
+        .landmark(Role::Region, t("voice.controls.region"))
         .flex_none()
         .min_h(px(m::CONTROLS_H))
         .flex()
