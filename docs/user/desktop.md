@@ -120,7 +120,6 @@ the updater and packaging.
   comes after the switch.
 - **Linux, AltGr and push to talk:** a push-to-talk key is accepted only on its own, and the app refuses Control, Alt,
   Shift and ⌘ with it, but on Linux holding AltGr with the key still opens the microphone.
-- **Other people's messages:** the Delete action is only offered on your own messages.
 
 ## Browser migration preparation (disabled)
 
