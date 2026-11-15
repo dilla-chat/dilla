@@ -231,6 +231,9 @@ pub fn install(cx: &mut App) {
 }
 
 #[cfg(target_os = "windows")]
+// The registry Run key is reached only through windows-sys's FFI calls: each call's pointers are to buffers this
+// module owns for the call's length, and every key it opens it closes.
+#[allow(unsafe_code)]
 mod windows {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
