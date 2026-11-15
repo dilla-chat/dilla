@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2172] = [
+pub static STRINGS: [(&str, &str); 2177] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -478,6 +478,11 @@ pub static STRINGS: [(&str, &str); 2172] = [
     ("callStage.share.go", "Go live"),
     ("callStage.share.live", "You’re live"),
     ("callStage.share.native", "Source"),
+    ("callStage.share.pickerCancel", "Cancel"),
+    ("callStage.share.pickerEmpty", "Nothing to share here"),
+    ("callStage.share.pickerScreens", "Screens"),
+    ("callStage.share.pickerShare", "Share"),
+    ("callStage.share.pickerWindows", "Windows"),
     ("callStage.share.previewScreen", "Display · {w}×{h}"),
     ("callStage.share.previewTab", "Tab · you pick it next"),
     ("callStage.share.previewWindow", "Window · you pick it next"),

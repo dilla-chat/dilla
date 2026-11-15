@@ -186,6 +186,8 @@ pub struct MediaSession {
     videos: Arc<Mutex<RemoteVideos>>,
     /// Bumped on every new remote video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
+    /// The devices (hex) whose screen share carries sound.
+    screen_sound: Arc<Mutex<BTreeSet<String>>>,
 }
 
 /// What a share asks its [`SourceFactory`] for.
@@ -244,26 +246,16 @@ fn real_source(r: &ShareRequest) -> Result<Box<dyn CaptureSource>, OpenError> {
     let cancel = || r.cancelled();
     match r.kind {
         ShareKind::Camera => camera(&cancel),
-        ShareKind::Screen => {
-            let source = match &r.source {
-                Some(s) => Some(s.clone()),
-                None if desktop::portal() => None,
-                // No picker choice off the portal: the first screen (the picker supplies the choice).
-                None => desktop::list(desktop::SourceKind::Screen)
-                    .into_iter()
-                    .next(),
-            };
-            let wait = if source.is_none() {
-                desktop::PORTAL_WAIT
-            } else {
-                desktop::START_WAIT
-            };
-            if source.is_none() && !desktop::portal() {
-                return Err(OpenError::Unavailable("no screen".to_owned()));
+        // The picker's choice, or (Linux on Wayland, no choice) the system portal's own dialog. Never a source nobody
+        // chose: off the portal a request without a choice opens nothing.
+        ShareKind::Screen => match &r.source {
+            Some(s) => desktop::open(Some(s), r.options.fps, desktop::START_WAIT, &cancel),
+            None if desktop::portal() => {
+                desktop::open(None, r.options.fps, desktop::PORTAL_WAIT, &cancel)
             }
-            desktop::open(source.as_ref(), r.options.fps, wait, &cancel)
-                .map(|c| Box::new(c) as Box<dyn CaptureSource>)
+            None => Err(OpenError::Unavailable("no source was chosen".to_owned())),
         }
+        .map(|c| Box::new(c) as Box<dyn CaptureSource>),
     }
 }
 
@@ -290,12 +282,14 @@ impl MediaSession {
         let (commands, rx) = mpsc::unbounded_channel();
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
+        let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
         let ctx = Ctx {
             voice: client.voice(),
             states: client.state(),
             prefs: client.prefs(),
             videos: videos.clone(),
             video_seq: video_seq.clone(),
+            screen_sound: screen_sound.clone(),
             sources,
         };
         runtime.spawn(run(ctx, rx));
@@ -304,6 +298,7 @@ impl MediaSession {
             commands,
             videos,
             video_seq,
+            screen_sound,
         })
     }
 
@@ -322,6 +317,14 @@ impl MediaSession {
         let _ = self.commands.send(Command::Quality(options));
     }
 
+    /// The devices (hex) whose screen share carries sound: a remote screen without it shows the "no sound" mark.
+    pub fn screen_sound(&self) -> BTreeSet<String> {
+        self.screen_sound
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     /// Every remote video stream's newest frame.
     pub fn videos(&self) -> RemoteVideos {
         self.videos
@@ -337,6 +340,7 @@ struct Ctx {
     prefs: dilla_client::prefs::Prefs,
     videos: Arc<Mutex<RemoteVideos>>,
     video_seq: Arc<AtomicU64>,
+    screen_sound: Arc<Mutex<BTreeSet<String>>>,
     sources: SourceFactory,
 }
 
@@ -456,6 +460,8 @@ async fn in_call(
     links: &mut watch::Receiver<Option<Arc<MediaLink>>>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
 ) {
+    // A share asked for outside a call (a window's press as its last call ended) never carries into this one.
+    while commands.try_recv().is_ok() {}
     let (feed, slot, feeder) = feed_epochs(link);
     // A muted or push-to-talk join: the microphone is muted before it is published.
     let options = CallOptions {
@@ -539,6 +545,7 @@ async fn in_call(
                 if r.is_ok() {
                     let next = videos.borrow_and_update().clone();
                     *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
+                    *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
                     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
                 }
             }

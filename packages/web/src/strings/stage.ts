@@ -59,6 +59,13 @@ export const stage = {
   // Fix round 2 (Ruling AV): the prototype's toasts.
   'callStage.share.live': 'You’re live',
   'callStage.share.applied': 'Stream set to {res} · {fps} fps',
+  // The desktop's screen-share picker (ScreenSourcePicker; beta.5's screen-picker-page.tsx copy). Its title is
+  // callStage.share.title.
+  'callStage.share.pickerScreens': 'Screens',
+  'callStage.share.pickerWindows': 'Windows',
+  'callStage.share.pickerShare': 'Share',
+  'callStage.share.pickerCancel': 'Cancel',
+  'callStage.share.pickerEmpty': 'Nothing to share here',
   // Tile stats (the prototype's): the own microphone's codec and rate, a screen's frame height and rate.
   'callStage.stat.codec': '{codec} {khz}k',
   // Fix round 1: another person's ping, as their own device publishes it.

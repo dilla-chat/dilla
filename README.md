@@ -65,7 +65,7 @@ measured). What works today, screen by screen:
 | Members, roles and moderation | The members aside, the profile card and the person menu (message, mention, profile, edit roles, copy username, compare safety numbers, kick, ban) as your permissions allow, the moderation dialogs, and the Roles, Self roles, Members, Bans and Moderation log sections of the server settings. |
 | Server settings | Overview (name and AFK timeout, saved together; a dirty-draft guard on leaving), Channels, GIFs, Invites, Welcome, Join roles and Danger zone, only the sections your permissions allow. |
 | User settings | Profile, Devices (rename, remove a device with the recovery key, sign out), Appearance, Keyboard (the shortcut table), Privacy, Sign-in (password, authenticator app, passkeys, backup codes, each behind "Confirm it is you"), Notifications, Voice and Diagnostics. |
-| Voice, rings and AFK | Join and leave voice channels, the people under a channel, the dock, the stage with a tile per person (a person's camera or screen share is drawn when they send one), the call controls, mute and deafen (Ctrl+Shift+M, Ctrl+Shift+D), push to talk while the window has focus, DM calls with the incoming-ring banner (Enter answers, Escape declines), blocked calls and the comparison they offer, and the AFK channel's page and move notice. Calls are end-to-end encrypted. |
+| Voice, rings and AFK | Join and leave voice channels, the people under a channel, the dock, the stage with a tile per person (a person's camera or screen share is drawn when they send one), your own camera (Linux, Windows) and screen or window share from a picker with thumbnails (the system's dialog on Wayland), with the stream quality applied live, the call controls, mute and deafen (Ctrl+Shift+M, Ctrl+Shift+D), push to talk while the window has focus, DM calls with the incoming-ring banner (Enter answers, Escape declines), blocked calls and the comparison they offer, and the AFK channel's page and move notice. Calls are end-to-end encrypted. |
 | Voice settings | Input and output devices and volumes, the microphone test with its sensitivity meter, the input mode and the push-to-talk key (F13 to F24, Pause, Scroll Lock, Insert), noise suppression, echo cancellation, automatic gain, and the join, leave and ring sounds. |
 | Bot | The `/` command picker with named fields and greyed commands, private results, poll cards, reminders; in the server settings, the Bot page (its card and Restart, capabilities, health, Bot channels, webhooks, each change behind "Confirm it is you") and the Music page, with the Now playing row in the dock. |
 | Notifications | The settings rows only: the mode for the selected server and its @everyone switch, desktop notifications on this device, and one switch for the join, leave and ring sounds. The values are kept; nothing raises an operating-system notification yet. |
@@ -125,8 +125,7 @@ As of 2026-10-22, in the web client:
 
 For the native desktop preview:
 
-- The screen-capture picker (Share sends the first screen, or the Wayland portal's choice), the camera on macOS, and
-  per-application audio.
+- Per-application audio for a screen share, and the camera on macOS.
 - Tray, close to tray and badge count, `dilla://invite` links, a second launch handing over to the running app,
   autostart, and operating-system notifications (also for a ring, with Answer and Decline).
 - The updater, installers and packages (DMG, Windows installer, AppImage, deb, rpm, AUR). Build it from source.

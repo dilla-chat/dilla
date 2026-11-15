@@ -108,9 +108,9 @@ the updater and packaging.
 - **Deep links:** `dilla://invite/...` is not handled. Join with the address and the invite code in the instances window.
 - **Updater and packaging:** no automatic update, DMG, Windows installer, AppImage, deb, rpm or AUR package. Build
   from source.
-- **Screen capture and camera:** Share sends your first screen (on Wayland, the system's own dialog chooses a screen
-  or a window); there is no picker of screens and windows with thumbnails yet, and no per-application audio. The camera
-  works on Linux and Windows, not yet on macOS. A new stream quality applies to the running share.
+- **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
+  the system's own dialog chooses), but there is no per-application audio yet, so a share carries no sound. The camera
+  works on Linux and Windows, not yet on macOS.
 - **Operating-system notifications:** none are raised, including for an incoming ring (the ring banner and sound
   work while the window is open). The Notifications settings are kept for when they arrive.
 - **Quit guards and permission prompts:** quitting does not warn about an active call or an unsent draft (the draft

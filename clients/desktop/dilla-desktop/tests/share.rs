@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use dilla_client::calls::CallPhase;
 use dilla_client::state::{AppState, ChannelId};
-use dilla_desktop::screens::voice::{self, ShareSources};
+use dilla_desktop::screens::share_picker::{self, Found};
+use dilla_desktop::screens::voice::{self, ShareSources, TileKey};
+use dilla_media::sources::desktop::{DesktopSource, SourceKind};
 use dilla_media::{CaptureSource, Pull, ShareKind, ShareOptions, ShareResolution, TestPattern};
 use gpui::{App, Context, IntoElement, Render, TestAppContext, Window, div};
 
@@ -28,6 +30,8 @@ const CALL_WAIT: Duration = Duration::from_secs(45);
 struct Recorder {
     opened: AtomicUsize,
     alive: Arc<AtomicUsize>,
+    /// How many times the picker listed the sources.
+    listed: Arc<AtomicUsize>,
 }
 
 /// A moving test pattern that tells its [`Recorder`] when it goes.
@@ -60,7 +64,33 @@ impl CaptureSource for Tracked {
 impl Recorder {
     fn install(self: &Arc<Self>, cx: &mut TestAppContext) {
         let rec = self.clone();
+        let listed = self.listed.clone();
         cx.update(|cx| {
+            // The picker offers one screen and one window (no thumbnails: no display here).
+            share_picker::set_lister(
+                Arc::new(move || {
+                    listed.fetch_add(1, Ordering::SeqCst);
+                    vec![
+                        Found {
+                            source: DesktopSource {
+                                kind: SourceKind::Screen,
+                                id: 1,
+                                title: "Display 1".to_owned(),
+                            },
+                            thumbnail: None,
+                        },
+                        Found {
+                            source: DesktopSource {
+                                kind: SourceKind::Window,
+                                id: 7,
+                                title: "Notes".to_owned(),
+                            },
+                            thumbnail: None,
+                        },
+                    ]
+                }),
+                cx,
+            );
             cx.set_global(ShareSources(Arc::new(move |r| {
                 rec.opened.fetch_add(1, Ordering::SeqCst);
                 rec.alive.fetch_add(1, Ordering::SeqCst);
@@ -78,6 +108,10 @@ impl Recorder {
 
     fn opened(&self) -> usize {
         self.opened.load(Ordering::SeqCst)
+    }
+
+    fn listed(&self) -> usize {
+        self.listed.load(Ordering::SeqCst)
     }
 }
 
@@ -190,7 +224,34 @@ fn resync(cx: &mut TestAppContext, w: gpui::WindowId, client: &Rc<dilla_client::
     cx.update(|cx| voice::sync(w, state, Some(client), cx));
 }
 
-/// Joins alice's window to the call and starts a screen share there; answers once it runs.
+/// Runs the UI until `window`'s picker has listed the sources.
+fn wait_listed(cx: &mut TestAppContext, window: gpui::WindowId) {
+    let deadline = Instant::now() + CALL_WAIT;
+    while !cx.read(|cx| share_picker::enumerated(window, cx)) {
+        cx.run_until_parked();
+        assert!(Instant::now() < deadline, "the picker never listed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The window becomes the focused one (the system's window activation).
+fn focus(cx: &mut TestAppContext, w: &gpui::WindowHandle<Host>) {
+    w.update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
+/// A press on the window's Share (the call bar's Go live, the DM box's Share).
+fn press_share(cx: &mut TestAppContext, w: &gpui::WindowHandle<Host>) {
+    focus(cx, w);
+    w.update(cx, |_, window, cx| {
+        voice::toggle_share(ShareKind::Screen, window, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// Joins alice's window to the call and opens her call and starts a screen share there; answers once it runs.
 fn alice_shares(cx: &mut TestAppContext, w: &World, rec: &Recorder) -> gpui::WindowHandle<Host> {
     let a = window_for(cx, &w.alice);
     let wa = a.window_id();
@@ -200,7 +261,10 @@ fn alice_shares(cx: &mut TestAppContext, w: &World, rec: &Recorder) -> gpui::Win
         s.voice.call.phase == CallPhase::In
     }));
     resync(cx, wa, &w.alice);
-    cx.update(|cx: &mut App| voice::toggle_share(ShareKind::Screen, wa, cx));
+    press_share(cx, &a);
+    wait_listed(cx, wa);
+    assert_eq!(rec.opened(), 0, "nothing opens before a choice");
+    assert!(cx.update(|cx| share_picker::share(wa, &"screen:1".into(), cx)));
     w.rt.block_on(until(&w.alice, "alice's share is on", |s| {
         s.voice.share.screen
     }));
@@ -249,11 +313,16 @@ fn another_instance_cannot_stop_or_reconfigure_a_capture(cx: &mut TestAppContext
     let rec = Arc::new(Recorder::default());
     rec.install(cx);
     let a = alice_shares(cx, &w, &rec);
-    let wa = a.window_id();
     let b = window_for(cx, &w.bob);
     let wb = b.window_id();
     // Bob's window asks to share (which would stop a share it had) and to change the quality.
-    cx.update(|cx: &mut App| voice::toggle_share(ShareKind::Screen, wb, cx));
+    press_share(cx, &b);
+    cx.run_until_parked();
+    // Bob's picker is bob's: a choice in it starts nothing in alice's call.
+    if cx.read(|cx| share_picker::is_open(wb, cx)) {
+        wait_listed(cx, wb);
+        cx.update(|cx| share_picker::share(wb, &"screen:1".into(), cx));
+    }
     let session_b = cx
         .update(|cx: &mut App| voice::session_of(wb, cx))
         .expect("bob's session");
@@ -272,10 +341,135 @@ fn another_instance_cannot_stop_or_reconfigure_a_capture(cx: &mut TestAppContext
         "alice still shares"
     );
     // Alice's own stop ends her share and its source.
-    cx.update(|cx: &mut App| voice::toggle_share(ShareKind::Screen, wa, cx));
+    press_share(cx, &a);
     w.rt.block_on(until(&w.alice, "alice's share is off", |s| {
         !s.voice.share.screen
     }));
     wait(cx, "alice's source is let go", || rec.alive() == 0);
     drop(session_b);
+}
+
+/// share.spec.ts "cancelling native screen selection publishes no video or sound and leaves the voice call usable": alice
+/// presses Share, the picker lists the sources, and she cancels. Nothing was opened, her share stays off, and the call
+/// goes on (she can still mute, and her microphone stays published).
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn cancel_publishes_nothing_and_the_call_goes_on(cx: &mut TestAppContext) {
+    let w = world("t-share-cancel");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    cx.run_until_parked();
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    resync(cx, wa, &w.alice);
+    press_share(cx, &a);
+    wait_listed(cx, wa);
+    cx.update(|cx| share_picker::cancel(wa, cx));
+    for _ in 0..10 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!cx.read(|cx| share_picker::is_open(wa, cx)));
+    assert_eq!(rec.opened(), 0, "no source was opened");
+    let s = w.alice.state().borrow().clone();
+    assert!(
+        !s.voice.share.screen && !s.voice.share.camera,
+        "nothing is shared"
+    );
+    assert_eq!(s.voice.call.phase, CallPhase::In, "the call goes on");
+    w.alice.voice().set_muted(true);
+    w.rt.block_on(until(&w.alice, "alice mutes", |s| s.voice.self_mute));
+}
+
+/// share.spec.ts "a share without sound says so on both sides": alice shares a screen (a source without sound). She is
+/// told the share carries none (`voice.shareAudio.none.application`); bob's view of her screen tile carries the no-sound
+/// mark (a remote screen without a screen-audio stream), and her own tile does not.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_share_without_sound_says_so_on_both_sides(cx: &mut TestAppContext) {
+    let w = world("t-share-silent");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let _a = alice_shares(cx, &w, &rec);
+    w.rt.block_on(until(&w.alice, "alice is told", |s| {
+        s.voice.notice == Some(dilla_client::state::voice::VoiceNotice::ShareWithoutSound)
+    }));
+    let alice_device = w.alice.state().borrow().account.device_id.unwrap();
+    let alice_user = w.alice.state().borrow().account.user_id.unwrap();
+    let screen = TileKey {
+        user: alice_user,
+        device: alice_device,
+        screen: true,
+    };
+    let bob_state = w.bob.state().borrow().clone();
+    let none = std::collections::BTreeSet::new();
+    assert!(
+        voice::silent(&bob_state, &screen, &none),
+        "bob sees the no-sound mark on alice's screen"
+    );
+    let with_sound: std::collections::BTreeSet<String> = [alice_device.hex()].into();
+    assert!(
+        !voice::silent(&bob_state, &screen, &with_sound),
+        "not when it carries sound"
+    );
+    let alice_state = w.alice.state().borrow().clone();
+    assert!(
+        !voice::silent(&alice_state, &screen, &none),
+        "alice's own screen tile has no mark"
+    );
+}
+
+/// permissions.spec.ts "cancelling the typed native screen picker returns null without creating a broker": the picker
+/// opens on a press, lists, and Cancel closes it; no source is ever asked for.
+#[gpui::test]
+fn cancelling_the_picker_creates_no_capture(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let w = cx.add_window(|_, _| Host);
+    let id = w.window_id();
+    focus(cx, &w);
+    let opened = w
+        .update(cx, |_, window, cx| {
+            share_picker::open(ShareOptions::default(), window, cx)
+        })
+        .unwrap();
+    assert!(opened, "a focused window's press opens the picker");
+    wait_listed(cx, id);
+    assert!(rec.listed() >= 1);
+    // A source the enumeration never offered is refused, and the picker stays.
+    assert!(!cx.update(|cx| share_picker::share(id, &"screen:99".into(), cx)));
+    assert!(cx.read(|cx| share_picker::is_open(id, cx)));
+    cx.update(|cx| share_picker::cancel(id, cx));
+    cx.run_until_parked();
+    assert!(!cx.read(|cx| share_picker::is_open(id, cx)));
+    assert_eq!(rec.opened(), 0, "no capture was created");
+}
+
+/// permissions.spec.ts "screen capture without a real user gesture is refused without opening a picker": a window that
+/// is not the focused one opens no picker and lists nothing.
+#[gpui::test]
+fn no_picker_without_a_press_on_a_focused_window(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let (_, vcx) = cx.add_window_view(|_, _| Host);
+    vcx.update(|window, _| window.activate_window());
+    vcx.run_until_parked();
+    assert!(vcx.update(|window, _| window.is_window_active()));
+    vcx.deactivate_window();
+    assert!(!vcx.update(|window, _| window.is_window_active()));
+    let opened = vcx.update(|window, cx| share_picker::open(ShareOptions::default(), window, cx));
+    assert!(!opened, "no picker for an unfocused window");
+    let id = vcx.update(|window, _| window.window_handle().window_id());
+    vcx.run_until_parked();
+    assert!(!vcx.read(|cx| share_picker::is_open(id, cx)));
+    assert_eq!(rec.listed(), 0, "nothing was listed");
+    assert_eq!(rec.opened(), 0);
 }

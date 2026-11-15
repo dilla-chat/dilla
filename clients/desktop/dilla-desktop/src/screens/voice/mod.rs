@@ -1100,14 +1100,48 @@ pub fn toggle_deafen_in(window: WindowId, cx: &mut App) {
     }
 }
 
-pub fn toggle_share(kind: ShareKind, window: WindowId, cx: &mut App) {
-    let Some(ui) = ui_of(window, cx) else { return };
+/// The camera or Share button of `window`'s call: stops a running share, or starts one. A start needs a press on the
+/// focused window (beta.5: "screen capture without a real user gesture is refused without opening a picker"); a screen
+/// share opens the picker (Linux on Wayland: the system portal's dialog), and the chosen source is shared
+/// ([`share_source`]).
+pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
+    let w = wid(window);
+    let Some(ui) = ui_of(w, cx) else { return };
     let on = match kind {
         ShareKind::Camera => !ui.state.voice.share.camera,
         ShareKind::Screen => !ui.state.voice.share.screen,
     };
-    if let Some(s) = &ui.session {
-        s.share(kind, on, ui.share_options);
+    let (options, session) = (ui.share_options, ui.session.clone());
+    let Some(session) = session else { return };
+    if !on {
+        session.share(kind, false, options);
+        return;
+    }
+    // A start needs the press on the focused window, in a live call of this window.
+    if !window.is_window_active() || ui.state.voice.call.phase != CallPhase::In {
+        return;
+    }
+    if kind == ShareKind::Screen && !crate::screens::share_picker::portal(cx) {
+        crate::screens::share_picker::open(options, window, cx);
+        return;
+    }
+    session.share(kind, true, options);
+}
+
+/// The picker's choice: `window`'s call shares `source` at `options` (only that window's media session).
+pub fn share_source(
+    window: WindowId,
+    source: dilla_media::sources::desktop::DesktopSource,
+    options: ShareOptions,
+    cx: &mut App,
+) {
+    let Some(ui) = ui_of(window, cx) else { return };
+    // The call the picker was opened for may have ended meanwhile: nothing starts outside a live call.
+    if ui.state.voice.call.phase != CallPhase::In {
+        return;
+    }
+    if let Some(s) = ui.session.clone() {
+        s.share_source(source, options);
     }
 }
 
@@ -1512,6 +1546,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         })
         .unwrap_or_default();
     let menu = ui_of(w, cx).and_then(share_menu);
+    let sound = screen_sound_of(w, cx);
     let ui = ui_of(w, cx)?;
     let state = ui.state.clone();
     let focus = ui.stage_focus.clone()?;
@@ -1534,6 +1569,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 (stage_focused && i == selected, focused.as_ref()),
                 &images,
                 &stats,
+                silent(&state, k, &sound),
             )
         })
         .collect();
@@ -1739,6 +1775,7 @@ fn tile(
     (selected, focused): (bool, Option<&TileKey>),
     images: &HashMap<StreamKey, Arc<RenderImage>>,
     stats: &HashMap<StreamKey, (u32, u32)>,
+    silent: bool,
 ) -> AnyElement {
     let p = state
         .voice
@@ -1850,6 +1887,14 @@ fn tile(
                 Icon::new(IconName::MicOff)
                     .size(px(m::GLYPH))
                     .color(color::DANGER),
+            )
+        })
+        // CallTile.tsx `noSound`: a remote screen that carries no sound says so (`--fg-2`, 12px).
+        .when(silent, |d| {
+            d.child(
+                Icon::new(IconName::VolumeOff)
+                    .size(px(m::GLYPH))
+                    .color(color::FG_2),
             )
         })
         .child(
@@ -2033,6 +2078,7 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
         return None;
     }
     let images = refresh_images(window, cx);
+    let sound = screen_sound_of(w, cx);
     // Before the grid's first layout its width is not measured yet: the window's width less the rail, the default
     // sidebar and the stage's padding stands in, so the first frame does not draw one tall column (review minor).
     let grid_w = match ui_of(w, cx).map_or(0.0, |u| u.dm_grid_w) {
@@ -2043,7 +2089,10 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
         }
     };
     let keys = dm_tiles(&state, channel.id);
-    let cards: Vec<AnyElement> = keys.iter().map(|k| card(&state, k, &images)).collect();
+    let cards: Vec<AnyElement> = keys
+        .iter()
+        .map(|k| card(&state, k, &images, silent(&state, k, &sound)))
+        .collect();
     let measure = gpui::canvas(
         move |bounds, window, cx| {
             let width = f32::from(bounds.size.width);
@@ -2267,6 +2316,7 @@ fn card(
     state: &AppState,
     k: &TileKey,
     images: &HashMap<StreamKey, Arc<RenderImage>>,
+    silent: bool,
 ) -> AnyElement {
     let channel = state.voice.call.channel;
     let p = channel.and_then(|c| {
@@ -2302,9 +2352,12 @@ fn card(
             p.is_some_and(VoiceParticipant::deafened),
         )
     };
-    // A screen's caption carries no person states (only a share's no-sound mark, which comes with capture).
+    // A screen's caption carries no person states, only a remote share's no-sound mark (CallTile.tsx `noSound`).
     let glyphs: Vec<(IconName, gpui::Hsla)> = if k.screen {
-        Vec::new()
+        silent
+            .then_some((IconName::VolumeOff, color::FG_2))
+            .into_iter()
+            .collect()
     } else {
         [
             (muted, IconName::MicOff, color::DANGER),
@@ -2442,7 +2495,7 @@ fn dm_controls(state: &AppState) -> AnyElement {
                     t("callStage.bar.camera"),
                     Some(v.share.camera),
                     false,
-                    |_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx),
+                    |_, window, cx| toggle_share(ShareKind::Camera, window, cx),
                 ))
                 .child(toolbar_control(
                     "dm-call-share",
@@ -2454,7 +2507,7 @@ fn dm_controls(state: &AppState) -> AnyElement {
                     t("callStage.bar.share"),
                     Some(v.share.screen),
                     false,
-                    |_, window, cx| toggle_share(ShareKind::Screen, wid(window), cx),
+                    |_, window, cx| toggle_share(ShareKind::Screen, window, cx),
                 ))
                 .child(
                     div()
@@ -2890,7 +2943,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
                 // CallControls.tsx: before a share Share opens the picker; while sharing it stops the share.
                 let w = wid(window);
                 if sharing {
-                    toggle_share(ShareKind::Screen, w, cx);
+                    toggle_share(ShareKind::Screen, window, cx);
                 } else if ui_of(w, cx).is_some() {
                     let ui = ui_mut(w, cx);
                     ui.share_menu = !ui.share_menu;
@@ -3009,7 +3062,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
                 Tint::Idle
             },
             wide,
-            |_, window, cx| toggle_share(ShareKind::Camera, wid(window), cx),
+            |_, window, cx| toggle_share(ShareKind::Camera, window, cx),
         ))
         .child(share)
         .child(bar_control(
@@ -3060,13 +3113,9 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
         if ui_of(w, cx).is_none() {
             return;
         }
-        let ui = ui_mut(w, cx);
-        ui.share_options = next;
-        if ui.state.voice.share.screen
-            && let Some(s) = &ui.session
-        {
-            s.quality(next);
-        }
+        // SharePicker.tsx: a choice is the draft; Go live starts the share at it, Apply (while sharing) sends it to the
+        // running share.
+        ui_mut(w, cx).share_options = next;
         window.refresh();
     };
     let label = |key: &'static str| line(t(key), text::XS, 14.0, color::FG_2);
@@ -3128,22 +3177,32 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
             14.0,
             if heavy { color::WARN } else { color::FG_3 },
         ))
-        .when(!sharing, |d| {
-            d.child(tracked_box(
-                "voice-share-go",
-                dilla_desktop_ui::components::Button::new(
-                    "voice-share-go-b",
-                    t("callStage.share.go"),
-                )
-                .on_click(|_, window, cx| {
-                    let w = wid(window);
-                    if ui_of(w, cx).is_some() {
-                        ui_mut(w, cx).share_menu = false;
-                    }
-                    toggle_share(ShareKind::Screen, w, cx);
+        .child(tracked_box(
+            "voice-share-go",
+            dilla_desktop_ui::components::Button::new(
+                "voice-share-go-b",
+                t(if sharing {
+                    "callStage.share.apply"
+                } else {
+                    "callStage.share.go"
                 }),
-            ))
-        });
+            )
+            .on_click(move |_, window, cx| {
+                let w = wid(window);
+                let Some(ui) = ui_of(w, cx) else { return };
+                let (options, session) = (ui.share_options, ui.session.clone());
+                ui_mut(w, cx).share_menu = false;
+                if sharing {
+                    // Apply: the running share goes on at the new quality, from the same source.
+                    if let Some(s) = session {
+                        s.quality(options);
+                    }
+                    window.refresh();
+                } else {
+                    toggle_share(ShareKind::Screen, window, cx);
+                }
+            }),
+        ));
     Some(
         div()
             .absolute()
@@ -3155,6 +3214,19 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
             .child(panel)
             .into_any_element(),
     )
+}
+
+/// The devices (hex) of `window`'s call whose screen share carries sound.
+fn screen_sound_of(window: WindowId, cx: &App) -> std::collections::BTreeSet<String> {
+    ui_of(window, cx)
+        .and_then(|u| u.session.as_ref())
+        .map(|s| s.screen_sound())
+        .unwrap_or_default()
+}
+
+/// VoiceView.tsx `remoteScreen: { screenAudio }`: another device's screen tile whose share carries no sound.
+pub fn silent(state: &AppState, k: &TileKey, sound: &std::collections::BTreeSet<String>) -> bool {
+    k.screen && Some(k.device) != state.account.device_id && !sound.contains(&k.device.hex())
 }
 
 /// The tile stats (tile-stats.ts `frameStat`): the stream's height and its frame rate over the last second.

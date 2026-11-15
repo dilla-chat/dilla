@@ -9,7 +9,7 @@ Every test title of `e2e/media` (read live) and of the retired `e2e/web`, `e2e/v
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of `e2e/media` and the frozen titles file and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 177 with a Rust test, 42 n/a (browser/phone only), 14 next plan (native), 0 TODO only (0 TODO tests proposed in all).
+Totals: 233 e2e tests; 181 with a Rust test, 42 n/a (browser/phone only), 10 next plan (native), 0 TODO only (0 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -185,8 +185,8 @@ Totals: 233 e2e tests; 177 with a Rust test, 42 n/a (browser/phone only), 14 nex
 | `e2e/voice/ring.spec.ts` | timeout: the ring ends when the instance's 30 s pass (op 53 state 0), waited for, never timed | dilla-client::tests/ring::timeout |
 | `e2e/voice/sensitivity.spec.ts` | a voice under the threshold is not sent; the threshold and the levels persist | dilla-desktop::tests/voice_settings::under_threshold_not_sent_threshold_persists |
 | `e2e/voice/share.spec.ts` | a screen share and a camera reach the other browser verified, and stop | dilla-client::tests/voice::share_and_camera_reach_peer_verified_and_stop |
-| `e2e/voice/share.spec.ts` | a share without sound says so on both sides | next plan (native): the native app shares no screen until native capture lands (Capture: the picker window and its capture sources), and the viewer's no-sound mark comes with that share |
-| `e2e/voice/share.spec.ts` | cancelling native screen selection publishes no video or sound and leaves the voice call usable | next plan (native): the screen-capture picker window (Capture) |
+| `e2e/voice/share.spec.ts` | a share without sound says so on both sides | dilla-desktop::tests/share::a_share_without_sound_says_so_on_both_sides |
+| `e2e/voice/share.spec.ts` | cancelling native screen selection publishes no video or sound and leaves the voice call usable | dilla-desktop::tests/share::cancel_publishes_nothing_and_the_call_goes_on |
 | `e2e/voice/share.spec.ts` | a shared tab’s sound is heard by the other browser | n/a (browser/phone only): a browser tab's audio through getDisplayMedia |
 | `e2e/voice/speaking.spec.ts` | alice speaking lights her tile and bob's tile for her within a beat, and a mute puts it out | dilla-desktop::src/screens/voice/session::speaking_lights_after_its_onset_and_holds_for_the_hangover |
 | `e2e/voice/stage.spec.ts` | the stage shows a tile per camera and screen, focuses a shared screen, and keeps every stream running | dilla-desktop::tests/voice::stage_tile_per_stream_focuses_share; dilla-desktop::src/screens/voice/mod::the_stage_has_a_tile_per_device_and_one_per_screen_share |
@@ -242,11 +242,11 @@ same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
 | `packages/desktop/test/electron/permissions.spec.ts` | the shipping permission boundary refuses ${kind} capture after native Deny | next plan (native): OS permission prompts and capture |
 | `packages/desktop/test/electron/permissions.spec.ts` | a grant is reusable by its owner but cannot authorize another complete instance URL | next plan (native): OS permission prompts and capture |
 | `packages/desktop/test/electron/permissions.spec.ts` | another sandboxed webContents cannot borrow an owning window permission grant | n/a (browser/phone only): Electron webContents permission grants, the native app has no web renderer |
-| `packages/desktop/test/electron/permissions.spec.ts` | screen capture without a real user gesture is refused without opening a picker | next plan (native): OS permission prompts and capture |
+| `packages/desktop/test/electron/permissions.spec.ts` | screen capture without a real user gesture is refused without opening a picker | dilla-desktop::tests/share::no_picker_without_a_press_on_a_focused_window |
 | `packages/desktop/test/electron/permissions.spec.ts` | legacy desktop getUserMedia cannot capture a valid screen source without a user gesture or picker consent | n/a (browser/phone only): Electron legacy getUserMedia desktop sources |
 | `packages/desktop/test/electron/permissions.spec.ts` | a trusted direct getDisplayMedia call cannot bypass the native broker picker | n/a (browser/phone only): Electron getDisplayMedia broker, native capture is the Capture plan |
 | `packages/desktop/test/electron/permissions.spec.ts` | legacy desktop video without a source ID and system audio remain denied in the account renderer | n/a (browser/phone only): Electron legacy getUserMedia desktop sources |
-| `packages/desktop/test/electron/permissions.spec.ts` | cancelling the typed native screen picker returns null without creating a broker | next plan (native): the screen-capture picker window (Capture) |
+| `packages/desktop/test/electron/permissions.spec.ts` | cancelling the typed native screen picker returns null without creating a broker | dilla-desktop::tests/share::cancelling_the_picker_creates_no_capture |
 | `packages/desktop/test/electron/permissions.spec.ts` | an unfamiliar native invite is refused before connecting or persisting its host | dilla-desktop::tests/onboarding::an_invite_link_is_confirmed_before_anything_is_stored_or_sent |
 | `packages/desktop/test/electron/picker.spec.ts` | Connect closes the picker: exactly one window, the instance | dilla-desktop::tests/instances::manager_lists_and_connects_by_url_and_invite |
 | `packages/desktop/test/electron/picker.spec.ts` | cancelling the confirmation keeps the picker | dilla-desktop::tests/instances::remove_needs_a_confirmation |

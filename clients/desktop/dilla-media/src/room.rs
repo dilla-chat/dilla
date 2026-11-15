@@ -325,6 +325,10 @@ pub struct StreamKey {
 /// Every verified remote video stream's newest frame.
 pub type RemoteVideos = BTreeMap<StreamKey, RemoteFrame>;
 
+/// The devices (hex) whose screen share carries sound now: a verified screen-audio stream of theirs is subscribed. A
+/// remote screen without one shows the "no sound" mark (CallTile.tsx `silent`).
+type ScreenSound = Arc<Mutex<BTreeSet<String>>>;
+
 /// Why a call's room ended on its own (session.ts `endCodeOf`): the caller ends the call ("lost", session.ts
 /// `onRoomEnd` → `leave('lost')`), so the signalling never stays in a room this device is no longer in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -574,6 +578,7 @@ pub struct Call {
     events: Mutex<Option<mpsc::UnboundedReceiver<MediaEvent>>>,
     levels: watch::Receiver<RemoteLevels>,
     tails: Tails,
+    screen_sound: ScreenSound,
     muted: Arc<AtomicBool>,
     apm_flags: ApmFlags,
     videos: watch::Receiver<RemoteVideos>,
@@ -739,13 +744,14 @@ impl Call {
         let (videos_tx, videos) = watch::channel(RemoteVideos::new());
         let (shares_ended, shares_ended_rx) = mpsc::unbounded_channel();
         let tails: Tails = Arc::default();
+        let screen_sound: ScreenSound = Arc::default();
         let muted = Arc::new(AtomicBool::new(options.muted));
         let (ended_tx, ended) = watch::channel(None);
         let mut tasks = vec![tokio::spawn(remote_tracks(
             events,
             media.clone(),
             (levels_tx, videos_tx),
-            tails.clone(),
+            (tails.clone(), screen_sound.clone()),
             speaker.as_ref().map(|s| s.sink()),
             ended_tx,
         ))];
@@ -763,6 +769,7 @@ impl Call {
             events: Mutex::new(Some(events_rx)),
             levels,
             tails,
+            screen_sound,
             muted,
             apm_flags: options.apm_flags,
             videos,
@@ -998,6 +1005,14 @@ impl Call {
         if let Some(speaker) = &self.speaker {
             speaker.sink().set_deafened(on);
         }
+    }
+
+    /// The devices (hex) whose screen share carries sound (a verified screen-audio stream is subscribed).
+    pub fn remote_screen_sound(&self) -> BTreeSet<String> {
+        self.screen_sound
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Every verified remote video stream's newest frame.
@@ -1351,7 +1366,7 @@ async fn remote_tracks(
     mut events: mpsc::UnboundedReceiver<RoomEvent>,
     media: Arc<CallMedia>,
     (levels, videos): (watch::Sender<RemoteLevels>, watch::Sender<RemoteVideos>),
-    tails: Tails,
+    (tails, screen_sound): (Tails, ScreenSound),
     playout: Option<PlayoutSink>,
     ended: watch::Sender<Option<RoomEnd>>,
 ) {
@@ -1419,6 +1434,12 @@ async fn remote_tracks(
                     }
                 }
                 if let RemoteTrack::Audio(t) = track {
+                    if slot == Slot::ScreenAudio {
+                        screen_sound
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(hex(&device));
+                    }
                     let key = format!("{}:{}", hex(&device), publication.sid().as_str());
                     let reader = tokio::spawn(read_audio(
                         t.rtc_track(),
@@ -1445,6 +1466,12 @@ async fn remote_tracks(
                     }
                     if let Some(p) = &playout {
                         p.remove(&key);
+                    }
+                    if publication.source() == TrackSource::ScreenshareAudio {
+                        screen_sound
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .remove(&hex(&device));
                     }
                     let kind = match publication.source() {
                         TrackSource::Camera => Some(ShareKind::Camera),
