@@ -404,6 +404,7 @@ mod tests {
             pinned: false,
             attachments: vec![],
             mention: false,
+            actions: Vec::new(),
         }
     }
 

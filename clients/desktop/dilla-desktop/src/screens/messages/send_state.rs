@@ -1,4 +1,8 @@
-//! A row's send and read state under its body (MessageItem.tsx, MessageRow.tsx `detail` and `actions`): a failed send
+//! A row's send and read state under its body (MessageItem.tsx, MessageRow.tsx `pendingAction`, `detail` and `actions`).
+//!
+//! An edit, delete, reaction or pin still in the outbox shows on its message (`pendingAction`): "saving…" while it waits,
+//! "not saved" with **retry** and **discard** when it failed (the first failed one wins). A post whose file is gone from
+//! the instance (`E_ATTACHMENT_MISSING`) says so and offers only discard. Then: a failed send
 //! shows its reason (`send.tooLarge` for `E_TOO_LARGE`, the code otherwise) and offers **retry** and **discard**; a row
 //! that cannot be read says why when the reason is a privacy verdict (`privacy.changed`, `privacy.unlistedMessage`,
 //! `privacy.revokedMessage` for `E_DEVICE_REVOKED`).
@@ -7,15 +11,16 @@
 //! border, `--r-md`) at the start of the column; `.d-message-row__actions` is a row of ghost buttons 0.5rem apart, 0.25rem
 //! under the item above it. Each is a row of the message's grid, 1px under the item above it.
 
-use dilla_client::state::{TimelineItem, TimelineItemState};
+use dilla_client::state::{MessageId, TimelineItem, TimelineItemState};
 use gpui::{
     App, AppContext as _, InteractiveElement as _, IntoElement, ParentElement, SharedString,
     Styled, Window, div, px,
 };
 
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
-use dilla_desktop_ui::text::{line_height, paragraph};
+use dilla_desktop_ui::text::{line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
+use dilla_desktop_ui::{Icon, IconName};
 
 use crate::slots::{EXTRA_GAP, Extra, SlotCx};
 use crate::strings::t;
@@ -28,8 +33,66 @@ const ACTIONS_TOP: f32 = 4.0;
 const ACTIONS_GAP: f32 = 8.0;
 const BUTTON_HEIGHT: f32 = 32.0;
 
+/// MessageItem.tsx `gone`: a failed post whose file is no longer on the instance.
+fn gone(item: &TimelineItem) -> bool {
+    item.state == TimelineItemState::Failed
+        && item.reason == "E_ATTACHMENT_MISSING"
+        && item.msg_id.is_some()
+}
+
+/// What a pending-action line offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineAction {
+    Retry(MessageId),
+    Discard(MessageId),
+}
+
+/// MessageRow's `pendingAction` line: its label, whether it is the failed tone, and its buttons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingLine {
+    pub label: &'static str,
+    pub failed: bool,
+    pub actions: Vec<LineAction>,
+}
+
+/// MessageItem.tsx `pendingAction`: the gone file's notice, else the first failed fold ("not saved", retry and discard),
+/// else the first pending one ("saving…").
+pub fn pending_line(item: &TimelineItem) -> Option<PendingLine> {
+    if gone(item) {
+        return Some(PendingLine {
+            label: t("shell.message.attachmentGone"),
+            failed: true,
+            actions: vec![LineAction::Discard(item.msg_id?)],
+        });
+    }
+    let action = item
+        .actions
+        .iter()
+        .find(|a| a.failed)
+        .or_else(|| item.actions.first())?;
+    Some(if action.failed {
+        PendingLine {
+            label: t("shell.message.notSaved"),
+            failed: true,
+            actions: vec![
+                LineAction::Retry(action.msg_id),
+                LineAction::Discard(action.msg_id),
+            ],
+        }
+    } else {
+        PendingLine {
+            label: t("shell.message.saving"),
+            failed: false,
+            actions: Vec::new(),
+        }
+    })
+}
+
 /// The detail line of `item` (MessageItem.tsx `detail`): a failed send's reason, or a cannot-read row's privacy verdict.
 pub fn detail(item: &TimelineItem) -> Option<String> {
+    if gone(item) {
+        return None;
+    }
     match item.state {
         TimelineItemState::Failed if item.reason.is_empty() => None,
         TimelineItemState::Failed if item.reason == "E_TOO_LARGE" => {
@@ -48,7 +111,41 @@ pub fn detail(item: &TimelineItem) -> Option<String> {
 
 /// Whether `item` offers retry and discard: a failed send the outbox still holds (it has a message id).
 pub fn offers_retry(item: &TimelineItem) -> bool {
-    item.state == TimelineItemState::Failed && item.msg_id.is_some()
+    item.state == TimelineItemState::Failed && item.msg_id.is_some() && !gone(item)
+}
+
+/// The pending line's height: a row of 2rem buttons, or one `--text-xs` line.
+pub fn pending_height(line: &PendingLine) -> f32 {
+    if line.actions.is_empty() {
+        line_height(text::XS, 1.5)
+    } else {
+        BUTTON_HEIGHT
+    }
+}
+
+/// A ghost button that retries or discards an outbox row.
+fn outbox_button(id: String, action: LineAction, ctx: &SlotCx) -> Button {
+    let (label, msg, retry) = match action {
+        LineAction::Retry(m) => (t("shell.message.retry"), m, true),
+        LineAction::Discard(m) => (t("shell.message.discard"), m, false),
+    };
+    let client = ctx.client.clone();
+    Button::new(SharedString::from(id), label)
+        .variant(ButtonVariant::Ghost)
+        .size(ButtonSize::Md)
+        .on_click(move |_, _, cx| {
+            if let Some(c) = &client {
+                let done = if retry {
+                    c.messages().retry(msg)
+                } else {
+                    c.messages().discard(msg)
+                };
+                cx.background_spawn(async move {
+                    let _ = done.await;
+                })
+                .detach();
+            }
+        })
 }
 
 /// The detail chip's lines in a column `column` wide, and the chip's height.
@@ -77,16 +174,60 @@ pub fn send_state(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Extra> {
+    let pending = pending_line(item);
     let detail = detail(item);
     let retry = offers_retry(item);
-    if detail.is_none() && !retry {
+    if pending.is_none() && detail.is_none() && !retry {
         return None;
     }
     let column = crate::screens::reactions::column_width(window, cx);
     let mut height = 0.0;
     let mut col = div().flex().flex_col().items_start();
+    if let Some(p) = pending {
+        // `.d-message-row__pending`: `--text-xs`, `--fg-3` (`--fg-2` on a mention row), the danger tone and the x
+        // glyph when failed (0.875em, 0.25em right of it), the buttons 0.5rem apart, all centred on the line.
+        let tone = if p.failed {
+            color::DANGER
+        } else if item.mention {
+            color::FG_2
+        } else {
+            color::FG_3
+        };
+        let em = f32::from(text::XS);
+        let h = pending_height(&p);
+        height += h;
+        let mut label = div().flex().items_center();
+        if p.failed {
+            label = label.child(
+                div()
+                    .mr(px(0.25 * em))
+                    .child(Icon::new(IconName::X).size(px(0.875 * em)).color(tone)),
+            );
+        }
+        label = label.child(line(p.label, text::XS, line_height(text::XS, 1.5), tone));
+        col = col.child(
+            div()
+                .id(SharedString::from(format!("msg-pending-{}", item.key)))
+                .flex()
+                .items_center()
+                .gap(px(ACTIONS_GAP))
+                .h(px(h))
+                .child(label)
+                .children(p.actions.iter().map(|a| {
+                    let name = match a {
+                        LineAction::Retry(_) => "retry",
+                        LineAction::Discard(_) => "discard",
+                    };
+                    outbox_button(format!("msg-pending-{name}-{}", item.key), *a, ctx)
+                })),
+        );
+    }
     if let Some(detail) = detail {
         let (lines, h) = detail_lines(&detail, column);
+        if height > 0.0 {
+            height += EXTRA_GAP;
+            col = col.child(div().h(px(EXTRA_GAP)));
+        }
         height += h;
         col = col.child(
             div()
@@ -109,47 +250,21 @@ pub fn send_state(
             col = col.child(div().h(px(EXTRA_GAP)));
         }
         height += actions_height();
-        let client = ctx.client.clone();
-        let again = client.clone();
         col = col.child(
             div()
                 .flex()
                 .gap(px(ACTIONS_GAP))
                 .pt(px(ACTIONS_TOP))
-                .child(
-                    Button::new(
-                        SharedString::from(format!("msg-retry-{}", item.key)),
-                        t("shell.message.retry"),
-                    )
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Md)
-                    .on_click(move |_, _, cx| {
-                        if let Some(c) = &client {
-                            let done = c.messages().retry(msg);
-                            cx.background_spawn(async move {
-                                let _ = done.await;
-                            })
-                            .detach();
-                        }
-                    }),
-                )
-                .child(
-                    Button::new(
-                        SharedString::from(format!("msg-discard-{}", item.key)),
-                        t("shell.message.discard"),
-                    )
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Md)
-                    .on_click(move |_, _, cx| {
-                        if let Some(c) = &again {
-                            let done = c.messages().discard(msg);
-                            cx.background_spawn(async move {
-                                let _ = done.await;
-                            })
-                            .detach();
-                        }
-                    }),
-                ),
+                .child(outbox_button(
+                    format!("msg-retry-{}", item.key),
+                    LineAction::Retry(msg),
+                    ctx,
+                ))
+                .child(outbox_button(
+                    format!("msg-discard-{}", item.key),
+                    LineAction::Discard(msg),
+                    ctx,
+                )),
         );
     }
     Some(Extra {
@@ -161,7 +276,6 @@ pub fn send_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dilla_client::state::MessageId;
 
     fn item(state: TimelineItemState, reason: &str) -> TimelineItem {
         TimelineItem {
@@ -182,6 +296,7 @@ mod tests {
             pinned: false,
             attachments: Vec::new(),
             mention: false,
+            actions: Vec::new(),
         }
     }
 
@@ -220,6 +335,50 @@ mod tests {
             TimelineItemState::CannotRead,
             "E_DEVICE_REVOKED"
         )));
+    }
+
+    /// MessageItem.tsx `pendingAction`: a waiting fold says "saving…"; a failed one wins and offers retry and discard of
+    /// its own outbox row; a post whose file is gone offers only discard, and no detail or retry row.
+    #[test]
+    fn a_pending_fold_shows_on_its_message() {
+        use dilla_client::state::PendingAction;
+        let fold = |n: u8, failed: bool| PendingAction {
+            msg_id: MessageId([n; 16]),
+            kind: 1,
+            failed,
+            reason: if failed {
+                "E_FORBIDDEN".into()
+            } else {
+                String::new()
+            },
+        };
+        let mut ok = item(TimelineItemState::Ok, "");
+        assert_eq!(pending_line(&ok), None);
+        ok.actions = vec![fold(7, false)];
+        let saving = pending_line(&ok).unwrap();
+        assert_eq!(
+            (saving.label, saving.failed),
+            (t("shell.message.saving"), false)
+        );
+        assert!(saving.actions.is_empty());
+        assert!((pending_height(&saving) - line_height(text::XS, 1.5)).abs() < 1e-4);
+        ok.actions.push(fold(8, true));
+        let failed = pending_line(&ok).unwrap();
+        assert_eq!(failed.label, t("shell.message.notSaved"));
+        assert_eq!(
+            failed.actions,
+            [
+                LineAction::Retry(MessageId([8; 16])),
+                LineAction::Discard(MessageId([8; 16]))
+            ]
+        );
+        assert_eq!(pending_height(&failed), BUTTON_HEIGHT);
+        let gone_row = item(TimelineItemState::Failed, "E_ATTACHMENT_MISSING");
+        let line = pending_line(&gone_row).unwrap();
+        assert_eq!(line.label, t("shell.message.attachmentGone"));
+        assert_eq!(line.actions, [LineAction::Discard(MessageId([1; 16]))]);
+        assert_eq!(detail(&gone_row), None);
+        assert!(!offers_retry(&gone_row));
     }
 
     /// A one-line chip is the xs line in its 1px border; a long verdict wraps in the column.

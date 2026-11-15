@@ -421,6 +421,7 @@ fn items_of(
                     })
                     .collect(),
                 mention: false,
+                actions: Vec::new(),
             }
         })
         .collect()

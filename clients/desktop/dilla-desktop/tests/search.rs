@@ -111,6 +111,7 @@ fn item(body: &str, seq: u64) -> TimelineItem {
         pinned: false,
         attachments: Vec::new(),
         mention: false,
+        actions: Vec::new(),
     }
 }
 

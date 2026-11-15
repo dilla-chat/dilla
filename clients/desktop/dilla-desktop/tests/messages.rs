@@ -53,6 +53,7 @@ fn post(own: bool, state: TimelineItemState, ts: u64) -> TimelineItem {
         pinned: false,
         attachments: Vec::new(),
         mention: false,
+        actions: Vec::new(),
     }
 }
 
@@ -537,6 +538,78 @@ mod live {
                 .count(),
             1
         );
+    }
+
+    /// MessageItem.tsx `pendingAction` (beta.5): Ada edits her message while she is timed out. The instance refuses the
+    /// edit, so the message says "not saved" with retry and discard of the edit (not of the message); once the timeout is
+    /// lifted, Retry sends the same edit and the owner reads the new text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+    async fn a_failed_edit_is_not_saved_and_retries() {
+        let r = room("p10a-fold").await;
+        r.ada
+            .send_text(r.general, "first words".to_owned())
+            .await
+            .unwrap()
+            .expect("queued");
+        let s = world::wait_for(&r.owner, WITHIN, "the message", |s| {
+            item(s, r.general, "first words").is_some_and(|i| i.state == TimelineItemState::Ok)
+        })
+        .await;
+        let msg = item(&s, r.general, "first words").unwrap().msg_id.unwrap();
+        world::wait_for(&r.ada, WITHIN, "the stored message", |s| {
+            item(s, r.general, "first words").is_some_and(|i| i.seq.is_some())
+        })
+        .await;
+        time_out(&r).await;
+        r.ada
+            .messages()
+            .edit(r.general, msg, "second words".to_owned())
+            .await
+            .unwrap()
+            .unwrap();
+        let s = world::wait_for(&r.ada, WITHIN, "the refused edit", |s| {
+            item(s, r.general, "first words").is_some_and(|i| i.actions.iter().any(|a| a.failed))
+        })
+        .await;
+        let row = item(&s, r.general, "first words").unwrap();
+        let line = send_state::pending_line(row).expect("a pending line");
+        assert_eq!(
+            line.label,
+            dilla_desktop::strings::t("shell.message.notSaved")
+        );
+        let fold = row.actions.iter().find(|a| a.failed).unwrap();
+        assert_eq!(fold.kind, 1);
+        assert_ne!(
+            fold.msg_id, msg,
+            "retry and discard take the edit's own row"
+        );
+        assert_eq!(
+            line.actions,
+            [
+                send_state::LineAction::Retry(fold.msg_id),
+                send_state::LineAction::Discard(fold.msg_id)
+            ]
+        );
+        let fold = fold.msg_id;
+        lift(&r).await;
+        r.ada.messages().retry(fold).await.unwrap().unwrap();
+        world::wait_for(&r.owner, WITHIN, "the retried edit", |s| {
+            s.timelines.get(&r.general).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .any(|i| i.msg_id == Some(msg) && i.body == "second words" && i.edited)
+            })
+        })
+        .await;
+        world::wait_for(&r.ada, WITHIN, "the edit saved here", |s| {
+            s.timelines.get(&r.general).is_some_and(|t| {
+                t.items.iter().any(|i| {
+                    i.msg_id == Some(msg) && i.actions.is_empty() && i.body == "second words"
+                })
+            })
+        })
+        .await;
     }
 
     /// MessageItem.tsx `discard`: the failed post leaves Ada's log and never reaches the owner.
