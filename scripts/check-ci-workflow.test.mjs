@@ -3648,7 +3648,7 @@ test('the GPUI ignored-coverage guard counts only live Linux run lines and sees 
   writeFileSync(wf, original.replace(listed, `${listed}          cargo test -p dilla-client --test cfg --test inline --locked -- --ignored\n          cargo test -p dilla-desktop --test dirsuite --locked -- --ignored\n          cargo test -p dilla-desktop-ui --locked -- --ignored\n`));
   assert.deepEqual(checkDesktopGpuiWorkflow(root), []);
   // A disabled step does not count.
-  writeFileSync(wf, readFileSync(wf, 'utf8').replace("name: Run the ignored tests (Linux)\n        if: runner.os == 'Linux' && !cancelled()", "name: Run the ignored tests (Linux)\n        if: runner.os == 'Linux' && false"));
+  writeFileSync(wf, readFileSync(wf, 'utf8').replace("name: Run the ignored tests (Linux, desktop)\n        if: matrix.shard == 'desktop' && !cancelled()", "name: Run the ignored tests (Linux, desktop)\n        if: matrix.shard == 'desktop' && false"));
   assert.ok(checkDesktopGpuiWorkflow(root).length > 0, 'a step guarded by false must not count');
   rmSync(root, { recursive: true, force: true });
 });

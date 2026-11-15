@@ -2304,31 +2304,46 @@ export const GPUI_PINNED_STEPS = {
     '    go build -tags dilla_testhost -o target/dillabot ./cmd/dillabot',
     '    cargo build -p dilla-bot-core --release --locked',
   ].join('\n'),
+  // The real-server tests run in the gpui-linux job's four shards (client, Bot, desktop, media), one step each.
   ignored: [
-    '- name: Run the ignored tests (Linux)',
-    "  if: runner.os == 'Linux' && !cancelled()",
+    '- name: Run the ignored tests (Linux, client)',
+    "  if: matrix.shard == 'client' && !cancelled()",
     '  shell: bash',
     '  run: |',
-    // The null sound card (callPrereqs) for this step only: Chromium's AudioContext in the media step never renders on it.
+    // The null sound card (callPrereqs) for these steps only: Chromium's AudioContext in the media step never renders on it.
     '    export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"',
-    '    cargo test -p dilla-parity --locked -- --ignored',
     '    cargo test -p dilla-client --test gateway --locked -- --ignored',
     '    cargo test -p dilla-client --test sync --locked -- --ignored',
     '    cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
     '    cargo test -p dilla-client --test calls --locked -- --ignored',
     '    cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored',
-    '    cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored --skip enter_to_first_answer_is_within_rtt_plus_100ms_at_p95',
-    '    # G2 is a latency budget: measured alone, not beside the other Bot tests\' instances on the same four cores.',
-    '    cargo test -p dilla-client --test bot --locked -- --ignored --exact enter_to_first_answer_is_within_rtt_plus_100ms_at_p95',
     '    cargo test -p dilla-client --test notify --locked -- --ignored',
     '    cargo build -p dilla-testkit --bin dilla-testkit --locked',
     '    cargo test -p dilla-client --test dms --locked -- --ignored',
-    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
     '    cargo test -p dilla-client --test voice --locked -- --ignored',
     '    cargo test -p dilla-client --test ring --locked -- --ignored',
+  ].join('\n'),
+  ignoredBot: [
+    '- name: Run the ignored tests (Linux, Bot)',
+    "  if: matrix.shard == 'bot' && !cancelled()",
+    '  shell: bash',
+    '  run: |',
+    '    export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"',
+    '    cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored --skip enter_to_first_answer_is_within_rtt_plus_100ms_at_p95',
+    "    # G2 is a latency budget: measured alone, not beside the other Bot tests' instances on the same four cores.",
+    '    cargo test -p dilla-client --test bot --locked -- --ignored --exact enter_to_first_answer_is_within_rtt_plus_100ms_at_p95',
     '    cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings',
     '    cargo test -p dilla-desktop --features automation --locked',
     '    cargo test -p dilla-desktop --features automation --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test sign_in --test user_settings --test voice_settings --locked -- --ignored --skip parity_',
+  ].join('\n'),
+  ignoredDesktop: [
+    '- name: Run the ignored tests (Linux, desktop)',
+    "  if: matrix.shard == 'desktop' && !cancelled()",
+    '  shell: bash',
+    '  run: |',
+    '    export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"',
+    '    cargo test -p dilla-parity --locked -- --ignored',
+    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
     '    cargo test -p dilla-desktop --test integration --locked -- --ignored',
     '    cargo test -p dilla-desktop --test slice --locked -- --ignored',
   ].join('\n'),
@@ -2366,7 +2381,7 @@ export const GPUI_PINNED_STEPS = {
   ].join('\n'),
   media: [
     '- name: Run the media call tests (Linux)',
-    "  if: runner.os == 'Linux' && !cancelled()",
+    "  if: matrix.shard == 'media' && !cancelled()",
     '  shell: bash',
     '  run: |',
     '    cargo test -p dilla-media --test live --test call --test e2e_call --locked -- --ignored --skip bot_play_from_enter_to_first_audio_frame_meets_g3 --skip bot_next_queued_track_gap_is_under_150_ms --skip bot_repeated_track_starts_within_500_ms_at_p95',
@@ -2374,6 +2389,9 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-media --test call --locked -- --ignored --exact --test-threads=1 bot_play_from_enter_to_first_audio_frame_meets_g3 bot_next_queued_track_gap_is_under_150_ms bot_repeated_track_starts_within_500_ms_at_p95',
   ].join('\n'),
 };
+
+/** The job(s) each GPUI_PINNED_STEPS entry must be in; an entry not named here belongs to the gpui-linux job. */
+const GPUI_PIN_JOBS = { tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'] };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
@@ -2401,15 +2419,19 @@ function liveIgnoreSource(source) {
   return s;
 }
 
-/** The `cargo test ... --ignored` command lines of the gpui job's Linux steps (run blocks, comment lines dropped, wrapped lines joined). */
+/**
+ * The `cargo test ... --ignored` command lines of the gpui job's Linux steps and of the gpui-linux job's (Linux only, one
+ * step per shard) steps: run blocks, comment lines dropped, wrapped lines joined.
+ */
 function gpuiIgnoredRunLines(text) {
   let doc;
   try { doc = yaml.load(text); } catch { return []; }
-  const steps = Array.isArray(doc?.jobs?.gpui?.steps) ? doc.jobs.gpui.steps : [];
+  const stepsOf = (job) => (Array.isArray(doc?.jobs?.[job]?.steps) ? doc.jobs[job].steps : []);
+  const steps = [...stepsOf('gpui').map((step) => [step, true]), ...stepsOf('gpui-linux').map((step) => [step, false])];
   const lines = [];
-  for (const step of steps) {
+  for (const [step, needsLinuxGuard] of steps) {
     const guard = String(step?.if ?? '');
-    if (typeof step?.run !== 'string' || !guard.includes("runner.os == 'Linux'") || /\bfalse\b/.test(guard)) continue;
+    if (typeof step?.run !== 'string' || (needsLinuxGuard && !guard.includes("runner.os == 'Linux'")) || /\bfalse\b/.test(guard)) continue;
     const body = step.run.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n').replace(/\\\n/g, ' ');
     for (const l of body.split('\n')) if (l.includes('cargo test') && l.includes('--ignored')) lines.push(l);
   }
@@ -2421,10 +2443,15 @@ export function checkDesktopGpuiWorkflow(root) {
   let text;
   try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); } catch { return [`${file}: missing`]; }
   const problems = [];
-  // Compare each pinned step with the steps of the file, indentation removed.
-  const body = text.split('\n').map((l) => l.replace(/^ {6}/, '')).join('\n');
+  // Compare each pinned step with the steps of the job it belongs to (GPUI_PIN_JOBS), indentation removed: the gpui job
+  // (three OSes) runs the freshness tests, the gpui-linux job's shards the real-server tests, and both build the test host.
+  const split = text.indexOf('\n  gpui-linux:\n');
+  const jobText = { gpui: split < 0 ? text : text.slice(0, split), 'gpui-linux': split < 0 ? '' : text.slice(split) };
+  const unindent = (t) => t.split('\n').map((l) => l.replace(/^ {6}/, '')).join('\n');
   for (const [name, step] of Object.entries(GPUI_PINNED_STEPS)) {
-    if (!body.includes(step)) problems.push(`${file}: the ${name} step must be exactly:\n${step}`);
+    for (const job of GPUI_PIN_JOBS[name] ?? ['gpui-linux']) {
+      if (!unindent(jobText[job]).includes(step)) problems.push(`${file}: the ${name} step must be exactly (job ${job}):\n${step}`);
+    }
   }
   // Every integration-test file with an ignored test is run by a `cargo test -p <crate> [--test <file>] ... --ignored` line in the Linux
   // ignored or media step's run block (comments stripped, so a commented-out line or a disabled step does not count), so a suite a
