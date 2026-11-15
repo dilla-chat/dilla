@@ -409,18 +409,26 @@ fn playback_speed_scales_the_clock() {
     p.seek(Duration::ZERO);
     p.set_speed(2.0);
     assert_eq!(p.speed(), 2.0);
+    // The clock is held against the time that really passed (a loaded runner sleeps longer than asked).
+    let t0 = std::time::Instant::now();
     p.play();
     std::thread::sleep(Duration::from_millis(200));
     let at = p.position().as_secs_f32();
-    assert!((0.35..0.6).contains(&at), "{at} s after 200 ms at 2x");
+    let real = t0.elapsed().as_secs_f32();
+    assert!(
+        (at - 2.0 * real).abs() <= 0.1 + 0.25 * real,
+        "{at} s after {real} s at 2x"
+    );
     p.set_speed(3.0);
     assert_eq!(p.speed(), 2.0, "not one of Chromium's speeds");
     p.set_speed(0.25);
     let from = p.position();
+    let t0 = std::time::Instant::now();
     std::thread::sleep(Duration::from_millis(200));
     let moved = (p.position() - from).as_secs_f32();
+    let real = t0.elapsed().as_secs_f32();
     assert!(
-        (0.03..0.1).contains(&moved),
-        "{moved} s after 200 ms at 0.25x"
+        (moved - 0.25 * real).abs() <= 0.03 + 0.25 * 0.25 * real,
+        "{moved} s after {real} s at 0.25x"
     );
 }
