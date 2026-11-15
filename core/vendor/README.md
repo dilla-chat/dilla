@@ -169,6 +169,14 @@ into an RTCP PLI to the publisher.
 
 Remove this copy when upstream exposes an equivalent custom frame transformer.
 
+Also added (GPUI parity plan Package 12, inline video): a standalone video decoder for the desktop's attachment
+player, wholly dilla's: `include/livekit/dilla_video_decoder.h`, `src/dilla_video_decoder.{cpp,rs}`
+(`webrtc_sys::dilla_video_decoder::VideoDecoder`), built and exported from `build.rs` and `src/lib.rs`. It makes a
+decoder through LiveKit's own `VideoDecoderFactory` (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg H.264 on Linux and
+Windows, VideoToolbox H.264/H.265 on macOS), feeds it access units Rust demuxed from the decrypted file, and converts
+each picture to BGRA with libyuv (the colour matrix the bitstream names, BT.601 when it names none), scaled down to
+fit the box Rust gives. No PeerConnection, transformer or network is involved, and nothing in libwebrtc is rebuilt.
+
 ## libwebrtc 0.4.0
 
 Upstream: <https://github.com/livekit/rust-sdks> (`libwebrtc/`; `.cargo_vcs_info.json` has the
