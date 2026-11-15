@@ -5,7 +5,10 @@
 //! on the right, 48px apart) and the 4px timeline 16px in from either side, 22px above the bottom. The controls show
 //! while paused and for a moment after the pointer moves over the picture, as Chromium's do.
 //!
-//! The same element fills the window in full screen ([`video_fullscreen`]).
+//! The controls are drawn in the Signal style (Lucide glyphs, the mono time; Jonas 2026-11-15) at Chromium's places. The
+//! ⋮ menu has Chromium's three items (Download, Playback speed, Picture in picture), drawn as the app's
+//! [`ActionMenu`]. The same element fills the window in full screen ([`video_fullscreen`]) and the picture-in-picture
+//! window ([`PipMode::Window`]); while the video is in that window its card says so ([`PipMode::Elsewhere`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -21,6 +24,7 @@ use gpui::{
 
 use super::OnClick;
 use super::player::clock;
+use crate::components::action_menu::{ActionMenu, MenuItem};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
@@ -40,10 +44,16 @@ mod c {
     /// The play button's centre from the left edge; the time starts at 48px.
     pub const PLAY_X: f32 = 25.0;
     pub const TIME_X: f32 = 48.0;
-    /// The right-hand buttons' centres from the right edge: volume, full screen. Chromium's overflow menu (⋮, at 24px:
-    /// download, playback speed, picture in picture) is not drawn; its place stays empty (a deviation for Jonas).
+    /// The right-hand buttons' centres from the right edge: volume, full screen, the ⋮ menu.
     pub const VOLUME_FROM_RIGHT: f32 = 120.0;
     pub const FULL_FROM_RIGHT: f32 = 72.0;
+    pub const MORE_FROM_RIGHT: f32 = 24.0;
+    /// The ⋮ menu's width (Chromium's overflow menu).
+    pub const MENU_W: f32 = 220.0;
+    /// The menu's bottom right corner from the ⋮'s centre, both ways.
+    pub const MENU_CORNER: f32 = 20.0;
+    /// The picture-in-picture window's corner buttons: 8px in.
+    pub const PIP_INSET: f32 = 8.0;
     pub const BUTTON: f32 = 36.0;
     pub const GLYPH: f32 = 20.0;
     /// The timeline: 4px, 16px in, its centre 22px above the bottom; a 16px tall hit area.
@@ -79,6 +89,83 @@ pub type OnFraction = Rc<dyn Fn(f32, &mut Window, &mut App) + 'static>;
 /// The pointer moved over the picture (the controls show for a moment).
 pub type OnMotion = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
+/// Opens (`true`, at the pointer) or closes the ⋮ menu.
+pub type OnMenuOpen = Rc<dyn Fn(bool, gpui::Point<Pixels>, &mut Window, &mut App) + 'static>;
+/// An item of the ⋮ menu was chosen (its id, [`menu_items`]).
+pub type OnMenuPick = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
+
+/// The ⋮ menu: Chromium's overflow menu, its playback-speed page, the labels and the handlers.
+#[derive(Clone)]
+pub struct MenuView {
+    pub open: bool,
+    /// Where it opened (the pointer, window coordinates).
+    pub at: gpui::Point<Pixels>,
+    /// The playback-speed page instead of the main one.
+    pub speed_page: bool,
+    pub speed: f32,
+    pub more_label: SharedString,
+    pub download_label: SharedString,
+    pub speed_label: SharedString,
+    pub normal_label: SharedString,
+    pub pip_label: SharedString,
+    pub on_open: OnMenuOpen,
+    pub on_pick: OnMenuPick,
+}
+
+/// The speeds of Chromium's playback-speed page.
+pub const SPEEDS: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+/// A speed as the page names it: `normal` at 1, else the number without trailing zeros ("0.25", "1.5", "2").
+pub fn speed_name(rate: f32, normal: &str) -> String {
+    if rate == 1.0 {
+        return normal.to_owned();
+    }
+    let s = format!("{rate:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+/// The ⋮ menu's items: download, playback speed (its current speed as the hint) and picture in picture; or the speed
+/// page, its first row going back, then each speed with the current one ticked. Ids: `download`, `speed`, `pip`,
+/// `speed-back`, `speed-<rate>`.
+pub fn menu_items(m: &MenuView) -> Vec<MenuItem> {
+    if m.speed_page {
+        let mut items =
+            vec![MenuItem::new("speed-back", m.speed_label.clone()).icon(IconName::ChevronLeft)];
+        items.extend(SPEEDS.iter().map(|r| {
+            MenuItem::new(format!("speed-{r}"), speed_name(*r, &m.normal_label))
+                .checked(*r == m.speed)
+        }));
+        return items;
+    }
+    vec![
+        MenuItem::new("download", m.download_label.clone()).icon(IconName::Download),
+        MenuItem::new("speed", m.speed_label.clone()).hint(speed_name(m.speed, &m.normal_label)),
+        MenuItem::new("pip", m.pip_label.clone()),
+    ]
+}
+
+/// The rate an item id names (`speed-1.5`), if it is one of [`SPEEDS`].
+pub fn picked_speed(id: &str) -> Option<f32> {
+    let r: f32 = id.strip_prefix("speed-")?.parse().ok()?;
+    SPEEDS.contains(&r).then_some(r)
+}
+
+/// Where the video is drawn with regard to picture in picture.
+#[derive(Clone)]
+pub enum PipMode {
+    /// In its card (or full screen): the usual controls and the ⋮ menu.
+    Inline,
+    /// Its card while the video plays in the picture-in-picture window: the stage tile and Chromium's notice.
+    Elsewhere { notice: SharedString },
+    /// The picture-in-picture window itself: play or pause in the middle, back to the card top left, close top right.
+    Window {
+        back_label: SharedString,
+        close_label: SharedString,
+        on_back: OnClick,
+        on_close: OnClick,
+    },
+}
+
 /// What a ready video shows and does.
 #[derive(Clone)]
 pub struct VideoView {
@@ -109,6 +196,8 @@ pub struct VideoView {
     pub on_seek: OnFraction,
     pub on_volume: OnFraction,
     pub on_motion: OnMotion,
+    pub menu: MenuView,
+    pub pip: PipMode,
 }
 
 fn fraction(position: Duration, duration: Option<Duration>) -> f32 {
@@ -234,6 +323,26 @@ pub fn video_frame(v: VideoView, w: f32, h: f32) -> AnyElement {
     let id = v.id.clone();
     let name = |s: &str| ElementId::Name(format!("{id}-{s}").into());
     let fill = fraction(v.position, v.duration);
+    if let PipMode::Elsewhere { notice } = &v.pip {
+        return div()
+            .id(name("video"))
+            .w(px(w))
+            .max_w_full()
+            .h(px(h))
+            .flex()
+            .items_center()
+            .justify_center()
+            .px(px(c::TRACK_X))
+            .bg(color::STAGE_TILE)
+            .rounded(radius::XL)
+            .child(line(
+                notice.clone(),
+                text::UI,
+                line_height(text::UI, super::LEADING),
+                color::FG_2,
+            ))
+            .into_any_element();
+    }
     let motion = v.on_motion.clone();
     let frame_group: SharedString = format!("{id}-frame").into();
     let mut frame = div()
@@ -260,6 +369,47 @@ pub fn video_frame(v: VideoView, w: f32, h: f32) -> AnyElement {
         );
     if !v.controls {
         return frame.into_any_element();
+    }
+    if let PipMode::Window {
+        back_label,
+        close_label,
+        on_back,
+        on_close,
+    } = &v.pip
+    {
+        let (glyph, label) = if v.playing {
+            (IconName::Pause, v.pause_label.clone())
+        } else {
+            (IconName::Play, v.play_label.clone())
+        };
+        return frame
+            .child(div().absolute().size_full().bg(black(0.35)))
+            .child(
+                button(name("toggle"), glyph, label, v.on_toggle.clone())
+                    .left(px((w - c::BUTTON) / 2.0))
+                    .top(px((h - c::BUTTON) / 2.0)),
+            )
+            .child(
+                button(
+                    name("back"),
+                    IconName::ChevronLeft,
+                    back_label.clone(),
+                    on_back.clone(),
+                )
+                .left(px(c::PIP_INSET))
+                .top(px(c::PIP_INSET)),
+            )
+            .child(
+                button(
+                    name("close"),
+                    IconName::X,
+                    close_label.clone(),
+                    on_close.clone(),
+                )
+                .right(px(c::PIP_INSET))
+                .top(px(c::PIP_INSET)),
+            )
+            .into_any_element();
     }
     for (from, to, a0, a1) in c::SHADE {
         let mut piece = div()
@@ -351,12 +501,48 @@ pub fn video_frame(v: VideoView, w: f32, h: f32) -> AnyElement {
     } else {
         (IconName::Maximize, v.fullscreen_label.clone())
     };
+    let m = v.menu.clone();
+    let open_menu = m.on_open.clone();
+    let was_open = m.open;
+    let more: OnClick = Rc::new(move |e, w, cx| open_menu(!was_open, e.position(), w, cx));
+    let (on_open, on_pick) = (m.on_open.clone(), m.on_pick.clone());
+    let at = m.at;
+    let items = menu_items(&m);
+    // Chromium's menu ends 20px right of and 20px below the ⋮'s centre (4px in from the video's corner), over the
+    // controls (the window clamps it).
+    let menu_h: f32 = items
+        .iter()
+        .map(crate::components::action_menu::item_height)
+        .sum::<f32>()
+        + 8.0;
+    let place = gpui::point(
+        at.x + px(c::MENU_CORNER - c::MENU_W),
+        at.y + px(c::MENU_CORNER - menu_h),
+    );
+    let menu = ActionMenu::new(name("more-menu"), m.more_label.clone(), items)
+        .no_trigger(None)
+        .at(place)
+        .width(px(c::MENU_W))
+        .open(m.open)
+        .on_open_change(move |open, w, cx| on_open(open, at, w, cx))
+        .on_select(move |item, w, cx| on_pick(item, w, cx));
     frame
         .child(
             button(name("fullscreen"), glyph, label, v.on_fullscreen.clone())
                 .right(px(c::FULL_FROM_RIGHT - c::BUTTON / 2.0))
                 .top(px(row_top)),
         )
+        .child(
+            button(
+                name("more"),
+                IconName::EllipsisVertical,
+                m.more_label.clone(),
+                more,
+            )
+            .right(px(c::MORE_FROM_RIGHT - c::BUTTON / 2.0))
+            .top(px(row_top)),
+        )
+        .child(menu)
         .child(
             div()
                 .absolute()
@@ -397,6 +583,54 @@ pub fn video_fullscreen(v: VideoView, w: f32, h: f32) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn menu(speed_page: bool, speed: f32) -> MenuView {
+        MenuView {
+            open: true,
+            at: gpui::Point::default(),
+            speed_page,
+            speed,
+            more_label: "more".into(),
+            download_label: "Download".into(),
+            speed_label: "Playback speed".into(),
+            normal_label: "Normal".into(),
+            pip_label: "Picture in picture".into(),
+            on_open: Rc::new(|_, _, _, _| {}),
+            on_pick: Rc::new(|_, _, _| {}),
+        }
+    }
+
+    /// Chromium's three items, the speed named on the main page; its eight speeds, the current one ticked.
+    #[test]
+    fn the_more_menu_has_chromium_s_items_and_speeds() {
+        let main = menu_items(&menu(false, 1.5));
+        let ids: Vec<_> = main.iter().map(|i| i.id.to_string()).collect();
+        assert_eq!(ids, ["download", "speed", "pip"]);
+        assert_eq!(main[1].hint.as_deref(), Some("1.5"));
+        let page = menu_items(&menu(true, 1.0));
+        let labels: Vec<_> = page.iter().map(|i| i.label.to_string()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Playback speed",
+                "0.25",
+                "0.5",
+                "0.75",
+                "Normal",
+                "1.25",
+                "1.5",
+                "1.75",
+                "2"
+            ]
+        );
+        assert_eq!(page.iter().filter(|i| i.checked == Some(true)).count(), 1);
+        assert_eq!(page[4].checked, Some(true));
+        for item in &page[1..] {
+            assert!(picked_speed(&item.id).is_some(), "{}", item.id);
+        }
+        assert_eq!(picked_speed("speed-3"), None);
+        assert_eq!(picked_speed("download"), None);
+    }
 
     #[test]
     fn the_timeline_fills_by_the_played_fraction() {

@@ -33,6 +33,8 @@ use demux::{Rotation, VideoTrack};
 /// Pictures are scaled down (never up) to fit this box before they are kept: a fullscreen 1080p picture stays sharp,
 /// and a 4K file costs a quarter of its size per kept picture.
 pub const OUT_BOX: u32 = 1920;
+/// The playback speeds Chromium's ⋮ menu offers (1.0 is "Normal"), shared with the menu.
+pub use dilla_desktop_ui::components::attachments::video::SPEEDS;
 /// How many decoded pictures the thread keeps ahead of the clock.
 const AHEAD: usize = 4;
 /// How many access units the poster may take (a stream whose first pictures are held back by reordering).
@@ -315,6 +317,8 @@ pub struct VideoPlayback {
     shown: Frame,
     volume: f32,
     muted: bool,
+    /// The playback rate (the ⋮ menu's playback speed): the clock runs this much faster.
+    speed: f32,
 }
 
 impl Drop for VideoPlayback {
@@ -369,6 +373,7 @@ impl VideoPlayback {
             shown: poster,
             volume: 1.0,
             muted: false,
+            speed: 1.0,
         }
     }
 
@@ -378,7 +383,10 @@ impl VideoPlayback {
 
     /// Where the clock is, never past the end.
     pub fn position(&self) -> Duration {
-        let p = self.base + self.since.map_or(Duration::ZERO, |s| s.elapsed());
+        let p = self.base
+            + self
+                .since
+                .map_or(Duration::ZERO, |s| s.elapsed().mul_f32(self.speed));
         self.duration.map_or(p, |d| p.min(d))
     }
 
@@ -436,6 +444,25 @@ impl VideoPlayback {
 
     pub fn has_audio(&self) -> bool {
         self.audio.is_some()
+    }
+
+    /// The playback rate, one of [`SPEEDS`]; the clock and the sound follow it from where they are.
+    pub fn set_speed(&mut self, rate: f32) {
+        if !SPEEDS.contains(&rate) {
+            return;
+        }
+        self.base = self.position();
+        if self.since.is_some() {
+            self.since = Some(Instant::now());
+        }
+        self.speed = rate;
+        if let Some(a) = &self.audio {
+            a.set_speed(rate);
+        }
+    }
+
+    pub fn speed(&self) -> f32 {
+        self.speed
     }
 
     /// 0.0 to 1.0; a volume above 0 unmutes.

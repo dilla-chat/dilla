@@ -450,6 +450,10 @@ impl Playback {
     pub fn volume(&self) -> f32 {
         self.player.volume()
     }
+    /// The playback rate (a video's playback speed): rodio resamples, so the pitch follows the rate.
+    pub fn set_speed(&self, rate: f32) {
+        self.player.set_speed(rate);
+    }
 }
 
 /// The directory a video handed to the system player is written to: the instance's own data directory
