@@ -19,6 +19,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputState};
 
+use crate::a11y::{Accessible, Role};
 use crate::components::text_field::edge;
 use crate::text::{line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
@@ -465,6 +466,7 @@ impl RenderOnce for PrimaryAction {
         let ready = self.ready;
         let base = div()
             .id(self.id)
+            .a11y(Role::Button, self.label.clone())
             .w(px(CARD_INNER_W))
             .h(px(ACTION_H))
             .flex_none()
@@ -539,6 +541,7 @@ impl RenderOnce for NavLink {
         };
         let base = div()
             .id(self.id)
+            .a11y(Role::Button, self.label.clone())
             .min_h(px(24.0))
             .flex()
             .items_center()
@@ -616,6 +619,7 @@ impl RenderOnce for OnboardingField {
             // As `TextField`: 13px (`--text-input`) with the frame's own 12px sides, never the editor's 14px and padding.
             .child(
                 Input::new(&self.input)
+                    .aria_label(self.label.clone())
                     .appearance(false)
                     .text_size(text::INPUT)
                     .px_0()

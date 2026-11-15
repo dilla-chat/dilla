@@ -5,8 +5,9 @@
 //! speaks to the dialog (Create.tsx review I2), and a second press while a create runs does nothing (one server per
 //! press).
 //!
-//! Against the web: the private-channel toggle and the announcement channel's role list are not offered yet (the roles
-//! come with Task 14's slice); an announcement channel is created read-only for @everyone, writable by its creator. A
+//! A new channel can be private from birth (the **private channel** switch and the roles that may see it, for a creator
+//! who may manage roles), and an announcement channel takes the roles that may post in it (Create.tsx
+//! `CreateChannelFlow`); the roles on offer are those below the creator's highest (all of them for the owner). A
 //! create whose answer was lost is not adopted from the server list (WB m5): the person sees the refusal and the server
 //! list shows what exists.
 
@@ -17,7 +18,8 @@ use dilla_client::features::signup::{
     self as su, CHANNEL_NAME_MAX_BYTES, FlowError, INVITE_MAX_USES, INVITE_TTL_DAYS, NameProblem,
     NewChannelKind, SERVER_NAME_MAX_BYTES,
 };
-use dilla_client::state::{ChannelId, CommunityId};
+use dilla_client::state::roles::{CommunityAccess, RoleId, RoleSummary};
+use dilla_client::state::{AppState, ChannelId, CommunityId};
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Subscription, Window, div,
@@ -25,10 +27,12 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
+use dilla_desktop_ui::components::check_list::{CheckList, CheckListItem};
 use dilla_desktop_ui::components::dialog::{Dialog as DialogPanel, InitialFocus};
 use dilla_desktop_ui::components::onboarding::{AddServerChoice, AddServerChoices, forms};
 use dilla_desktop_ui::components::segmented::Segmented;
 use dilla_desktop_ui::components::text_field::TextField;
+use dilla_desktop_ui::components::toggle::Toggle;
 use dilla_desktop_ui::components::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::text::{line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, text};
@@ -36,6 +40,64 @@ use dilla_desktop_ui::tokens::{color, text};
 use super::{Navigate, OnNavigate, Open};
 use crate::strings::{t, tf};
 use crate::{tracked_box, tracked_focus};
+
+/// Create.tsx `PRIVATE_ROLES_MAX` and `ANNOUNCE_ROLES_MAX`: a create carries at most 100 overwrites (@everyone's and the
+/// creator's own among them), so the role rows past these are disabled and the instance's refusal is unreachable.
+pub const PRIVATE_ROLES_MAX: usize = 98;
+pub const ANNOUNCE_ROLES_MAX: usize = 99;
+
+/// The roles a creator may name in a new channel's overwrites (Create.tsx `offered` and `announceRoles`): every role but
+/// @everyone that ranks below the creator's highest (all of them for the owner), highest first.
+pub fn offered_roles<'a>(
+    roles: &'a [RoleSummary],
+    access: &CommunityAccess,
+) -> Vec<&'a RoleSummary> {
+    let mut out: Vec<&RoleSummary> = roles
+        .iter()
+        .filter(|r| Some(r.id) != access.everyone_id && (access.owner || r.position < access.top))
+        .collect();
+    out.sort_by_key(|r| std::cmp::Reverse(r.position));
+    out
+}
+
+/// The check list's rows for `offered`, `ticked` checked; once `max` are ticked the others are disabled, with `full`
+/// as their detail when given.
+pub fn role_rows(
+    offered: &[&RoleSummary],
+    ticked: &[RoleId],
+    max: usize,
+    full: Option<&str>,
+) -> Vec<CheckListItem> {
+    offered
+        .iter()
+        .map(|r| {
+            let checked = ticked.contains(&r.id);
+            let disabled = !checked && ticked.len() >= max;
+            let item = CheckListItem::new(role_key(&r.id), r.name.clone(), checked)
+                .color(r.color)
+                .disabled(disabled);
+            match full {
+                Some(detail) if disabled => item.detail(detail.to_owned()),
+                _ => item,
+            }
+        })
+        .collect()
+}
+
+fn role_key(id: &RoleId) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A tick (`on`) or untick of the row `key` in `list`: a tick goes last, once; a key not on offer changes nothing.
+pub fn toggle_role(list: &mut Vec<RoleId>, offered: &[&RoleSummary], key: &str, on: bool) {
+    let Some(id) = offered.iter().map(|r| r.id).find(|id| role_key(id) == key) else {
+        return;
+    };
+    list.retain(|x| *x != id);
+    if on {
+        list.push(id);
+    }
+}
 
 /// A link whose answer took longer than this is not copied by itself (Create.tsx `AUTO_COPY_MS`).
 const AUTO_COPY_MS: u128 = 1000;
@@ -84,6 +146,10 @@ pub struct CreateFlows {
     community: Option<CommunityId>,
     parent: Option<ChannelId>,
     can_announce: bool,
+    /// The private-channel switch and the roles ticked under it; the roles ticked for an announcement channel.
+    private: bool,
+    ticked: Vec<RoleId>,
+    announce_ticked: Vec<RoleId>,
     error: Option<SharedString>,
     busy: bool,
     partial: Option<Partial>,
@@ -143,6 +209,9 @@ impl CreateFlows {
             community: None,
             parent: None,
             can_announce: false,
+            private: false,
+            ticked: Vec::new(),
+            announce_ticked: Vec::new(),
             error: None,
             busy: false,
             partial: None,
@@ -229,6 +298,9 @@ impl CreateFlows {
         self.partial = None;
         self.busy = false;
         self.kind = NewChannelKind::Text;
+        self.private = false;
+        self.ticked.clear();
+        self.announce_ticked.clear();
         self.invite_state = InviteState::Creating;
         self.invite_status = None;
         self.prefilled = None;
@@ -448,6 +520,15 @@ impl CreateFlows {
         };
         let flow = client.onboarding();
         let at = self.session;
+        // The roles and the creator's access (the `permissions:` and `roles:` slices), for the switch and the role lists.
+        let read = client
+            .roles()
+            .run(move |r| async move { r.load_access(community).await });
+        cx.spawn(async move |this, cx| {
+            let _ = read.await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let can = flow.can_announce(community).await;
             let _ = this.update(cx, |this, cx| {
@@ -501,11 +582,38 @@ impl CreateFlows {
         let flow = client.onboarding();
         let parent = self.parent;
         let at = self.session;
+        // Only ticks still on offer are sent; a private create needs the manage-roles right and is never an announcement.
+        let (private, announce) = {
+            let state = client.state().borrow().clone();
+            let (offered, access) = Self::offered(&state, community);
+            let keep = |list: &[RoleId]| -> Vec<RoleId> {
+                list.iter()
+                    .copied()
+                    .filter(|id| offered.iter().any(|r| r.id == *id))
+                    .collect()
+            };
+            let private =
+                (access.manage_roles && self.private && kind != NewChannelKind::Announcement)
+                    .then(|| keep(&self.ticked));
+            let announce = if kind == NewChannelKind::Announcement {
+                keep(&self.announce_ticked)
+            } else {
+                Vec::new()
+            };
+            (private, announce)
+        };
         self.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let made = flow
-                .create_channel(community, kind, &shown, parent, &[])
+                .create_channel_with(
+                    community,
+                    kind,
+                    &shown,
+                    parent,
+                    &announce,
+                    private.as_deref(),
+                )
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 client.refresh();
@@ -540,6 +648,127 @@ impl CreateFlows {
             });
         })
         .detach();
+    }
+
+    /// The roles on offer in `community` and the creator's access, from the roles slice.
+    fn offered(state: &AppState, community: CommunityId) -> (Vec<RoleSummary>, CommunityAccess) {
+        let access = state.roles.access_of(community);
+        let offered = offered_roles(state.roles.roles_of(community), &access)
+            .into_iter()
+            .cloned()
+            .collect();
+        (offered, access)
+    }
+
+    /// Under the name: an announcement channel's posting roles and their hint; else, for a creator who may add channels
+    /// but not manage roles, why there is no announcement kind; else, for one who may manage roles, the private switch
+    /// and, when it is on, the roles that may see the channel (Create.tsx's children of `CreateChannel`).
+    fn channel_access(&self, width: f32, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let (Some(community), Some(client)) = (self.community, self.client.clone()) else {
+            return Vec::new();
+        };
+        let state = client.state().borrow().clone();
+        let (offered, access) = Self::offered(&state, community);
+        let refs: Vec<&RoleSummary> = offered.iter().collect();
+        // `.d-select__hint`: `--text-sm`, `--fg-3`.
+        let hint = |text_: &str| {
+            div()
+                .flex()
+                .flex_col()
+                .children(paragraph(
+                    text_,
+                    text::SM,
+                    line_height(text::SM, 1.5),
+                    color::FG_3,
+                    width,
+                ))
+                .into_any_element()
+        };
+        let mut out = Vec::new();
+        if self.kind() == NewChannelKind::Announcement {
+            let rows = role_rows(&refs, &self.announce_ticked, ANNOUNCE_ROLES_MAX, None);
+            let this = cx.entity().downgrade();
+            let keys = offered.clone();
+            out.push(
+                tracked_box(
+                    "create-channel-announce-roles",
+                    CheckList::new(
+                        "create-channel-announce-roles",
+                        t("announce.roles"),
+                        rows,
+                        t("announce.noRoles"),
+                    )
+                    .on_toggle(move |id, on, _, cx| {
+                        let offered: Vec<&RoleSummary> = keys.iter().collect();
+                        let _ = this.update(cx, |this, cx| {
+                            toggle_role(&mut this.announce_ticked, &offered, id, on);
+                            cx.notify();
+                        });
+                    }),
+                )
+                .into_any_element(),
+            );
+            out.push(hint(t("announce.hint")));
+            return out;
+        }
+        if access.loaded && !self.can_announce && access.manage_channels && !access.manage_roles {
+            out.push(hint(t("announce.needsRoles")));
+            return out;
+        }
+        if !access.manage_roles {
+            return out;
+        }
+        let this = cx.entity().downgrade();
+        out.push(
+            tracked_box(
+                "create-channel-private",
+                Toggle::new(
+                    "create-channel-private",
+                    t("chperm.create.private"),
+                    self.private,
+                )
+                .show_label(true)
+                .hint(t("chperm.create.privateHint"))
+                .on_change(move |on, _, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.private = on;
+                        this.error = None;
+                        cx.notify();
+                    });
+                }),
+            )
+            .into_any_element(),
+        );
+        if self.private {
+            let rows = role_rows(
+                &refs,
+                &self.ticked,
+                PRIVATE_ROLES_MAX,
+                Some(t("chperm.create.tooMany")),
+            );
+            let this = cx.entity().downgrade();
+            let keys = offered.clone();
+            out.push(
+                tracked_box(
+                    "create-channel-private-roles",
+                    CheckList::new(
+                        "create-channel-private-roles",
+                        t("chperm.create.roles"),
+                        rows,
+                        t("chperm.create.noRoles"),
+                    )
+                    .on_toggle(move |id, on, _, cx| {
+                        let offered: Vec<&RoleSummary> = keys.iter().collect();
+                        let _ = this.update(cx, |this, cx| {
+                            toggle_role(&mut this.ticked, &offered, id, on);
+                            cx.notify();
+                        });
+                    }),
+                )
+                .into_any_element(),
+            );
+        }
+        out
     }
 
     fn channel_hint(&self, cx: &gpui::App) -> String {
@@ -889,9 +1118,7 @@ impl Render for CreateFlows {
                         &field_focus,
                         div().w_full().child(field),
                     ));
-                if self.kind() == NewChannelKind::Announcement {
-                    body = body.child(body_text(t("announce.hint"), body_w));
-                }
+                body = body.children(self.channel_access(body_w, cx));
                 DialogPanel::new(
                     "create-channel",
                     tf("create.channel.title", &[("server", &server)]),

@@ -50,6 +50,32 @@ pub fn draft_key(channel: ChannelId) -> String {
 pub enum Blocked {
     /// An announcement channel the viewer may not post in: `announce.readOnly`.
     ReadOnly,
+    /// The viewer is timed out in the channel's community until this Unix second: `shell.composer.timedOut`.
+    TimedOut(u64),
+}
+
+/// Shell.tsx `timeoutReason`: in a text channel of a community where the viewer's own timeout (the advisory read of
+/// `getMemberTimeout`, kept in `people.timeouts`) has not run out at `now_s`, its expiry. The instance enforces it.
+pub fn timed_out(state: &AppState, channel: &Channel, now_s: u64) -> Option<u64> {
+    if channel.kind != 0 {
+        return None;
+    }
+    let me = state.account.user_id?;
+    state
+        .people
+        .timeouts
+        .get(&channel.community_id)
+        .and_then(|m| m.get(&me))
+        .copied()
+        .filter(|&expires| expires > now_s)
+}
+
+/// Why the viewer cannot post in `channel` at `now_s`: a timeout first (Shell.tsx: `timeoutReason ?? blockReason`),
+/// then the announcement channel's rule ([`may_send`]).
+pub fn blocked_at(state: &AppState, channel: &Channel, now_s: u64) -> Option<Blocked> {
+    timed_out(state, channel, now_s)
+        .map(Blocked::TimedOut)
+        .or_else(|| may_send(state, channel).err())
 }
 
 /// Whether the viewer may post in `channel`. Announcement channels (mode 1) take posts only from the roles the server

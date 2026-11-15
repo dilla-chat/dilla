@@ -18,6 +18,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
+use crate::a11y::{Accessible, Role};
 use crate::metrics::focus_ring;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
@@ -253,6 +254,7 @@ impl EmojiGrid {
         let hover_view = view.clone();
         let cell = div()
             .id((SharedString::from(format!("{}-cell", self.id)), pos))
+            .a11y(Role::Button, item.name.clone())
             .track_focus(&handle)
             .tab_stop(pos == self.focus)
             .flex()

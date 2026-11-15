@@ -6,13 +6,14 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, px,
+    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
+    RenderOnce, SharedString, Styled, Window, div, px,
 };
 
 use super::avatar::{Avatar, AvatarSize};
 use super::button::{Button, ButtonSize, ButtonVariant};
 use super::dialog::{Dialog, DialogKind, InitialFocus};
+use crate::a11y::{Accessible, Live, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::text::{line, line_height, paragraph};
@@ -208,6 +209,7 @@ impl RenderOnce for ConfirmDialog {
             .close_handle(&cancel)
             .can_close(self.can_close)
             .description(description)
+            .a11y_description(self.body.clone())
             .footer(confirm)
             .initial_focus(match &self.field_focus {
                 Some(h) => InitialFocus::Handle(h.clone()),
@@ -231,8 +233,12 @@ impl RenderOnce for ConfirmDialog {
                 body = body.child(fields);
             }
             if let Some(error) = self.error {
+                // `role="alert"`: the refusal is read out as it arrives.
                 body = body.child(
                     div()
+                        .id((self.id.clone(), "error"))
+                        .a11y(Role::Alert, error.clone())
+                        .live(Live::Assertive)
                         .flex()
                         .items_center()
                         .gap(px(4.0))

@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use dilla_client::Area;
 use dilla_client::state::{AppState, CommunityId, Member, TimelineItem, TimelineItemState, UserId};
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::reactions::{
     Chip, ReactionBar, Slot, bar_height, chip_width, tooltip::tooltip as reaction_tooltip,
     wrap_lines,
@@ -126,7 +127,7 @@ pub fn set_log_width(window: gpui::WindowId, width: f32, cx: &mut App) {
 }
 
 /// How wide the message column is: the log less the row's gutter columns and right padding.
-fn column_width(window: &Window, cx: &App) -> f32 {
+pub(crate) fn column_width(window: &Window, cx: &App) -> f32 {
     let log = crate::per_window::get::<LogWidth>(window.window_handle().window_id(), cx)
         .map_or_else(
             || f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR),
@@ -328,6 +329,8 @@ pub fn emoji_button(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<A
     let remember = from.clone();
     let button = div()
         .id("composer-emoji-button")
+        .a11y(Role::Button, t("shell.composer.emoji"))
+        .aria_expanded(open)
         .track_focus(&handle)
         .tab_stop(true)
         .flex()

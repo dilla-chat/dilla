@@ -13,13 +13,14 @@
 //! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
 use dilla_client::state::{
-    AppState, Channel, CommunityId, Member, TimelineItem, TimelineItemState,
+    AppState, Channel, ChannelId, CommunityId, Member, TimelineItem, TimelineItemState,
 };
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
 use dilla_desktop_ui::text::{
@@ -359,6 +360,74 @@ fn body_parts(
     }
 }
 
+/// The body as a screen reader reads it: the text with each mention as its pill's label (`@name`), code as written.
+pub fn spoken_body(parts: &[Body]) -> String {
+    fn walk(parts: &[Body], out: &mut String) {
+        for p in parts {
+            match p {
+                Body::Text(s) | Body::Code(s) | Body::CodeBlock { text: s, .. } => out.push_str(s),
+                Body::Link { href } => out.push_str(href),
+                Body::Mention(pill) => out.push_str(&pill.label),
+                Body::Strong(c) | Body::Em(c) | Body::Strike(c) | Body::Quote(c) => walk(c, out),
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(parts, &mut out);
+    out
+}
+
+/// A message row's accessible name: MessageRow.tsx labels the `<article>` by its head (the author and the time), then
+/// the body follows; here both are the name, as the row's text has no nodes of its own.
+fn spoken_row(name: &str, time: &str, body: &str) -> String {
+    format!("{name}, {time}: {body}")
+}
+
+/// [`spoken_row`] of `item`: its author as the log names them, its time in the log's zone, its body as read.
+pub fn spoken_item(
+    state: &AppState,
+    members: &[Member],
+    community: CommunityId,
+    item: &TimelineItem,
+    clock: Clock,
+) -> String {
+    let name = author(state, members, item);
+    let zone = |secs: i64| zone_of(clock, secs);
+    let time = format::time_in(item.ts, &zone);
+    let parts = body_parts(state, members, community, item);
+    spoken_row(&name, &time, &spoken_body(&parts))
+}
+
+/// What the log reads out as it arrives (MessageLog.tsx `aria-live="polite" aria-relevant="additions"`): the newest
+/// readable message of the open log when it is someone else's and newer than `seen`, the key last spoken (or the tail
+/// when the log opened). Returns the key to remember and, when there is one, the text to announce.
+pub fn arrival(
+    state: &AppState,
+    channel: &Channel,
+    clock: Clock,
+    seen: Option<&(ChannelId, String)>,
+) -> Option<((ChannelId, String), Option<String>)> {
+    let items = &state.timelines.get(&channel.id)?.items;
+    let last = items.last()?;
+    let key = (channel.id, last.key.clone());
+    match seen {
+        Some(s) if *s == key => None,
+        // Another log (or the first look at this one): its tail is what was already there.
+        Some((c, _)) if *c != channel.id => Some((key, None)),
+        None => Some((key, None)),
+        Some(_) if last.own || !readable(last) => Some((key, None)),
+        Some(_) => {
+            let members = state
+                .members
+                .get(&channel.community_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let text = spoken_item(state, members, channel.community_id, last, clock);
+            Some((key, Some(text)))
+        }
+    }
+}
+
 /// A follow-up whose head shows a mark (a webhook's "via", edited, pinned, the send state) keeps a head line of its marks
 /// (MessageRow.css: a grouped head leaves the flow only when everything in it is for a screen reader).
 fn marks_head(state: &AppState, community: CommunityId, item: &TimelineItem) -> bool {
@@ -464,6 +533,18 @@ impl Placer {
                 .absolute()
                 .left(px(x.round()))
                 .top(px(top.round()))
+                .child(element)
+                .into_any_element(),
+        );
+    }
+
+    /// [`Self::block`] at the fractional position (an inline glyph inside a text run).
+    fn block_exact(&mut self, x: f32, top: f32, element: impl IntoElement) {
+        self.out.push(
+            div()
+                .absolute()
+                .left(px(x))
+                .top(px(top))
                 .child(element)
                 .into_any_element(),
         );
@@ -587,12 +668,24 @@ fn draw_marks(
         placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
         x += w + HEAD_GAP;
     }
-    for mark in head_marks(item) {
-        let tone = if item.state == TimelineItemState::Failed {
-            color::DANGER
-        } else {
-            meta_color
-        };
+    let marks = head_marks(item);
+    let last = marks.len().saturating_sub(1);
+    for (n, mark) in marks.into_iter().enumerate() {
+        // The send state is the last mark; a failed one is the danger tone after the x glyph (MessageRow.css `::before`:
+        // 0.875em, 0.25em right of it, its bottom 0.125em under the baseline), so the state is never colour alone.
+        let failed = n == last && item.state == TimelineItemState::Failed;
+        let tone = if failed { color::DANGER } else { meta_color };
+        if failed {
+            let em = f32::from(text::META);
+            let baseline = meta_top + chromium_baseline(Face::Mono, em, meta_line());
+            let glyph = 0.875 * em;
+            placer.block_exact(
+                x,
+                baseline + 0.125 * em - glyph,
+                Icon::new(IconName::X).size(px(glyph)).color(tone),
+            );
+            x += glyph + 0.25 * em;
+        }
         let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
         placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
         x += w + HEAD_GAP;
@@ -765,11 +858,18 @@ fn draw_row(
     // The row's box: the hover fill and bar, the mention tint, the flash; the toolbar over its top edge.
     let group = shown.group.clone();
     let flash = ui.read(cx).flashing(&item.key);
+    // MessageRow.tsx's `<article>`: one node per message, named by its author, time and text. Its id is the message's
+    // key, so a row keeps its node while earlier messages load above it.
+    let spoken = spoken_item(
+        cx_row.state,
+        cx_row.members,
+        cx_row.community,
+        item,
+        cx_row.clock,
+    );
     let mut row = div()
-        .id(gpui::SharedString::from(format!(
-            "message-row-{}",
-            shown.index
-        )))
+        .id(gpui::SharedString::from(format!("message-{}", item.key)))
+        .a11y(Role::Article, spoken)
         .absolute()
         .left(len(0.))
         .top(px(base))
@@ -870,7 +970,8 @@ pub fn render(
         let body_color = match item.state {
             TimelineItemState::Ok => color::FG_BODY,
             TimelineItemState::Pending => color::FG_2,
-            TimelineItemState::Failed => color::DANGER,
+            // MessageRow.css colours only a pending body; a failed one keeps `--fg-body` (its head mark is the danger).
+            TimelineItemState::Failed => color::FG_BODY,
             _ => color::FG_3,
         };
         let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
@@ -1049,8 +1150,19 @@ pub fn render(
         u.log_focus.get_or_insert_with(|| cx.focus_handle()).clone()
     });
     let to_focus = focus.clone();
+    // MessageLog.tsx: `role="log"` named "messages in #general" (a DM's by its name). A new message from someone else
+    // in the open log is read out through the window's announcer (`announce_new`), as the web's `aria-live`.
+    let target = if state.dms.get(channel.id).is_some() {
+        channel.name.clone()
+    } else {
+        format!("#{}", channel.name)
+    };
     div()
         .id("message-log")
+        .a11y(
+            Role::Log,
+            t("shell.log.label").replace("#{channel}", &target),
+        )
         .key_context("MessageLog")
         .track_focus(&focus)
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {

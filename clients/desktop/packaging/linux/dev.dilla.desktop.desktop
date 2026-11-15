@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Dilla
+GenericName=Chat
+Comment=End-to-end encrypted chat, voice and video
+Exec=dilla-desktop %U
+Icon=dev.dilla.desktop
+Terminal=false
+StartupWMClass=dev.dilla.desktop
+Categories=Network;InstantMessaging;Chat;
+Keywords=messaging;voice;video;encrypted;

@@ -7,6 +7,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
@@ -69,6 +70,7 @@ impl RenderOnce for AfkPage {
         let id = self.id.clone();
         let mut action = div()
             .id((id, "action"))
+            .a11y(Role::Button, self.action.clone())
             .flex()
             .flex_none()
             .items_center()

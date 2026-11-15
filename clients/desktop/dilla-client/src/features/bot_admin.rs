@@ -844,6 +844,42 @@ impl BotAdmin {
         })
     }
 
+    /// controller.ts `patchBotProfile`: names the community's managed Bot (`PATCH /bot/profile`, `[display]`) and answers
+    /// the name the instance stored; the member list is read again, so the new name shows wherever the Bot is named. The
+    /// name is checked as a profile display name first (routes.ts `checkedProfile`): a blank or refused one is never sent.
+    pub fn rename_bot(
+        &self,
+        community: CommunityId,
+        display: &str,
+    ) -> oneshot::Receiver<Result<String, ClientError>> {
+        use crate::features::profile::{
+            DISPLAY_MAX_CHARS, profile_text_problem, profile_text_value,
+        };
+        let problem = profile_text_problem(display, DISPLAY_MAX_CHARS, false);
+        let display = profile_text_value(display, false);
+        let inner = self.inner.clone();
+        self.spawn(async move {
+            if problem.is_some() || display.is_empty() {
+                return Err(ClientError::Sync(
+                    "E_ROUTE_INPUT: bot display name is required".to_owned(),
+                ));
+            }
+            let body = Value::Array(vec![Value::Text(display)]).encode();
+            let answer = Self::call::<r::PatchBotProfile>(&inner, &[&community.hex()], body, false)
+                .await
+                .map_err(sync_err)?;
+            let value =
+                Value::decode(&answer).map_err(|_| decode_err(v::DecodeError("not CBOR")))?;
+            let saved = v::text(&v::arr(&value, 1).map_err(decode_err)?[0]).map_err(decode_err)?;
+            if saved.is_empty() || profile_text_problem(&saved, DISPLAY_MAX_CHARS, false).is_some()
+            {
+                return Err(decode_err(v::DecodeError("invalid bot display name")));
+            }
+            let _ = crate::features::members::reload_members(&inner, community).await;
+            Ok(saved)
+        })
+    }
+
     /// Disables the installation (at the revision it was read at).
     pub fn disable_installation(
         &self,

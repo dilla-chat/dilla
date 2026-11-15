@@ -21,6 +21,7 @@ use gpui::{
 use super::super::dialog::{
     HasOpenFocus, OVERLAY_CONTEXT, OpenFocus, TrapNext, TrapPrevious, sync_open_focus, trap_tab,
 };
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
@@ -58,6 +59,8 @@ pub struct SettingsFrame {
     footer: Option<AnyElement>,
     wide: bool,
     on_close: Option<CloseHandler>,
+    /// The dialog's accessible name (the web's `aria-labelledby` title).
+    title: SharedString,
 }
 
 impl SettingsFrame {
@@ -74,7 +77,14 @@ impl SettingsFrame {
             footer: None,
             wide: false,
             on_close: None,
+            title: SharedString::default(),
         }
+    }
+
+    /// Names the settings dialog for a screen reader: the open section's title (SettingsFrame.tsx `aria-labelledby`).
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = title.into();
+        self
     }
 
     pub fn open(mut self, open: bool) -> Self {
@@ -328,6 +338,8 @@ impl RenderOnce for SettingsFrame {
         let close_click = close_with.clone();
         let close = div()
             .id((self.id.clone(), "close"))
+            .a11y(Role::Button, self.close_label.clone())
+            .aria_keyshortcuts("Escape")
             .absolute()
             .top(px(22.0))
             .right(px(16.0))
@@ -373,6 +385,7 @@ impl RenderOnce for SettingsFrame {
             .child(
                 div()
                     .id((self.id.clone(), "panel"))
+                    .modal_dialog(self.title.clone())
                     .track_focus(&panel)
                     .key_context(OVERLAY_CONTEXT)
                     .relative()

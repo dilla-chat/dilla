@@ -5,11 +5,14 @@
 
 use std::rc::Rc;
 
+use gpui::StatefulInteractiveElement as _;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window,
     div,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::components::button::{Button, ButtonSize};
 use crate::metrics::Density;
 use crate::tokens::{color, radius, text};
@@ -70,8 +73,12 @@ impl RenderOnce for DmPickerList {
             .gap(density.row_gap())
             .children(self.members.into_iter().enumerate().map(|(i, m)| {
                 let pick = self.on_pick.clone();
+                let picked = self.selected == Some(i);
                 let mut row = div()
                     .id(("dm-pick", i))
+                    .a11y(Role::ListBoxOption, m.name.clone())
+                    .aria_selected(picked)
+                    .when(picked, |r| r.aria_active_descendant())
                     .flex()
                     .justify_between()
                     .items_center()

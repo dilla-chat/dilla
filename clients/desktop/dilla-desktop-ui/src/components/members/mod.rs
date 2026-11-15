@@ -13,6 +13,7 @@ use gpui::{
     rgb,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::components::avatar::{Avatar, AvatarShape, AvatarSize, Presence, colour_of};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
@@ -273,6 +274,12 @@ fn row(
             .ellipsis(),
         );
     }
+    // The row's accessible name: the person, then their status (what the row shows under the name).
+    let row_name = if m.status.is_empty() {
+        m.name.to_string()
+    } else {
+        format!("{}, {}", m.name, m.status)
+    };
     let id: SharedString = format!("member-{}", m.name).into();
     let (open_id, menu_id, key_id) = (m.id.clone(), m.id.clone(), m.id.clone());
     let on_open_key = on_open.clone();
@@ -288,6 +295,8 @@ fn row(
                 .size_full(),
         )
         .id(id.clone())
+        .a11y(Role::Button, row_name)
+        .aria_expanded(focus.open)
         .h(layout::ROW_H_2)
         .px(px(8.))
         .flex()
@@ -430,10 +439,13 @@ impl RenderOnce for MemberList {
                             .ellipsis(),
                     ),
                 );
-            if let (Some(_), Some(on_close)) = (self.close_label, self.on_close.clone()) {
+            if let (Some(close_label), Some(on_close)) = (self.close_label, self.on_close.clone()) {
                 bar = bar.child(
                     div()
                         .id("members-close")
+                        .a11y(Role::Button, close_label)
+                        .tab_index(0)
+                        .focus_visible(|s| s.shadow(crate::metrics::focus_ring()))
                         .size(px(32.))
                         .flex_none()
                         .flex()
@@ -518,6 +530,7 @@ impl RenderOnce for MemberList {
                 body = body.child(
                     div()
                         .id(SharedString::from(format!("members-group-{}", g.id)))
+                        .a11y(Role::Group, format!("{} — {}", g.title, g.members.len()))
                         .flex()
                         .flex_col()
                         .child(heading)

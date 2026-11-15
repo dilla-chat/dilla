@@ -12,6 +12,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::text::{line, line_height};
@@ -114,8 +115,12 @@ pub fn link(
     let ink = if back { color::FG_2 } else { color::FG_LINK };
     tracked_box(
         id,
+        // A `<button>` on the web: keyboard reachable, with the focus ring.
         div()
             .id(id)
+            .a11y(Role::Button, label.clone())
+            .tab_index(0)
+            .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
             .h(px(LINK_H))
             .flex()
             .items_center()
@@ -289,6 +294,9 @@ impl AuthFrame {
                 a.id,
                 div()
                     .id(a.id)
+                    .a11y(Role::Button, a.label.clone())
+                    .tab_index(0)
+                    .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
                     .w_full()
                     .h(px(ACTION_H))
                     .rounded(radius::LG)
@@ -319,15 +327,22 @@ impl AuthFrame {
             .flex_col()
             .gap(px(CARD_GAP))
             .children(head)
+            // The step's `<h1>`: a heading node a reader jumps to.
             .child(
-                line(
-                    self.title,
-                    text::HEADING,
-                    line_height(text::HEADING, 1.5),
-                    color::FG,
-                )
-                .weight(font::WEIGHT_DISPLAY)
-                .tracking(-0.01),
+                div()
+                    .id("auth-title")
+                    .a11y(Role::Heading, self.title.clone())
+                    .aria_level(1)
+                    .child(
+                        line(
+                            self.title,
+                            text::HEADING,
+                            line_height(text::HEADING, 1.5),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY)
+                        .tracking(-0.01),
+                    ),
             )
             .child(
                 div()

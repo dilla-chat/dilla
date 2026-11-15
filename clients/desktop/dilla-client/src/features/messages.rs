@@ -177,6 +177,40 @@ impl Messages {
         self.fold(channel, msg, if on { PIN } else { UNPIN }, String::new())
     }
 
+    /// Sends the failed post `msg` again (controller.ts `retrySend`, MessageItem.tsx Retry): its row goes back to
+    /// pending and the outbox drains. A message id no outbox holds as failed is refused by the core.
+    pub fn retry(&self, msg: MessageId) -> oneshot::Receiver<Result<(), ClientError>> {
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            inner.engine().retry_send(msg.0).await?;
+            Ok(())
+        })
+    }
+
+    /// Drops the queued or failed post `msg` from the outbox (controller.ts `discardSend`, MessageItem.tsx Discard):
+    /// its row leaves the log and the references of its uploaded files are deleted (a failed delete is left to the
+    /// instance's pending_ttl, as `onDiscarded` swallows it). A message id no outbox holds does nothing.
+    pub fn discard(&self, msg: MessageId) -> oneshot::Receiver<Result<(), ClientError>> {
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            let Some((channel, blobs)) = inner.engine().discard_send(msg.0).await? else {
+                return Ok(());
+            };
+            let channel = ChannelId(channel);
+            for blob in blobs {
+                let _ = inner
+                    .api()
+                    .http_route::<crate::http::routes::DeleteBlob>(
+                        &[&channel.hex(), &crate::state::hex(&blob)],
+                        crate::http::routes::NoBody,
+                        true,
+                    )
+                    .await;
+            }
+            Ok(())
+        })
+    }
+
     /// Reads the channel's pins into [`crate::state::messages::MessagesState::pins`]. The caller asks: when the pins
     /// dialog opens and after it unpins; a pin that folds while the dialog is open shows at the next open (no refresh
     /// is wired to the fold).

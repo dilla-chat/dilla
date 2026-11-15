@@ -67,9 +67,14 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
         "header-members-tip",
         members_tip,
         &[],
-        BarButton::new(SharedString::from(members_label), IconName::Users, count)
-            .pressed(model.aside == Some(AsideKind::Members))
-            .on_click(move |_: &ClickEvent, window, cx| members(AsideKind::Members, window, cx)),
+        BarButton::new(
+            SharedString::from(members_label.clone()),
+            IconName::Users,
+            count,
+        )
+        .a11y_label(members_label)
+        .pressed(model.aside == Some(AsideKind::Members))
+        .on_click(move |_: &ClickEvent, window, cx| members(AsideKind::Members, window, cx)),
     )
     .delay(TIP_DELAY);
     #[cfg(feature = "automation")]

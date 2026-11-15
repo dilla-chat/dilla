@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use super::panes::{Pane, REM};
+use crate::a11y::{Accessible, Role};
 use crate::tokens::color;
 
 /// What a key asks of a splitter.
@@ -67,6 +68,8 @@ pub struct Splitter {
     probe: Option<gpui::AnyElement>,
     on_press: Option<Press>,
     on_set: Option<Set>,
+    /// The accessible name (`aria-label`, the web's `pane.resize.*`).
+    label: SharedString,
 }
 
 impl Splitter {
@@ -83,7 +86,14 @@ impl Splitter {
             probe: None,
             on_press: None,
             on_set: None,
+            label: SharedString::default(),
         }
+    }
+
+    /// Names the splitter for a screen reader (`pane.resize.sidebar`, `pane.resize.aside`).
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = label.into();
+        self
     }
 
     /// The width now and its limits, for the keys.
@@ -150,8 +160,14 @@ impl RenderOnce for Splitter {
             .w(Pixels::from(1.0f32))
             .bg(if accent { color::ACCENT } else { at_rest })
             .group_hover(group.clone(), |s| s.bg(color::ACCENT));
+        // `role="separator" aria-orientation="vertical" aria-valuenow/min/max`: a focusable splitter.
         div()
             .id(self.id)
+            .a11y(Role::Splitter, self.label.clone())
+            .aria_orientation(gpui::Orientation::Vertical)
+            .aria_numeric_value(now.round().into())
+            .aria_min_numeric_value(min.round().into())
+            .aria_max_numeric_value(max.round().into())
             .track_focus(&self.focus)
             .absolute()
             .left(Pixels::from(self.left))

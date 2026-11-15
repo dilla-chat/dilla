@@ -7,9 +7,11 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::metrics::{OPACITY_MUTED, focus_ring, shadow_knob};
 use crate::text::{flow_paragraph, line_height};
 use crate::tokens::{color, radius, text};
+use gpui::prelude::FluentBuilder as _;
 
 pub(crate) type ChangeHandler = Box<dyn Fn(bool, &mut Window, &mut App) + 'static>;
 
@@ -120,8 +122,12 @@ impl RenderOnce for Toggle {
             );
         let disabled = self.disabled;
         let on_change = self.on_change;
+        // `role="switch" aria-checked`, named by its label (shown or not) and described by its hint.
         let mut switch = div()
             .id(self.id.clone())
+            .a11y(Role::Switch, self.label.clone())
+            .toggled(on)
+            .when_some(self.hint.clone(), |s, hint| s.aria_description(hint))
             .flex()
             .items_center()
             .justify_center()
@@ -136,7 +142,10 @@ impl RenderOnce for Toggle {
             Fit::Tight => switch,
         };
         switch = if disabled {
-            switch.cursor_not_allowed().opacity(OPACITY_MUTED)
+            switch
+                .cursor_not_allowed()
+                .opacity(OPACITY_MUTED)
+                .node_props(|n| n.set_disabled())
         } else {
             switch.cursor_pointer()
         };

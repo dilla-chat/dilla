@@ -7,9 +7,10 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, px,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::metrics::{OPACITY_MUTED, focus_ring};
 use crate::roving::Roving;
 use crate::text::{line, line_height};
@@ -35,6 +36,8 @@ pub struct Segmented {
     on_change: Option<PickHandler>,
     /// An extra child of each option, by its value (the app's automation probe; the ui crate has none of its own).
     option_child: Option<OptionChild>,
+    /// The group's accessible name (`aria-label` of the web's radio group).
+    label: Option<SharedString>,
 }
 
 impl Segmented {
@@ -60,12 +63,19 @@ impl Segmented {
             tall: false,
             on_change: None,
             option_child: None,
+            label: None,
         }
     }
 
     /// Adds `f(value)` to each option (absolutely placed over it), as the app's automation build names the options.
     pub fn option_child(mut self, f: impl Fn(&str) -> Option<gpui::AnyElement> + 'static) -> Self {
         self.option_child = Some(Rc::new(f));
+        self
+    }
+
+    /// Names the group for a screen reader (the web's `aria-label` on the radio group).
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
@@ -99,6 +109,8 @@ impl RenderOnce for Segmented {
         let group_handles = handles.clone();
         let mut group = div()
             .id(self.id.clone())
+            .role(Role::RadioGroup)
+            .when_some(self.label.clone(), |g, label| g.aria_label(label))
             .flex()
             .flex_none()
             // The options wrap as the web's do when the row is too narrow (`flex-wrap: wrap`).
@@ -136,6 +148,10 @@ impl RenderOnce for Segmented {
             };
             let mut option = div()
                 .id((self.id.clone(), format!("option-{i}")))
+                .a11y(Role::RadioButton, label.clone())
+                .toggled(checked)
+                .aria_position_in_set(i + 1)
+                .aria_size_of_set(count)
                 // The handle's own flag decides the tab stop of a tracked element.
                 .track_focus(&handles[i].clone().tab_stop(i == stop))
                 .flex()

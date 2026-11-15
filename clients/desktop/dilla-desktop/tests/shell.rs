@@ -8,7 +8,11 @@
 
 #![cfg(feature = "automation")]
 
+mod support;
+
 use std::path::{Path, PathBuf};
+
+use support::world;
 
 use dilla_parity::screen::assert_screen;
 use dilla_parity::{Driver, Os};
@@ -290,7 +294,7 @@ fn desktop_home_title_is_not_server_name(cx: &mut TestAppContext) {
         })
         .expect("the main window opens");
     let mut window_cx = VisualTestContext::from_window(handle.into(), cx);
-    assert_eq!(window_cx.window_title().as_deref(), Some("Dilla Preview"));
+    assert_eq!(window_cx.window_title().as_deref(), Some("Dilla"));
 }
 
 fn bounds(width: f32, height: f32) -> gpui::Bounds<gpui::Pixels> {
@@ -392,4 +396,146 @@ fn resize_cannot_shrink_below_desktop_minimum() {
     };
     let (w, h, _) = restore_bounds(Some(saved), shape, &[]);
     assert_eq!((w, h), (900.0, 600.0));
+}
+
+// ---- Package 10d: the revoked device's and the lost store's boot ----
+
+/// Runs the window until `done` holds (the client's start runs on its own thread, the wipe in the background).
+fn until_screen(
+    vcx: &mut VisualTestContext,
+    what: &str,
+    mut done: impl FnMut(&mut VisualTestContext) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done(vcx) {
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    vcx.run_until_parked();
+}
+
+/// The window on `root`'s first instance, started as the shipping app starts it (resume), with `kc`.
+fn boot_window<'a>(
+    cx: &'a mut TestAppContext,
+    root: &Path,
+    kc: std::sync::Arc<dilla_client::keychain::MemoryKeychain>,
+) -> (
+    gpui::Entity<dilla_desktop::app::AppView>,
+    &'a mut VisualTestContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(dilla_desktop::install);
+    let mut launch = dilla_desktop::app::Launch::live(Some(root.to_path_buf()), kc);
+    launch.shipping = false;
+    let (app, vcx) =
+        cx.add_window_view(move |window, cx| dilla_desktop::app::AppView::new(launch, window, cx));
+    (app, vcx)
+}
+
+/// After the confirmed reset: the instance is forgotten here (its list entry, data dir and key gone) and the window
+/// is on the sign-in, where it is added again.
+fn reset_and_expect_forgotten(
+    app: &gpui::Entity<dilla_desktop::app::AppView>,
+    vcx: &mut VisualTestContext,
+    root: &Path,
+    cfg: &dilla_client::seams::InstanceConfig,
+) {
+    app.update_in(vcx, |a, window, cx| a.confirm_boot_reset(window, cx));
+    until_screen(vcx, "the sign-in after the reset", |vcx| {
+        app.read_with(vcx, |a, _| a.shows_sign_in())
+    });
+    let listed = dilla_client::instances::Instances::load(root).unwrap();
+    assert!(listed.get(cfg.id).is_none(), "the instance is forgotten");
+    assert!(!cfg.data_dir.exists(), "its data is wiped");
+}
+
+/// e2e/web/z/reload.spec.ts "a profile whose device key wrapper is gone says so and can start over after a
+/// confirmation": the store's key is gone from the keychain (a reset keychain), so the start says the data can no longer
+/// be opened (`boot.storeLost.*`) instead of failing, and Reset this browser, after its confirmation, wipes the data the
+/// key opened and leaves the window on the sign-in. Nothing is wiped before the confirmation.
+#[gpui::test]
+fn lost_key_boot_offers_reset(cx: &mut TestAppContext) {
+    use dilla_client::seams::Keychain as _;
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("p10d-store-lost-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let cfg = dilla_client::instances::Instances::load(&root)
+        .unwrap()
+        .add(url::Url::parse("https://chat.example.org").unwrap())
+        .unwrap();
+    let kc = std::sync::Arc::new(dilla_client::keychain::MemoryKeychain::new());
+    drop(dilla_client::store::open_store(&cfg, kc.as_ref()).unwrap());
+    let account = dilla_client::store::store_keychain_account(&cfg).unwrap();
+    kc.delete(&account).unwrap();
+
+    let (app, vcx) = boot_window(cx, &root, kc);
+    until_screen(vcx, "the failure splash", |vcx| {
+        app.read_with(vcx, |a, _| a.screen_name() == "fatal")
+    });
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.failure_boot()),
+        Some(dilla_desktop::screens::boot::Boot::StoreLost)
+    );
+    assert!(
+        cfg.data_dir.exists(),
+        "nothing is wiped before the confirmation"
+    );
+    reset_and_expect_forgotten(&app, vcx, &root, &cfg);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// e2e/web/required-factor.spec.ts "the forced screen's Forget this browser clears this browser and leaves the account's
+/// device list" (the boot half, Boot.tsx `revoked`): Ada removes her first device from a second one; the first device's
+/// next start is refused, so it explains that the account no longer accepts it (`boot.revoked.*`) instead of failing,
+/// and Forget this browser, after its confirmation, wipes it here and leaves the window on the sign-in.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn revoked_device_boot_explains_and_resets(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let tag = "p10d-revoked";
+    let host = world::start_host(tag, "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", tag));
+    world::community(&host, &ada, "Revoked", &[]);
+    world::clear_session(&ada);
+    let first = dilla_client::state::DeviceId(ada.device_id);
+    let (second, second_root) = rt.block_on(world::second_device(&host, &mut ada, tag));
+    rt.block_on(async {
+        second
+            .devices()
+            .revoke(
+                first,
+                Some(zeroize::Zeroizing::new(ada.recovery_key.clone())),
+            )
+            .await
+            .expect("the client answers")
+            .expect("the second device removes the first");
+    });
+    second.stop();
+    let cfg = ada.cfg.clone();
+    let root = cfg
+        .data_dir
+        .parent()
+        .and_then(|d| d.parent())
+        .unwrap()
+        .to_path_buf();
+
+    let (app, vcx) = boot_window(cx, &root, ada.kc.clone());
+    until_screen(vcx, "the failure splash", |vcx| {
+        app.read_with(vcx, |a, _| a.screen_name() == "fatal")
+    });
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.failure_boot()),
+        Some(dilla_desktop::screens::boot::Boot::Revoked)
+    );
+    reset_and_expect_forgotten(&app, vcx, &root, &cfg);
+    drop(rt);
+    let _ = std::fs::remove_dir_all(second_root);
 }

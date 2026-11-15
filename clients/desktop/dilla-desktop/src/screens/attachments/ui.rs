@@ -9,13 +9,14 @@
 //! Decrypted bytes live only here, in memory, as the decoded images GPUI draws and the players' buffers; they go when
 //! the card, the lightbox or the player lets them go, and with the app. Nothing is written to disk except a file the
 //! person saves (after their choice of path) and a video handed to the system player (`media::write_for_system_player`,
-//! in the instance's own directory, wiped at start and exit).
+//! in the instance's own directory, wiped at start and exit): only a video the inline player cannot decode
+//! ([`super::video`], parity plan Package 12) goes there.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dilla_client::Client;
 use dilla_client::features::attachments::{
@@ -25,7 +26,8 @@ use dilla_client::features::gifs::{GifItem, GifVariant};
 use dilla_client::state::{ChannelId, CommunityId};
 use gpui::{App, FocusHandle, Global, Image, ImageFormat, Window, WindowId};
 
-use super::media::{self, MediaDecoder, Playback};
+use super::media::{self, MediaDecoder, MediaError, Playback};
+use super::video::{self, VideoPlayback};
 use crate::strings::{t, tf};
 
 /// Which opened picture: a message's attachment, its thumbnail or the whole file, as one client opened it (review M2:
@@ -75,7 +77,36 @@ pub enum CardStatus {
 pub enum Player {
     Loading,
     Ready(Box<Playback>), // boxed: a Windows Playback is 240+ bytes (clippy large_enum_variant)
+    /// A video playing in its card (parity plan Package 12).
+    Video(Box<VideoState>),
     Error,
+}
+
+/// A card's inline video and when the pointer last moved over it (Chromium shows its controls for a moment after).
+pub struct VideoState {
+    pub playback: VideoPlayback,
+    pub motion: Option<Instant>,
+}
+
+/// How long the controls of a playing video stay after the pointer last moved over it.
+pub const CONTROLS_LINGER: Duration = Duration::from_millis(2500);
+
+impl VideoState {
+    /// Chromium's rule: the controls show while paused or ended, and for a moment after the pointer moves.
+    pub fn controls(&self) -> bool {
+        self.playback.is_paused()
+            || self.playback.ended()
+            || self.motion.is_some_and(|m| m.elapsed() < CONTROLS_LINGER)
+    }
+}
+
+/// A video shown full screen: its card, the window it fills, the focus that takes Escape, and whether the window was
+/// made full screen for it (and goes back when it ends).
+pub struct Fullscreen {
+    pub key: CardKey,
+    pub owner: WindowId,
+    pub focus: FocusHandle,
+    pub made_window_fullscreen: bool,
 }
 
 /// The lightbox (Attachments.tsx `LightboxState`): the images of one message and the one shown.
@@ -154,6 +185,8 @@ pub struct AttachmentsUi {
     pub targets: HashMap<WindowId, Target>,
     /// Every opened instance's data directory: each one's played-video directory is wiped at quit.
     pub instance_dirs: BTreeSet<PathBuf>,
+    /// The video shown full screen, if any.
+    pub fullscreen: Option<Fullscreen>,
 }
 
 /// A window's composer target: its client and its open channel, and the window (its toasts show there).
@@ -748,8 +781,9 @@ fn dirs_home() -> PathBuf {
         .map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
-/// The media card's play: an audio file is opened and played inline (symphonia, rodio); a video is written to the
-/// instance's directory and opened in the system player.
+/// The media card's play: an audio file is opened and played inline (symphonia, rodio); a video plays inline
+/// ([`video`]) when its container and codec decode here, and is otherwise written to the instance's directory and
+/// opened in the system player.
 pub fn play(client: &Client, key: CardKey, video: bool, mime: String, cx: &mut App) {
     if matches!(ui(cx).players.get(&key), Some(Player::Loading)) {
         return;
@@ -798,12 +832,17 @@ pub fn play_from(
         let prepared = cx
             .background_executor()
             .spawn(async move {
-                if video {
-                    Err(dir.map(|d| {
-                        media::write_for_system_player(&d, &mime, &opened.bytes)
-                    }))
-                } else {
-                    Ok(media::open_audio(Arc::new(opened.bytes), &mime))
+                let bytes = Arc::new(opened.bytes);
+                if !video {
+                    return Ok(Prepared::Audio(media::open_audio(bytes, &mime)));
+                }
+                match video::open(bytes.clone(), &mime) {
+                    Ok(v) => Ok(Prepared::Video(Box::new(v))),
+                    // Not decodable here: the system player, as before (the fallback for unsupported formats).
+                    Err(MediaError::Unsupported(_)) => Err(dir.map(|d| {
+                        media::write_for_system_player(&d, &mime, &bytes)
+                    })),
+                    Err(_) => Err(None),
                 }
             })
             .await;
@@ -823,7 +862,11 @@ pub fn play_from(
                         None
                     }
                     Err(_) => Some(Player::Error),
-                    Ok(decoder) => match decoder
+                    Ok(Prepared::Video(v)) => Some(Player::Video(Box::new(VideoState {
+                        playback: VideoPlayback::start(*v),
+                        motion: None,
+                    }))),
+                    Ok(Prepared::Audio(decoder)) => match decoder
                         .map(|d| Box::new(d) as Box<dyn MediaDecoder>)
                         .and_then(Playback::start)
                     {
@@ -843,10 +886,33 @@ pub fn play_from(
         if !landed {
             return;
         }
-        // Redraw the position while it plays.
+        // Redraw the position while it plays; a video's pictures as they come due.
+        let mut shown: Option<Arc<gpui::RenderImage>> = None;
+        let mut redrawn = Instant::now();
         loop {
-            cx.background_executor().timer(Duration::from_millis(250)).await;
+            let video = cx.update(|cx| matches!(ui(cx).players.get(&key), Some(Player::Video(_))));
+            let every = if video { VIDEO_TICK } else { Duration::from_millis(250) };
+            cx.background_executor().timer(every).await;
             let go = cx.update(|cx| {
+                if let Some(Player::Video(v)) = ui(cx).players.get_mut(&key) {
+                    let gone = v.playback.tick();
+                    let changed = !gone.is_empty();
+                    shown = Some(v.playback.frame().image.clone());
+                    let live = !v.playback.is_paused() && !v.playback.ended();
+                    // The pictures that left the screen leave the GPU atlas too.
+                    for g in gone {
+                        cx.drop_image(g, None);
+                    }
+                    if changed || (live && redrawn.elapsed() >= Duration::from_millis(250)) {
+                        redrawn = Instant::now();
+                        cx.refresh_windows();
+                    }
+                    return true;
+                }
+                if let Some(image) = shown.take() {
+                    // The video was let go (released, or replaced): its last picture leaves the atlas.
+                    cx.drop_image(image, None);
+                }
                 let playing = matches!(ui(cx).players.get(&key), Some(Player::Ready(p)) if !p.is_paused() && !p.ended());
                 if playing {
                     cx.refresh_windows();
@@ -861,8 +927,24 @@ pub fn play_from(
     .detach();
 }
 
+/// How often a playing video checks for a picture due (a little over 60 a second).
+const VIDEO_TICK: Duration = Duration::from_millis(15);
+
+/// What a player's open prepared off the UI thread.
+enum Prepared {
+    Audio(Result<media::AudioDecoder, MediaError>),
+    Video(Box<video::OpenedVideo>),
+}
+
 /// Play or pause a ready player; at its end, play starts it again from the beginning.
 pub fn toggle(key: CardKey, cx: &mut App) {
+    if let Some(Player::Video(v)) = ui(cx).players.get_mut(&key) {
+        if v.playback.is_paused() || v.playback.ended() {
+            v.playback.play();
+        } else {
+            v.playback.pause();
+        }
+    }
     if let Some(Player::Ready(p)) = ui(cx).players.get(&key) {
         if p.ended() || p.is_paused() {
             if p.ended() {
@@ -872,6 +954,84 @@ pub fn toggle(key: CardKey, cx: &mut App) {
         } else {
             p.pause();
         }
+    }
+    cx.refresh_windows();
+}
+
+/// Runs `f` on the card's inline video, if it has one, and redraws.
+fn with_video(key: CardKey, cx: &mut App, f: impl FnOnce(&mut VideoState)) {
+    if let Some(Player::Video(v)) = ui(cx).players.get_mut(&key) {
+        f(v);
+        cx.refresh_windows();
+    }
+}
+
+/// The timeline was pressed or dragged at `fraction` of its width: the video moves there.
+pub fn seek_video(key: CardKey, fraction: f32, cx: &mut App) {
+    with_video(key, cx, |v| {
+        if let Some(d) = v.playback.duration() {
+            v.playback.seek(d.mul_f32(fraction.clamp(0.0, 1.0)));
+        }
+        v.motion = Some(Instant::now());
+    });
+}
+
+/// The volume slider was set at `fraction`.
+pub fn set_video_volume(key: CardKey, fraction: f32, cx: &mut App) {
+    with_video(key, cx, |v| {
+        v.playback.set_volume(fraction);
+        v.motion = Some(Instant::now());
+    });
+}
+
+pub fn toggle_video_mute(key: CardKey, cx: &mut App) {
+    with_video(key, cx, |v| v.playback.toggle_mute());
+}
+
+/// The pointer moved over the picture: the controls show (and stay a moment).
+pub fn video_motion(key: CardKey, cx: &mut App) {
+    let Some(Player::Video(v)) = ui(cx).players.get_mut(&key) else {
+        return;
+    };
+    let was = v.controls();
+    v.motion = Some(Instant::now());
+    if !was {
+        cx.refresh_windows();
+    }
+}
+
+/// The full screen button: the video fills `window` (made full screen, as Chromium's does), or goes back to its card.
+pub fn toggle_video_fullscreen(key: CardKey, window: &mut Window, cx: &mut App) {
+    if ui(cx).fullscreen.as_ref().is_some_and(|f| f.key == key) {
+        exit_video_fullscreen(window, cx);
+        return;
+    }
+    if !matches!(ui(cx).players.get(&key), Some(Player::Video(_))) {
+        return;
+    }
+    let made = !window.is_fullscreen();
+    if made {
+        window.toggle_fullscreen();
+    }
+    let focus = cx.focus_handle();
+    window.focus(&focus, cx);
+    ui(cx).fullscreen = Some(Fullscreen {
+        key,
+        owner: window_id(window),
+        focus,
+        made_window_fullscreen: made,
+    });
+    cx.refresh_windows();
+}
+
+/// Escape, or the button again: the video goes back to its card, and the window out of full screen if it went in for
+/// the video.
+pub fn exit_video_fullscreen(window: &mut Window, cx: &mut App) {
+    let Some(f) = ui(cx).fullscreen.take() else {
+        return;
+    };
+    if f.made_window_fullscreen && f.owner == window_id(window) && window.is_fullscreen() {
+        window.toggle_fullscreen();
     }
     cx.refresh_windows();
 }

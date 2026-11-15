@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::gateway::frames::Value;
-use crate::sync::value::{DecodeError, Rows, arr, bin16, opt, text, u53, uint};
+use crate::sync::value::{DecodeError, Rows, arr, bin16, bin32, opt, text, u53, uint};
 
 use super::{ChannelGroupState, ChannelId, DeviceId, MessageId, UserId, hex};
 
@@ -129,6 +129,9 @@ pub(crate) struct OutboxRow {
     pub kind: u8,
     pub reply_to: Option<[u8; 16]>,
     pub attachments: Vec<Attachment>,
+    /// The attachments' blob ids, in the same order: a discarded row's references are deleted (send.ts `discardSend`,
+    /// controller.ts `onDiscarded`).
+    pub blobs: Vec<[u8; 32]>,
 }
 
 fn flag(v: &Value) -> Result<bool, DecodeError> {
@@ -229,6 +232,7 @@ pub(crate) fn decode_outbox(raw: &[u8]) -> Result<Vec<OutboxRow>, DecodeError> {
                 body: text(&a[4])?,
                 kind: kind as u8,
                 reply_to: opt(&a[6], bin16)?,
+                blobs: list(&a[7], |v| bin32(&arr(v, 4)?[0]))?,
                 attachments: list(&a[7], |v| {
                     let b = arr(v, 4)?;
                     Ok(Attachment {
@@ -395,6 +399,7 @@ mod tests {
             kind: 0,
             reply_to: None,
             attachments: Vec::new(),
+            blobs: Vec::new(),
         }
     }
 

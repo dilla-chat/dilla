@@ -25,6 +25,7 @@ use gpui::{
 };
 use gpui_component::input::{Enter, InputEvent, MoveDown, MoveUp, Textarea, TextareaState};
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
 use dilla_desktop_ui::text::{line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
@@ -278,6 +279,13 @@ impl Composer {
             return;
         }
         self.save = None;
+        let community = |c: Option<ChannelId>| {
+            c.and_then(|c| self.slots.state.channel(c))
+                .map(|c| c.community_id)
+        };
+        if next.is_some() && community(next) != community(self.loaded) {
+            self.read_own_timeout(cx);
+        }
         if let (Some(client), Some(old)) = (&self.slots.client, self.loaded) {
             client.messages().typing(old, false);
         }
@@ -423,7 +431,25 @@ impl Composer {
     }
 
     fn blocked(&self) -> Option<Blocked> {
-        composing::may_send(&self.slots.state, self.channel()?).err()
+        composing::blocked_at(&self.slots.state, self.channel()?, self.slots.clock.now())
+    }
+
+    /// Shell.tsx's advisory read of the viewer's own timeout, when the composer comes to a community (the instance
+    /// enforces it; a failed read blocks nothing). The answer lands in `people.timeouts`, which [`Self::blocked`] reads.
+    fn read_own_timeout(&self, cx: &mut Context<Self>) {
+        let (Some(client), Some(channel)) = (&self.slots.client, self.channel()) else {
+            return;
+        };
+        let (Some(me), community) = (self.slots.state.account.user_id, channel.community_id) else {
+            return;
+        };
+        let job = client
+            .moderation()
+            .run(move |m| async move { m.timeout_of(community, me).await });
+        cx.spawn(async move |_, _| {
+            let _ = job.await;
+        })
+        .detach();
     }
 
     /// What the draft is posted as: names encoded back to their tokens (the web's `encodeMentions`).
@@ -618,6 +644,12 @@ impl Composer {
     }
 }
 
+/// The field's accessible name (`shell.composer.label`, "message #general"): the target is the channel's `#name` or the
+/// DM's `@name`, put where the web's `#{channel}` is.
+fn composer_label(target: &str) -> String {
+    t("shell.composer.label").replace("#{channel}", target)
+}
+
 /// A 26x24 tool button of the foot with a 14px icon.
 fn tool(icon: IconName) -> impl IntoElement {
     div()
@@ -771,7 +803,8 @@ impl Render for Composer {
             composing::slow_state_since(c, items, false, now_ms, opened_s)
         });
         let waiting = slow_wait.is_some_and(|s| s.until_ms > now_ms);
-        self.arm_tick(waiting, cx);
+        // A timeout lifts by itself at its expiry: the tick redraws until then (Shell.tsx's expiry timer).
+        self.arm_tick(waiting || matches!(blocked, Some(Blocked::TimedOut(_))), cx);
         let typing_text = ctx
             .channel
             .and_then(|c| typing::text(&ctx.state, c, now_ms));
@@ -807,6 +840,7 @@ impl Render for Composer {
                             // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which
                             // wins.
                             Textarea::new(&self.input)
+                                .aria_label(composer_label(&self.target))
                                 .appearance(false)
                                 .disabled(blocked.is_some())
                                 .text_size(text::INPUT)
@@ -834,6 +868,11 @@ impl Render for Composer {
         };
         let send = div()
             .id("composer-send")
+            .a11y(Role::Button, t("shell.composer.send"))
+            .aria_keyshortcuts("Enter")
+            // A `<button>` on the web: the keyboard reaches it too.
+            .tab_index(0)
+            .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
             .flex_none()
             .h(len(28.))
             .px(len(10.))
@@ -874,6 +913,10 @@ impl Render for Composer {
             .child(send);
         let code = div()
             .id("composer-code")
+            .a11y(Role::Button, t("shell.composer.code"))
+            .tab_index(0)
+            .rounded(radius::SM)
+            .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
             .child(tool(IconName::CodeXml))
             .on_click(cx.listener(|this, _, window, cx| {
                 if this.blocked().is_some() {
@@ -917,7 +960,7 @@ impl Render for Composer {
         );
         // The notice above the box: the read-only line, or the wait and its queue.
         let notice: Option<String> = match (blocked, slow_wait) {
-            (Some(Blocked::ReadOnly), _) => None,
+            (Some(_), _) => None,
             (None, Some(s)) if s.until_ms > now_ms => {
                 let mut text = tf(
                     "slow.wait",
@@ -935,7 +978,16 @@ impl Render for Composer {
             _ => None,
         };
         let name = self.channel().map(|c| c.name.clone()).unwrap_or_default();
-        let reason = blocked.map(|_| tf("announce.readOnly", &[("name", &name)]));
+        let reason = blocked.map(|b| match b {
+            Blocked::ReadOnly => tf("announce.readOnly", &[("name", &name)]),
+            Blocked::TimedOut(expires) => tf(
+                "shell.composer.timedOut",
+                &[(
+                    "time",
+                    &crate::screens::threads::time_of(expires, ctx.clock),
+                )],
+            ),
+        });
         // The budget used is worked out when the text changes (compared in place, no copy), not on every draw.
         if self.used_for != value {
             self.used = if value.contains('@') {

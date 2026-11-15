@@ -49,29 +49,31 @@ As of the Signal redesign, wave B (unreleased, 2026-10-31), on top of web3.12 (2
 ### The native desktop client (GPUI)
 
 As of the screens wave 1 (2026-11-13). The Rust/GPUI desktop client in `clients/desktop`. It replaces the Electron
-app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). There is no released
-build yet: you build it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)),
-it draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
+app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). Linux has alpha
+releases (`desktop-gpui-v0.2.0-alpha.N`: AppImage, tar.gz, deb, rpm and an AUR recipe; the packages replace an
+installed beta.5, [how to install it](docs/user/desktop.md#install-the-linux-alpha)); on macOS and Windows you build
+it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)). It does not update itself yet.
+It draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
 measured). What works today, screen by screen:
 
 | Screen | State |
 |---|---|
-| Shell | The server rail, the channel list with categories you can fold, the user panel, the channel header and the members aside, with a splitter between panes (widths and folded categories are kept per instance). Back and forward through the places you have been (Alt+Left, Alt+Right), the previous and next channel (Alt+Up, Alt+Down), Control/⌘+, for your settings. The boot screen, "dilla could not start" with a Try again action, and the offline and "this instance needs a newer app" banners. |
-| Messages | Markdown and code blocks, mentions with a list as you type, edit (Up in an empty composer edits your newest message) and delete of your own messages, pin and unpin, a draft kept per channel, the typing signal, slow-mode and announcement-channel notices, Page Up and Page Down in the log. Deleting someone else's message is not offered. |
+| Shell | The server rail, the channel list with categories you can fold, the user panel, the channel header and the members aside, with a splitter between panes (widths and folded categories are kept per instance). Back and forward through the places you have been (Alt+Left, Alt+Right), the previous and next channel (Alt+Up, Alt+Down), Control/⌘+, for your settings. The boot screen, "dilla could not start" with a Try again action, a device the instance no longer accepts or whose stored key is gone explained, with Forget or Reset after a confirmation, and the offline and "this instance needs a newer app" banners. |
+| Messages | Markdown and code blocks, mentions with a list as you type, edit (Up in an empty composer edits your newest message) and delete of your own messages, pin and unpin, a draft kept per channel, a failed send with its reason and retry or discard, the typing signal, slow-mode and announcement-channel notices, the timed-out notice, Page Up and Page Down in the log. A member allowed to manage messages removes someone else's message for everyone, with a reason. |
 | Threads | The reply line, the reply bar, the thread pane with its own composer, the reply count on the root (Escape closes the pane). |
 | Reactions | The reaction bar, the emoji grid from the composer and from the message toolbar, and who reacted. |
-| Attachments | The tray, file cards, the image grid, the lightbox, drag and drop, the GIF picker and saving a file. Audio plays inline (MP3, AAC, Vorbis, Opus, FLAC, WAV); a video shows its poster and opens in the system player. |
+| Attachments | The tray, file cards, the image grid, the lightbox, drag and drop, the GIF picker and saving a file. Audio plays inline (MP3, AAC, Vorbis, Opus, FLAC, WAV); so does video (WebM and MP4 with VP8, VP9, AV1, H.264; H.265 on macOS), with play, pause, seek, volume and full screen; a video it cannot decode opens in the system player. |
 | Direct messages and trust | The Home list of DMs, the DM picker, DM conversations, trust alerts when a contact's identity changes, the safety-number comparison, and Settings → Privacy. |
 | Members, roles and moderation | The members aside, the profile card and the person menu (message, mention, profile, edit roles, copy username, compare safety numbers, kick, ban) as your permissions allow, the moderation dialogs, and the Roles, Self roles, Members, Bans and Moderation log sections of the server settings. |
-| Server settings | Overview (name and AFK timeout, saved together; a dirty-draft guard on leaving), Channels, GIFs, Invites, Welcome, Join roles and Danger zone, only the sections your permissions allow. |
+| Server settings | Overview (name and AFK timeout, saved together; a dirty-draft guard on leaving; a section whose permission you lose falls back to one you still have), Channels, GIFs, Invites, Welcome, Join roles and Danger zone, only the sections your permissions allow. |
 | User settings | Profile, Devices (rename, remove a device with the recovery key, sign out), Appearance, Keyboard (the shortcut table), Privacy, Sign-in (password, authenticator app, passkeys, backup codes, each behind "Confirm it is you"), Notifications, Voice and Diagnostics. |
-| Voice, rings and AFK | Join and leave voice channels, the people under a channel, the dock, the stage with a tile per person (a person's camera or screen share is drawn when they send one), the call controls, mute and deafen (Ctrl+Shift+M, Ctrl+Shift+D), push to talk while the window has focus, DM calls with the incoming-ring banner (Enter answers, Escape declines), blocked calls and the comparison they offer, and the AFK channel's page and move notice. Calls are end-to-end encrypted. |
+| Voice, rings and AFK | Join and leave voice channels, the people under a channel, the dock, the stage with a tile per person (a person's camera or screen share is drawn when they send one; a focused tile has Grid and full screen), the person menu on a tile (right-click or Shift+F10: a person's or a stream's volume, applied to what you hear, Mute for me, profile, message, copy username; your own: mute, deafen, Move to another voice channel, leave), the call controls with the ping and ↑ ↓ kb/s, mute and deafen (Ctrl+Shift+M, Ctrl+Shift+D), push to talk while the window has focus (with the PTT tag on the mute button; AltGr with the key is refused on Linux too), Return to call in Settings, joining with no speaker or microphone (listening, as the Electron app did), DM calls with the incoming-ring banner (Enter answers, Escape declines), blocked calls and the comparison they offer, and the AFK channel's page and move notice. Calls are end-to-end encrypted. |
 | Voice settings | Input and output devices and volumes, the microphone test with its sensitivity meter, the input mode and the push-to-talk key (F13 to F24, Pause, Scroll Lock, Insert), noise suppression, echo cancellation, automatic gain, and the join, leave and ring sounds. |
-| Bot | The `/` command picker with named fields and greyed commands, private results, poll cards, reminders; in the server settings, the Bot page (its card and Restart, capabilities, health, Bot channels, webhooks, each change behind "Confirm it is you") and the Music page, with the Now playing row in the dock. |
+| Bot | The `/` command picker with named fields and greyed commands, private results, poll cards, reminders; in the server settings, the Bot page (its card with Restart and a menu to rename, refresh or disable the Bot, capabilities, health, Bot channels, webhooks, each change behind "Confirm it is you") and the Music page (which roles may DJ), with the Now playing row in the dock. |
 | Notifications | The settings rows only: the mode for the selected server and its @everyone switch, desktop notifications on this device, and one switch for the join, leave and ring sounds. The values are kept; nothing raises an operating-system notification yet. |
 | Search | The palette (Control/⌘+K or Ctrl+/) with Channels, People, Settings, Messages and Actions. Messages are found in this device's own decrypted history; the query never leaves the device. |
 | Diagnostics | Settings → Diagnostics: the connection, the slowest requests and the last 20 error codes, with Copy codes (codes only, nothing of your content). |
-| Onboarding | Sign-up with an invite (the account, the recovery key shown once), the second factor set-up, the done step, sign-in on a new device with the recovery key, a passkey or the instance's identity provider (in the system browser), create server, create channel, join by invite and the invite link. |
+| Onboarding | Sign-up with an invite (the account, the recovery key shown once), the second factor set-up, the done step, sign-in on a new device with the recovery key, a passkey or the instance's identity provider (in the system browser), create server, create channel (private from birth with the roles that may see it, or an announcement channel with the roles that may post), join by invite and the invite link. |
 | Second factor | Required for every account: the forced-factor screen, set-up of an authenticator app or a passkey, backup codes, and the step-up dialog. |
 | Several instances | One window and one client per instance, and the "Dilla - your instances" window to connect by address, join by invite, open or remove an instance (up to 32). |
 
@@ -127,15 +129,15 @@ For the native desktop preview:
 
 - Starting a camera or screen share (a call can show other people's), the screen-capture picker and per-application audio.
 - Tray, close to tray and badge count, autostart, and operating-system notifications (also for a ring, with Answer
-  and Decline).
-- The updater, installers and packages (DMG, Windows installer, AppImage, deb, rpm, AUR). Build it from source. Until
-  the packages register it, the system does not open `dilla://invite` links in the app by itself (passing one on the
-  command line works).
-- Screen readers (they come after the switch) and push to talk while another window has focus.
-- On Linux, AltGr plus the push-to-talk key still opens the microphone (the other modifiers are refused).
+  and Decline). Until the packages register the `dilla:` scheme, the system does not open `dilla://invite` links in
+  the app by itself (passing one on the command line works).
+- The updater, and the macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
+  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand.
+- Push to talk while another window has focus. Screen readers are supported (AccessKit), but
+  messages cannot yet be stepped through with the arrow keys and the recovery key is not read out.
 
-Beyond the web client: the native [desktop client](docs/user/desktop.md) is built from source and has no released
-build yet; the Electron app is discontinued at `desktop-v0.1.0-beta.5`. The browser client is deprecated. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no
+Beyond the web client: the native [desktop client](docs/user/desktop.md) has Linux alpha releases and is built from
+source on macOS and Windows; the Electron app is discontinued at `desktop-v0.1.0-beta.5`. The browser client is deprecated. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no
 published security review or published capacity report yet.
 
 ## Run it
@@ -162,7 +164,7 @@ camera and screen share, push to talk, the call code, AFK channels, sounds, and 
 |---|---|
 | `protocol/` | Normative protocol documents and conformance test vectors (Apache-2.0) |
 | `packages/protocol-vectors` | TypeScript reference implementation that generates the vectors (Apache-2.0) |
-| `clients/desktop` | The native Rust/GPUI desktop client (built from source; no released build yet) |
+| `clients/desktop` | The native Rust/GPUI desktop client (Linux alpha releases; built from source on macOS and Windows) |
 | `docs/superpowers/specs` | Product and system design specifications |
 | `docs/superpowers/plans` | Implementation plans |
 | `docs/design` | Design brief, and the Signal design reference in `docs/design/signal` (the current design) |

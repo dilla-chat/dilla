@@ -9,6 +9,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 
+use crate::a11y::{Accessible, Live, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::OPACITY_MUTED;
@@ -189,6 +190,7 @@ impl RenderOnce for TextField {
             // (gpui-component's 14px `text_sm`) and its inner padding would set the text larger and further in.
             Control::Single(input) => {
                 let field = Input::new(input)
+                    .aria_label(self.label.clone())
                     .appearance(false)
                     .text_size(text::INPUT)
                     .px_0()
@@ -209,7 +211,11 @@ impl RenderOnce for TextField {
             Control::Multi(input) => match self.frame {
                 None => frame
                     .min_h(px(34.0 + 20.0 * (self.rows.saturating_sub(1)) as f32))
-                    .child(Textarea::new(input).appearance(false)),
+                    .child(
+                        Textarea::new(input)
+                            .aria_label(self.label.clone())
+                            .appearance(false),
+                    ),
                 // A fixed frame holds its text from the top, as a `<textarea>` does: the text box is the frame's content
                 // box, and the textarea is shifted back by its own padding so its lines start at the box's corner.
                 Some(f) => frame.items_start().child(
@@ -239,6 +245,7 @@ impl RenderOnce for TextField {
                                         .bottom(px(-f.line))
                                         .child(
                                             Textarea::new(input)
+                                                .aria_label(self.label.clone())
                                                 .appearance(false)
                                                 .text_size(text::INPUT)
                                                 .line_height(px(f.line))
@@ -252,6 +259,7 @@ impl RenderOnce for TextField {
         if self.disabled {
             frame = frame.opacity(OPACITY_MUTED).cursor_not_allowed();
         }
+        let error_id: ElementId = (self.id.clone(), "error").into();
         let mut root = div()
             .id(self.id)
             .flex()
@@ -269,8 +277,12 @@ impl RenderOnce for TextField {
             root = root.child(hint_lines(note, self.hint_width));
         }
         if let Some(error) = self.error {
+            // `role="alert"`: the field's refusal is read out as it appears.
             root = root.child(
                 div()
+                    .id(error_id)
+                    .a11y(Role::Alert, error.clone())
+                    .live(Live::Assertive)
                     .flex()
                     .items_center()
                     .gap(px(4.0))

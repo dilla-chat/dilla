@@ -1,13 +1,17 @@
 //! The boot splash and the fatal screen (packages/web/src/screens/Boot.tsx, packages/ui/src/Splash).
 //!
 //! The full-window surface of the app while it starts and when it cannot: the brand, one status line (`› ` in the accent,
-//! then the text) with an optional detail under it, and an optional action. Only the two phases a native app reaches are
-//! drawn; the browser's `unsupported`, `other-tab`, `store-lost` and `resetting` phases have no counterpart here (the
-//! store is the OS keychain's, and an instance has no second tab), and `revoked` is the sign-in flow's (Task 26).
+//! then the text) with an optional detail under it, and an optional action. The browser's `unsupported` and `other-tab`
+//! phases have no counterpart here (the store is the OS keychain's, and an instance has no second tab).
 //!
 //! - [`loading`]: "Starting dilla" while `Client::start` runs.
 //! - [`fatal`]: "dilla could not start" with the stable code of what failed and a Try again action. The code is
 //!   [`fatal_code`], never the error's text: that can name a path or a server.
+//! - `revoked` (Package 10d): the instance no longer accepts this device (its start was refused as revoked, unlisted or
+//!   out of its session's scope). The web's words, and Forget this browser behind a confirmation, which wipes this
+//!   device's data for the instance and leaves the account's device list alone (Boot.tsx `forgetBrowser`).
+//! - `store-lost`: the key that opens the instance's store is gone from the keychain. Reset this browser behind a
+//!   confirmation wipes the data the key opened (Boot.tsx `resetDevice`); `resetting` shows while it runs.
 //!
 //! The words are the web's (`boot.*`): "Reload the page to try again" is what the web says, and parity keeps it; the
 //! action restarts the client.
@@ -18,7 +22,8 @@ use dilla_client::ClientError;
 use dilla_client::features::diagnostics::stable_code;
 use gpui::{AnyElement, App, ElementId, IntoElement, ParentElement, Styled, Window, div};
 
-use dilla_desktop_ui::components::button::{Button, ButtonVariant};
+use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
+use dilla_desktop_ui::components::dialog::{Dialog, DialogKind};
 use dilla_desktop_ui::metrics::LABEL_TRACKING_WIDE;
 use dilla_desktop_ui::text::{MONO_ADVANCE, line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
@@ -38,6 +43,12 @@ pub enum Boot {
         found: u32,
         supported: u32,
     },
+    /// The instance no longer accepts this device: Forget this browser.
+    Revoked,
+    /// The store's key is gone from the keychain: Reset this browser.
+    StoreLost,
+    /// A Forget or a Reset is wiping this device's data.
+    Resetting,
 }
 
 impl Boot {
@@ -47,13 +58,18 @@ impl Boot {
             Self::Loading => "boot.loading.status",
             Self::Fatal { .. } => "boot.error.status",
             Self::StoreNewer { .. } => "boot.storeNewer.status",
+            Self::Revoked => "boot.revoked.status",
+            Self::StoreLost => "boot.storeLost.status",
+            Self::Resetting => "boot.resetting.status",
         }
     }
 
     /// The detail under the status, if any.
     pub fn detail(&self) -> Option<String> {
         match self {
-            Self::Loading => None,
+            Self::Loading | Self::Resetting => None,
+            Self::Revoked => Some(t("boot.revoked.detail").to_owned()),
+            Self::StoreLost => Some(t("boot.storeLost.detail").to_owned()),
             Self::Fatal { code } => Some(tf("boot.error.detail", &[("code", code)])),
             Self::StoreNewer { found, supported } => Some(tf(
                 "boot.storeNewer.detail",
@@ -68,7 +84,9 @@ impl Boot {
     /// The action's label, if any.
     pub fn action_key(&self) -> Option<&'static str> {
         match self {
-            Self::Loading => None,
+            Self::Loading | Self::Resetting => None,
+            Self::Revoked => Some("boot.revoked.action"),
+            Self::StoreLost => Some("boot.storeLost.action"),
             Self::Fatal { .. } => Some("boot.error.action"),
             Self::StoreNewer { .. } => Some("boot.storeNewer.action"),
         }
@@ -82,14 +100,34 @@ impl Boot {
             _ => None,
         }
     }
+
+    /// The confirmation behind the action (Boot.tsx's dialogs): its title, body and confirm keys. Only the two resets ask.
+    pub fn confirm_keys(&self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self {
+            Self::Revoked => Some((
+                "boot.revoked.confirmTitle",
+                "boot.revoked.confirmBody",
+                "boot.revoked.confirmAction",
+            )),
+            Self::StoreLost => Some((
+                "boot.storeLost.confirmTitle",
+                "boot.storeLost.confirmBody",
+                "boot.storeLost.confirmAction",
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// What a failed `Client::start` leads to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StartFailure {
-    /// This device is gone (revoked, unlisted, session scope, a factor owed): the sign-in screen answers it, as the web's
-    /// `enterRevoked` does for `E_SESSION_SCOPE` and `E_DEVICE_UNLISTED`.
+    /// No account here yet, or a factor owed: the sign-up or the sign-in screen answers it.
     SignIn,
+    /// The instance no longer accepts this device (revoked, unlisted, session scope): the web's `enterRevoked`.
+    Revoked,
+    /// The store's key is gone from the keychain: the web's `store-lost`.
+    StoreLost,
     /// The store is newer than this build.
     StoreNewer,
     /// Anything else: the fatal splash with its stable code.
@@ -99,11 +137,12 @@ pub enum StartFailure {
 /// Sorts a failed start. `E_STORE_NEWER` arrives as a `Sync` code until the store reports its schema versions.
 pub fn classify(error: &ClientError) -> StartFailure {
     match error {
-        ClientError::Revoked | ClientError::FactorRequired | ClientError::NoIdentity => {
-            StartFailure::SignIn
-        }
+        ClientError::FactorRequired | ClientError::NoIdentity => StartFailure::SignIn,
+        ClientError::Revoked => StartFailure::Revoked,
+        // dilla-client's `StoreError::KeyMissing`, as the start reports it.
+        ClientError::Store(m) if m.contains("key is missing") => StartFailure::StoreLost,
         ClientError::Sync(code) => match code.as_str() {
-            "E_SESSION_SCOPE" | "E_DEVICE_UNLISTED" | "E_DEVICE_REVOKED" => StartFailure::SignIn,
+            "E_SESSION_SCOPE" | "E_DEVICE_UNLISTED" | "E_DEVICE_REVOKED" => StartFailure::Revoked,
             "E_STORE_NEWER" => StartFailure::StoreNewer,
             _ => StartFailure::Fatal,
         },
@@ -119,6 +158,8 @@ pub fn failure_boot(error: &ClientError) -> Boot {
             found: 0,
             supported: 0,
         },
+        StartFailure::Revoked => Boot::Revoked,
+        StartFailure::StoreLost => Boot::StoreLost,
         _ => Boot::Fatal {
             code: fatal_code(error),
         },
@@ -144,7 +185,9 @@ pub fn fatal_code(error: &ClientError) -> String {
 /// The detail's `max-width` in characters (Splash.css `46ch`).
 const DETAIL_COLUMNS: f32 = 46.0;
 
-type Press = Rc<dyn Fn(&mut Window, &mut App)>;
+pub type Press = Rc<dyn Fn(&mut Window, &mut App)>;
+/// Opens (`true`) or closes a confirmation.
+pub type Toggle = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
 /// The splash: the brand, the status and detail, and the action when there is one. It fills its parent.
 pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>) -> AnyElement {
@@ -218,17 +261,75 @@ pub fn loading() -> AnyElement {
     splash(&Boot::Loading, None, None)
 }
 
-/// "dilla could not start", with `on_retry` behind its action.
+/// What the failure splash's buttons do: the action (Try again, or open the reset's confirmation), the secondary (back
+/// to the sign-in), and the confirmation's own buttons.
+pub struct FailureActions {
+    pub on_retry: Press,
+    pub on_sign_in: Press,
+    /// Opens (`true`) or closes the reset's confirmation.
+    pub on_confirming: Toggle,
+    /// The confirmed Forget or Reset.
+    pub on_reset: Press,
+}
+
+/// The splash for a failed start: "dilla could not start" with Try again, the revoked device's Forget this browser, or the
+/// lost store's Reset this browser, each reset behind its confirmation (open while `confirming`).
 pub fn fatal(
     error: &ClientError,
-    on_retry: impl Fn(&mut Window, &mut App) + 'static,
-    on_sign_in: impl Fn(&mut Window, &mut App) + 'static,
+    confirming: bool,
+    viewport_width: f32,
+    actions: FailureActions,
 ) -> AnyElement {
-    splash(
-        &failure_boot(error),
-        Some(Rc::new(on_retry)),
-        Some(Rc::new(on_sign_in)),
-    )
+    let boot = failure_boot(error);
+    let FailureActions {
+        on_retry,
+        on_sign_in,
+        on_confirming,
+        on_reset,
+    } = actions;
+    let Some((title, body, confirm)) = boot.confirm_keys() else {
+        return splash(&boot, Some(on_retry), Some(on_sign_in));
+    };
+    let open = on_confirming.clone();
+    let page = splash(
+        &boot,
+        Some(Rc::new(move |window, cx| open(true, window, cx))),
+        None,
+    );
+    let close = on_confirming;
+    let dialog = Dialog::new("boot-confirm", t(title), t("dialog.close"))
+        .open(confirming)
+        .body(
+            div().flex().flex_col().children(
+                paragraph(
+                    t(body),
+                    text::UI,
+                    line_height(text::UI, 1.5),
+                    color::FG_2,
+                    DialogKind::Form.body_width(viewport_width),
+                )
+                .into_iter()
+                .map(IntoElement::into_any_element),
+            ),
+        )
+        .footer(
+            Button::new(ElementId::from("boot-confirm-action"), t(confirm))
+                .variant(ButtonVariant::Danger)
+                .size(ButtonSize::Dialog)
+                .on_click(move |_, window, cx| on_reset(window, cx)),
+        )
+        .on_close(move |window, cx| close(false, window, cx));
+    div()
+        .size_full()
+        .relative()
+        .child(page)
+        .child(dialog)
+        .into_any_element()
+}
+
+/// "Clearing this browser's data", while a Forget or a Reset wipes the instance's data.
+pub fn resetting() -> AnyElement {
+    splash(&Boot::Resetting, None, None)
 }
 
 /// The wordmark, page size: the 20px tile, DILLA and the caret (`BrandMark`, `size="page"`).
@@ -287,11 +388,19 @@ mod tests {
     fn failed_starts_are_sorted_like_the_webs_boot() {
         use StartFailure::*;
         let sync = |c: &str| ClientError::Sync(c.into());
-        assert_eq!(classify(&ClientError::Revoked), SignIn);
+        assert_eq!(classify(&ClientError::Revoked), Revoked);
         assert_eq!(classify(&ClientError::FactorRequired), SignIn);
         assert_eq!(classify(&ClientError::NoIdentity), SignIn);
-        assert_eq!(classify(&sync("E_SESSION_SCOPE")), SignIn);
-        assert_eq!(classify(&sync("E_DEVICE_UNLISTED")), SignIn);
+        assert_eq!(classify(&sync("E_SESSION_SCOPE")), Revoked);
+        assert_eq!(classify(&sync("E_DEVICE_UNLISTED")), Revoked);
+        assert_eq!(classify(&sync("E_DEVICE_REVOKED")), Revoked);
+        assert_eq!(
+            classify(&ClientError::Store(
+                "the database key is missing from the keychain".into()
+            )),
+            StoreLost
+        );
+        assert_eq!(classify(&ClientError::Store("disk full".into())), Fatal);
         assert_eq!(classify(&sync("E_STORE_NEWER")), StoreNewer);
         assert_eq!(classify(&sync("E_COMMIT_REQUIRED")), Fatal);
         assert_eq!(classify(&ClientError::Network("x".into())), Fatal);
@@ -318,6 +427,27 @@ mod tests {
         ] {
             assert!(crate::strings::try_t(key).is_some(), "{key}");
         }
+    }
+
+    /// Boot.tsx: the revoked and store-lost splashes say what happened and offer their reset, each behind its
+    /// confirmation; neither offers Try again, and every word is the web's.
+    #[test]
+    fn the_reset_splashes_explain_and_ask_first() {
+        for (boot, action) in [
+            (Boot::Revoked, "boot.revoked.action"),
+            (Boot::StoreLost, "boot.storeLost.action"),
+        ] {
+            assert!(boot.detail().is_some());
+            assert_eq!(boot.action_key(), Some(action));
+            assert_eq!(boot.secondary_key(), None);
+            let (title, body, confirm) = boot.confirm_keys().unwrap();
+            for key in [boot.status_key(), action, title, body, confirm] {
+                assert!(crate::strings::try_t(key).is_some(), "{key}");
+            }
+        }
+        assert_eq!(Boot::Resetting.action_key(), None);
+        assert_eq!(Boot::Resetting.detail(), None);
+        assert_eq!(Boot::Fatal { code: "E_X".into() }.confirm_keys(), None);
     }
 
     #[test]

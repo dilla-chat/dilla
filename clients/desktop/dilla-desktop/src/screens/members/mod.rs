@@ -491,6 +491,15 @@ fn action_label(a: MenuAction, name: &str) -> String {
 }
 
 /// Runs a chosen action on `user` (the card's buttons and the person menu's items).
+/// Opens `user`'s profile card at `at`, with the member list it sits beside (the stage's person menu's Profile).
+pub fn open_card(w: WindowId, user: UserId, at: Point<Pixels>, cx: &mut App) {
+    let u = ui(w, cx);
+    u.open = true;
+    u.menu = None;
+    u.card = Some((user, at));
+    cx.refresh_windows();
+}
+
 fn choose(w: WindowId, community: CommunityId, user: UserId, id: &str, cx: &mut App) {
     let Some(ctx) = ui(w, cx).ctx.clone() else {
         return;

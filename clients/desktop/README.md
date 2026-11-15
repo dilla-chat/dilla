@@ -6,6 +6,12 @@ Crates: `dilla-client` (store, keychain, HTTP, gateway, sync, calls), `dilla-med
 `dilla-sframe/1`), `dilla-desktop-ui` (Signal tokens, fonts, icons, components), `dilla-desktop` (the app),
 `parity` (pixel-parity harness).
 
+## Releasing
+
+Linux alphas are released from a `desktop-gpui-v<X.Y.Z>-alpha.<N>` tag by `.github/workflows/desktop-gpui-release.yml`;
+see [RELEASING.md](RELEASING.md). The packaging inputs (desktop entry, metainfo, icons, nfpm config, AppRun) are in
+`packaging/linux/`.
+
 ## Building
 
 - **Linux:** clang 21 or newer (LiveKit's prebuilt libwebrtc ships a hermetic libc++ that needs it):

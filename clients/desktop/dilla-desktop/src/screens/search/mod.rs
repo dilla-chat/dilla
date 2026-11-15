@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use dilla_client::state::search::SearchHit;
 use dilla_client::state::{ChannelId, CommunityId};
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::dialog::{
     HasOpenFocus, OVERLAY_CONTEXT, OpenFocus, TrapNext, TrapPrevious, sync_open_focus, trap_tab,
 };
@@ -524,6 +525,7 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             // The component pads a single-line input by its size; the palette's textbox has no side padding.
             .child(
                 Input::new(&input)
+                    .aria_label(t("search.placeholder"))
                     .appearance(false)
                     .ml(-gpui_component::Size::default().input_px()),
             )
@@ -541,6 +543,8 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         "search-close",
         Some(&esc),
         ui::esc_key("search-close", ESC_KEY)
+            .a11y(Role::Button, t("dialog.close"))
+            .aria_keyshortcuts("Escape")
             .track_focus(&esc)
             .on_click({
                 let on_esc = on_esc.clone();
@@ -563,6 +567,7 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 
     // The results.
     let mut list = ui::results("search-results")
+        .a11y(Role::ListBox, t("search.open"))
         .track_focus(&results.clone().tab_stop(!items.is_empty()))
         .track_scroll(&scroll);
     let mut at = 0usize;
@@ -637,6 +642,7 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let key_memory = memory.clone();
     let key_input = input.clone();
     let panel_el = ui::panel("search-panel", vw, vh)
+        .modal_dialog(t("search.open"))
         .track_focus(&panel)
         .key_context(OVERLAY_CONTEXT)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
