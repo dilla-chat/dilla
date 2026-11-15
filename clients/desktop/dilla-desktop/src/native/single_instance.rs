@@ -228,6 +228,54 @@ pub fn decode(bytes: &[u8]) -> Option<Vec<String>> {
     (!args.is_empty() && args.len() <= MAX_ARGS).then_some(args)
 }
 
+/// Why a handover connection gave nothing (the Windows pipe's `AcceptError`, as the serving loop sees it).
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Failure {
+    /// The client left before it connected: wait again at once.
+    ClientGone,
+    /// The client is not this user's process: dropped unread, wait again at once.
+    Rejected,
+    /// The wait itself failed: wait again after a pause that grows to [`Backoff::CAP`].
+    Transient,
+    /// The next listening instance could not be made, so the name could lapse to someone else: stop serving.
+    Hostile,
+}
+
+/// The pause between transient failures of the serving loop.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Default)]
+struct Backoff {
+    pause: Duration,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl Backoff {
+    const FIRST: Duration = Duration::from_millis(50);
+    const CAP: Duration = Duration::from_secs(5);
+
+    /// How long to pause before waiting again after `failure`, or `None` to stop serving.
+    fn after(&mut self, failure: Failure) -> Option<Duration> {
+        match failure {
+            Failure::ClientGone | Failure::Rejected => Some(Duration::ZERO),
+            Failure::Transient => {
+                self.pause = if self.pause.is_zero() {
+                    Self::FIRST
+                } else {
+                    (self.pause * 2).min(Self::CAP)
+                };
+                Some(self.pause)
+            }
+            Failure::Hostile => None,
+        }
+    }
+
+    /// A client was served: the next transient failure starts from the first pause.
+    fn reset(&mut self) {
+        self.pause = Duration::ZERO;
+    }
+}
+
 /// Reads one message: at most [`MAX_MESSAGE`] bytes, until the sender is done.
 fn read_message(from: impl io::Read) -> io::Result<Option<Vec<String>>> {
     let mut buf = Vec::new();
@@ -464,24 +512,43 @@ impl Endpoint {
         let spawned = std::thread::Builder::new()
             .name("dilla-handover".into())
             .spawn(move || {
+                use super::pipe_windows::AcceptError;
+                let mut backoff = Backoff::default();
                 loop {
-                    let pipe = match self.listener.accept() {
-                        Ok(pipe) => pipe,
-                        Err(e) => {
-                            log::warn!("dilla-desktop: a handover connection failed: {e}");
+                    let (failure, e) = match self.listener.accept() {
+                        Ok(pipe) => {
+                            backoff.reset();
+                            match read_message(&pipe) {
+                                Ok(Some(argv)) => {
+                                    if tx.send(argv).is_err() {
+                                        return;
+                                    }
+                                }
+                                Ok(None) => log::warn!(
+                                    "dilla-desktop: a handover that was not an argv was dropped"
+                                ),
+                                Err(e) => {
+                                    log::warn!("dilla-desktop: a handover could not be read: {e}")
+                                }
+                            }
                             continue;
                         }
+                        Err(AcceptError::ClientGone(e)) => (Failure::ClientGone, e),
+                        Err(AcceptError::Rejected(e)) => (Failure::Rejected, e),
+                        Err(AcceptError::Transient(e)) => (Failure::Transient, e),
+                        Err(AcceptError::Hostile(e)) => (Failure::Hostile, e),
                     };
-                    match read_message(&pipe) {
-                        Ok(Some(argv)) => {
-                            if tx.send(argv).is_err() {
-                                return;
-                            }
+                    match backoff.after(failure) {
+                        Some(pause) => {
+                            log::warn!("dilla-desktop: a handover connection failed ({failure:?}): {e}");
+                            std::thread::sleep(pause);
                         }
-                        Ok(None) => {
-                            log::warn!("dilla-desktop: a handover that was not an argv was dropped")
+                        None => {
+                            log::error!(
+                                "dilla-desktop: the handover pipe stopped ({failure:?}): {e}; second launches cannot hand over"
+                            );
+                            return;
                         }
-                        Err(e) => log::warn!("dilla-desktop: a handover could not be read: {e}"),
                     }
                 }
             });
@@ -490,7 +557,6 @@ impl Endpoint {
         }
     }
 }
-
 #[cfg(windows)]
 fn hand_over(root: &Path, argv: &[String]) -> io::Result<()> {
     let (name, sid) = pipe_of(root)?;
@@ -586,6 +652,25 @@ mod tests {
         let socket = socket_path(&root);
         assert_eq!(mode(socket.parent().unwrap()), 0o700);
         assert_eq!(mode(&socket), 0o600);
+    }
+
+    /// The serving loop's policy: a client that left or is another user's costs no pause; failed waits back off,
+    /// doubling to a cap, and start over after a served client; a lost listening instance stops the serving.
+    #[test]
+    fn the_serving_loop_backs_off_and_stops_when_hostile() {
+        let mut b = Backoff::default();
+        assert_eq!(b.after(Failure::ClientGone), Some(Duration::ZERO));
+        assert_eq!(b.after(Failure::Rejected), Some(Duration::ZERO));
+        let pauses: Vec<_> = (0..10)
+            .map(|_| b.after(Failure::Transient).unwrap())
+            .collect();
+        assert_eq!(pauses[0], Backoff::FIRST);
+        assert_eq!(pauses[1], Backoff::FIRST * 2);
+        assert!(pauses.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(*pauses.last().unwrap(), Backoff::CAP);
+        b.reset();
+        assert_eq!(b.after(Failure::Transient), Some(Backoff::FIRST));
+        assert_eq!(b.after(Failure::Hostile), None);
     }
 
     /// Both ends see the other's user id, and it is this user's.

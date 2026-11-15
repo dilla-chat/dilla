@@ -4,8 +4,11 @@
 //! - The name carries the user's SID and a hash of the data root: `\\.\pipe\dilla-desktop-<SID>-<hash>`.
 //! - The app makes the pipe with a protected DACL that allows the current user only (`D:P(A;;GA;;;<SID>)`), its first
 //!   instance with `FILE_FLAG_FIRST_PIPE_INSTANCE` (a name someone else made first fails visibly), inbound only and
-//!   refusing remote clients.
-//! - A second launch opens it, then asks who serves it (`GetNamedPipeServerProcessId`, that process's token user) and
+//!   refusing remote clients. One instance is always outstanding (the next is made before a connected one is read),
+//!   so the name never lapses for someone else to take; failing to make it stops the serving.
+//! - The app reads a client only when `GetNamedPipeClientProcessId`'s token user is its own SID.
+//! - A second launch opens it for identification only (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`: the server
+//!   cannot impersonate it), then asks who serves it (`GetNamedPipeServerProcessId`, that process's token user) and
 //!   writes only when that is its own SID.
 //!
 //! Only `std` and `windows-sys` are used here, so the file checks on its own for the Windows target.
@@ -17,7 +20,7 @@ use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -26,10 +29,14 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
     TokenUser,
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND, SECURITY_IDENTIFICATION,
+    SECURITY_SQOS_PRESENT,
+};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+    GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -99,11 +106,28 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
-/// The app's end: makes pipe instances only `sid` may open, one connection at a time.
+/// Why [`Listener::accept`] returned no pipe, and what the serving loop does about it
+/// ([`super::single_instance::Failure`]).
+#[derive(Debug)]
+pub enum AcceptError {
+    /// The client went before it was connected (`ERROR_NO_DATA`): the same instance waits again.
+    ClientGone(io::Error),
+    /// A connected client is not this user's process (or could not be identified): dropped unread.
+    Rejected(io::Error),
+    /// `ConnectNamedPipe` failed otherwise: try again after a pause.
+    Transient(io::Error),
+    /// No next instance could be made while one was connected: the name may be taken by someone else. Stop serving.
+    Hostile(io::Error),
+}
+
+/// The app's end: makes pipe instances only `sid` may open. One instance is always outstanding, so the name never
+/// lapses for another user to take: the next is made before a connected one is handed over.
 pub struct Listener {
     name: Vec<u16>,
+    sid: String,
     descriptor: PSECURITY_DESCRIPTOR,
-    first: Option<HANDLE>,
+    /// The instance waiting for the next client.
+    pending: HANDLE,
 }
 
 // SAFETY: the descriptor and the handle are process-wide kernel and heap objects; only the serving thread uses them.
@@ -111,9 +135,7 @@ unsafe impl Send for Listener {}
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        if let Some(h) = self.first.take() {
-            drop(Owned(h));
-        }
+        drop(Owned(self.pending));
         // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
         unsafe { LocalFree(self.descriptor.cast()) };
     }
@@ -136,89 +158,129 @@ impl Listener {
         {
             return Err(io::Error::last_os_error());
         }
-        let mut listener = Self {
-            name: wide(name),
+        let name = wide(name);
+        let pending = match create(&name, descriptor, true) {
+            Ok(h) => h,
+            Err(e) => {
+                // SAFETY: allocated above, not kept.
+                unsafe { LocalFree(descriptor.cast()) };
+                return Err(e);
+            }
+        };
+        Ok(Self {
+            name,
+            sid: sid.to_owned(),
             descriptor,
-            first: None,
-        };
-        listener.first = Some(listener.create(true)?);
-        Ok(listener)
+            pending,
+        })
     }
 
-    fn create(&self, first: bool) -> io::Result<HANDLE> {
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: self.descriptor,
-            bInheritHandle: 0,
-        };
-        let open_mode = PIPE_ACCESS_INBOUND
-            | if first {
-                FILE_FLAG_FIRST_PIPE_INSTANCE
-            } else {
-                0
-            };
-        // SAFETY: a NUL-terminated name and attributes that outlive the call.
-        let handle = unsafe {
-            CreateNamedPipeW(
-                self.name.as_ptr(),
-                open_mode,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                PIPE_UNLIMITED_INSTANCES,
-                0,
-                64 * 1024,
-                0,
-                &attributes,
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(handle)
-        }
-    }
-
-    /// Waits for the next second launch and hands its end of the pipe over as a `File` (read it to the end).
-    pub fn accept(&mut self) -> io::Result<File> {
-        let handle = match self.first.take() {
-            Some(h) => h,
-            None => self.create(false)?,
-        };
+    /// Waits for the next second launch and hands its end of the pipe over as a `File` (read it to the end), once
+    /// the next instance is outstanding and the client is known to run as this user.
+    pub fn accept(&mut self) -> Result<File, AcceptError> {
         // SAFETY: our pipe handle, waited on synchronously.
-        let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) } != 0
-            || io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32);
-        // SAFETY: the handle is ours and is closed once, by the File.
-        let pipe = unsafe { File::from_raw_handle(handle as _) };
-        if connected {
-            Ok(pipe)
-        } else {
-            Err(io::Error::last_os_error())
+        let ok = unsafe { ConnectNamedPipe(self.pending, std::ptr::null_mut()) } != 0;
+        if !ok {
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(c) if c == ERROR_PIPE_CONNECTED as i32 => {}
+                Some(c) if c == ERROR_NO_DATA as i32 => {
+                    // SAFETY: our instance; it waits again after the disconnect.
+                    unsafe { DisconnectNamedPipe(self.pending) };
+                    return Err(AcceptError::ClientGone(e));
+                }
+                _ => {
+                    // SAFETY: as above.
+                    unsafe { DisconnectNamedPipe(self.pending) };
+                    return Err(AcceptError::Transient(e));
+                }
+            }
         }
+        // The next instance first: the name never has no instance of ours.
+        let next = create(&self.name, self.descriptor, false).map_err(|e| {
+            // SAFETY: as above; the connected client is dropped, our instance stays outstanding.
+            unsafe { DisconnectNamedPipe(self.pending) };
+            AcceptError::Hostile(e)
+        })?;
+        let connected = std::mem::replace(&mut self.pending, next);
+        // SAFETY: the handle is ours and is closed once, by the File.
+        let pipe = unsafe { File::from_raw_handle(connected as _) };
+        // SAFETY: an open, connected pipe handle.
+        let client = peer_sid(&pipe, |h, pid| unsafe {
+            GetNamedPipeClientProcessId(h, pid)
+        })
+        .map_err(AcceptError::Rejected)?;
+        if client != self.sid {
+            return Err(AcceptError::Rejected(io::Error::other(
+                "a handover from another user's process",
+            )));
+        }
+        Ok(pipe)
     }
 }
 
-/// A second launch's end: opens `name` and returns it only when the process serving it runs as `sid`.
-pub fn connect(name: &str, sid: &str) -> io::Result<File> {
-    let pipe = OpenOptions::new().write(true).open(name)?;
-    let denied = |e: io::Error| io::Error::new(io::ErrorKind::PermissionDenied, e);
-    server_sid(&pipe).map_err(denied).and_then(|server| {
-        if server == sid {
-            Ok(pipe)
+fn create(name: &[u16], descriptor: PSECURITY_DESCRIPTOR, first: bool) -> io::Result<HANDLE> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor,
+        bInheritHandle: 0,
+    };
+    let open_mode = PIPE_ACCESS_INBOUND
+        | if first {
+            FILE_FLAG_FIRST_PIPE_INSTANCE
         } else {
-            Err(denied(io::Error::other(
-                "the handover pipe is served by another user's process",
-            )))
-        }
-    })
+            0
+        };
+    // SAFETY: a NUL-terminated name and attributes that outlive the call.
+    let handle = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            open_mode,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES,
+            0,
+            64 * 1024,
+            0,
+            &attributes,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(handle)
+    }
 }
 
-/// The SID of the process serving `pipe`.
-fn server_sid(pipe: &File) -> io::Result<String> {
-    let mut pid = 0u32;
+/// A second launch's end: opens `name` for identification only (the server cannot impersonate this process), and
+/// returns it only when the process serving it runs as `sid`.
+pub fn connect(name: &str, sid: &str) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let pipe = OpenOptions::new()
+        .write(true)
+        .security_qos_flags(SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION)
+        .open(name)?;
+    let denied = |e: io::Error| io::Error::new(io::ErrorKind::PermissionDenied, e);
     // SAFETY: an open pipe handle.
-    if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle() as HANDLE, &mut pid) } == 0 {
+    let server = peer_sid(&pipe, |h, pid| unsafe {
+        GetNamedPipeServerProcessId(h, pid)
+    })
+    .map_err(denied)?;
+    if server == sid {
+        Ok(pipe)
+    } else {
+        Err(denied(io::Error::other(
+            "the handover pipe is served by another user's process",
+        )))
+    }
+}
+
+/// The SID of the process at the other end of `pipe`, its id asked with `pid_of`.
+fn peer_sid(pipe: &File, pid_of: impl FnOnce(HANDLE, *mut u32) -> i32) -> io::Result<String> {
+    let mut pid = 0u32;
+    if pid_of(pipe.as_raw_handle() as HANDLE, &mut pid) == 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: a query-only open of the server process; closed by `Owned`.
+    // SAFETY: a query-only open of the other process; closed by `Owned`.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
         return Err(io::Error::last_os_error());
