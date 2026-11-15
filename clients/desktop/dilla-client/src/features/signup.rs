@@ -50,6 +50,7 @@ pub const AFK_BUILTIN_POSITION: u64 = 1 << 30;
 pub const PENDING_JOIN_KEY: &str = "signup.pendingJoin";
 
 /// `send_messages` (admin/perm.ts `PERM.sendMessages`).
+const PERM_VIEW_CHANNEL: u64 = 1 << 0;
 const PERM_SEND_MESSAGES: u64 = 1 << 1;
 const PERM_MANAGE_CHANNELS: u64 = 1 << 14;
 const PERM_MANAGE_ROLES: u64 = 1 << 15;
@@ -1191,6 +1192,32 @@ impl Onboarding {
         parent: Option<ChannelId>,
         announce_roles: &[[u8; 16]],
     ) -> Result<ChannelId, FlowError> {
+        self.create_channel_with(community, kind, name, parent, announce_roles, None)
+            .await
+    }
+
+    /// [`Self::create_channel`], private from birth when `private_roles` is given (Create.tsx `private: { roleIds }`,
+    /// controller.ts `privateOverwrites`): @everyone may not view it, each listed role may, and so may the creator
+    /// when she is neither the owner nor an administrator. An announcement channel is never private (its own overwrites
+    /// win, as the worker refuses both).
+    pub async fn create_channel_with(
+        &self,
+        community: CommunityId,
+        kind: NewChannelKind,
+        name: &str,
+        parent: Option<ChannelId>,
+        announce_roles: &[[u8; 16]],
+        private_roles: Option<&[[u8; 16]]>,
+    ) -> Result<ChannelId, FlowError> {
+        if private_roles.is_some()
+            && matches!(
+                kind,
+                NewChannelKind::Announcement | NewChannelKind::Category
+            )
+        {
+            return Err(FlowError::local("E_BAD_INPUT"));
+        }
+        let private = private_roles.map(<[[u8; 16]]>::to_vec);
         if name_problem(name, CHANNEL_NAME_MAX_BYTES).is_some()
             || (kind == NewChannelKind::Category && parent.is_some())
         {
@@ -1213,6 +1240,8 @@ impl Onboarding {
             };
             let overwrites = if kind == NewChannelKind::Announcement {
                 Some(announcement_overwrites(&inner, &api, community, &roles).await?)
+            } else if let Some(private) = &private {
+                Some(private_overwrites(&inner, &api, community, private).await?)
             } else {
                 None
             };
@@ -1377,6 +1406,37 @@ async fn announcement_overwrites(
             && let Some(me) = inner.snapshot().account.user_id
         {
             out.push((1, me.0, PERM_SEND_MESSAGES, 0));
+        }
+    }
+    check_overwrite_count(out.len())?;
+    Ok(out)
+}
+
+/// controller.ts `privateOverwrites`: @everyone denied viewing, each chosen role allowed to view (deduplicated, @everyone
+/// skipped), and the creator allowed to view when she holds neither ownership nor administrator, so she keeps the
+/// channel she made.
+async fn private_overwrites(
+    inner: &Inner,
+    api: &crate::sync::api::Api,
+    community: CommunityId,
+    roles: &[[u8; 16]],
+) -> Result<Vec<(u64, [u8; 16], u64, u64)>, FlowError> {
+    let answer = api
+        .socket_call::<r::ListRoles>(&[&community.hex()], None, None, true)
+        .await?;
+    let everyone = everyone_role(&answer.body).ok_or_else(|| FlowError::local("E_DECODE"))?;
+    let mut out = vec![(0, everyone, 0, PERM_VIEW_CHANNEL)];
+    for role in roles {
+        if *role != everyone && !out.iter().any(|(_, t, _, _)| t == role) {
+            out.push((0, *role, PERM_VIEW_CHANNEL, 0));
+        }
+    }
+    if !is_owner(inner, community) {
+        let bits = permission_bits(api, community).await?;
+        if bits & PERM_ADMINISTRATOR == 0
+            && let Some(me) = inner.snapshot().account.user_id
+        {
+            out.push((1, me.0, PERM_VIEW_CHANNEL, 0));
         }
     }
     check_overwrite_count(out.len())?;

@@ -9,6 +9,8 @@
 //!   shell's route host (Task 8) opens it).
 //! - `keyboard_*`: the settings' keyboard contract, on the pieces this area owns.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use dilla_desktop::router::ServerSection;
@@ -321,4 +323,131 @@ fn activate(vcx: &mut gpui::VisualTestContext) {
         keystroke: gpui::Keystroke::parse("enter").expect("a keystroke"),
     });
     vcx.run_until_parked();
+}
+
+/// Package 10b: a channel private from birth, made through the create dialog's flow against a real dillad.
+mod live {
+    use std::time::Duration;
+
+    use dilla_client::features::roles::perm;
+    use dilla_client::features::signup::NewChannelKind;
+    use dilla_client::state::{CommunityId, UserId};
+    use dilla_desktop::screens::create::flows::{
+        PRIVATE_ROLES_MAX, offered_roles, role_rows, toggle_role,
+    };
+
+    use super::support::world;
+
+    const WITHIN: Duration = Duration::from_secs(30);
+
+    /// e2e/web/private.spec.ts (create): the owner makes a role for Ada, opens a new text channel with **private channel**
+    /// on and the role ticked (Create.tsx: only roles under the creator's top, @everyone never), and creates it. Ada, who
+    /// holds the role, sees the channel; Björn, who does not, never does, while a public channel made after it reaches
+    /// him. The 98-role cap disables the rows past it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+    async fn create_private_channel_with_roles() {
+        let tag = "p10b-private";
+        let host = tokio::task::spawn_blocking(move || world::start_host(tag, "127.0.0.1:0", None))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let olof = world::sign_up(&host, &invite, "olof", "Olof", tag).await;
+        let ada = world::sign_up(&host, &invite, "ada", "Ada", tag).await;
+        let bjorn = world::sign_up(&host, &invite, "bjorn", "Björn", tag).await;
+        let (_host, olof, ada, bjorn, c) = tokio::task::spawn_blocking(move || {
+            let c = world::community(&host, &olof, "crew", &[&ada, &bjorn]);
+            for p in [&olof, &ada, &bjorn] {
+                world::clear_session(p);
+            }
+            (host, olof, ada, bjorn, CommunityId(c))
+        })
+        .await
+        .unwrap();
+        let ada_id = UserId(ada.user_id);
+        let (owner, ada, bjorn) = (
+            world::start(&olof).await,
+            world::start(&ada).await,
+            world::start(&bjorn).await,
+        );
+        for client in [&owner, &ada, &bjorn] {
+            world::wait_for(client, WITHIN, "the member list", |s| {
+                s.members.get(&c).is_some_and(|m| m.len() == 3)
+            })
+            .await;
+        }
+        owner.roles().load_access(c).await.unwrap();
+        let crew = owner
+            .roles()
+            .create_role(c, "crew-mates", 0x5A_A8E6, false, false, perm::VIEW_CHANNEL)
+            .await
+            .unwrap();
+        owner.roles().grant_role(c, ada_id, crew).await.unwrap();
+        owner.roles().load_access(c).await.unwrap();
+        let s = world::wait_for(&owner, WITHIN, "the new role", |s| {
+            s.roles.roles_of(c).iter().any(|r| r.id == crew)
+        })
+        .await;
+
+        // What the dialog offers the owner: the role, never @everyone; a tick checks its row.
+        let access = s.roles.access_of(c);
+        assert!(access.manage_roles, "the owner gets the private switch");
+        let offered = offered_roles(s.roles.roles_of(c), &access);
+        assert_eq!(
+            offered.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![crew],
+            "every role below the owner's top but @everyone"
+        );
+        let mut ticked = Vec::new();
+        let key: String = crew.iter().map(|b| format!("{b:02x}")).collect();
+        toggle_role(&mut ticked, &offered, &key, true);
+        toggle_role(&mut ticked, &offered, "not-a-role", true);
+        assert_eq!(ticked, vec![crew]);
+        let rows = role_rows(&offered, &ticked, PRIVATE_ROLES_MAX, Some("full"));
+        assert!(rows[0].checked && !rows[0].disabled);
+        // At the cap, an unticked row is disabled with its reason.
+        let rows = role_rows(&offered, &[], 0, Some("full"));
+        assert!(rows[0].disabled && rows[0].detail.as_deref() == Some("full"));
+
+        let secret = owner
+            .onboarding()
+            .create_channel_with(c, NewChannelKind::Text, "secret", None, &[], Some(&ticked))
+            .await
+            .unwrap();
+        // A private announcement channel is refused before anything is sent.
+        assert!(
+            owner
+                .onboarding()
+                .create_channel_with(
+                    c,
+                    NewChannelKind::Announcement,
+                    "news",
+                    None,
+                    &[],
+                    Some(&ticked)
+                )
+                .await
+                .is_err()
+        );
+        owner
+            .onboarding()
+            .create_channel_with(c, NewChannelKind::Text, "lobby", None, &[], None)
+            .await
+            .unwrap();
+        for client in [&owner, &ada, &bjorn] {
+            client.refresh();
+        }
+        world::wait_for(&ada, WITHIN, "the private channel for its role", |s| {
+            s.channel(secret).is_some()
+        })
+        .await;
+        let s = world::wait_for(&bjorn, WITHIN, "the public channel", |s| {
+            s.channel_named(c, "lobby").is_some()
+        })
+        .await;
+        assert!(
+            s.channel(secret).is_none() && s.channel_named(c, "secret").is_none(),
+            "a member without the role never sees the private channel"
+        );
+    }
 }
