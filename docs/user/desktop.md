@@ -101,8 +101,10 @@ before it joined are not shown on it. Keep another signed-in device and the reco
   operating system's keychain) and the end-to-end encryption run in the same process.
 - One window and one client per instance. Closing a window keeps its client running until you remove the instance or
   quit the app; opening the instance again shows a new window on the running client.
-- Inline audio plays in the app (MP3, AAC, Vorbis, Opus, FLAC, WAV). A video shows its poster and opens in your
-  system's player; a copy handed to the player is deleted when the app starts and quits.
+- Inline audio plays in the app (MP3, AAC, Vorbis, Opus, FLAC, WAV). Videos play in their card too, as in the
+  browser: WebM and MP4 with VP8, VP9, AV1 or H.264 (and H.265 on macOS), with play and pause, the timeline, volume
+  and full screen (Escape leaves it). A video the app cannot decode (Ogg Theora, or H.265 on Windows and Linux) opens
+  in your system's player instead; a copy handed to the player is deleted when the app starts and quits.
 - Message search runs on this device's own decrypted history, as in the browser.
 - The screens are drawn, not laid out by a browser, so the keyboard works through the app's own focus order
   (Tab and Shift+Tab) and its own shortcuts, below.
@@ -160,6 +162,8 @@ the updater and packaging.
 - **Linux, AltGr and push to talk:** a push-to-talk key is accepted only on its own, and the app refuses Control, Alt,
   Shift and ⌘ with it, but on Linux holding AltGr with the key still opens the microphone.
 - **Other people's messages:** the Delete action is only offered on your own messages.
+- **Video player menu:** the browser player's ⋮ menu (download, playback speed, picture in picture) is not there; save
+  a video with the card's **save**.
 
 ## Browser migration preparation (disabled)
 

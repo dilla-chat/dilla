@@ -58,6 +58,8 @@ fn main() {
         "src/packet_trailer.rs",
         // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
         "src/dilla_transform.rs",
+        // DILLA PATCH: the inline attachment player's standalone video decoder (core/vendor/README.md).
+        "src/dilla_video_decoder.rs",
     ];
 
     if is_desktop {
@@ -108,6 +110,8 @@ fn main() {
         "src/packet_trailer_av1.cpp",
         // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
         "src/dilla_transform.cpp",
+        // DILLA PATCH: the inline attachment player's standalone video decoder (core/vendor/README.md).
+        "src/dilla_video_decoder.cpp",
     ]);
 
     if is_desktop {

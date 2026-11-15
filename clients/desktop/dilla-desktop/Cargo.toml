@@ -48,6 +48,12 @@ symphonia = { version = "0.5.5", default-features = false, features = ["aac", "f
 opus-pure = { version = "=0.2.3", default-features = false }
 # - Task 12: the random names of videos handed to the system player.
 getrandom = "0.3"
+# Parity Package 12, inline video (Jonas 2026-11-15: before the switch; no FFmpeg of our own): libwebrtc's own decoders
+# through the patched webrtc-sys (core/vendor/README.md, "dilla_video_decoder"), already linked for calls, and two
+# pure-Rust demuxers for the web's playable containers (MP4, WebM/Matroska).
+webrtc-sys = "=0.3.53"
+re_mp4 = { version = "=0.5.1", default-features = false }
+matroska-demuxer = "=0.8.1"
 
 # On Linux the platform's windowing and its text system come with its display backends: without them `current_platform`
 # has no text system (the headless frame draws no glyphs, Task 3's finding) and no window opens. X11 pulls
