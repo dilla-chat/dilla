@@ -130,7 +130,6 @@ For the native desktop preview:
   autostart, and operating-system notifications (also for a ring, with Answer and Decline).
 - The updater, installers and packages (DMG, Windows installer, AppImage, deb, rpm, AUR). Build it from source.
 - Screen readers (they come after the switch) and push to talk while another window has focus.
-- On Linux, AltGr plus the push-to-talk key still opens the microphone (the other modifiers are refused).
 
 Beyond the web client: the native [desktop client](docs/user/desktop.md) is built from source and has no released
 build yet; the Electron app is discontinued at `desktop-v0.1.0-beta.5`. The browser client is deprecated. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no

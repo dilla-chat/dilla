@@ -618,6 +618,25 @@ fn push_to_talk_ignores_a_modified_key(cx: &mut TestAppContext) {
     );
 }
 
+/// Package 9 (web ptt.ts refuses `getModifierState('AltGraph')`): on Linux AltGr (xkb's Level3) with the key never opens
+/// the mic, though gpui reports no modifier for it; the bare key still does once AltGr is let go.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn altgr_with_the_ptt_key_does_not_open_the_mic(cx: &mut TestAppContext) {
+    let (vcx, w, _) = field_host(cx);
+    // The keyboard's state as xkb reports AltGr held: the keystroke itself looks bare.
+    gpui_linux::set_level3_shift_active(true);
+    key_down(vcx, "insert");
+    let opened = vcx.update(|_, cx| voice::ptt_sending(w, cx));
+    gpui_linux::set_level3_shift_active(false);
+    assert!(!opened, "AltGr with the key: not push to talk");
+    key_down(vcx, "insert");
+    assert!(
+        vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "the bare key opens the mic"
+    );
+}
+
 /// Review A (web ptt.ts): the key types as usual in a text field; the mic stays closed.
 #[gpui::test]
 fn push_to_talk_is_off_in_a_text_field(cx: &mut TestAppContext) {

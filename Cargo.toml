@@ -63,3 +63,6 @@ gpui-pre-wgpu = { path = "core/vendor/gpui-pre-wgpu" }
 # GPUI 0.3.12 with box edges snapped to whole logical px (half up) at a whole scale factor, as Chromium paints the web
 # client's frames (Task 6c). core/vendor/README.md, "gpui-pre 0.3.12".
 gpui-pre = { path = "core/vendor/gpui-pre" }
+# GPUI's Linux platform 0.3.12 with AltGr's state kept for the app: xkb's Level3 is none of gpui's modifiers, so push to
+# talk could not refuse AltGr with its key (Package 9). core/vendor/README.md, "gpui-pre-linux 0.3.12".
+gpui-pre-linux = { path = "core/vendor/gpui-pre-linux" }

@@ -1376,6 +1376,20 @@ pub fn release_ptt(window: WindowId, cx: &mut App) {
 /// acts while one holds the focus (ptt.ts `isEditable`).
 const TEXT_FIELD_CONTEXT: &str = "Input";
 
+/// AltGr is held (ptt.ts `getModifierState('AltGraph')`). On Linux xkb's Level3 is none of gpui's modifiers, so the
+/// vendored platform keeps its state on the side (core/vendor/README.md, "gpui-pre-linux 0.3.12"); elsewhere AltGr comes
+/// as Control+Alt, which the modifiers already refuse.
+fn altgr_held() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        gpui_linux::level3_shift_active()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// The push-to-talk key's handlers, on the window's root element (review I1): an ancestor of whatever holds the focus,
 /// so a key is heard on every screen. The key counts while this window's call is on.
 pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
@@ -1404,6 +1418,7 @@ pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
             || m.shift
             || m.platform
             || m.function
+            || altgr_held()
             || stack.iter().any(|c| c.contains(TEXT_FIELD_CONTEXT))
         {
             return;
