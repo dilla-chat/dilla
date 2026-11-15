@@ -244,7 +244,9 @@ jobs:
           cargo test -p dilla-client --test http_sign_in --locked -- --ignored
           cargo test -p dilla-client --test calls --locked -- --ignored
           cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored
-          cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored
+          cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored --skip enter_to_first_answer_is_within_rtt_plus_100ms_at_p95
+          # G2 is a latency budget: measured alone, not beside the other Bot tests' instances on the same four cores.
+          cargo test -p dilla-client --test bot --locked -- --ignored --exact enter_to_first_answer_is_within_rtt_plus_100ms_at_p95
           cargo test -p dilla-client --test notify --locked -- --ignored
           cargo build -p dilla-testkit --bin dilla-testkit --locked
           cargo test -p dilla-client --test dms --locked -- --ignored
