@@ -444,6 +444,8 @@ impl RenderOnce for MemberList {
                     div()
                         .id("members-close")
                         .a11y(Role::Button, close_label)
+                        .tab_index(0)
+                        .focus_visible(|s| s.shadow(crate::metrics::focus_ring()))
                         .size(px(32.))
                         .flex_none()
                         .flex()

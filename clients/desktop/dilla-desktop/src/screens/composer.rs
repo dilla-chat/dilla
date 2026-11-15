@@ -844,6 +844,9 @@ impl Render for Composer {
             .id("composer-send")
             .a11y(Role::Button, t("shell.composer.send"))
             .aria_keyshortcuts("Enter")
+            // A `<button>` on the web: the keyboard reaches it too.
+            .tab_index(0)
+            .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
             .flex_none()
             .h(len(28.))
             .px(len(10.))
@@ -885,6 +888,9 @@ impl Render for Composer {
         let code = div()
             .id("composer-code")
             .a11y(Role::Button, t("shell.composer.code"))
+            .tab_index(0)
+            .rounded(radius::SM)
+            .focus_visible(|s| s.shadow(dilla_desktop_ui::metrics::focus_ring()))
             .child(tool(IconName::CodeXml))
             .on_click(cx.listener(|this, _, window, cx| {
                 if this.blocked().is_some() {

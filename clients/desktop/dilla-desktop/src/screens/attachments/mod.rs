@@ -834,7 +834,11 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
             .border_color(color::HAIRLINE_2)
             .rounded(radius::MD)
             .text_size(text::INPUT)
-            .child(gpui_component::input::Input::new(&input).appearance(false))
+            .child(
+                gpui_component::input::Input::new(&input)
+                    .aria_label(t("gif.search"))
+                    .appearance(false),
+            )
             .into_any_element(),
         powered: t("gif.powered").into(),
         tiles,

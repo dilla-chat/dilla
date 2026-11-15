@@ -178,6 +178,9 @@ fn the_tree_lint_runs_on_every_fixture() {
             problems.push(format!("{name}: nothing on the screen is named"));
         }
         problems.extend(lint(&tree).into_iter().map(|p| format!("{name}: {p}")));
+        for n in tree.pointer_only() {
+            eprintln!("{name}: pointer only: {}", tree.describe(n));
+        }
     }
     let problems = dedup(problems);
     assert!(
@@ -189,6 +192,56 @@ fn the_tree_lint_runs_on_every_fixture() {
     assert!(
         refused.len() < 10,
         "fixtures the automation build refused: {refused:?}"
+    );
+}
+
+/// Keyboard reachability on every fixture: each one's tab order is walked, and every stop must be a named node. Six
+/// fixtures are walked at a time (one automation process each).
+#[test]
+#[ignore = "walks every fixture's tab order (several minutes): run in the a11y CI step"]
+fn the_tab_order_is_named_on_every_fixture() {
+    let names = std::sync::Mutex::new(every_fixture());
+    let problems = std::sync::Mutex::new(Vec::new());
+    let walked = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..6 {
+            scope.spawn(|| {
+                loop {
+                    let Some(name) = names.lock().expect("the queue").pop() else {
+                        return;
+                    };
+                    let path = fixture(&name);
+                    let Ok(loaded) = dilla_parity::fixture::load(&path, Os::current()) else {
+                        continue;
+                    };
+                    let Ok(mut app) =
+                        Driver::try_launch_fixture(&path, loaded.shot_path.as_deref(), &[])
+                    else {
+                        continue;
+                    };
+                    app.wait_idle();
+                    let (found, order) = walk(&mut app);
+                    walked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if !found.is_empty() {
+                        problems.lock().expect("the findings").push(format!(
+                            "{name}:\n  {}\n  the tab order: {}",
+                            dedup(found).join("\n  "),
+                            order.join(" | ")
+                        ));
+                    }
+                }
+            });
+        }
+    });
+    let walked = walked.into_inner();
+    assert!(walked >= 60, "only {walked} fixtures were walked");
+    let mut problems = problems.into_inner().expect("the findings");
+    problems.sort();
+    assert!(
+        problems.is_empty(),
+        "{} fixtures with unnamed tab stops:\n{}",
+        problems.len(),
+        problems.join("\n")
     );
 }
 
@@ -225,7 +278,6 @@ fn every_slice_state_passes_the_tree_lint() {
         "messages/conversation-actions",
         "threads/pane-open",
         "dms/conversation",
-        "dms/home",
         "members/pane",
     ] {
         lint_fixture(name);

@@ -619,6 +619,7 @@ impl RenderOnce for OnboardingField {
             // As `TextField`: 13px (`--text-input`) with the frame's own 12px sides, never the editor's 14px and padding.
             .child(
                 Input::new(&self.input)
+                    .aria_label(self.label.clone())
                     .appearance(false)
                     .text_size(text::INPUT)
                     .px_0()

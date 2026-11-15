@@ -21,6 +21,7 @@ use gpui::{
 };
 use zeroize::Zeroizing;
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::factor::{CodeList, code_list_columns, copy_text};
 use dilla_desktop_ui::components::onboarding::frame::CARD_INNER_W;
@@ -258,6 +259,7 @@ impl DoneView {
         let action = |id: &'static str, label: &str, handle: &FocusHandle| {
             div()
                 .id(id)
+                .a11y(Role::Button, label.to_owned())
                 .track_focus(handle)
                 .tab_stop(true)
                 .w_full()

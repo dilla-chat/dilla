@@ -309,7 +309,6 @@ enum Key {
     Menu,
 }
 
-#[allow(clippy::too_many_arguments)]
 /// A channel row's accessible name (`shell.channels.rowLabel` / `rowLabelMuted`): the bare name, or the name and what is
 /// new in it; a voice row the device is in says so (`voice.row.joined`).
 pub fn row_label(name: &str, unread: u32, mentions: u32, muted: bool, joined: bool) -> String {
@@ -337,6 +336,7 @@ pub fn row_label(name: &str, unread: u32, mentions: u32, muted: bool, joined: bo
     label
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row(
     c: &Channel,
     index: usize,
@@ -625,6 +625,9 @@ pub fn render(
         .children(model.can_add.then(|| {
             div()
                 .id("channel-list-add")
+                .tab_index(0)
+                .rounded(radius::MD)
+                .focus_visible(|s| s.shadow(focus_ring()))
                 .a11y(
                     Role::Button,
                     tf(

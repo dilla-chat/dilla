@@ -457,9 +457,14 @@ fn panel_form(
                 label,
             )
             .child(
-                div()
-                    .w(px(EMOJI_FIELD_W))
-                    .child(Input::new(&input).disabled(locked)),
+                div().w(px(EMOJI_FIELD_W)).child(
+                    Input::new(&input)
+                        .aria_label(tf(
+                            "botCommand.rolepanel.emojiFor",
+                            &[("role", role.name.as_str())],
+                        ))
+                        .disabled(locked),
+                ),
             ),
         );
     }

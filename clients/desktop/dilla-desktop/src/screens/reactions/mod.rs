@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use dilla_client::Area;
 use dilla_client::state::{AppState, CommunityId, Member, TimelineItem, TimelineItemState, UserId};
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::reactions::{
     Chip, ReactionBar, Slot, bar_height, chip_width, tooltip::tooltip as reaction_tooltip,
     wrap_lines,
@@ -328,6 +329,8 @@ pub fn emoji_button(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<A
     let remember = from.clone();
     let button = div()
         .id("composer-emoji-button")
+        .a11y(Role::Button, t("shell.composer.emoji"))
+        .aria_expanded(open)
         .track_focus(&handle)
         .tab_stop(true)
         .flex()

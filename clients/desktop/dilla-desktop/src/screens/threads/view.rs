@@ -448,6 +448,7 @@ impl Render for PaneView {
                 div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
                     // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which wins.
                     Textarea::new(&self.input)
+                        .aria_label(crate::strings::t("thread.composer"))
                         .appearance(false)
                         .disabled(blocked)
                         .text_size(text::INPUT)

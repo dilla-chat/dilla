@@ -254,6 +254,16 @@ impl Tree {
         out
     }
 
+    /// Controls a pointer can press but the keyboard cannot reach (a click action, no focus): a screen reader can still
+    /// activate them from its own cursor, but a keyboard-only person cannot. Reported, not linted: the web drew some
+    /// of these as hover-only too (a message's toolbar).
+    pub fn pointer_only(&self) -> Vec<&Node> {
+        self.nodes
+            .iter()
+            .filter(|n| n.click && !n.focus && TARGET_ROLES.contains(&n.role.as_str()))
+            .collect()
+    }
+
     /// The tree lint (module doc). Empty when the tree passes.
     pub fn lint(&self) -> Vec<Violation> {
         let mut out = Vec::new();

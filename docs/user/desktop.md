@@ -115,7 +115,12 @@ the updater and packaging.
   work while the window is open). The Notifications settings are kept for when they arrive.
 - **Quit guards and permission prompts:** quitting does not warn about an active call or an unsent draft (the draft
   is kept per channel), and the operating system's microphone prompt is the system's own.
-- **Screen readers:** not supported yet. They come after the switch, with AccessKit.
+- **Screen readers:** the app exposes itself to Orca, VoiceOver and NVDA through AccessKit: every control is named, the shell has
+  its landmarks (servers, channels, the message log, the call controls), messages are read with their author and time,
+  and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Not yet:
+  messages cannot be stepped through one by one with the arrow keys (a reader's own cursor reads them), the recovery
+  key and an authenticator secret are not read out (use Copy), and a few hover-only controls (a category's "+", the
+  message toolbar) are reached only by the pointer or a reader's cursor.
 - **Push to talk outside the window:** the key works only while the app has focus. Operating-system-wide push to talk
   comes after the switch.
 - **Linux, AltGr and push to talk:** a push-to-talk key is accepted only on its own, and the app refuses Control, Alt,

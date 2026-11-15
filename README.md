@@ -129,7 +129,8 @@ For the native desktop preview:
 - Tray, close to tray and badge count, `dilla://invite` links, a second launch handing over to the running app,
   autostart, and operating-system notifications (also for a ring, with Answer and Decline).
 - The updater, installers and packages (DMG, Windows installer, AppImage, deb, rpm, AUR). Build it from source.
-- Screen readers (they come after the switch) and push to talk while another window has focus.
+- Push to talk while another window has focus. Screen readers are supported (AccessKit), but
+  messages cannot yet be stepped through with the arrow keys and the recovery key is not read out.
 - On Linux, AltGr plus the push-to-talk key still opens the microphone (the other modifiers are refused).
 
 Beyond the web client: the native [desktop client](docs/user/desktop.md) is built from source and has no released
