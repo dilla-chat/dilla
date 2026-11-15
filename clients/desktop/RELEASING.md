@@ -67,8 +67,10 @@ Everything the release downloads is pinned in the repository:
 ### Linting notes
 
 `lintian` on the deb reports `dir-or-file-in-opt` (the app lives in `/opt/Dilla`, beta.5's layout, plan D3),
-`malformed-contact` and `no-changelog` (the project has no maintainer address to put in either). Those are accepted;
-anything else is a bug.
+`malformed-contact` and `no-changelog` (the project has no maintainer address to put in either). `namcap` on the Arch
+package reports `ELF files outside of a valid path ('opt/')` for the same layout, and warns about dependencies the app
+loads at run time (Vulkan, Wayland, X11) rather than links. Those are accepted; anything else is a bug (the smoke
+test fails on any other namcap error).
 
 ## Milestone 2 (not yet)
 
