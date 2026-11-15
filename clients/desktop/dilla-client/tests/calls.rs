@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use dilla_client::calls::wire::{decode_call_started, decode_channel_call, decode_media_epoch};
 use dilla_client::calls::{
     CallCatchUp, CallCore, CallPhase, CallRoutes, CallStarted, ChannelCall, CoreRefusal,
-    GroupSummary, HandshakePage, JoinHooks, JoinTarget, REJOIN_STEP, REJOIN_WAIT, RouteError,
-    join_call, leave_call, media_epoch, rotate_call,
+    FROZEN_RETRY, GroupSummary, HandshakePage, JoinHooks, JoinTarget, REJOIN_STEP, REJOIN_WAIT,
+    RouteError, join_call, leave_call, media_epoch, rotate_call,
 };
 use dilla_core::cbor::Encoder;
 use zeroize::Zeroizing;
@@ -220,6 +220,7 @@ fn err(status: u16, code: &str) -> RouteError {
     RouteError {
         status: Some(status),
         code: Some(code.into()),
+        retry_after_ms: None,
         detail: String::new(),
     }
 }
@@ -682,6 +683,7 @@ fn outcome_unknown() -> RouteError {
     RouteError {
         status: None,
         code: Some("E_OUTCOME_UNKNOWN".into()),
+        retry_after_ms: None,
         detail: "the request was written and its answer was lost".into(),
     }
 }
@@ -1117,6 +1119,148 @@ async fn a_second_e_group_closed_fails_the_join() {
             "get_tree",
             "post_resync"
         ]
+    );
+}
+
+// ---- a join into a call group frozen behind an outstanding Remove (a member left; 425 E_COMMIT_REQUIRED until an
+// online member commits it): the CI race of `a_new_device_uses_play_within_its_first_session` ----
+
+/// The instance's freeze answer: 425 `E_COMMIT_REQUIRED` with its commit deadline as the retry hint.
+fn frozen(retry_after_ms: Option<u64>) -> RouteError {
+    RouteError {
+        retry_after_ms,
+        ..err(425, "E_COMMIT_REQUIRED")
+    }
+}
+
+#[test]
+fn the_frozen_retry_is_the_bots_schedule() {
+    assert_eq!(
+        FROZEN_RETRY.map(|d| d.as_millis()),
+        [250, 1_000, 2_000],
+        "cmd/dillabot/music_call_join.go retryMusicCallGroupJoin"
+    );
+}
+
+/// A join refused 425 while a member's Remove is outstanding waits, reads the call again, builds its external commit on
+/// the group as it then is (the Remove committed: a moved GroupInfo) and joins it.
+#[tokio::test(start_paused = true)]
+async fn a_join_into_a_frozen_call_group_waits_for_the_remove_and_joins() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    routes.resync.lock().unwrap().push_back(Err(frozen(None)));
+    routes
+        .infos
+        .lock()
+        .unwrap()
+        .extend([b"info".to_vec(), b"moved".to_vec()]);
+    let h = hooks();
+    let began = tokio::time::Instant::now();
+    let joined = join_call(&core, &routes, &h, &target()).await.unwrap();
+    assert_eq!(joined.group_id, GROUP, "the same call group");
+    assert_eq!(began.elapsed(), FROZEN_RETRY[0]);
+    assert_eq!(
+        routes.posted(),
+        [
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync",
+            // the step's wait, then the call read again and the join built on the moved group
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync",
+            "start",
+        ]
+    );
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [CallPhase::Joining, CallPhase::In]
+    );
+    let log = core.lock().unwrap().inner.log.clone();
+    assert_eq!(
+        log,
+        [
+            "join_external 44 info",
+            "join_external 44 moved",
+            "joined 44 9"
+        ]
+    );
+}
+
+/// The instance's retry hint lengthens a step up to the schedule's longest one, never past it.
+#[tokio::test(start_paused = true)]
+async fn the_frozen_retry_honours_the_instances_hint_within_the_schedule() {
+    for (hint, waited) in [
+        (Some(600), Duration::from_millis(600)),
+        (Some(60_000), FROZEN_RETRY[FROZEN_RETRY.len() - 1]),
+        (Some(10), FROZEN_RETRY[0]),
+    ] {
+        let core = Mutex::new(gated(vec![], vec![]));
+        let routes = FakeRoutes::default();
+        routes.resync.lock().unwrap().push_back(Err(frozen(hint)));
+        let began = tokio::time::Instant::now();
+        join_call(&core, &routes, &hooks(), &target())
+            .await
+            .unwrap();
+        assert_eq!(began.elapsed(), waited, "{hint:?}");
+    }
+}
+
+/// A freeze nobody lifts is bounded: one try per step of the schedule after the first, then the join fails with the
+/// instance's refusal, having started nothing.
+#[tokio::test(start_paused = true)]
+async fn a_join_into_a_group_that_stays_frozen_gives_up_after_the_schedule() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    *routes.resync_always.lock().unwrap() = Some(frozen(Some(2_000)));
+    let h = hooks();
+    let began = tokio::time::Instant::now();
+    let refused = tokio::time::timeout(
+        Duration::from_secs(60),
+        join_call(&core, &routes, &h, &target()),
+    )
+    .await
+    .expect("the retries are bounded")
+    .unwrap_err();
+    assert_eq!(refused.code, "E_COMMIT_REQUIRED");
+    assert_eq!(refused.leave, None);
+    // Every step lengthened to the hint, which the longest step caps.
+    assert_eq!(began.elapsed(), 3 * FROZEN_RETRY[2]);
+    assert_eq!(
+        routes
+            .posted()
+            .iter()
+            .filter(|p| *p == "post_resync")
+            .count(),
+        1 + FROZEN_RETRY.len()
+    );
+    assert!(!routes.posted().contains(&"start".to_owned()));
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [CallPhase::Joining, CallPhase::Idle]
+    );
+}
+
+/// A leave during the freeze's wait ends the join there with the refusal; nothing more is posted.
+#[tokio::test(start_paused = true)]
+async fn a_leave_during_the_frozen_wait_ends_the_join() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    *routes.resync_always.lock().unwrap() = Some(frozen(None));
+    let h = hooks();
+    let cancel = h.cancel.clone();
+    let leave = tokio::spawn(async move {
+        tokio::time::sleep(FROZEN_RETRY[0] / 2).await;
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let refused = join_call(&core, &routes, &h, &target()).await.unwrap_err();
+    leave.await.unwrap();
+    assert_eq!(refused.code, "E_COMMIT_REQUIRED");
+    assert_eq!(
+        routes.posted(),
+        ["get_call", "get_info", "get_tree", "post_resync"]
     );
 }
 

@@ -470,12 +470,16 @@ fn run_frames(mode: NoiseMode, input: &[Vec<i16>]) -> Vec<Vec<i16>> {
             out.push(o);
         }
     }
-    // A drain bound, not a budget: it ends as soon as every frame is out. The Windows runner's debug build of the
-    // enhanced model needed more than 10 s for 800 frames.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while out.len() < input.len() && Instant::now() < deadline {
+    // A stall bound, not a budget: it ends as soon as every frame is out, and gives up only when no frame came for
+    // 30 s. A fixed total was too short on a busy runner (the Windows debug build of the enhanced model needed more
+    // than 10 s for 800 frames; the Linux one, beside 17 other tests, more than 60 s).
+    let mut last = Instant::now();
+    while out.len() < input.len() && last.elapsed() < Duration::from_secs(30) {
         match rx.try_recv() {
-            Ok(o) => out.push(o),
+            Ok(o) => {
+                out.push(o);
+                last = Instant::now();
+            }
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
     }

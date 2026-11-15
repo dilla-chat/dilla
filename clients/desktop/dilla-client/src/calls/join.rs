@@ -17,6 +17,14 @@
 //! `DELETE ?if_alone=1` closed the group) is refused 409 `E_GROUP_CLOSED`, never as a stale
 //! epoch: the join reads the call once more and registers a fresh call group, as a first joiner
 //! does (join.ts).
+//!
+//! A join whose external commit reaches the call group while it is frozen (a member left and the
+//! instance's Remove of its leaf is still outstanding: 425 `E_COMMIT_REQUIRED`, the instance's
+//! freeze, invariant 5) waits for an online member to commit that Remove and tries again on
+//! [`FROZEN_RETRY`], each step at least the instance's `retry_after_ms` hint up to the schedule's
+//! longest step (the Bot's `retryMusicCallGroupJoin`, the text channel's own 425 retry). An external
+//! commit cannot carry the Remove itself (RFC 9420 §12.4.3.2: no proposals by reference), so the
+//! joiner can only wait. A freeze that outlasts the schedule fails the join with that refusal.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -40,6 +48,15 @@ pub const REJOIN_STEP: Duration = Duration::from_millis(2_000);
 /// join.ts `REJOIN_WAIT_MS`: how long after the first `E_REMOVE_PENDING` the rejoin waits. It
 /// outlasts the room's departure timeout (20 s) and its webhook.
 pub const REJOIN_WAIT: Duration = Duration::from_millis(30_000);
+/// How long the join waits before each new try of an external commit refused 425
+/// `E_COMMIT_REQUIRED` (the call group frozen behind an outstanding Remove); a step is lengthened to
+/// the instance's `retry_after_ms` hint, never past the schedule's longest step. The schedule and
+/// the bound are the Bot's (`cmd/dillabot/music_call_join.go` `retryMusicCallGroupJoin`).
+pub const FROZEN_RETRY: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_millis(1_000),
+    Duration::from_millis(2_000),
+];
 
 /// The call to join.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,11 +210,14 @@ fn stopped(leave: Option<[u8; 16]>) -> JoinRefused {
 
 /// A refusal of the external join, and whether its cause was the instance's 409
 /// `E_REMOVE_PENDING` (join.ts `isHttp(e.cause, 409, 'E_REMOVE_PENDING')`) or 409
-/// `E_GROUP_CLOSED` (the call ended as the join was built: its group is closed).
+/// `E_GROUP_CLOSED` (the call ended as the join was built: its group is closed), or 425
+/// `E_COMMIT_REQUIRED` (the group is frozen behind an outstanding proposal: `frozen` carries the
+/// instance's retry hint).
 struct ExistingRefused {
     refused: JoinRefused,
     remove_pending: bool,
     group_closed: bool,
+    frozen: Option<Duration>,
 }
 
 impl From<JoinRefused> for ExistingRefused {
@@ -206,6 +226,7 @@ impl From<JoinRefused> for ExistingRefused {
             refused,
             remove_pending: false,
             group_closed: false,
+            frozen: None,
         }
     }
 }
@@ -222,6 +243,9 @@ fn route_refused(e: &RouteError) -> ExistingRefused {
         refused: refused(&route_code(e), None),
         remove_pending: e.is(409, "E_REMOVE_PENDING"),
         group_closed: e.is(409, "E_GROUP_CLOSED"),
+        frozen: e
+            .is(425, "E_COMMIT_REQUIRED")
+            .then(|| Duration::from_millis(e.retry_after_ms.unwrap_or(0))),
     }
 }
 
@@ -260,6 +284,7 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
     let mut reread_exists = true;
     let mut reread_closed = true;
     let mut reread_ended = true;
+    let mut frozen_tries = 0;
     let mut wait_since: Option<Instant> = None;
     let mut read = reread(routes, target, seen).await?;
     loop {
@@ -315,6 +340,23 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
                     // Once only: a second refusal fails the join.
                     if e.group_closed && reread_ended && !hooks.cancelled() {
                         reread_ended = false;
+                        read = reread(routes, target, seen).await?;
+                        continue;
+                    }
+                    // The group is frozen behind an outstanding proposal (a member left: its
+                    // Remove): an online member commits it within the instance's commit deadline,
+                    // so the join waits a step of FROZEN_RETRY and tries again on the call as it is
+                    // then. The staged join was discarded; the next try reads the moved group.
+                    if let Some(hint) = e.frozen.filter(|_| frozen_tries < FROZEN_RETRY.len()) {
+                        if hooks.cancelled() {
+                            return Err(e.refused);
+                        }
+                        let longest = FROZEN_RETRY[FROZEN_RETRY.len() - 1];
+                        tokio::time::sleep(FROZEN_RETRY[frozen_tries].max(hint.min(longest))).await;
+                        frozen_tries += 1;
+                        if hooks.cancelled() {
+                            return Err(e.refused);
+                        }
                         read = reread(routes, target, seen).await?;
                         continue;
                     }

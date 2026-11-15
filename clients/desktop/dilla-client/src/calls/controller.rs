@@ -154,6 +154,7 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?
         return Err(RouteError {
             status: None,
             code: Some("E_RANDOM".into()),
+            retry_after_ms: None,
             detail: "no OS randomness for an idempotency key".into(),
         }
         .into());
@@ -179,6 +180,7 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?
                         Err(RouteError {
                             status: None,
                             code: Some("E_OUTCOME_UNKNOWN".into()),
+                            retry_after_ms: None,
                             detail: "the rotation was not reconciled in time".into(),
                         })
                     })
@@ -230,6 +232,7 @@ async fn commit_that_took<R: CallRoutes + ?Sized>(
                 return Err(RouteError {
                     status: None,
                     code: Some("E_OUTCOME_UNKNOWN".into()),
+                    retry_after_ms: None,
                     detail: "the commit that took the epoch is not after the cursor".into(),
                 });
             }
@@ -243,6 +246,7 @@ async fn commit_that_took<R: CallRoutes + ?Sized>(
     Err(RouteError {
         status: None,
         code: Some("E_OUTCOME_UNKNOWN".into()),
+        retry_after_ms: None,
         detail: "no commit within the pages read".into(),
     })
 }
@@ -308,6 +312,7 @@ async fn reconcile<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>
         None if active => Err(RouteError {
             status: None,
             code: Some("E_OUTCOME_UNKNOWN".into()),
+            retry_after_ms: None,
             detail: if pending {
                 "the rotation's epoch was taken; the next catch-up settles it".into()
             } else {

@@ -103,7 +103,7 @@ struct Runtime {
     generation: u64,
     /// The join in flight: dropping it cancels the join.
     joining: Option<oneshot::Sender<()>>,
-    /// Closes once the join in flight has returned, its teardown done (controller.ts `joining.done`).
+    /// Closes once the join in flight has answered, its teardown done (controller.ts `joining.done`).
     join_done: Option<oneshot::Receiver<()>>,
     live: Option<Live>,
     link: watch::Sender<Option<Arc<MediaLink>>>,
@@ -493,22 +493,26 @@ impl Voice {
     /// answer comes once it has joined or ended without a call (its `E_*` code then also in `call.error`).
     pub fn join(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
-        self.inner.spawn(async move {
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        self.inner.spawn_holding(done_tx, async move {
             let community = this
                 .inner
                 .snapshot()
                 .channel(channel)
                 .map(|c| c.community_id)
                 .ok_or(ClientError::UnknownChannel)?;
-            this.join_inner(channel, Some(community), None).await
+            this.join_inner(channel, Some(community), None, done_rx)
+                .await
         })
     }
 
     /// Joins a DM's or group DM's call (no community). Task 18's ring and DM call flows use it.
     pub fn join_dm(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
-        self.inner
-            .spawn(async move { this.join_inner(channel, None, None).await })
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        self.inner.spawn_holding(done_tx, async move {
+            this.join_inner(channel, None, None, done_rx).await
+        })
     }
 
     /// Takes over a join the ring area's gate already let through ([`Ring::join`]'s [`GatedJoin`]): this device follows
@@ -522,8 +526,11 @@ impl Voice {
         join: GatedJoin,
     ) -> oneshot::Receiver<Result<(), ClientError>> {
         let this = self.clone();
-        self.inner
-            .spawn(async move { this.join_inner(channel, community, Some(join)).await })
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        self.inner.spawn_holding(done_tx, async move {
+            this.join_inner(channel, community, Some(join), done_rx)
+                .await
+        })
     }
 
     /// The ring area's handle on this client (Task 18): every join goes through its gate, a mid-call block is recorded
@@ -537,6 +544,7 @@ impl Voice {
         channel: ChannelId,
         community: Option<CommunityId>,
         given: Option<GatedJoin>,
+        done_rx: oneshot::Receiver<()>,
     ) -> Result<(), ClientError> {
         let snap = self.inner.snapshot();
         if snap.voice.call.channel == Some(channel) && snap.voice.in_call() {
@@ -549,9 +557,9 @@ impl Voice {
         }
         let rt = self.rt();
         let (abort_tx, abort_rx) = oneshot::channel::<()>();
-        // Held until this join returns: a leave meanwhile waits for it to close (controller.ts `joining.done`).
-        let (done_tx, done_rx) = oneshot::channel::<()>();
-        let _done = done_tx;
+        // `done_rx` closes once this join has answered (its sender is held by the spawned task until the answer is sent:
+        // [`Inner::spawn_holding`]): a leave meanwhile waits for it (controller.ts `joining.done`), so the cancelled
+        // join's answer is in before the leave's.
         let generation = {
             let mut r = lock(&rt);
             r.generation += 1;

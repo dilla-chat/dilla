@@ -28,7 +28,9 @@ use crate::seams::{Http, HttpError};
 use crate::sync::requests::SocketHttp;
 
 pub use controller::{Left, RotateError, decline_ring, leave_call, media_epoch, rotate_call};
-pub use join::{JoinHooks, JoinRefused, JoinTarget, Joined, REJOIN_STEP, REJOIN_WAIT, join_call};
+pub use join::{
+    FROZEN_RETRY, JoinHooks, JoinRefused, JoinTarget, Joined, REJOIN_STEP, REJOIN_WAIT, join_call,
+};
 pub use session::{CallJoin, CallTarget, Calls, NoHttp, SocketCallRoutes};
 pub use wire::{CallParticipant, CallStarted, ChannelCall, GroupSummary, HandshakePage};
 
@@ -86,6 +88,9 @@ pub struct RouteError {
     pub status: Option<u16>,
     pub code: Option<String>,
     pub detail: String,
+    /// The instance's `retry_after_ms` hint (a 425 `E_COMMIT_REQUIRED`'s commit deadline, a 429's
+    /// wait), when the refusal carries one.
+    pub retry_after_ms: Option<u64>,
 }
 
 impl RouteError {
@@ -98,6 +103,7 @@ impl RouteError {
             status: None,
             code: Some("E_CBOR_SHAPE".into()),
             detail: detail.into(),
+            retry_after_ms: None,
         }
     }
 }
@@ -105,25 +111,34 @@ impl RouteError {
 impl From<HttpError> for RouteError {
     fn from(e: HttpError) -> Self {
         match e {
-            HttpError::Status { status, code, .. } => Self {
+            HttpError::Status {
+                status,
+                code,
+                retry_after_ms,
+                ..
+            } => Self {
                 status: Some(status),
                 detail: format!("status {status}"),
                 code,
+                retry_after_ms,
             },
             HttpError::Transport(t) => Self {
                 status: None,
                 code: None,
                 detail: t,
+                retry_after_ms: None,
             },
             HttpError::Decode(d) => Self {
                 status: None,
                 code: Some("E_CBOR_SHAPE".into()),
                 detail: d,
+                retry_after_ms: None,
             },
             HttpError::Unanswered { code, detail } => Self {
                 status: None,
                 code: Some(code),
                 detail,
+                retry_after_ms: None,
             },
         }
     }

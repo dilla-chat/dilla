@@ -867,6 +867,22 @@ impl Inner {
         rx
     }
 
+    /// [`Inner::spawn`] that drops `hold` only after the answer was sent: whoever waits on `hold` closing (a leave
+    /// waiting for the join in flight, [`crate::features::voice`]) runs only once `f`'s answer is in its oneshot.
+    pub(crate) fn spawn_holding<T: Send + 'static, H: Send + 'static>(
+        &self,
+        hold: H,
+        f: impl std::future::Future<Output = Result<T, ClientError>> + Send + 'static,
+    ) -> oneshot::Receiver<Result<T, ClientError>> {
+        let (tx, rx) = oneshot::channel();
+        let updates = self.updates.clone();
+        self.runtime.spawn(async move {
+            let _ = tx.send(guarded(f, &updates).await);
+            drop(hold);
+        });
+        rx
+    }
+
     /// The account's upkeep (key packages, backups: [`crate::account`]).
     pub(crate) fn upkeep(&self) -> &Arc<Upkeep> {
         &self.upkeep
