@@ -1,0 +1,14 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Dilla
+Upstream-Contact: https://github.com/dilla-chat/dilla/issues
+Source: https://github.com/dilla-chat/dilla
+
+Files: *
+Copyright: Dilla contributors
+License: AGPL-3.0-or-later
+ The full text is in /opt/Dilla/licenses/LICENSE.
+Comment:
+ dilla-desktop links third-party Rust crates and LiveKit's libwebrtc, and
+ embeds the JetBrains Mono and DM Serif Display fonts. Their licences are
+ listed in /opt/Dilla/licenses/THIRD-PARTY.md, with the full texts of
+ libwebrtc's (libwebrtc-LICENSE.md) and the fonts' (OFL-*.txt) beside it.
