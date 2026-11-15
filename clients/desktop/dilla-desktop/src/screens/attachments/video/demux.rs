@@ -190,60 +190,94 @@ fn vp9_key(b: &[u8]) -> bool {
     (x >> (bit - 1)) & 1 == 0
 }
 
-/// The sample counts an MP4 declares (`stsz`, `trun`) fit its size: `re_mp4` would otherwise build a table of four
-/// billion samples from a 40-byte box.
+/// Each declared sample takes at least this many bytes of the file: a file declaring more samples than its size allows
+/// is refused before `re_mp4` builds a table for them.
+const MIN_SAMPLE_BYTES: usize = 4;
+
+/// The MP4's box tree is well formed and the sample counts it declares (`stsz`, `trun`) fit its size, checked before
+/// `re_mp4` reads it (security review of Package 12):
+/// - every box lies inside its parent's body; only the file's own last top-level box may be cut short (a truncated
+///   download, which `re_mp4` reads to its end), never a nested one, so nothing passes here that `re_mp4` then reads
+///   past its parent;
+/// - no box is smaller than its header;
+/// - one running sum of every `stsz` and every `trun` count in the whole file stays under [`MAX_SAMPLES`] and under the
+///   file's size divided by [`MIN_SAMPLE_BYTES`]: many small boxes cannot add up to a table no single one would make.
 pub fn mp4_counts_fit(b: &[u8]) -> bool {
-    fn walk(b: &[u8], depth: u32, total: usize) -> bool {
-        let mut at = 0usize;
-        while at + 8 <= b.len() {
-            let size32 = u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as usize;
-            let kind = &b[at + 4..at + 8];
-            let (size, head) = match size32 {
-                0 => (b.len() - at, 8),
-                1 => {
-                    let Some(s) = b.get(at + 8..at + 16) else {
-                        return false;
-                    };
-                    let s = u64::from_be_bytes(s.try_into().expect("8 bytes"));
-                    (usize::try_from(s).unwrap_or(usize::MAX), 16)
-                }
-                s => (s, 8),
-            };
-            if size < head {
-                // A box smaller than its own header: refused (a reader could step backwards over it forever).
-                return false;
-            }
-            if at + size > b.len() {
-                // A truncated last box: re_mp4 reads what is there.
-                return true;
-            }
-            let body = &b[at + head..at + size];
-            match kind {
-                b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"moof" | b"traf" => {
-                    if depth > 8 || !walk(body, depth + 1, total) {
-                        return false;
-                    }
-                }
-                b"stsz" if body.len() >= 12 => {
-                    let one = u32::from_be_bytes([body[4], body[5], body[6], body[7]]) as usize;
-                    let n = u32::from_be_bytes([body[8], body[9], body[10], body[11]]) as usize;
-                    if n > MAX_SAMPLES || (one > 0 && n.saturating_mul(one) > total) {
-                        return false;
-                    }
-                }
-                b"trun" if body.len() >= 8 => {
-                    let n = u32::from_be_bytes([body[4], body[5], body[6], body[7]]) as usize;
-                    if n > MAX_SAMPLES {
-                        return false;
-                    }
-                }
-                _ => {}
-            }
-            at += size;
-        }
-        true
+    struct Walk {
+        limit: usize,
+        declared: usize,
     }
-    walk(b, 0, b.len())
+    impl Walk {
+        fn declare(&mut self, n: usize) -> bool {
+            self.declared = self.declared.saturating_add(n);
+            self.declared <= self.limit
+        }
+        fn walk(&mut self, b: &[u8], depth: u32) -> bool {
+            let mut at = 0usize;
+            while at < b.len() {
+                if at + 8 > b.len() {
+                    // Fewer than a header's bytes left: only a cut-off end of the file itself.
+                    return depth == 0;
+                }
+                let size32 = u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as usize;
+                let kind = &b[at + 4..at + 8];
+                let (size, head) = match size32 {
+                    0 => (b.len() - at, 8),
+                    1 => {
+                        let Some(s) = b.get(at + 8..at + 16) else {
+                            return false;
+                        };
+                        let s = u64::from_be_bytes(s.try_into().expect("8 bytes"));
+                        (usize::try_from(s).unwrap_or(usize::MAX), 16)
+                    }
+                    s => (s, 8),
+                };
+                if size < head {
+                    // A box smaller than its own header (a reader could step backwards over it forever).
+                    return false;
+                }
+                let Some(end) = at.checked_add(size).filter(|e| *e <= b.len()) else {
+                    // Past its parent: refused, except the file's last top-level box cut short.
+                    return depth == 0;
+                };
+                let body = &b[at + head..end];
+                match kind {
+                    b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"moof" | b"traf"
+                    | b"mvex" | b"edts" | b"dinf" => {
+                        if depth > 8 || !self.walk(body, depth + 1) {
+                            return false;
+                        }
+                    }
+                    b"stsz" => {
+                        let Some(f) = body.get(4..12) else {
+                            return false;
+                        };
+                        let n = u32::from_be_bytes([f[4], f[5], f[6], f[7]]) as usize;
+                        if !self.declare(n) {
+                            return false;
+                        }
+                    }
+                    b"trun" => {
+                        let Some(f) = body.get(4..8) else {
+                            return false;
+                        };
+                        let n = u32::from_be_bytes([f[0], f[1], f[2], f[3]]) as usize;
+                        if !self.declare(n) {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+                at = end;
+            }
+            true
+        }
+    }
+    Walk {
+        limit: MAX_SAMPLES.min(b.len() / MIN_SAMPLE_BYTES),
+        declared: 0,
+    }
+    .walk(b, 0)
 }
 
 /// A track header matrix's `a`, `b`, `c` and `d` as a turn (ISO/IEC 14496-12 §6.2.2: x' = a x + c y, y' = b x + d y,
@@ -491,5 +525,58 @@ mod tests {
         assert!(mp4_counts_fit(include_bytes!(
             "../testdata/video-h264-aac.mp4"
         )));
+    }
+
+    /// An ISO box: its size, its type and its body.
+    fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut b = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        b.extend_from_slice(kind);
+        b.extend_from_slice(body);
+        b
+    }
+
+    /// Security review (MEDIUM): the sample counts add up over the whole file. Ten thousand `trun` boxes of 4 096
+    /// samples each pass any per-box cap but declare 40 million samples in a 160 kB file.
+    #[test]
+    fn many_trun_boxes_are_summed_and_refused() {
+        let mut trun = vec![0, 0, 0, 0];
+        trun.extend_from_slice(&4096u32.to_be_bytes());
+        let truns: Vec<u8> = (0..10_000).flat_map(|_| boxed(b"trun", &trun)).collect();
+        let ftyp = boxed(b"ftyp", b"isom\0\0\0\0");
+        let file = [ftyp.clone(), boxed(b"moof", &boxed(b"traf", &truns))].concat();
+        assert!(!mp4_counts_fit(&file));
+        // One small run in a big enough file passes.
+        let mut one = vec![0, 0, 0, 0];
+        one.extend_from_slice(&4u32.to_be_bytes());
+        let ok = [
+            ftyp,
+            boxed(b"moof", &boxed(b"traf", &boxed(b"trun", &one))),
+            boxed(b"mdat", &[0u8; 64]),
+        ]
+        .concat();
+        assert!(mp4_counts_fit(&ok));
+    }
+
+    /// Security review (MEDIUM): a box running past its parent is refused at every depth; only the file's own last
+    /// top-level box may be cut short.
+    #[test]
+    fn a_nested_box_past_its_parent_is_refused() {
+        // An stsz claiming 4 kB inside a 28-byte stbl, the file long enough to hold it.
+        let mut stsz = 4096u32.to_be_bytes().to_vec();
+        stsz.extend_from_slice(b"stsz");
+        stsz.extend_from_slice(&[0u8; 12]);
+        let stbl = boxed(b"stbl", &stsz);
+        let moov = boxed(
+            b"moov",
+            &boxed(b"trak", &boxed(b"mdia", &boxed(b"minf", &stbl))),
+        );
+        let ftyp = boxed(b"ftyp", b"isom\0\0\0\0");
+        let file = [ftyp.clone(), moov, boxed(b"free", &[0u8; 8192])].concat();
+        assert!(!mp4_counts_fit(&file));
+        // A top-level last box cut short (a truncated download) is still read.
+        let mut cut = ftyp;
+        cut.extend_from_slice(&1000u32.to_be_bytes());
+        cut.extend_from_slice(b"mdat\0\0");
+        assert!(mp4_counts_fit(&cut));
     }
 }
