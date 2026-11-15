@@ -47,11 +47,77 @@ const INLINE: [(&[u8], &str, bool); 5] = [
     (H264, "video/mp4", true),
 ];
 
+/// Whether this build decodes `codec`: H.264 everywhere but macOS (whose libwebrtc FFmpeg lacks it; VideoToolbox is
+/// behind webrtc-sys's `dilla-video-toolbox`, off), H.265 only with that feature.
+fn decodes(codec: webrtc_sys::dilla_video_decoder::VideoCodec) -> bool {
+    webrtc_sys::dilla_video_decoder::VideoDecoder::new(codec, 2, 2).is_some()
+}
+
+fn h264_here() -> bool {
+    let here = decodes(webrtc_sys::dilla_video_decoder::VideoCodec::H264);
+    if !cfg!(target_os = "macos") {
+        assert!(
+            here,
+            "libwebrtc's FFmpeg decodes H.264 on Linux and Windows"
+        );
+    }
+    here
+}
+
+/// The inline formats this build plays: [`INLINE`] less H.264 where it has no decoder.
+fn inline() -> Vec<(&'static [u8], &'static str, bool)> {
+    let h264 = h264_here();
+    INLINE
+        .into_iter()
+        .filter(|(f, ..)| h264 || !std::ptr::eq(*f, H264))
+        .collect()
+}
+
+/// The child process of [`every_inline_format_decodes_its_frames_in_presentation_order`] decodes the format this names.
+const CHILD: &str = "DILLA_VIDEO_TEST_FORMAT";
+const THIS_TEST: &str = "screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order";
+
 /// Each codec the web played inline decodes here, every picture is the frame its time names (H.264's B-frames come
-/// back in presentation order), and the poster is the first frame.
+/// back in presentation order), and the poster is the first frame. Each format decodes in a child process of this test
+/// binary, so a crash inside a native decoder (macOS CI's VideoToolbox SIGSEGV) fails this test with the format and the
+/// signal named instead of taking the whole binary down.
 #[test]
 fn every_inline_format_decodes_its_frames_in_presentation_order() {
-    for (file, mime, sound) in INLINE {
+    if let Ok(i) = std::env::var(CHILD) {
+        let (file, mime, sound) = inline()[i.parse::<usize>().expect("an index")];
+        decodes_in_order(file, mime, sound);
+        return;
+    }
+    for (i, (_, mime, _)) in inline().into_iter().enumerate() {
+        let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args([THIS_TEST, "--exact", "--nocapture", "--test-threads", "1"])
+            .env(CHILD, i.to_string())
+            .output()
+            .expect("the child runs");
+        let how = match out.status.code() {
+            Some(c) => format!("exit code {c}"),
+            None => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    format!("signal {:?} (a crash in native code)", out.status.signal())
+                }
+                #[cfg(not(unix))]
+                {
+                    "no exit code".to_owned()
+                }
+            }
+        };
+        assert!(
+            out.status.success(),
+            "format #{i} ({mime}) failed: {how}\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+fn decodes_in_order(file: &[u8], mime: &str, sound: bool) {
+    {
         let opened = open(bytes(file), mime).expect(mime);
         assert_eq!(opened.has_audio(), sound, "{mime} sound");
         assert_eq!((opened.poster.width, opened.poster.height), (96, 64));
@@ -77,14 +143,19 @@ fn every_inline_format_decodes_its_frames_in_presentation_order() {
 }
 
 /// A codec or container this cannot play is Unsupported, so the card falls back to the system player: Theora (Chromium
-/// dropped it too), H.265 off macOS, a type the bytes do not match.
+/// dropped it too), H.265 (no VideoToolbox by default), H.264 where the build has no decoder (macOS), a type the
+/// bytes do not match.
 #[test]
 fn what_cannot_play_inline_is_unsupported() {
     let unsupported =
         |b: &[u8], mime: &str| matches!(open(bytes(b), mime), Err(MediaError::Unsupported(_)));
     assert!(unsupported(THEORA, "video/ogg"));
-    if !cfg!(target_os = "macos") {
+    if !decodes(webrtc_sys::dilla_video_decoder::VideoCodec::H265) {
         assert!(unsupported(HEVC, "video/mp4"));
+    }
+    if !h264_here() {
+        assert!(unsupported(H264, "video/mp4"), "macOS: the system player");
+        assert!(unsupported(ROT90, "video/mp4"));
     }
     assert!(unsupported(VP8, "video/mp4"), "a WebM typed as MP4");
     assert!(unsupported(H264, "video/webm"), "an MP4 typed as WebM");
@@ -95,6 +166,9 @@ fn what_cannot_play_inline_is_unsupported() {
 /// right half, white, ends up on top).
 #[test]
 fn a_rotated_track_is_shown_turned() {
+    if !h264_here() {
+        return;
+    }
     let opened = open(bytes(ROT90), "video/mp4").expect("opens");
     let f = &opened.poster;
     assert_eq!((f.width, f.height), (64, 96));
@@ -130,7 +204,7 @@ fn wait_for(mut done: impl FnMut() -> bool) {
 /// before it), in every inline format.
 #[test]
 fn a_seek_shows_the_frame_at_its_target_and_pause_holds_the_clock() {
-    for (file, mime, _) in INLINE {
+    for (file, mime, _) in inline() {
         let mut p = playing(open(bytes(file), mime).unwrap());
         p.pause();
         let at = p.position();

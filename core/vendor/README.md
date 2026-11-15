@@ -180,9 +180,13 @@ Remove this copy when upstream exposes an equivalent custom frame transformer.
 
 Also added (GPUI parity plan Package 12, inline video): a standalone video decoder for the desktop's attachment
 player, wholly dilla's: `include/livekit/dilla_video_decoder.h`, `src/dilla_video_decoder.{cpp,rs}`
-(`webrtc_sys::dilla_video_decoder::VideoDecoder`), built and exported from `build.rs` and `src/lib.rs`. It makes a
-decoder through LiveKit's own `VideoDecoderFactory` (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg H.264 on Linux and
-Windows, VideoToolbox H.264/H.265 on macOS), feeds it access units Rust demuxed from the decrypted file, and converts
+(`webrtc_sys::dilla_video_decoder::VideoDecoder`), built and exported from `build.rs` and `src/lib.rs`. It makes
+libwebrtc's own software decoders directly (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg H.264 on Linux and
+Windows; the macOS prebuilt's FFmpeg has no H.264, so macOS sends H.264 to the system player). VideoToolbox (macOS
+H.264/H.265, through LiveKit's `VideoDecoderFactory`) only with the crate feature `dilla-video-toolbox`
+(`DILLA_VIDEO_TOOLBOX`), off by default: that path crashed the decode test on macOS CI (SIGSEGV) and waits for a
+Mac to fix it on. Teardown releases the decoder before dropping its callback, and a callback during teardown keeps
+nothing. It feeds the decoder access units Rust demuxed from the decrypted file, and converts
 each picture to BGRA with libyuv (the colour matrix the bitstream names, BT.601 when it names none), scaled down to
 fit the box Rust gives. No PeerConnection, transformer or network is involved, and nothing in libwebrtc is rebuilt.
 
