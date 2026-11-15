@@ -1324,6 +1324,9 @@ async fn rejoin_waits_for_pending_remove() {
     use serde_json::json;
     use world::{Driver, MediaPeer, hex};
 
+    // Built before the call starts (MediaPeer::build): a cold build between alice's join and her media is minutes in
+    // the call with no room presence, which the instance acts on before the rejoin this test is about.
+    tokio::task::spawn_blocking(MediaPeer::build).await.unwrap();
     let host = tokio::task::spawn_blocking(|| world::start_host("rejoin"))
         .await
         .unwrap();

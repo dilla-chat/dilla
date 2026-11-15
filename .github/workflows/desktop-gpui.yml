@@ -205,13 +205,15 @@ jobs:
           wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       # The runner has no sound card, and a call's media opens the default speaker (dilla-media's Speaker): without one
       # the desktop's join fails (MediaFailed) and the call tests' peer never sees the other in the call. ALSA's null
-      # device stands in. The media call tests' web peer (e2e/media/support/testhost.ts) reads the WASI core from
-      # internal/mlswasi/testdata, which is git-ignored: the core built above goes there.
+      # device stands in, for the ignored-tests step only (its ALSA_CONFIG_PATH): it never paces, so a Chromium
+      # AudioContext on it never renders, and the media call tests' page must keep Chromium's own fake output (the
+      # one it takes with no sound device at all). The media call tests' web peer (e2e/media/support/testhost.ts)
+      # reads the WASI core from internal/mlswasi/testdata, which is git-ignored: the core built above goes there.
       - name: A null sound card and the WASI core for the call tests (Linux)
         if: runner.os == 'Linux' && !cancelled()
         shell: bash
         run: |
-          printf 'pcm.!default {\n  type null\n}\n' > ~/.asoundrc
+          printf 'pcm.!default {\n  type null\n}\n' > "$RUNNER_TEMP/asound-null.conf"
           mkdir -p internal/mlswasi/testdata
           cp target/wasm32-wasip1/release/dilla_core_wasi.wasm internal/mlswasi/testdata/
       # Chromium for the media tests and for dilla-parity's web shooter (parity/shoot.mjs).
@@ -235,6 +237,7 @@ jobs:
         if: runner.os == 'Linux' && !cancelled()
         shell: bash
         run: |
+          export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"
           cargo test -p dilla-parity --locked -- --ignored
           cargo test -p dilla-client --test gateway --locked -- --ignored
           cargo test -p dilla-client --test sync --locked -- --ignored

@@ -94,6 +94,8 @@ async fn join_with_media_args(
     tone: u32,
     extra: &'static [&'static str],
 ) -> MediaPeer {
+    // Built before the join (MediaPeer::build): a cold build must not leave the member in the call with no media.
+    tokio::task::spawn_blocking(MediaPeer::build).await.unwrap();
     listed(c, voice).await;
     c.voice()
         .join(voice)

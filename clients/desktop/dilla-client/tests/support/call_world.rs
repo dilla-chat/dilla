@@ -526,10 +526,17 @@ impl MediaPeer {
         Self::start_with(url, token, tone, &[])
     }
 
-    /// [`MediaPeer::start`] with more `call-peer` arguments (`--muted 1`).
-    pub fn start_with(url: &str, token: &str, tone: u32, extra: &[&str]) -> MediaPeer {
+    /// Builds `call-peer` (once per process). A test calls it before its call starts: a cold build takes minutes on
+    /// CI, and a member that is in the call's signalling all that while with no room presence is one the instance
+    /// acts on, so the build must not fall between a join and its media.
+    pub fn build() {
         static BUILT: std::sync::Once = std::sync::Once::new();
         cargo_build(&BUILT, &["-p", "dilla-media", "--example", "call-peer"]);
+    }
+
+    /// [`MediaPeer::start`] with more `call-peer` arguments (`--muted 1`).
+    pub fn start_with(url: &str, token: &str, tone: u32, extra: &[&str]) -> MediaPeer {
+        Self::build();
         let bin = profile_dir().join("examples/call-peer");
         let mut child = Command::new(bin)
             .args(["--url", url, "--token", token, "--tone", &tone.to_string()])

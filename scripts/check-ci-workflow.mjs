@@ -2309,6 +2309,8 @@ export const GPUI_PINNED_STEPS = {
     "  if: runner.os == 'Linux' && !cancelled()",
     '  shell: bash',
     '  run: |',
+    // The null sound card (callPrereqs) for this step only: Chromium's AudioContext in the media step never renders on it.
+    '    export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"',
     '    cargo test -p dilla-parity --locked -- --ignored',
     '    cargo test -p dilla-client --test gateway --locked -- --ignored',
     '    cargo test -p dilla-client --test sync --locked -- --ignored',
@@ -2343,14 +2345,14 @@ export const GPUI_PINNED_STEPS = {
     '    export PATH="$RUNNER_TEMP/dilla-ci-tools:$PATH"',
     '    wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
   ].join('\n'),
-  // The runner has no sound card (a call's media opens the default speaker), and the media tests' web peer reads the
-  // git-ignored WASI core from internal/mlswasi/testdata.
+  // The runner has no sound card (a call's media opens the default speaker): a null one for the ignored step. The
+  // media tests' web peer reads the git-ignored WASI core from internal/mlswasi/testdata.
   callPrereqs: [
     '- name: A null sound card and the WASI core for the call tests (Linux)',
     "  if: runner.os == 'Linux' && !cancelled()",
     '  shell: bash',
     '  run: |',
-    "    printf 'pcm.!default {\\n  type null\\n}\\n' > ~/.asoundrc",
+    "    printf 'pcm.!default {\\n  type null\\n}\\n' > \"$RUNNER_TEMP/asound-null.conf\"",
     '    mkdir -p internal/mlswasi/testdata',
     '    cp target/wasm32-wasip1/release/dilla_core_wasi.wasm internal/mlswasi/testdata/',
   ].join('\n'),
