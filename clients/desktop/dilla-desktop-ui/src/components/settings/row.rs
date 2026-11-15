@@ -12,11 +12,14 @@ use gpui::{
 };
 
 use super::super::action_menu::{ActionMenu, MenuItem, opens_context_menu};
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
 use crate::text::{line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
+use gpui::StatefulInteractiveElement as _;
+use gpui::prelude::FluentBuilder as _;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Layout {
@@ -188,7 +191,14 @@ impl RenderOnce for SettingsRow {
             focus: cx.focus_handle().tab_stop(true),
         });
 
-        let mut text_col = div().flex().flex_col().min_w_0();
+        // The row's label and hint (the web's `<span>` and `<p>`): one node, named by the label, described by the hint.
+        let mut text_col = div()
+            .id((self.id.clone(), "text"))
+            .a11y(Role::Label, self.label.clone())
+            .when_some(self.hint.clone(), |d, hint| d.aria_description(hint))
+            .flex()
+            .flex_col()
+            .min_w_0();
         if !stacked {
             text_col = text_col.flex_1().min_w(px(220.0));
         }
@@ -351,7 +361,10 @@ impl RenderOnce for SettingsRow {
         if self.menu.is_some() {
             let key_set = set.clone();
             let mouse_set = set.clone();
+            // A row with a menu is one tab stop (Shift+F10 opens it): named by its label.
             row = row
+                .a11y(Role::Group, self.label.clone())
+                .node_props(|n| n.set_has_popup(gpui::accesskit::HasPopup::Menu))
                 .track_focus(&focus)
                 .tab_stop(true)
                 .focus_visible(|s| s.shadow(focus_ring()))

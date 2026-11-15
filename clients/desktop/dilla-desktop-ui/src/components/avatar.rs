@@ -85,6 +85,8 @@ pub enum AvatarSize {
     Preview,
     /// A call stage tile's face (CallTile.css `.d-call-tile__avatar`: `--d-face` 4rem, `--text-title`).
     Stage,
+    /// A focused stage tile's face (CallStage.css `[data-focused] .d-call-tile__avatar`: 7.5rem, `--text-face`).
+    StageFocused,
     /// The not-joined preview's faces (CallStage.css `.d-call-stage__face .d-avatar`: 3rem, `--text-md`).
     StagePreview,
 }
@@ -107,6 +109,7 @@ impl AvatarSize {
             Self::Preview => (px(48.0), text::UI),
             Self::Lg => (px(64.0), text::LG),
             Self::Stage => (px(64.0), text::TITLE),
+            Self::StageFocused => (px(120.0), text::FACE),
             Self::StagePreview => (px(48.0), text::MD),
         }
     }

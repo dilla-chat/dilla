@@ -10,6 +10,7 @@ use gpui::{
 
 use gpui::prelude::FluentBuilder as _;
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_MUTED, focus_ring};
@@ -81,6 +82,8 @@ impl RenderOnce for CheckButton {
         };
         let mut button = div()
             .id(self.id)
+            .a11y(Role::Button, self.label.clone())
+            .toggled(self.testing)
             .when_some(self.focus.as_ref(), |d, h| {
                 d.track_focus(&h.clone().tab_stop(true))
             })
@@ -206,6 +209,7 @@ impl RenderOnce for KeyCapture {
         if self.listening && !focus.is_focused(window) {
             focus.focus(window, cx);
         }
+        let spoken = format!("{}, {}", self.button_label, self.key_text);
         let (fg, weight) = if self.empty && !self.listening {
             (color::FG_2, font::WEIGHT_BODY)
         } else {
@@ -247,6 +251,8 @@ impl RenderOnce for KeyCapture {
             (self.listening, self.on_key, self.on_click, self.on_blur);
         let button = div()
             .id((self.id.clone(), "button"))
+            // The button names the key it sets: "Change key, Ctrl+Space" (or what it says while listening).
+            .a11y(Role::Button, spoken)
             .track_focus(&focus)
             .flex()
             .flex_none()

@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::gateway::frames::Value;
-use crate::sync::value::{DecodeError, Rows, arr, bin16, opt, text, u53, uint};
+use crate::sync::value::{DecodeError, Rows, arr, bin16, bin32, opt, text, u53, uint};
 
 use super::{ChannelGroupState, ChannelId, DeviceId, MessageId, UserId, hex};
 
@@ -51,6 +51,20 @@ pub struct Attachment {
     pub name: String,
 }
 
+/// types.ts `PendingAction`: an edit, delete, reaction or pin still in the outbox, shown on the message it aims at
+/// (derive.ts `buildTimeline`'s folds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAction {
+    /// The fold row's own outbox message id: retry and discard take it.
+    pub msg_id: MessageId,
+    /// 1 edit, 2 delete, 3 react, 4 unreact, 5 pin, 6 unpin.
+    pub kind: u8,
+    /// Failed (`state 2`), else pending.
+    pub failed: bool,
+    /// The failure's code; empty while pending.
+    pub reason: String,
+}
+
 /// `TimelineItem`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineItem {
@@ -77,6 +91,8 @@ pub struct TimelineItem {
     pub pinned: bool,
     pub attachments: Vec<Attachment>,
     pub mention: bool,
+    /// The edits, deletes, reactions and pins of this message still in the outbox, in queue order.
+    pub actions: Vec<PendingAction>,
 }
 
 /// `TimelineState`.
@@ -129,6 +145,9 @@ pub(crate) struct OutboxRow {
     pub kind: u8,
     pub reply_to: Option<[u8; 16]>,
     pub attachments: Vec<Attachment>,
+    /// The attachments' blob ids, in the same order: a discarded row's references are deleted (send.ts `discardSend`,
+    /// controller.ts `onDiscarded`).
+    pub blobs: Vec<[u8; 32]>,
 }
 
 fn flag(v: &Value) -> Result<bool, DecodeError> {
@@ -229,6 +248,7 @@ pub(crate) fn decode_outbox(raw: &[u8]) -> Result<Vec<OutboxRow>, DecodeError> {
                 body: text(&a[4])?,
                 kind: kind as u8,
                 reply_to: opt(&a[6], bin16)?,
+                blobs: list(&a[7], |v| bin32(&arr(v, 4)?[0]))?,
                 attachments: list(&a[7], |v| {
                     let b = arr(v, 4)?;
                     Ok(Attachment {
@@ -312,6 +332,7 @@ pub(crate) fn build_timeline(
             pinned: row.pinned,
             attachments: row.attachments.clone(),
             mention: row.mention,
+            actions: Vec::new(),
         });
     }
     for row in outbox {
@@ -350,6 +371,28 @@ pub(crate) fn build_timeline(
             pinned: false,
             attachments: row.attachments.clone(),
             mention: false,
+            actions: Vec::new(),
+        });
+    }
+    // derive.ts: each fold (an edit, delete, reaction or pin) shows on the item it aims at, in queue order.
+    for row in outbox.iter().filter(|r| r.kind != 0) {
+        let Some(target) = row.reply_to else { continue };
+        let Some(item) = items
+            .iter_mut()
+            .find(|i| i.msg_id == Some(MessageId(target)))
+        else {
+            continue;
+        };
+        let failed = row.state == 2;
+        item.actions.push(PendingAction {
+            msg_id: MessageId(row.msg_id),
+            kind: row.kind,
+            failed,
+            reason: if failed {
+                row.error.clone()
+            } else {
+                String::new()
+            },
         });
     }
     Timeline {
@@ -395,7 +438,51 @@ mod tests {
             kind: 0,
             reply_to: None,
             attachments: Vec::new(),
+            blobs: Vec::new(),
         }
+    }
+
+    /// derive.ts: an edit, delete, reaction or pin in the outbox is no item of its own; it shows on the message it aims
+    /// at, pending or failed with its code, in queue order; one aimed at nothing held is dropped.
+    #[test]
+    fn a_fold_shows_on_its_target() {
+        let ch = ChannelId([9; 16]);
+        let me = [1; 16];
+        let fold = |msg: u8, kind: u8, target: u8, state: u8| OutboxRow {
+            kind,
+            reply_to: Some([target; 16]),
+            state,
+            error: if state == 2 {
+                "E_FORBIDDEN".into()
+            } else {
+                String::new()
+            },
+            ..queued(msg, "")
+        };
+        let t = build_timeline(
+            ch,
+            ChannelGroupState::Active,
+            &[stored(1, 1, Some(5), "hi")],
+            &[fold(7, 1, 5, 0), fold(8, 5, 5, 2), fold(9, 1, 6, 0)],
+            me,
+            me,
+            100,
+        );
+        assert_eq!(t.bodies(), ["hi"]);
+        let actions = &t.items[0].actions;
+        assert_eq!(actions.len(), 2);
+        assert_eq!(
+            (actions[0].msg_id, actions[0].kind, actions[0].failed),
+            (MessageId([7; 16]), 1, false)
+        );
+        assert_eq!(
+            (
+                actions[1].kind,
+                actions[1].failed,
+                actions[1].reason.as_str()
+            ),
+            (5, true, "E_FORBIDDEN")
+        );
     }
 
     #[test]

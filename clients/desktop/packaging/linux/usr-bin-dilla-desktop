@@ -1,0 +1,5 @@
+#!/bin/sh
+# /usr/bin/dilla-desktop of the deb and rpm. A small script rather than a link: beta.5 managed this path through
+# update-alternatives, and on a deb upgrade its old postrm runs `update-alternatives --remove` after the new files are
+# unpacked, which deletes a link here but leaves a regular file alone.
+exec /opt/Dilla/dilla-desktop "$@"

@@ -8,6 +8,7 @@ use gpui::{
     ParentElement, Pixels, StatefulInteractiveElement, Styled, Window, canvas, div,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::tooltip::{SHOW_DELAY, tooltip};
 use dilla_desktop_ui::metrics::focus_ring;
 use dilla_desktop_ui::text::{line, line_height};
@@ -103,6 +104,9 @@ fn bell(
 ) -> impl IntoElement + use<> {
     let open = model.reminders_open;
     let mut button = interactive(div().id("topbar-bell"))
+        .a11y(Role::Button, t("reminder.inbox"))
+        .aria_expanded(open)
+        .node_props(|n| n.set_has_popup(gpui::accesskit::HasPopup::Dialog))
         .tab_index(0)
         .cursor_pointer()
         .rounded(radius::MD)
@@ -196,6 +200,7 @@ fn window_button(
     run: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     interactive(div().id(id))
+        .a11y(Role::Button, label)
         .tab_index(0)
         .flex_none()
         .size(Pixels::from(css::BUTTON))
@@ -261,6 +266,10 @@ pub fn render(
         .justify_center()
         .child(
             interactive(div().id("topbar-search"))
+                .a11y(Role::Button, t("topbar.search"))
+                .aria_keyshortcuts("Control+K Meta+K")
+                .tab_index(0)
+                .focus_visible(|s| s.shadow(focus_ring()))
                 .cursor_pointer()
                 .on_click({
                     let on_search = handlers.on_search.clone();
@@ -314,6 +323,7 @@ pub fn render(
     // TopBar.tsx's voice chip, only while in a call: the room (and the link's ping once the client reads one).
     let voice = model.voice.clone().map(|room| {
         interactive(div().id("topbar-voice"))
+            .a11y(Role::Button, room.clone())
             .tab_index(0)
             .cursor_pointer()
             .flex_none()
@@ -345,6 +355,7 @@ pub fn render(
         .child(bell(model, handlers.on_reminders.clone(), reminders))
         .child(
             interactive(div().id("topbar-settings"))
+                .a11y(Role::Button, t("shell.rail.settings"))
                 .tab_index(0)
                 .cursor_pointer()
                 .rounded(radius::MD)
@@ -385,6 +396,7 @@ pub fn render(
     }
     let bar = div()
         .id("topbar")
+        .a11y_unnamed(Role::Banner)
         .flex_none()
         .h(layout::TOPBAR)
         .bg(color::BG_2)

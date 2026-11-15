@@ -1043,12 +1043,25 @@ impl Render for SignupView {
                     .focus(&self.handles.ack)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_ack(cx))),
                 );
-                f = f.child(RecoveryKeyLayout::new(
-                    tracked_box("onboarding-key", KeyGroups::new(groups)),
-                    print,
-                    save,
-                    ack,
-                ));
+                // The key is never in the accessibility tree; "Read aloud" (a Tab stop, drawn while focused) reads it
+                // out once on request (Jonas 2026-11-15).
+                let spoken_key = self.key.as_ref().map(|k| k.hyphenated());
+                let key_box = div()
+                    .relative()
+                    .child(tracked_box("onboarding-key", KeyGroups::new(groups)))
+                    .children(spoken_key.map(|key| {
+                        crate::screens::read_aloud::button(
+                            "onboarding-read-key",
+                            "readAloud.recoveryKey",
+                            move || {
+                                crate::screens::read_aloud::spoken(
+                                    t("onboarding.keys.label"),
+                                    key.as_str(),
+                                )
+                            },
+                        )
+                    }));
+                f = f.child(RecoveryKeyLayout::new(key_box, print, save, ack));
                 if self.busy {
                     f = f.child(frame::body_paragraph(
                         &tf("onboarding.keys.registering", &[("instance", &name)]),

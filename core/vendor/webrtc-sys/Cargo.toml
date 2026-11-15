@@ -33,6 +33,9 @@ default = []
 # DILLA PATCH: the hook's synthetic-frame test support (src/dilla_transform_testing.*); enabled only
 # by dilla-media's dev-dependency.
 dilla-test-frames = []
+# DILLA PATCH: the attachment player's decoder takes H.264/H.265 from VideoToolbox (macOS) instead of the software
+# decoders; off by default since it crashed on macOS CI (core/vendor/README.md, "dilla_video_decoder").
+dilla-video-toolbox = []
 
 [lib]
 name = "webrtc_sys"

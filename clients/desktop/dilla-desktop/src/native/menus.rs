@@ -5,8 +5,7 @@
 //!   another package (a ring, the updater, application audio) is in both.
 //! - **Edit** is the system's (undo, redo, cut, copy, paste, select all on the focused text field).
 //! - **View** has Toggle Full Screen (F11; Control-⌘-F on macOS). beta.5's Reset Zoom, Zoom In and Zoom Out are not
-//!   here yet: Electron's zoom scaled the page, and the native client draws at fixed sizes (pixel parity at 100 %), so
-//!   a zoom is a design decision that waits for Jonas.
+//!   offered: the native client draws at fixed sizes (pixel parity), and Jonas decided to skip zoom (2026-11-15).
 //! - **Window**: Minimize, Zoom and Close Window, on the window in front.
 //! - **Reopen** (a click on the dock icon with no window): the first window, else the manager
 //!   ([`NativeShell::show_app`]).

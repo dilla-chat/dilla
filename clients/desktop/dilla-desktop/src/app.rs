@@ -135,8 +135,14 @@ enum Wipe {
 /// What the window shows. // ROUTE: a screen of another area is a variant here.
 enum Screen {
     Starting,
-    /// `Client::start` failed with something sign-in cannot answer: the fatal splash, with a retry (Task 24).
+    /// `Client::start` failed with something sign-in cannot answer: the fatal splash, with a retry (Task 24), or the
+    /// revoked device's and the lost store's splash with its reset (Package 10d).
     Fatal(ClientError, InstanceConfig),
+    /// A revoked device's Forget, or a lost store's Reset, is wiping the instance's data (`boot.resetting`).
+    Resetting,
+    /// A fixture's failed start (Package 10d): the splash `boot::fatal` draws for the error, with nothing behind it.
+    #[cfg(feature = "automation")]
+    FixtureBoot(ClientError),
     SignIn(Entity<SignInView>),
     /// The sign-up's steps 1 to 3 (Task 25).
     Signup(Entity<SignupView>),
@@ -167,7 +173,9 @@ impl Screen {
     /// The window shape the screen needs.
     fn mode(&self) -> WindowMode {
         match self {
-            Screen::Starting | Screen::Fatal(..) => WindowMode::Starting,
+            Screen::Starting | Screen::Fatal(..) | Screen::Resetting => WindowMode::Starting,
+            #[cfg(feature = "automation")]
+            Screen::FixtureBoot(_) => WindowMode::Starting,
             Screen::SignIn(_) | Screen::Signup(_) | Screen::Factor(_) => WindowMode::Authentication,
             Screen::Shell(_) | Screen::Done(_) | Screen::ServerSettings { .. } => {
                 WindowMode::Workspace
@@ -205,6 +213,8 @@ pub struct AppView {
     _subscriptions: Vec<Subscription>,
     /// Task 26: why the last Forget did not finish, for the forced screen the client comes back to.
     forget_note: Option<String>,
+    /// Package 10d: the failure splash's reset confirmation is open.
+    boot_confirming: bool,
 }
 
 impl AppView {
@@ -239,6 +249,7 @@ impl AppView {
             }),
             _subscriptions: Vec::new(),
             forget_note: None,
+            boot_confirming: false,
         };
         if this.launch.shipping {
             this.keep_bounds(window, cx);
@@ -298,6 +309,13 @@ impl AppView {
                     this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
+                }
+                crate::fixture::FixtureScreen::Boot { store_lost } => {
+                    this.screen = Screen::FixtureBoot(if store_lost {
+                        ClientError::Store("the database key is missing from the keychain".into())
+                    } else {
+                        ClientError::Revoked
+                    });
                 }
                 crate::fixture::FixtureScreen::Welcome(start) => {
                     this.show_pre_account(start, &fixture, window, cx)
@@ -841,22 +859,17 @@ impl AppView {
                 });
                 return self.show_signup(invite, window, cx);
             }
-            // A key lost from the keychain (an interrupted removal, a reset keychain): say what to do (Task 27).
-            Err(ClientError::Store(m)) if m.contains("key is missing") => {
-                return self.show_sign_in(
-                    Some(crate::screens::instances::copy::KEY_MISSING.into()),
-                    window,
-                    cx,
-                );
-            }
-            // A device the instance no longer knows is the sign-in's to answer (the web's `enterRevoked`); any other failed
-            // start is a splash with its stable code (Task 24: `boot::classify`).
+            // A factor owed is the sign-in's to answer; a device the instance no longer accepts (the web's
+            // `enterRevoked`) and a key lost from the keychain (an interrupted removal, a reset keychain; the web's
+            // `store-lost`) get their splash and its reset (Package 10d); any other failed start is a splash with its
+            // stable code (Task 24: `boot::classify`).
             // Task 26 (Task 2's note): with the start's error in the sign-in screen's words.
             Err(e) if boot::classify(&e) == boot::StartFailure::SignIn => {
                 let copy = crate::screens::factor::start_error_copy(&e);
                 return self.show_sign_in(Some(copy), window, cx);
             }
             Err(e) => {
+                self.boot_confirming = false;
                 self.screen = Screen::Fatal(e, cfg);
                 self.fit_window(window, cx);
                 cx.notify();
@@ -1120,6 +1133,60 @@ impl AppView {
         .detach();
     }
 
+    /// Package 10d (Boot.tsx `forgetBrowser`, `resetDevice`): a device the instance no longer accepts, or whose store's key
+    /// is gone, forgets the instance here after its confirmation. No client runs (its start failed), so the data dir, the
+    /// list entry and the key go at once (`factors::forget_device`, the forced screen's Forget without its sign-out: the
+    /// account's device list is not touched). Then the sign-in, where the instance is added again; a refused wipe is
+    /// the failure splash with its code.
+    fn reset_device(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.launch.root.clone() else {
+            return;
+        };
+        let keychain = self.launch.keychain.clone();
+        self.boot_confirming = false;
+        self.screen = Screen::Resetting;
+        cx.notify();
+        let id = cfg.id;
+        crate::windows::wipe_begin(cx, id);
+        let job =
+            cx.background_spawn({
+                let cfg = cfg.clone();
+                async move {
+                    dilla_client::features::factors::forget_device(&root, &cfg, keychain.as_ref())
+                }
+            });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = job.await;
+            gpui::AsyncApp::update(cx, |cx| crate::windows::wipe_end(cx, id));
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => this.show_sign_in(None, window, cx),
+                Err(e) => {
+                    this.screen = Screen::Fatal(ClientError::Store(e.to_string()), cfg);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Tests: the failure splash's reset, confirmed (Package 10d).
+    #[cfg(feature = "test-hooks")]
+    pub fn confirm_boot_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Screen::Fatal(_, cfg) = &self.screen {
+            let cfg = cfg.clone();
+            self.reset_device(cfg, window, cx);
+        }
+    }
+
+    /// Tests: the failure splash's boot (what it says), while the window shows it.
+    #[cfg(feature = "test-hooks")]
+    pub fn failure_boot(&self) -> Option<boot::Boot> {
+        match &self.screen {
+            Screen::Fatal(e, _) => Some(boot::failure_boot(e)),
+            _ => None,
+        }
+    }
+
     /// Tests (feature `test-hooks`, review M6): the shell's client comes to owe a factor (the forced screen, as
     /// `show_shell`'s state loop shows it), and the person confirms Forget this device there.
     #[cfg(feature = "test-hooks")]
@@ -1157,6 +1224,9 @@ impl AppView {
         match &self.screen {
             Screen::Starting => "starting",
             Screen::Fatal(..) => "fatal",
+            Screen::Resetting => "resetting",
+            #[cfg(feature = "automation")]
+            Screen::FixtureBoot(_) => "fatal",
             Screen::SignIn(_) => "sign-in",
             Screen::Signup(_) => "signup",
             Screen::Done(_) => "done",
@@ -1492,16 +1562,50 @@ impl Render for AppView {
             Screen::Starting => boot::loading(),
             Screen::Fatal(error, cfg) => {
                 let (this, cfg) = (cx.entity().downgrade(), cfg.clone());
-                let (retry, sign_in) = (this.clone(), this.clone());
+                let (retry, sign_in, confirming, reset) =
+                    (this.clone(), this.clone(), this.clone(), this.clone());
+                let reset_cfg = cfg.clone();
                 boot::fatal(
                     error,
-                    move |window, cx| {
-                        let _ =
-                            retry.update(cx, |this, cx| this.start_client(cfg.clone(), window, cx));
+                    self.boot_confirming,
+                    f32::from(window.viewport_size().width),
+                    boot::FailureActions {
+                        on_retry: Rc::new(move |window, cx| {
+                            let _ = retry
+                                .update(cx, |this, cx| this.start_client(cfg.clone(), window, cx));
+                        }),
+                        // "Switch instance": back to the sign-in screen, which lists the instances.
+                        on_sign_in: Rc::new(move |window, cx| {
+                            let _ =
+                                sign_in.update(cx, |this, cx| this.show_sign_in(None, window, cx));
+                        }),
+                        on_confirming: Rc::new(move |open, _, cx| {
+                            let _ = confirming.update(cx, |this, cx| {
+                                this.boot_confirming = open;
+                                cx.notify();
+                            });
+                        }),
+                        on_reset: Rc::new(move |window, cx| {
+                            let _ = reset.update(cx, |this, cx| {
+                                this.reset_device(reset_cfg.clone(), window, cx);
+                            });
+                        }),
                     },
-                    // "Switch instance": back to the sign-in screen, which lists the instances.
-                    move |window, cx| {
-                        let _ = sign_in.update(cx, |this, cx| this.show_sign_in(None, window, cx));
+                )
+            }
+            Screen::Resetting => boot::resetting(),
+            #[cfg(feature = "automation")]
+            Screen::FixtureBoot(error) => {
+                let noop: boot::Press = Rc::new(|_, _| {});
+                boot::fatal(
+                    error,
+                    self.boot_confirming,
+                    f32::from(window.viewport_size().width),
+                    boot::FailureActions {
+                        on_retry: noop.clone(),
+                        on_sign_in: noop.clone(),
+                        on_confirming: Rc::new(|_, _, _| {}),
+                        on_reset: noop,
                     },
                 )
             }
@@ -1536,11 +1640,27 @@ impl Render for AppView {
         // The focus outside the root (none, or a stale one on a control that went away) lets push to talk go and, while
         // the call is on, comes back to the root (review B; a stale focus is judged on the next frame, re-review B2).
         crate::screens::voice::guard_focus(w, &self.root_focus, window, cx);
+        // A splash (starting, a failed start) holds no focus of its own: the root takes it, so the keyboard's Tab (bound
+        // on the root below) reaches the splash's buttons (Package 11).
+        let splash = matches!(
+            self.screen,
+            Screen::Starting | Screen::Fatal(..) | Screen::Resetting
+        );
+        #[cfg(feature = "automation")]
+        let splash = splash || matches!(self.screen, Screen::FixtureBoot(_));
+        if splash && window.focused(cx).is_none() {
+            let root = self.root_focus.clone();
+            window.defer(cx, move |window, cx| root.focus(window, cx));
+        }
         // "Quit Dilla" from a focused window (the menu's key, Package 5) asks the quit guards first (the OS shell).
         crate::screens::voice::ptt_keys(
             w,
             div()
                 .track_focus(&self.root_focus)
+                // Tab from nowhere (a splash with no focus yet) walks the screen's controls (Package 11): the screens'
+                // own roots hold these too, for when the focus is inside them.
+                .on_action(|_: &crate::screens::FocusNext, window, cx| window.focus_next(cx))
+                .on_action(|_: &crate::screens::FocusPrevious, window, cx| window.focus_prev(cx))
                 .on_action(|_: &crate::native::Quit, _, cx| {
                     crate::native::NativeShell::request_quit(cx)
                 })
@@ -1552,7 +1672,11 @@ impl Render for AppView {
                         .bg(color::BG)
                         .child(body)
                         .children(strips.into_iter().flatten()),
-                )),
+                ))
+                // The quit question, when this window carries it (Package 7).
+                .children(crate::native::quit::overlay(window, cx))
+                // The window's live region (Package 11): what `a11y::announce` reads out.
+                .child(dilla_desktop_ui::a11y::announcer(window, cx)),
         )
     }
 }

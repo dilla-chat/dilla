@@ -59,6 +59,22 @@ export const stage = {
   // Fix round 2 (Ruling AV): the prototype's toasts.
   'callStage.share.live': 'You’re live',
   'callStage.share.applied': 'Stream set to {res} · {fps} fps',
+  // The desktop's screen-share picker (ScreenSourcePicker; beta.5's screen-picker-page.tsx copy). Its title is
+  // callStage.share.title.
+  'callStage.share.pickerScreens': 'Screens',
+  'callStage.share.pickerWindows': 'Windows',
+  'callStage.share.pickerShare': 'Share',
+  'callStage.share.pickerCancel': 'Cancel',
+  'callStage.share.pickerEmpty': 'Nothing to share here',
+  // The desktop's sound section (the picker's "Also share system audio" row): one application's sound, chosen in a
+  // dialog (beta.5 main.ts `dilla:app-audio` copy).
+  'callStage.share.audioApp': 'Also share an application’s sound',
+  'callStage.share.audioAppNote': 'Dilla’s own call audio is excluded.',
+  'callStage.share.audioAppOf': 'Sound from {app}',
+  'callStage.share.appTitle': 'Share application sound',
+  'callStage.share.appChoose': 'Choose the application others will hear',
+  'callStage.share.appNone': 'No playback applications are available. Start audio in the application, then try again.',
+  'callStage.share.appCancel': 'Cancel',
   // Tile stats (the prototype's): the own microphone's codec and rate, a screen's frame height and rate.
   'callStage.stat.codec': '{codec} {khz}k',
   // Fix round 1: another person's ping, as their own device publishes it.

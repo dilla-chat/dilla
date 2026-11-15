@@ -1,0 +1,4 @@
+#!/bin/sh
+# The AppImage's entry point: the binary alone. Nothing is bundled beside it, so no LD_LIBRARY_PATH is set; the
+# system's own libraries (glibc 2.39+, Vulkan or GLES, xkbcommon, ALSA) are used, as the deb and rpm use them.
+exec "$APPDIR/usr/bin/dilla-desktop" "$@"

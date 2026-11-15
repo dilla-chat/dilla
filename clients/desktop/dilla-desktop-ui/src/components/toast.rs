@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use gpui::{
     App, ElementId, Global, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, WindowId, div, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, WindowId, div, px,
 };
 
+use crate::a11y::{Accessible, Live, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::shadow_toast;
@@ -103,11 +104,20 @@ impl RenderOnce for ToastHost {
             .flex_col()
             .items_center()
             .gap(px(6.0));
-        match current_in(window.window_handle().window_id(), cx) {
+        let window_id = window.window_handle().window_id();
+        let n = cx
+            .try_global::<Toasts>()
+            .and_then(|t| t.current.as_ref().map(|(_, n, _)| *n))
+            .unwrap_or_default();
+        match current_in(window_id, cx) {
             None => region,
+            // `role="status"`: read out once as it appears (each toast is a new node, so a repeated "Copied" is too).
             Some(message) => region.child(
                 div()
-                    .id((self.id, "toast"))
+                    .id((self.id, format!("toast-{n}")))
+                    .a11y(Role::Status, message.clone())
+                    .aria_value(message.clone())
+                    .live(Live::Polite)
                     .flex()
                     .items_center()
                     .gap(px(8.0))

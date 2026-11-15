@@ -17,6 +17,7 @@ use gpui::{
 };
 
 use super::frame::{CARD_INNER_W, Click, pressable, pressable_quiet};
+use crate::a11y::{Accessible, Role};
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
 use crate::{Icon, IconName, metrics};
@@ -113,6 +114,7 @@ impl RenderOnce for KeyAction {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let base = div()
             .id(self.id)
+            .a11y(Role::Button, self.label.clone())
             .w(px((CARD_INNER_W - ACTIONS_GAP) / 2.0))
             .h(px(34.0))
             .px(px(12.0))
@@ -195,6 +197,8 @@ impl RenderOnce for KeyAck {
             });
         let base = div()
             .id(self.id)
+            .a11y(Role::CheckBox, self.label.clone())
+            .toggled(on)
             .w(px(CARD_INNER_W))
             .flex()
             .items_center()

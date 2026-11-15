@@ -17,6 +17,7 @@ use gpui::{
     ParentElement, Styled, Window, WindowId, div,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::dialog::{Dialog, InitialFocus};
 use dilla_desktop_ui::components::dms::privacy::body_text;
@@ -243,6 +244,7 @@ pub fn picker_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> Op
         body = body.child(
             div()
                 .id("dm-picker-list")
+                .a11y(Role::ListBox, t("shell.dms.newTitle"))
                 .track_focus(&list)
                 .on_key_down(move |event: &KeyDownEvent, window, cx| {
                     let ks = &event.keystroke;

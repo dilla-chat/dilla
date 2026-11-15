@@ -5,6 +5,7 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_DISABLED, focus_ring};
@@ -251,6 +252,7 @@ impl RenderOnce for Button {
         }
         let mut base = div()
             .id(self.id)
+            .a11y(Role::Button, self.label.clone())
             .flex()
             .flex_none()
             .items_center()
@@ -280,6 +282,12 @@ impl RenderOnce for Button {
                 14.0
             };
             base = base.child(Icon::new(icon).size(px(glyph)).color(p.fg));
+        }
+        if let Some(on) = self.pressed {
+            base = base.toggled(on);
+        }
+        if let Some(hint) = &self.key_hint {
+            base = base.aria_keyshortcuts(hint.clone());
         }
         if self.pressed.is_some() {
             base = base.child(div().child(if self.pressed == Some(true) {
@@ -312,10 +320,16 @@ impl RenderOnce for Button {
             );
         }
         if self.disabled {
-            return base.opacity(OPACITY_DISABLED).cursor_not_allowed();
+            return base
+                .opacity(OPACITY_DISABLED)
+                .cursor_not_allowed()
+                .node_props(|n| n.set_disabled());
         }
         if self.blocked {
-            base = base.opacity(OPACITY_DISABLED);
+            // `aria-disabled="true"`: announced as unavailable, still focusable so a press can say why.
+            base = base
+                .opacity(OPACITY_DISABLED)
+                .node_props(|n| n.set_disabled());
         }
         // Focusable, with the accent focus ring (`.d-root :focus-visible`); Enter and Space click it, as GPUI does for any
         // focused element with a click handler.

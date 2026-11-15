@@ -19,6 +19,7 @@ use gpui::{
     ScrollHandle, SharedString, Styled, Subscription, Window, div,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::shell::panes::{
     ASIDE_DEFAULT_MEMBERS, ASIDE_DEFAULT_THREAD, COLUMN_FROM, SIDEBAR_DEFAULT, range,
@@ -147,6 +148,10 @@ pub struct ShellView {
     community: Option<CommunityId>,
     channel: Option<ChannelId>,
     clock: Clock,
+    /// The open log's newest message already read out or already there when it opened (Package 11's arrivals).
+    heard: Option<(ChannelId, String)>,
+    /// The call as last read out (Package 11): where, and the microphone and sound switches.
+    heard_call: Option<CallHeard>,
     composer: Entity<Composer>,
     log: ScrollHandle,
     /// The log follows its end (new messages scroll into view) until the person scrolls up.
@@ -250,6 +255,8 @@ impl ShellView {
             overlay_open: false,
             dm_view: false,
             call_key: keys::RepeatLatch::default(),
+            heard: None,
+            heard_call: None,
             mic_off: false,
             deaf: false,
             sidebar_splitter: cx.focus_handle().tab_stop(true),
@@ -1076,6 +1083,32 @@ impl Render for ShellView {
             .map(|room| crate::strings::tf("members.inChannel", &[("channel", &room)]));
         let call_room = crate::screens::voice::call_room(&state);
         let call_route = crate::screens::voice::call_route(&state);
+        // The call's changes are read out as useCall.tsx announces them: joined, left, the microphone and the sound.
+        let (muted_now, deaf_now) = self.mic_and_deaf();
+        let call_now = CallHeard {
+            room: in_room_name(&state),
+            muted: muted_now,
+            deafened: deaf_now,
+        };
+        if self.heard_call.as_ref() != Some(&call_now) {
+            if let Some(text) = self
+                .heard_call
+                .as_ref()
+                .and_then(|before| call_announcement(before, &call_now))
+            {
+                dilla_desktop_ui::a11y::announce(text, window, cx);
+            }
+            self.heard_call = Some(call_now);
+        }
+        // A message someone else just sent to the open log is read out (MessageLog.tsx's `aria-live`).
+        if let Some(c) = channel
+            && let Some((key, text)) = timeline::arrival(&state, c, self.clock, self.heard.as_ref())
+        {
+            self.heard = Some(key);
+            if let Some(text) = text {
+                dilla_desktop_ui::a11y::announce(text, window, cx);
+            }
+        }
         let ctx = self.slot_cx();
         // The threads area reads this shell's view (its pane, the header's toggle, the reply keys), and the Threads button
         // is pressed while a thread is open (11).
@@ -1287,6 +1320,11 @@ impl Render for ShellView {
                 in_room: in_room.as_deref(),
                 muted,
                 deafened,
+                ptt: self.client.as_ref().and_then(|c| {
+                    use dilla_client::features::voice_prefs::values::{InputMode, VoiceValues};
+                    (VoiceValues::read(&c.prefs()).mode == InputMode::Ptt)
+                        .then_some(state.voice.ptt_held)
+                }),
             },
             &user_panel::PanelHandlers {
                 on_mute: Rc::new(move |_, cx| {
@@ -1314,6 +1352,15 @@ impl Render for ShellView {
                     .bg(color::BG_2)
                     .border_r_1()
                     .border_color(color::HAIRLINE)
+                    .id("sidebar-list")
+                    .landmark(
+                        Role::Navigation,
+                        t(if self.home_shown() {
+                            "shell.dms.label"
+                        } else {
+                            "shell.channels.label"
+                        }),
+                    )
                     .child(list),
             )
             // The voice dock and now playing (17, 21) over the user panel.
@@ -1440,6 +1487,15 @@ impl Render for ShellView {
             }),
             cx,
         );
+        // The person menu's Move to opens the room it moved to (Shell.tsx `openVoice`).
+        let open = shell.clone();
+        crate::screens::voice::set_open_voice(
+            self.window_id,
+            Rc::new(move |id, cx| {
+                let _ = open.update(cx, |shell, cx| shell.select(id, cx));
+            }),
+            cx,
+        );
         let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
         // A DM: the call's notice strip under the header while this device is not in its call. Its call is in the DM row's
         // menu (Ruling Z), not in the header.
@@ -1457,6 +1513,8 @@ impl Render for ShellView {
             let _ = weak.update(cx, |shell, cx| shell.toggle_aside(kind, wid, cx));
         });
         let main = div()
+            .id("shell-main-region")
+            .a11y_unnamed(Role::Main)
             .flex_1()
             .min_w_0()
             .h_full()
@@ -1534,6 +1592,8 @@ impl Render for ShellView {
         // The aside is a column from 64rem of window; narrower it is the slot guest's own overlay.
         let aside_column = aside.map(|a| {
             div()
+                .id("shell-aside")
+                .a11y_unnamed(Role::Complementary)
                 .flex_none()
                 .w(Pixels::from(panes.aside + HAIRLINE_W))
                 .h_full()
@@ -1547,6 +1607,7 @@ impl Render for ShellView {
         let (lo, hi) = range(Pane::Sidebar, &sidebar_input, panes.aside);
         let sidebar_splitter =
             Splitter::new("splitter-sidebar", Pane::Sidebar, &self.sidebar_splitter)
+                .label(t("pane.resize.sidebar"))
                 .at(f32::from(layout::RAIL) + panes.sidebar
                     - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
                 .range(panes.sidebar, lo, hi)
@@ -1576,6 +1637,7 @@ impl Render for ShellView {
             let (w_press, w_set) = (shell.clone(), shell.clone());
             let (lo, hi) = range(Pane::Aside, &sidebar_input, panes.sidebar);
             let splitter = Splitter::new("splitter-aside", Pane::Aside, &self.aside_splitter)
+                .label(t("pane.resize.aside"))
                 .at(window_width
                     - panes.aside
                     - HAIRLINE_W
@@ -1659,6 +1721,13 @@ impl Render for ShellView {
             )
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+            // Escape on a message row goes to the composer (Conversation.tsx `rowKey`).
+            .on_action(
+                cx.listener(|this, _: &timeline::FocusComposer, window, cx| {
+                    let field = gpui::Focusable::focus_handle(this.composer.read(cx), cx);
+                    window.focus(&field, cx);
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &keys::PreviousChannel, _, cx| this.step_channel(-1, cx)),
             )
@@ -1788,8 +1857,87 @@ pub(crate) fn no_server(state: &AppState) -> bool {
     state.communities_loaded && state.communities.is_empty()
 }
 
+/// What a screen reader was last told of the call: the place this device is in (`None` out of a call) and the two
+/// switches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CallHeard {
+    room: Option<String>,
+    muted: bool,
+    deafened: bool,
+}
+
+/// The place this device's call is in, as useCall.tsx's `whereOf` names it, once it is in.
+fn in_room_name(state: &AppState) -> Option<String> {
+    crate::screens::voice::in_room(state)
+}
+
+/// useCall.tsx's announcements for a change from `before` to `now`: joining or leaving a place first (`voice.announce
+/// .joined` / `.left`), else the sound (`deafened` / `undeafened`), else the microphone (`muted` / `unmuted`).
+fn call_announcement(before: &CallHeard, now: &CallHeard) -> Option<String> {
+    match (&before.room, &now.room) {
+        (_, Some(room)) if before.room.as_ref() != Some(room) => {
+            return Some(tf("voice.announce.joined", &[("where", room)]));
+        }
+        (Some(room), None) => return Some(tf("voice.announce.left", &[("where", room)])),
+        _ => {}
+    }
+    if before.deafened != now.deafened {
+        return Some(
+            t(if now.deafened {
+                "voice.announce.deafened"
+            } else {
+                "voice.announce.undeafened"
+            })
+            .to_owned(),
+        );
+    }
+    (before.muted != now.muted).then(|| {
+        t(if now.muted {
+            "voice.announce.muted"
+        } else {
+            "voice.announce.unmuted"
+        })
+        .to_owned()
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    /// Package 11: the call's changes are read out as the web's useCall announces them.
+    #[test]
+    fn the_call_announces_joining_leaving_and_its_switches() {
+        let at = |room: Option<&str>, muted, deafened| CallHeard {
+            room: room.map(str::to_owned),
+            muted,
+            deafened,
+        };
+        assert_eq!(
+            call_announcement(&at(None, false, false), &at(Some("lounge"), false, false))
+                .as_deref(),
+            Some("You joined lounge.")
+        );
+        assert_eq!(
+            call_announcement(&at(Some("lounge"), true, false), &at(None, true, false)).as_deref(),
+            Some("You left lounge.")
+        );
+        assert_eq!(
+            call_announcement(&at(Some("a"), false, false), &at(Some("a"), true, false)).as_deref(),
+            Some("Microphone muted.")
+        );
+        assert_eq!(
+            call_announcement(&at(Some("a"), true, false), &at(Some("a"), true, true)).as_deref(),
+            Some("Sound off.")
+        );
+        assert_eq!(
+            call_announcement(&at(Some("a"), true, true), &at(Some("a"), false, false)).as_deref(),
+            Some("Sound on.")
+        );
+        assert_eq!(
+            call_announcement(&at(Some("a"), false, false), &at(Some("a"), false, false)),
+            None
+        );
+    }
+
     use super::*;
 
     /// Review m2: focus inside an open action menu (the channel list head's ⌄, a toolbar's ⋯) refuses Ctrl+K, as the web's

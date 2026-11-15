@@ -895,3 +895,25 @@ parity! {
     parity_server_settings_moderation_log => "server-settings/moderation-log";
     parity_server_settings_moderation_log_b => "server-settings/moderation-log-b";
 }
+
+/// role-palette.ts `signalPalette` (Package 10b): a role whose colour is none of the six swatches (one set by the web's
+/// older twelve-colour palette, or by another client) keeps it as a seventh swatch named "current colour", so opening
+/// the editor neither hides nor changes it; a swatch colour and no colour list the six alone.
+#[test]
+fn custom_colour_is_listed() {
+    use dilla_client::features::members::signal_palette;
+    let custom = 0x12_A594;
+    let palette = signal_palette(custom);
+    assert_eq!(palette.len(), 7);
+    assert_eq!(palette.last(), Some(&(custom, "custom")));
+    assert_eq!(
+        dilla_desktop::strings::t("roles.color.custom"),
+        "current colour"
+    );
+    assert_eq!(signal_palette(0x5A_A8E6).len(), 6);
+    assert_eq!(signal_palette(0).len(), 6);
+    // Every swatch has its name, so a colour is never told by sight alone.
+    for (_, key) in signal_palette(custom) {
+        assert!(!dilla_desktop::strings::t(&format!("roles.color.{key}")).is_empty());
+    }
+}

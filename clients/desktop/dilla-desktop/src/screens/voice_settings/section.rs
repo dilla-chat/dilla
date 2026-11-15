@@ -463,6 +463,11 @@ impl Render for VoiceSection {
         let volume_slider = |id: &'static str, value: u32, handle: &FocusHandle, input: bool| {
             let me = me.clone();
             Slider::new(id, value as i32, 0, 200)
+                .label(t(if input {
+                    "signalSettings.voice.inputVolume"
+                } else {
+                    "signalSettings.voice.outputVolume"
+                }))
                 .focus_handle(handle)
                 .on_change(move |value, commit, _, cx| {
                     if commit {
@@ -589,6 +594,7 @@ impl Render for VoiceSection {
                 v.sensitivity_auto,
                 test.testing,
             )
+            .label(t("signalSettings.voice.threshold"))
             .focus_handle(&handles.threshold)
             .on_threshold(move |db, commit, _, cx| {
                 if commit {
@@ -652,6 +658,7 @@ impl Render for VoiceSection {
                 ],
                 mode_str(v.mode),
             )
+            .label(t("signalSettings.voice.inputMode"))
             .tall(true)
             .on_change(move |picked, _, cx| {
                 let mode = InputMode::parse(picked).unwrap_or_default();
@@ -704,6 +711,7 @@ impl Render for VoiceSection {
             let release = {
                 let me = me.clone();
                 Slider::new("voice-release-range", v.ptt_release_ms as i32, 0, 1000)
+                    .label(t("signalSettings.voice.release"))
                     .step(20)
                     .page(100)
                     .focus_handle(&handles.release)
@@ -759,6 +767,7 @@ impl Render for VoiceSection {
                 ],
                 v.noise.as_str(),
             )
+            .label(t("settings.voice.noise"))
             .on_change(move |picked, _, cx| {
                 let noise = Noise::parse(picked).unwrap_or_default();
                 me.update(cx, |this, cx| this.set(Setting::Noise(noise), cx));

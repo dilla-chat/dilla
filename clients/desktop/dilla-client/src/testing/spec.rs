@@ -58,8 +58,13 @@ pub enum Phase {
     #[default]
     Ready,
     FactorSetup,
+    /// The instance no longer accepts this device (Boot.tsx `revoked`): the world removes the viewer's device after
+    /// the history, and the device starts again.
     Revoked,
     VersionRefused,
+    /// The key that opens this device's store is gone (Boot.tsx `store-lost`): the browser's key wrapper is deleted, and
+    /// the device starts again.
+    StoreLost,
 }
 
 /// One action of a fixture, replayed on both sides.

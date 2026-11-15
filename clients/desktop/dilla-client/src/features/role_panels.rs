@@ -680,6 +680,7 @@ mod tests {
             pinned: false,
             attachments: Vec::new(),
             mention: false,
+            actions: Vec::new(),
         });
         s.timelines.insert(GENERAL, t);
         s

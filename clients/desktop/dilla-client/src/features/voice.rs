@@ -732,6 +732,7 @@ impl Voice {
                 error: None,
                 roster,
                 ping_ms: None,
+                rate_kbps: None,
             };
         });
         // Product walk M5: a call started muted or deafened says so to the others at once.
@@ -1089,6 +1090,17 @@ impl Voice {
             let c = &mut s.voice.call;
             if c.call_id == Some(call) && c.phase == CallPhase::In && c.ping_ms != ms {
                 c.ping_ms = ms;
+            }
+        });
+    }
+
+    /// The link's rate, `(up, down)` kb/s (session.ts `linkTick`'s sample), for the dock and the call bar; ignored unless it
+    /// is this device's live call.
+    pub fn set_rate(&self, call: [u8; 16], kbps: Option<(u32, u32)>) {
+        self.inner.publish(move |s| {
+            let c = &mut s.voice.call;
+            if c.call_id == Some(call) && c.phase == CallPhase::In && c.rate_kbps != kbps {
+                c.rate_kbps = kbps;
             }
         });
     }

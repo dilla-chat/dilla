@@ -182,6 +182,15 @@ impl Fake {
         }
     }
 
+    /// No speaker can be opened (`true`) or one is plugged in again (`false`).
+    fn set_no_output(&self, none: bool) {
+        self.0.lock().unwrap().no_output = none;
+    }
+
+    fn output_open(&self) -> bool {
+        self.0.lock().unwrap().output.is_some()
+    }
+
     /// Pulls the device out: it leaves the list and a stream on it fails.
     fn unplug(&self, id: &str) {
         let lost = {
@@ -689,6 +698,117 @@ fn a_speaker_unplugged_moves_to_the_default_or_says_it_is_lost() {
     assert!(host.pull(480).iter().any(|s| *s != 0));
     host.unplug_output(true);
     assert_eq!(wait(&mut ev), vec![MediaEvent::SpeakerLost]);
+}
+
+/// Waits up to 5 s for `f`.
+fn eventually(mut f: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    f()
+}
+
+/// Package 8a (beta.5 joined a call on a machine with no output device and played nowhere): a call's speaker opens
+/// with no device, keeps every source drained meanwhile (nothing queues up to play late), says nothing, and opens the
+/// system default once one appears.
+#[test]
+fn a_call_speaker_with_no_output_device_plays_nowhere_until_one_appears() {
+    let host = Fake::new();
+    host.set_no_output(true);
+    let (tx, mut ev) = tokio::sync::mpsc::unbounded_channel();
+    let speaker = Speaker::open_waiting(Arc::new(host.clone()), Apm::default(), Some(tx), None)
+        .expect("no device is not a failure");
+    assert!(!speaker.is_playing());
+    assert!(
+        Speaker::open_with(Arc::new(host.clone()), Apm::default(), None, None).is_err(),
+        "a plain speaker still fails"
+    );
+    let sink = speaker.sink();
+    for _ in 0..50 {
+        sink.push("a", &[3000; 480]);
+    }
+    // The worker drops what nobody plays (however irregular its ticks: macOS coalesces timers), so nothing is left to
+    // play late once a device appears.
+    std::thread::sleep(Duration::from_millis(300));
+    host.set_no_output(false);
+    assert!(eventually(|| speaker.is_playing() && host.output_open()));
+    assert!(
+        host.pull(4800).iter().all(|s| *s == 0),
+        "nothing queued while there was no device"
+    );
+    sink.push("a", &[3000; 480]);
+    assert!(
+        host.pull(480).contains(&3000),
+        "it plays once a device is there"
+    );
+    assert!(
+        events(&mut ev).is_empty(),
+        "a join with no device says nothing"
+    );
+}
+
+/// Package 8a: a call's speaker whose last device went (`SpeakerLost`) plays again when one comes back, and says so.
+#[test]
+fn a_call_speaker_that_lost_its_last_device_plays_again_when_one_appears() {
+    let host = Fake::new();
+    let (tx, mut ev) = tokio::sync::mpsc::unbounded_channel();
+    let speaker =
+        Speaker::open_waiting(Arc::new(host.clone()), Apm::default(), Some(tx), None).unwrap();
+    assert!(speaker.is_playing());
+    host.unplug_output(true);
+    let mut seen = Vec::new();
+    assert!(eventually(|| {
+        seen.extend(events(&mut ev));
+        !seen.is_empty()
+    }));
+    assert_eq!(seen, vec![MediaEvent::SpeakerLost]);
+    assert!(!speaker.is_playing());
+    host.set_no_output(false);
+    seen.clear();
+    assert!(eventually(|| {
+        seen.extend(events(&mut ev));
+        !seen.is_empty()
+    }));
+    assert_eq!(seen, vec![MediaEvent::DevicesChanged]);
+    assert!(speaker.is_playing());
+}
+
+/// Package 8b (call/volume.ts `gainOf`, VoiceView.tsx's User volume and Stream volume): each person's voice and each
+/// stream's sound play at their own gain, a source that starts later takes its group's gain, and 0 is silence.
+#[test]
+fn per_participant_gain_scales_playout() {
+    let host = Fake::new();
+    let speaker = Speaker::open_with(Arc::new(host.clone()), Apm::default(), None, None).unwrap();
+    let sink = speaker.sink();
+    sink.group("alice:1", "alice:voice");
+    sink.push("alice:1", &[1000; 480]);
+    assert_eq!(host.pull(480)[100], 1000, "1.0 by default");
+    sink.set_gain("alice:voice", 0.5);
+    sink.push("alice:1", &[1000; 480]);
+    assert_eq!(host.pull(480)[100], 500, "half");
+    sink.set_gain("alice:voice", 2.0);
+    sink.push("alice:1", &[1000; 480]);
+    assert_eq!(host.pull(480)[100], 2000, "double");
+    // Bob's stream at 0 (the stream mute) leaves only alice's voice.
+    sink.set_gain("bob:stream", 0.0);
+    sink.group("bob:2", "bob:stream");
+    sink.push("bob:2", &[1000; 480]);
+    sink.push("alice:1", &[1000; 480]);
+    assert_eq!(host.pull(480)[100], 2000, "bob's stream is silent");
+    sink.set_gain("bob:stream", 1.0);
+    sink.push("bob:2", &[1000; 480]);
+    assert_eq!(host.pull(480)[100], 1000, "back to as received");
+    sink.set_gain("alice:voice", f32::NAN);
+    sink.push("alice:1", &[1000; 480]);
+    assert_eq!(
+        host.pull(480)[100],
+        1000,
+        "a gain that is not a number plays as received"
+    );
 }
 
 /// Task 4 ledger (Task 17): the 17th source is refused (and warned about once), a removed source's slot is free again

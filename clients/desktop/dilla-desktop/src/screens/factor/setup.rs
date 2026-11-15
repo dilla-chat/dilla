@@ -879,12 +879,30 @@ impl FactorSetupView {
                                             line_height(text::XS, 1.5),
                                             color::FG_2,
                                         ))
+                                        // The setup key is never in the accessibility tree; "Read aloud" (a Tab
+                                        // stop, drawn while focused) reads it out once on request (Jonas 2026-11-15).
                                         .child(
                                             div()
+                                                .relative()
                                                 .text_size(text::SM)
                                                 .font_family(dilla_desktop_ui::tokens::font::MONO)
                                                 .text_color(color::FG)
-                                                .child(secret),
+                                                .child(secret)
+                                                .child({
+                                                    let key = Zeroizing::new(
+                                                        key.secret.as_str().to_owned(),
+                                                    );
+                                                    crate::screens::read_aloud::button(
+                                                        "factor-totp-read-key",
+                                                        "readAloud.setupKey",
+                                                        move || {
+                                                            crate::screens::read_aloud::spoken(
+                                                                t("factor.totp.key"),
+                                                                key.as_str(),
+                                                            )
+                                                        },
+                                                    )
+                                                }),
                                         )
                                         .child(tracked_box(
                                             "factor-totp-copy",

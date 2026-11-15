@@ -227,6 +227,7 @@ pub fn ring_banner(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             on_answer,
             on_decline,
         )
+        .region(t("call.ring.region"))
         .into_any_element(),
     )
 }

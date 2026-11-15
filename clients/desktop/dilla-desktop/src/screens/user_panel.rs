@@ -7,6 +7,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, div,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::tooltip::tooltip;
 use dilla_desktop_ui::components::{Avatar, AvatarSize, Presence};
 use dilla_desktop_ui::metrics::focus_ring;
@@ -29,6 +30,31 @@ mod css {
     pub const GLYPH: f32 = 16.0;
     /// The sidebar's edge runs on past the list: a 1px line over the panel's last column.
     pub const EDGE: f32 = 1.0;
+    /// `.d-user-panel__ptt`: 2px out past the mute button's bottom right, 3px in, 16px high.
+    pub const PTT_OUT: f32 = -2.0;
+    pub const PTT_PAD_X: f32 = 3.0;
+    pub const PTT_LINE: f32 = 16.0;
+    /// `.d-user-panel__avatar[data-speaking]`: 2px of the panel, then 1.5px of `--ok`.
+    pub const RING_GAP: f32 = 2.0;
+    pub const RING: f32 = 1.5;
+}
+
+/// The PTT tag over the mute button's corner (UserPanel.css `.d-user-panel__ptt`).
+fn ptt_tag() -> impl IntoElement {
+    div()
+        .debug_selector(|| "user-panel-ptt".into())
+        .absolute()
+        .right(Pixels::from(css::PTT_OUT))
+        .bottom(Pixels::from(css::PTT_OUT))
+        .px(Pixels::from(css::PTT_PAD_X))
+        .bg(color::BG_2)
+        .border_1()
+        .border_color(color::HAIRLINE)
+        .rounded(radius::SM)
+        .child(
+            line(t("layout.ptt.tag"), text::BADGE, css::PTT_LINE, color::FG_2)
+                .tracking(dilla_desktop_ui::metrics::TRACKING_SOFT),
+        )
 }
 
 pub struct PanelModel<'a> {
@@ -39,6 +65,9 @@ pub struct PanelModel<'a> {
     pub in_room: Option<&'a str>,
     pub muted: bool,
     pub deafened: bool,
+    /// Push to talk is the input mode (UserPanel.tsx `ptt`): the PTT tag on the mute button, and whether the key is held
+    /// now (the avatar's speaking ring).
+    pub ptt: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -76,6 +105,8 @@ fn toggle(
     };
     div()
         .id(id)
+        .a11y(Role::Button, t(label))
+        .toggled(pressed)
         .tab_index(0)
         .flex()
         .flex_none()
@@ -110,11 +141,35 @@ pub fn render(model: &PanelModel<'_>, handlers: &PanelHandlers) -> impl IntoElem
         .items_center()
         .pl(Pixels::from(css::WHO_LEFT))
         .gap(Pixels::from(css::WHO_GAP))
-        .child(
-            Avatar::new("user-panel-avatar", model.name.to_owned())
+        .child({
+            let avatar = Avatar::new("user-panel-avatar", model.name.to_owned())
                 .size(AvatarSize::Panel)
-                .presence(presence),
-        )
+                .presence(presence);
+            // Push to talk held: the speaking ring, 2px of the panel and 1.5px of `--ok`.
+            let held = model.ptt == Some(true);
+            let inner = div()
+                .flex_none()
+                .rounded(radius::AVATAR)
+                .border(Pixels::from(css::RING_GAP))
+                .border_color(if held {
+                    color::BG_2
+                } else {
+                    gpui::transparent_black()
+                })
+                .m(Pixels::from(-css::RING_GAP))
+                .child(avatar);
+            div()
+                .flex_none()
+                .rounded(radius::AVATAR)
+                .border(Pixels::from(css::RING))
+                .border_color(if held {
+                    color::OK
+                } else {
+                    gpui::transparent_black()
+                })
+                .m(Pixels::from(-css::RING))
+                .child(inner)
+        })
         .child(
             div()
                 .min_w_0()
@@ -142,6 +197,7 @@ pub fn render(model: &PanelModel<'_>, handlers: &PanelHandlers) -> impl IntoElem
         );
     let panel = div()
         .id(SharedString::from("user-panel"))
+        .landmark(Role::Region, t("panel.region"))
         .flex_none()
         .relative()
         .h(layout::USER_PANEL)
@@ -153,15 +209,22 @@ pub fn render(model: &PanelModel<'_>, handlers: &PanelHandlers) -> impl IntoElem
         .px(Pixels::from(css::SIDE))
         .gap(Pixels::from(css::GAP))
         .child(who)
-        .child(toggle(
-            "user-panel-mute",
-            IconName::Mic,
-            IconName::MicOff,
-            "voice.mute",
-            "M",
-            model.muted,
-            handlers.on_mute.clone(),
-        ))
+        .child({
+            let mic = div().relative().flex_none().child(toggle(
+                "user-panel-mute",
+                IconName::Mic,
+                IconName::MicOff,
+                "voice.mute",
+                "M",
+                model.muted,
+                handlers.on_mute.clone(),
+            ));
+            if model.ptt.is_some() {
+                mic.child(ptt_tag())
+            } else {
+                mic
+            }
+        })
         .child(toggle(
             "user-panel-deafen",
             IconName::Headphones,

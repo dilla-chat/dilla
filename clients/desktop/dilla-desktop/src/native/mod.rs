@@ -10,7 +10,7 @@
 //! | [`tray`] | 5 | `install(cx)`: draws the OS tray from [`NativeShell::tray_menu`], re-drawn on [`NativeShell::on_tray_changed`] |
 //! | [`badge`] | 5 | `install(cx)`: a [`NativeShell::add_badge_sink`] that sets the dock, overlay or launcher count |
 //! | [`autostart`] | 5 | `hidden_start(argv)`, `install(cx)` (its tray section) |
-//! | [`menus`] | 5 | `prepare(app)` (`on_reopen`, before the run loop), `install(cx)` (`set_menus`, zoom) |
+//! | [`menus`] | 5 | `prepare(app)` (`on_reopen`, before the run loop), `install(cx)` (`set_menus`, full screen) |
 //! | [`notifier`] | 4 | `install(cx)`: the OS notifier; withdraws a window's notifications on [`WindowEvent::Closed`] |
 //! | [`links`] | 6 | `prepare(app)` (`on_open_urls`), `parse(raw)`, `install(cx)` (its [`NativeShell::on_link`] handler) |
 //! | [`single_instance`] | 6 | `claim(argv)` (before the run loop), `install(primary, cx)` (second launches) |
@@ -36,6 +36,8 @@ pub mod links;
 pub mod menus;
 pub mod notifier;
 pub mod permissions;
+#[cfg(windows)]
+mod pipe_windows;
 pub mod quit;
 pub mod single_instance;
 pub mod tray;
@@ -686,7 +688,12 @@ impl NativeShell {
 /// Before the run loop: takes the single-process lock, or hands this launch's argv (the program name first) to the
 /// running app.
 pub fn claim(argv: &[String]) -> Claimed {
-    match single_instance::claim(argv) {
+    claimed(single_instance::claim(argv), argv)
+}
+
+/// What `claim` answers for the lock's answer `claim` and the command line `argv`.
+fn claimed(claim: single_instance::Claim, argv: &[String]) -> Claimed {
+    match claim {
         single_instance::Claim::HandedOver => Claimed::HandedOver,
         single_instance::Claim::Primary(primary) => Claimed::Primary(Startup {
             hidden: autostart::hidden_start(argv),
@@ -973,16 +980,34 @@ mod tests {
         );
     }
 
-    /// `claim` with the stubs: this process is the app, no hidden start, no link parsed yet.
+    /// `claim` (Package 6): the first launch is the app and its command line's links are queued; a second launch in the
+    /// same data root hands over.
     #[test]
-    fn claim_is_primary_until_package_6() {
-        let argv = vec!["dilla-desktop".to_owned(), "--other".to_owned()];
-        match claim(&argv) {
+    fn claim_takes_the_lock_and_the_command_line_links() {
+        let root = links::tests::temp_root("claim");
+        let argv = vec![
+            "dilla-desktop".to_owned(),
+            "--other".to_owned(),
+            "dilla://invite/chat.example/CODE".to_owned(),
+            "dilla://invite/b/code?token=secret".to_owned(),
+        ];
+        let first = claimed(single_instance::claim_at(&root, &argv), &argv);
+        match &first {
             Claimed::Primary(startup) => {
                 assert!(!startup.hidden);
-                assert!(startup.links.is_empty());
+                assert_eq!(startup.links, [invite("CODE")]);
             }
-            Claimed::HandedOver => panic!("the stub never hands over"),
+            Claimed::HandedOver => panic!("the first launch is the app"),
         }
+        let Claimed::Primary(startup) = first else {
+            unreachable!()
+        };
+        // The app's endpoint is served (as `install` does), so the second launch is taken.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        startup.primary.serve_for_test(tx);
+        assert!(matches!(
+            claimed(single_instance::claim_at(&root, &argv), &argv),
+            Claimed::HandedOver
+        ));
     }
 }

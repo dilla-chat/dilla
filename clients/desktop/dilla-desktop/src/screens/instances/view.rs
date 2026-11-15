@@ -17,6 +17,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::confirm_dialog::{ConfirmDialog, Tone};
 use dilla_desktop_ui::components::text_field::TextField;
@@ -501,6 +502,7 @@ impl Render for ManagerView {
             let focused = handle.is_focused(window);
             div()
                 .id(("instance-row", index))
+                .a11y(Role::Button, entry.label.clone())
                 .track_focus(&handle)
                 .key_context("InstanceRow")
                 .flex()
@@ -537,6 +539,7 @@ impl Render for ManagerView {
                 .child(
                     div()
                         .id(("instance-remove", index))
+                        .a11y(Role::Button, format!("{} {}", copy::REMOVE, entry.label))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -740,5 +743,8 @@ impl Render for ManagerView {
                     .child(main),
             )
             .children(dialog)
+            // The quit question, when this window carries it (Package 7).
+            .children(crate::native::quit::overlay(window, cx))
+            .child(dilla_desktop_ui::a11y::announcer(window, cx))
     }
 }

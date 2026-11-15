@@ -6,11 +6,13 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::components::avatar::{Avatar, AvatarShape, AvatarSize};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
@@ -277,6 +279,11 @@ impl ResultRow {
 
 impl RenderOnce for ResultRow {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        // `role="option"`, named by its label and sub-line; the active one is the list's active descendant.
+        let spoken = match &self.sub {
+            Some(sub) => format!("{}, {sub}", self.label),
+            None => self.label.to_string(),
+        };
         let glyph: AnyElement = match self.glyph {
             Glyph::Icon(name) => div()
                 .flex_none()
@@ -327,6 +334,9 @@ impl RenderOnce for ResultRow {
         }
         let mut row = div()
             .id(self.id)
+            .a11y(Role::ListBoxOption, spoken)
+            .aria_selected(self.selected)
+            .when(self.selected, |r| r.aria_active_descendant())
             .relative()
             .flex()
             .flex_none()

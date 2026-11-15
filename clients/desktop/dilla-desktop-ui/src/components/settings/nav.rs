@@ -13,6 +13,7 @@ use gpui::{
     point, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
@@ -155,6 +156,8 @@ pub struct SettingsNav {
     items: Vec<NavItem>,
     active: SharedString,
     on_select: Option<SelectHandler>,
+    /// The navigation's accessible name (`settings.nav.label`).
+    label: SharedString,
 }
 
 impl SettingsNav {
@@ -168,7 +171,14 @@ impl SettingsNav {
             items,
             active: active.into(),
             on_select: None,
+            label: SharedString::default(),
         }
+    }
+
+    /// Names the navigation for a screen reader (`settings.nav.label`, "Settings sections").
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = label.into();
+        self
     }
 
     pub fn on_select(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
@@ -195,6 +205,7 @@ impl RenderOnce for SettingsNav {
         });
         let mut list = div()
             .id(self.id.clone())
+            .landmark(Role::Navigation, self.label.clone())
             .flex()
             .flex_col()
             .gap(px(2.0))
@@ -234,6 +245,9 @@ impl RenderOnce for SettingsNav {
             let mut row = div()
                 .id((self.id.clone(), format!("item-{}", item.id)))
                 .debug_selector(move || selector.clone())
+                // A section link; the current one is `aria-current="page"`.
+                .a11y(Role::Link, item.label.clone())
+                .aria_selected(current)
                 // The handle's own flag decides the tab stop of a tracked element.
                 .track_focus(&handles[i].clone().tab_stop(i == stop))
                 .relative()

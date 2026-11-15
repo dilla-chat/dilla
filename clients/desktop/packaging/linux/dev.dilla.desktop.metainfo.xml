@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.dilla.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Dilla</name>
+  <summary>End-to-end encrypted chat, voice and video</summary>
+  <description>
+    <p>
+      Dilla is a self-hosted chat app: servers, channels, direct messages, voice and video calls and screen sharing,
+      all end-to-end encrypted with MLS. This is the native desktop client.
+    </p>
+    <p>
+      Dilla stores its database key in the system's Secret Service (GNOME Keyring, KWallet or KeePassXC), which must
+      be running to sign in.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.dilla.desktop.desktop</launchable>
+  <url type="homepage">https://github.com/dilla-chat/dilla</url>
+  <url type="bugtracker">https://github.com/dilla-chat/dilla/issues</url>
+  <developer id="dev.dilla">
+    <name>Dilla contributors</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>dilla-desktop</binary>
+  </provides>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+    <category>Chat</category>
+  </categories>
+</component>

@@ -14,6 +14,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
@@ -178,6 +179,8 @@ fn chip_view(
     let emoji = chip.emoji.clone();
     div()
         .id(id)
+        .a11y(Role::Button, chip.name.clone())
+        .toggled(chip.mine)
         .track_focus(handle)
         .tab_stop(tab)
         .flex()
@@ -254,6 +257,7 @@ impl RenderOnce for ReactionBar {
         let on_add = self.on_add.clone();
         let add = div()
             .id((self.id.clone(), "add"))
+            .a11y(Role::Button, self.add_label.clone())
             .track_focus(&handles[n])
             .tab_stop(tab(n))
             .flex()

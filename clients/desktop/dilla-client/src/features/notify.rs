@@ -1690,6 +1690,7 @@ mod tests {
             pinned: false,
             attachments: vec![],
             mention,
+            actions: Vec::new(),
         }
     }
 
