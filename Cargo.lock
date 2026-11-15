@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "dilla-desktop"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "ashpd",
  "block2 0.6.2",
