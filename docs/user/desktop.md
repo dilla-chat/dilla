@@ -1,8 +1,9 @@
 # Dilla desktop
 
-The desktop client is the native Rust/GPUI program in `clients/desktop`. It is built from source: there is no
-released build yet, no installer and no updater. Keep using the browser client or the [mobile app](mobile.md) for
-everyday use.
+The desktop client is the native Rust/GPUI program in `clients/desktop`. On Linux it is released as an **alpha**
+(`desktop-gpui-v0.2.0-alpha.N`): an AppImage, a tar.gz, a deb, an rpm and an AUR recipe, [installed by
+hand](#install-the-linux-alpha). It does not update itself yet. On macOS and Windows it is built from source. Keep
+using the browser client or the [mobile app](mobile.md) for everyday use.
 
 **The Electron desktop app is discontinued.** Its last release is `desktop-v0.1.0-beta.5`. A copy you already
 installed keeps working against a compatible server, but it gets no further updates and no fixes. The browser
@@ -14,8 +15,9 @@ server's `/desktop-auth` routes; an older instance cannot take them, and the app
 ## The native client (GPUI)
 
 The native client is written in Rust with the GPUI toolkit (`clients/desktop`) and draws the Signal screens at pixel
-parity with the web client on Linux. **You build it from source.** It has no installer, no updater and no tray yet. The
-list of what works, screen by screen, is in the [README](../../README.md#the-native-desktop-client-gpui).
+parity with the web client on Linux. On Linux you install an alpha release; on macOS and Windows you build it from
+source. It has no updater and no tray yet. The list of what works, screen by screen, is in the
+[README](../../README.md#the-native-desktop-client-gpui).
 
 ![The native client: Midgard Crew with the channel list, a conversation in #general and the members](screenshots/gpui-shell-conversation.png)
 
@@ -34,6 +36,41 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 ![The search palette with results for "bridge"](screenshots/gpui-search.png)
 
 ![Sign-up, step 3 of 6: the recovery key, shown once](screenshots/gpui-onboarding-recovery-key.png)
+
+### Install the Linux alpha
+
+Download the files from the newest
+[`desktop-gpui-v…` release](https://github.com/dilla-chat/dilla/releases?q=desktop-gpui&expanded=true) (the release
+notes carry the same table). `<v>` is the release's version, for example `0.2.0-alpha.1`.
+
+| System | File | Install |
+|---|---|---|
+| Ubuntu 24.04 or newer, Debian 13 | `dilla-<v>-linux-x64.deb` | `sudo apt install ./dilla-<v>-linux-x64.deb` |
+| Fedora 40 or newer | `dilla-<v>-linux-x64.rpm` | `sudo dnf install ./dilla-<v>-linux-x64.rpm` |
+| Arch | `dilla-<v>-linux-x64.aur.tar.gz` | Unpack it into an empty folder, read the `PKGBUILD`, then `makepkg -si` there |
+| Any distribution | `dilla-<v>-linux-x64.AppImage` | `chmod +x dilla-<v>-linux-x64.AppImage`, then run it |
+| Any distribution | `dilla-<v>-linux-x64.tar.gz` | Unpack it and run `dilla-<v>/dilla-desktop` |
+
+The deb, rpm and Arch packages put the app in `/opt/Dilla`, start it as `dilla-desktop` and add "Dilla" to the
+application menu. The Arch recipe (package `dilla-bin`) is a release file only: it is not on the AUR. It builds from
+the release's own tar.gz, pinned by its checksum.
+
+To check a download, keep `SHA256SUMS` beside the files and run `sha256sum --check --ignore-missing SHA256SUMS`;
+`gh attestation verify <file> --repo dilla-chat/dilla` shows that GitHub Actions built it from this repository.
+
+**What it needs.** glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40, Arch and newer); Vulkan or OpenGL ES 3
+graphics; PipeWire or PulseAudio for calls; and a running **Secret Service**: GNOME Keyring, KWallet or KeePassXC.
+Dilla keeps its database key there, so without one it cannot sign in. GNOME and KDE Plasma run one already; on other
+desktops install and start one of them first. File dialogs and printing go through the XDG desktop portal, and colour
+emoji need the Noto Color Emoji font.
+
+**Upgrading from Dilla beta (the Electron app).** The deb, rpm and Arch packages are named like beta's (`dilla`; the
+Arch recipe provides and conflicts with `dilla`), so installing one replaces an installed beta.5 in place. Beta's
+files in `/opt/Dilla` are removed (an rpm upgrade can leave its empty folders behind). Beta's app data stays on disk
+but is not used, and nothing deletes it. The native app is a **new device** on your account (see below), so keep
+another signed-in device and your recovery key at hand. `dilla://` invite links stop opening the app until the native
+app handles them; join with the address and the invite code instead. An AppImage or tar.gz runs beside an installed
+beta.
 
 ### Build and run it
 
@@ -106,8 +143,10 @@ the updater and packaging.
 - **Tray and background:** no tray icon, close to tray, badge count, autostart. A second copy of the app cannot open an
   instance that another copy holds, but it does not hand the launch over to the running one.
 - **Deep links:** `dilla://invite/...` is not handled. Join with the address and the invite code in the instances window.
-- **Updater and packaging:** no automatic update, DMG, Windows installer, AppImage, deb, rpm or AUR package. Build
-  from source.
+- **Updater and packaging:** no automatic update: download each new alpha from its release. Linux has an AppImage,
+  a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR); macOS and Windows have no DMG or
+  installer yet, so build from source there.
+- **Window title:** the window is still titled "Dilla Preview".
 - **Screen capture and camera:** the camera and screen-share buttons are drawn but start nothing (the share is
   treated as cancelled), and there is no screen picker or per-application audio. You still see other people's camera
   and screen shares, and hear and speak in calls.

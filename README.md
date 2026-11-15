@@ -49,9 +49,11 @@ As of the Signal redesign, wave B (unreleased, 2026-10-31), on top of web3.12 (2
 ### The native desktop client (GPUI)
 
 As of the screens wave 1 (2026-11-13). The Rust/GPUI desktop client in `clients/desktop`. It replaces the Electron
-app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). There is no released
-build yet: you build it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)),
-it draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
+app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). Linux has alpha
+releases (`desktop-gpui-v0.2.0-alpha.N`: AppImage, tar.gz, deb, rpm and an AUR recipe; the packages replace an
+installed beta.5, [how to install it](docs/user/desktop.md#install-the-linux-alpha)); on macOS and Windows you build
+it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)). It does not update itself yet.
+It draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
 measured). What works today, screen by screen:
 
 | Screen | State |
@@ -128,12 +130,13 @@ For the native desktop preview:
 - Starting a camera or screen share (a call can show other people's), the screen-capture picker and per-application audio.
 - Tray, close to tray and badge count, `dilla://invite` links, a second launch handing over to the running app,
   autostart, and operating-system notifications (also for a ring, with Answer and Decline).
-- The updater, installers and packages (DMG, Windows installer, AppImage, deb, rpm, AUR). Build it from source.
+- The updater, and the macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
+  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand.
 - Screen readers (they come after the switch) and push to talk while another window has focus.
 - On Linux, AltGr plus the push-to-talk key still opens the microphone (the other modifiers are refused).
 
-Beyond the web client: the native [desktop client](docs/user/desktop.md) is built from source and has no released
-build yet; the Electron app is discontinued at `desktop-v0.1.0-beta.5`. The browser client is deprecated. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no
+Beyond the web client: the native [desktop client](docs/user/desktop.md) has Linux alpha releases and is built from
+source on macOS and Windows; the Electron app is discontinued at `desktop-v0.1.0-beta.5`. The browser client is deprecated. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no
 published security review or published capacity report yet.
 
 ## Run it
@@ -160,7 +163,7 @@ camera and screen share, push to talk, the call code, AFK channels, sounds, and 
 |---|---|
 | `protocol/` | Normative protocol documents and conformance test vectors (Apache-2.0) |
 | `packages/protocol-vectors` | TypeScript reference implementation that generates the vectors (Apache-2.0) |
-| `clients/desktop` | The native Rust/GPUI desktop client (built from source; no released build yet) |
+| `clients/desktop` | The native Rust/GPUI desktop client (Linux alpha releases; built from source on macOS and Windows) |
 | `docs/superpowers/specs` | Product and system design specifications |
 | `docs/superpowers/plans` | Implementation plans |
 | `docs/design` | Design brief, and the Signal design reference in `docs/design/signal` (the current design) |
