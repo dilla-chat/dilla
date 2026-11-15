@@ -125,6 +125,15 @@ pub fn last_announcement(window: &Window, cx: &App) -> Option<SharedString> {
         .map(|(_, text, _)| text.clone())
 }
 
+/// The number of the latest announcement in `window` (each announcement takes the next one), for tests: a repeat of
+/// the same text is still a new announcement.
+pub fn announcement_seq(window: &Window, cx: &App) -> Option<u64> {
+    let id = window.window_handle().window_id();
+    cx.try_global::<Announcements>()
+        .and_then(|a| a.by_window.get(&id))
+        .map(|(seq, _, _)| *seq)
+}
+
 /// The window's live region: one invisible node holding the latest announcement. Each window's root view draws it
 /// once. The node's id changes with every announcement, so the adapter sees a new live node and reads it even when the
 /// text repeats ("Copied" twice).

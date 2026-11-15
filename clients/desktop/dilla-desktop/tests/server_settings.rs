@@ -559,10 +559,25 @@ fn permission_change_is_announced(cx: &mut gpui::TestAppContext) {
         view.read_with(vcx, |v, _| v.active()),
         Some(ServerSection::Bans)
     );
-    let changed = dilla_desktop::strings::t("workspace.permissionChanged").to_owned();
+    let changed = dilla_desktop::strings::t("workspace.permissionChanged");
+    // Read to a screen reader only (ServerSettings.tsx's polite live region), never a toast or other visible text.
+    let read = |vcx: &mut gpui::VisualTestContext| {
+        vcx.update(|window, cx| {
+            (
+                dilla_desktop_ui::a11y::announcement_seq(window, cx),
+                dilla_desktop_ui::a11y::last_announcement(window, cx),
+            )
+        })
+    };
+    let (before, _) = read(vcx);
     view.update(vcx, |v, cx| v.set_state(state_with(demoted.clone()), cx));
     vcx.run_until_parked();
-    assert_eq!(*said.borrow(), [changed]);
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let (first, text) = read(vcx);
+    assert_eq!(text.as_deref(), Some(changed));
+    assert_ne!(first, before);
+    assert!(said.borrow().is_empty(), "no toast");
     assert_eq!(
         view.read_with(vcx, |v, _| v.active()),
         Some(ServerSection::Members),
@@ -570,10 +585,15 @@ fn permission_change_is_announced(cx: &mut gpui::TestAppContext) {
     );
     view.update(vcx, |v, cx| v.set_state(state_with(demoted.clone()), cx));
     vcx.run_until_parked();
-    assert_eq!(said.borrow().len(), 1, "said once");
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert_eq!(read(vcx).0, first, "said once");
     view.update(vcx, |v, cx| {
         v.set_state(state_with(CommunityAccess::default()), cx)
     });
     vcx.run_until_parked();
-    assert_eq!(said.borrow().len(), 2, "a lost read says it too");
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert_ne!(read(vcx).0, first, "a lost read says it too");
+    assert!(said.borrow().is_empty(), "no toast");
 }
