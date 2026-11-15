@@ -320,6 +320,11 @@ impl Seat {
             s.channel(room).is_some()
         })
         .await;
+        // The media binary is built before the join, as call_world's MediaPeer is: a cold build (a CI shard that
+        // never built the example) took 90 s mid-join, past the instance's 30 s admission join window, so the sweep
+        // removed this device's leaf and the call group froze behind that Remove (the Bot's join then got 425 and
+        // never played).
+        blocking(call_peer).await;
         let voice = self.client.voice();
         voice.set_muted(true);
         voice.join(room).await.unwrap().expect("the join succeeds");
