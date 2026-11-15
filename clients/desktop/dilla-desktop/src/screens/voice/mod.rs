@@ -8,6 +8,7 @@
 //! newest remote frames.
 
 pub mod keys;
+pub mod menu;
 pub mod session;
 
 use std::collections::HashMap;
@@ -213,6 +214,10 @@ pub struct VoiceUi {
     ptt_key: Option<(String, u32)>,
     /// The DM call box's tile grid's width, logical px, as last laid out ([`dm_call_box`]): its column count follows it.
     dm_grid_w: f32,
+    /// The stage's person menu ([`menu`]).
+    pub menu: menu::MenuState,
+    /// The shell's way to open a voice channel (Move to), set as it draws ([`set_open_voice`]).
+    open_voice: Option<OpenVoice>,
     /// The DM box's call code disclosure is open (CallStage.tsx's `<details>`), and its summary's focus.
     pub code_open: bool,
     code_focus: Option<FocusHandle>,
@@ -339,6 +344,21 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     cx.global_mut::<VoiceAreas>()
         .windows
         .retain(|_, ui| !ui.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
+}
+
+/// The shell's way to open a voice channel's stage (Shell.tsx `openVoice`).
+pub type OpenVoice = Rc<dyn Fn(ChannelId, &mut App)>;
+
+/// `window`'s shell's way to open a voice channel, set on each render of the shell.
+pub fn set_open_voice(window: WindowId, open: OpenVoice, cx: &mut App) {
+    ui_mut(window, cx).open_voice = Some(open);
+}
+
+/// Opens `channel`'s stage in `window` (the person menu's Move to), through its shell.
+pub fn open_voice(window: WindowId, channel: ChannelId, cx: &mut App) {
+    if let Some(open) = ui_of(window, cx).and_then(|u| u.open_voice.clone()) {
+        open(channel, cx);
+    }
 }
 
 /// `window`'s shell's way out of the AFK page (Shell.tsx `onLeaveAfk`), set on each render of the shell.
@@ -547,7 +567,10 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     };
     if fresh_client && let Some(client) = client {
         client.voice().start();
-        let session = MediaSession::start(client, session::default_sources())
+        let host = cx
+            .try_global::<AudioHostChoice>()
+            .map_or_else(dilla_media::devices::system, |h| h.0.clone());
+        let session = MediaSession::start_on(client, session::default_sources(), host)
             .map(Rc::new)
             .map_err(|e| log::warn!("voice: no media session: {e}"))
             .ok();
@@ -582,6 +605,17 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
         ui.repainting = true;
         repaint_on_video(window, cx);
     }
+}
+
+/// The audio host a call's media opens its devices on: the system's unless a test chose another.
+struct AudioHostChoice(Arc<dyn dilla_media::devices::AudioHost>);
+
+impl Global for AudioHostChoice {}
+
+/// Test hook: the media sessions started from here on open their devices on `host` (a fake with no speaker, say).
+#[cfg(feature = "test-hooks")]
+pub fn use_audio_host(host: Arc<dyn dilla_media::devices::AudioHost>, cx: &mut App) {
+    cx.set_global(AudioHostChoice(host));
 }
 
 /// What a repaint loop does on a tick.
@@ -1518,7 +1552,10 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         })
         .unwrap_or_default();
     let menu = ui_of(w, cx).and_then(share_menu);
+    let person_menu = menu::person_menu(w, channel, cx);
+    let values = client_of(w, cx).map(|c| c.voice_prefs().values());
     let ui = ui_of(w, cx)?;
+    let bounds = ui.menu.bounds.clone();
     let state = ui.state.clone();
     let focus = ui.stage_focus.clone()?;
     let keys = tiles(&state, channel.id);
@@ -1538,8 +1575,8 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 channel,
                 k,
                 (stage_focused && i == selected, focused.as_ref()),
-                &images,
-                &stats,
+                (&images, &stats),
+                (values.as_ref(), &bounds),
             )
         })
         .collect();
@@ -1629,7 +1666,22 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .flex_col()
         .bg(color::BG)
         .on_key_down(move |e, window, cx| {
-            stage_key(&e.keystroke.key, n, wid(window), cx);
+            if dilla_desktop_ui::components::action_menu::opens_context_menu(&e.keystroke) {
+                // Shift+F10 or the Menu key: the selected tile's person menu.
+                let w = wid(window);
+                let key = ui_of(w, cx).and_then(|u| {
+                    let ch = u.state.voice.call.channel?;
+                    let keys = tiles(&u.state, ch);
+                    keys.get(u.selected.min(keys.len().saturating_sub(1)))
+                        .cloned()
+                });
+                if let Some(key) = key {
+                    cx.stop_propagation();
+                    menu::open_from_key(w, key, cx);
+                }
+            } else {
+                stage_key(&e.keystroke.key, n, wid(window), cx);
+            }
             window.refresh();
         })
         .child(title)
@@ -1645,7 +1697,8 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .child(body),
         )
         .when(in_call, |d| d.child(call_bar(&state, channel, wide)))
-        .children(menu);
+        .children(menu)
+        .children(person_menu);
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
 
@@ -1738,13 +1791,20 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
     out
 }
 
+type TileImages = HashMap<StreamKey, Arc<RenderImage>>;
+type TileStats = HashMap<StreamKey, (u32, u32)>;
+type TileBounds = Rc<std::cell::RefCell<HashMap<TileKey, gpui::Bounds<gpui::Pixels>>>>;
+
 fn tile(
     state: &AppState,
     channel: &Channel,
     k: &TileKey,
     (selected, focused): (bool, Option<&TileKey>),
-    images: &HashMap<StreamKey, Arc<RenderImage>>,
-    stats: &HashMap<StreamKey, (u32, u32)>,
+    (images, stats): (&TileImages, &TileStats),
+    (values, bounds): (
+        Option<&dilla_client::features::voice_prefs::values::VoiceValues>,
+        &TileBounds,
+    ),
 ) -> AnyElement {
     let p = state
         .voice
@@ -1786,6 +1846,11 @@ fn tile(
     };
     let muted = p.is_some_and(|p| p.muted() || p.deafened());
     let deafened = p.is_some_and(VoiceParticipant::deafened);
+    // CallTile.tsx: another person's tile says their volume while it is not 100 (the own tile and a screen have none).
+    let volume = values
+        .filter(|_| !own && !k.screen)
+        .map(|v| menu::volume_of(v, k.user, false))
+        .filter(|v| *v != 100);
     let is_focused = focused == Some(k);
     let face = if focused.is_some() && !is_focused {
         AvatarSize::Confirm
@@ -1871,8 +1936,12 @@ fn tile(
                 .h(px(m::METER_H))
                 .when(!speaking, |d| d.invisible())
                 .children((0..3).map(|_| div().w(px(m::METER_W)).h(px(m::METER_H)).bg(color::OK))),
-        );
+        )
+        .children(volume.map(menu::volume_chip));
     let key = k.clone();
+    let menu_key = k.clone();
+    let bounds_key = k.clone();
+    let bounds = bounds.clone();
     div()
         .id(ElementId::Name(
             format!(
@@ -1896,6 +1965,22 @@ fn tile(
             color::HAIRLINE
         })
         .cursor_pointer()
+        .on_mouse_down(gpui::MouseButton::Right, move |e, window, cx| {
+            menu::open(wid(window), menu_key.clone(), e.position, cx);
+            window.refresh();
+        })
+        .child(
+            gpui::canvas(
+                move |b, _, _| {
+                    bounds.borrow_mut().insert(bounds_key.clone(), b);
+                },
+                |_, (), _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
         .on_click(move |_, window, cx| {
             let w = wid(window);
             if ui_of(w, cx).is_some() {

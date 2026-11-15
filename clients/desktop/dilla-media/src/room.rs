@@ -96,7 +96,8 @@ pub enum Mic {
 pub struct CallOptions {
     pub mic: Mic,
     /// Play the call through the system's speakers ([`Speaker`], which also gives the echo canceller
-    /// its reference). Off for a headless participant.
+    /// its reference). Off for a headless participant. With no output device the call still joins
+    /// and plays nowhere until one appears ([`Speaker::open_waiting`]).
     pub playout: bool,
     /// How long the join waits for the first epoch key before it gives up (nothing published).
     pub key_timeout: Duration,
@@ -419,8 +420,6 @@ pub struct Call {
     router: Arc<Router>,
     media: Arc<CallMedia>,
     local: Option<LocalAudioTrack>,
-    apm: Apm,
-    host: Arc<dyn AudioHost>,
     capture: Option<Arc<capture::Mic>>,
     speaker: Option<Arc<Speaker>>,
     events_tx: mpsc::UnboundedSender<MediaEvent>,
@@ -428,13 +427,22 @@ pub struct Call {
     levels: watch::Receiver<RemoteLevels>,
     tails: Tails,
     muted: Arc<AtomicBool>,
-    apm_flags: ApmFlags,
     videos: watch::Receiver<RemoteVideos>,
     shares: Mutex<HashMap<ShareKind, LocalShare>>,
     shares_ended: mpsc::UnboundedSender<ShareKind>,
     shares_ended_rx: Mutex<Option<mpsc::UnboundedReceiver<ShareKind>>>,
     ended: watch::Receiver<Option<RoomEnd>>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+/// The join's microphone once its device (if any) is open.
+enum PreparedMic {
+    None,
+    Device(capture::Mic),
+    Pcm {
+        frames: mpsc::Receiver<Vec<i16>>,
+        noise: NoiseMode,
+    },
 }
 
 /// Ends a call's media when dropped while armed (a failed or cancelled join).
@@ -572,9 +580,11 @@ impl Call {
 
         let apm = Apm::default();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
-        // The speaker first: it gives the microphone's echo canceller its reference.
+        // The speaker first: it gives the microphone's echo canceller its reference. No output
+        // device does not fail the join (beta.5 joined and played nowhere): the speaker waits for
+        // one, and the person can still talk and be heard.
         let speaker = if options.playout {
-            Some(Arc::new(Speaker::open_with(
+            Some(Arc::new(Speaker::open_waiting(
                 host.clone(),
                 apm.clone(),
                 Some(events_tx.clone()),
@@ -582,6 +592,24 @@ impl Call {
             )?))
         } else {
             None
+        };
+
+        // A device microphone opens before the room is entered: one that is not there (or refused) fails the join
+        // before this device was ever in the room, so a listen-only join that follows is its only presence there (a
+        // room left at once would read as this device leaving the call).
+        let mic = match options.mic {
+            Mic::Device { id, noise } => PreparedMic::Device(capture::Mic::open_with(
+                CaptureConfig {
+                    host: host.clone(),
+                    apm: apm.clone(),
+                    model: Arc::new(embedded_model),
+                    flags: options.apm_flags,
+                },
+                id.map(DeviceId),
+                noise,
+            )?),
+            Mic::Pcm { frames, noise } => PreparedMic::Pcm { frames, noise },
+            Mic::None => PreparedMic::None,
         };
 
         let (room, events) = Room::connect(&token.url, &token.token, room_options)
@@ -608,8 +636,6 @@ impl Call {
             router,
             media,
             local: None,
-            apm,
-            host,
             capture: None,
             speaker,
             events_tx,
@@ -617,7 +643,6 @@ impl Call {
             levels,
             tails,
             muted,
-            apm_flags: options.apm_flags,
             videos,
             shares: Mutex::new(HashMap::new()),
             shares_ended,
@@ -625,7 +650,7 @@ impl Call {
             ended,
             tasks: Vec::new(),
         };
-        match call.publish_mic(options.mic, &mut tasks).await {
+        match call.publish_mic(mic, &mut tasks).await {
             Ok(()) => {
                 call.tasks = tasks;
                 Ok(call)
@@ -641,22 +666,12 @@ impl Call {
 
     async fn publish_mic(
         &mut self,
-        mic: Mic,
+        mic: PreparedMic,
         tasks: &mut Vec<JoinHandle<()>>,
     ) -> Result<(), MediaError> {
         let (track, feeder) = match mic {
-            Mic::None => return Ok(()),
-            Mic::Device { id, noise } => {
-                let mut mic = capture::Mic::open_with(
-                    CaptureConfig {
-                        host: self.host.clone(),
-                        apm: self.apm.clone(),
-                        model: Arc::new(embedded_model),
-                        flags: self.apm_flags,
-                    },
-                    id.map(DeviceId),
-                    noise,
-                )?;
+            PreparedMic::None => return Ok(()),
+            PreparedMic::Device(mut mic) => {
                 let frames = mic
                     .take_frames()
                     .ok_or_else(|| MediaError::Audio("the microphone has no frames".into()))?;
@@ -681,7 +696,7 @@ impl Call {
                     Some((frames, NoiseProcessor::new(NoiseMode::Off)?, source)),
                 )
             }
-            Mic::Pcm { frames, noise } => {
+            PreparedMic::Pcm { frames, noise } => {
                 let processor = NoiseProcessor::new(noise)?;
                 let source = native_source();
                 let track = LocalAudioTrack::create_audio_track(
@@ -770,6 +785,20 @@ impl Call {
         tokio::task::spawn_blocking(move || speaker.switch(device))
             .await
             .map_err(|e| MediaError::Audio(e.to_string()))?
+    }
+
+    /// Plays `device`'s (hex) voice, or its screen share's sound with `stream`, at `gain` (the
+    /// per-person volume times the output volume, call/volume.ts `gainOf`; 0 is silence). Kept for
+    /// tracks that start later.
+    pub fn set_gain(&self, device: &str, stream: bool, gain: f32) {
+        if let Some(speaker) = &self.speaker {
+            speaker.sink().set_gain(&gain_group(device, stream), gain);
+        }
+    }
+
+    /// The call plays through an output device (false with playout off, or while there is none).
+    pub fn is_playing(&self) -> bool {
+        self.speaker.as_ref().is_some_and(|s| s.is_playing())
     }
 
     /// What the audio devices did that the user should see ([`MediaEvent`]), once.
@@ -1104,6 +1133,11 @@ async fn feed_pcm(
 
 /// Binds each subscribed track and measures each verified device's audio. The room's end on its own (its
 /// `Disconnected`, or its events stopping) is said on `ended`.
+/// The playout gain group of a device's voice (`stream` false) or of its screen share's sound.
+pub fn gain_group(device: &str, stream: bool) -> String {
+    format!("{device}:{}", if stream { "stream" } else { "voice" })
+}
+
 async fn remote_tracks(
     mut events: mpsc::UnboundedReceiver<RoomEvent>,
     media: Arc<CallMedia>,
@@ -1177,6 +1211,9 @@ async fn remote_tracks(
                 }
                 if let RemoteTrack::Audio(t) = track {
                     let key = format!("{}:{}", hex(&device), publication.sid().as_str());
+                    if let Some(p) = &playout {
+                        p.group(&key, &gain_group(&hex(&device), slot == Slot::ScreenAudio));
+                    }
                     let reader = tokio::spawn(read_audio(
                         t.rtc_track(),
                         (hex(&device), key.clone()),

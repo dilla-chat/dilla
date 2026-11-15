@@ -12,13 +12,17 @@
 //! The device stream lives on the worker thread (cpal's streams are not `Send` everywhere). When
 //! the output device goes away the worker moves to the system default and sends
 //! [`MediaEvent::DevicesChanged`], or [`MediaEvent::SpeakerLost`] when there is none.
+//!
+//! A call's speaker ([`Speaker::open_waiting`]) never fails for want of a device: with none (a
+//! machine with no output, or one that lost its last), it plays nowhere as beta.5's call did, keeps
+//! every source drained so nothing queues up, and opens the system default as soon as one appears.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -38,6 +42,8 @@ const SLOTS: usize = 16;
 const CHUNK: usize = 1024;
 /// How often the worker moves the render reference into the APM and reads the stream's latency.
 const TICK: Duration = Duration::from_millis(5);
+/// How often a speaker with no device tries the system default again.
+const RETRY: Duration = Duration::from_secs(1);
 
 struct Slot {
     ring: Ring,
@@ -46,7 +52,12 @@ struct Slot {
     /// handed to a new source only once this is false again, so a new source's first samples are
     /// never emptied with the old one's (the clear-versus-first-push race).
     clear: AtomicBool,
+    /// The source's gain (f32 bits): its person's volume, 1.0 by default.
+    gain: AtomicU32,
 }
+
+/// The most a source is amplified: 200 % of the person's volume times 200 % of the output volume.
+pub const MAX_GAIN: f32 = 4.0;
 
 struct Pool {
     slots: Vec<Slot>,
@@ -61,6 +72,21 @@ struct Keys {
     slots: HashMap<String, usize>,
     /// The sources refused for want of a slot: each is warned about once, not per frame.
     refused: std::collections::HashSet<String>,
+    /// Each source's gain group ([`PlayoutSink::group`]): a person's voice, or their stream's sound.
+    /// Kept after the source ends (a resubscribed track keeps its key; a call has few).
+    groups: HashMap<String, String>,
+    /// Each gain group's gain ([`PlayoutSink::set_gain`]); a group without one plays at 1.0.
+    gains: HashMap<String, f32>,
+}
+
+impl Keys {
+    fn gain_of(&self, source: &str) -> f32 {
+        self.groups
+            .get(source)
+            .and_then(|g| self.gains.get(g))
+            .copied()
+            .unwrap_or(1.0)
+    }
 }
 
 /// Where decoded remote audio goes. Cheap to clone; every clone feeds the same speaker.
@@ -78,6 +104,7 @@ impl Default for PlayoutSink {
                         ring: Ring::new(2 * MAX_QUEUED),
                         active: AtomicBool::new(false),
                         clear: AtomicBool::new(false),
+                        gain: AtomicU32::new(1.0f32.to_bits()),
                     })
                     .collect(),
                 keys: Mutex::new(Keys::default()),
@@ -107,6 +134,10 @@ impl PlayoutSink {
                     return;
                 };
                 keys.refused.remove(source);
+                let gain = keys.gain_of(source);
+                self.pool.slots[i]
+                    .gain
+                    .store(gain.to_bits(), Ordering::Release);
                 self.pool.slots[i].active.store(true, Ordering::Release);
                 keys.slots.insert(source.to_owned(), i);
                 i
@@ -124,6 +155,42 @@ impl PlayoutSink {
             let slot = &self.pool.slots[i];
             slot.active.store(false, Ordering::Release);
             slot.clear.store(true, Ordering::Release);
+        }
+    }
+
+    /// Puts `source` in the gain group `group` (a person's voice or their stream's sound, any stable
+    /// key): it plays at that group's gain from now on.
+    pub fn group(&self, source: &str, group: &str) {
+        let mut keys = self.pool.keys.lock().unwrap_or_else(|p| p.into_inner());
+        keys.groups.insert(source.to_owned(), group.to_owned());
+        let gain = keys.gain_of(source);
+        if let Some(i) = keys.slots.get(source) {
+            self.pool.slots[*i]
+                .gain
+                .store(gain.to_bits(), Ordering::Release);
+        }
+    }
+
+    /// Plays every source of `group` at `gain` (0 is silence, 1 as received, at most [`MAX_GAIN`]):
+    /// the per-person volume (call/volume.ts `gainOf`).
+    pub fn set_gain(&self, group: &str, gain: f32) {
+        let gain = if gain.is_finite() {
+            gain.clamp(0.0, MAX_GAIN)
+        } else {
+            1.0
+        };
+        let mut keys = self.pool.keys.lock().unwrap_or_else(|p| p.into_inner());
+        if gain == 1.0 {
+            keys.gains.remove(group);
+        } else {
+            keys.gains.insert(group.to_owned(), gain);
+        }
+        for (source, i) in &keys.slots {
+            if keys.groups.get(source).is_some_and(|g| g == group) {
+                self.pool.slots[*i]
+                    .gain
+                    .store(gain.to_bits(), Ordering::Release);
+            }
         }
     }
 
@@ -163,8 +230,15 @@ impl PlayoutSink {
                     slot.ring.skip(excess);
                 }
                 let n = slot.ring.pop(&mut tmp[..part.len()]);
-                for (a, s) in acc.iter_mut().zip(&tmp[..n]) {
-                    *a += i32::from(*s);
+                let gain = f32::from_bits(slot.gain.load(Ordering::Acquire));
+                if gain == 1.0 {
+                    for (a, s) in acc.iter_mut().zip(&tmp[..n]) {
+                        *a += i32::from(*s);
+                    }
+                } else {
+                    for (a, s) in acc.iter_mut().zip(&tmp[..n]) {
+                        *a += (f32::from(*s) * gain) as i32;
+                    }
                 }
             }
             if self.pool.deafened.load(Ordering::Acquire) {
@@ -187,6 +261,7 @@ pub struct Speaker {
     sink: PlayoutSink,
     ctl: mpsc::Sender<Ctl>,
     worker: Option<JoinHandle<()>>,
+    playing: Arc<AtomicBool>,
 }
 
 struct Worker {
@@ -199,6 +274,11 @@ struct Worker {
     stream: Option<Box<dyn Running>>,
     /// What the callback rendered, waiting to become the APM's echo reference.
     reference: Arc<Ring>,
+    /// A device stream is open.
+    playing: Arc<AtomicBool>,
+    /// With no stream: when the system default was last tried, and whether its return is said
+    /// ([`MediaEvent::DevicesChanged`], after a loss that said [`MediaEvent::SpeakerLost`]).
+    retry: Option<(Instant, bool)>,
 }
 
 impl Worker {
@@ -218,8 +298,32 @@ impl Worker {
         let on_lost = Box::new(move || {
             let _ = ctl.send(Ctl::Lost(generation));
         });
-        self.stream = Some(self.host.open_output(device, source, on_lost)?);
+        let opened = self.host.open_output(device, source, on_lost);
+        self.playing.store(opened.is_ok(), Ordering::Release);
+        self.stream = Some(opened?);
         Ok(())
+    }
+
+    /// With no device: the sources are drained as a device would (nothing queues up, nothing is
+    /// played), and the system default is tried again every [`RETRY`].
+    fn wait_for_device(&mut self, scratch: &mut [i16]) {
+        let Some((tried, announce)) = self.retry else {
+            return;
+        };
+        self.sink.mix(scratch);
+        if tried.elapsed() < RETRY {
+            return;
+        }
+        match self.open(None) {
+            Ok(()) => {
+                log::info!("dilla-media: an output device appeared: playing again");
+                self.retry = None;
+                if announce {
+                    self.send(MediaEvent::DevicesChanged);
+                }
+            }
+            Err(_) => self.retry = Some((Instant::now(), announce)),
+        }
     }
 
     fn send(&self, e: MediaEvent) {
@@ -241,14 +345,22 @@ impl Worker {
         }
     }
 
-    fn run(mut self, rx: mpsc::Receiver<Ctl>) {
+    fn run(mut self, rx: mpsc::Receiver<Ctl>, waits: bool) {
         let mut frame = [0i16; FRAME_SAMPLES];
+        // One tick of samples at the device rate.
+        let mut scratch = [0i16; (RATE as usize * TICK.as_millis() as usize) / 1000];
         loop {
             match rx.recv_timeout(TICK) {
                 Ok(Ctl::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Ok(Ctl::Switch(device, reply)) => {
-                    let _ = reply.send(self.open(device.as_ref()));
+                    let opened = self.open(device.as_ref());
+                    if opened.is_ok() {
+                        self.retry = None;
+                    } else if waits && self.retry.is_none() {
+                        self.retry = Some((Instant::now(), false));
+                    }
+                    let _ = reply.send(opened);
                 }
                 Ok(Ctl::Lost(g)) if g == self.generation => {
                     // The device is gone: the system default takes over.
@@ -257,11 +369,15 @@ impl Worker {
                         Err(e) => {
                             log::warn!("dilla-media: no speaker after a device loss: {e}");
                             self.send(MediaEvent::SpeakerLost);
+                            if waits {
+                                self.retry = Some((Instant::now(), true));
+                            }
                         }
                     }
                 }
                 Ok(Ctl::Lost(_)) => {}
             }
+            self.wait_for_device(&mut scratch);
             self.feed_reference(&mut frame);
         }
     }
@@ -280,7 +396,32 @@ impl Speaker {
         events: Option<UnboundedSender<MediaEvent>>,
         device: Option<DeviceId>,
     ) -> Result<Speaker, MediaError> {
+        Self::start(host, apm, events, device, false)
+    }
+
+    /// As [`open_with`](Speaker::open_with) for a call: no output device (none at all, or none
+    /// left after a loss) is not a failure. The speaker then plays nowhere, as beta.5's call did,
+    /// with no echo reference, and opens the system default once one appears; until then
+    /// [`is_playing`](Speaker::is_playing) is false. Fails only when its thread cannot start.
+    pub fn open_waiting(
+        host: Arc<dyn AudioHost>,
+        apm: Apm,
+        events: Option<UnboundedSender<MediaEvent>>,
+        device: Option<DeviceId>,
+    ) -> Result<Speaker, MediaError> {
+        Self::start(host, apm, events, device, true)
+    }
+
+    fn start(
+        host: Arc<dyn AudioHost>,
+        apm: Apm,
+        events: Option<UnboundedSender<MediaEvent>>,
+        device: Option<DeviceId>,
+        waits: bool,
+    ) -> Result<Speaker, MediaError> {
         let sink = PlayoutSink::default();
+        let playing = Arc::new(AtomicBool::new(false));
+        let worker_playing = playing.clone();
         let (ctl, rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker_sink = sink.clone();
@@ -298,12 +439,21 @@ impl Speaker {
                     generation: 0,
                     stream: None,
                     reference: Arc::new(Ring::new(2)),
+                    playing: worker_playing,
+                    retry: None,
                 };
-                let opened = worker.open(device.as_ref());
+                let opened = match worker.open(device.as_ref()) {
+                    Err(e) if waits => {
+                        log::warn!("dilla-media: no output device ({e}): playing nowhere");
+                        worker.retry = Some((Instant::now(), false));
+                        Ok(())
+                    }
+                    other => other,
+                };
                 let failed = opened.is_err();
                 let _ = ready_tx.send(opened);
                 if !failed {
-                    worker.run(rx);
+                    worker.run(rx, waits);
                 }
             })
             .map_err(|e| MediaError::Audio(e.to_string()))?;
@@ -314,7 +464,13 @@ impl Speaker {
             sink,
             ctl,
             worker: Some(handle),
+            playing,
         })
+    }
+
+    /// An output device is open (false while a waiting speaker has none).
+    pub fn is_playing(&self) -> bool {
+        self.playing.load(Ordering::Acquire)
     }
 
     /// Where remote audio is pushed.

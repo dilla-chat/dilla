@@ -1436,6 +1436,15 @@ impl Render for ShellView {
             }),
             cx,
         );
+        // The person menu's Move to opens the room it moved to (Shell.tsx `openVoice`).
+        let open = shell.clone();
+        crate::screens::voice::set_open_voice(
+            self.window_id,
+            Rc::new(move |id, cx| {
+                let _ = open.update(cx, |shell, cx| shell.select(id, cx));
+            }),
+            cx,
+        );
         let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
         // A DM: the call's notice strip under the header while this device is not in its call. Its call is in the DM row's
         // menu (Ruling Z), not in the header.

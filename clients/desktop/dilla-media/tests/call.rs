@@ -714,3 +714,75 @@ async fn a_new_device_uses_play_within_its_first_session() {
     drop(device);
     let _ = std::fs::remove_dir_all(data);
 }
+
+/// An audio host with no device at all (a server, a VM, a machine whose sound is off).
+struct NoAudio;
+
+impl dilla_media::devices::AudioHost for NoAudio {
+    fn list(&self) -> dilla_media::devices::DeviceList {
+        dilla_media::devices::DeviceList::default()
+    }
+
+    fn open_input(
+        &self,
+        _: Option<&dilla_media::devices::DeviceId>,
+        _: dilla_media::devices::InputSink,
+        _: dilla_media::devices::OnLost,
+    ) -> Result<Box<dyn dilla_media::devices::Running>, dilla_media::MediaError> {
+        Err(dilla_media::MediaError::Audio("no microphone".into()))
+    }
+
+    fn open_output(
+        &self,
+        _: Option<&dilla_media::devices::DeviceId>,
+        _: dilla_media::devices::OutputSource,
+        _: dilla_media::devices::OnLost,
+    ) -> Result<Box<dyn dilla_media::devices::Running>, dilla_media::MediaError> {
+        Err(dilla_media::MediaError::Audio("no speaker".into()))
+    }
+}
+
+/// Package 8a (beta.5 joined with no output device and played nowhere): a join that plays the call, on a machine with
+/// no output device, is not failed by the speaker. It goes on to the room (here one that is not there, so the join ends
+/// with the room's error, not an audio one: the desktop would otherwise report the media as failed and leave).
+#[test]
+fn a_join_without_an_output_device_gets_past_the_speaker() {
+    let _s = serial();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let feed = EpochFeed::new();
+    feed.publish(MediaEpoch {
+        epoch: 1,
+        base_key: zeroize::Zeroizing::new([7; 16]),
+        roster: vec![(0, [1; 16])],
+        own_leaf: 0,
+    });
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let joined = rt.block_on(dilla_media::Call::join_on(
+        dilla_media::LiveKitToken {
+            url: format!("ws://127.0.0.1:{port}"),
+            token: zeroize::Zeroizing::new("t".into()),
+            ice_servers: Vec::new(),
+        },
+        feed as std::sync::Arc<dyn EpochKeys>,
+        dilla_media::CallOptions {
+            mic: dilla_media::Mic::None,
+            playout: true,
+            key_timeout: std::time::Duration::from_secs(5),
+            ..dilla_media::CallOptions::default()
+        },
+        std::sync::Arc::new(NoAudio),
+    ));
+    match joined {
+        Err(dilla_media::MediaError::Room(_)) => {}
+        Err(e) => panic!("the join failed before the room: {e}"),
+        Ok(_) => panic!("there is no room at that port"),
+    }
+}
