@@ -3120,6 +3120,22 @@ impl Window {
         self.rendered_frame.scene.scale_factor
     }
 
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the fifth change): turns this window's accessibility tree on
+    /// as a screen reader connecting would (the test platform's window has no AccessKit adapter to do it), so the next
+    /// frame builds a tree that [`Self::a11y_tree_update`] reads back.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn activate_a11y_for_test(&mut self) {
+        self.a11y.activate_for_test();
+        self.refresh();
+    }
+
+    /// DILLA PATCH (the fifth change): the accessibility tree the most recent frame built (every node: GPUI sends the
+    /// whole tree each frame), or `None` before a frame with accessibility active.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn a11y_tree_update(&self) -> Option<accesskit::TreeUpdate> {
+        self.a11y.last_tree_update()
+    }
+
     /// Returns the underlines in the most recently rendered frame's scene.
     #[cfg(any(test, feature = "test-support"))]
     pub fn painted_underlines(&self) -> Vec<Underline> {

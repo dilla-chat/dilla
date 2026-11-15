@@ -310,3 +310,12 @@ A fourth change (final review I7, 2026-11-14), marked `DILLA PATCH`: `Scene` gai
 `Window::painted_scale_factor` (test support) reads it back. The wgpu renderer (gpui-pre-wgpu, above) hands it to its
 shader to measure dashed borders in CSS px; the Metal and DirectX renderers ignore it. Test:
 `the_scene_carries_the_scale_it_was_painted_at` in `clients/desktop/dilla-desktop/tests/vendored_patches.rs`.
+
+A fifth change (Package 11, screen readers, 2026-11-15), marked `DILLA PATCH`, test support only: the test platform's
+window has no AccessKit adapter, so nothing ever switches its accessibility tree on and no test could see one.
+`Window::activate_a11y_for_test` does what a platform adapter's activation callback does (`A11y::activate_for_test` sets
+the window's active flag) and refreshes; `Window::a11y_tree_update` hands back the last frame's `TreeUpdate`
+(`A11y::last_tree_update`, from the copy `A11yDebug` already keeps for `debug_a11y_tree_json`). Both are
+`#[cfg(any(test, feature = "test-support"))]` (`src/window.rs`, `src/window/a11y.rs`, `src/window/a11y/debug.rs`), so a
+release build has neither. The automation build's `a11y` command reads the tree through them and
+`clients/desktop/dilla-desktop/tests/a11y.rs` lints it per screen. Keep it until upstream's test window can be activated.

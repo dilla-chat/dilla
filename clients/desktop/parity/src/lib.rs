@@ -3,6 +3,7 @@
 //! round: a fixture JSON both shooters read, the GPUI side drawn from it, the R13 text mask from the app's own text
 //! bounds, the committed tolerance.
 
+pub mod a11y;
 mod diff;
 mod driver;
 pub mod fixture;

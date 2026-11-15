@@ -350,6 +350,40 @@ impl Driver {
         self.expect_ok(&format!("key {key}"));
     }
 
+    /// The window's accessibility tree, as a screen reader gets it ([`crate::a11y`]). The first call switches
+    /// accessibility on, as an assistive technology connecting does.
+    pub fn a11y_tree(&mut self) -> crate::a11y::Tree {
+        let reply = self.request("a11y");
+        let json = reply
+            .strip_prefix("ok ")
+            .unwrap_or_else(|| panic!("`a11y` failed: {reply}"));
+        crate::a11y::Tree::parse(json).unwrap_or_else(|e| panic!("`a11y` sent bad JSON: {e}"))
+    }
+
+    /// Walks the tab order from where the focus is: presses Tab up to `max` times and returns, at each stop, the
+    /// automation id of the focused element (`focused`) and the tree, until the focus comes back to the first stop.
+    pub fn tab_walk(&mut self, max: usize) -> Vec<(Option<String>, crate::a11y::Tree)> {
+        let mut stops = Vec::new();
+        let mut first = None;
+        for _ in 0..max {
+            self.press("tab");
+            let id = self.focused();
+            let tree = self.a11y_tree();
+            // A stop is known by its node and its automation id. One with neither (no node, an unregistered element)
+            // could be any of several, so it is kept (the lint flags it) but never starts or ends the walk.
+            let key = (tree.focus, id.clone());
+            let ambiguous = Some(tree.focus) == tree.root && id.as_deref().is_none_or(|i| i == "-");
+            if !ambiguous && first.as_ref() == Some(&key) {
+                break;
+            }
+            if first.is_none() && !ambiguous {
+                first = Some(key);
+            }
+            stops.push((id, tree));
+        }
+        stops
+    }
+
     /// The line boxes of every text line on screen, in logical pixels: the input of the chrome gate's text mask
     /// ([`crate::TextMask::from_rects`] after scaling to device pixels).
     pub fn text_bounds(&mut self) -> Vec<ElementInfo> {
