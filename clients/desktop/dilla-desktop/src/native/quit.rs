@@ -269,6 +269,33 @@ fn ask(request: QuitRequest, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// The automation interface's `quit-dialog <state>` (the dialog's golden shots): asks to quit, through the real
+/// guards and prompt, with one guard in `state` (`active-call`, `unsent-draft`, `not-responding`). A dialog already open
+/// is dismissed first (as Stay) and earlier shots' guards are dropped.
+#[cfg(feature = "automation")]
+pub fn show_state(state: &str, cx: &mut App) -> Result<Dialog, String> {
+    let guard = match state {
+        "active-call" => GuardState {
+            active_call: true,
+            ..GuardState::IDLE
+        },
+        "unsent-draft" => GuardState {
+            unsaved_draft: true,
+            ..GuardState::IDLE
+        },
+        "not-responding" => GuardState::UNANSWERED,
+        other => return Err(format!("unknown quit state `{other}`")),
+    };
+    answer(QuitAnswer::Stay, cx);
+    cx.set_global(NativeShell::default());
+    NativeShell::set_quit_prompt(Box::new(ask), cx);
+    NativeShell::add_quit_guard(InstanceId(0), Box::new(move |_| guard), cx);
+    NativeShell::request_quit(cx);
+    showing(cx)
+        .map(|(_, d)| d)
+        .ok_or_else(|| "no window carries the quit dialog".to_owned())
+}
+
 /// The quit dialog showing now, if any.
 pub fn showing(cx: &App) -> Option<(WindowId, Dialog)> {
     cx.try_global::<Asking>().map(|a| (a.window, a.dialog))

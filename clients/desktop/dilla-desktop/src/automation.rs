@@ -25,6 +25,9 @@
 //!                                                                the first call switches accessibility on, as a reader does)
 //! log                     -> ok [<entry>[;<entry>]...]          (the harness view's received events; see `--harness`)
 //! screenshot <path>       -> ok <width> <height>                (PNG of the rendered frame, device pixels)
+//! quit-dialog <state>     -> ok <dialog> | err <why>            (asks to quit with one guard in `active-call`,
+//!                                                                `unsent-draft` or `not-responding`: the quit dialog
+//!                                                                over the screen, `native::quit::show_state`)
 //! quit                    -> ok, then the process exits
 //! ```
 //!
@@ -847,6 +850,16 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
             Some(frames) => format!("ok {frames}"),
             None => "err not idle".to_owned(),
         },
+        (Some("quit-dialog"), Some(state), None) => {
+            let shown = session
+                .cx
+                .update(|cx| crate::native::quit::show_state(state, cx));
+            session.frame();
+            match shown {
+                Ok(dialog) => format!("ok {dialog:?}"),
+                Err(why) => format!("err {why}"),
+            }
+        }
         (Some("rest"), None, None) => {
             session.rest();
             "ok".to_owned()

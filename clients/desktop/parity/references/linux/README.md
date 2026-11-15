@@ -16,6 +16,21 @@ per-fixture setting. The two shell sidecars carry `"hand_migrated": true`: they 
 Chromium 156.0.8078.4, the web client of `feat/gpui-desktop` with Tasks 9b and 11 merged), which predate the screen
 fixtures; shoot them again with `shoot.mjs` to make them pairs of the shooter.
 
+## GPUI-only references (`native/`)
+
+A surface the web client never had has no web frame to compare with. Its reference is the app's own frame, made once
+by the test that checks it and looked at by eye against the Signal design (the component it is built from) before it is
+committed; afterwards the test compares every run with it under `../../tolerance.toml`, as for a web reference.
+
+| Reference | What | Test |
+| --- | --- | --- |
+| `native/quit-active-call` | "Quit Dilla?" over the channel view (`quit-dialog active-call`) | `dilla-desktop::tests/quit::parity_quit_dialog_active_call` |
+| `native/quit-unsent-draft` | the same question for unsent text (`quit-dialog unsent-draft`) | `dilla-desktop::tests/quit::parity_quit_dialog_unsent_draft` |
+| `native/quit-not-responding` | "Dilla is not responding" (`quit-dialog not-responding`) | `dilla-desktop::tests/quit::parity_quit_dialog_not_responding` |
+
+Remake them after a deliberate change with `DILLA_PARITY_BLESS=1 cargo test -p dilla-desktop --test quit parity_`, and
+look at them again before committing.
+
 ## How they are made
 
 `node clients/desktop/parity/shoot.mjs clients/desktop/parity/fixtures/<area>/<state>.json` (from the repository root,
