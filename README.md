@@ -125,7 +125,8 @@ As of 2026-10-22, in the web client:
 
 For the native desktop preview:
 
-- Starting a camera or screen share (a call can show other people's), the screen-capture picker and per-application audio.
+- The screen-capture picker (Share sends the first screen, or the Wayland portal's choice), the camera on macOS, and
+  per-application audio.
 - Tray, close to tray and badge count, `dilla://invite` links, a second launch handing over to the running app,
   autostart, and operating-system notifications (also for a ring, with Answer and Decline).
 - The updater, installers and packages (DMG, Windows installer, AppImage, deb, rpm, AUR). Build it from source.

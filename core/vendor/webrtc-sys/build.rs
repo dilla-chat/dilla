@@ -63,6 +63,11 @@ fn main() {
     if is_desktop {
         rust_files.push("src/desktop_capturer.rs");
     }
+    // DILLA PATCH: the desktop client's camera (libwebrtc's VideoCaptureModule: V4L2, DirectShow).
+    let dilla_camera = target_os == "linux" || target_os == "windows";
+    if dilla_camera {
+        rust_files.push("src/dilla_camera.rs");
+    }
     // DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.
     let dilla_test_frames = env::var("CARGO_FEATURE_DILLA_TEST_FRAMES").is_ok();
     if dilla_test_frames {
@@ -112,6 +117,9 @@ fn main() {
 
     if is_desktop {
         builder.file("src/desktop_capturer.cpp");
+    }
+    if dilla_camera {
+        builder.file("src/dilla_camera.cpp");
     }
     if dilla_test_frames {
         builder.file("src/dilla_transform_testing.cpp");

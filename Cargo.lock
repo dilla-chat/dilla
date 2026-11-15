@@ -2212,6 +2212,7 @@ name = "dilla-media"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "cxx",
  "deep-filter-rt",
  "dilla-client",
  "dilla-core",

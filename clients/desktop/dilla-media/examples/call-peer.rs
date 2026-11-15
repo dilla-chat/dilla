@@ -17,6 +17,13 @@
 //!                                             the call's audio as a whole turning audible or quiet (any verified
 //!                                             stream audible), and each stream's own changes
 //!                                             ({"device","stream","t","audible"}), t in Unix ms
+//!   share camera|screen|window [frames]      publishes the test pattern in that slot (a window is a screen-slot source,
+//!                                             video only); with frames it ends after that many (the source closing)
+//!   unshare camera|screen
+//!   quality <720p|1080p|1440p|source> <fps>   the running screen share's new stream quality (the same source)
+//!   ended                                     prints {"event":"shares_ended","kinds":[...]}: the shares whose source ended
+//!   sent                                      prints {"event":"sent","video":[[mime,bytes],...]}: the outbound video
+//!   videos                                    prints each verified remote video stream
 //!   quit
 //! stdout: one JSON object per line ({"event": ...}); {"event":"ended","code":...} once the room ends on its own.
 
@@ -211,6 +218,7 @@ async fn main() {
         });
     }
 
+    let mut shares_ended = call.shares_ended();
     while let Some(line) = lines.recv().await {
         let parts: Vec<&str> = line.split_whitespace().collect();
         match parts.as_slice() {
@@ -226,19 +234,47 @@ async fn main() {
                     .map(|e| e.to_string());
                 emit(json!({"event": "mic", "error": error}));
             }
-            ["share", kind] => {
+            ["share", kind, rest @ ..] => {
                 let kind = if *kind == "camera" {
                     dilla_media::ShareKind::Camera
                 } else {
                     dilla_media::ShareKind::Screen
                 };
-                let source = dilla_media::TestPattern::new(kind, 320, 180, 15);
+                let mut source = dilla_media::TestPattern::new(kind, 320, 180, 15);
+                if let Some(frames) = rest.first().and_then(|f| f.parse().ok()) {
+                    source = source.ending_after(frames);
+                }
                 let error = call
                     .publish_video(Box::new(source))
                     .await
                     .err()
                     .map(|e| e.to_string());
                 emit(json!({"event": "share", "error": error}));
+            }
+            ["quality", resolution, fps] => {
+                let options = dilla_media::ShareOptions {
+                    resolution: dilla_media::ShareResolution::from_name(resolution)
+                        .unwrap_or_default(),
+                    fps: fps.parse().unwrap_or(30),
+                };
+                let error = call
+                    .configure_video(dilla_media::ShareKind::Screen, options)
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+                emit(json!({"event": "quality", "error": error}));
+            }
+            ["ended"] => {
+                let mut kinds = Vec::new();
+                if let Some(rx) = shares_ended.as_mut() {
+                    while let Ok(kind) = rx.try_recv() {
+                        kinds.push(format!("{kind:?}"));
+                    }
+                }
+                emit(json!({"event": "shares_ended", "kinds": kinds}));
+            }
+            ["sent"] => {
+                emit(json!({"event": "sent", "video": call.sent_video().await}));
             }
             ["unshare", kind] => {
                 let kind = if *kind == "camera" {

@@ -235,6 +235,12 @@ pub struct VoiceAreas {
 
 impl Global for VoiceAreas {}
 
+/// Where this app's share sources come from, when not the real ones ([`session::default_sources`]): the tests' recording
+/// sources. Read when a window's media session starts.
+pub struct ShareSources(pub session::SourceFactory);
+
+impl Global for ShareSources {}
+
 /// How many repaint loops run (one per window with a live call).
 pub fn repaint_loops(cx: &App) -> usize {
     cx.try_global::<VoiceAreas>().map_or(0, |a| a.loops)
@@ -547,7 +553,10 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     };
     if fresh_client && let Some(client) = client {
         client.voice().start();
-        let session = MediaSession::start(client, session::default_sources())
+        let sources = cx
+            .try_global::<ShareSources>()
+            .map_or_else(session::default_sources, |s| s.0.clone());
+        let session = MediaSession::start(client, sources)
             .map(Rc::new)
             .map_err(|e| log::warn!("voice: no media session: {e}"))
             .ok();

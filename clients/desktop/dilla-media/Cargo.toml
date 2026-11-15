@@ -17,6 +17,8 @@ livekit = "=0.10.1"
 # The dilla-sframe/1 hook (core/vendor/webrtc-sys, patched in the root Cargo.toml): the same crate
 # livekit links, used directly for `dilla_transform`.
 webrtc-sys = "=0.3.53"
+# The camera bridge's handle (core/vendor/webrtc-sys `dilla_camera`, parity plan Package 1): the cxx webrtc-sys links.
+cxx = "=1.0.205"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }

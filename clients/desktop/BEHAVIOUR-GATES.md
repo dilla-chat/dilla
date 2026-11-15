@@ -9,7 +9,7 @@ Every test title of `e2e/media` (read live) and of the retired `e2e/web`, `e2e/v
 
 `scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of `e2e/media` and the frozen titles file and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
-Totals: 233 e2e tests; 169 with a Rust test, 42 n/a (browser/phone only), 22 next plan (native), 0 TODO only (0 TODO tests proposed in all).
+Totals: 233 e2e tests; 177 with a Rust test, 42 n/a (browser/phone only), 14 next plan (native), 0 TODO only (0 TODO tests proposed in all).
 
 ## e2e/web
 
@@ -208,8 +208,8 @@ same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
 | `e2e/media/cross-sdk.spec.ts` | the Go peer and Chromium decrypt each other (SP-15 cross-SDK) | dilla-media::tests/call::rust_to_web_audio; dilla-media::tests/call::web_to_rust_audio |
 | `e2e/media/e2ee-call.spec.ts` | three contexts decrypt per KID; a join and a leave move every receiver to the new KID | dilla-media::tests/live::desktop_to_desktop_through_the_sfu_with_client_core_keys_and_an_epoch_change; dilla-media::tests/call::epoch_change_mid_stream |
 | `e2e/media/fail-closed.spec.ts` | control: a dilla sender and receiver carry video, and the path is the expected one | dilla-media::tests/live::desktop_to_desktop_through_the_sfu_with_client_core_keys_and_an_epoch_change |
-| `e2e/media/fail-closed.spec.ts` | a sender labelled with a server-forced codec (AV1) still attaches and encrypts what it sends | next plan (native): video send path and codec policy arrive with capture |
-| `e2e/media/fail-closed.spec.ts` | a sender whose frames have no prefix rule (AV1) sends 0 media bytes | next plan (native): video send path and codec policy arrive with capture |
+| `e2e/media/fail-closed.spec.ts` | a sender labelled with a server-forced codec (AV1) still attaches and encrypts what it sends | dilla-media::tests/call::a_forced_codec_sender_attaches_and_encrypts |
+| `e2e/media/fail-closed.spec.ts` | a sender whose frames have no prefix rule (AV1) sends 0 media bytes | dilla-media::tests/call::av1_without_prefix_rule_sends_nothing |
 | `e2e/media/fail-closed.spec.ts` | a sender with no slot (unknown source) is blocked: 0 media bytes, reported and unpublished | dilla-media::tests/glue::the_microphone_sender_is_bound_as_it_attaches_and_an_unbound_sender_sends_nothing |
 | `e2e/media/fail-closed.spec.ts` | control: a receiver without any transform renders a plaintext sender | n/a (browser/phone only): control case of the browser fail-closed harness |
 | `e2e/media/fail-closed.spec.ts` | a receiver whose transform cannot be attached at all renders 0 frames of that plaintext sender | dilla-media::tests/hook_enforced::the_glue_refuses_a_peer_connection_without_a_hook_and_any_content_bearing_pass |
@@ -225,7 +225,7 @@ same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
 | `e2e/media/real-sfu-guards.spec.ts` | audio stops at a failed worker and a dead sender refuses replaceTrack through the real SFU | dilla-media::src/room::an_audio_failure_after_sealing_is_not_retryable |
 | `e2e/media/real-sfu-guards.spec.ts` | a recorded pre-connect microphone is refused through the real SFU | dilla-media::tests/glue::the_microphone_sender_is_bound_as_it_attaches_and_an_unbound_sender_sends_nothing |
 | `e2e/media/sender-binding.spec.ts` | valid ciphertext under another member’s track identity is never rendered | dilla-media::tests/glue::a_receiver_is_bound_by_its_handle_never_by_its_track_id_and_only_once |
-| `e2e/media/unsupported-sfu-codec.spec.ts` | the real SFU offers AV1 but the client negotiates and sends VP8 | next plan (native): video codec negotiation arrives with the video send path |
+| `e2e/media/unsupported-sfu-codec.spec.ts` | the real SFU offers AV1 but the client negotiates and sends VP8 | dilla-media::tests/live::sfu_offers_av1_client_sends_vp8 |
 
 ## packages/desktop/test/electron (Electron shell)
 
@@ -250,11 +250,11 @@ same bounds; the gates are not loosened by more than that (w2-bot-review M-C2).
 | `packages/desktop/test/electron/permissions.spec.ts` | an unfamiliar native invite is refused before connecting or persisting its host | dilla-desktop::tests/onboarding::an_invite_link_is_confirmed_before_anything_is_stored_or_sent |
 | `packages/desktop/test/electron/picker.spec.ts` | Connect closes the picker: exactly one window, the instance | dilla-desktop::tests/instances::manager_lists_and_connects_by_url_and_invite |
 | `packages/desktop/test/electron/picker.spec.ts` | cancelling the confirmation keeps the picker | dilla-desktop::tests/instances::remove_needs_a_confirmation |
-| `packages/desktop/test/electron/screen-capture.spec.ts` | a selected native application window stays video-only and encrypted through the real media worker | next plan (native): screen and window capture |
-| `packages/desktop/test/electron/screen-capture.spec.ts` | an unbound native screen source is blocked while its real input remains live | next plan (native): screen and window capture |
-| `packages/desktop/test/electron/screen-capture.spec.ts` | a foreign instance cannot stop or reconfigure the capture and stopping its track destroys the broker | next plan (native): screen and window capture |
-| `packages/desktop/test/electron/screen-capture.spec.ts` | owner navigation releases its native broker | next plan (native): screen and window capture |
-| `packages/desktop/test/electron/screen-capture.spec.ts` | closing the selected source ends its consumer track and destroys the broker | next plan (native): screen and window capture |
+| `packages/desktop/test/electron/screen-capture.spec.ts` | a selected native application window stays video-only and encrypted through the real media worker | dilla-media::tests/capture::a_window_source_is_video_only_and_encrypted |
+| `packages/desktop/test/electron/screen-capture.spec.ts` | an unbound native screen source is blocked while its real input remains live | dilla-media::tests/capture::an_unbound_screen_source_sends_nothing |
+| `packages/desktop/test/electron/screen-capture.spec.ts` | a foreign instance cannot stop or reconfigure the capture and stopping its track destroys the broker | dilla-desktop::tests/share::another_instance_cannot_stop_or_reconfigure_a_capture |
+| `packages/desktop/test/electron/screen-capture.spec.ts` | owner navigation releases its native broker | dilla-desktop::tests/share::closing_the_owner_window_stops_its_capture |
+| `packages/desktop/test/electron/screen-capture.spec.ts` | closing the selected source ends its consumer track and destroys the broker | dilla-media::tests/capture::a_closed_source_ends_the_track |
 | `packages/desktop/test/electron/shell.spec.ts` | runs the installed React client in an isolated sandbox without executing server HTML | n/a (browser/phone only): the Electron renderer sandbox, the native app has no web renderer |
 | `packages/desktop/test/electron/shell.spec.ts` | focused copy writes text to the system clipboard while clipboard reads and hidden writes stay denied | dilla-desktop::tests/diagnostics::copy_writes_to_the_system_clipboard_only_from_a_focused_action |
 | `packages/desktop/test/electron/shell.spec.ts` | protected reload needs an explicit native confirmation and cancelling retains the document | n/a (browser/phone only): the web client reload, the native app has no document to reload |

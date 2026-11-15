@@ -48,7 +48,7 @@ use zeroize::Zeroizing;
 
 use crate::apm::{Apm, ApmFlags};
 use crate::capture::{self, CaptureConfig};
-use crate::capture_source::{CaptureSource, ShareKind, ShareOptions};
+use crate::capture_source::{CaptureSource, Frame, PixelFormat, Pull, ShareKind, ShareOptions};
 use crate::devices::{self, AudioHost, DeviceId};
 use crate::noise::{FRAME_SAMPLES, NoiseMode, NoiseProcessor, RATE, embedded_model};
 use crate::playout::{PlayoutSink, Speaker};
@@ -407,11 +407,158 @@ pub fn rtt_ms_of(report: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
     )
 }
 
+/// A share's source, kept apart from its feeder so a new stream quality republishes the same source.
+type SharedSource = Arc<Mutex<Option<Box<dyn CaptureSource>>>>;
+
+/// The call's local shares, by kind: shared with their feeders, so a source that ends takes its own share away.
+type Shares = Arc<Mutex<HashMap<ShareKind, LocalShare>>>;
+
+/// What a feeder does when its source ends: unpublishes its track (a viewer's tile goes), takes its share out of the
+/// call (unless a newer share of the kind replaced it) and tells the call's owner.
+struct EndOfShare {
+    participant: LocalParticipant,
+    shares: Shares,
+    sid: TrackSid,
+    ended: mpsc::UnboundedSender<ShareKind>,
+}
+
+impl EndOfShare {
+    async fn end(self, kind: ShareKind) {
+        {
+            let mut shares = self.shares.lock().unwrap_or_else(|p| p.into_inner());
+            if shares.get(&kind).is_some_and(|s| s.sid == self.sid) {
+                shares.remove(&kind);
+            }
+        }
+        if let Err(e) = self.participant.unpublish_track(&self.sid).await {
+            log::warn!("dilla-media: unpublish an ended share: {e}");
+        }
+        let _ = self.ended.send(kind);
+    }
+}
+
 /// A local share being published.
 struct LocalShare {
     sid: TrackSid,
     feeder: JoinHandle<()>,
     sent: Arc<std::sync::atomic::AtomicU64>,
+    source: SharedSource,
+}
+
+/// The size a `width` x `height` source is sent at under `bound` (`None`: as it is): scaled down to fit, keeping its
+/// aspect, never up; even sides (I420's chroma), at least 16 x 16.
+pub fn fit(width: u32, height: u32, bound: Option<(u32, u32)>) -> (u32, u32) {
+    let (w, h) = (width.max(1), height.max(1));
+    let scale = bound.map_or(1.0, |(bw, bh)| {
+        (f64::from(bw) / f64::from(w))
+            .min(f64::from(bh) / f64::from(h))
+            .min(1.0)
+    });
+    let side = |v: u32| ((f64::from(v) * scale).round() as u32).max(16) & !1;
+    (side(w), side(h))
+}
+
+/// Converts one captured frame to I420 at `size` (scaling it when the frame's own size differs); `None` for a frame
+/// whose bytes do not cover what it says.
+pub fn to_i420(frame: &Frame, size: (u32, u32)) -> Option<I420Buffer> {
+    if !frame.is_whole() {
+        return None;
+    }
+    let (w, h) = (frame.width, frame.height);
+    let mut i420 = I420Buffer::new(w, h);
+    let (sy, su, sv) = i420.strides();
+    let (y, u, v) = i420.data_mut();
+    match frame.format {
+        // libyuv's ABGR is R, G, B, A in memory: RGBA rows as they are.
+        PixelFormat::Rgba => yuv_helper::abgr_to_i420(
+            &frame.data,
+            frame.stride,
+            y,
+            sy,
+            u,
+            su,
+            v,
+            sv,
+            w as i32,
+            h as i32,
+        ),
+        // libyuv's ARGB is B, G, R, A in memory: the desktop capturer's frames.
+        PixelFormat::Bgra => yuv_helper::argb_to_i420(
+            &frame.data,
+            frame.stride,
+            y,
+            sy,
+            u,
+            su,
+            v,
+            sv,
+            w as i32,
+            h as i32,
+        ),
+        PixelFormat::I420 => {
+            let (w, h) = (w as usize, h as usize);
+            let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+            let (sy, su, sv) = (sy as usize, su as usize, sv as usize);
+            let stride = frame.stride as usize;
+            let (u0, v0) = (stride * h, stride * h + cw * ch);
+            for r in 0..h {
+                y[r * sy..r * sy + w].copy_from_slice(&frame.data[r * stride..r * stride + w]);
+            }
+            for r in 0..ch {
+                u[r * su..r * su + cw].copy_from_slice(&frame.data[u0 + r * cw..u0 + r * cw + cw]);
+                v[r * sv..r * sv + cw].copy_from_slice(&frame.data[v0 + r * cw..v0 + r * cw + cw]);
+            }
+        }
+    }
+    if (w, h) == size {
+        return Some(i420);
+    }
+    Some(i420.scale(size.0 as i32, size.1 as i32))
+}
+
+/// A share's feeder: pulls the source's newest frame at `fps` and hands it to the encoder, sized under `bound` (a window
+/// that changes its size goes on at its new size). The source's end ends the track: the source is let go at once and
+/// `ended` is told.
+async fn feed(
+    source: SharedSource,
+    rtc: NativeVideoSource,
+    bound: Option<(u32, u32)>,
+    fps: u32,
+    sent: Arc<std::sync::atomic::AtomicU64>,
+    end: EndOfShare,
+) {
+    let mut tick = tokio::time::interval(Duration::from_micros(1_000_000 / u64::from(fps.max(1))));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let (kind, pulled) = {
+            let mut guard = source.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(s) = guard.as_mut() else { return };
+            (s.kind(), s.pull())
+        };
+        let frame = match pulled {
+            Pull::Frame(f) => f,
+            Pull::Idle => continue,
+            Pull::Ended => {
+                // The screen, window or camera is let go at once, then the track ends.
+                source.lock().unwrap_or_else(|p| p.into_inner()).take();
+                end.end(kind).await;
+                return;
+            }
+        };
+        let size = fit(frame.width, frame.height, bound);
+        let Some(i420) = to_i420(&frame, size) else {
+            log::warn!("dilla-media: a malformed {kind:?} frame dropped");
+            continue;
+        };
+        rtc.capture_frame(&VideoFrame {
+            rotation: VideoRotation::VideoRotation0,
+            timestamp_us: 0,
+            frame_metadata: None,
+            buffer: &i420,
+        });
+        sent.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub struct Call {
@@ -430,7 +577,7 @@ pub struct Call {
     muted: Arc<AtomicBool>,
     apm_flags: ApmFlags,
     videos: watch::Receiver<RemoteVideos>,
-    shares: Mutex<HashMap<ShareKind, LocalShare>>,
+    shares: Shares,
     shares_ended: mpsc::UnboundedSender<ShareKind>,
     shares_ended_rx: Mutex<Option<mpsc::UnboundedReceiver<ShareKind>>>,
     ended: watch::Receiver<Option<RoomEnd>>,
@@ -619,7 +766,7 @@ impl Call {
             muted,
             apm_flags: options.apm_flags,
             videos,
-            shares: Mutex::new(HashMap::new()),
+            shares: Shares::default(),
             shares_ended,
             shares_ended_rx: Mutex::new(Some(shares_ended_rx)),
             ended,
@@ -873,6 +1020,35 @@ impl Call {
         rtt_ms_of(&stats.publisher_stats).or_else(|| rtt_ms_of(&stats.subscriber_stats))
     }
 
+    /// The video this device sends now: each outbound video stream's negotiated codec (its mime type, `video/VP8`) and
+    /// the bytes it sent (the publisher's statistics). The check that a server offering AV1 still gets VP8.
+    pub async fn sent_video(&self) -> Vec<(String, u64)> {
+        use livekit::webrtc::stats::RtcStats;
+        let Ok(stats) = self.room.get_stats().await else {
+            return Vec::new();
+        };
+        let report = &stats.publisher_stats;
+        report
+            .iter()
+            .filter_map(|s| match s {
+                RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
+                _ => None,
+            })
+            .map(|o| {
+                let mime = report
+                    .iter()
+                    .find_map(|c| match c {
+                        RtcStats::Codec(c) if c.rtc.id == o.stream.codec_id => {
+                            Some(c.codec.mime_type.clone())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                (mime, o.sent.bytes_sent)
+            })
+            .collect()
+    }
+
     /// The room's end on its own ([`RoomEnd`]): `None` while this device is in it. A [`Call::leave`] never sets it.
     pub fn ended(&self) -> watch::Receiver<Option<RoomEnd>> {
         self.ended.clone()
@@ -895,15 +1071,64 @@ impl Call {
             .await
     }
 
-    /// [`Call::publish_video`] with the person's stream quality (the encoder's bitrate and frame-rate bound).
+    /// [`Call::publish_video`] with the person's stream quality: the encoder's bitrate and frame-rate bound, and for a
+    /// screen share the largest frame sent (a larger source is scaled down, keeping its aspect).
     pub async fn publish_video_with(
         &self,
-        mut source: Box<dyn CaptureSource>,
+        source: Box<dyn CaptureSource>,
         quality: ShareOptions,
     ) -> Result<(), MediaError> {
         let kind = source.kind();
         self.unpublish_video(kind).await;
-        let (width, height) = source.size();
+        self.publish_shared(Arc::new(Mutex::new(Some(source))), quality)
+            .await
+    }
+
+    /// The person changed the stream quality of the running share of `kind` (beta.5 `configure-screen-capture`): the
+    /// same source goes on under the new bound, frame rate and bitrate. The track is published anew (libwebrtc's sender
+    /// keeps its encoding), so the share is never re-chosen. Nothing when there is no such share.
+    pub async fn configure_video(
+        &self,
+        kind: ShareKind,
+        quality: ShareOptions,
+    ) -> Result<(), MediaError> {
+        let share = self
+            .shares
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&kind);
+        let Some(share) = share else {
+            return Ok(());
+        };
+        share.feeder.abort();
+        if let Err(e) = self
+            .room
+            .local_participant()
+            .unpublish_track(&share.sid)
+            .await
+        {
+            log::warn!("dilla-media: unpublish: {e}");
+        }
+        self.publish_shared(share.source, quality).await
+    }
+
+    async fn publish_shared(
+        &self,
+        source: SharedSource,
+        quality: ShareOptions,
+    ) -> Result<(), MediaError> {
+        let (kind, (width, height)) = {
+            let guard = source.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(s) = guard.as_ref() else {
+                return Err(MediaError::Closed);
+            };
+            (s.kind(), s.size())
+        };
+        let bound = match kind {
+            ShareKind::Screen => quality.resolution.frame(),
+            ShareKind::Camera => None,
+        };
+        let (width, height) = fit(width, height, bound);
         let (slot, track_source, name) = match kind {
             ShareKind::Camera => (Slot::Camera, TrackSource::Camera, "camera"),
             ShareKind::Screen => (Slot::ScreenVideo, TrackSource::Screenshare, "screen"),
@@ -920,6 +1145,8 @@ impl Call {
                 LocalTrack::Video(track.clone()),
                 TrackPublishOptions {
                     source: track_source,
+                    // dilla-sframe/1 has prefix rules for VP8, VP9 and H.264 only: VP8 always, whatever the SFU offers
+                    // (a sender with another codec sends nothing: transform.rs `unsupportedCodec`).
                     video_codec: livekit::options::VideoCodec::VP8,
                     video_encoding: Some(livekit::options::VideoEncoding {
                         max_bitrate: quality.bitrate_bps(None),
@@ -935,7 +1162,7 @@ impl Call {
             .await
             .map_err(|e| MediaError::Room(e.to_string()))?;
         let sid = publication.sid();
-        let bound = match ffi::sender_handle_video(&track.rtc_track()) {
+        let bound_sender = match ffi::sender_handle_video(&track.rtc_track()) {
             Some(handle) => match self.media.bind_local(handle, slot) {
                 Ok(()) | Err(MediaError::AlreadyBound(_)) => Ok(()),
                 Err(e) => Err(e),
@@ -944,55 +1171,48 @@ impl Call {
                 "the {name} has no sender transformer"
             ))),
         };
-        if let Err(e) = bound {
+        if let Err(e) = bound_sender {
             let _ = self.room.local_participant().unpublish_track(&sid).await;
             return Err(e);
         }
-        let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let counter = sent.clone();
-        let ended = self.shares_ended.clone();
-        let feeder = tokio::spawn(async move {
-            let mut tick = tokio::time::interval(source.interval());
-            let mut i420 = I420Buffer::new(width, height);
-            loop {
-                tick.tick().await;
-                let Some(frame) = source.next_frame() else {
-                    let _ = ended.send(kind);
-                    return;
-                };
-                if frame.width != width || frame.height != height {
-                    log::warn!("dilla-media: a {name} frame of another size dropped");
-                    continue;
+        let fps = {
+            let mut guard = source.lock().unwrap_or_else(|p| p.into_inner());
+            match guard.as_mut() {
+                Some(s) => {
+                    if kind == ShareKind::Screen {
+                        s.set_fps(quality.fps);
+                    }
+                    s.fps().min(quality.fps.max(1))
                 }
-                let (sy, su, sv) = i420.strides();
-                let (y, u, v) = i420.data_mut();
-                // libyuv's ABGR is R, G, B, A in memory: the RGBA rows as they are.
-                yuv_helper::abgr_to_i420(
-                    &frame.rgba,
-                    width * 4,
-                    y,
-                    sy,
-                    u,
-                    su,
-                    v,
-                    sv,
-                    width as i32,
-                    height as i32,
-                );
-                let video = VideoFrame {
-                    rotation: VideoRotation::VideoRotation0,
-                    timestamp_us: 0,
-                    frame_metadata: None,
-                    buffer: &i420,
-                };
-                rtc.capture_frame(&video);
-                counter.fetch_add(1, Ordering::Relaxed);
+                None => quality.fps,
             }
-        });
+        };
+        let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let feeder = tokio::spawn(feed(
+            source.clone(),
+            rtc,
+            bound,
+            fps,
+            sent.clone(),
+            EndOfShare {
+                participant: self.room.local_participant(),
+                shares: self.shares.clone(),
+                sid: sid.clone(),
+                ended: self.shares_ended.clone(),
+            },
+        ));
         self.shares
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(kind, LocalShare { sid, feeder, sent });
+            .insert(
+                kind,
+                LocalShare {
+                    sid,
+                    feeder,
+                    sent,
+                    source,
+                },
+            );
         Ok(())
     }
 
@@ -1005,6 +1225,14 @@ impl Call {
             .remove(&kind);
         if let Some(share) = share {
             share.feeder.abort();
+            // The screen, window or camera is let go now, not when the aborted feeder is next polled.
+            drop(
+                share
+                    .source
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take(),
+            );
             if let Err(e) = self
                 .room
                 .local_participant()
@@ -1016,6 +1244,27 @@ impl Call {
         }
     }
 
+    /// Stops every share: its feeder, and its source at once (the screen, window or camera is let go).
+    fn stop_shares(&self) {
+        let shares: Vec<LocalShare> = self
+            .shares
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .drain()
+            .map(|(_, s)| s)
+            .collect();
+        for share in shares {
+            share.feeder.abort();
+            drop(
+                share
+                    .source
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take(),
+            );
+        }
+    }
+
     /// This device's identity in the room.
     pub fn identity(&self) -> String {
         self.room.local_participant().identity().as_str().to_owned()
@@ -1024,14 +1273,7 @@ impl Call {
     /// Leaves the room and ends the call's media: its keys are dropped and every later frame of
     /// this process is dropped until the next call.
     pub async fn leave(mut self) {
-        for (_, share) in self
-            .shares
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .drain()
-        {
-            share.feeder.abort();
-        }
+        self.stop_shares();
         self.media.close();
         for t in self.tasks.drain(..) {
             t.abort();
@@ -1048,6 +1290,7 @@ impl Call {
 impl Drop for Call {
     fn drop(&mut self) {
         // A call dropped without `leave` still ends its media at once; the room closes with it.
+        self.stop_shares();
         self.router.end(&self.media);
         for t in self.tasks.drain(..) {
             t.abort();
@@ -1396,6 +1639,62 @@ fn native_source() -> NativeAudioSource {
 #[cfg(test)]
 mod retry_tests {
     use super::*;
+
+    /// A screen share is sent under its quality's bound, keeping the aspect, never scaled up, with even sides.
+    #[test]
+    fn a_share_is_sized_under_its_bound() {
+        assert_eq!(fit(3840, 2160, Some((1920, 1080))), (1920, 1080));
+        assert_eq!(fit(3840, 1600, Some((1920, 1080))), (1920, 800));
+        assert_eq!(fit(1000, 2000, Some((1280, 720))), (360, 720));
+        assert_eq!(
+            fit(301, 301, Some((1920, 1080))),
+            (300, 300),
+            "even, not scaled up"
+        );
+        assert_eq!(fit(5120, 2880, None), (5120, 2880), "source size");
+        assert_eq!(fit(4, 4, None), (16, 16), "at least 16 x 16");
+    }
+
+    /// Every frame format converts to the same colours, and a frame whose bytes are short is never encoded.
+    #[test]
+    fn captured_frames_convert_to_i420_in_every_format() {
+        use crate::capture_source::{Frame, PixelFormat};
+        let (w, h) = (32u32, 16u32);
+        // Opaque mid-red RGBA, its BGRA twin, and the I420 that BT.601 makes of it.
+        let rgba = Frame::rgba(w, h, [200u8, 40, 40, 255].repeat((w * h) as usize));
+        let bgra = Frame {
+            format: PixelFormat::Bgra,
+            data: [40u8, 40, 200, 255].repeat((w * h) as usize),
+            ..rgba.clone()
+        };
+        let a = to_i420(&rgba, (w, h)).unwrap();
+        let b = to_i420(&bgra, (w, h)).unwrap();
+        assert_eq!(a.data(), b.data(), "RGBA and BGRA give the same picture");
+        let (y, u, v) = a.data();
+        let mut packed = y[..(w * h) as usize].to_vec();
+        packed.extend_from_slice(&u[..(w * h / 4) as usize]);
+        packed.extend_from_slice(&v[..(w * h / 4) as usize]);
+        let i420 = Frame {
+            format: PixelFormat::I420,
+            stride: w,
+            data: packed,
+            ..rgba.clone()
+        };
+        let c = to_i420(&i420, (w, h)).unwrap();
+        assert_eq!(c.data(), a.data(), "I420 is copied as it is");
+        use livekit::webrtc::video_frame::VideoBuffer as _;
+        let half = to_i420(&rgba, (16, 8)).unwrap();
+        assert_eq!(
+            (half.width(), half.height()),
+            (16, 8),
+            "scaled to the size asked"
+        );
+        let short = Frame {
+            data: vec![0; 10],
+            ..rgba
+        };
+        assert!(to_i420(&short, (w, h)).is_none());
+    }
 
     #[test]
     fn an_audio_failure_after_sealing_is_not_retryable() {
