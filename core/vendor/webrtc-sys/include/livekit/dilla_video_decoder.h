@@ -2,13 +2,15 @@
  * DILLA PATCH (core/vendor/README.md): this whole file is dilla's, not LiveKit's.
  *
  * A standalone video decoder for the desktop's inline attachment player (parity plan Package 12): libwebrtc's own
- * decoders (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg's H.264 on Linux and Windows, VideoToolbox on macOS),
- * reached through LiveKit's VideoDecoderFactory, fed whole access units by Rust and answering BGRA pictures. No
+ * software decoders (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg's H.264 on Linux and Windows), fed whole access
+ * units by Rust and answering BGRA pictures. VideoToolbox (macOS H.264/H.265, through LiveKit's VideoDecoderFactory)
+ * only with the crate feature `dilla-video-toolbox`, off by default. No
  * PeerConnection, no network, no frame transformer: it decodes bytes the app already holds.
  */
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -58,6 +60,8 @@ class DillaVideoDecoder : public webrtc::DecodedImageCallback {
   const uint32_t out_width_;
   const uint32_t out_height_;
   bool reorders_;
+  // Set as the decoder is torn down: a late callback keeps nothing.
+  std::atomic<bool> closing_{false};
   std::mutex mutex_;
   std::deque<Picture> pictures_;
 };

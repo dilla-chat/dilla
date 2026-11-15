@@ -129,6 +129,10 @@ fn main() {
         builder.file("src/dilla_transform_testing.cpp");
         builder.define("DILLA_TEST_FRAMES", None);
     }
+    // DILLA PATCH: VideoToolbox for the attachment player's H.264/H.265, only on request (see Cargo.toml).
+    if env::var("CARGO_FEATURE_DILLA_VIDEO_TOOLBOX").is_ok() {
+        builder.define("DILLA_VIDEO_TOOLBOX", None);
+    }
 
     let webrtc_dir = webrtc_sys_build::webrtc_dir();
     let webrtc_include = webrtc_dir.join("include");

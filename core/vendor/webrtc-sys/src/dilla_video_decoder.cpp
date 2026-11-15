@@ -17,7 +17,17 @@
 #include "api/video/video_frame.h"
 #include "api/video_codecs/sdp_video_format.h"
 #include "api/video_codecs/video_codec.h"
+#include "modules/video_coding/codecs/h264/include/h264.h"
+#include "modules/video_coding/codecs/vp8/include/vp8.h"
+#include "modules/video_coding/codecs/vp9/include/vp9.h"
+
+#if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY)
+#include "modules/video_coding/codecs/av1/dav1d_decoder.h"  // nogncheck
+#endif
+
+#if defined(DILLA_VIDEO_TOOLBOX)
 #include "livekit/video_decoder_factory.h"
+#endif
 #include "third_party/libyuv/include/libyuv/convert_argb.h"
 #include "webrtc-sys/src/dilla_video_decoder.rs.h"
 
@@ -64,8 +74,13 @@ DillaVideoDecoder::DillaVideoDecoder(const webrtc::Environment& env,
 }
 
 DillaVideoDecoder::~DillaVideoDecoder() {
-  decoder_->RegisterDecodeCompleteCallback(nullptr);
+  // Release first: an asynchronous decoder (VideoToolbox) waits for its frames in flight there, and any callback they
+  // make still finds this object whole; `closing_` makes those callbacks drop their pictures. Only then is the callback
+  // taken away and the decoder destroyed (before the environment it may point into, by member order).
+  closing_.store(true);
   decoder_->Release();
+  decoder_->RegisterDecodeCompleteCallback(nullptr);
+  decoder_.reset();
 }
 
 int32_t DillaVideoDecoder::decode(rust::Slice<const uint8_t> data, uint32_t timestamp, bool key_frame) {
@@ -113,6 +128,9 @@ bool DillaVideoDecoder::take_frame(rust::Slice<uint8_t> bgra) {
 }
 
 int32_t DillaVideoDecoder::Decoded(webrtc::VideoFrame& frame) {
+  if (closing_.load()) {
+    return 0;
+  }
   auto buffer = frame.video_frame_buffer();
   if (!buffer) {
     return 0;
@@ -156,28 +174,74 @@ int32_t DillaVideoDecoder::Decoded(webrtc::VideoFrame& frame) {
   return 0;
 }
 
-std::unique_ptr<DillaVideoDecoder> new_dilla_video_decoder(rust::Str codec, uint32_t out_width, uint32_t out_height) {
-  const std::string name(codec.data(), codec.size());
-  webrtc::Environment env = webrtc::CreateEnvironment();
+namespace {
+
+// libwebrtc's own software decoders, made directly: libvpx (VP8, VP9), dav1d (AV1), and the bundled FFmpeg's H.264
+// where the build has it (Linux and Windows; the macOS prebuilt's FFmpeg lacks H.264, so its Configure fails and H.264
+// goes to the system player there). No platform factory: VideoToolbox (macOS) and the NVIDIA/VA-API factories are not
+// used unless the crate feature `dilla-video-toolbox` asks for VideoToolbox (DILLA_VIDEO_TOOLBOX), since the
+// VideoToolbox path crashed the decode test on macOS CI and cannot be iterated on without a Mac.
+std::unique_ptr<webrtc::VideoDecoder> software_decoder(const webrtc::Environment& env, const std::string& name) {
+  if (absl::EqualsIgnoreCase(name, "VP8")) {
+    return webrtc::CreateVp8Decoder(env);
+  }
+  if (absl::EqualsIgnoreCase(name, "VP9")) {
+    return webrtc::VP9Decoder::Create();
+  }
+  if (absl::EqualsIgnoreCase(name, "H264")) {
+    return webrtc::H264Decoder::IsSupported() ? webrtc::H264Decoder::Create() : nullptr;
+  }
+#if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY)
+  if (absl::EqualsIgnoreCase(name, "AV1")) {
+    return webrtc::CreateDav1dDecoder();
+  }
+#endif
+  return nullptr;
+}
+
+#if defined(DILLA_VIDEO_TOOLBOX)
+std::unique_ptr<webrtc::VideoDecoder> platform_decoder(const webrtc::Environment& env, const std::string& name) {
   VideoDecoderFactory factory;
   for (const webrtc::SdpVideoFormat& format : factory.GetSupportedFormats()) {
-    if (!absl::EqualsIgnoreCase(format.name, name)) {
-      continue;
+    if (absl::EqualsIgnoreCase(format.name, name)) {
+      return factory.Create(env, format);
     }
-    std::unique_ptr<webrtc::VideoDecoder> decoder = factory.Create(env, format);
-    if (!decoder) {
-      return nullptr;
-    }
-    webrtc::VideoDecoder::Settings settings;
-    settings.set_codec_type(webrtc::PayloadStringToCodecType(name));
-    settings.set_number_of_cores(2);
-    settings.set_max_render_resolution({kMaxSide, kMaxSide});
-    if (!decoder->Configure(settings)) {
-      return nullptr;
-    }
-    return std::make_unique<DillaVideoDecoder>(env, std::move(decoder), out_width, out_height);
   }
   return nullptr;
+}
+#endif
+
+}  // namespace
+
+std::unique_ptr<DillaVideoDecoder> new_dilla_video_decoder(rust::Str codec, uint32_t out_width, uint32_t out_height) {
+  const std::string name(codec.data(), codec.size());
+  const webrtc::VideoCodecType type = webrtc::PayloadStringToCodecType(name);
+  if (type == webrtc::kVideoCodecGeneric) {
+    return nullptr;
+  }
+  webrtc::Environment env = webrtc::CreateEnvironment();
+  std::unique_ptr<webrtc::VideoDecoder> decoder;
+#if defined(DILLA_VIDEO_TOOLBOX)
+  if (type == webrtc::kVideoCodecH264 || type == webrtc::kVideoCodecH265) {
+    decoder = platform_decoder(env, name);
+  }
+#endif
+  if (!decoder) {
+    decoder = software_decoder(env, name);
+  }
+  if (!decoder) {
+    return nullptr;
+  }
+  webrtc::VideoDecoder::Settings settings;
+  settings.set_codec_type(type);
+  settings.set_number_of_cores(2);
+  settings.set_max_render_resolution({kMaxSide, kMaxSide});
+  if (!decoder->Configure(settings)) {
+    // An H.264 decoder whose FFmpeg lacks the codec fails here (the macOS prebuilt): no decoder, the system player.
+    decoder->Release();
+    return nullptr;
+  }
+  return std::make_unique<DillaVideoDecoder>(env, std::move(decoder), out_width, out_height);
 }
 
 }  // namespace livekit_ffi

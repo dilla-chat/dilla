@@ -107,9 +107,9 @@ before it joined are not shown on it. Keep another signed-in device and the reco
   Dilla?"). Drafts are kept per channel across restarts. A microphone the operating system blocks joins calls
   listen-only, with a notice.
 - Inline audio plays in the app (MP3, AAC, Vorbis, Opus, FLAC, WAV). Videos play in their card too, as in the
-  browser: WebM and MP4 with VP8, VP9, AV1 or H.264 (and H.265 on macOS), with play and pause, the timeline, volume
+  browser: WebM and MP4 with VP8, VP9, AV1 or H.264 (H.264 not on macOS yet), with play and pause, the timeline, volume
   and full screen (Escape leaves it). The ⋮ menu downloads the video, sets the playback speed (0.25× to 2×) and moves
-  it to a small picture-in-picture window (back returns it to its card; close also pauses it). A video the app cannot decode (Ogg Theora, or H.265 on Windows and Linux) opens
+  it to a small picture-in-picture window (back returns it to its card; close also pauses it). A video the app cannot decode (Ogg Theora, H.265, and H.264 on macOS) opens
   in your system's player instead; a copy handed to the player is deleted when the app starts and quits.
 - Message search runs on this device's own decrypted history, as in the browser.
 - The screens are drawn, not laid out by a browser, so the keyboard works through the app's own focus order

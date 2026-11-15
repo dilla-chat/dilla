@@ -3,7 +3,7 @@
 //!
 //! The decode approach (the commit that added it says why): libwebrtc's own decoders, which every call already links,
 //! through a small patch to the vendored webrtc-sys (`dilla_video_decoder`): libvpx for VP8 and VP9, dav1d for AV1,
-//! the H.264 decoder libwebrtc bundles on Linux and Windows and VideoToolbox on macOS (which also has H.265). No new
+//! the H.264 decoder libwebrtc bundles on Linux and Windows (none on macOS: VideoToolbox is opt-in, see webrtc-sys). No new
 //! native library, so no new licence, no growth of the shipped binary beyond the glue, and no new glibc symbol. The
 //! containers are read by two pure-Rust demuxers ([`demux`]); the sound goes through the audio card's path
 //! (`media::open_audio`, rodio).
