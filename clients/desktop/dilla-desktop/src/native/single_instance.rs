@@ -25,7 +25,9 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::App;
@@ -41,7 +43,8 @@ pub const MAX_MESSAGE: usize = 64 * 1024;
 pub const MAX_ARGS: usize = 64;
 /// How long a second launch keeps trying to reach the app (it may be between taking the lock and listening).
 const CONNECT_FOR: Duration = Duration::from_secs(3);
-/// How long either side waits for the other's bytes.
+/// How long either side waits for the other's bytes (the Unix socket; the tests use it too).
+#[cfg(any(unix, test))]
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// What the app answers once it took a message (Unix; the Windows pipe is inbound only).
 #[cfg(unix)]
