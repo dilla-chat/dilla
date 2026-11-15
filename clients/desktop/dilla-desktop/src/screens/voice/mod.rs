@@ -134,6 +134,15 @@ mod m {
     pub const METER_GAP: f32 = 1.5;
     pub const CAPTION_CHIP_PAD_X: f32 = 7.0;
     pub const STAT_RIGHT: f32 = 8.0;
+    /// `.d-call-tile__tools`: 10px in from the focused tile's top right (its stat 10px in from the bottom right), 4px
+    /// apart; each tool 28px; Grid 9px in, its 13px glyph 6px before the word; full screen's glyph 14px.
+    pub const TOOLS_INSET: f32 = 10.0;
+    pub const TOOLS_GAP: f32 = 4.0;
+    pub const TOOL: f32 = 28.0;
+    pub const GRID_TOOL_PAD_X: f32 = 9.0;
+    pub const GRID_TOOL_GAP: f32 = 6.0;
+    pub const GRID_GLYPH: f32 = 13.0;
+    pub const FULLSCREEN_GLYPH: f32 = 14.0;
     pub const STAT_TOP: f32 = 7.0;
     /// The stream-quality menu: 320px wide, 72px over the stage's foot (the bar and its gap), 12px in, 8px gaps.
     pub const MENU_BOTTOM: f32 = 72.0;
@@ -1215,6 +1224,18 @@ fn person_row(p: &Person) -> Div {
             15.0,
             color::FG_STRONG,
         )))
+        // VoiceChannelRow.tsx: a bot's row says "playback only" after the name (its rounded-square avatar marks it).
+        .when(p.bot, |d| {
+            d.child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "voice-person-playback-only".into())
+                    .child(dilla_desktop_ui::components::tag::Tag::new(
+                        ElementId::Name(format!("voice-person-tag-{}", p.user.hex()).into()),
+                        dilla_desktop_ui::components::tag::TagKind::PlaybackOnly,
+                    )),
+            )
+        })
         .child(div().flex_1())
         .when_some(p.video.then_some(()), |d, ()| {
             d.child(
@@ -1242,6 +1263,22 @@ use gpui::prelude::FluentBuilder as _;
 
 // ---- the dock -----------------------------------------------------------------------------------------------------
 
+/// The link's line (VoiceDock.tsx's line 2, VoiceView.tsx `StatsLine`): the ping, then what this device sends and receives
+/// ("24 ms · ↑ 38 ↓ 71 kb/s") once a rate was read.
+pub fn link_text(ms: Option<u32>, rate: Option<(u32, u32)>) -> String {
+    let ping = ping_text(ms);
+    match rate {
+        Some((up, down)) => format!(
+            "{ping} · {}",
+            tf(
+                "voice.dock.rate",
+                &[("up", &up.to_string()), ("down", &down.to_string())]
+            )
+        ),
+        None => ping,
+    }
+}
+
 /// VoiceView.tsx `Dock`'s ping of the link (`call.ping_ms`, the media's read): "— ms" until one is read (a parity
 /// fixture's call has none), "<1 ms" under a millisecond, else "{ms} ms".
 pub fn ping_text(ms: Option<u32>) -> String {
@@ -1264,7 +1301,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     // VoiceView.tsx `Dock`'s `where`: the channel, or "the call with {name}" for a DM.
     let name = call_place(&state).unwrap_or_default();
     let where_ = match call.phase {
-        CallPhase::In => ping_text(call.ping_ms),
+        CallPhase::In => link_text(call.ping_ms, call.rate_kbps),
         CallPhase::WaitingForRemove => t("voice.announce.rejoining").to_owned(),
         _ => t("voice.dock.connecting").to_owned(),
     };
@@ -1822,6 +1859,7 @@ fn tile(
         },
     };
     let video = images.get(&stream).cloned();
+    let has_media = video.is_some();
     let own = p.is_some_and(|p| p.own);
     // VoiceView.tsx `withTileStats`: a screen says its frames; the own person tile what its microphone sends (this
     // client's capture is always Opus at 48 kHz: `dilla_media`), once the call is up.
@@ -1981,8 +2019,14 @@ fn tile(
             .left_0()
             .size_full(),
         )
-        .on_click(move |_, window, cx| {
+        .on_click(move |e, window, cx| {
             let w = wid(window);
+            // CallTile.tsx: a double-click on a tile with media goes full screen (the second click of it focuses
+            // nothing more).
+            if e.click_count() == 2 && has_media {
+                window.toggle_fullscreen();
+                return;
+            }
             if ui_of(w, cx).is_some() {
                 let ui = ui_mut(w, cx);
                 ui.focused = if ui.focused.as_ref() == Some(&key) {
@@ -1996,20 +2040,106 @@ fn tile(
         .child(media)
         .child(caption)
         .when_some(stat, |d, stat| {
-            d.child(
-                div()
-                    .absolute()
-                    .top(px(m::STAT_TOP - edge))
+            // `.d-call-stage__tile[data-focused] .d-call-tile__stat`: the focused tile's stat sits 10px over its bottom
+            // right in 10px, under the tools.
+            let at = div().absolute();
+            let at = if is_focused {
+                at.bottom(px(m::TOOLS_INSET - edge))
+                    .right(px(m::TOOLS_INSET - edge))
+            } else {
+                at.top(px(m::STAT_TOP - edge))
                     .right(px(m::STAT_RIGHT - edge))
-                    .child(line(
-                        stat,
-                        text::CHIP,
-                        line_height(text::CHIP, LINE),
-                        color::FG_3,
-                    )),
-            )
+            };
+            let size = if is_focused { text::MICRO } else { text::CHIP };
+            d.child(at.child(line(stat, size, line_height(size, LINE), color::FG_3)))
         })
+        .when(is_focused, |d| d.child(tile_tools(edge)))
         .into_any_element()
+}
+
+/// The focused tile's tools over its top right (CallTile.tsx `__tools`, 10px in, 4px apart): Grid (back to the grid; 28px
+/// high, 9px in, the 13px glyph 6px before its word) and full screen (28 x 28, a 14px glyph, `--accent` while on: the
+/// window full screen, where the web's tile went full screen).
+fn tile_tools(edge: f32) -> AnyElement {
+    let tool = |id: &'static str| {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .justify_center()
+            .h(px(m::TOOL))
+            .min_w(px(m::TOOL))
+            .rounded(radius::MD)
+            .bg(color::SCRIM_TILE)
+            .cursor_pointer()
+            .focus_visible(|s| s.shadow(focus_ring()))
+    };
+    div()
+        .absolute()
+        .top(px(m::TOOLS_INSET - edge))
+        .right(px(m::TOOLS_INSET - edge))
+        .flex()
+        .gap(px(m::TOOLS_GAP))
+        .child(
+            tool("voice-tile-grid")
+                .debug_selector(|| "voice-tile-grid".into())
+                .px(px(m::GRID_TOOL_PAD_X))
+                .gap(px(m::GRID_TOOL_GAP))
+                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+                    t("callStage.grid"),
+                    &[],
+                ))
+                .on_click(|_, window, cx| {
+                    cx.stop_propagation();
+                    let w = wid(window);
+                    if ui_of(w, cx).is_some() {
+                        ui_mut(w, cx).focused = None;
+                    }
+                    window.refresh();
+                })
+                .child(
+                    Icon::new(IconName::LayoutGrid)
+                        .size(px(m::GRID_GLYPH))
+                        .color(color::FG_STRONG),
+                )
+                .child(line(
+                    t("callStage.grid"),
+                    text::XS,
+                    line_height(text::XS, LINE),
+                    color::FG_STRONG,
+                )),
+        )
+        .child(
+            tool("voice-tile-fullscreen")
+                .debug_selector(|| "voice-tile-fullscreen".into())
+                .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+                    t("stage.fullscreen"),
+                    &[],
+                ))
+                .on_click(|_, window, cx| {
+                    cx.stop_propagation();
+                    window.toggle_fullscreen();
+                })
+                .child(FullscreenGlyph),
+        )
+        .into_any_element()
+}
+
+/// The full-screen tool's glyph: maximize, or minimize in `--accent` while the window is full screen (read as it paints).
+#[derive(IntoElement)]
+struct FullscreenGlyph;
+
+impl gpui::RenderOnce for FullscreenGlyph {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let on = window.is_fullscreen();
+        Icon::new(if on {
+            IconName::Minimize
+        } else {
+            IconName::Maximize
+        })
+        .size(px(m::FULLSCREEN_GLYPH))
+        .color(if on { color::ACCENT } else { color::FG_STRONG })
+    }
 }
 
 // ---- the DM call box ----------------------------------------------------------------------------------------------
@@ -2955,7 +3085,7 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
         )
         .child(
             line(
-                ping_text(v.call.ping_ms),
+                link_text(v.call.ping_ms, v.call.rate_kbps),
                 text::META,
                 line_height(text::META, BAR_LINE),
                 color::FG_3,
@@ -3359,6 +3489,12 @@ mod tests {
         assert_eq!(ping_text(None), "— ms");
         assert_eq!(ping_text(Some(0)), "<1 ms");
         assert_eq!(ping_text(Some(42)), "42 ms");
+        // Package 8c: the rate follows the ping once one was read.
+        assert_eq!(link_text(Some(24), None), "24 ms");
+        assert_eq!(
+            link_text(Some(24), Some((38, 71))),
+            "24 ms · ↑ 38 ↓ 71 kb/s"
+        );
     }
 
     fn state_with(people: &[(u8, u8, u8)]) -> (AppState, Channel) {

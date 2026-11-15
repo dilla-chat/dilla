@@ -1283,6 +1283,11 @@ impl Render for ShellView {
                 in_room: in_room.as_deref(),
                 muted,
                 deafened,
+                ptt: self.client.as_ref().and_then(|c| {
+                    use dilla_client::features::voice_prefs::values::{InputMode, VoiceValues};
+                    (VoiceValues::read(&c.prefs()).mode == InputMode::Ptt)
+                        .then_some(state.voice.ptt_held)
+                }),
             },
             &user_panel::PanelHandlers {
                 on_mute: Rc::new(move |_, cx| {

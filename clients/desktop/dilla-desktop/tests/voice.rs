@@ -203,6 +203,126 @@ fn the_tile_menu_opens_with_the_person_s_items(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("menu-item-mute-for-me").is_none());
 }
 
+/// Package 8c (CallTile.tsx `__tools`): the focused tile offers Grid, which goes back to the grid, and full screen; a
+/// tile in the grid offers neither.
+#[gpui::test]
+fn the_focused_tile_offers_grid_and_full_screen(cx: &mut TestAppContext) {
+    let cx = host(cx, state(3));
+    assert!(
+        cx.debug_bounds("voice-tile-grid").is_none(),
+        "the grid has no tools"
+    );
+    let focus = stage_focus(cx);
+    cx.update(|window, cx| focus.focus(window, cx));
+    press(cx, "enter");
+    assert!(area(cx, |ui| ui.focused.is_some()));
+    assert!(cx.debug_bounds("voice-tile-fullscreen").is_some());
+    let grid = cx.debug_bounds("voice-tile-grid").expect("Grid").center();
+    cx.simulate_click(grid, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(area(cx, |ui| ui.focused.clone()), None, "back to the grid");
+}
+
+/// Package 8c (VoiceChannelRow.tsx): a bot in a voice channel's row says "playback only" after its name; a person does not.
+#[gpui::test]
+fn a_bot_s_voice_row_says_playback_only(cx: &mut TestAppContext) {
+    let cx = host(cx, state(3));
+    assert!(cx.debug_bounds("voice-person-playback-only").is_none());
+    let mut s = (*state(3)).clone();
+    if let Some(m) = s.members.get_mut(&COMMUNITY) {
+        m[2].kind = 1;
+    }
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), Arc::new(s), None, cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("voice-person-playback-only").is_some());
+}
+
+/// Package 8c (UserPanel.tsx `ptt`): in push-to-talk mode the mute button carries the PTT tag; otherwise it has none.
+#[gpui::test]
+fn the_user_panel_tags_push_to_talk(cx: &mut TestAppContext) {
+    use dilla_desktop::screens::user_panel::{PanelHandlers, PanelModel, render};
+    struct Panel(Option<bool>);
+    impl Render for Panel {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let handlers = PanelHandlers {
+                on_mute: Rc::new(|_, _| {}),
+                on_deafen: Rc::new(|_, _| {}),
+            };
+            div().size_full().child(render(
+                &PanelModel {
+                    name: "Ada",
+                    status: "online",
+                    in_room: None,
+                    muted: false,
+                    deafened: false,
+                    ptt: self.0,
+                },
+                &handlers,
+            ))
+        }
+    }
+    let (_, vcx) = cx.add_window_view(|_, _| Panel(Some(false)));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("user-panel-ptt").is_some());
+    let (_, vcx) = cx.add_window_view(|_, _| Panel(None));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("user-panel-ptt").is_none());
+}
+
+/// Opens the user settings over `s` in a window of its own, with the routes it asks for.
+fn open_settings(
+    cx: &mut TestAppContext,
+    s: Arc<AppState>,
+) -> (
+    &mut VisualTestContext,
+    Rc<std::cell::RefCell<Vec<dilla_desktop::router::Route>>>,
+) {
+    use dilla_desktop::screens::settings_host::{SettingsEvent, UserSettingsHost};
+    let ctx = dilla_desktop::slots::SlotCx {
+        state: s,
+        ..dilla_desktop::slots::SlotCx::default()
+    };
+    let (host, vcx) = cx.add_window_view(|_, cx| UserSettingsHost::new(None, None, ctx, cx));
+    let routes = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = routes.clone();
+    vcx.update(|_, cx| {
+        cx.subscribe(&host, move |_, e: &SettingsEvent, _| {
+            let SettingsEvent::Navigate(route) = e;
+            log.borrow_mut().push(route.clone());
+        })
+        .detach();
+    });
+    vcx.run_until_parked();
+    (vcx, routes)
+}
+
+/// Package 8c (Shell.tsx `settingsActivity`): while this device is in a call, Settings offers Return to call, which goes to
+/// the call's channel; out of a call it is not there.
+#[gpui::test]
+fn settings_offer_return_to_call(cx: &mut TestAppContext) {
+    use dilla_desktop::router::Route;
+    cx.update(dilla_desktop::install);
+    let (vcx, _) = open_settings(cx, Arc::new(AppState::default()));
+    assert!(vcx.debug_bounds("settings-return-call").is_none());
+    let (vcx, routes) = open_settings(cx, state(3));
+    let back = vcx
+        .debug_bounds("settings-return-call")
+        .expect("Return to call")
+        .center();
+    vcx.simulate_click(back, gpui::Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(
+        routes.borrow().last(),
+        Some(&Route::Channel {
+            community: COMMUNITY,
+            channel: Some(VOICE)
+        })
+    );
+}
+
 /// Package 8b: the person's volume reads as call/volume.ts does (100 when absent or not a volume), and the rooms a move
 /// can go to are the server's other voice channels, the AFK channel and the current one left out, with their head count.
 #[test]

@@ -109,14 +109,19 @@ pub enum Command {
 /// The link's ping read (session.ts `linkTick`), polled beside the call loop's other arms rather than awaited in one, so
 /// a stalled read never holds up a leave, the room's end or a command: one read in flight at a time, answering none
 /// once [`LINK_STALL`] has passed.
-#[derive(Default)]
-struct PingRead<'a> {
-    read: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>>>,
+struct PingRead<'a, T = u32> {
+    read: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<T>> + Send + 'a>>>,
 }
 
-impl<'a> PingRead<'a> {
+impl<T> Default for PingRead<'_, T> {
+    fn default() -> Self {
+        Self { read: None }
+    }
+}
+
+impl<'a, T: Send + 'a> PingRead<'a, T> {
     /// A tick: starts a read unless one is still in flight.
-    fn start(&mut self, read: impl std::future::Future<Output = Option<u32>> + Send + 'a) {
+    fn start(&mut self, read: impl std::future::Future<Output = Option<T>> + Send + 'a) {
         if self.read.is_none() {
             self.read = Some(Box::pin(async move {
                 tokio::time::timeout(LINK_STALL, read).await.ok().flatten()
@@ -126,7 +131,7 @@ impl<'a> PingRead<'a> {
 
     /// The read's answer; pending while none is in flight. Cancel-safe: a read the loop's `select!` drops this for is
     /// kept and answers later.
-    async fn answer(&mut self) -> Option<u32> {
+    async fn answer(&mut self) -> Option<T> {
         let Some(read) = self.read.as_mut() else {
             return std::future::pending().await;
         };
@@ -463,7 +468,9 @@ async fn in_call(
     let mut speaking = Speaking::default();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
     let mut link_read = tokio::time::interval(LINK_EVERY);
-    let mut ping = PingRead::default();
+    let mut ping: PingRead<'_, dilla_media::LinkRead> = PingRead::default();
+    // The previous link read and when it answered: the rate is what moved since (stats.ts `linkSample`).
+    let mut last_link: Option<(Instant, dilla_media::LinkRead)> = None;
     let rtt = Arc::new(Mutex::new(RttReport::default()));
     let own = ctx.states.borrow().account.device_id;
     let mut applied: Option<(bool, bool)> = None;
@@ -538,9 +545,19 @@ async fn in_call(
             },
             // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
             // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
-            _ = link_read.tick() => ping.start(call.rtt_ms()),
-            ms = ping.answer() => {
+            _ = link_read.tick() => ping.start(call.link()),
+            read = ping.answer() => {
+                let ms = read.as_ref().and_then(|r| r.rtt_ms);
                 ctx.voice.set_ping(link.call_id, ms);
+                // A read that failed is no data: the next one spans the gap from the last that answered.
+                if let Some(read) = read {
+                    let now = Instant::now();
+                    if let Some((at, before)) = &last_link {
+                        let ms = now.duration_since(*at).as_secs_f64() * 1000.0;
+                        ctx.voice.set_rate(link.call_id, read.rate_since(before, ms));
+                    }
+                    last_link = Some((now, read));
+                }
                 // session.ts `publishRtt`: the others see this device's ping through the instance.
                 let send = ms.and_then(|ms| lock_rtt(&rtt).want(ms));
                 if let Some(send) = send {
@@ -813,7 +830,7 @@ mod tests {
         s.voice.call.channel = Some(channel);
         s.voice.place(
             channel,
-            None,
+            Some([9; 16]),
             vec![
                 VoiceParticipant {
                     user_id: dilla_client::state::UserId([0xaa; 16]),

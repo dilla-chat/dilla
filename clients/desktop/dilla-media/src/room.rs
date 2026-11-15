@@ -408,6 +408,61 @@ pub fn rtt_ms_of(report: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
     )
 }
 
+/// One read of the link (stats.ts `countersOf` over both peer connections): the ping, and the byte counter of each RTP
+/// stream sent and received, by stream id.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LinkRead {
+    pub rtt_ms: Option<u32>,
+    pub sent: HashMap<String, u64>,
+    pub received: HashMap<String, u64>,
+}
+
+impl LinkRead {
+    /// The counters of the publisher's and the subscriber's reports (an inbound stream listed in both counts once).
+    pub fn of(
+        publisher: &[livekit::webrtc::stats::RtcStats],
+        subscriber: &[livekit::webrtc::stats::RtcStats],
+    ) -> LinkRead {
+        use livekit::webrtc::stats::RtcStats;
+        let mut read = LinkRead {
+            rtt_ms: rtt_ms_of(publisher).or_else(|| rtt_ms_of(subscriber)),
+            ..LinkRead::default()
+        };
+        for s in publisher.iter().chain(subscriber) {
+            match s {
+                RtcStats::OutboundRtp(o) => {
+                    read.sent.insert(o.rtc.id.clone(), o.sent.bytes_sent);
+                }
+                RtcStats::InboundRtp(i) => {
+                    read.received
+                        .entry(i.rtc.id.clone())
+                        .or_insert(i.inbound.bytes_received);
+                }
+                _ => {}
+            }
+        }
+        read
+    }
+
+    /// stats.ts `linkSample`'s rates: what was sent and received since `before`, `ms` earlier, in whole kb/s. Only the
+    /// streams in both reads count (one that appeared or ended adds nothing), and a counter that went down counts from 0.
+    pub fn rate_since(&self, before: &LinkRead, ms: f64) -> Option<(u32, u32)> {
+        if ms <= 0.0 {
+            return None;
+        }
+        let delta = |now: &HashMap<String, u64>, was: &HashMap<String, u64>| -> u64 {
+            now.iter()
+                .filter_map(|(id, n)| was.get(id).map(|w| if n >= w { n - w } else { *n }))
+                .sum()
+        };
+        let kbps = |bytes: u64| ((bytes as f64) * 8.0 / ms).round() as u32;
+        Some((
+            kbps(delta(&self.sent, &before.sent)),
+            kbps(delta(&self.received, &before.received)),
+        ))
+    }
+}
+
 /// A local share being published.
 struct LocalShare {
     sid: TrackSid,
@@ -897,6 +952,15 @@ impl Call {
 
     /// The link's ping now (session.ts `readLink`: the publisher's connection, else the subscriber's), in ms; `None`
     /// while no round trip is measured or the stats cannot be read. It never goes to the server.
+    /// One read of the link ([`LinkRead`]): the ping and the RTP byte counters, `None` when the stats could not be read.
+    pub async fn link(&self) -> Option<LinkRead> {
+        let stats = self.room.get_stats().await.ok()?;
+        Some(LinkRead::of(
+            &stats.publisher_stats,
+            &stats.subscriber_stats,
+        ))
+    }
+
     pub async fn rtt_ms(&self) -> Option<u32> {
         let stats = self.room.get_stats().await.ok()?;
         rtt_ms_of(&stats.publisher_stats).or_else(|| rtt_ms_of(&stats.subscriber_stats))
@@ -1686,6 +1750,28 @@ mod rtt_tests {
 
     /// stats.ts `rttOf`: the transport's selected pair's current round-trip time (else a nominated, succeeded pair), in
     /// whole ms; a report with no pair, or a pair never answered, knows none.
+    /// Package 8c (stats.ts `linkSample`): the dock's rate is the byte delta of the streams in both reads, as kb/s; a
+    /// stream that appeared adds nothing, a counter that went down counts from 0.
+    #[test]
+    fn the_link_rate_is_the_byte_delta_of_the_streams_in_both_reads() {
+        let read = |sent: &[(&str, u64)], received: &[(&str, u64)]| LinkRead {
+            rtt_ms: Some(20),
+            sent: sent.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+            received: received
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), *v))
+                .collect(),
+        };
+        let before = read(&[("a", 1_000)], &[("x", 10_000), ("y", 500)]);
+        let now = read(
+            &[("a", 6_000), ("new", 90_000)],
+            &[("x", 20_000), ("y", 100)],
+        );
+        // 5 000 bytes in 2 s up: 20 kb/s; down 10 000 + 100 (y restarted) bytes: 40.4 -> 40 kb/s.
+        assert_eq!(now.rate_since(&before, 2_000.0), Some((20, 40)));
+        assert_eq!(now.rate_since(&before, 0.0), None);
+    }
+
     #[test]
     fn the_ping_is_the_selected_pair_s_round_trip() {
         let report = [
