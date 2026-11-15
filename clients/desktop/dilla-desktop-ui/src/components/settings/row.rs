@@ -18,6 +18,8 @@ use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
 use crate::text::{line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
+use gpui::StatefulInteractiveElement as _;
+use gpui::prelude::FluentBuilder as _;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Layout {
@@ -189,7 +191,14 @@ impl RenderOnce for SettingsRow {
             focus: cx.focus_handle().tab_stop(true),
         });
 
-        let mut text_col = div().flex().flex_col().min_w_0();
+        // The row's label and hint (the web's `<span>` and `<p>`): one node, named by the label, described by the hint.
+        let mut text_col = div()
+            .id((self.id.clone(), "text"))
+            .a11y(Role::Label, self.label.clone())
+            .when_some(self.hint.clone(), |d, hint| d.aria_description(hint))
+            .flex()
+            .flex_col()
+            .min_w_0();
         if !stacked {
             text_col = text_col.flex_1().min_w(px(220.0));
         }

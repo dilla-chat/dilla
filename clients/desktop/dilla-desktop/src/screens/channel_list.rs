@@ -556,12 +556,17 @@ fn category(
                 .h(layout::ROW_H_SUB)
                 .flex()
                 .items_center()
-                .opacity(0.0)
-                .group_hover(group, |s| s.opacity(1.0))
                 .child(
+                    // ChannelList.css: shown while the head is hovered, and while the "+" itself has the keyboard's
+                    // focus (a `<button>` on the web, reached by Tab).
                     div()
                         .id(SharedString::from(format!("category-add-{}", c.name)))
                         .a11y(Role::Button, label.clone())
+                        .tab_index(0)
+                        .rounded(radius::MD)
+                        .opacity(0.0)
+                        .group_hover(group, |s| s.opacity(1.0))
+                        .focus_visible(|s| s.opacity(1.0).shadow(focus_ring()))
                         .size(Pixels::from(css::ADD_HIT))
                         .flex_none()
                         .flex()

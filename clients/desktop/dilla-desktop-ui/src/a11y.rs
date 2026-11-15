@@ -89,6 +89,44 @@ pub trait Accessible: StatefulInteractiveElement + Sized {
 
 impl<T: StatefulInteractiveElement + Sized> Accessible for T {}
 
+/// Text the web exposed as an element of its own (an `<h2>`, a hint `<p>`): `child` (the painted text) wrapped in a node
+/// with `role` and `text` as its name, so a reader's own cursor and heading navigation find it. Its id is the text: one
+/// heading of a given text per container.
+fn text_node(
+    role: Role,
+    text: SharedString,
+    level: Option<usize>,
+    child: impl IntoElement,
+) -> gpui::Stateful<gpui::Div> {
+    let node = div()
+        .id(gpui::ElementId::Name(
+            format!("a11y-{role:?}-{text}").into(),
+        ))
+        .a11y(role, text);
+    let node = match level {
+        Some(level) => node.aria_level(level),
+        None => node,
+    };
+    node.child(child)
+}
+
+/// A heading (`<h1>`…`<h3>`): `child` is the painted title.
+pub fn heading(
+    level: usize,
+    text: impl Into<SharedString>,
+    child: impl IntoElement,
+) -> gpui::Stateful<gpui::Div> {
+    text_node(Role::Heading, text.into(), Some(level), child)
+}
+
+/// A paragraph a reader reads (a hint, a section's intro, an empty state's body): `child` is the painted text.
+pub fn paragraph(
+    text: impl Into<SharedString>,
+    child: impl IntoElement,
+) -> gpui::Stateful<gpui::Div> {
+    text_node(Role::Paragraph, text.into(), None, child)
+}
+
 /// The announcements of each window: the latest one and a counter that makes each a new node.
 #[derive(Default)]
 struct Announcements {

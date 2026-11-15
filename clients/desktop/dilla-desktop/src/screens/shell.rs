@@ -1717,6 +1717,13 @@ impl Render for ShellView {
             )
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+            // Escape on a message row goes to the composer (Conversation.tsx `rowKey`).
+            .on_action(
+                cx.listener(|this, _: &timeline::FocusComposer, window, cx| {
+                    let field = gpui::Focusable::focus_handle(this.composer.read(cx), cx);
+                    window.focus(&field, cx);
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &keys::PreviousChannel, _, cx| this.step_channel(-1, cx)),
             )

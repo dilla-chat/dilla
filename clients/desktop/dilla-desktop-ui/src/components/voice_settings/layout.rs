@@ -68,7 +68,9 @@ pub fn group() -> Div {
 
 /// A group's micro heading (10px 600, 0.12em, uppercase, `--fg-3`).
 pub fn heading(text_: &str) -> Div {
-    div().child(
+    div().child(crate::a11y::heading(
+        3,
+        text_.to_owned(),
         line(
             text_.to_uppercase(),
             text::MICRO,
@@ -77,7 +79,7 @@ pub fn heading(text_: &str) -> Div {
         )
         .weight(font::WEIGHT_LABEL)
         .tracking(LABEL_TRACKING_WIDE),
-    )
+    ))
 }
 
 /// The group's two-column grid (18px apart).

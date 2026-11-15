@@ -302,14 +302,16 @@ impl RenderOnce for TextField {
 /// A field's hint (12.5px `--fg-3`): wrapped at `width` when given, else one line.
 pub(crate) fn hint_lines(hint: SharedString, width: Option<f32>) -> gpui::AnyElement {
     let lh = line_height(text::SM, 1.5);
-    match width {
+    // The hint is the field's `<p>`: a node a reader's cursor reads.
+    let painted = match width {
         Some(w) => div()
             .flex()
             .flex_col()
             .children(crate::text::paragraph(&hint, text::SM, lh, color::FG_3, w))
             .into_any_element(),
-        None => line(hint, text::SM, lh, color::FG_3).into_any_element(),
-    }
+        None => line(hint.clone(), text::SM, lh, color::FG_3).into_any_element(),
+    };
+    crate::a11y::paragraph(hint, painted).into_any_element()
 }
 
 #[cfg(test)]
