@@ -1,5 +1,5 @@
 //! Task 27's client tests for the instances area (standard procedure S2): the address rules of the desktop shell
-//! (`packages/desktop/test/policy.test.ts`), the list's cross-process lock, no resurrection of a removed id, the window
+//! (`packages/desktop/test/policy.test.ts` of the former Electron shell, tag desktop-v0.1.0-beta.5), the list's cross-process lock, no resurrection of a removed id, the window
 //! hold, and the crypto-erase on removal. They need no dillad: an instance is a directory, a list and a keychain entry.
 
 use std::path::{Path, PathBuf};

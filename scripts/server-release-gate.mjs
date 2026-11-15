@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 /**
  * release.yml's gate: a v* tag is released only if the `server` workflow went green on a push to main for exactly
- * the tagged commit. The desktop workflow gates the desktop release the same way (packages/desktop/scripts/ci-run.mjs);
- * neither run satisfies the other's gate. Everything is re-derived from the API, never from the tag's name.
+ * the tagged commit; a green run of another workflow (desktop, mobile) never satisfies it. Everything is re-derived from
+ * the API, never from the tag's name.
  *
  * A tag pushed right after its merge finds the commit's server run still queued or in progress: the gate then polls
  * every 30 s for up to 60 min (release.yml's tag job has the default 360 min timeout). It refuses at once when the

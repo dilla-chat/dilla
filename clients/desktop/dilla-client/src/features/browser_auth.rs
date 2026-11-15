@@ -1,7 +1,7 @@
 //! Area **factors** (Task 26): the system-browser ceremony (get, create, oidc; 2 min timeout; SHA-256 verifier;
 //! `desktop-auth/request` and `desktop-auth/<id>/consume`), the browser opened with `open`.
 //!
-//! Ports: packages/desktop/src/browser-auth.ts (the shell's half) and, for what the page does, web
+//! Ports: packages/desktop/src/browser-auth.ts of the former Electron shell (tag desktop-v0.1.0-beta.5) (the shell's half) and, for what the page does, web
 //! `desktop-auth-browser.ts`. The desktop app has no WebAuthn of its own: a passkey ceremony (and an OIDC sign-in) runs
 //! in the system browser on the instance's own page, which hands the result back through the instance.
 //!

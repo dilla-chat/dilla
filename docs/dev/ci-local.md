@@ -59,8 +59,6 @@ so the lint is the one CI runs.
 | job | why |
 | --- | --- |
 | `go-fts5-arm64` | it needs a native linux/arm64 runner (`ubuntu-24.04-arm`). The job tests FTS5 on arm64 itself, so a cross-build or qemu wouldn't be the same check. It runs on an arm64 machine. |
-| `linux-sandbox-foundation` | requires disposable Ubuntu 22.04/24.04 runners and privileged kernel fixtures. |
-| `desktop` | requires native Linux, Windows and macOS acceptance runners in `desktop.yml`. |
 | `mobile-android`, `mobile-e2e-tools` | the emulator smoke test needs KVM, JDK 21, the Android SDK and an AVD, which `scripts/ci-android.sh` provisions on the runner only. It is opt-in locally: `npm run e2e:android -w @dilla/mobile` (`packages/mobile/README.md` lists its prerequisites). `mobile-unit`, `mobile-core-wasm` (its wasm-pack build is web-build's, memoised, so it runs once) and `mobile-bundle` (the mobile client build) do run. |
 | `mobile-ios` | needs a macOS runner with Xcode; on a Mac, `packages/mobile/README.md` has the build. |
 | `ci-watchdog` | GitHub run cancellation is replaced by the local fail-fast scheduler. |
@@ -103,7 +101,7 @@ throwaway container. `CI=true` and the `GITHUB_*`/`RUNNER_*` variables are set a
   staged, unstaged and untracked files all count. As in CI, the diff fails safe to everything.
 - `--list`: each workflow's jobs, their matrix legs, which jobs both carry, and which ci-local skips and why.
 - `--only <job,…>`: those jobs and the jobs they need. A job name from either workflow selects every matrix leg; a leg is
-  `linux-sandbox-foundation-ubuntu-22.04` or a Go shard such as `go-api-2`. `--no-deps` leaves the needed jobs out and reuses their artifacts from an earlier run.
+  a Go shard such as `go-api-2`. `--no-deps` leaves the needed jobs out and reuses their artifacts from an earlier run.
 - `--stress`: the Go and browser jobs run pinned (`taskset`) to a quarter of the CPUs (at least 2), beside one
   busy-loop process per pinned CPU. This brings out the timing flakes a loaded runner does: TOTP window edges,
   animation waits, fixed-millisecond checks and package timeouts.
@@ -134,7 +132,6 @@ anything else.
 - the system libraries Playwright's Chromium needs (`npx playwright install-deps chromium` on Debian/Ubuntu, or your
   distribution's packages)
 - a running PipeWire-Pulse or PulseAudio server and `pactl`, for the browser-media audio suites
-- the GTK3 headers and pkg-config (the Go jobs) and bsdtar from libarchive (the node job)
 - podman or docker, for go-postgres
 - network access to the release hosts that `install-ci-tool.sh` downloads from, to proxy.golang.org (govulncheck), and
   to unicode.org for the profile-text tables

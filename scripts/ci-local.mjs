@@ -202,13 +202,6 @@ function checkPrereq(m, job) {
     }
     return { ok: true, text: notes.join('\n'), env };
   }
-  if (m.tool === 'gtk') {
-    const r = spawnSync('pkg-config', ['--exists', 'gtk+-3.0'], { encoding: 'utf8' });
-    return r.status === 0 ? { ok: true, text: 'GTK3 headers found by pkg-config' } : { ok: false, text: 'pkg-config cannot find gtk+-3.0: install the GTK3 headers and pkg-config (Arch: pacman -S gtk3 pkgconf; Debian/Ubuntu: apt install libgtk-3-dev pkg-config)' };
-  }
-  if (m.tool === 'bsdtar') {
-    return has('bsdtar') ? { ok: true, text: 'bsdtar is on PATH' } : { ok: false, text: 'no bsdtar: install libarchive (Arch: pacman -S libarchive; Debian/Ubuntu: apt install libarchive-tools)' };
-  }
   if (m.tool === 'audio') {
     if (!has('pactl')) return { ok: false, text: `no pactl: install ${TOOL_HINTS.pactl}` };
     const r = spawnSync('pactl', ['info'], { encoding: 'utf8' });

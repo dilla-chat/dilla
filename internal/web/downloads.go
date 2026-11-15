@@ -16,7 +16,7 @@ import (
 )
 
 // These are separately embedded public documents, never executable client bytes.
-// downloads/brand.png is the existing packages/desktop/assets/tray.png.
+// downloads/brand.png is the existing clients/desktop/assets/brand/tray.png.
 //
 //go:embed downloads/index.html
 var downloadHTML []byte

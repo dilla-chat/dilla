@@ -1,5 +1,5 @@
 // Builds packages/mobile/dist, the webDir Capacitor copies into the iOS and Android apps:
-// the @dilla/web build (as packages/desktop/scripts/build.mjs copies it), plus the mobile CSP, the bridge and the picker.
+// the @dilla/web build (as the former Electron shell did, tag desktop-v0.1.0-beta.5, packages/desktop/scripts/build.mjs), plus the mobile CSP, the bridge and the picker.
 //   --client-dir=<dir>  use an existing mobile build of @dilla/web instead of building one (tests). packages/web/dist
 //                       is the web/desktop client (__DILLA_MOBILE__ false) and cannot run in the app.
 //   --out-dir=<dir>     write somewhere other than packages/mobile/dist (tests)

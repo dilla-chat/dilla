@@ -8,19 +8,19 @@ A Capacitor 8.6 shell around the bundled `@dilla/web` client. The app ships the 
 - `window.dillaMobile` (`src/bridge.ts`) implements the `MobileBridge` contract (`src/contract.ts`) that
   `packages/web/src/mobile.ts` reads: instance info, local notifications and their permission, haptics, pause/resume,
   switching instance, and browser sign-in.
-- Browser sign-in (`src/browser-auth.ts`) is the desktop poll flow: the system browser (`@capacitor/browser`: SFSafariViewController /
+- Browser sign-in (`src/browser-auth.ts`) is the system-browser poll flow (the one the former Electron desktop shell used): the system browser (`@capacitor/browser`: SFSafariViewController /
   Custom Tabs) opens `/desktop-auth/<id>`, and the app polls over **native HTTP** (`CapacitorHttp`), which sends no
   `Origin` header. `/desktop-auth/` refuses any foreign Origin, so the WebView's own `fetch` cannot be used there.
 - The instance picker (`src/picker.html`, `src/picker.ts`) keeps `instances` and `current` in `@capacitor/preferences`.
-  Instances are HTTPS origins with a DNS name (no base path, no IP literal), validated with a copy of desktop's
-  `canonicalInstance`, and probed with `GET <instance>/v1/instance` through the WebView's `fetch` (so through the
+  Instances are HTTPS origins with a DNS name (no base path, no IP literal), validated with a copy of the former Electron shell's
+  `canonicalInstance` (tag `desktop-v0.1.0-beta.5`), and probed with `GET <instance>/v1/instance` through the WebView's `fetch` (so through the
   server's CORS) before they are stored. The client's **Switch instance** (You, and the boot error screen) sends
   `switch-instance`, which returns to the picker.
 - App data is not backed up: Android sets `allowBackup="false"`, and iOS marks `Library/WebKit`, `Library/Cookies`
   and `Library/Application Support` as excluded from backup at launch (`AppDelegate.swift`).
 - All instances share the app's one origin, so the core worker keys each instance's OPFS store, KEK record and leader
   lock on `SHA-256(instance URL, 0x00, instanceId)` (client-core `worker/storage-key.ts`), never on the instanceId alone.
-- CSP (a `<meta>` in every page): desktop's policy with `'self'` for the local assets. Capacitor's native bridge
+- CSP (a `<meta>` in every page): the former Electron shell's policy with `'self'` for the local assets. Capacitor's native bridge
   is injected as a document-start script, which page CSP does not govern.
 
 ## Commands

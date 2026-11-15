@@ -4,7 +4,7 @@
 //! ([`InstanceGuard`]: a second window or another process cannot open it, and a removal refuses it), its window and
 //! its client. Closing a window drops only the window: the client, and the hold, stay until the instance is removed
 //! or the app quits, as the Electron shell keeps a closed window's client alive for background work
-//! (`packages/desktop/test/electron/shell.spec.ts`, "closing a window keeps the client alive"). Opening the instance
+//! (the former Electron shell, tag desktop-v0.1.0-beta.5, `packages/desktop/test/electron/shell.spec.ts`, "closing a window keeps the client alive"). Opening the instance
 //! again shows a new window on the running client.
 
 use std::any::Any;

@@ -1,7 +1,7 @@
-import type { BrowserAuthRequest, BrowserAuthResult } from '../../desktop/src/browser-auth.ts';
+import type { BrowserAuthRequest, BrowserAuthResult } from './contract.ts';
 import { canonicalInstance } from './instances.ts';
 
-// A port of packages/desktop/src/browser-auth.ts: the same flow, limits, timeouts and error strings, on WebCrypto.
+// A port of the former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/src/browser-auth.ts): the same flow, limits, timeouts and error strings, on WebCrypto.
 // The desktop-auth requests go through native HTTP (CapacitorHttp, wired in bridge.ts), never the WebView fetch:
 // a WebView request carries Origin: capacitor://localhost or https://localhost, and /desktop-auth/ refuses any
 // foreign Origin (internal/desktopauth/http.go). Native HTTP sends no Origin, as desktop's Node main process does.

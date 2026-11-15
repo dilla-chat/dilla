@@ -66,8 +66,6 @@ export const JOB_MAP = {
     changes: SHARED_JOBS.changes,
     'ci-watchdog': SHARED_JOBS['ci-watchdog'],
     'desktop-work-complete': { kind: 'aggregate', weight: 0 },
-    'linux-sandbox-foundation': { weight: 2, skip: 'requires disposable Ubuntu 22.04/24.04 native runners with privileged kernel fixtures' },
-    desktop: { weight: 4, skip: 'requires the Linux, Windows and macOS native platform acceptance runners in desktop.yml' },
     'core-integration': { weight: 2, group: 'e2e', ports: 'block' },
     // ci-areas.test.mjs's reader scan skips targets that do not exist: on a runner packages/web/dist never does when it runs.
     node: { weight: 2, locks: ['tracked-tree'], cleanTree: ['npm run test:ci-check'] },
@@ -213,9 +211,6 @@ const APT_RUNS = [
   /^bash scripts\/ci-apt-cache\.sh (?:prepare|stash)$/,
 ];
 
-// The runner installs bsdtar through scripts/ci-apt-install.sh, retried on Ubuntu mirror/DNS outages; locally it is a
-// prerequisite.
-const LIBARCHIVE_INSTALL = "command -v bsdtar >/dev/null || node scripts/retry-on.mjs --attempts 6 --wait 60 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh libarchive-tools";
 const PLAYWRIGHT_INSTALL =/^(?:npx playwright|node node_modules\/playwright\/cli\.js) install --with-deps ((?:chromium|firefox|webkit)(?: (?:chromium|firefox|webkit))*)$/;
 const CLANG_STEP_NAME = /^clang (\d+) for the wasm C build$/;
 const PRLIMIT_LINE = /^sudo prlimit --pid "\$\$" --memlock=(\d+):(\d+)$/;
@@ -319,8 +314,6 @@ export function classifyStep(step, job = {}) {
     if (!version) throw new Error(`step "${step.name}" no longer checks a clang version`);
     return { kind: 'prereq', tool: 'llvm', version, reason: 'apt.llvm.org packages: the local LLVM of the same line stands in' };
   }
-  if (/^sudo apt-get update && sudo apt-get install -y libgtk-3-dev(?: pkg-config)?$/.test(script)) return { kind: 'prereq', tool: 'gtk', reason: 'GTK3 headers and pkg-config must be installed locally' };
-  if (script === LIBARCHIVE_INSTALL) return { kind: 'prereq', tool: 'bsdtar', reason: 'libarchive-tools: bsdtar must be installed locally' };
   if (APT_RUNS.some((re) => re.test(script))) return { kind: 'noop', reason: 'apt cache: no apt here' };
   // The runner's AppArmor strips capabilities from unprivileged user namespaces; a local host either allows them,
   // and the Bot keeper's tests run, or they skip with that reason (internal/botsupervisor/keeper_linux_test.go).

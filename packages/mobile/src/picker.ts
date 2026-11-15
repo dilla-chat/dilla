@@ -1,4 +1,4 @@
-// The instance picker: a port of packages/desktop/src/manager.ts (list, add, connect) over @capacitor/preferences.
+// The instance picker: a port of the former Electron shell's picker (tag desktop-v0.1.0-beta.5, packages/desktop/src/manager.ts) (list, add, connect) over @capacitor/preferences.
 import { Preferences } from '@capacitor/preferences';
 import { addInstance, CONNECT_ERROR, currentInstance, listInstances, reachInstance, selectInstance } from './instances.ts';
 

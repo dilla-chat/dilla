@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { DesktopBridge, DesktopCommand, DesktopEvent } from '../../desktop/src/contract.ts';
+import type { DesktopBridge, DesktopCommand, DesktopEvent } from './desktop-contract.ts';
 import { UPGRADE_RELOAD_KEY, clearUpgradeReload, desktopNotificationCtor, startDesktopLifecycle, setDesktopGuard, startDesktopWindowLayout, upgradeRequired } from './desktop.ts';
 import { t } from './strings/index.ts';
 

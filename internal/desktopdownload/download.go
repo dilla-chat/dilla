@@ -1,7 +1,7 @@
 // Package desktopdownload answers /download/<platform> on a desktop-only instance
 // (`dillad serve --desktop-downloads`): it reads the desktop beta channel's signed
 // update feed from GitHub Pages, verifies it under the metadata keys the desktop app
-// pins (packages/desktop/release-trust.json), and redirects to that release's asset
+// pins (the former Electron shell's release-trust.json, tag desktop-v0.1.0-beta.5), and redirects to that release's asset
 // for the platform. The redirect URL is built from the verified version and the
 // expected asset name, never taken from the feed's text; anything that does not
 // verify gets a 503 page that links to the releases page instead.
@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	// FeedURL is the beta channel's signed metadata, as packages/desktop/src/updater.ts reads it.
+	// FeedURL is the beta channel's signed metadata, as the desktop updater reads it.
 	FeedURL = "https://dilla-chat.github.io/dilla/beta/desktop-beta.json"
 	// ReleasesPage is where a person goes when no verified download can be offered.
 	ReleasesPage = "https://github.com/dilla-chat/dilla/releases"
@@ -40,7 +40,7 @@ const (
 )
 
 // Platforms maps each /download/<platform> to the asset suffix the release workflow publishes
-// (packages/desktop/scripts/release-feed.mjs): dilla-<version>-<suffix>. There is no macOS Intel build.
+// (the release feed script): dilla-<version>-<suffix>. There is no macOS Intel build.
 var Platforms = map[string]string{
 	"linux-appimage": "linux-x64.AppImage",
 	"linux-deb":      "linux-x64.deb",

@@ -151,7 +151,6 @@ test('--list shows every workflow\'s jobs and what ci-local does with each', () 
   for (const name of ['mobile-e2e-tools', 'mobile-android', 'mobile-ios']) assert.ok(lines.some((l) => l.startsWith(`  ${name}  (skipped: `)), name);
   for (const name of ['mobile-unit', 'mobile-core-wasm', 'mobile-bundle']) assert.ok(lines.includes(`  ${name}`), name);
   assert.ok(lines.includes('  go  (legs go-1, go-2, go-3, go-4)'), lines.join('\n'));
-  assert.ok(lines.some((l) => l.startsWith('  desktop  (skipped: ')), lines.join('\n'));
   assert.equal(parseArgs(['--list']).list, true);
   assert.deepEqual(loadWorkflows(ROOT).parsed, PARSED);
 });
@@ -270,9 +269,6 @@ test('step mapping: GitHub-only steps become local equivalents, the rest runs as
   // The clang step (scripts/ci-llvm.sh) checks the local LLVM line its name gives instead of apt-installing it.
   const clang = steps('web-build').find((m) => m.tool === 'llvm');
   assert.equal(clang.version, '23');
-  // The apt installs of GTK3 headers and bsdtar are prerequisites, never sudo.
-  assert.ok(steps('go-lint').some((m) => m.kind === 'prereq' && m.tool === 'gtk'));
-  assert.ok(steps('node').some((m) => m.kind === 'prereq' && m.tool === 'bsdtar'));
   // install-ci-tool runs as written (pinned, hash-checked downloads), once per run.
   assert.ok(steps('go-lint').some((m) => m.memo === 'bash scripts/install-ci-tool.sh golangci-lint'));
   // sudo prlimit becomes an unprivileged prlimit; the cargo test still runs.
@@ -346,10 +342,10 @@ test('the ui job: every Storybook port moves with the block, and blocks never re
   for (const p of base) assert.ok(p >= UI_PORT_SPAN[0] && p <= UI_PORT_SPAN[1], `ui port ${p} is outside UI_PORT_SPAN, so the block probe misses it`);
 });
 
-/** The suites' sources the port blocks move: the core, web and voice configs and specs. */
+/** The suites' sources the port blocks move: the core and web configs and the e2e/web specs and support. */
 function suiteSources() {
   const e2e = join(ROOT, 'e2e');
-  const files = ['playwright.core.config.ts', 'playwright.web.config.ts', 'playwright.voice.config.ts'].map((f) => join(e2e, f));
+  const files = ['playwright.core.config.ts', 'playwright.web.config.ts'].map((f) => join(e2e, f));
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) walk(join(dir, entry.name));
@@ -357,11 +353,10 @@ function suiteSources() {
     }
   };
   walk(join(e2e, 'web'));
-  walk(join(e2e, 'voice'));
   return files.map((f) => [f, readFileSync(f, 'utf8')]);
 }
 
-test('every host, control and SFU port of the core, web and voice suites goes through e2ePort, within one block', () => {
+test('every host, control and SFU port of the core and web suites goes through e2ePort, within one block', () => {
   const used = [];
   for (const [file, text] of suiteSources()) {
     for (const [n, line] of text.split('\n').entries()) {

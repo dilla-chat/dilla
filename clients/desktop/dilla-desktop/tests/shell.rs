@@ -300,7 +300,7 @@ fn bounds(width: f32, height: f32) -> gpui::Bounds<gpui::Pixels> {
     )
 }
 
-/// packages/desktop/test/electron/shell.spec.ts `startup_and_sign_in_compact_window_expands_for_workspace`: the app starts
+/// The former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/test/electron/shell.spec.ts) `startup_and_sign_in_compact_window_expands_for_workspace`: the app starts
 /// in the 400x280 start window (not resizable), the sign-in takes the compact authentication shape (still 400 wide and
 /// fixed), and the workspace is 1240 wide and resizable with a 900x600 minimum.
 #[gpui::test]
@@ -362,7 +362,7 @@ fn startup_and_sign_in_compact_window_expands_for_workspace(cx: &mut TestAppCont
     assert!(resizable);
 }
 
-/// packages/desktop/test/electron/shell.spec.ts `resize_cannot_shrink_below_desktop_minimum`: the workspace window carries
+/// The former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/test/electron/shell.spec.ts) `resize_cannot_shrink_below_desktop_minimum`: the workspace window carries
 /// a 900x600 minimum (the platform enforces it on every resize), the compact windows are not resizable, and bounds kept
 /// under the minimum are restored at it.
 #[test]

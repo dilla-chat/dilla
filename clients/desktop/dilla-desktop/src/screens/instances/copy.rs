@@ -1,4 +1,4 @@
-//! The manager window's words: the copy of `packages/desktop/src/manager.{html,ts}` (the beta.5 Electron window), plus
+//! The manager window's words: the copy of `packages/desktop/src/manager.{html,ts}` (the beta.5 Electron window, tag desktop-v0.1.0-beta.5), plus
 //! the new removal, invite and 32-instance lines. None of them is in the web client's string catalogue
 //! (`strings.rs` is generated from `packages/web/src/strings/*.ts`), so they live here until the generator learns the
 //! manager's file; the report lists them.

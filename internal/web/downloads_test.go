@@ -197,7 +197,7 @@ func TestMigrationHTTPSRoundTripRetainsOriginalClientAtSameOrigin(t *testing.T) 
 func TestDownloadBrandReusesTheDesktopAsset(t *testing.T) {
 	client, _ := newSite(t)
 	rec := do(t, client.DownloadsFallback(server.NewMux()), "GET", "/desktop-download-brand.png", nil)
-	source, err := os.ReadFile("../../packages/desktop/assets/tray.png")
+	source, err := os.ReadFile("../../clients/desktop/assets/brand/tray.png")
 	if err != nil {
 		t.Fatal(err)
 	}

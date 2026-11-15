@@ -247,7 +247,7 @@ mod behaviour {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// packages/desktop/test/electron/shell.spec.ts, "downloads a decrypted local attachment while refusing blob document
+    /// The former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/test/electron/shell.spec.ts), "downloads a decrypted local attachment while refusing blob document
     /// navigation", for the native shell (it has no document to navigate): the card's Save opens bob's copy of alice's
     /// file, asks the save dialog for a path, and writes the decrypted bytes there, and nothing before the person picks
     /// the path. The blob-navigation half has no native counterpart.

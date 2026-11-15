@@ -46,12 +46,13 @@ As of the Signal redesign, wave B (unreleased, 2026-10-31), on top of web3.12 (2
 
 ![The call dock and the user panel up close](docs/user/screenshots/dock-desktop.png)
 
-### The native desktop preview (GPUI)
+### The native desktop client (GPUI)
 
-As of the screens wave 1 (2026-11-13). A Rust/GPUI desktop client in `clients/desktop` that is meant to replace the
-Electron shell. It is a preview you build from source ([how to run it](docs/user/desktop.md#native-desktop-preview-gpui)),
+As of the screens wave 1 (2026-11-13). The Rust/GPUI desktop client in `clients/desktop`. It replaces the Electron
+app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). There is no released
+build yet: you build it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)),
 it draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
-measured), and the Electron app stays the desktop app until the switch. What works today, screen by screen:
+measured). What works today, screen by screen:
 
 | Screen | State |
 |---|---|
@@ -131,9 +132,8 @@ For the native desktop preview:
 - Screen readers (they come after the switch) and push to talk while another window has focus.
 - On Linux, AltGr plus the push-to-talk key still opens the microphone (the other modifiers are refused).
 
-Beyond the web client: an [Electron validation shell](docs/user/desktop.md) is in development.
-The supported desktop release remains gated on Linux, Windows and macOS acceptance together;
-keep using the browser client. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no
+Beyond the web client: the native [desktop client](docs/user/desktop.md) is built from source and has no released
+build yet; the Electron app is discontinued at `desktop-v0.1.0-beta.5`. The browser client is deprecated. The [mobile app](docs/user/mobile.md) is a preview on TestFlight and as an APK. There is no
 published security review or published capacity report yet.
 
 ## Run it
@@ -160,7 +160,7 @@ camera and screen share, push to talk, the call code, AFK channels, sounds, and 
 |---|---|
 | `protocol/` | Normative protocol documents and conformance test vectors (Apache-2.0) |
 | `packages/protocol-vectors` | TypeScript reference implementation that generates the vectors (Apache-2.0) |
-| `packages/desktop` | Bundled Electron client, platform validation and packaging (not yet a supported release) |
+| `clients/desktop` | The native Rust/GPUI desktop client (built from source; no released build yet) |
 | `docs/superpowers/specs` | Product and system design specifications |
 | `docs/superpowers/plans` | Implementation plans |
 | `docs/design` | Design brief, and the Signal design reference in `docs/design/signal` (the current design) |

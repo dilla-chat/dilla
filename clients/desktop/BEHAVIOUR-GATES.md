@@ -1,13 +1,13 @@
 # Behaviour gates: the e2e suites mapped to the native client
 
-Every test title in `e2e/web`, `e2e/voice`, `e2e/media` and `packages/desktop/test/electron` has one row. The last cell says where the behaviour is held now:
+Every test title of `e2e/media` (read live) and of the retired `e2e/web`, `e2e/voice` and `packages/desktop/test/electron` suites has one row. The retired suites' titles are frozen at `desktop-v0.1.0-beta.5` in `clients/desktop/behaviour-gates-titles.tsv`; their sources are deleted. The last cell says where the behaviour is held now:
 
 - a Rust test, `crate::path::test_name` (`dilla-client`, `dilla-desktop`, `dilla-media`; `tests/<file>` is an integration test, `src/...` an inline test; every name is checked to exist);
 - `n/a (browser/phone only)` with the reason: the behaviour belongs to the browser or phone client, or to the Electron shell the native app replaces;
 - `next plan (native)`: native integrations (tray, deep links, updater, OS notifications and permission prompts, capture, accessibility) planned after the screens wave 1 (see the "Next plans" list of `docs/superpowers/plans/2026-11-13-gpui-desktop-screens-wave1.md`);
 - `TODO: crate::path::test_name`: in scope of wave 1 but with no Rust test yet; the proposed name is the work item of the Task 28 test lane.
 
-`scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of those directories and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
+`scripts/behaviour-gates.test.mjs` (CI test `behaviour_gate_table_complete`) parses the `test(` titles of `e2e/media` and the frozen titles file and fails on a title missing from this table, on a row whose title no e2e source has any more, and on a Rust reference that is not a real test function. Titles are the literal text of the e2e source (`test.describe` groups are not rows). When an e2e test is added, renamed or removed, change its row here.
 
 Totals: 233 e2e tests; 169 with a Rust test, 42 n/a (browser/phone only), 22 next plan (native), 0 TODO only (0 TODO tests proposed in all).
 

@@ -6,10 +6,10 @@ export interface PreferenceStore {
   set(options: { key: string; value: string }): Promise<void>;
 }
 
-/** The desktop picker's copy (packages/desktop/src/manager.ts), word for word. */
+/** The former Electron picker's copy (tag desktop-v0.1.0-beta.5, packages/desktop/src/manager.ts), word for word. */
 export const CONNECT_ERROR = 'Could not connect. Enter a complete HTTPS instance address, then try again.';
 
-// Copied from packages/desktop/src/policy.ts (canonicalInstance and unsafeUrl). Not imported: policy.ts pulls in
+// Copied from the former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/src/policy.ts) (canonicalInstance and unsafeUrl). Not imported: policy.ts pulls in
 // node:crypto and the desktop contract, which a WebView bundle cannot carry. Keep the two in step.
 const unsafeUrl = /[\s\\\u0000-\u001f\u007f]/;
 

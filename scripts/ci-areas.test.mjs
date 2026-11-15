@@ -70,13 +70,11 @@ test('the design tokens are read by a Go test, so they run the Go jobs too', () 
   assert.ok(jobRuns('server', 'go-api', outputs));
 });
 
-test('sandbox bootstrap changes run Go interop and retain web and desktop coverage', () => {
-  const outputs = areasFor(['packages/desktop/native/linux-sandbox/frontend/bootstrap.py']);
-  assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, mobile: false, code: true });
-  for (const job of ['go', 'go-native']) assert.ok(jobRuns('server', job, outputs), job);
-  for (const job of ['ui', 'desktop', 'linux-sandbox-foundation']) assert.ok(jobRuns('desktop', job, outputs), job);
-  const neighbor = areasFor(['packages/desktop/native/linux-sandbox/frontend/other.py']);
-  assert.deepEqual(neighbor, { go: false, core: false, web: true, e2e: true, text: false, mobile: false, code: true });
+test('the desktop brand tray icon is read by a Go test (internal/web/downloads_test.go), so it runs the Go jobs', () => {
+  const outputs = areasFor(['clients/desktop/assets/brand/tray.png']);
+  assert.equal(outputs.go, true);
+  assert.ok(jobRuns('server', 'go', outputs));
+  assert.ok(PATH_RULES.some((rule) => rule.areas.includes('go') && rule.patterns.includes('clients/desktop/assets/brand/tray.png')));
 });
 
 test('the LiveKit schema golden is read by the media checks, which run with web', () => {
@@ -112,13 +110,13 @@ test('a Go-only PR turns no desktop area on except through core', () => {
 test('the mobile lane runs for the apps and the client they bundle, never for a server-only or desktop-only change', () => {
   for (const file of ['packages/mobile/src/bridge.ts', 'packages/mobile/android/app/build.gradle', 'packages/mobile/ios/App/App/Info.plist', 'packages/web/src/mobile.ts',
     'packages/client-core/src/worker/storage-key.ts', 'packages/ui/src/Button.tsx', 'packages/media/src/x.ts', 'packages/design-tokens/src/x.ts',
-    'packages/desktop/src/browser-auth.ts', 'package-lock.json', 'e2e/web/support/native-https-proxy.mjs', 'core/dilla-core/src/lib.rs', 'Cargo.lock',
+    'package-lock.json', 'e2e/web/support/native-https-proxy.mjs', 'core/dilla-core/src/lib.rs', 'Cargo.lock',
     '.github/workflows/mobile.yml', 'scripts/ci-areas.mjs', 'scripts/ci-android.sh',
     // What the emulator smoke test runs beside the app: the test host, the native peer and the WASI core.
     'cmd/dilla-testhost/main.go', 'testkit/src/main.rs', 'core/dilla-core-wasi/src/lib.rs', 'packages/mobile/e2e/android-smoke.mjs']) {
     assert.deepEqual(ranJobs('mobile', areasFor([file])), Object.keys(JOB_GATES.mobile), file);
   }
-  for (const files of [['internal/api/messages.go'], ['cmd/dillad/main.go', 'go.sum'], ['packages/desktop/src/main.ts'], ['e2e/web/x.spec.ts'], ['docs/user/mobile.md']]) {
+  for (const files of [['internal/api/messages.go'], ['cmd/dillad/main.go', 'go.sum'], ['e2e/web/x.spec.ts'], ['docs/user/mobile.md']]) {
     assert.deepEqual(ranJobs('mobile', areasFor(files)), [], files.join(' '));
   }
   // A mobile-only change runs no Go job and no desktop lane beyond the code-gated script and artifact jobs.
@@ -250,13 +248,6 @@ test("a docs-only PR runs every workflow's changes job and reports its ok job", 
   }
 });
 
-test('Linux sandbox foundation shares desktop fail-safe code eligibility', () => {
-  assert.deepEqual(JOB_GATES.desktop['linux-sandbox-foundation'], ['e2e']);
-  for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {
-    assert.equal(jobRuns('desktop', 'linux-sandbox-foundation', outputs), jobRuns('desktop', 'desktop', outputs));
-  }
-});
-
 // The guard for the whole table: every file that a test or a build reads from another place must trigger the
 // reader's jobs when it changes. It scans the sources for relative paths in reads and resolves them.
 // Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.
@@ -268,8 +259,6 @@ const READER_PREFIX_AREA = [['packages/mobile/', 'mobile']];
 // A local generated dist must not make the scanner mistake it for an ordinary Go-job reader.
 const READER_PATH_AREA = {
   'internal/web/webdist_test.go': 'web',
-  // Desktop units run in the reusable desktop workflow, whose real gate is e2e.
-  'packages/desktop/test/linux-appimage-launcher.test.ts': 'e2e',
 };
 
 function relativeReads(file, text) {
@@ -286,14 +275,6 @@ function relativeReads(file, text) {
   }
   return reads.filter((read) => read.startsWith('..'));
 }
-
-test('native maintenance diagnostic audit follows its exact Go source dependency',()=>{
- const path='internal/desktopsandbox/native_root_linux_test.go';assert.equal(areasFor([path]).web,true);
- assert.equal(areasFor(['internal/desktopsandbox/another_native_test.go']).web,false);
- const index=PATH_RULES.findIndex(rule=>rule.patterns.length===1&&rule.patterns[0]===path&&rule.areas.join(',')==='web');assert.ok(index>=0);
- const [rule]=PATH_RULES.splice(index,1);
- try{assert.equal(areasFor([path]).web,false,'omitting the exact dependency loses the privacy audit consumer');}finally{PATH_RULES.splice(index,0,rule);}
-});
 
 test('every path the code reads from another place is covered by a rule', () => {
   const found = [];

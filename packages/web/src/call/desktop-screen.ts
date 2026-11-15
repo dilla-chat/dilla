@@ -1,5 +1,5 @@
 import { desktopBridge } from '../desktop.ts';
-import type { ScreenCaptureOptions, ScreenCaptureSource } from '../../../desktop/src/contract.ts';
+import type { ScreenCaptureOptions, ScreenCaptureSource } from '../desktop-contract.ts';
 
 type GeneratedTrack = MediaStreamTrack & { writable: WritableStream<VideoFrame> };
 type GeneratorConstructor = new (options: { kind: 'video' }) => GeneratedTrack;

@@ -1,5 +1,4 @@
 import { test as base, expect, type BrowserContext, type BrowserType, type Page, type TestInfo } from '@playwright/test';
-import { desktopE2E, launchDesktopContext } from './electron.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, rmSync } from 'node:fs';
@@ -18,14 +17,6 @@ type Fixtures = {
 };
 
 export const test = base.extend<Fixtures>({
-  browser: async ({ browser, launchOptions }, use) => {
-    if (!desktopE2E()) { await use(browser); return; }
-    const original = browser.newContext.bind(browser);
-    const contexts: BrowserContext[] = [];
-    browser.newContext = async options => { const context = await launchDesktopContext(null, { ...options, launchOptions }, false, true, base.info()); contexts.push(context); return context; };
-    try { await use(browser); }
-    finally { browser.newContext = original; await Promise.all(contexts.map(context => context.close())); }
-  },
   profileDir: async ({}, use, testInfo: TestInfo) => {
     const dir = profileDirFor(testInfo.project.name, testInfo.workerIndex);
     rmSync(dir, { recursive: true, force: true });
@@ -37,14 +28,12 @@ export const test = base.extend<Fixtures>({
   // tracing on every context launchPersistentContext makes and keeps the trace when the test fails
   // (playwright 1.63.0, lib/index.js:134-145, 648-651); a second tracing.start throws
   // "Tracing has been already started".
-  holder: async ({ playwright, browserName, launchOptions, headless, channel, viewport, baseURL, profileDir, permissions }, use, info) => {
+  holder: async ({ playwright, browserName, launchOptions, headless, channel, viewport, baseURL, profileDir }, use) => {
     const holder: Holder = {
       context: null,
       open: async () => {
         const type: BrowserType = playwright[browserName];
-        const context = desktopE2E()
-          ? await launchDesktopContext(profileDir, { launchOptions, viewport, baseURL, permissions }, true, false, info)
-          : await type.launchPersistentContext(profileDir, { ...launchOptions, headless, channel, viewport, baseURL });
+        const context = await type.launchPersistentContext(profileDir, { ...launchOptions, headless, channel, viewport, baseURL });
         holder.context = context;
         return context;
       },

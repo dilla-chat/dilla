@@ -1,6 +1,6 @@
 name: desktop-gpui
-# The native GPUI desktop client (clients/desktop). Separate from desktop.yml / desktop-ci.yml, which are the
-# Electron client's; this one builds, lints and tests only the GPUI crates and the parity harness.
+# The native GPUI desktop client (clients/desktop). desktop-ci.yml (check desktop-ok) runs the shared web, UI and core
+# checks; this one builds, lints and tests only the GPUI crates and the parity harness.
 on:
   push:
     branches: [main]

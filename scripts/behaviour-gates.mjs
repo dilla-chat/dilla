@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * The behaviour-gate table of the GPUI desktop client (clients/desktop/BEHAVIOUR-GATES.md): every test title in the e2e suites
- * of the web, voice, media and Electron clients maps to the Rust test that now holds that behaviour, to "n/a (browser/phone only)"
+ * The behaviour-gate table of the GPUI desktop client (clients/desktop/BEHAVIOUR-GATES.md): every test title of the e2e/media
+ * suite (read live) and of the retired web, voice and Electron suites (frozen at desktop-v0.1.0-beta.5 in
+ * clients/desktop/behaviour-gates-titles.tsv, `file<TAB>title` rows; those directories are deleted) maps to the Rust test that now holds that behaviour, to "n/a (browser/phone only)"
  * with its reason, to "next plan (native)", or to a "TODO: <proposed test name>" the Task 28 test lane writes.
  * scripts/behaviour-gates.test.mjs (CI: desktop-gpui.yml, `npm run ci:local`) fails on an e2e title missing from the table, on a
  * table row whose title no e2e source has any more, and on a Rust reference whose test function does not exist.
@@ -13,8 +14,10 @@ import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-/** The e2e directories the table covers (the Electron suite is Playwright's `_electron`, so the same `test(` titles). */
-export const E2E_DIRS = ['e2e/web', 'e2e/voice', 'e2e/media', 'packages/desktop/test/electron'];
+/** The e2e directories read live; e2e/web, e2e/voice and packages/desktop/test/electron are read from FROZEN_TITLES. */
+export const E2E_DIRS = ['e2e/media'];
+/** The titles of the retired suites, frozen at desktop-v0.1.0-beta.5: `file<TAB>title` per line. */
+export const FROZEN_TITLES = 'clients/desktop/behaviour-gates-titles.tsv';
 export const TABLE = 'clients/desktop/BEHAVIOUR-GATES.md';
 
 function walk(dir) {
@@ -47,9 +50,18 @@ export function titlesOf(source) {
   return titles;
 }
 
-/** Every `[file, title]` of the e2e suites, in file then source order. `file` is repo-relative with `/`. */
+/** The frozen `[file, title]` rows of the retired suites. */
+export function frozenTitles(root = ROOT) {
+  return readFileSync(join(root, FROZEN_TITLES), 'utf8').split(/\r?\n/).filter(Boolean).map((line) => {
+    const tab = line.indexOf('\t');
+    if (tab < 0) throw new Error(`a frozen title row needs file<TAB>title: ${line.slice(0, 120)}`);
+    return [line.slice(0, tab), line.slice(tab + 1)];
+  });
+}
+
+/** Every `[file, title]`: the frozen rows first, then the live e2e suites in file then source order. `file` is repo-relative with `/`. */
 export function e2eTitles(root = ROOT) {
-  const out = [];
+  const out = frozenTitles(root);
   for (const dir of E2E_DIRS) {
     for (const path of walk(join(root, dir)).filter((p) => p.endsWith('.spec.ts')).sort()) {
       const file = relative(root, path).split(sep).join('/');

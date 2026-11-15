@@ -657,7 +657,7 @@ impl gpui::Render for CopyHost {
     }
 }
 
-/// packages/desktop/test/electron/shell.spec.ts, "focused copy writes text to the system clipboard while clipboard reads
+/// The former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/test/electron/shell.spec.ts), "focused copy writes text to the system clipboard while clipboard reads
 /// and hidden writes stay denied", for the native shell: drawing the section (its window active or not) writes nothing
 /// to the system clipboard; the person's own action on the focused Copy codes button (Tab to it, Enter) writes exactly
 /// the codes; the copy reads nothing back from the clipboard (a text the person put there stays until that action).

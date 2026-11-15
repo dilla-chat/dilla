@@ -1564,7 +1564,7 @@ and when the other tab closes it takes over by itself.
   identity" warning in your conversations and must sign in again (section 6); it cannot be compared.
 - After a reload, Privacy forgets that a changed contact left a conversation (the contact still shows as changed
   until you compare), and the changed-identity alert opens Privacy rather than the comparison itself.
-- No Electron desktop app, no server-readable channels, and no settings shared between your browsers (each keeps
+- No Electron desktop app (it is discontinued; the native desktop client is built from source), no server-readable channels, and no settings shared between your browsers (each keeps
   its own). A second tab never shows the first tab's conversations.
 - If the page is reloaded while the account is being created, the account is finished but the server the
   invite named is not joined; paste the invite into **Join a server**.

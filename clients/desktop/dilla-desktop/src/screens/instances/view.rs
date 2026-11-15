@@ -1,4 +1,4 @@
-//! The "Dilla - your instances" window's content (`packages/desktop/src/manager.{html,css,ts}`): the brand, the heading,
+//! The "Dilla - your instances" window's content (the former Electron shell, tag desktop-v0.1.0-beta.5, `packages/desktop/src/manager.{html,css,ts}`): the brand, the heading,
 //! a field to connect by address, a field to join by a pasted invite, the list of instances and the footer.
 //!
 //! Sizes are the CSS's rem values (`rem_size`), never literal pixels. Keyboard: Tab runs address field, Connect,

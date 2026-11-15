@@ -1,4 +1,4 @@
-//! The window's shapes (packages/desktop `window-layout.ts` `windowShape`): the start window, the compact sign-in window
+//! The window's shapes (the former Electron shell, tag desktop-v0.1.0-beta.5, packages/desktop `window-layout.ts` `windowShape`): the start window, the compact sign-in window
 //! and the workspace. All dimensions are logical px. Pure: `lib.rs` turns a shape into GPUI window options, and
 //! [`restore_bounds`] decides where the workspace opens from the bounds the app kept.
 

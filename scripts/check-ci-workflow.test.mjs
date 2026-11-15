@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -29,196 +29,8 @@ const checkWorkflow = (root) => [...checkServerWorkflow(root), ...checkDesktopCi
 // The file that reports on a job a fixture edits (its first occurrence).
 const fileOfJob = (job) => (REQUIRED_JOBS.server.includes(job) ? 'server.yml' : 'desktop-ci.yml');
 
-test('whole-module Go jobs provision GTK development files before package loading', () => {
-  for (const name of ['go', 'go-checks', 'go-lint', 'go-vuln']) {
-    const body = new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm').exec(REAL_CI)[0];
-    const steps = jobSteps(body);
-    const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
-    const load = steps.findIndex(step => step.some(line => /(?:go vet|golangci-lint run|govulncheck@\S+) \.\/\.\.\.|node scripts\/go-shard\.mjs run go /.test(line)));
-    assert.ok(gtk >= 0 && gtk < load, name + ' must install GTK before loading the Linux cgo frontend');
-  }
-});
-
-test('GTK provisioning cannot be omitted, postponed or bypassed by excluding cgo', () => {
-  for (const name of ['go', 'go-checks', 'go-lint', 'go-vuln']) {
-    const body = jobBody(name), setup = '      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n';
-    assert.ok(body.includes(setup), name);
-    for (const changed of [body.replace(setup, ''), body.replace('libgtk-3-dev', 'libgtk-3-0'),
-      body.replace(setup, '      - if: false\n        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n'),
-      body.replace(setup, '') + setup]) {
-      assert.ok(checkWorkflow(fixture(GOOD.replace(body, () => changed))).some(problem => problem.includes('GTK')), name);
-    }
-  }
-  const body = jobBody('go-vuln');
-  for (const changed of [body.replace('run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...', 'run: CGO_ENABLED=0 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...'),
-    body.replace('    steps:', '    env:\n      CGO_ENABLED: 0\n    steps:')]) {
-    assert.notEqual(changed, body);
-    assert.ok(checkWorkflow(fixture(GOOD.replace(body, () => changed))).some(problem => problem.includes('GTK')));
-  }
-});
-
-test('Linux sandbox foundation has independent native Ubuntu lanes ahead of desktop', () => {
-  assert.match(REAL_CI, /^  linux-sandbox-foundation:\n    needs: \[changes\]/m);
-  const body = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_CI)?.[0] ?? '';
-  assert.match(body, /os: ubuntu-22\.04, lane: namespace/);
-  assert.match(body, /os: ubuntu-24\.04, lane: managed/);
-  assert.match(body, /xvfb-run -a dbus-run-session -- node --test packages\/desktop\/test\/native\/linux-sandbox-foundation\.test\.mjs/);
-  assert.match(body, /id: sandbox_foundation/);
-  assert.match(body, /steps\.sandbox_foundation\.outcome\)\n        uses: actions\/upload-artifact@/);
-  assert.match(REAL_CI, /  desktop:\n    needs: \[[^\]\n]*\blinux-sandbox-foundation\]/);
-});
-
-test('Linux sandbox foundation rejects omitted lanes, fake proofs and delayed or weakened execution', () => {
-  const body = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(GOOD)[0];
-  for (const [before, after] of [
-    ['needs: [changes]', 'needs: [changes, web-build]'],
-    ['timeout-minutes: 15', 'timeout-minutes: 90'],
-    ['fail-fast: true', 'fail-fast: false'],
-    ['os: ubuntu-22.04, lane: namespace', 'os: ubuntu-24.04, lane: namespace'],
-    ['          - { os: ubuntu-24.04, lane: managed }\n', ''],
-    ['lane: managed', 'lane: namespace'],
-    ['persist-credentials: false', 'persist-credentials: true'],
-    ['node-version-file: .nvmrc', 'node-version: latest'],
-    ['actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1', 'actions/setup-node@1111111111111111111111111111111111111111'],
-    ['run: npm ci', 'run: npm install'],
-    ['node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs', 'node --test --test-name-pattern=kernel packages/desktop/test/native/linux-sandbox-foundation.test.mjs'],
-    ['DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}', 'DILLA_LINUX_SANDBOX_FOUNDATION_LANE: omitted'],
-    ['      - id: sandbox_foundation\n        run: xvfb-run', '      - id: sandbox_foundation\n        if: false\n        run: xvfb-run'],
-    ['    steps:', '    env:\n      APPIMAGE_EXTRACT_AND_RUN: 1\n    steps:'],
-    ['          sudo apt-get update', '          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n          sudo apt-get update'],
-    ['          if-no-files-found: error', '          if-no-files-found: ignore'],
-    ["      - if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)\n        uses: actions/upload-artifact@", '      - uses: actions/upload-artifact@'],
-    ["steps.sandbox_foundation.outcome)","steps.sandbox_maintenance.outcome)"],
-    ["always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)","always()"],
-  ]) {
-    const changed = body.replace(before, after); assert.notEqual(changed, body, before);
-    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('Linux sandbox foundation')), before);
-  }
-  assert.ok(checkWorkflow(fixture(GOOD.replace(body, ''))).some(problem => problem.includes('missing job "linux-sandbox-foundation"')));
-  const changed = GOOD.replace(', linux-sandbox-foundation]', ']');
-  assert.notEqual(changed, GOOD);
-  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('desktop') && problem.includes('Linux sandbox foundation')));
-});
-
-const MAINTENANCE_CLEANUP_IF = `always() && matrix.lane == 'managed' && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_maintenance.outcome)`;
-const MAINTENANCE_PORTABLE = 'node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs';
-const MAINTENANCE_NATIVE = 'node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs';
-const MAINTENANCE_CLEANUP = 'node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only';
-
-test('managed maintenance CI runs portable controls then pinned Go/native/always cleanup before unchanged foundation',()=>{
- const body=jobBody('linux-sandbox-foundation'),steps=jobSteps(body);
- const index=command=>steps.findIndex(step=>step.includes('run: '+command));
- const portable=index(MAINTENANCE_PORTABLE),go=steps.findIndex(step=>step.includes('uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7'));
- const native=index(MAINTENANCE_NATIVE),cleanup=index(MAINTENANCE_CLEANUP),foundation=index('xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs');
- assert.ok(portable>=0&&go>portable&&native>go&&cleanup>native&&foundation>cleanup);
- for(const step of [steps[portable],steps[go],steps[native]])assert.ok(step.includes("if: matrix.lane == 'managed'"));
- assert.ok(steps[native].includes('id: sandbox_maintenance'));assert.ok(steps[native].includes('DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed'));
- assert.ok(steps[cleanup].includes('if: '+MAINTENANCE_CLEANUP_IF));assert.ok(steps[cleanup].includes('timeout-minutes: 1'));
- const proof=steps.find(step=>step.includes('path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json'));
- assert.ok(steps.indexOf(proof)>cleanup&&steps.indexOf(proof)<foundation);
- assert.ok(proof.includes('if-no-files-found: error'));assert.ok(proof.includes('if: '+MAINTENANCE_CLEANUP_IF));assert.ok(proof.includes('retention-days: 3'));
-});
-
-test('managed maintenance CI refuses omissions, broad guards, late cleanup, setup drift and filtered native execution',()=>{
- const body=jobBody('linux-sandbox-foundation');const steps=jobSteps(body);
- for(const [before,after]of [
-  [MAINTENANCE_PORTABLE,MAINTENANCE_PORTABLE+' --test-name-pattern=partial'],
-  [MAINTENANCE_NATIVE,MAINTENANCE_NATIVE.replace('node --test','node --test --test-name-pattern=kernel')],
-  [MAINTENANCE_CLEANUP,MAINTENANCE_CLEANUP.replace(' --cleanup-only','')],
-  ['timeout-minutes: 1\n        run: '+MAINTENANCE_CLEANUP,'timeout-minutes: 15\n        run: '+MAINTENANCE_CLEANUP],
-  [MAINTENANCE_CLEANUP_IF,'always()'],
-  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace("matrix.lane == 'managed' && ",'')],
-  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace('"cancelled"','"skipped"')],
-  [MAINTENANCE_CLEANUP_IF,MAINTENANCE_CLEANUP_IF.replace('always()','success()')],
-  ['actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e','actions/setup-go@1111111111111111111111111111111111111111'],
-  ['path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json','path: packages/desktop/test-results/**'],
-  ['name: linux-sandbox-maintenance-managed\n          path:', 'name: linux-sandbox-maintenance-managed\n          if-no-files-found: ignore\n          path:'],
- ]){
-  const changed=body.replace(before,after);assert.notEqual(changed,body,before);
-  assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')),before);
- }
- for(const command of [MAINTENANCE_PORTABLE,MAINTENANCE_NATIVE,MAINTENANCE_CLEANUP]){
-  const step=steps.find(step=>step.includes('run: '+command));assert.ok(step);
-  // Drop the complete YAML step, not merely a token in a comment.
-  const lines=body.split('\n'),start=lines.findIndex(line=>line.trim()==='run: '+command||line.trim()==='- run: '+command);assert.ok(start>=0);
-  let first=start;while(first>0&&!lines[first].startsWith('      - '))first--;
-  let last=first+1;while(last<lines.length&&!lines[last].startsWith('      - '))last++;
-  const changed=[...lines.slice(0,first),...lines.slice(last)].join('\n');
-  assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
- }
- // Moving the cleanup behind the mounted foundation could leave privileged
- // leftovers throughout unrelated Electron execution; order is part of proof.
- const cleanupStart=body.indexOf('      - name: Cleanup root sandbox maintenance fixture');assert.ok(cleanupStart>=0);
- const cleanupEnd=body.indexOf('      - ',cleanupStart+8);const block=body.slice(cleanupStart,cleanupEnd);
- const changed=body.slice(0,cleanupStart)+body.slice(cleanupEnd)+block;
- assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
-});
-
-test('managed maintenance cleanup allowance is confined to exact job and finalizer blocks',()=>{
- const body=jobBody('linux-sandbox-foundation');const lines=body.split('\n');
- function blockContaining(text){const at=lines.findIndex(line=>line.includes(text));assert.ok(at>=0,text);let start=at;while(start>0&&!lines[start].startsWith('      - '))start--;let end=start+1;while(end<lines.length&&!lines[end].startsWith('      - '))end++;return lines.slice(start,end).join('\n').replace(/\n*$/,'')+'\n';}
- const setup=blockContaining('uses: actions/setup-go@'),cleanup=blockContaining('name: Cleanup root sandbox maintenance fixture'),artifact=blockContaining('name: Preserve root sandbox maintenance proof');
- for(const changed of [body.replace(setup,''),body.replace(setup,setup.replace("        if: matrix.lane == 'managed'\n",'')),body.replace(setup,'')+setup,body.replace(artifact,''),
-  body.replace(cleanup,cleanup.replace('        run:', '        continue-on-error: true\n        run:')),
-  body.replace(cleanup,cleanup.replace(MAINTENANCE_CLEANUP,MAINTENANCE_CLEANUP+' || true')),
-  body.replace(artifact,artifact.replace('if-no-files-found: error','if-no-files-found: ignore')),
-  body.replace(artifact,artifact.replace('retention-days: 3','retention-days: 90'))]){
-  assert.notEqual(changed,body);assert.ok(checkWorkflow(fixture(GOOD.replace(body,changed))).some(problem=>problem.includes('Linux sandbox foundation')));
- }
- const otherJob=GOOD.replace(NPM_TEST,cleanup+NPM_TEST);assert.notEqual(otherJob,GOOD);
- assert.ok(checkWorkflow(fixture(otherJob)).some(problem=>problem.includes('R22')&&problem.includes('always()')));
- const rebuilt=body.replace(cleanup,cleanup.replace(MAINTENANCE_CLEANUP,MAINTENANCE_NATIVE));
- assert.ok(checkWorkflow(fixture(GOOD.replace(body,rebuilt))).some(problem=>problem.includes('R22')&&problem.includes('always()')));
-});
-
-test('Linux sandbox foundation is required exactly once by completion and final gates', () => {
-  for (const name of ['desktop-work-complete', 'desktop-ok']) {
-    const body = jobBody(name);
-    for (const replacement of ['', 'linux-sandbox-foundation, linux-sandbox-foundation, ']) {
-      const changed = body.replace('linux-sandbox-foundation, ', replacement); assert.notEqual(changed, body);
-      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => name === 'desktop-ok' ? problem.includes('"desktop-ok"') : problem.includes('completion barrier')));
-    }
-  }
-});
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
-const ELECTRON_RUN = "node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js";
-const REAL_DESKTOP = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop.yml'), 'utf8');
-test('desktop checker refuses missing installed native package acceptance gates', () => {
- const block = REAL_DESKTOP.split('\n  native-linux-package-acceptance:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
- const root = fixture(GOOD);
- writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace('\n  native-linux-package-acceptance:\n' + block, ''));
- assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native package acceptance')));
-});
-test('native format acceptance rejects skipped/commented runs, omitted formats and foreign artifacts', () => {
- const block = REAL_DESKTOP.split('\n  native-linux-package-acceptance:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
- assert.ok(block);
- for (const [before, after] of [
-  ['format: aur, label: AUR', 'format: aur, label: RPM'],
-  ['needs: [test-tools, native-linux-packages]', 'needs: test-tools'],
-  ['persist-credentials: false', 'persist-credentials: true'],
-  ['run: bash e2e/web/support/native-linux-package-run.sh', '# run: bash e2e/web/support/native-linux-package-run.sh'],
-  ['name: Installed ${{ matrix.label }} package acceptance', 'name: Installed ${{ matrix.label }} package acceptance\n        if: false'],
-  ['name: desktop-installers-linux-packages-x64', 'run-id: 123\n          name: desktop-installers-linux-packages-x64'],
- ]) {
-  assert.ok(block.includes(before));
-  const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(block, block.replace(before, after)));
-  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native package acceptance')), before);
- }
-});
-test('desktop workflow checker requires the native feasibility job and its installed ASAR comparison', () => {
- const stock = /^  native-stock-feasibility:\n[\s\S]*?(?=^  [a-z][\w-]*:)/m.exec(REAL_DESKTOP)[0];
- for (const [before, after] of [
-  ['  native-stock-feasibility:', '  removed-stock-feasibility:'],
-  ['          cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar', '          # cmp "$RUNNER_TEMP/native-extracted/opt/Dilla/resources/app.asar" /opt/Dilla/resources/app.asar'],
-  ['          persist-credentials: false', '          persist-credentials: true'],
- ]) {
-  const root = fixture(GOOD), changed = REAL_DESKTOP.replace(stock, stock.replace(before, after));
-  assert.notEqual(changed, REAL_DESKTOP);
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native stock feasibility')));
- }
-});
 function addE2ePackage(root) {
   mkdirSync(join(root, 'e2e'), { recursive: true });
   writeFileSync(join(root, 'e2e/package.json'), readFileSync(join(REPO_ROOT, 'e2e/package.json')));
@@ -227,7 +39,6 @@ function addE2ePackage(root) {
 test('desktop-only CI keeps shared core security and removes unsupported browser client lanes', () => {
   assert.doesNotMatch(REAL_CI, /^  (?:firefox-[^:]+|webkit-[^:]+|chromium-(?:web-[123]|voice|core)):/m);
   assert.match(REAL_CI, /^  core-integration:/m);
-  assert.match(REAL_CI, /uses: \.\/.github\/workflows\/desktop.yml/);
   const scripts = JSON.parse(readFileSync(join(REPO_ROOT, 'e2e/package.json'), 'utf8')).scripts;
   for (const name of ['test:e2e:matrix', 'test:e2e:media', 'test:e2e:spike', 'test:e2e:core']) assert.doesNotMatch(scripts[name], /firefox|webkit/);
 });
@@ -236,235 +47,6 @@ test('CI refuses reinstalling an unsupported compatibility browser in shared har
   const changed = GOOD.replace('npx playwright install --with-deps chromium', 'npx playwright install --with-deps chromium firefox');
   assert.notEqual(changed, GOOD);
   assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('unsupported browser engine')));
-});
-
-test('desktop acceptance requires every native target, Electron tests, packaging and fuse verification', () => {
-  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
-  for (const removed of ['node packages/desktop/scripts/prepare-browser-sandbox.mjs', 'node packages/desktop/scripts/run-performance.mjs', 'name: Desktop performance comparison', 'name: desktop-performance-', 'playwright.desktop-voice.config.ts', 'DILLA_E2E_NOTIFICATIONS', 'dunst', 'with-window-manager.sh', 'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'Application audio encryption and exclusion', 'application-audio.spec.ts', 'os: macos-15,', 'npm run typecheck -w @dilla/desktop', 'npm run build:validation -w @dilla/desktop', 'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs', 'node --test packages/desktop/test/native/installed-upgrade.test.mjs', 'libfuse2t64', 'name: desktop-installed-upgrade-', 'npm run dist -w @dilla/desktop', 'arch: x64, shard: 3', "specs: 'web/installed-upgrade-account.spec.ts", 'os: [ubuntu-24.04, windows-latest, macos-15]', 'playwright.desktop.config.ts']) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-ci-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll(removed, 'removed'));
-    assert.ok(checkDesktopWorkflow(root).length > 0, removed);
-  }
-});
-
-test('installed Linux sandbox preparation cannot lose build prerequisites, controls or exact proof', () => {
- for(const [before,after] of [
-  ['libgtk-3-dev pkg-config','libgtk-3-0'],
-  ['node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out','true'],
-  ["name: Linux AppImage final package inspection mutations\n        if: runner.os == 'Linux'","name: Linux AppImage final package inspection mutations\n        if: false"],
-  ['packages/desktop/out/*.sandbox.json','packages/desktop/out/*.other'],
-  ['CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap','true'],
-  ['node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs','node --test --test-name-pattern=none packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs'],
-  ["name: Linux installed sandbox prerequisite controls\n        if: runner.os == 'Linux'","name: Linux installed sandbox prerequisite controls\n        if: false"],
-  ['path: ${{ runner.temp }}/dilla-installed-sandbox-initial.json','path: unknown.json'],
-  ["name: Initial installed sandbox prerequisite proof\n        if: runner.os == 'Linux'","name: Initial installed sandbox prerequisite proof\n        if: always()"],
- ]){
-  const root=fixture(GOOD),changed=REAL_DESKTOP.replaceAll(before,after);assert.notEqual(changed,REAL_DESKTOP,before);
-  writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
-  assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed sandbox')),before);
- }
-});
-
-test('native desktop Go setup remains unconditional for every platform', () => {
- const before = 'cache: npm\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7';
- assert.ok(REAL_DESKTOP.includes(before)); assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
- for (const guard of ["runner.os == 'Windows'", "runner.os == 'Linux'", 'false', 'success()']) {
-  const root=fixture(GOOD), changed=REAL_DESKTOP.replace(before, `cache: npm\n      - if: ${guard}\n        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7`);
-  assert.notEqual(changed,REAL_DESKTOP); writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
-  assert.ok(checkDesktopWorkflow(root).some(problem=>problem.includes('pinned native Go')),guard);
- }
- const block='      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7\n        with:\n          go-version-file: go.mod\n          cache-dependency-path: go.sum\n';
- const nativeStart=REAL_DESKTOP.indexOf('  native:\n'), at=REAL_DESKTOP.indexOf(block,nativeStart); assert.ok(at>=0);
- const without=REAL_DESKTOP.slice(0,at)+REAL_DESKTOP.slice(at+block.length), unit='      - run: npm test -w @dilla/desktop\n', unitAt=without.indexOf(unit,nativeStart); assert.ok(unitAt>=0);
- const reordered=without.slice(0,unitAt+unit.length)+block+without.slice(unitAt+unit.length), root=fixture(GOOD);
- writeFileSync(join(root,'.github/workflows/desktop.yml'),reordered); assert.ok(checkDesktopWorkflow(root).some(problem=>problem.includes('pinned native Go')));
-});
-
-test('every macOS Electron consumer seals its npm runtime immediately after installation', () => {
- assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
- const seal = "      - name: Seal macOS npm Electron runtime for native notifications\n        if: runner.os == 'macOS'\n        run: node e2e/web/support/prepare-mac-electron-runtime.ts\n";
- const install = ELECTRON_DOWNLOAD;
- for (const job of ['native', 'client', 'voice']) {
-  const start = REAL_DESKTOP.indexOf(`\n  ${job}:\n`);
-  const tail = REAL_DESKTOP.slice(start), next = /\n  [a-z][a-z0-9-]*:\n/.exec(tail.slice(1));
-  const end = next ? start + 1 + next.index : REAL_DESKTOP.length;
-  const body = REAL_DESKTOP.slice(start, end);
-  assert.ok(body.includes(install + seal), job);
-  for (const changed of [body.replace(seal, ''), body.replace(seal, seal.replace("runner.os == 'macOS'", "runner.os == 'Linux'")),
-   body.replace(install + seal, seal + install), body.replace(seal, '') + seal]) {
-   const root = fixture(GOOD);
-   writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.slice(0, start) + changed + REAL_DESKTOP.slice(end));
-   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('macOS npm Electron runtime') && problem.includes(job)), job);
-  }
- }
-});
-
-test('native failure diagnostics run only after a successful desktop build', () => {
- const guard="if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''";
- const before=`${guard}\n        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: desktop-failure-`;
- assert.ok(REAL_DESKTOP.includes(before)); assert.deepEqual(checkDesktopWorkflow(REPO_ROOT),[]);
- for(const replacement of ['failure()', "failure() && steps.desktop-build.outcome != 'success'", 'always()']) {
-  const root=fixture(GOOD), changed=REAL_DESKTOP.replace(before,before.replace(guard,`if: ${replacement}`)); assert.notEqual(changed,REAL_DESKTOP);
-  writeFileSync(join(root,'.github/workflows/desktop.yml'),changed); assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')),replacement);
- }
- const block=`${before}\${{ matrix.platform }}-\${{ matrix.arch }}\n          path: packages/desktop/test-results\n          if-no-files-found: error`;
- assert.ok(REAL_DESKTOP.includes(block));
- for(const changed of [REAL_DESKTOP.replace(block,block.replace('if-no-files-found: error','if-no-files-found: warn')),REAL_DESKTOP.replace(block,block.replace('packages/desktop/test-results','packages/desktop/missing')),REAL_DESKTOP.replace('id: desktop-build','id: other-build'),
-  REAL_DESKTOP.replace('        shell: bash\n        run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log','        shell: bash\n        continue-on-error: true\n        run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log'),
-  REAL_DESKTOP.replace('windows-audio/; fi; done','windows-audio/ || true; fi; done'),
-  REAL_DESKTOP.replace("name: Collect the Windows audio logs\n        if: failure() && steps.desktop-build.outcome == 'success'","name: Collect the Windows audio logs\n        if: always()")]) {
-  const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')));
- }
-});
-
-test('installed account coverage retains OS credential protection, normal FUSE and owning-shard proof collection', () => {
-  for (const [before, after] of [
-    ['e2e/web/support/installed-keyring.sh', 'removed-keyring.sh'],
-    ['libasound2t64 gnome-keyring libfuse2t64', 'libasound2t64'],
-    ['node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results', 'echo skipped-account-proof'],
-    ["if: steps.installed-account.outputs.present == 'true'", 'if: false'],
-    ['name: desktop-installed-account-', 'name: unrelated-proof-'],
-  ]) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-account-ci-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    const changed = REAL_DESKTOP.replaceAll(before, after); assert.notEqual(changed, REAL_DESKTOP, before);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => /installed account/i.test(problem)), before);
-  }
-});
-
-test('native build provenance authenticates final fused installers and is uploaded with their bytes', () => {
-  const record = '      - name: Record native desktop build provenance\n        run: node packages/desktop/scripts/build-provenance.mjs packages/desktop/out ${{ matrix.platform }}-${{ matrix.arch }}\n';
-  const fuse = '      - run: node packages/desktop/scripts/check-fuses.mjs\n';
-  for (const changed of [
-    REAL_DESKTOP.replace(record, ''),
-    REAL_DESKTOP.replace(record, record.replace('        run:', '        if: false\n        run:')),
-    REAL_DESKTOP.replace('            packages/desktop/out/build-provenance-*.json\n', ''),
-    REAL_DESKTOP.replace(fuse, '').replace('      - name: Build installable desktop artifacts\n', fuse + '      - name: Build installable desktop artifacts\n'),
-  ]) {
-    assert.notEqual(changed, REAL_DESKTOP);
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-build-proof-ci-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => /build provenance/i.test(problem)));
-  }
-});
-
-test('desktop voice cannot shard its frozen-clock suite', () => {
-  const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-voice-ci-'));
-  mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replaceAll('playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --shard=1/2'));
-  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('single frozen-clock worker')));
-});
-
-test('the Linux client suite runs in exactly WEB_SHARDS shards, each given its share', () => {
-  const last = `          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: ${WEB_SHARDS} }\n`;
-  const flag = `--shard=\${{ matrix.shard }}/${WEB_SHARDS}`;
-  assert.ok(REAL_DESKTOP.includes(last) && REAL_DESKTOP.includes(flag));
-  for (const changed of [
-    REAL_DESKTOP.replace(last, ''),
-    REAL_DESKTOP.replace(last, `${last}          - { os: ubuntu-24.04, platform: linux, arch: x64, shard: ${WEB_SHARDS + 1} }\n`),
-    REAL_DESKTOP.replace(flag, '--shard=${{ matrix.shard }}/3'),
-  ]) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-shards-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => /client (?:coverage missing|suite must run in exactly)/.test(problem)));
-  }
-});
-
-test('Electron voice runs before downloading the browser performance baseline', () => {
-  const root = mkdtempSync(join(TEST_ROOT, 'dilla-voice-baseline-order-'));
-  mkdirSync(join(root, '.github/workflows'), { recursive: true });
-  addE2ePackage(root);
-  const start = REAL_DESKTOP.indexOf('\n  voice:\n'), end = REAL_DESKTOP.indexOf('\n  client:\n', start);
-  const command = '      - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium\n';
-  let voice = REAL_DESKTOP.slice(start, end);
-  assert.equal(voice.split(command).length, 2);
-  voice = voice.replace(command, '').replace('      - name: Desktop voice end-to-end coverage in Electron\n', command + '      - name: Desktop voice end-to-end coverage in Electron\n');
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.slice(0, start) + voice + REAL_DESKTOP.slice(end));
-  assert.ok(checkDesktopWorkflow(root).some(problem => /browser baseline.*after Electron voice/.test(problem)));
-});
-
-test('installed upgrade acceptance cannot omit either NSIS or normal FUSE launch', () => {
-  for (const [before, after] of [
-    ["if: runner.os == 'Windows'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: node --test packages/desktop/test/native/installed-upgrade.test.mjs"],
-    ["if: runner.os == 'Linux'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs", "if: runner.os == 'macOS'\n        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh node --test packages/desktop/test/native/installed-upgrade.test.mjs"],
-    ["name: Installed upgrade acceptance\n        if: runner.os == 'Linux'", "name: Installed upgrade acceptance\n        if: runner.os == 'Linux'\n        env:\n          APPIMAGE_EXTRACT_AND_RUN: 1"],
-  ]) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-installed-ci-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    const changed = REAL_DESKTOP.replace(before, after);
-    assert.notEqual(changed, REAL_DESKTOP);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => /installed.*acceptance|FUSE/.test(problem)));
-  }
-});
-
-test('installed proof is produced after Playwright clears output and uploaded afterwards', () => {
-  const sparkle = "      - name: Installed unsigned Sparkle upgrade and signed-feed rejection\n        if: runner.os == 'macOS'\n        run: node --test packages/desktop/test/native/mac-upgrade.test.mjs\n";
-  const moved = REAL_DESKTOP.replace(sparkle, '').replace('      - name: Linux display and Chromium sandbox helper', sparkle + '      - name: Linux display and Chromium sandbox helper');
-  assert.notEqual(moved, REAL_DESKTOP);
-  const root = mkdtempSync(join(TEST_ROOT, 'dilla-installed-proof-'));
-  mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), moved);
-  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('Playwright cleanup')));
-});
-
-test('desktop CI: e2e shards keep running after a failure, build matrices stop', () => {
-  const failFast = job => {
-    const start = REAL_DESKTOP.indexOf(`\n  ${job}:\n`);
-    const at = REAL_DESKTOP.indexOf('fail-fast: ', start);
-    assert.ok(start >= 0 && at > start, job);
-    return at;
-  };
-  const flip = (job, value) => {
-    const at = failFast(job) + 'fail-fast: '.length;
-    return REAL_DESKTOP.slice(0, at) + value + REAL_DESKTOP.slice(at).replace(/^\w+/, '');
-  };
-  const problemsFor = changed => {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-fail-fast-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    return checkDesktopWorkflow(root).filter(problem => problem.includes('fail-fast'));
-  };
-  assert.deepEqual(problemsFor(REAL_DESKTOP), []);
-  for (const job of ['client', 'voice']) assert.ok(problemsFor(flip(job, 'true')).some(p => p.includes(job)), job);
-  for (const job of ['test-tools', 'native-linux-package-acceptance', 'native']) {
-    assert.ok(problemsFor(flip(job, 'false')).some(p => p.includes(job)), job);
-  }
-});
-
-test('the real desktop workflow passes without --max-failures', () => {
-  assert.ok(!REAL_DESKTOP.includes('--max-failures'));
-  const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-no-max-failures-'));
-  mkdirSync(join(root, '.github/workflows'), { recursive: true });
-  addE2ePackage(root);
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP);
-  assert.deepEqual(checkDesktopWorkflow(root).filter(problem => problem.includes('--max-failures')), []);
-});
-
-test('a desktop client or voice step with --max-failures is reported', () => {
-  for (const anchor of ['--project=electron-voice --workers=1\n', '--shard=${{ matrix.shard }}/6\n', '${{ matrix.specs }}\n']) {
-    for (const flag of ['--max-failures=1', '--max-failures=3']) {
-      const changed = REAL_DESKTOP.replace(anchor, `${anchor.slice(0, -1)} ${flag}\n`);
-      assert.notEqual(changed, REAL_DESKTOP, anchor);
-      const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-max-failures-'));
-      mkdirSync(join(root, '.github/workflows'), { recursive: true });
-      addE2ePackage(root);
-      writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-      assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('--max-failures')), `${anchor} ${flag}`);
-    }
-  }
 });
 
 test('CI rejects removing the whole-run watcher or its completion barrier', () => {
@@ -524,40 +106,6 @@ test('CI accepts a skipped watcher only for fork pull requests', () => {
   }
 });
 
-test('desktop tooling must be built once per native target and verified before every consumer', () => {
-  for (const [before, after] of [
-    ['node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools', 'echo skipped build'],
-    ['needs: test-tools', 'needs: rust-native'],
-    ['DILLA_E2E_TOOLING_DIR:', 'UNUSED_TOOLING_DIR:'],
-    ['node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools', 'echo skipped verification'],
-    ['name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}', 'name: stale-tools'],
-    ['overwrite: true', 'overwrite: false'],
-    ["go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'", 'echo skipped locks'],
-  ]) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-tooling-ci-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    const changed = REAL_DESKTOP.replaceAll(before, after);
-    assert.notEqual(changed, REAL_DESKTOP, before);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => /tooling|directory locks/i.test(problem)), before);
-  }
-});
-
-test('desktop native acceptance stays independent and tooling never comes from another run', () => {
-  for (const changed of [
-    REAL_DESKTOP.replace('  native:\n', '  native:\n    needs: test-tools\n'),
-    REAL_DESKTOP.replaceAll('path: artifacts/e2e-test-tools\n', 'path: artifacts/e2e-test-tools\n          run-id: 123\n'),
-    REAL_DESKTOP.replace('  client:\n', '  client:\n    unrelated:\n      - run: cargo build -p dilla-testkit --release --locked\n'),
-  ]) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-tooling-scope-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => /tooling|independent/i.test(problem)));
-  }
-});
-
 
 test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
   const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  rust-wasi:\n')[0];
@@ -590,7 +138,6 @@ test('compiled helper recovery tests receive the same-commit helper and cannot s
 test('workflow steps execute only commit-pinned GitHub actions', () => {
   for (const workflow of [REAL_CI, REAL_RELEASE]) {
     for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
-      if (match[1] === './.github/workflows/desktop.yml') continue;
       assert.match(match[1], /^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/);
     }
   }
@@ -642,7 +189,7 @@ const GO_TEST = goShardCommand('go');
 /** The browser jobs of GOOD, generated from BROWSER_WEB_JOBS: one job per engine, suite and web shard. */
 function browserJobsFixture() {
   return Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => `  ${job}:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: ${spec.timeout}
     needs: [rust-native, rust-wasi, web-build]
     steps:
@@ -818,7 +365,6 @@ ${goShardMatrix('go')}    steps:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: ${GO_TEST}
         env:
           GORACE: halt_on_error=1
@@ -833,7 +379,6 @@ ${goShardMatrix('go')}    steps:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - run: go mod verify
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
       - run: go test -race github.com/pion/turn/v5/internal/allocation -run '^TestAddPermissionPublishesInitializedTimer$' -count=20
@@ -841,7 +386,7 @@ ${goShardMatrix('go')}    steps:
       - run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
 
   browser-media:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [rust-native, rust-wasi]
     steps:
@@ -964,13 +509,11 @@ ${goShardMatrix('go-harness')}    steps:
     runs-on: ubuntu-latest
     steps:
       - run: bash scripts/install-ci-tool.sh golangci-lint
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: golangci-lint run ./...
 
   go-vuln:
     runs-on: ubuntu-latest
     steps:
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -scan package -tags dillapins ./internal/deps
 
@@ -1134,20 +677,7 @@ function withChanges(text) {
   return build('server') + SPLIT.slice(1) + build('desktop');
 }
 
-const LINUX_FOUNDATION_JOB = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0].replace(/^    needs:.*\n/m, '').replace(/^    if:.*\n/m, '');
-const GOOD = withChanges(withWasmClang(GOOD_BASE + LINUX_FOUNDATION_JOB + '  desktop:\n    needs: [web-build, linux-sandbox-foundation]\n    uses: ./.github/workflows/desktop.yml\n'));
-
-test('desktop units retain all native platforms and cannot be conditionally narrowed', () => {
-  const step = '      - run: npm test -w @dilla/desktop\n';
-  assert.ok(REAL_DESKTOP.includes(step));
-  for (const replacement of ['', "      - if: runner.os == 'Linux'\n        run: npm test -w @dilla/desktop\n", "      - if: runner.os != 'Windows'\n        run: npm test -w @dilla/desktop\n"]) {
-    const root = mkdtempSync(join(TEST_ROOT, 'dilla-unit-platform-ci-'));
-    mkdirSync(join(root, '.github/workflows'), { recursive: true });
-    addE2ePackage(root);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(step, replacement));
-    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('desktop unit')));
-  }
-});
+const GOOD = withChanges(withWasmClang(GOOD_BASE));
 
 const BUDGET = MIN_BROWSER_WEB_TIMEOUT;
 
@@ -1179,10 +709,9 @@ function fixture(body, gated = GATED) {
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
   // ... and mobile-release.yml, which signs the APK and publishes the draft release.
   writeFileSync(join(dir, '.github', 'workflows', 'mobile-release.yml'), readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile-release.yml'), 'utf8'));
-  writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
-  // ... and the desktop release trampoline with the key scripts it pins.
+  // ... and the other workflows the CLI checks.
   releaseRoots.push(dir);
-  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /desktop-release(-request)?\.yml$|ci-rerun-starved\.yml$|desktop-gpui\.yml$/.test(path))) {
+  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /ci-rerun-starved\.yml$|desktop-gpui\.yml$/.test(path))) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
     writeFileSync(join(dir, file), readFileSync(join(REPO_ROOT, file), 'utf8'));
   }
@@ -1951,10 +1480,9 @@ for (const job of Object.keys(BROWSER_WEB_JOBS)) {
   }
 }
 
-test('shared core integration uses only the Electron-compatible engine', () => {
+test('shared core integration uses only the Chromium engine', () => {
   assert.deepEqual(BROWSER_WEB_JOBS, { 'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 } });
   assert.equal(browserSuiteCommand(BROWSER_WEB_JOBS['core-integration']), 'npm run test:e2e:core:chromium -w @dilla/e2e');
-  assert.equal(WEB_SHARDS, 6, 'desktop client acceptance runs in six shards');
 });
 
 test('the core security job cannot be deleted, folded into another suite or given too little time', () => {
@@ -2300,7 +1828,6 @@ function releaseFixture(release) {
   addE2ePackage(dir);
   writeFileSync(join(dir, '.github', 'workflows', 'server.yml'), REAL_SERVER);
   writeFileSync(join(dir, '.github', 'workflows', 'desktop-ci.yml'), REAL_DESKTOP_CI);
-  writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), release);
   return dir;
 }
@@ -2716,7 +2243,7 @@ test('server.yml must not contain desktop jobs', () => {
   assert.deepEqual(checkServerWorkflow(REPO_ROOT), []);
   const desktopOnly = [...REQUIRED_JOBS.desktop, ...Object.keys(BROWSER_WEB_JOBS)].filter((job) => !REQUIRED_JOBS.server.includes(job));
   assert.deepEqual(desktopOnly.filter((job) => new RegExp(`^  ${job}:$`, 'm').test(REAL_SERVER)), []);
-  for (const job of ['ui', 'core-integration', 'desktop']) {
+  for (const job of ['ui', 'core-integration']) {
     const body = jobBody(job);
     const [server, desktop] = GOOD.split(SPLIT);
     const moved = server.replace('  deny:\n', () => `${body}\n  deny:\n`) + SPLIT + desktop;
@@ -2726,16 +2253,6 @@ test('server.yml must not contain desktop jobs', () => {
   // And the reverse: a server job in desktop-ci.yml.
   const problems = checkDesktopCiWorkflow(fixture(GOOD + jobBody('go-lint') + '\n'));
   assert.ok(problems.some((p) => p.startsWith('desktop-ci.yml: job "go-lint" does not belong')), problems.join('\n'));
-});
-
-test('desktop-ci.yml must call desktop.yml', () => {
-  assert.match(REAL_DESKTOP_CI, /^  desktop:\n(?:    .*\n)*    uses: \.\/\.github\/workflows\/desktop\.yml$/m);
-  const [server, desktop] = GOOD.split(SPLIT);
-  let problems = checkDesktopCiWorkflow(fixture(server + SPLIT + desktop.replace('    uses: ./.github/workflows/desktop.yml\n', '    runs-on: ubuntu-latest\n    steps:\n      - run: echo skipped\n')));
-  assert.ok(problems.some((p) => p.includes('job "desktop" is missing: uses: ./.github/workflows/desktop.yml')), problems.join('\n'));
-  // Only desktop-ci.yml may call it: anywhere else it is an unreviewed local action.
-  problems = checkServerWorkflow(fixture(server.replace('  deny:\n', '  desktop:\n    needs: [changes]\n    uses: ./.github/workflows/desktop.yml\n  deny:\n') + SPLIT + desktop));
-  assert.ok(problems.some((p) => p.includes('./.github/workflows/desktop.yml is not a GitHub-owned action')), problems.join('\n'));
 });
 
 test('neither workflow filters paths at the trigger', () => {
@@ -2777,60 +2294,19 @@ test('the docs job must run the real checks, not only their unit tests', () => {
   }
 });
 
-test('installed AppImage sandbox gate requires exact verification after actual upgrade and before upload', () => {
- const step = `      - name: Linux AppImage sandbox native acceptance\n        if: runner.os == 'Linux'\n        run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json\n`;
- assert.ok(REAL_DESKTOP.includes(step), 'missing actual installed AppImage kernel proof gate');
- for(const changed of [
-  REAL_DESKTOP.replace(step,''),REAL_DESKTOP.replace(step,step.replace("runner.os == 'Linux'",'false')),
-  REAL_DESKTOP.replace(step,step.replace('        run:','        continue-on-error: true\n        run:')),
-  REAL_DESKTOP.replace(step,step.replace('run: node ','run: echo ')),
-  REAL_DESKTOP.replace(step,step.replace('linux-installed-upgrade.json','other.json')),
-  REAL_DESKTOP.replace(step,step.replace('native acceptance','diagnostic acceptance')),
-  REAL_DESKTOP.replace(step,'').replace('      - name: Installed upgrade acceptance\n',step+'      - name: Installed upgrade acceptance\n'),
-  REAL_DESKTOP.replace(step,step.replace('        run:','        env:\n          NODE_OPTIONS: --import ./fake-proof.mjs\n        run:')),
- ]){
-  assert.notEqual(changed,REAL_DESKTOP);const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);
-  assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('installed AppImage sandbox')),changed);
- }
-});
 
-
-test('native Linux release producer is separate, source-versioned, non-bypassable and uploads only its own outputs', () => {
- const block = REAL_DESKTOP.split('\n  native-linux-packages:\n')[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
- const mutations = [
-  REAL_DESKTOP.replace('\n  native-linux-packages:\n' + block, ''),
-  ...[
-   ['name: desktop-installers-linux-packages-x64', 'name: unrelated-native-outputs'],
-   ['linux-packages-x64.json', 'linux-x64.json'],
-   ['"$version"', '1.0.0'],
-   ['name: Record native Linux package build provenance', 'name: Record native Linux package build provenance\n        if: false'],
-   ['name: Build native Linux release packages', 'name: Build native Linux release packages\n        if: false'],
-   ['persist-credentials: false', 'persist-credentials: true'],
-  ].map(([before, after]) => REAL_DESKTOP.replace('\n  native-linux-packages:\n' + block, '\n  native-linux-packages:\n' + block.replaceAll(before, after))),
- ];
- for (const changed of mutations) {
-  const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('native Linux package producer')));
- }
-});
-
-// ---- Desktop release trampoline (checkDesktopReleaseWorkflow) ----
-// Every test mutates the real committed files in a temporary copy and expects at least one problem.
+// ---- Temporary repository roots holding the real workflow files ----
+// Each test mutates the real committed files in a temporary copy.
 
 const yaml = createRequire(import.meta.url)('js-yaml');
 const RELEASE_FILES = [
   ...readdirSync(join(REPO_ROOT, '.github', 'workflows')).map(name => `.github/workflows/${name}`),
-  // The keyed steps' scripts and everything they import (the checker walks the import graph).
-  ...['scripts', 'src'].flatMap(dir => readdirSync(join(REPO_ROOT, 'packages', 'desktop', dir)).filter(name => /\.(mjs|ts)$/.test(name)).map(name => `packages/desktop/${dir}/${name}`)),
-  // keyed-run.mjs (sign's re-run checks) classifies paths with the CI's own classifier.
-  'scripts/ci-areas.mjs',
 ];
-const KEYED = '.github/workflows/desktop-release.yml', REQUEST = '.github/workflows/desktop-release-request.yml';
 /** A temporary root holding the real files with `changes` (path -> text => text) applied. */
 const releaseRoots = [];
 after(() => { for (const root of releaseRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function releaseRoot(changes = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'dilla-desktop-release-ci-'));
+  const root = mkdtempSync(join(tmpdir(), 'dilla-workflows-ci-'));
   releaseRoots.push(root);
   for (const file of RELEASE_FILES) {
     const text = readFileSync(join(REPO_ROOT, file), 'utf8');
@@ -2845,353 +2321,12 @@ function releaseRoot(changes = {}) {
 /** A structural change: parse, mutate, dump. */
 const edit = mutate => text => { const doc = yaml.load(text); mutate(doc); return yaml.dump(doc, { lineWidth: -1 }); };
 const step = (doc, job, match) => doc.jobs[job].steps.find(item => (item.name ?? item.uses ?? item.run ?? '').includes(match));
-function reported(changes, label) {
-  const root = releaseRoot(changes);
-  const problems = checkDesktopReleaseWorkflow(root);
-  rmSync(root, { recursive: true, force: true });
-  assert.ok(problems.length > 0, `not reported: ${label}`);
-  return problems;
-}
-
-test('desktop release workflows as committed have no problems', () => {
-  assert.deepEqual(checkDesktopReleaseWorkflow(REPO_ROOT), []);
-  assert.deepEqual(checkDesktopReleaseWorkflow(releaseRoot({ [KEYED]: edit(() => {}), [REQUEST]: edit(() => {}) })), [], 'a parse and re-dump is not a change');
-  assert.equal(DESKTOP_RELEASE_SECRETS.length, 6);
-  assert.ok(DESKTOP_RELEASE_ACTIONS.every(action => /^actions\/[a-z-]+@[0-9a-f]{40}$/.test(action)));
-  const cli = spawnSync(process.execPath, [SCRIPT_PATH, releaseRoot({ [KEYED]: text => text.replace('cancel-in-progress: false', 'cancel-in-progress: true') })], { encoding: 'utf8' });
-  assert.notEqual(cli.status, 0, 'wired into the CLI');
-  assert.match(cli.stderr, /desktop-release\.yml/);
-});
-
-test('the gate\'s macOS update decision reaches sign, publish, verify-published and feed, and only from the gate', () => {
-  for (const [label, change] of [
-    ['no gate output', edit(doc => { delete doc.jobs.gate.outputs.mac_update; })],
-    ['sign without MAC_UPDATE', edit(doc => { delete step(doc, 'sign', 'Sign (the only').env.MAC_UPDATE; })],
-    ['sign MAC_UPDATE from a literal', edit(doc => { step(doc, 'sign', 'Sign (the only').env.MAC_UPDATE = 'dmg'; })],
-    ['publish plan without DESKTOP_MAC_UPDATE', edit(doc => { delete step(doc, 'publish', 'Re-verify').env.DESKTOP_MAC_UPDATE; })],
-    ['publish from sign', edit(doc => { step(doc, 'publish', 'Publish the versioned').env.DESKTOP_MAC_UPDATE = '${{ needs.sign.outputs.staged }}'; })],
-    ['verify-published without DESKTOP_MAC_UPDATE', edit(doc => { delete step(doc, 'verify-published', 'Re-download').env.DESKTOP_MAC_UPDATE; })],
-    ['feed without MAC_UPDATE', edit(doc => { delete step(doc, 'feed', 'Build the channel feed').env.MAC_UPDATE; })],
-  ]) reported({ [KEYED]: change }, label);
-});
-
-test('the macOS update disk image check runs once on macOS after the final fused distribution and before provenance', () => {
-  const check = "      - name: macOS update disk image check\n        if: runner.os == 'macOS'\n        run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out\n";
-  assert.ok(REAL_DESKTOP.includes(check));
-  for (const [label, changed] of [
-    ['removed', REAL_DESKTOP.replace(check, '')],
-    ['skipped', REAL_DESKTOP.replace(check, check.replace("runner.os == 'macOS'", 'false'))],
-    ['before the fuses', REAL_DESKTOP.replace(check, '').replace('      - run: node packages/desktop/scripts/check-fuses.mjs\n', check + '      - run: node packages/desktop/scripts/check-fuses.mjs\n')],
-    ['twice', REAL_DESKTOP.replace(check, check + check)],
-    ['another directory', REAL_DESKTOP.replace(check, check.replace('packages/desktop/out\n', 'packages/desktop/other\n'))],
-  ]) {
-    assert.notEqual(changed, REAL_DESKTOP, label);
-    const root = fixture(GOOD); writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('disk image')), label);
-  }
-});
-
-test('request workflow gaining secrets, an environment, contents: write, any uses or a checkout is reported', () => {
-  for (const [label, change] of [
-    ['secrets', edit(doc => { doc.jobs.request.steps[0].env = { K: '${{ secrets.DESKTOP_METADATA_KEY_A }}' }; })],
-    ['environment', edit(doc => { doc.jobs.request.environment = 'desktop-release'; })],
-    ['contents: write', edit(doc => { doc.permissions.contents = 'write'; })],
-    ['job permissions', edit(doc => { doc.jobs.request.permissions = { contents: 'read' }; })],
-    ['uses', edit(doc => { doc.jobs.request.steps.push({ uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' }); })],
-    ['job env', edit(doc => { doc.jobs.request.env = { A: 'b' }; })],
-    ['second job', edit(doc => { doc.jobs.other = doc.jobs.request; })],
-    ['workflow_dispatch', edit(doc => { doc.on.workflow_dispatch = null; })],
-    ['runs-on', edit(doc => { doc.jobs.request['runs-on'] = 'self-hosted'; })],
-    ['name', edit(doc => { doc.name = 'desktop release request 2'; })],
-  ]) reported({ [REQUEST]: change }, label);
-});
-
-test('keyed workflow gaining push, pull_request, workflow_dispatch, a branches filter, a different upstream name or missing types is reported', () => {
-  for (const [label, change] of [
-    ['push', edit(doc => { doc.on.push = { tags: ['desktop-v*'] }; })],
-    ['pull_request', edit(doc => { doc.on.pull_request = null; })],
-    ['workflow_dispatch', edit(doc => { doc.on.workflow_dispatch = null; })],
-    ['branches', edit(doc => { doc.on.workflow_run.branches = ['main']; })],
-    ['upstream name', edit(doc => { doc.on.workflow_run.workflows = ['ci']; })],
-    ['types', edit(doc => { delete doc.on.workflow_run.types; })],
-    ['concurrency', edit(doc => { doc.concurrency = { group: 'desktop-release', 'cancel-in-progress': true }; })],
-  ]) reported({ [KEYED]: change }, label);
-});
-
-test('changing the sign if is reported', () => {
-  // The event check sits on the first job (gate); every later job needs it.
-  reported({ [KEYED]: edit(doc => { doc.jobs.gate.if = "github.event.workflow_run.conclusion == 'success'"; }) }, 'no event check');
-  reported({ [KEYED]: edit(doc => { delete doc.jobs.gate.if; }) }, 'no if');
-  reported({ [KEYED]: edit(doc => { doc.jobs.sign.if = 'true'; }) }, 'an if on sign');
-  reported({ [KEYED]: edit(doc => { doc.jobs.publish.if = 'true'; }) }, 'an if on publish');
-  reported({ [KEYED]: edit(doc => { step(doc, 'publish', 'Publish the versioned').if = 'false'; }) }, 'a step if');
-});
-
-test('removing environment from sign, an environment on publish or verify-published, environment as a mapping or expression elsewhere, or the environment named in another workflow is reported', () => {
-  for (const [label, change] of [
-    ['sign without environment', { [KEYED]: edit(doc => { delete doc.jobs.sign.environment; }) }],
-    ['publish environment', { [KEYED]: edit(doc => { doc.jobs.publish.environment = 'desktop-release'; }) }],
-    ['verify-published environment', { [KEYED]: edit(doc => { doc.jobs['verify-published'].environment = 'other'; }) }],
-    ['mapping on sign', { [KEYED]: edit(doc => { doc.jobs.sign.environment = { name: 'desktop-release' }; }) }],
-    ['feed environment changed', { [KEYED]: edit(doc => { doc.jobs.feed.environment = 'desktop-release'; }) }],
-    ['collect environment', { [KEYED]: edit(doc => { doc.jobs.collect.environment = 'desktop-release'; }) }],
-    ['gate environment', { [KEYED]: edit(doc => { doc.jobs.gate.environment = 'desktop-release'; }) }],
-    ['mapping in ci.yml', { '.github/workflows/release.yml': edit(doc => { Object.values(doc.jobs)[0].environment = { name: 'desktop-release' }; }) }],
-    ['expression in ci.yml', { '.github/workflows/release.yml': edit(doc => { Object.values(doc.jobs)[0].environment = "${{ format('desktop-{0}', 'release') }}"; }) }],
-    ['plain name in another workflow', { '.github/workflows/release.yml': edit(doc => { Object.values(doc.jobs)[0].environment = 'desktop-release'; }) }],
-    ['a new workflow', { '.github/workflows/sneaky.yml': () => 'name: sneaky\non: push\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    environment: desktop-release\n    steps:\n      - run: echo\n' }],
-  ]) reported(change, label);
-});
-
-test('any permission added to sign, contents: write missing from publish, contents: write on verify-published are reported', () => {
-  for (const [label, change] of [
-    ['sign write', edit(doc => { doc.jobs.sign.permissions.contents = 'write'; })],
-    ['sign id-token', edit(doc => { doc.jobs.sign.permissions['id-token'] = 'write'; })],
-    ['publish read', edit(doc => { doc.jobs.publish.permissions.contents = 'read'; })],
-    ['verify write', edit(doc => { doc.jobs['verify-published'].permissions.contents = 'write'; })],
-    ['top-level', edit(doc => { doc.permissions = { contents: 'read' }; })],
-    ['feed actions', edit(doc => { doc.jobs.feed.permissions.actions = 'write'; })],
-    ['sign actions write', edit(doc => { doc.jobs.sign.permissions.actions = 'write'; })],
-    ['sign without actions read', edit(doc => { delete doc.jobs.sign.permissions.actions; })],
-    ['collect write', edit(doc => { doc.jobs.collect.permissions.contents = 'write'; })],
-    ['gate pull-requests write', edit(doc => { doc.jobs.gate.permissions['pull-requests'] = 'write'; })],
-    ['collect needs', edit(doc => { delete doc.jobs.collect.needs; })],
-    ['sign needs', edit(doc => { doc.jobs.sign.needs = ['gate']; })],
-    ['publish needs', edit(doc => { doc.jobs.publish.needs = []; })],
-    ['verify needs', edit(doc => { doc.jobs['verify-published'].needs = ['gate', 'sign']; })],
-    ['feed needs', edit(doc => { doc.jobs.feed.needs = ['gate', 'sign', 'publish']; })],
-    ['extra job', edit(doc => { doc.jobs.extra = { 'runs-on': 'ubuntu-24.04', steps: [{ run: 'echo' }] }; })],
-  ]) reported({ [KEYED]: change }, label);
-});
-
-test('a seventh secrets reference, a secrets reference outside the Sign step, secrets[ indexing, secrets: inherit and toJSON(secrets) are reported', () => {
-  for (const [label, change] of [
-    ['seventh', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_EXTRA = '${{ secrets.DESKTOP_EXTRA }}'; }) }],
-    ['outside', { [KEYED]: edit(doc => { step(doc, 'sign', 'Fetch the gate-digested').env.K = '${{ secrets.DESKTOP_METADATA_KEY_A }}'; }) }],
-    ['other job', { [KEYED]: edit(doc => { step(doc, 'publish', 'Publish the versioned').env.K = '${{ secrets.DESKTOP_SANDBOX_KEY_B }}'; }) }],
-    ['collect job', { [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').env.K = '${{ secrets.GITHUB_TOKEN }}'; }) }],
-    ['indexing', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_METADATA_KEY_A = "${{ secrets['DESKTOP_METADATA_KEY_A'] }}"; }) }],
-    ['toJSON', { [KEYED]: edit(doc => { step(doc, 'gate', 'Gate').env.ALL = '${{ toJSON(secrets) }}'; }) }],
-    ['inherit elsewhere', { '.github/workflows/desktop-ci.yml': text => text.replace('    uses: ./.github/workflows/desktop.yml\n', '    uses: ./.github/workflows/desktop.yml\n    secrets: inherit\n') }],
-    ['DESKTOP_ secret in another workflow', { '.github/workflows/release.yml': text => text + '\n# ${{ secrets.DESKTOP_METADATA_KEY_A }}\n' }],
-    ['swapped value', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_METADATA_KEY_A = '${{ secrets.DESKTOP_METADATA_KEY_B }}'; }) }],
-  ]) reported(change, label);
-});
-
-test('an extra or missing key in the Sign step env is reported', () => {
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.GH_TOKEN = '${{ github.token }}'; }) }, 'extra');
-  reported({ [KEYED]: edit(doc => { delete step(doc, 'sign', 'Sign (').env.DESKTOP_SANDBOX_KEY_B; }) }, 'missing');
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').name = 'Sign'; }) }, 'renamed');
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').run += ' --debug'; }) }, 'run changed');
-});
-
-test('the notes step takes previous from the gate output, not from tags or another value', () => {
-  reported({ [KEYED]: edit(doc => { delete step(doc, 'collect', 'Generate release notes').env.PREVIOUS; }) }, 'missing PREVIOUS');
-  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Generate release notes').env.PREVIOUS = ''; }) }, 'empty PREVIOUS');
-  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Generate release notes').env.EXTRA = 'x'; }) }, 'extra env');
-});
-
-test('defaults, shell, working-directory, container, services, NODE_OPTIONS in sign are reported', () => {
-  for (const [label, change] of [
-    ['defaults', doc => { doc.jobs.sign.defaults = { run: { shell: 'bash' } }; }],
-    ['workflow defaults', doc => { doc.defaults = { run: { shell: 'bash' } }; }],
-    ['shell', doc => { step(doc, 'sign', 'Fetch the gate-digested').shell = 'bash'; }],
-    ['working-directory', doc => { step(doc, 'sign', 'Sign (')['working-directory'] = 'packages'; }],
-    ['container', doc => { doc.jobs.sign.container = 'node:24'; }],
-    ['services', doc => { doc.jobs.sign.services = { x: { image: 'redis' } }; }],
-    ['NODE_OPTIONS', doc => { step(doc, 'sign', 'Fetch the gate-digested').env.NODE_OPTIONS = '--require ./x.js'; }],
-    ['NODE_OPTIONS in collect', doc => { step(doc, 'collect', 'Collect').env.NODE_OPTIONS = '--require ./x.js'; }],
-    ['GH_TOKEN dropped from the build step', doc => { delete step(doc, 'sign', 'Fetch the gate-digested').env.GH_TOKEN; }],
-    ['git in sign', doc => { doc.jobs.sign.steps.splice(3, 0, { run: 'git status' }); }],
-    ['NODE_PATH in publish', doc => { step(doc, 'publish', 'Publish the versioned').env.NODE_PATH = '/tmp'; }],
-    ['job env', doc => { doc.jobs.sign.env = { A: 'b' }; }],
-    ['workflow env', doc => { doc.env = { A: 'b' }; }],
-    ['continue-on-error', doc => { doc.jobs.sign['continue-on-error'] = true; }],
-    ['runs-on', doc => { doc.jobs.sign['runs-on'] = 'ubuntu-latest'; }],
-  ]) reported({ [KEYED]: edit(change) }, label);
-});
-
-test('checkout ref/repository/path or workflow_run.head_sha is reported', () => {
-  for (const [label, change] of [
-    ['ref', doc => { step(doc, 'sign', 'actions/checkout').with.ref = '${{ github.event.workflow_run.head_branch }}'; }],
-    ['repository', doc => { step(doc, 'publish', 'actions/checkout').with.repository = 'other/dilla'; }],
-    ['path', doc => { step(doc, 'sign', 'actions/checkout').with.path = 'src'; }],
-    ['head_sha', doc => { step(doc, 'gate', 'Gate').env.HINT_SHA = '${{ github.event.workflow_run.head_sha }}'; }],
-    ['head_repository', doc => { step(doc, 'gate', 'Gate').env.HINT_REPO = '${{ github.event.workflow_run.head_repository.full_name }}'; }],
-    ['gate fetch-depth', doc => { delete step(doc, 'gate', 'actions/checkout').with['fetch-depth']; }],
-    ['persist-credentials', doc => { delete step(doc, 'verify-published', 'actions/checkout').with['persist-credentials']; }],
-    ['sign fetch-depth', doc => { delete step(doc, 'sign', 'actions/checkout').with['fetch-depth']; }],
-    ['sign fetch-depth 1', doc => { step(doc, 'sign', 'actions/checkout').with['fetch-depth'] = 1; }],
-    // The feed reads each published release's pins at its tag's commit (review batch B, I3).
-    ['feed fetch-depth', doc => { delete step(doc, 'feed', 'actions/checkout').with['fetch-depth']; }],
-    ['feed build without the token', doc => { delete step(doc, 'feed', 'Build the channel feed').env.GH_TOKEN; }],
-    ['feed build with a Pages URL', doc => { step(doc, 'feed', 'Build the channel feed').env.LIVE = 'https://dilla-chat.github.io/dilla/'; }],
-  ]) reported({ [KEYED]: edit(change) }, label);
-});
-
-test('download-artifact with pattern, merge-multiple, the triggering run id or no artifact-ids is reported', () => {
-  for (const [label, change] of [
-    ['pattern', doc => { step(doc, 'collect', 'Fetch the accepted').with.pattern = 'desktop-*'; }],
-    ['merge-multiple', doc => { step(doc, 'collect', 'Fetch the accepted').with['merge-multiple'] = true; }],
-    ['triggering run', doc => { step(doc, 'collect', 'Fetch the accepted').with['run-id'] = '${{ github.event.workflow_run.id }}'; }],
-    ['no artifact-ids', doc => { delete step(doc, 'collect', 'Fetch the accepted').with['artifact-ids']; }],
-    ['ids from elsewhere', doc => { step(doc, 'collect', 'Fetch the accepted').with['artifact-ids'] = '${{ needs.gate.outputs.run }}'; }],
-    ['digest-mismatch', doc => { step(doc, 'collect', 'Fetch the accepted').with['digest-mismatch'] = 'warn'; }],
-    ['signed release from another run', doc => { step(doc, 'publish', 'Fetch the signed').with['run-id'] = '${{ needs.gate.outputs.run }}'; }],
-    ['candidate from another run', doc => { step(doc, 'publish', 'Fetch the signed candidate').with['run-id'] = '${{ needs.gate.outputs.run }}'; }],
-    ['raw CI artifacts in publish', doc => { step(doc, 'publish', 'Fetch the signed candidate').with = { ...step(doc, 'collect', 'Fetch the accepted').with }; }],
-    ['signed release by name in feed', doc => { const w = step(doc, 'feed', 'Fetch the signed').with; delete w['artifact-ids']; w.name = 'desktop-signed-release'; }],
-  ]) reported({ [KEYED]: edit(change) }, label);
-});
-
-test('review batch B minors: quoted inherit, Pages deploys elsewhere, unpinned step env, a workflow concurrency group', () => {
-  // m1: a quoted inherit is the same YAML value.
-  // (A new caller: desktop-ci.yml's desktop call already has a secrets mapping, so editing it would only make the YAML invalid.)
-  const caller = quoted => () => `name: caller\non: push\npermissions: {}\njobs:\n  call:\n    uses: ./.github/workflows/desktop.yml\n    secrets: ${quoted}\n`;
-  for (const quoted of ['"inherit"', "'inherit'", 'inherit']) {
-    const problems = reported({ '.github/workflows/caller.yml': caller(quoted) }, `${quoted} inherit`);
-    assert.ok(problems.some(problem => /caller\.yml: secrets: inherit is forbidden/.test(problem)), quoted);
-  }
-  // Flow style with no space after the colon's key hides it from a naive text match; the parsed check still sees it.
-  const flow = reported({ '.github/workflows/caller.yml': () => 'name: caller\non: push\npermissions: {}\njobs: { call: { uses: ./.github/workflows/desktop.yml, "secrets": "inherit" } }\n' }, 'flow-style inherit');
-  assert.ok(flow.some(problem => /caller\.yml: secrets: inherit is forbidden/.test(problem)));
-  // m2: only desktop-release.yml's feed job may deploy GitHub Pages.
-  const docs = body => () => `name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n${body}    steps:\n      - run: echo\n`;
-  reported({ '.github/workflows/docs.yml': docs('    environment: github-pages\n') }, 'github-pages environment elsewhere');
-  reported({ '.github/workflows/docs.yml': docs('    permissions:\n      pages: write\n      id-token: write\n') }, 'pages: write elsewhere');
-  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions:\n  pages: write\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n' }, 'workflow-level pages: write');
-  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346\n' }, 'deploy-pages elsewhere');
-  reported({ '.github/workflows/docs.yml': () => 'name: docs\non: push\npermissions: {}\njobs:\n  site:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/upload-pages-artifact@v5\n        with:\n          path: site\n' }, 'upload-pages-artifact elsewhere');
-  reported({ [KEYED]: edit(doc => { doc.jobs.publish.permissions.pages = 'write'; }) }, 'pages on publish');
-  // m3: every run step's env is pinned; loader and shell variables are refused anywhere.
-  for (const [label, change] of [
-    ['publish DIGEST from collect', doc => { step(doc, 'publish', 'Verify the signed release').env.DIGEST = '${{ needs.gate.outputs.run_record }}'; }],
-    ['BASH_ENV in collect', doc => { step(doc, 'collect', 'Collect').env.BASH_ENV = '/tmp/x'; }],
-    ['LD_PRELOAD after signing', doc => { step(doc, 'sign', 'Digest the signed output').env.LD_PRELOAD = '/tmp/x.so'; }],
-    ['NODE_EXTRA_CA_CERTS in feed', doc => { step(doc, 'feed', 'Build the channel feed').env.NODE_EXTRA_CA_CERTS = '/tmp/ca'; }],
-    ['GIT_DIR in publish', doc => { step(doc, 'publish', 'Publish the versioned').env.GIT_DIR = '/tmp/g'; }],
-    ['extra value in verify-published', doc => { step(doc, 'verify-published', 'Re-download').env.EXTRA = 'x'; }],
-    ['env on an unpinned step', doc => { step(doc, 'collect', 'Derive acceptance').env.TREE = '${{ needs.gate.outputs.sha }}'; }],
-  ]) reported({ [KEYED]: edit(change) }, label);
-  // m5: no workflow-level group (it silently cancels a pending run); the gate refuses while another run is active.
-  reported({ [KEYED]: edit(doc => { doc.concurrency = { group: 'desktop-release', 'cancel-in-progress': false }; }) }, 'workflow concurrency');
-  reported({ [KEYED]: edit(doc => { delete doc.jobs.feed.concurrency; }) }, 'feed deploys unserialised');
-  reported({ [KEYED]: edit(doc => { doc.jobs.feed.concurrency['cancel-in-progress'] = true; }) }, 'feed cancels in progress');
-  reported({ [KEYED]: edit(doc => { doc.jobs.sign.concurrency = { group: 'x' }; }) }, 'concurrency on sign');
-});
-
-test('sign runs no download action at all, and nothing collect produces reaches sign or publish (review batch B, I1/I2)', () => {
-  const collectDownload = doc => ({ ...step(doc, 'collect', 'Fetch the accepted') });
-  for (const [label, change] of [
-    ['raw CI artifacts in sign', doc => { doc.jobs.sign.steps.splice(2, 0, collectDownload(doc)); }],
-    ['a candidate by id in sign', doc => { doc.jobs.sign.steps.splice(2, 0, { uses: collectDownload(doc).uses, with: { 'artifact-ids': '${{ needs.collect.outputs.candidate_id }}', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' } }); }],
-    ['a candidate by name in sign', doc => { doc.jobs.sign.steps.splice(2, 0, { uses: collectDownload(doc).uses, with: { name: 'desktop-release-candidate', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' } }); }],
-    ['collect gains outputs', doc => { doc.jobs.collect.outputs = { candidate_id: '${{ steps.x.outputs.id }}' }; }],
-    ['collect uploads', doc => { doc.jobs.collect.steps.push({ ...step(doc, 'sign', 'Upload the signed candidate'), with: { ...step(doc, 'sign', 'Upload the signed candidate').with, name: 'desktop-release-candidate' } }); }],
-    ['publish candidate from collect', doc => { step(doc, 'publish', 'Fetch the signed candidate').with['artifact-ids'] = '${{ needs.collect.outputs.candidate_id }}'; }],
-    ['publish digest from collect', doc => { step(doc, 'publish', 'Verify the candidate').env.CANDIDATE_DIGEST = '${{ needs.collect.outputs.candidate_digest }}'; }],
-    ['publish signed release by name', doc => { const w = step(doc, 'publish', 'Fetch the signed release').with; delete w['artifact-ids']; w.name = 'desktop-signed-release'; }],
-    ['publish needs collect', doc => { doc.jobs.publish.needs = ['gate', 'collect', 'sign']; }],
-    ['sign zips from collect ids', doc => { step(doc, 'sign', 'Fetch the gate-digested').env.ARTIFACT_IDS = '${{ needs.collect.outputs.artifact_ids }}'; }],
-    ['sign without the records digest', doc => { delete step(doc, 'sign', 'Fetch the gate-digested').env.RECORDS_DIGEST; }],
-    ['gate records output from elsewhere', doc => { doc.jobs.gate.outputs.records_digest = '${{ steps.gate.outputs.run_record }}'; }],
-    ['sign output changed', doc => { doc.jobs.sign.outputs.candidate_id = '${{ steps.candidate_upload.outputs.artifact-id }}'; }],
-  ]) reported({ [KEYED]: edit(change) }, label);
-  // The zip reader and every script the keyed steps import stay on node: built-ins (sign runs no npm ci).
-  reported({ 'packages/desktop/scripts/artifact-zip.mjs': text => "import yauzl from 'yauzl';\n" + text }, 'npm zip reader');
-  reported({ 'packages/desktop/scripts/release-notes.mjs': text => "import x from 'left-pad';\n" + text }, 'npm package in a transitive import');
-});
-
-test('workflow_run.head_branch outside the gate env is reported', () => {
-  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').env.TAG = '${{ github.event.workflow_run.head_branch }}'; }) }, 'collect env');
-  reported({ [KEYED]: edit(doc => { doc.jobs.gate.outputs.tag = '${{ github.event.workflow_run.head_branch }}'; }) }, 'outputs');
-  reported({ [KEYED]: edit(doc => { step(doc, 'publish', 'Publish the versioned').env.RUN = '${{ github.event.workflow_run.id }}'; }) }, 'run id');
-  reported({ [KEYED]: edit(doc => { step(doc, 'gate', 'Gate').env.HINT_TAG = '${{ github.event.workflow_run.display_title }}'; }) }, 'other event field');
-});
-
-test('a ${{ }} in a run line, including a block scalar, is reported', () => {
-  reported({ [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').run = 'node x.mjs "${{ needs.gate.outputs.version }}"'; }) }, 'inline');
-  reported({ [KEYED]: text => text.replace('        run: node packages/desktop/scripts/release-candidate.mjs verify "$RUNNER_TEMP/candidate"\n',
-    '        run: |\n          node packages/desktop/scripts/release-candidate.mjs verify "$RUNNER_TEMP/candidate"\n          echo ${{ needs.gate.outputs.tag }}\n') }, 'block scalar');
-  reported({ [REQUEST]: edit(doc => { doc.jobs.request.steps[0].run = 'echo "${{ github.ref_name }}"'; }) }, 'request');
-});
-
-test('an unpinned or third-party action, an action between download and sign, setup-node without package-manager-cache false, or npm in publish is reported', () => {
-  for (const [label, change] of [
-    ['unpinned', doc => { step(doc, 'sign', 'actions/checkout').uses = 'actions/checkout@v7'; }],
-    ['other sha', doc => { step(doc, 'sign', 'actions/checkout').uses = 'actions/checkout@' + 'a'.repeat(40); }],
-    ['third party', doc => { step(doc, 'publish', 'actions/setup-node').uses = 'someone/setup-node@' + 'a'.repeat(40); }],
-    ['action between download and sign', doc => { doc.jobs.sign.steps.splice(3, 0, { uses: step(doc, 'sign', 'actions/setup-node').uses, with: { 'node-version-file': '.nvmrc', 'package-manager-cache': false } }); }],
-    ['pages action in sign', doc => { doc.jobs.sign.steps.push({ uses: step(doc, 'feed', 'upload-pages-artifact').uses, with: { path: 'x' } }); }],
-    ['package-manager-cache', doc => { delete step(doc, 'feed', 'actions/setup-node').with['package-manager-cache']; }],
-    ['npm in publish', doc => { doc.jobs.publish.steps.splice(2, 0, { run: 'npm ci --ignore-scripts' }); }],
-    ['npx in verify', doc => { step(doc, 'verify-published', 'Re-download').run = 'npx tsx packages/desktop/scripts/verify-published.mjs'; }],
-    ['always()', doc => { doc.jobs.feed.if = 'always()'; }],
-    ['|| true', doc => { step(doc, 'publish', 'Re-verify').run += ' || true'; }],
-    ['candidate verify after sign', doc => { const s = doc.jobs.sign.steps; [s[3], s[4]] = [s[4], s[3]]; }],
-    ['step order in collect', doc => { const s = doc.jobs.collect.steps; [s[5], s[6]] = [s[6], s[5]]; }],
-    ['download check skipped', doc => { doc.jobs.collect.steps.splice(4, 1); }],
-    ['digest verify after plan', doc => { const s = doc.jobs.publish.steps; s.push(s.splice(3, 1)[0]); }],
-    ['candidate verify after plan', doc => { const s = doc.jobs.publish.steps; s.push(s.splice(5, 1)[0]); }],
-  ]) reported({ [KEYED]: edit(change) }, label);
-});
-
-test('upload path other than runner.temp/signed is reported', () => {
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.path = '${{ runner.temp }}'; }) }, 'parent');
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.path = '${{ runner.temp }}/candidate'; }) }, 'candidate');
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed release').with.name = 'other'; }) }, 'name');
-  reported({ [KEYED]: edit(doc => { step(doc, 'feed', 'upload-pages-artifact').with.path = '${{ runner.temp }}/signed'; }) }, 'pages path');
-  reported({ [KEYED]: edit(doc => { step(doc, 'sign', 'Upload the signed candidate').with.path = '${{ runner.temp }}/zips'; }) }, 'raw zips as the candidate');
-  reported({ [KEYED]: edit(doc => { step(doc, 'gate', 'Upload the gate').with.path = '${{ runner.temp }}'; }) }, 'gate records path');
-});
-
-test('a keyed job that no longer refuses a re-run attempt, or skips its main and one-run checks, is reported (final review, I-1)', () => {
-  const S = 'packages/desktop/scripts/';
-  reported({ [`${S}keyed-run.mjs`]: text => text.replace("env.GITHUB_RUN_ATTEMPT !== '1'", "Number(env.GITHUB_RUN_ATTEMPT) < 1") }, 'attempt check weakened');
-  for (const [file, job] of [['release-gate.mjs', 'gate'], ['release-candidate.mjs', 'sign'], ['publish-release.mjs', 'publish']]) {
-    reported({ [S + file]: text => text.replace(`refuseRerunAttempt(env, '${job}');`, '') }, `${job}: attempt check removed`);
-    reported({ [S + file]: text => text.replace(`refuseRerunAttempt(env, '${job}');`, `// refuseRerunAttempt(env, '${job}');`) }, `${job}: attempt check commented out`);
-    reported({ [S + file]: text => text.replace('await assertNoOtherReleaseRun(env, api);', '') }, `${job}: one-run check removed`);
-  }
-  for (const file of ['release-candidate.mjs', 'publish-release.mjs']) reported({ [S + file]: text => text.replace('assertCheckoutIsMain(env, git);', '') }, `${file}: main check removed`);
-  // feed stays re-runnable: pages-feed.mjs never refuses an attempt.
-  reported({ [`${S}pages-feed.mjs`]: text => text + "\nimport { refuseRerunAttempt } from './keyed-run.mjs';\n" }, 'feed refuses re-runs');
-});
-
-test('environment and secret names in other workflows are matched case-insensitively, as GitHub resolves them (final review, m1)', () => {
-  const job = body => () => `name: sneaky\non: push\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n${body}    steps:\n      - run: echo\n`;
-  for (const name of ['DESKTOP-RELEASE', 'Desktop-Release', 'desktop-Release']) reported({ '.github/workflows/sneaky.yml': job(`    environment: ${name}\n`) }, `environment ${name}`);
-  for (const name of ['GITHUB-PAGES', 'GitHub-Pages']) reported({ '.github/workflows/sneaky.yml': job(`    environment: ${name}\n`) }, `environment ${name}`);
-  for (const secret of ['desktop_metadata_key_a', 'Desktop_Sparkle_Key_B', 'desktop_SANDBOX_key_a']) {
-    reported({ '.github/workflows/sneaky.yml': job(`    env:\n      K: \${{ secrets.${secret} }}\n`) }, `secret ${secret}`);
-  }
-  reported({ [KEYED]: edit(doc => { doc.jobs.sign.environment = 'Desktop-Release'; }) }, 'keyed sign environment case');
-  reported({ [KEYED]: edit(doc => { doc.jobs.feed.environment = 'GitHub-Pages'; }) }, 'keyed feed environment case');
-});
-
-test('release-keys.mjs importing a non-node module or adding a tag policy is reported', () => {
-  const keys = 'packages/desktop/scripts/release-keys.mjs', signer = 'packages/desktop/scripts/release-sign-job.mjs';
-  reported({ [keys]: text => "import yaml from 'js-yaml';\n" + text }, 'package import');
-  reported({ [keys]: text => text + "\nawait import('left-pad');\n" }, 'dynamic import');
-  reported({ [keys]: text => text + "\nconst policy = { name: 'desktop-v*', type: 'tag' };\n" }, 'tag policy');
-  reported({ [keys]: text => text + "\n// deployment-branch-policies\nconst policies = [{ name: 'main', type: 'branch' }, { name: 'dev', type: 'branch' }];\n" }, 'two branch policies');
-  // Unconditional: removing the environment setup altogether (and with it the policy literal) is reported too.
-  reported({ [keys]: text => text.replaceAll('deployment-branch-policies', 'policies').replace(/\{ name: 'main', type: 'branch' \}/g, '{}') }, 'no main policy');
-  reported({ [signer]: text => "import { x } from 'https://example.com/x.mjs';\n" + text }, 'remote import');
-  reported({ [signer]: text => "import { x } from '@dilla/other';\n" + text }, 'package import in signer');
-});
-
-test('other workflows naming the sign job script or chaining on desktop release request are reported', () => {
-  reported({ '.github/workflows/release.yml': text => text + '\n# node packages/desktop/scripts/release-sign-job.mjs\n' }, 'sign script');
-  reported({ '.github/workflows/sneaky.yml': () => "name: sneaky\non:\n  workflow_run:\n    workflows: ['desktop release request']\n    types: [completed]\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n" }, 'workflow_run chain');
-});
 
 // A failure-evidence upload of a step that wrote no files adds a second, misleading error ("No files were
 // found with the provided path"); the guard makes the upload run only when its evidence exists.
 test('a failure-evidence upload without a hashFiles guard is reported', () => {
   assert.deepEqual(checkWorkflow(REPO_ROOT), []);
-  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
-  for (const [file, text, check] of [['server.yml', REAL_SERVER, checkServerWorkflow], ['desktop-ci.yml', REAL_DESKTOP_CI, checkDesktopCiWorkflow], ['desktop.yml', REAL_DESKTOP, checkDesktopWorkflow]]) {
+  for (const [file, text, check] of [['server.yml', REAL_SERVER, checkServerWorkflow], ['desktop-ci.yml', REAL_DESKTOP_CI, checkDesktopCiWorkflow]]) {
     const guards = [...text.matchAll(/if: failure\(\)[^\n]*hashFiles\([^\n]*/g)].map(m => m[0]);
     if (file === 'server.yml') { assert.equal(guards.length, 0, 'server.yml uploads no failure evidence'); continue; }
     assert.ok(guards.length > 0, file);
@@ -3221,91 +2356,15 @@ test('every Go job downloads its modules through the retry wrapper, after its se
   }
 });
 
-const ELECTRON_VERSION = "      - name: Read the Electron version\n        id: electron-version\n        shell: bash\n        run: echo \"version=$(node -p \"require('electron/package.json').version\")\" >> \"$GITHUB_OUTPUT\"\n";
-const ELECTRON_CACHE = "      - name: Cache the Electron binary\n        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: ${{ runner.temp }}/electron-cache\n          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}\n";
-const ELECTRON_DOWNLOAD = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n        env:\n          electron_config_cache: \${{ runner.temp }}/electron-cache\n`;
-
-test('every Electron binary is cached, then downloaded through the retry wrapper', () => {
-  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+test('every job that runs playwright install --with-deps is pinned to ubuntu-24.04', () => {
   assert.deepEqual(checkWorkflow(REPO_ROOT), []);
-  const block = ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD;
-  for (const [file, real, check] of [['desktop.yml', REAL_DESKTOP, checkDesktopWorkflow], ['desktop-ci.yml', REAL_DESKTOP_CI, null]]) {
-    assert.ok(real.includes(block), file);
-    for (const changed of [
-      real.replace(block, ELECTRON_VERSION + ELECTRON_CACHE + '      - run: node node_modules/electron/install.js\n'),
-      real.replace(ELECTRON_RUN, 'node node_modules/electron/install.js'),
-      real.replace(ELECTRON_RUN, ELECTRON_RUN.replace('|socket hang up', '|socket hang up|404')),
-      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD + '        continue-on-error: true\n'),
-      real.replace(block, ELECTRON_VERSION + ELECTRON_DOWNLOAD),
-      real.replace(block, ELECTRON_CACHE + ELECTRON_DOWNLOAD),
-      real.replace(ELECTRON_CACHE, ELECTRON_CACHE.replace('-${{ steps.electron-version.outputs.version }}', '')),
-      real.replace(ELECTRON_CACHE, ELECTRON_CACHE.replace('${{ runner.os }}-', '')),
-      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD.replace('        env:\n          electron_config_cache: ${{ runner.temp }}/electron-cache\n', '')),
-      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD.replace('electron-cache', 'electron')),
-      real.replace(block, ELECTRON_DOWNLOAD.replace(/ {8}env:[\s\S]*/, '') + ELECTRON_VERSION + ELECTRON_CACHE),
-    ]) {
-      assert.notEqual(changed, real);
-      const found = [];
-      checkElectronInstalls({ native: changed }, found, file);
-      assert.ok(found.some((p) => p.includes('Electron')), file);
-      if (check !== null) {
-        const root = fixture(GOOD);
-        writeFileSync(join(root, '.github/workflows/' + file), changed);
-        assert.ok(check(root).some((p) => p.includes('Electron')), file);
-      }
-    }
-  }
-});
-
-test('the Electron install.js still reads electron_config_cache, the variable the workflows cache through', () => {
-  const install = readFileSync(join(REPO_ROOT, 'node_modules', 'electron', 'install.js'), 'utf8');
-  assert.ok(install.includes('process.env.electron_config_cache'),
-    'node_modules/electron/install.js no longer reads process.env.electron_config_cache: the Electron cache in desktop.yml and desktop-ci.yml would silently do nothing; point the download steps and their checker pin at the new variable');
-});
-
-test('deleting an Electron download block is reported', () => {
-  const start = REAL_DESKTOP.indexOf('\n  native-stock-feasibility:\n');
-  const at = REAL_DESKTOP.indexOf(ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD, start);
-  assert.ok(start >= 0 && at > start);
-  const changed = REAL_DESKTOP.replace(ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD, '');
-  assert.notEqual(changed, REAL_DESKTOP);
-  const root = fixture(GOOD);
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-  assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('exactly 5')));
-});
-
-test('the Electron version is read only after npm ci has installed the package', () => {
-  const found = [];
-  const moved = REAL_DESKTOP_CI.replace('      - run: npm ci\n' + ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD, ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD + '      - run: npm ci\n');
-  assert.notEqual(moved, REAL_DESKTOP_CI);
-  const job = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  [a-z][\w-]*:\n|$(?![\s\S]))/m;
-  checkElectronInstalls({ 'linux-sandbox-foundation': job.exec(REAL_DESKTOP_CI)[0] }, [], 'desktop-ci.yml');
-  checkElectronInstalls({ 'linux-sandbox-foundation': job.exec(moved)[0] }, found, 'desktop-ci.yml');
-  assert.ok(found.some((p) => p.includes('npm ci')), found.join('\n'));
-});
-
-test('the macOS installer build retries only the stapling errors', () => {
-  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
-  for (const changed of [
-    REAL_DESKTOP.replace("node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|\\bError 68\\b' -- npm run dist", 'npm run dist'),
-    REAL_DESKTOP.replace('|\\bError 68\\b', '|\\bError 68\\b|error'),
-    REAL_DESKTOP.replace('|\\bError 68\\b', '|Error 68'),
-    REAL_DESKTOP.replace("(macOS, staple retry)\n        if: runner.os == 'macOS'", "(macOS, staple retry)\n        if: runner.os != 'macOS'"),
-    REAL_DESKTOP.replace("        if: runner.os != 'macOS'\n        run: npm run dist", '        run: npm run dist'),
-  ]) {
-    const root = fixture(GOOD);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('macOS-only step through retry-on.mjs')));
-  }
-});
-
-test('the native build job has room for three notarizing macOS builds', () => {
-  const pin = "  native:\n    name: desktop-${{ matrix.platform }}-${{ matrix.arch }}\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n";
-  assert.ok(REAL_DESKTOP.includes(pin));
-  for (const minutes of ['30', '45']) {
-    const root = fixture(GOOD);
-    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(pin, pin.replace('60', minutes)));
-    assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('native') && p.includes('timeout-minutes: 60')), minutes);
+  for (const job of ['ui', 'core-integration', 'browser-spike', 'browser-media']) {
+    const body = new RegExp(`^  ${job}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:\\n|$(?![\\s\\S]))`, 'm').exec(REAL_DESKTOP_CI)[0];
+    const found = [];
+    checkPlaywrightImage({ [job]: body }, found, 'desktop-ci.yml');
+    assert.deepEqual(found, [], job);
+    checkPlaywrightImage({ [job]: body.replace('    runs-on: ubuntu-24.04\n', '    runs-on: ubuntu-latest\n') }, found, 'desktop-ci.yml');
+    assert.ok(found.some((p) => p.includes(`"${job}"`) && p.includes('ubuntu-24.04')), job);
   }
 });
 

@@ -80,9 +80,6 @@ jobs:
       - run: npm run test:ci-check
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
-      - if: needs.changes.outputs.web != 'false'
-        # bsdtar may already be on the runner image; otherwise install it, retrying only on Ubuntu mirror/DNS outages.
-        run: command -v bsdtar >/dev/null || node scripts/retry-on.mjs --attempts 6 --wait 60 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh libarchive-tools
       # The Unicode inputs are cached under a key of the generator file, which holds their pinned checksums: they are
       # downloaded once per pin change. npm test's profile-tables check reads the same directory (DILLA_UCD_DIR), so
       # neither it nor the tables step below reaches unicode.org on a cache hit (PR #149: its 522s failed npm test).
@@ -108,7 +105,8 @@ jobs:
   ui:
     needs: [changes]
     if: needs.changes.outputs.web != 'false'
-    runs-on: ubuntu-latest
+    # Playwright's --with-deps has no package list for Ubuntu 26.04, which ubuntu-latest now resolves to.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -350,7 +348,7 @@ jobs:
       - run: bash scripts/install-ci-tool.sh binaryen
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
-      # The shared encrypted-store harness runs only the Electron-compatible engine.
+      # The shared encrypted-store harness runs only the Chromium engine.
       - id: apt-browser-spike-key
         run: echo "suffix=$(bash scripts/ci-apt-cache.sh key)" >> "$GITHUB_OUTPUT"
       - id: apt-browser-spike
@@ -482,8 +480,8 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
-    # Build the bundled UI once for Electron, shared core integration and go-release, so every
-    # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
+    # Build the bundled UI once for the shared core integration, so every
+    # consumer tests the same bytes. The webdist test is web.New's manifest check over
     # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
     timeout-minutes: 15
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
@@ -548,117 +546,15 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: dilla-desktop-core
-          path: packages/core-wasm/pkg/
-          if-no-files-found: error
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
           name: dilla-core-harness
           path: packages/client-core/harness-dist/
           if-no-files-found: error
 
-  # Keep Linux sandbox security controls ahead of native desktop acceptance.
-  linux-sandbox-foundation:
-    needs: [changes]
-    if: needs.changes.outputs.e2e != 'false'
-    name: linux-sandbox-foundation-${{ matrix.lane }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { os: ubuntu-22.04, lane: namespace }
-          - { os: ubuntu-24.04, lane: managed }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: |
-          sudo apt-get update
-          case "$(lsb_release -rs)" in
-            22.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0 libasound2 libfuse2 ;;
-            24.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0t64 libasound2t64 libfuse2t64 ;;
-            *) exit 1 ;;
-          esac
-      - run: npm ci
-      - name: Read the Electron version
-        id: electron-version
-        shell: bash
-        run: echo "version=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
-      - name: Cache the Electron binary
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/electron-cache
-          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}
-      - name: Download the Electron binary (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
-        env:
-          electron_config_cache: ${{ runner.temp }}/electron-cache
-      - name: Portable sandbox maintenance controls
-        if: matrix.lane == 'managed'
-        run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        if: matrix.lane == 'managed'
-        with:
-          go-version-file: go.mod
-      - name: Download Go modules (retried only on known network errors)
-        if: matrix.lane == 'managed'
-        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
-      - name: Root sandbox maintenance kernel proof
-        id: sandbox_maintenance
-        if: matrix.lane == 'managed'
-        timeout-minutes: 8
-        run: node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs
-        env:
-          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed
-      - name: Cleanup root sandbox maintenance fixture
-        if: always() && matrix.lane == 'managed' && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_maintenance.outcome)
-        timeout-minutes: 1
-        run: node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only
-        env:
-          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed
-      - name: Preserve root sandbox maintenance proof
-        if: always() && matrix.lane == 'managed' && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_maintenance.outcome)
-        timeout-minutes: 1
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: linux-sandbox-maintenance-managed
-          path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json
-          if-no-files-found: error
-          retention-days: 3
-      - id: sandbox_foundation
-        run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs
-        env:
-          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}
-      - if: always() && contains(fromJSON('["success","failure","cancelled"]'), steps.sandbox_foundation.outcome)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: linux-sandbox-foundation-${{ matrix.lane }}
-          path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json
-          if-no-files-found: error
-
-  desktop:
-    needs: [changes, web-build, rust-wasi, linux-sandbox-foundation]
-    if: needs.changes.outputs.e2e != 'false'
-    uses: ./.github/workflows/desktop.yml
-    # The macOS Developer ID certificate and notarization key, read by its native job alone. Named, never
-    # inherited (scripts/check-ci-workflow.mjs forbids inheriting), so no other secret reaches desktop.yml.
-    secrets:
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-
   core-integration:
     needs: [changes, rust-native, rust-wasi, web-build]
     if: needs.changes.outputs.e2e != 'false'
-    runs-on: ubuntu-latest
+    # Playwright's --with-deps has no package list for Ubuntu 26.04, which ubuntu-latest now resolves to.
+    runs-on: ubuntu-24.04
     # C18: the core-worker suite in Chromium, against the test host serving the build same-origin, with the native testkit peer.
     # The wasm arrives inside the two builds; no Rust toolchain here.
     # Budget: core took about 2 minutes plus about 3 of setup; 20 minutes leaves wide margin.
@@ -731,7 +627,7 @@ jobs:
   # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
   # children. This does no build work and never depends on the watcher or final aggregator.
   desktop-work-complete:
-    needs: [changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, web-build, linux-sandbox-foundation, desktop, core-integration]
+    needs: [changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, web-build, core-integration]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -740,7 +636,7 @@ jobs:
 
   # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
   desktop-ok:
-    needs: [ci-watchdog, desktop-work-complete, changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, web-build, linux-sandbox-foundation, desktop, core-integration]
+    needs: [ci-watchdog, desktop-work-complete, changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, web-build, core-integration]
     if: always()
     runs-on: ubuntu-latest
     steps:

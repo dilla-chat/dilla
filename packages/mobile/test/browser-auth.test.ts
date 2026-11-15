@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { browserAuth, CEREMONY_TIMEOUT_MS, type NativeHttp, type NativeHttpOptions } from '../src/browser-auth.ts';
 
-// The desktop cases (packages/desktop/test/browser-auth.test.ts) ported to the native transport.
+// The desktop cases (the former Electron shell, tag desktop-v0.1.0-beta.5, packages/desktop/test/browser-auth.test.ts) ported to the native transport.
 // Every reply is a CapacitorHttp-shaped { status, data, headers, url }.
 const reply = (status: number, data: unknown = '') => ({ status, data, headers: {}, url: '' });
 const httpOf = (handler: (options: NativeHttpOptions) => ReturnType<typeof reply> | Promise<ReturnType<typeof reply>>): NativeHttp => ({ request: async options => handler(options) });

@@ -407,7 +407,7 @@ fn lock_file(path: &Path) -> Result<File, StoreError> {
 }
 
 /// What a person may type or paste into the manager, and the rules for it: the same ones as the desktop shell's
-/// `packages/desktop/src/policy.ts` (`canonicalInstance`, `instanceInput`, `parseInvite`).
+/// `packages/desktop/src/policy.ts` in the former Electron shell (tag desktop-v0.1.0-beta.5) (`canonicalInstance`, `instanceInput`, `parseInvite`).
 pub mod address {
     use url::Url;
 

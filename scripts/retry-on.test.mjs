@@ -109,17 +109,13 @@ function shippedPatterns(command) {
   return { patterns: parseArgs([...JSON.parse(flags), '--', 'x']).patterns, files: [...new Set(files)].sort() };
 }
 const GO = shippedPatterns('go mod download');
-const STAPLE = shippedPatterns('npm run dist');
-const ELECTRON = shippedPatterns('node node_modules/electron/install.js');
 const GRADLE = shippedPatterns('packages/mobile/android/gradlew');
 const ANDROID_SDK = shippedPatterns('bash scripts/ci-android.sh sdk');
 const SPM = shippedPatterns('xcodebuild -resolvePackageDependencies');
 const retried = async (patterns, output) => (await retryOn({ patterns, attempts: 3, waitMs: 0, run: sequence({ code: 1, output }, { code: 0, output: '' }).run, sleep: noSleep })).attempts > 1;
 
 test('the shipped pattern sets come from the workflows that run the wrapped commands', () => {
-  assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop-gpui.yml', 'desktop.yml', 'mobile.yml', 'release.yml', 'server.yml']);
-  assert.deepEqual(STAPLE.files, ['desktop.yml']);
-  assert.deepEqual(ELECTRON.files, ['desktop-ci.yml', 'desktop.yml']);
+  assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop-gpui.yml', 'mobile.yml', 'release.yml', 'server.yml']);
   // mobile-release.yml builds the signed APK (Gradle) and archives for TestFlight (Swift packages); the SDK install is mobile.yml's only.
   for (const set of [GRADLE, SPM]) assert.deepEqual(set.files, ['mobile-release.yml', 'mobile.yml']);
   assert.deepEqual(ANDROID_SDK.files, ['mobile.yml']);
@@ -144,41 +140,6 @@ test('the Go download does not retry a module that is not there or a real failur
     'verifying example.com/x@v1.2.3: checksum mismatch\n\tdownloaded: h1:abc=\n\tgo.sum:     h1:def=',
     '--- FAIL: TestDownload (0.01s)\n    download_test.go:12: got 502 from proxy.golang.org mock, want 200\nFAIL\tgithub.com/dilla/x\t0.02s',
   ]) assert.ok(!(await retried(GO.patterns, line)), line);
-});
-
-test('the macOS build retries only the stapling and Apple service errors', async () => {
-  for (const line of [
-    'The staple and validate action failed! Error 65.',
-    'Could not validate ticket: Error Domain=NSURLErrorDomain Code=-1001 "The request timed out."',
-    'CloudKit query for Dilla.app (2/abc) failed due to "Record not found". The staple and validate action failed! Error 68.',
-  ]) assert.ok(await retried(STAPLE.patterns, line), line);
-  for (const line of [
-    '  status: Invalid\n  message: Processing complete',
-    'Notarization failed: Error 680',
-    'Error 6800: something else',
-    'npm ERR! code ELIFECYCLE',
-  ]) assert.ok(!(await retried(STAPLE.patterns, line)), line);
-});
-
-test('the Electron download retries a gateway error, a rate limit and transport errors', async () => {
-  for (const line of [
-    'HTTPError: Response code 504 (Gateway Time-out) for https://github.com/electron/electron/releases/download/v45.2.1/electron-v45.2.1-darwin-arm64.zip',
-    'HTTPError: Response code 502 (Bad Gateway) for https://github.com/electron/electron/releases/download/v45.2.1/electron-v45.2.1-linux-x64.zip',
-    'HTTPError: Response code 429 (Too Many Requests) for https://github.com/electron/electron/releases/download/v45.2.1/electron-v45.2.1-win32-x64.zip',
-    'RequestError: connect ETIMEDOUT 140.82.121.4:443',
-    'RequestError: read ECONNRESET',
-    'RequestError: getaddrinfo EAI_AGAIN github.com',
-    'RequestError: socket hang up',
-  ]) assert.ok(await retried(ELECTRON.patterns, line), line);
-});
-
-test('the Electron download does not retry a missing release or a checksum mismatch', async () => {
-  for (const line of [
-    'HTTPError: Response code 404 (Not Found) for https://github.com/electron/electron/releases/download/v0.0.0/electron-v0.0.0-linux-x64.zip',
-    'Error: Response code 5040 (odd) for https://github.com/electron/electron/releases/download/v45.2.1/x.zip',
-    'Error: checksum mismatch: sha256 of electron-v45.2.1-linux-x64.zip does not match SHASUMS256.txt',
-    'Error: Failed to verify the sha256 checksum of the Electron download',
-  ]) assert.ok(!(await retried(ELECTRON.patterns, line)), line);
 });
 
 test('the Gradle build retries a repository 5xx, a rate limit and transport errors', async () => {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ROOT, TABLE, cell, e2eTitles, entries, rustRefs, tableRows, titlesOf, unescapeTitle } from './behaviour-gates.mjs';
+import { FROZEN_TITLES, ROOT, TABLE, cell, e2eTitles, entries, frozenTitles, rustRefs, tableRows, titlesOf, unescapeTitle } from './behaviour-gates.mjs';
 
 const rows = tableRows(readFileSync(join(ROOT, TABLE), 'utf8'));
 const key = (file, title) => `${file}\u0000${cell(title)}`;
@@ -51,6 +51,13 @@ test('behaviour_gate_table_complete: every Rust reference is a real test functio
     }
   }
   assert.deepEqual(missing, [], 'Rust references that name no test function');
+});
+
+test('the frozen titles of the retired suites are all there and none is read from a deleted directory', () => {
+  const frozen = frozenTitles();
+  assert.ok(frozen.length > 200, `${FROZEN_TITLES} holds the frozen web, voice and Electron titles`);
+  assert.ok(frozen.every(([file]) => /^(e2e\/web|e2e\/voice|packages\/desktop\/test\/electron)\//.test(file)));
+  assert.ok(e2eTitles().length >= frozen.length);
 });
 
 test('the e2e title parser reads literals, escapes and modifiers, and refuses a title it cannot read', () => {

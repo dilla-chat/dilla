@@ -1,8 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, posix } from 'node:path';
+import { join } from 'node:path';
 import { AREAS, gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
 import { localMirrorProblems } from './ci-local-plan.mjs';
-import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 import { createRequire } from 'node:module';
 const yaml = createRequire(import.meta.url)('js-yaml');
@@ -66,11 +65,8 @@ export const REQUIRED_JOBS = {
     'rust-wasi',
     'browser-spike',
     'browser-media',
-    // Build the bundled client once for Electron and retain shared encrypted-core
-    // integration (BROWSER_WEB_JOBS below) without browser compatibility lanes.
+    // Build the bundled client once for the shared encrypted-core integration (BROWSER_WEB_JOBS below).
     'web-build',
-    'linux-sandbox-foundation',
-    'desktop',
     // core-integration: BROWSER_WEB_JOBS.
   ],
   mobile: [
@@ -134,8 +130,7 @@ const FORBIDDEN = [
 export const NON_RACE_STEP =
   "go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'";
 
-/** Shared core-worker/OPFS integration uses the Chromium engine embedded in
- * Electron. Product chat and voice acceptance run only in desktop.yml. */
+/** Shared core-worker/OPFS integration runs in Chromium. */
 export const WEB_SHARDS = 6;
 export const BROWSER_WEB_JOBS = {
   'core-integration': { engine: 'chromium', suite: 'core', shard: null, timeout: 20 },
@@ -208,7 +203,6 @@ export const UI_SHOTS_3 = [
 
 /** One load-bearing command per job, so a silently gutted job is caught; a job carries them in either workflow. */
 const REQUIRED_STEPS = {
-  desktop: ['uses: ./.github/workflows/desktop.yml'],
   // The areas are computed by scripts/ci-areas.mjs (tested in ci-areas.test.mjs), which fails safe to everything.
   // fetch-depth: 0 gives it the base commit to diff against.
   changes: [
@@ -771,34 +765,18 @@ export function jobSteps(body) {
   return steps;
 }
 
-// Loading the complete module on Linux includes the cgo GTK setup frontend.
-// Keep it in vet/lint/vulnerability/race coverage, including future full-tree
-// jobs: provide headers before loading rather than hiding the package with cgo.
-function checkWholeModuleGTK(jobs, problems, file) {
-  // The go set's shards load ./... through the partitioner (scripts/go-shard.mjs).
-  const loadsAll = line => /(?:\bgo\s+(?:vet|test|list|build)\b|\bgolangci-lint\s+run\b|\bgovulncheck(?:@\S+)?\b)[^\n]*\s\.\/\.\.\.(?=\s|$|[);|])/.test(line) ||
-    /\bnode scripts\/go-shard\.mjs run go\s/.test(line);
-  for (const [name, body] of Object.entries(jobs)) {
-    if (!/^ {4}runs-on: ubuntu-\S+$/m.test(body)) continue;
-    const steps = jobSteps(body), consumers = steps.map((step, index) => step.some(loadsAll) ? index : -1).filter(index => index >= 0);
-    if (!consumers.length) continue;
-    const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
-    if (gtk < 0 || consumers.some(index => index <= gtk)) problems.push(`${file}: job "${name}" must install GTK development headers before loading all Go packages`);
-    const header = body.split(/^ {4}steps:/m)[0];
-    if (/\bCGO_ENABLED:\s*['"]?0\b/.test(header) || consumers.some(index => steps[index].some(line => !/^(?:name|id):/.test(line) && /\bCGO_ENABLED(?:=|:\s*['"]?)0\b|^if:/.test(line)))) {
-      problems.push(`${file}: job "${name}" must retain cgo GTK frontend coverage in whole-module checks`);
-    }
-  }
-}
-
 /** The retried module download every Go job runs right after its Go (and, where present, Node) setup. */
 const GO_MOD_DOWNLOAD_NAME = 'name: Download Go modules (retried only on known network errors)';
 const GO_MOD_DOWNLOAD_RUN = "node scripts/retry-on.mjs --pattern 'proxy\\.golang\\.org[^\\n]*:\\s(50[0-4]|429)\\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download";
-/** The Electron binary comes from GitHub releases: only a gateway error, a rate limit or a transport error repeats it, never a 404 or a checksum mismatch. */
-const ELECTRON_INSTALL_NAME = 'name: Download the Electron binary (retried only on known network errors)';
-const ELECTRON_INSTALL_RUN = "node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js";
-/** The macOS stapling retry: only Apple-service errors repeat the (re-notarizing) build. */
-const STAPLE_RETRY = "node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|\\bError 68\\b' -- npm run dist -w @dilla/desktop";
+
+/** Playwright's `install --with-deps` knows the packages of the Ubuntu releases it supports only; ubuntu-latest moved to
+ *  26.04, where it fails (CI run 20). Every job that runs it is pinned to ubuntu-24.04. */
+export function checkPlaywrightImage(jobs, problems, file) {
+  for (const [name, body] of Object.entries(jobs)) {
+    if (!jobSteps(body).some((step) => step.some((line) => /\binstall --with-deps\b/.test(line) && /playwright/.test(line)))) continue;
+    if (!/^ {4}runs-on: ubuntu-24\.04$/m.test(body)) problems.push(`${file}: job "${name}" runs playwright install --with-deps and must run on ubuntu-24.04 (no package list for 26.04)`);
+  }
+}
 
 /** Every job with actions/setup-go downloads its modules through retry-on.mjs, once, after the Go and Node setup. */
 export function checkGoModuleDownloads(jobs, problems, file) {
@@ -816,154 +794,6 @@ export function checkGoModuleDownloads(jobs, problems, file) {
       problems.push(`${file}: job "${name}" must run exactly one retried "go mod download" step (${GO_MOD_DOWNLOAD_RUN}) after its setup-go and setup-node steps and before the first Go build or test, with setup-go's condition`);
     }
   }
-}
-
-/**
- * The Electron binary is cached per OS and version in electron_config_cache (the variable install.js reads) (step env: the runner context is not available in a
- * job's env), so the retried download only runs on a miss. The three steps stay together, after the job's npm ci.
- */
-const ELECTRON_VERSION_STEP = [
-  'name: Read the Electron version',
-  'id: electron-version',
-  'shell: bash',
-  'run: echo "version=$(node -p "require(\'electron/package.json\').version")" >> "$GITHUB_OUTPUT"',
-];
-const ELECTRON_CACHE_STEP = [
-  'name: Cache the Electron binary',
-  'uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0',
-  'with:',
-  'path: ${{ runner.temp }}/electron-cache',
-  'key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}',
-];
-const ELECTRON_INSTALL_STEP = [
-  ELECTRON_INSTALL_NAME,
-  `run: ${ELECTRON_INSTALL_RUN}`,
-  'env:',
-  'electron_config_cache: ${{ runner.temp }}/electron-cache',
-];
-const ELECTRON_STEPS = [ELECTRON_VERSION_STEP, ELECTRON_CACHE_STEP, ELECTRON_INSTALL_STEP].map((step) => step.join('\n')).join('\n');
-
-const ELECTRON_INSTALLS_PER_FILE = { 'desktop.yml': 5, 'desktop-ci.yml': 1, 'server.yml': 0, 'mobile.yml': 0 };
-
-/** Every step that runs electron/install.js is the one retried step, byte for byte, behind the version and cache steps. */
-export function checkElectronInstalls(jobs, problems, file) {
-  let installs = 0;
-  for (const [name, body] of Object.entries(jobs)) {
-    const steps = jobSteps(body);
-    steps.forEach((step, index) => {
-      if (!step.some((line) => line.includes('electron/install.js'))) return;
-      installs += 1;
-      const block = steps.slice(Math.max(0, index - 2), index + 1).map((lines) => lines.join('\n')).join('\n');
-      const ci = steps.findIndex((lines) => lines.join('\n') === 'run: npm ci');
-      if (block !== ELECTRON_STEPS) {
-        problems.push(`${file}: job "${name}" must read the Electron version, cache electron_config_cache by OS, arch and that version, then download the binary through the retried step (${ELECTRON_INSTALL_RUN}), as three consecutive steps with no other condition or flag`);
-      } else if (ci < 0 || ci >= index - 2) {
-        problems.push(`${file}: job "${name}" must run npm ci before it reads the Electron version`);
-      }
-    });
-  }
-  // A deleted block would otherwise go unnoticed: each workflow keeps one per job that runs Electron.
-  const want = ELECTRON_INSTALLS_PER_FILE[file];
-  if (want !== undefined && installs !== want) problems.push(`${file}: must download the Electron binary in exactly ${want} steps, found ${installs}`);
-}
-
-// Narrow cancellation finalizers for the reviewed disposable fixture only.
-// Full job shape below also rejects reordered, duplicate or extra steps.
-const SANDBOX_MAINTENANCE_CONTROLS = [
-  "      - name: Portable sandbox maintenance controls",
-  "        if: matrix.lane == 'managed'",
-  "        run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs",
-  "      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7",
-  "        if: matrix.lane == 'managed'",
-  "        with:",
-  "          go-version-file: go.mod",
-  "      - name: Download Go modules (retried only on known network errors)",
-  "        if: matrix.lane == 'managed'",
-  `        run: ${GO_MOD_DOWNLOAD_RUN}`,
-  "      - name: Root sandbox maintenance kernel proof",
-  "        id: sandbox_maintenance",
-  "        if: matrix.lane == 'managed'",
-  "        timeout-minutes: 8",
-  "        run: node --test packages/desktop/test/native/linux-sandbox-maintenance.test.mjs",
-  "        env:",
-  "          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed",
-].join('\n');
-const SANDBOX_MAINTENANCE_CLEANUP = [
-  "      - name: Cleanup root sandbox maintenance fixture",
-  "        if: always() && matrix.lane == 'managed' && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_maintenance.outcome)",
-  "        timeout-minutes: 1",
-  "        run: node packages/desktop/test/native/linux-sandbox-maintenance.test.mjs --cleanup-only",
-  "        env:",
-  "          DILLA_LINUX_SANDBOX_FOUNDATION_LANE: managed",
-].join('\n');
-const SANDBOX_MAINTENANCE_ARTIFACT = [
-  "      - name: Preserve root sandbox maintenance proof",
-  "        if: always() && matrix.lane == 'managed' && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_maintenance.outcome)",
-  "        timeout-minutes: 1",
-  "        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7",
-  "        with:",
-  "          name: linux-sandbox-maintenance-managed",
-  "          path: packages/desktop/test-results/linux-sandbox-maintenance-managed.json",
-  "          if-no-files-found: error",
-  "          retention-days: 3",
-].join('\n');
-
-// Keep this feasibility proof independent of asset builds and long Windows tests.
-// Exact native lanes/commands prohibit extracted execution and host-policy overrides.
-function checkLinuxSandboxFoundationJob(jobs, problems, file) {
-  if (!jobs['linux-sandbox-foundation']) return;
-  const expected = [
-    "needs: [changes]",
-    "if: needs.changes.outputs.e2e != 'false'",
-    "name: linux-sandbox-foundation-${{ matrix.lane }}",
-    "runs-on: ${{ matrix.os }}",
-    "timeout-minutes: 15",
-    "strategy:",
-    "fail-fast: true",
-    "matrix:",
-    "include:",
-    "- { os: ubuntu-22.04, lane: namespace }",
-    "- { os: ubuntu-24.04, lane: managed }",
-    "steps:",
-    "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7",
-    "with:",
-    "persist-credentials: false",
-    "- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7",
-    "with:",
-    "node-version-file: .nvmrc",
-    "cache: npm",
-    "- run: |",
-    "sudo apt-get update",
-    "case \"$(lsb_release -rs)\" in",
-    "22.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0 libasound2 libfuse2 ;;",
-    "24.04) sudo apt-get install -y xvfb dbus-x11 libnss3 libgbm1 libgtk-3-0t64 libasound2t64 libfuse2t64 ;;",
-    "*) exit 1 ;;",
-    "esac",
-    "- run: npm ci",
-    `- ${ELECTRON_VERSION_STEP[0]}`,
-    ...ELECTRON_VERSION_STEP.slice(1),
-    `- ${ELECTRON_CACHE_STEP[0]}`,
-    ...ELECTRON_CACHE_STEP.slice(1),
-    `- ${ELECTRON_INSTALL_STEP[0]}`,
-    ...ELECTRON_INSTALL_STEP.slice(1),
-    ...SANDBOX_MAINTENANCE_CONTROLS.split('\n').map(line => line.trim()),
-    ...SANDBOX_MAINTENANCE_CLEANUP.split('\n').map(line => line.trim()),
-    ...SANDBOX_MAINTENANCE_ARTIFACT.split('\n').map(line => line.trim()),
-    "- id: sandbox_foundation",
-    "run: xvfb-run -a dbus-run-session -- node --test packages/desktop/test/native/linux-sandbox-foundation.test.mjs",
-    "env:",
-    "DILLA_LINUX_SANDBOX_FOUNDATION_LANE: ${{ matrix.lane }}",
-    "- if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)",
-    "uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7",
-    "with:",
-    "name: linux-sandbox-foundation-${{ matrix.lane }}",
-    "path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json",
-    "if-no-files-found: error",
-  ].join('\n');
-  const actual = jobs['linux-sandbox-foundation'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
-  if (actual !== expected) problems.push(`${file}: Linux sandbox foundation must run both fixed native Ubuntu lanes with unchanged host policy, pinned provisioning and the unfiltered FUSE feasibility fixture`);
-  const needs = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
-  if (!needs.includes('linux-sandbox-foundation')) problems.push(`${file}: desktop must wait for Linux sandbox foundation`);
 }
 
 /**
@@ -1025,7 +855,6 @@ function checkActionReference(line, file, number, problems) {
   const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
   if (!match) return;
   const action = match[1];
-  if (action === './.github/workflows/desktop.yml' && file === WORKFLOWS.desktop.file) return;
   if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
   } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
@@ -1070,19 +899,6 @@ function checkCiWorkflow(root, workflow) {
     for (const { re, what } of FORBIDDEN) {
       // Only the final gate and its no-op DAG barrier may run regardless of dependency results.
       if (what === 'if: always()' && [ok, barrier].includes(currentJob) && line === '    if: always()') continue;
-      // Preserve only the bounded sandbox observation file after a failed
-      // native test. This action cannot execute or bypass an acceptance step.
-      if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' && workflowLines.slice(i, i + 6).join('\n') === [
-        "      - if: always() && contains(fromJSON('[\"success\",\"failure\",\"cancelled\"]'), steps.sandbox_foundation.outcome)",
-        '        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7',
-        '        with:',
-        '          name: linux-sandbox-foundation-${{ matrix.lane }}',
-        '          path: packages/desktop/test-results/linux-sandbox-foundation-${{ matrix.lane }}.json',
-        '          if-no-files-found: error',
-      ].join('\n')) continue;
-      if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' &&
-          [SANDBOX_MAINTENANCE_CLEANUP, SANDBOX_MAINTENANCE_ARTIFACT].some(block =>
-            workflowLines.slice(i - 1, i - 1 + block.split('\n').length).join('\n') === block)) continue;
       if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -1142,10 +958,8 @@ function checkCiWorkflow(root, workflow) {
   for (const name of Object.keys(jobs)) {
     if (!requiredJobs.includes(name)) problems.push(`${file}: job "${name}" does not belong to the ${workflowName} workflow (REQUIRED_JOBS.${workflow})`);
   }
-  checkWholeModuleGTK(jobs, problems, file);
   checkGoModuleDownloads(jobs, problems, file);
-  checkElectronInstalls(jobs, problems, file);
-  checkLinuxSandboxFoundationJob(jobs, problems, file);
+  checkPlaywrightImage(jobs, problems, file);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
   // request (or, with a wrong condition, be skipped on code).
@@ -1288,7 +1102,6 @@ function checkCiWorkflow(root, workflow) {
   for (const [job, needs] of [
     ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
-    ['desktop', ['web-build']],
     ['mobile-bundle', ['mobile-core-wasm']],
     ['mobile-android', ['mobile-bundle', 'mobile-e2e-tools']],
     ['mobile-ios', ['mobile-bundle']],
@@ -1525,6 +1338,8 @@ const STATUS_CHECK = /\b(?:always|cancelled|failure|success)\s*\(/;
 const isCheckout = (step) => typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@');
 /** Every `${{ … }}` expression body in a text. */
 const expressions = (text) => [...text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map((m) => m[1]);
+/** Structural equality of two parsed YAML values. */
+const drSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /**
  * mobile-release.yml (2026-11-06, "Draft, sign on main"): release.yml leaves each v* release a draft; this workflow,
@@ -1633,636 +1448,6 @@ export function checkMobileReleaseWorkflow(root) {
       if (writers.length !== 1 || writers[0].name !== keyFile.step || !run.includes(keyFile.trap) || run.indexOf(keyFile.trap) > run.indexOf(keyFile.write)) {
         problems.push(`${file}: job "${name}": the key file is written in one step only, "${keyFile.step}", whose ${keyFile.trap} comes before the write`);
       }
-    }
-  }
-  return problems;
-}
-
-export function checkDesktopWorkflow(root) {
-  const file = 'desktop.yml';
-  let text;
-  try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
-  catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
-  const problems = [];
-  problems.push(...checkNativeStockFeasibility(text, { workflow: true }).map(problem => `${file}: native stock feasibility: ${problem}`));
-  // The e2e shards run every test so one round shows every failing test; the watchdog leaves their failures running too.
-  if (/--max-failures/.test(text)) {
-    problems.push(`${file}: desktop e2e shards must run every test, so --max-failures is not allowed`);
-  }
-  text.split('\n').forEach((line, i) => {
-    checkActionReference(line, file, i + 1, problems);
-    for (const { re, what } of FORBIDDEN) if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden ${what}`);
-  });
-  for (const required of [
-    'workflow_call:', 'contents: read', 'fail-fast: true',
-    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
-    'os: macos-15, platform: mac, arch: arm64',
-    'name: dilla-web-dist', 'name: dilla-desktop-core',
-    'npm test -w @dilla/desktop', 'npm run typecheck -w @dilla/desktop',
-    'npm run build -w @dilla/desktop -- --existing-client', 'npm run build:validation -w @dilla/desktop',
-    'xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop',
-    'run: npm run test:electron -w @dilla/desktop', 'npm run pack -w @dilla/desktop',
-    'node packages/desktop/scripts/check-fuses.mjs', 'node --test packages/desktop/test/native/mac-upgrade.test.mjs',
-    'node --test packages/desktop/test/native/installed-upgrade.test.mjs', 'libfuse2t64', 'name: desktop-installed-upgrade-',
-    'prepare-windows-audio.ps1', '--grep-invert "application-audio.spec.ts"', 'name: Application audio encryption and exclusion', 'playwright test --config playwright.config.ts application-audio.spec.ts',
-    'npm run dist -w @dilla/desktop', 'name: desktop-installers-${{ matrix.platform }}-${{ matrix.arch }}',
-  ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
-  if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
-  const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
-  // Build matrices stop at the first failure; the e2e shards keep running so one round shows every failing test.
-  for (const job of ['test-tools', 'native-linux-package-acceptance', 'native', 'client', 'voice']) {
-    const want = job === 'client' || job === 'voice' ? 'false' : 'true';
-    const got = /^ {6}fail-fast:\s*(\w+)/m.exec(body(job))?.[1];
-    if (got !== want) {
-      problems.push(`${file}: ${job} matrix must set fail-fast: ${want} (builds stop the matrix on the first failure, e2e shards run every test)`);
-    }
-  }
-  for (const job of ['native', 'client', 'voice']) {
-    const steps = jobSteps(body(job));
-    const install = steps.findIndex(step => step.join('\n') === ELECTRON_INSTALL_STEP.join('\n'));
-    const seal = steps.map((step, index) => step.some(line => line.includes('prepare-mac-electron-runtime.ts')) ? index : -1).filter(index => index >= 0);
-    const expected = "name: Seal macOS npm Electron runtime for native notifications\nif: runner.os == 'macOS'\nrun: node e2e/web/support/prepare-mac-electron-runtime.ts";
-    if (install < 0 || seal.length !== 1 || seal[0] !== install + 1 || steps[seal[0]].join('\n') !== expected)
-      problems.push(`${file}: ${job} must seal the macOS npm Electron runtime immediately after installation`);
-  }
-  checkGoModuleDownloads(splitJobs(text), problems, file);
-  checkElectronInstalls(splitJobs(text), problems, file);
-  // Three notarizing macOS builds (STAPLE_RETRY's attempts) do not fit in 30 minutes.
-  if (!/^ {4}timeout-minutes: 60$/m.test(body('native'))) problems.push(`${file}: the native job must carry timeout-minutes: 60, room for the macOS staple retry's three builds`);
-  const nativeSteps = jobSteps(body('native'));
-  const distSteps = nativeSteps.filter((step) => step.some((line) => line.includes('npm run dist -w @dilla/desktop')));
-  const distArgs = '-- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}';
-  const [macDist, plainDist] = distSteps;
-  // The retry wrapper is macOS-only (it cannot start npm.cmd on Windows and only stapling needs it); the other platforms run plain.
-  if (distSteps.length !== 2 || macDist[0] !== 'name: Build installable desktop artifacts (macOS, staple retry)' || macDist[1] !== "if: runner.os == 'macOS'"
-    || !macDist.includes(`run: ${STAPLE_RETRY} ${distArgs}`)
-    || plainDist[0] !== 'name: Build installable desktop artifacts' || plainDist[1] !== "if: runner.os != 'macOS'"
-    || !plainDist.includes(`run: npm run dist -w @dilla/desktop ${distArgs}`)
-    || JSON.stringify(macDist.slice(3)) !== JSON.stringify(plainDist.slice(3))) {
-    problems.push(`${file}: the native installer build must be a macOS-only step through retry-on.mjs retrying only the macOS stapling errors, plus the same build plain on other platforms`);
-  }
-  const formatAcceptance = body('native-linux-package-acceptance');
-  for (const required of [
-    'name: desktop-linux-package-acceptance-${{ matrix.format }}-x64',
-    'needs: [test-tools, native-linux-packages]', 'runs-on: ubuntu-24.04',
-    '- { format: deb, label: DEB }', '- { format: rpm, label: RPM }', '- { format: aur, label: AUR }',
-    'persist-credentials: false', 'node-version-file: .nvmrc',
-    'name: desktop-installers-linux-packages-x64', 'path: ${{ runner.temp }}/native-linux-package-inputs',
-    'name: dilla-e2e-tools-linux-x64-${{ github.sha }}', 'name: dilla-web-dist', 'name: dilla-core-wasi',
-    'run: npm ci --ignore-scripts',
-    'run: node --test e2e/unit/native-linux-package-acceptance.test.mjs e2e/unit/native-stock-sandbox.test.mjs',
-    'name: Installed ${{ matrix.label }} package acceptance\n        run: bash e2e/web/support/native-linux-package-run.sh "${{ matrix.format }}"',
-    'name: desktop-linux-package-observation-${{ matrix.format }}-x64', 'if-no-files-found: error',
-  ]) if (!formatAcceptance.includes(required)) problems.push(`${file}: native package acceptance missing ${required}`);
-  if (/^\s*if:|continue-on-error|run-id:|repository:|github-token:|persist-credentials: true|build-native-linux-packages|--no-sandbox/m.test(formatAcceptance)) problems.push(`${file}: native package acceptance must consume same-run artifacts without skips, rebuilds or credentials`);
-  try {
-    const job = yaml.load(text).jobs['native-linux-package-acceptance'], steps = job?.steps ?? [];
-    const download = name => steps.findIndex(step => step.uses?.startsWith('actions/download-artifact@') && step.with?.name === name);
-    const accept = steps.findIndex(step => step.name === 'Installed ${{ matrix.label }} package acceptance' && step.run === 'bash e2e/web/support/native-linux-package-run.sh "${{ matrix.format }}"');
-    if (JSON.stringify(job?.strategy?.matrix?.include) !== JSON.stringify([{format:'deb',label:'DEB'},{format:'rpm',label:'RPM'},{format:'aur',label:'AUR'}])
-      || steps.filter(step => step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials'] === false).length !== 1
-      || accept < 0 || ['desktop-installers-linux-packages-x64','dilla-e2e-tools-linux-x64-${{ github.sha }}','dilla-web-dist','dilla-core-wasi'].some(name => download(name) < 0 || download(name) >= accept)
-      || [...steps, job].some(item => !item || Object.hasOwn(item,'if') || Object.hasOwn(item,'continue-on-error'))) problems.push(`${file}: native package acceptance must execute all three formats after their same-run artifact downloads`);
-  } catch { problems.push(`${file}: invalid native package acceptance YAML`); }
-  const packages = body('native-linux-packages'), packageSteps = jobSteps(packages);
-  const packageBuild = `name: Build native Linux release packages
-run: |
-version="$(node -p "require('./packages/desktop/package.json').version")"
-node --input-type=module -e "import {verifyShippingCoreWasmInDist} from './e2e/web/support/shipping-wasm.mjs'; verifyShippingCoreWasmInDist('packages/web/dist')"
-node packages/desktop/scripts/build-native-linux-packages.mjs build "$RUNNER_TEMP/native-linux-packages" "$version"
-node --input-type=module -e "import {checkDesktopFuses} from './packages/desktop/scripts/check-fuses.mjs'; await checkDesktopFuses(process.argv[1])" "$RUNNER_TEMP/native-linux-packages"
-node packages/desktop/scripts/build-native-linux-packages.mjs recipe "$version" "$RUNNER_TEMP/native-linux-packages/dilla-$version-linux-x64.deb" "$RUNNER_TEMP/native-linux-recipe"
-cp "$RUNNER_TEMP/native-linux-recipe/dilla-$version-linux-x64.aur.tar.gz" "$RUNNER_TEMP/native-linux-packages/"`;
-  const packageProof = 'name: Record native Linux package build provenance\nrun: node packages/desktop/scripts/build-provenance.mjs "$RUNNER_TEMP/native-linux-packages" linux-packages-x64';
-  const packageUpload = `uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-with:
-name: desktop-installers-linux-packages-x64
-path: |
-\${{ runner.temp }}/native-linux-packages/*.deb
-\${{ runner.temp }}/native-linux-packages/*.rpm
-\${{ runner.temp }}/native-linux-packages/*.aur.tar.gz
-\${{ runner.temp }}/native-linux-packages/build-provenance-linux-packages-x64.json
-if-no-files-found: error`;
-  const packageBuildIndex = packageSteps.findIndex(step => step.join('\n') === packageBuild);
-  const packageProofIndex = packageSteps.findIndex(step => step.join('\n') === packageProof);
-  const packageUploadIndex = packageSteps.findIndex(step => step.join('\n') === packageUpload);
-  const packageCheckout = `uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-with:
-persist-credentials: false`;
-  if (!packages.includes('name: desktop-linux-packages-x64') || !packages.includes('runs-on: ubuntu-24.04')
-   || packageSteps[0]?.join('\n') !== packageCheckout || packageBuildIndex < 0 || packageProofIndex <= packageBuildIndex || packageUploadIndex <= packageProofIndex
-   || ['dilla-web-dist', 'dilla-desktop-core'].some(name => !packageSteps.slice(0, packageBuildIndex).some(step => step.includes('name: ' + name) && step.includes('uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8')))
-   || /^\s*if:|run-id:|repository:|github-token:|packages\/desktop\/out|--no-sandbox/m.test(packages)) problems.push(`${file}: native Linux package producer must build the source version with existing client/core, verify fuses and independent clean provenance, and upload only its exact three outputs and record`);
-
-  // Installed AppImages compile the GTK launcher and provision their exact
-  // compiled initial capsule inside the isolated test, not a copied bare helper.
-  for (const job of ['native','voice','client']) {
-    const steps=jobSteps(body(job));
-    const headers=steps.findIndex(step=>step.length===2 && step[0]==="if: runner.os == 'Linux'"
-      && /^run: sudo apt-get update && sudo apt-get install -y [a-z0-9.+ -]+$/.test(step[1])
-      && step[1].split(' ').includes('libgtk-3-dev') && step[1].split(' ').includes('pkg-config'));
-    const build=steps.findIndex(step=>step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
-    if(headers<0 || build<0 || headers>=build)problems.push(`${file}: installed sandbox GTK compiler prerequisites must precede ${job} builds`);
-  }
-  const nativeGo=nativeSteps.findIndex(step=>step.join('\n')===`uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-with:
-go-version-file: go.mod
-cache-dependency-path: go.sum`);
-  const controls=nativeSteps.findIndex(step=>step.join('\n')===`name: Linux installed sandbox prerequisite controls
-if: runner.os == 'Linux'
-run: |
-CGO_ENABLED=0 go test ./packages/desktop/test/fixtures/linux-installed-sandbox-bootstrap
-node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs packages/desktop/test/linux-sandbox-package-runner.test.mjs packages/desktop/test/linux-installed-runtime-proof.test.mjs`);
-  const installedLinux=nativeSteps.findIndex(step=>step.includes('name: Installed upgrade acceptance') && step.includes("if: runner.os == 'Linux'"));
-  const nativeUnit=nativeSteps.findIndex(step=>step.some(line=>line.includes('run: npm test -w @dilla/desktop')));
-  if(nativeGo<0 || nativeUnit<=nativeGo || controls<=nativeGo || controls>=installedLinux)problems.push(`${file}: installed sandbox controls require pinned native Go and unfiltered controls before installed acceptance`);
-  for(const [job,name,guard,artifact]of [
-    ['native','Initial installed sandbox prerequisite proof',"runner.os == 'Linux'",'desktop-initial-sandbox-native-linux-x64'],
-    ['client','Initial installed account sandbox prerequisite proof',"runner.os == 'Linux' && steps.installed-account.outputs.present == 'true'",'desktop-initial-sandbox-account-linux-x64'],
-  ]){
-    const expected=`name: ${name}\nif: ${guard}\nuses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\nwith:\nname: ${artifact}\npath: \${{ runner.temp }}/dilla-installed-sandbox-initial.json\nif-no-files-found: error`;
-    if(jobSteps(body(job)).filter(step=>step.join('\n')===expected).length!==1)problems.push(`${file}: installed sandbox requires exact job-selected initial prerequisite proof upload for ${job}`);
-  }
-  const desktopBuild = nativeSteps.findIndex(step=>step.includes('id: desktop-build') && step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
-  const failureUpload = `if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''
-uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-with:
-name: desktop-failure-\${{ matrix.platform }}-\${{ matrix.arch }}
-path: packages/desktop/test-results
-if-no-files-found: error`;
-  // hashFiles and upload-artifact see only the workspace: the Windows audio logs are copied into it by the step
-  // directly before the upload, which must fail on nothing (no continue-on-error, no || true, no always()).
-  const collectLogs = `name: Collect the Windows audio logs
-if: failure() && steps.desktop-build.outcome == 'success'
-shell: bash
-run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log "$RUNNER_TEMP"/dilla-windows-audio/*.out "$RUNNER_TEMP"/dilla-windows-audio/*.err; do if [ -f "$f" ]; then mkdir -p packages/desktop/test-results/windows-audio && cp "$f" packages/desktop/test-results/windows-audio/; fi; done`;
-  const failureUploads = nativeSteps.map((step,index)=>step.join('\n')===failureUpload ? index : -1).filter(index=>index>=0);
-  if(desktopBuild<0 || failureUploads.length!==1 || failureUploads[0]<=desktopBuild || nativeSteps[failureUploads[0]-1]?.join('\n')!==collectLogs)problems.push(`${file}: native failure diagnostics require the exact post-build upload`);
-  const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));
-  if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== 'run: npm test -w @dilla/desktop') {
-    problems.push(`${file}: desktop unit tests must run on every native platform`);
-  }
-  const proof = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installed-upgrade-')));
-  const sandboxGateName = 'name: Linux AppImage sandbox native acceptance';
-  const sandboxGates = nativeSteps.map((step,index)=>step.includes(sandboxGateName)?index:-1).filter(index=>index>=0);
-  const sandboxGate = `name: Linux AppImage sandbox native acceptance
-if: runner.os == 'Linux'
-run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packages/desktop/test-results/linux-installed-upgrade.json`;
-  if(sandboxGates.length!==1 || nativeSteps[sandboxGates[0]]?.join('\n')!==sandboxGate
-    || sandboxGates[0]<=installedLinux || sandboxGates[0]>=proof)
-    problems.push(`${file}: installed AppImage sandbox requires exact non-bypassable kernel proof verification after Linux installed upgrade and before upload`);
-  const buildProvenance = nativeSteps.findIndex(step => step.some(line => line.includes('name: Record native desktop build provenance')));
-  const finalDistribution = nativeSteps.findLastIndex(step => step.some(line => line.includes('npm run dist -w @dilla/desktop')));
-  const finalFuses = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: node packages/desktop/scripts/check-fuses.mjs')));
-  const installerUpload = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installers-')));
-  if (buildProvenance < 0 || finalDistribution < 0 || finalFuses <= finalDistribution || buildProvenance <= finalFuses || installerUpload <= buildProvenance
-    || nativeSteps[buildProvenance]?.some(line => /\bif:/.test(line))
-    || !nativeSteps[buildProvenance]?.some(line => line.includes('run: node packages/desktop/scripts/build-provenance.mjs packages/desktop/out ${{ matrix.platform }}-${{ matrix.arch }}'))
-    || !nativeSteps[installerUpload]?.some(line => line.trim() === 'packages/desktop/out/build-provenance-*.json')) {
-    problems.push(`${file}: build provenance must authenticate final fused installers and accompany their accepted bytes`);
-  }
-  const mutation=nativeSteps.findIndex(step=>step.join('\n')===`name: Linux AppImage final package inspection mutations
-if: runner.os == 'Linux'
-run: node packages/desktop/scripts/test-linux-sandbox-package.mjs packages/desktop/out`);
-  if(mutation<=finalDistribution || mutation>=buildProvenance)problems.push(`${file}: installed sandbox final-image mutation command must run unfiltered after distribution and before provenance`);
-  const macDiskImage = nativeSteps.map((step, index) => step.join('\n') === `name: macOS update disk image check
-if: runner.os == 'macOS'
-run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out` ? index : -1).filter(index => index >= 0);
-  if (macDiskImage.length !== 1 || nativeSteps.filter(step => step.some(line => line.includes('check-mac-dmg.mjs'))).length !== 1 || macDiskImage[0] <= finalFuses || macDiskImage[0] >= buildProvenance)
-    problems.push(`${file}: the macOS update disk image (the key-rotation update) must be checked exactly once after the final fused distribution and before provenance`);
-  for(const glob of ['packages/desktop/out/*.sandbox','packages/desktop/out/*.sandbox.json'])if(!nativeSteps[installerUpload]?.some(line=>line.trim()===glob))problems.push(`${file}: installed sandbox accepted component sidecars must accompany final AppImage`);
-  const lastPlaywright = nativeSteps.findLastIndex(step => step.some(line => /npm run test:electron|playwright test/.test(line)));
-  const installed = nativeSteps.map((step, index) => step.some(line => /node --test packages\/desktop\/test\/native\/(?:mac-upgrade|installed-upgrade)\.test\.mjs/.test(line)) ? index : -1).filter(index => index >= 0);
-  if (proof < 0 || installed.some(index => index <= lastPlaywright || index >= proof)) problems.push(`${file}: installed acceptance proof must follow Playwright cleanup and precede upload`);
-  for (const os of ['Linux', 'Windows']) {
-    if (!nativeSteps.some(step => step.some(line => line.includes('name: Installed upgrade acceptance'))
-      && step.some(line => line.includes(`if: runner.os == '${os}'`))
-      && step.some(line => line.includes('node --test packages/desktop/test/native/installed-upgrade.test.mjs')))) {
-      problems.push(`${file}: ${os} requires actual installed upgrade acceptance`);
-    }
-  }
-  if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract/.test(body('native'))) problems.push(`${file}: Linux installed acceptance must exercise normal FUSE launch`);
-  const tooling = body('test-tools');
-  for (const required of [
-    'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
-    'os: macos-15, platform: mac, arch: arm64',
-    'node scripts/e2e-test-tools.mjs build artifacts/e2e-test-tools',
-    'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}', 'path: artifacts/e2e-test-tools', 'overwrite: true',
-  ]) if (!tooling.includes(required)) problems.push(`${file}: native tooling producer missing ${required}`);
-  if (/^    needs:|shard:/m.test(tooling)) problems.push(`${file}: tooling must build once per native target without waiting for test jobs`);
-  const buildStep = jobSteps(tooling).find(step => step.some(line => line.includes('node scripts/e2e-test-tools.mjs build ')));
-  if (buildStep?.some(line => /\bif:/.test(line))) problems.push(`${file}: tooling builds cannot be bypassed by a cache hit`);
-  if (/^    needs:/m.test(body('native'))) problems.push(`${file}: native acceptance must stay independent of tooling builds`);
-  for (const job of ['client', 'voice']) {
-    const consumer = body(job);
-    for (const required of [
-      'needs: test-tools', 'DILLA_E2E_TOOLING_DIR: ${{ github.workspace }}/artifacts/e2e-test-tools',
-      'name: dilla-e2e-tools-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}',
-      'path: artifacts/e2e-test-tools', 'node scripts/e2e-test-tools.mjs verify artifacts/e2e-test-tools',
-    ]) if (!consumer.includes(required)) problems.push(`${file}: ${job} tooling consumer missing ${required}`);
-    if (!consumer.includes("go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'")) {
-      problems.push(`${file}: ${job} must retain native test-host directory locks coverage`);
-    }
-    if (/cargo build|^\s+(?:run-id|repository|github-token):/m.test(consumer)) {
-      problems.push(`${file}: ${job} tooling must reuse the verified artifact from this run without rebuilding`);
-    }
-    const steps = jobSteps(consumer);
-    const verify = steps.findIndex(step => step.some(line => line.includes('node scripts/e2e-test-tools.mjs verify ')));
-    const acceptance = steps.findIndex(step => step.some(line => /playwright test/.test(line)));
-    if (verify < 0 || acceptance < 0 || verify >= acceptance || steps[verify]?.some(line => /\bif:/.test(line))) {
-      problems.push(`${file}: ${job} tooling verification must run unconditionally before acceptance`);
-    }
-  }
-  const client = body('client');
-  for (const required of ['e2e/web/support/installed-keyring.sh', 'libasound2t64 gnome-keyring libfuse2t64',
-    'CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox',
-    'node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results']) {
-    if (!client.includes(required)) problems.push(`${file}: installed account acceptance missing ${required}`);
-  }
-  if (/APPIMAGE_EXTRACT_AND_RUN|--appimage-extract|--password-store=basic/.test(client)) problems.push(`${file}: installed account acceptance must keep normal FUSE and OS credential protection`);
-  const accountUpload = jobSteps(client).find(step => step.some(line => line.includes('name: Installed account upgrade proof')));
-  if (!accountUpload || !accountUpload.some(line => line.includes("if: steps.installed-account.outputs.present == 'true'"))
-    || !accountUpload.some(line => line.includes('name: desktop-installed-account-${{ matrix.platform }}-${{ matrix.arch }}'))
-    || !accountUpload.some(line => line.includes('path: packages/desktop/test-report/installed-account-${{ matrix.platform }}-${{ matrix.arch }}.json'))) {
-    problems.push(`${file}: installed account proof must upload only from its owning shard`);
-  }
-  for (const required of [
-    ...Array.from({ length: WEB_SHARDS }, (_, i) => `os: ubuntu-24.04, platform: linux, arch: x64, shard: ${i + 1} }`),
-    "os: windows-latest, platform: win, arch: x64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
-    "os: macos-15, platform: mac, arch: arm64, shard: 1, specs: 'web/installed-upgrade-account.spec.ts",
-    'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
-    `playwright test --config playwright.desktop.config.ts --project=electron-client --shard=\${{ matrix.shard }}/${WEB_SHARDS}`,
-    'playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }}',
-  ]) if (!client.includes(required)) problems.push(`${file}: shared Electron client coverage missing ${required}`);
-  // Every Linux shard and no more: an extra one would run nothing, a missing one would drop part of the suite.
-  const linuxShards = client.match(/^ {10}- \{ os: ubuntu-24\.04, platform: linux, arch: x64, shard: \d+ \}$/gm) ?? [];
-  if (linuxShards.length !== WEB_SHARDS) problems.push(`${file}: the Linux client suite must run in exactly ${WEB_SHARDS} shards, not ${linuxShards.length}`);
-  const voice = body('voice');
-  for (const required of ['desktop-voice-${{ matrix.platform }}-${{ matrix.arch }}',
-    'os: [ubuntu-24.04, windows-latest, macos-15]',
-    'playwright.desktop-voice.config.ts --project=electron-voice --workers=1', 'DILLA_E2E_NOTIFICATIONS', 'dunst',
-    'name: dilla-core-wasi', 'node packages/desktop/scripts/prepare-browser-sandbox.mjs',
-    'name: Desktop performance comparison', 'node packages/desktop/scripts/run-performance.mjs', 'name: desktop-performance-']) {
-    if (!voice.includes(required)) problems.push(`${file}: Electron voice coverage missing ${required}`);
-  }
-  if (/--shard|shard:/.test(voice)) problems.push(`${file}: the desktop voice suite must preserve its single frozen-clock worker`);
-  const voiceSteps = jobSteps(voice);
-  const lastVoice = voiceSteps.findLastIndex(step => step.includes('name: Desktop voice end-to-end coverage in Electron'));
-  const baselineInstall = voiceSteps.findIndex(step => step.includes('run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium'));
-  const baselineSandbox = voiceSteps.findIndex(step => step.includes('run: node packages/desktop/scripts/prepare-browser-sandbox.mjs'));
-  const firstPerformance = voiceSteps.findIndex(step => step.includes('name: Desktop performance comparison'));
-  if (lastVoice < 0 || baselineInstall <= lastVoice || baselineSandbox <= baselineInstall || firstPerformance <= baselineSandbox)
-    problems.push(`${file}: browser baseline setup must run after Electron voice and before performance measurement`);
-  assertEveryUploadFailsOnNoFiles(text, problems, file);
-  return problems;
-}
-
-/*
- * The desktop release trampoline (plan 2026-11-03, Task 10; job split from implementation batch B).
- * Both workflows are parsed, never text-matched alone, so flow style, mappings, expressions and
- * block scalars cannot hide anything. desktop-release-request.yml is an unprivileged echo on a
- * desktop-v* tag; desktop-release.yml is the main-only workflow_run that holds the keys:
- *   gate -> collect (keyless early-failure check; no outputs, no uploads) -> sign (environment
- *   desktop-release: fetches the gate-digested CI zips as blobs and reads them in-process, no
- *   download action; the six secrets in one step) -> publish (contents: write, no keys; takes only
- *   sign's uploads by id) -> verify-published -> feed (GitHub Pages).
- */
-export const DESKTOP_RELEASE_SECRETS = Object.freeze(['DESKTOP_METADATA_KEY_A', 'DESKTOP_SPARKLE_KEY_A', 'DESKTOP_SANDBOX_KEY_A', 'DESKTOP_METADATA_KEY_B', 'DESKTOP_SPARKLE_KEY_B', 'DESKTOP_SANDBOX_KEY_B']);
-export const DESKTOP_RELEASE_ACTIONS = Object.freeze([
-  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', // v7
-  'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1', // v7
-  'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', // v8
-  'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9', // v7
-  'actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9', // v5.0.0
-  'actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346', // v5.0.1
-]);
-export const DESKTOP_RELEASE_IF = "github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'";
-const DR_REQUEST_NAME = 'desktop release request';
-const DR_SIGN_STEP = 'Sign (the only step that receives secrets)';
-const DR_JOBS = ['gate', 'collect', 'sign', 'publish', 'verify-published', 'feed'];
-const DR_PERMISSIONS = {
-  gate: { contents: 'read', actions: 'read' },
-  collect: { contents: 'read', actions: 'read', 'pull-requests': 'read' },
-  // actions: read only to fetch the gate-digested artifact zips through the REST API.
-  sign: { contents: 'read', actions: 'read', 'pull-requests': 'read' },
-  publish: { contents: 'write', actions: 'read' },
-  'verify-published': { contents: 'read' },
-  feed: { contents: 'read', pages: 'write', 'id-token': 'write' },
-};
-const DR_NEEDS = { collect: ['gate'], sign: ['gate', 'collect'], publish: ['gate', 'sign'], 'verify-published': ['gate', 'sign', 'publish'], feed: ['gate', 'sign', 'publish', 'verify-published'] };
-const GATE_OUT = name => `\${{ needs.gate.outputs.${name} }}`;
-/** Exact job outputs: collect has none, so nothing it produces can reach sign or publish. */
-const DR_OUTPUTS = {
-  gate: { ...Object.fromEntries(['tag', 'version', 'channel', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'run_record', 'jobs_record', 'previous', 'mac_update'].map(name => [name, `\${{ steps.gate.outputs.${name} }}`])),
-    records_id: '${{ steps.records.outputs.artifact-id }}', records_digest: '${{ steps.records.outputs.artifact-digest }}' },
-  collect: undefined,
-  sign: { staged: '${{ steps.sign.outputs.staged }}', digest: '${{ steps.digest.outputs.digest }}', candidate_digest: '${{ steps.candidate_digest.outputs.candidate_digest }}',
-    signed_id: '${{ steps.ids.outputs.signed_id }}', candidate_id: '${{ steps.ids.outputs.candidate_id }}' },
-  publish: undefined, 'verify-published': undefined, feed: undefined,
-};
-const DR_ENVIRONMENTS = { sign: 'desktop-release', feed: 'github-pages' };
-const DR_JOB_KEYS = new Set(['if', 'needs', 'runs-on', 'timeout-minutes', 'environment', 'concurrency', 'permissions', 'outputs', 'steps']);
-/** Only the Pages deploy is serialised (a superseded pending feed is harmless: every feed deploys the newest published releases). */
-const DR_CONCURRENCY = { feed: { group: 'desktop-release-feed', 'cancel-in-progress': false } };
-/** Never in a release step's env, pinned or not: loader, shell, runtime, git and proxy overrides (review batch B, m3). */
-const DR_BANNED_ENV = /^(LD_|DYLD_|BASH_ENV$|ENV$|BASH_FUNC_|SHELLOPTS$|BASHOPTS$|PS4$|IFS$|NODE_|NPM_CONFIG_|GIT_|SSL_CERT_|CURL_|HTTPS?_PROXY$|ALL_PROXY$|NO_PROXY$|PATH$|HOME$|TMPDIR$|PYTHON|PERL5|RUBY|GCONV_PATH$|GITHUB_|RUNNER_|ACTIONS_)/i;
-const DR_STEP_KEYS = new Set(['name', 'id', 'uses', 'with', 'run', 'env']);
-const S = 'node packages/desktop/scripts/';
-/** Every job's exact step sequence, by step kind (see drKind). */
-const DR_ORDER = {
-  gate: ['checkout', 'setup-node', 'release-gate', 'upload:desktop-release-gate'],
-  collect: ['checkout', 'setup-node', 'download:desktop-release-gate', 'download:ci', 'release-download-check', 'release-assemble collect', 'release-notes generate', 'release-assemble assemble'],
-  // No download action in sign: `release-candidate build` fetches the gate-digested zips as blobs and reads them in-process.
-  sign: ['checkout', 'setup-node', 'release-candidate build', 'release-sign-job', 'candidate-digest write', 'release-candidate digest',
-    'upload:desktop-signed-release', 'upload:desktop-signed-candidate', 'release-candidate record-id'],
-  publish: ['checkout', 'setup-node', 'download:signed', 'candidate-digest verify', 'download:candidate', 'release-candidate verify', 'publish-release plan', 'publish-release publish'],
-  'verify-published': ['checkout', 'setup-node', 'verify-published'],
-  feed: ['checkout', 'setup-node', 'download:signed', 'candidate-digest verify', 'pages-feed build', 'upload-pages', 'deploy-pages', 'pages-feed verify'],
-};
-/** Exact run commands. */
-const DR_RUNS = {
-  'release-gate': `${S}release-gate.mjs "$RUNNER_TEMP/gate"`,
-  'release-download-check': `${S}release-download-check.mjs "$RUNNER_TEMP/gate" "$RUNNER_TEMP/candidate"`,
-  'release-assemble collect': `${S}release-assemble.mjs collect "$VERSION" "$RUNNER_TEMP/downloaded" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/gate"`,
-  'release-notes generate': `${S}release-notes.mjs generate "$VERSION" "$SHA" "$RUNNER_TEMP/candidate/release-notes.md"`,
-  'release-assemble assemble': `${S}release-assemble.mjs assemble "$VERSION" "$RUNNER_TEMP/candidate" "$TREE"`,
-  'release-candidate digest': `${S}release-candidate.mjs digest "$RUNNER_TEMP/candidate" "$VERSION"`,
-  'release-candidate record-id': `${S}release-candidate.mjs record-id`,
-  'release-candidate build': `${S}release-candidate.mjs build "$RUNNER_TEMP/zips" "$RUNNER_TEMP/candidate"`,
-  'release-sign-job': `${S}release-sign-job.mjs "$VERSION" "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/signed"`,
-  'candidate-digest write': `${S}candidate-digest.mjs write "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED"`,
-  'candidate-digest verify': `${S}candidate-digest.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$STAGED" "$DIGEST"`,
-  'release-candidate verify': `${S}release-candidate.mjs verify "$RUNNER_TEMP/candidate"`,
-  'publish-release plan': `${S}publish-release.mjs plan`,
-  'publish-release publish': `${S}publish-release.mjs publish`,
-  'verify-published': `${S}verify-published.mjs`,
-  'pages-feed build': `${S}pages-feed.mjs build "$RUNNER_TEMP/signed" "$CHANNEL" "$VERSION" "$RUNNER_TEMP/site"`,
-  'pages-feed verify': `${S}pages-feed.mjs verify "$RUNNER_TEMP/signed" "$CHANNEL"`,
-};
-const DR_UPLOAD = (name, dir) => ({ name, path: `\${{ runner.temp }}/${dir}`, 'if-no-files-found': 'error', 'retention-days': 3 });
-/** Exact `with` of every action step, by job and kind. */
-const DR_WITH = {
-  checkout: job => ['gate', 'sign', 'publish', 'feed'].includes(job) ? { 'fetch-depth': 0, 'persist-credentials': false } : { 'persist-credentials': false },
-  'setup-node': () => ({ 'node-version-file': '.nvmrc', 'package-manager-cache': false }),
-  'download:desktop-release-gate': () => ({ name: 'desktop-release-gate', path: '${{ runner.temp }}/gate', 'digest-mismatch': 'error' }),
-  // sign's two uploads, each by the artifact id sign reports (an id names immutable bytes; a name could be re-uploaded).
-  'download:signed': () => ({ 'artifact-ids': '${{ needs.sign.outputs.signed_id }}', path: '${{ runner.temp }}/signed', 'digest-mismatch': 'error' }),
-  'download:candidate': () => ({ 'artifact-ids': '${{ needs.sign.outputs.candidate_id }}', path: '${{ runner.temp }}/candidate', 'digest-mismatch': 'error' }),
-  'download:ci': () => ({ 'github-token': '${{ github.token }}', 'run-id': '${{ needs.gate.outputs.run }}', repository: 'dilla-chat/dilla',
-    'artifact-ids': '${{ needs.gate.outputs.artifact_ids }}', path: '${{ runner.temp }}/downloaded', 'digest-mismatch': 'error' }),
-  'upload:desktop-release-gate': () => DR_UPLOAD('desktop-release-gate', 'gate'),
-  'upload:desktop-signed-release': () => DR_UPLOAD('desktop-signed-release', 'signed'),
-  'upload:desktop-signed-candidate': () => DR_UPLOAD('desktop-signed-candidate', 'candidate'),
-  'upload-pages': () => ({ path: '${{ runner.temp }}/site' }),
-  'deploy-pages': () => undefined,
-};
-const DR_ACTION_KINDS = { checkout: 'checkout', 'setup-node': 'setup-node', 'upload-pages-artifact': 'upload-pages', 'deploy-pages': 'deploy-pages' };
-const PUBLISH_ENV = { GH_TOKEN: '${{ github.token }}', DESKTOP_TAG: GATE_OUT('tag'), DESKTOP_SHA: GATE_OUT('sha'), DESKTOP_STAGED: '${{ needs.sign.outputs.staged }}',
-  DESKTOP_MAC_UPDATE: GATE_OUT('mac_update'), DESKTOP_RELEASE_CANDIDATE: '${{ runner.temp }}/signed', DESKTOP_INSTALLERS: '${{ runner.temp }}/candidate' };
-/** Exact env of every run step (review batch B, m3): a value from collect, or a loader variable, cannot slip in. */
-const DR_ENV = {
-  'gate release-gate': { GH_TOKEN: '${{ github.token }}', HINT_TAG: '${{ github.event.workflow_run.head_branch }}', HINT_RUN: '${{ github.event.workflow_run.id }}' },
-  // The notes range starts at the gate's validated previous published release; the notes never read tags.
-  'collect release-notes generate': { GH_TOKEN: '${{ github.token }}', VERSION: '${{ needs.gate.outputs.version }}', SHA: '${{ needs.gate.outputs.sha }}', PREVIOUS: '${{ needs.gate.outputs.previous }}' },
-  'collect release-download-check': { GH_TOKEN: '${{ github.token }}', ...Object.fromEntries(['run', 'artifact_ids', 'artifact_digests', 'run_record', 'jobs_record'].map(name => [name.toUpperCase(), GATE_OUT(name)])) },
-  'collect release-assemble collect': { VERSION: GATE_OUT('version') },
-  'collect release-assemble assemble': { VERSION: GATE_OUT('version'), TREE: GATE_OUT('tree') },
-  'sign candidate-digest write': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ steps.sign.outputs.staged }}' },
-  'sign release-candidate digest': { VERSION: GATE_OUT('version') },
-  'publish candidate-digest verify': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ needs.sign.outputs.staged }}', DIGEST: '${{ needs.sign.outputs.digest }}' },
-  'publish publish-release plan': PUBLISH_ENV,
-  'publish publish-release publish': PUBLISH_ENV,
-  'verify-published verify-published': { GH_TOKEN: '${{ github.token }}', DESKTOP_TAG: GATE_OUT('tag'), DESKTOP_SHA: GATE_OUT('sha'), DESKTOP_STAGED: '${{ needs.sign.outputs.staged }}', DESKTOP_MAC_UPDATE: GATE_OUT('mac_update') },
-  'feed candidate-digest verify': { CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), STAGED: '${{ needs.sign.outputs.staged }}', DIGEST: '${{ needs.sign.outputs.digest }}' },
-  'feed pages-feed verify': { CHANNEL: GATE_OUT('channel') },
-  // Every id and digest the zip fetch trusts comes from the gate's outputs, never from collect.
-  'sign release-candidate build': { GH_TOKEN: '${{ github.token }}', ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'artifact_ids', 'artifact_digests', 'records_id', 'records_digest', 'run_record', 'jobs_record', 'previous']
-    .map(name => [name.toUpperCase(), GATE_OUT(name)])) },
-  // MAC_UPDATE: the gate's decision; 'dmg' only for a channel's rotation release of a pending macOS key change.
-  'sign release-sign-job': { VERSION: GATE_OUT('version'), MAC_UPDATE: GATE_OUT('mac_update'), ...Object.fromEntries(DESKTOP_RELEASE_SECRETS.map(name => [name, `\${{ secrets.${name} }}`])) },
-  'sign release-candidate record-id': { SIGNED_ID: '${{ steps.signed_upload.outputs.artifact-id }}', CANDIDATE_ID: '${{ steps.candidate_upload.outputs.artifact-id }}' },
-  // The feed reads published releases through the API (contents: read), never the live site.
-  'feed pages-feed build': { GH_TOKEN: '${{ github.token }}', CHANNEL: GATE_OUT('channel'), VERSION: GATE_OUT('version'), MAC_UPDATE: GATE_OUT('mac_update') },
-  'publish release-candidate verify': { ...Object.fromEntries(['version', 'sha', 'tree', 'run', 'run_record', 'jobs_record'].map(name => [name.toUpperCase(), GATE_OUT(name)])),
-    CANDIDATE_DIGEST: '${{ needs.sign.outputs.candidate_digest }}' },
-};
-
-function drKind(step) {
-  if (typeof step?.uses === 'string') {
-    const action = /^actions\/([a-z-]+)@/.exec(step.uses)?.[1];
-    if (action === 'download-artifact') {
-      const w = step.with ?? {};
-      if (w['run-id'] !== undefined || w['github-token'] !== undefined || w.repository !== undefined) return 'download:ci';
-      if (w.name !== undefined) return `download:${w.name}`;
-      const ids = String(w['artifact-ids'] ?? '');
-      return ids.includes('signed_id') ? 'download:signed' : ids.includes('candidate_id') ? 'download:candidate' : 'download:other';
-    }
-    if (action === 'upload-artifact') return `upload:${step.with?.name}`;
-    return DR_ACTION_KINDS[action] ?? `action:${step.uses}`;
-  }
-  const match = typeof step?.run === 'string' ? /^node packages\/desktop\/scripts\/([a-z-]+)\.mjs(?: ([a-z-]+))?(?:\s|$)/.exec(step.run) : null;
-  return match ? match[1] + (match[2] ? ' ' + match[2] : '') : `run:${step?.run}`;
-}
-/** Every string in a parsed document, with its path. */
-function drStrings(value, path = [], out = []) {
-  if (typeof value === 'string') out.push([path, value]);
-  else if (Array.isArray(value)) value.forEach((item, i) => drStrings(item, [...path, i], out));
-  else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) { out.push([[...path, `key:${key}`], key]); drStrings(item, [...path, key], out); }
-  return out;
-}
-const drSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const drNeeds = value => typeof value === 'string' ? [value] : value;
-
-/** Checks `file` and, with `seen`, every repository file it imports: only node: modules and repository files. */
-function checkScriptImports(root, file, problems, seen = null) {
-  if (seen?.has(file)) return null;
-  seen?.add(file);
-  let text;
-  try { text = readFileSync(join(root, file), 'utf8'); } catch { problems.push(`${file}: missing`); return null; }
-  for (const match of text.matchAll(/(?:^|[\s;])(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?(['"])([^'"]+)\1|import\(\s*([^)]*)\)/g)) {
-    const specifier = match[2] ?? match[3];
-    const literal = match[2] !== undefined ? specifier : /^(['"])([^'"]+)\1$/.exec(specifier.trim())?.[2];
-    if (literal === undefined) { problems.push(`${file}: dynamic import of a computed specifier`); continue; }
-    if (!literal.startsWith('node:') && !literal.startsWith('./') && !literal.startsWith('../')) problems.push(`${file}: imports ${literal}; only node: modules and repository files are allowed`);
-    // Static imports load with the module and are followed. A literal dynamic import of a repository
-    // file loads only when its code path runs (build-provenance's CI-only inspectors) and is not walked.
-    else if (seen && match[2] !== undefined && !literal.startsWith('node:')) checkScriptImports(root, posix.join(posix.dirname(file), literal), problems, seen);
-  }
-  return text;
-}
-/** The scripts the keyed sign job runs; it runs no `npm ci`, so their whole import graph is node: built-ins and repository files. */
-const DR_KEYED_SCRIPTS = Object.freeze(['release-candidate.mjs', 'artifact-zip.mjs', 'release-sign-job.mjs', 'candidate-digest.mjs'].map(name => `packages/desktop/scripts/${name}`));
-
-export function checkDesktopReleaseWorkflow(root) {
-  const problems = [];
-  const directory = join(root, '.github', 'workflows');
-  const files = {};
-  for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).sort()) {
-    const text = readFileSync(join(directory, name), 'utf8');
-    let doc;
-    try { doc = yaml.load(text); } catch (error) { problems.push(`${name}: invalid YAML (${error.message.split('\n')[0]})`); continue; }
-    files[name] = { text, doc };
-  }
-  const request = files['desktop-release-request.yml'], keyed = files['desktop-release.yml'];
-  if (!request) problems.push('desktop-release-request.yml: missing');
-  if (!keyed) problems.push('desktop-release.yml: missing');
-
-  // Rules that hold in every workflow: the release environment and secrets are confined.
-  for (const [name, { text, doc }] of Object.entries(files)) {
-    if (/secrets\s*\[/.test(text)) problems.push(`${name}: secrets[...] indexing is forbidden`);
-    // Parsed first (a quoted "inherit" is the same YAML value), with the text match as a backstop.
-    const inherits = Object.values(doc?.jobs ?? {}).some(body => body && typeof body === 'object' && body.secrets === 'inherit');
-    if (inherits || /secrets\s*:\s*['"]?inherit\b/.test(text)) problems.push(`${name}: secrets: inherit is forbidden; pass named secrets`);
-    // GitHub Pages serves the desktop update feed: only desktop-release.yml's feed job may deploy it (review batch B, m2).
-    if (name !== 'desktop-release.yml') {
-      const pagesWrite = permissions => permissions === 'write-all' || (permissions && typeof permissions === 'object' && permissions.pages === 'write');
-      if (pagesWrite(doc?.permissions)) problems.push(`${name}: pages: write is reserved for desktop-release.yml's feed job`);
-      for (const [job, body] of Object.entries(doc?.jobs ?? {})) {
-        if (!body || typeof body !== 'object') continue;
-        const environment = typeof body.environment === 'string' ? body.environment : body.environment?.name;
-        // GitHub resolves environment and secret names case-insensitively, so every name check here ignores case (final review, m1).
-        if (typeof environment === 'string' && environment.toLowerCase() === 'github-pages') problems.push(`${name}: ${job}: the github-pages environment is reserved for desktop-release.yml's feed job`);
-        if (pagesWrite(body.permissions)) problems.push(`${name}: ${job}: pages: write is reserved for desktop-release.yml's feed job`);
-        for (const step of Array.isArray(body.steps) ? body.steps : []) {
-          if (typeof step?.uses === 'string' && /^actions\/(deploy-pages|upload-pages-artifact)@/.test(step.uses)) problems.push(`${name}: ${job}: ${step.uses.split('@')[0]} is reserved for desktop-release.yml's feed job`);
-        }
-      }
-    }
-    if (/toJSON\(\s*secrets\s*\)/i.test(text)) problems.push(`${name}: toJSON(secrets) is forbidden`);
-    for (const [job, body] of Object.entries(doc?.jobs ?? {})) {
-      if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'environment')) continue;
-      const value = body.environment;
-      if (typeof value !== 'string') { problems.push(`${name}: ${job}: environment must be a plain name, not a mapping`); continue; }
-      if (value.includes('${{')) problems.push(`${name}: ${job}: environment must not be an expression`);
-      const allowed = name === 'desktop-release.yml' ? DR_ENVIRONMENTS[job] : undefined;
-      if (allowed !== undefined ? value !== allowed : (name === 'desktop-release.yml' || /desktop-release/i.test(value))) problems.push(`${name}: ${job}: environment ${value} is not allowed here; desktop-release belongs to the sign job of desktop-release.yml only`);
-    }
-    if (name === 'desktop-release.yml' || name === 'desktop-release-request.yml') continue;
-    if (/DESKTOP_(METADATA|SPARKLE|SANDBOX)_KEY/i.test(text)) problems.push(`${name}: names a desktop signing secret`);
-    if (/release-sign-job\.mjs/.test(text)) problems.push(`${name}: runs the desktop sign job script`);
-    if (/desktop-release\b(?![-.])/i.test(text)) problems.push(`${name}: names the desktop-release environment`);
-    const upstream = doc?.on?.workflow_run?.workflows;
-    if ([].concat(upstream ?? []).some(item => item === DR_REQUEST_NAME || item === 'desktop release')) problems.push(`${name}: chains on the desktop release workflows`);
-  }
-
-  if (request) {
-    const { doc, text } = request, r = 'desktop-release-request.yml';
-    if (!drSame(Object.keys(doc ?? {}), ['name', 'on', 'permissions', 'jobs'])) problems.push(`${r}: top level must be exactly name, on, permissions and jobs`);
-    if (doc?.name !== DR_REQUEST_NAME) problems.push(`${r}: name must be "${DR_REQUEST_NAME}"`);
-    if (!drSame(doc?.on, { push: { tags: ['desktop-v*'] } })) problems.push(`${r}: must trigger only on push of desktop-v* tags`);
-    if (!drSame(doc?.permissions, { contents: 'read' })) problems.push(`${r}: permissions must be exactly contents: read`);
-    const jobs = doc?.jobs ?? {}, job = jobs.request;
-    if (!drSame(Object.keys(jobs), ['request'])) problems.push(`${r}: must have exactly one job, request`);
-    if (!job || Object.keys(job).some(key => !['runs-on', 'timeout-minutes', 'steps'].includes(key))) problems.push(`${r}: request may carry only runs-on, timeout-minutes and steps`);
-    if (job?.['runs-on'] !== 'ubuntu-24.04') problems.push(`${r}: request must run on ubuntu-24.04`);
-    if (!drSame(job?.steps, [{ run: 'echo "Desktop release requested; the privileged workflow re-derives everything from main."' }])) problems.push(`${r}: request must only echo (no uses, no env, no expressions)`);
-    if (/secrets|\$\{\{/.test(text)) problems.push(`${r}: must not reference secrets or expressions`);
-    if (keyed && keyed.doc?.on?.workflow_run?.workflows?.[0] !== doc?.name) problems.push('desktop-release.yml: workflow_run must name the request workflow exactly');
-  }
-
-  if (keyed) {
-    const { doc, text } = keyed, k = 'desktop-release.yml';
-    // No workflow concurrency group: GitHub keeps one pending run per group and silently cancels it when a third
-    // arrives (review batch B, m5). The gate fails loudly instead while another run is active.
-    if (!drSame(Object.keys(doc ?? {}), ['name', 'on', 'permissions', 'jobs'])) problems.push(`${k}: top level must be exactly name, on, permissions and jobs (no concurrency, env or defaults)`);
-    if (doc?.name !== 'desktop release') problems.push(`${k}: name must be "desktop release"`);
-    if (!drSame(doc?.on, { workflow_run: { workflows: [DR_REQUEST_NAME], types: ['completed'] } })) problems.push(`${k}: must trigger only on workflow_run of "${DR_REQUEST_NAME}", types [completed], no branches`);
-    if (!drSame(doc?.permissions, {})) problems.push(`${k}: top-level permissions must be {}`);
-    if (/always\(\)|\|\|\s*true|continue-on-error|cancelled\(\)|failure\(\)/.test(text)) problems.push(`${k}: no always(), || true, continue-on-error, cancelled() or failure()`);
-    if (/NODE_OPTIONS|NODE_PATH/.test(text) || /NODE_OPTIONS|NODE_PATH/.test(request?.text ?? '')) problems.push(`${k}: NODE_OPTIONS and NODE_PATH are forbidden in the release workflows`);
-    const jobs = doc?.jobs ?? {};
-    if (!drSame(Object.keys(jobs), DR_JOBS)) problems.push(`${k}: jobs must be exactly ${DR_JOBS.join(', ')}`);
-    let signSteps = 0;
-    for (const name of DR_JOBS) {
-      const job = jobs[name];
-      if (!job || typeof job !== 'object') continue;
-      const extra = Object.keys(job).filter(key => !DR_JOB_KEYS.has(key));
-      if (extra.length) problems.push(`${k}: ${name}: forbidden job keys ${extra.join(', ')} (defaults, container, services, env, continue-on-error...)`);
-      if (name === 'gate' ? job.if !== DESKTOP_RELEASE_IF : Object.hasOwn(job, 'if')) problems.push(`${k}: ${name}: ${name === 'gate' ? `if must be exactly ${DESKTOP_RELEASE_IF}` : 'no if besides the gate\'s'}`);
-      if (!drSame(drNeeds(job.needs), DR_NEEDS[name])) problems.push(`${k}: ${name}: needs must be ${JSON.stringify(DR_NEEDS[name] ?? null)}`);
-      if (job['runs-on'] !== 'ubuntu-24.04') problems.push(`${k}: ${name}: must run on ubuntu-24.04`);
-      if (!Number.isInteger(job['timeout-minutes'])) problems.push(`${k}: ${name}: needs a timeout-minutes`);
-      if (!drSame(job.permissions, DR_PERMISSIONS[name])) problems.push(`${k}: ${name}: permissions must be exactly ${JSON.stringify(DR_PERMISSIONS[name])}`);
-      if (DR_ENVIRONMENTS[name] !== undefined && job.environment !== DR_ENVIRONMENTS[name]) problems.push(`${k}: ${name}: environment must be ${DR_ENVIRONMENTS[name]}`);
-      if (DR_ENVIRONMENTS[name] === undefined && Object.hasOwn(job, 'environment')) problems.push(`${k}: ${name}: must not have an environment`);
-      if (!drSame(job.outputs, DR_OUTPUTS[name])) problems.push(`${k}: ${name}: outputs must be exactly ${JSON.stringify(DR_OUTPUTS[name] ?? null)}`);
-      if (!drSame(job.concurrency, DR_CONCURRENCY[name])) problems.push(`${k}: ${name}: concurrency must be exactly ${JSON.stringify(DR_CONCURRENCY[name] ?? null)}`);
-      const steps = Array.isArray(job.steps) ? job.steps : [];
-      const kinds = steps.map(drKind);
-      // Review batch B, I1/I2: no action in sign ever extracts a zip another job could have produced.
-      if (name === 'sign' && kinds.some(kind => kind.startsWith('download:'))) problems.push(`${k}: sign: no download-artifact step; sign fetches the gate-digested zips itself (release-candidate build)`);
-      if (!drSame(kinds, DR_ORDER[name])) problems.push(`${k}: ${name}: steps must be exactly, in order: ${DR_ORDER[name].join(' -> ')} (found ${kinds.join(' -> ')})`);
-      steps.forEach((step, i) => {
-        const where = `${k}: ${name}: step ${i + 1}`;
-        const extraStep = Object.keys(step ?? {}).filter(key => !DR_STEP_KEYS.has(key));
-        if (extraStep.length) problems.push(`${where}: forbidden step keys ${extraStep.join(', ')} (if, shell, working-directory...)`);
-        const kind = kinds[i];
-        if (typeof step?.uses === 'string') {
-          if (!DESKTOP_RELEASE_ACTIONS.includes(step.uses)) problems.push(`${where}: ${step.uses} is not one of the pinned first-party actions`);
-          const expected = DR_WITH[kind]?.(name);
-          if (!drSame(step.with, expected)) problems.push(`${where}: ${kind} must use exactly ${JSON.stringify(expected)}`);
-          if (step.run !== undefined || step.env !== undefined) problems.push(`${where}: an action step carries no run or env`);
-        } else {
-          if (typeof step?.run !== 'string') { problems.push(`${where}: must be a run or uses step`); return; }
-          if (step.run.includes('${{')) problems.push(`${where}: no \${{ }} inside run; pass values through env`);
-          if (DR_RUNS[kind] === undefined || step.run !== DR_RUNS[kind]) problems.push(`${where}: run must be exactly a pinned release command`);
-          if (/\b(npm|npx|git)\b/.test(step.run)) problems.push(`${where}: no npm, npx or git in the release workflow`);
-          for (const key of Object.keys(step.env ?? {})) if (DR_BANNED_ENV.test(key)) problems.push(`${where}: ${key} is forbidden in a release step's env`);
-          // Every run step's env is pinned exactly, as its run line is.
-          if (!Object.hasOwn(DR_ENV, `${name} ${kind}`)) problems.push(`${where}: no pinned env for ${kind} in ${name}`);
-        }
-        const pinnedEnv = DR_ENV[`${name} ${kind}`];
-        if (pinnedEnv !== undefined && !drSame(step.env, pinnedEnv)) problems.push(`${where}: env must be exactly ${Object.keys(pinnedEnv).join(', ')}`);
-        if (step?.name === DR_SIGN_STEP) { signSteps++; if (name !== 'sign' || kind !== 'release-sign-job') problems.push(`${where}: only the sign job's signing step carries the Sign name`); }
-        if (kind === 'release-sign-job' && step?.name !== DR_SIGN_STEP) problems.push(`${where}: the signing step must be named "${DR_SIGN_STEP}"`);
-      });
-    }
-    if (signSteps !== 1) problems.push(`${k}: exactly one "${DR_SIGN_STEP}" step`);
-    // Secrets: the six names, once each, only in the Sign step's env; the event payload only in the gate.
-    const secretRefs = [...text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map(match => match[1]).sort();
-    if (!drSame(secretRefs, [...DESKTOP_RELEASE_SECRETS].sort())) problems.push(`${k}: the six DESKTOP_* secrets must each be referenced exactly once`);
-    const signIndex = (jobs.sign?.steps ?? []).findIndex(step => step?.name === DR_SIGN_STEP);
-    const gateIndex = (jobs.gate?.steps ?? []).findIndex(step => drKind(step) === 'release-gate');
-    for (const [path, value] of drStrings(doc)) {
-      const at = path.join('.');
-      if (/needs\s*\.\s*collect\b|needs\s*\[\s*['"]collect/.test(value)) problems.push(`${k}: nothing collect produces may reach another job (${at})`);
-      if (/secrets\b/.test(value) && /secrets\s*[.[(]|\(\s*secrets/.test(value)) {
-        const key = path[path.length - 1];
-        if (!(at === `jobs.sign.steps.${signIndex}.env.${key}` && DESKTOP_RELEASE_SECRETS.includes(key) && value === `\${{ secrets.${key} }}`)) problems.push(`${k}: secrets referenced outside the Sign step's env (${at})`);
-      }
-      if (/github\.event/.test(value)) {
-        const ok = (at === 'jobs.gate.if' && value === DESKTOP_RELEASE_IF)
-          || (at === `jobs.gate.steps.${gateIndex}.env.HINT_TAG` && value === '${{ github.event.workflow_run.head_branch }}')
-          || (at === `jobs.gate.steps.${gateIndex}.env.HINT_RUN` && value === '${{ github.event.workflow_run.id }}');
-        if (!ok) problems.push(`${k}: the workflow_run payload may reach only the gate's if and its HINT_TAG/HINT_RUN env (${at})`);
-      }
-    }
-    if (/workflow_run\.(head_sha|head_repository)/.test(text)) problems.push(`${k}: workflow_run.head_sha and head_repository are never used`);
-  }
-
-  // The scripts that hold or create the keys, and the whole import graph of the sign job's steps
-  // (the in-process zip reader included), import only node: modules and repository files.
-  const keys = checkScriptImports(root, 'packages/desktop/scripts/release-keys.mjs', problems);
-  const seen = new Set();
-  for (const file of DR_KEYED_SCRIPTS) checkScriptImports(root, file, problems, seen);
-  // Final review, I-1: a partial re-run of an old keyed run reuses its gate's outputs with old code. gate, sign
-  // (release-candidate build, before any secret) and publish refuse every attempt but the first and repeat the main
-  // and one-run checks; only the keyless feed job stays re-runnable. Each call must be a statement on its own line.
-  const scriptText = file => { try { return readFileSync(join(root, 'packages/desktop/scripts', file), 'utf8'); } catch { problems.push(`packages/desktop/scripts/${file}: missing`); return ''; } };
-  const statement = (text, call) => new RegExp(`^[ \\t]*${call.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm').test(text);
-  if (!statement(scriptText('keyed-run.mjs'), "if (env.GITHUB_RUN_ATTEMPT !== '1') {")) problems.push("keyed-run.mjs: refuseRerunAttempt must refuse every GITHUB_RUN_ATTEMPT but '1'");
-  for (const [file, job, calls] of [['release-gate.mjs', 'gate', []], ['release-candidate.mjs', 'sign', ['assertCheckoutIsMain(env, git);']], ['publish-release.mjs', 'publish', ['assertCheckoutIsMain(env, git);']]]) {
-    const text = scriptText(file);
-    for (const call of [`refuseRerunAttempt(env, '${job}');`, 'await assertNoOtherReleaseRun(env, api);', ...calls]) {
-      if (!statement(text, call)) problems.push(`${file}: the ${job} job must run ${call} (otherwise a re-run attempt or old keyed code reaches it)`);
-    }
-  }
-  if (/refuseRerunAttempt/.test(scriptText('pages-feed.mjs'))) problems.push('pages-feed.mjs: feed is the one keyed-run job that may be re-run');
-  if (keys !== null) {
-    if (/type\s*:\s*['"]tag['"]/.test(keys)) problems.push('release-keys.mjs: the desktop-release environment admits no tag policy');
-    // The environment setup names exactly one deployment policy: the branch main.
-    if (!/deployment-branch-policies/.test(keys) || ((keys.match(/type\s*:\s*['"]branch['"]/g) ?? []).length !== 1 || !/\{\s*name\s*:\s*['"]main['"]\s*,\s*type\s*:\s*['"]branch['"]\s*\}/.test(keys))) {
-      problems.push("release-keys.mjs: the environment policy must be the single { name: 'main', type: 'branch' }");
     }
   }
   return problems;
@@ -2539,7 +1724,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }
