@@ -2235,6 +2235,19 @@ fn move_to_moves_the_member(cx: &mut TestAppContext) {
         !s.voice.participants(voice_a).iter().any(|p| p.own),
         "and no longer in the first room"
     );
+    // The move may land while the first room's media is still joining (voice-4: that join failed once the instance
+    // dropped this device from the old call, and its failure left the new call): the new room's media comes up, and no
+    // failure is said.
+    let s = rt.block_on(until(
+        &alice,
+        "upstairs' media is up (its ping is read)",
+        |s| s.voice.call.channel == Some(voice_b) && s.voice.call.ping_ms.is_some(),
+    ));
+    assert_eq!(s.voice.call.phase, CallPhase::In);
+    assert_ne!(
+        s.voice.notice,
+        Some(dilla_client::state::voice::VoiceNotice::MediaFailed)
+    );
     drop(vcx);
     drop(alice);
     drop(rt);

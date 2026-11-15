@@ -418,6 +418,15 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
         let link = links.borrow_and_update().clone();
         if let Some(link) = link {
             in_call(&ctx, &link, &mut links, &mut commands).await;
+            // A move replaces the link while the old call runs (its loop saw the change and left): the new call's link
+            // is already here, so it is joined now, not after some later change.
+            if links
+                .borrow()
+                .as_ref()
+                .is_some_and(|l| l.call_id != link.call_id)
+            {
+                continue;
+            }
         }
         if links.changed().await.is_err() {
             return;
@@ -530,7 +539,17 @@ async fn in_call(
             ..ctx.options()
         }
     };
-    let call = match Call::join_on(token_of(link), feed.clone(), options, ctx.host.clone()).await {
+    // The join runs while the person may already have moved on (Move to, another join, a leave): a join whose link is
+    // no longer the current one is dropped at once (its guard ends its media), and it never fails or leaves the call
+    // that replaced it.
+    let joined = tokio::select! {
+        r = Call::join_on(token_of(link), feed.clone(), options, ctx.host.clone()) => r,
+        () = superseded(links.clone(), link.call_id) => {
+            feeder.abort();
+            return;
+        }
+    };
+    let call = match joined {
         Ok(call) => call,
         Err(dilla_media::MediaError::Audio(e)) => {
             // No microphone: the call goes on listen-only, and the person is told (voice.micMissing, as beta.5). No
@@ -542,12 +561,19 @@ async fn in_call(
                 muted: true,
                 ..ctx.options()
             };
-            match Call::join_on(token_of(link), feed, listen, ctx.host.clone()).await {
+            let joined = tokio::select! {
+                r = Call::join_on(token_of(link), feed, listen, ctx.host.clone()) => r,
+                () = superseded(links.clone(), link.call_id) => {
+                    feeder.abort();
+                    return;
+                }
+            };
+            match joined {
                 Ok(call) => call,
-                Err(e) => return failed(ctx, feeder, &e),
+                Err(e) => return failed(ctx, links, link.call_id, feeder, &e),
             }
         }
-        Err(e) => return failed(ctx, feeder, &e),
+        Err(e) => return failed(ctx, links, link.call_id, feeder, &e),
     };
     let _ = slot.set(call.media());
     // An epoch refused before the call existed: its keys go now.
@@ -719,11 +745,42 @@ async fn in_call(
     call.leave().await;
 }
 
+/// Whether `call_id` is still the call this device's media should be in.
+fn is_current(links: &watch::Receiver<Option<Arc<MediaLink>>>, call_id: [u8; 16]) -> bool {
+    links
+        .borrow()
+        .as_ref()
+        .is_some_and(|l| l.call_id == call_id)
+}
+
+/// Resolves once `call_id` is no longer the current media link (left, or replaced by another call's).
+async fn superseded(mut links: watch::Receiver<Option<Arc<MediaLink>>>, call_id: [u8; 16]) {
+    loop {
+        if !is_current(&links, call_id) {
+            return;
+        }
+        if links.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// The media did not start (the room refused, no key in time): the person is told the join failed and the call is
 /// left, so the signalling never stays "in" a call nobody hears.
-fn failed(ctx: &Ctx, feeder: tokio::task::JoinHandle<()>, e: &dilla_media::MediaError) {
+fn failed(
+    ctx: &Ctx,
+    links: &watch::Receiver<Option<Arc<MediaLink>>>,
+    call_id: [u8; 16],
+    feeder: tokio::task::JoinHandle<()>,
+    e: &dilla_media::MediaError,
+) {
     log::warn!("voice: the call's media did not start: {e}");
     feeder.abort();
+    // A join that failed because the person moved on (the instance dropped this device from the old call) says nothing
+    // and leaves nothing: the leave would end the call that replaced it.
+    if !is_current(links, call_id) {
+        return;
+    }
     ctx.voice.set_notice(Some(VoiceNotice::MediaFailed));
     drop(ctx.voice.leave());
 }
