@@ -1628,6 +1628,8 @@ impl Render for AppView {
                         .child(body)
                         .children(strips.into_iter().flatten()),
                 ))
+                // The quit question, when this window carries it (Package 7).
+                .children(crate::native::quit::overlay(window, cx))
                 // The window's live region (Package 11): what `a11y::announce` reads out.
                 .child(dilla_desktop_ui::a11y::announcer(window, cx)),
         )
