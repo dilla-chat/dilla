@@ -9,6 +9,7 @@ pub mod edit_state;
 pub mod fixture;
 pub mod format;
 pub mod keys;
+pub mod native;
 pub mod per_window;
 pub mod print;
 pub mod release;

@@ -71,6 +71,38 @@ the instance manager runs before any `Client` exists.
 `docs/user/screenshots/` (the GPUI preview section only). It may touch any file to integrate, and it reports each such
 change.
 
+## Parity waves (`docs/superpowers/plans/2026-11-15-gpui-electron-parity.md`)
+
+Task 0 laid down `D/native/` (the OS shell): `native/mod.rs` holds `NativeShell`, an app global with the registries
+the packages fill (tray sections by `TraySlot`, badge sinks, quit guards and the quit prompt, the link handler, window
+events), and calls one fixed entry point per file (`prepare`, `install`, and `claim`, `parse`, `hidden_start`; the
+table at the top of `native/mod.rs`). `main.rs`, `app.rs` and `windows.rs` already call the shell, so no package
+edits them. A package that needs a new shell registry or a new hook in a shared file writes it into its report; the
+controller adds it at merge. `D/native/mod.rs` is the controller's.
+
+Short for this section: `N/` is `dilla-desktop/src/native/`, `M/` is `dilla-media/src/`.
+
+| Package | Wave | Owns (may create or edit) |
+|---|---|---|
+| 0 native shell skeleton | — | `N/mod.rs`, the stubs `N/{tray,badge,autostart,notifier,links,single_instance,quit,menus,permissions}.rs`, the shell hooks in `D/{lib,main,app,windows}.rs`, this section |
+| 1 capture and video send | A | `M/capture_source.rs`, new `M/capture/` (`screen_linux.rs`, `screen_mac.rs`, `screen_win.rs`, `camera.rs`), `M/room.rs` (video publish, codec policy), `dilla-media/Cargo.toml`, `D/screens/voice/session.rs` (the `ShareSourceFactory`) |
+| 2 share picker and share UI | B | new `D/screens/share_picker/`, new `U/share_picker/`, `D/screens/voice/{mod,session}.rs` (the controls), `PF/share_picker/`, `PR/share_picker/` |
+| 3 application audio | C | new `M/app_audio/` (`mod`, `linux`, `mac`, `windows`), `M/room.rs` (the second audio track), `D/screens/share_picker/` (the checkbox, the chooser); its tray row through `NativeShell::add_tray_section` (`TraySlot::AppAudio`) from its own files |
+| 4 OS notifications | A | `N/notifier.rs`, `C/features/notify.rs` (`withdraw(tag)`), `D/screens/ring/effects.rs` (the notifier calls), `D/screens/notify/`; its ring tray rows through `TraySlot::Ring` |
+| 5 tray, background, autostart, badge, menus, zoom | A | `N/{tray,badge,autostart,menus}.rs`, `D/screens/titlebar.rs` (window menu entries only), `C/prefs.rs` (the app-wide zoom key only) |
+| 6 single instance and deep links | A | `N/{single_instance,links}.rs`, `D/screens/instances/` (the confirm dialog, join-with-invite), `C/instances.rs` (the shared invite parser) |
+| 7 quit guards and permissions | B | `N/{quit,permissions}.rs`; the guard providers in `D/screens/voice/` (call) and `D/screens/messages/` (drafts), registered through `NativeShell::add_quit_guard` |
+| 8 voice gaps | A | 8a `M/room.rs` (the optional speaker), `D/screens/voice/session.rs` (the notice); 8b `M/playout.rs` (per-participant gain), the stage menu in `D/screens/voice/`, `U/voice/`; 8c the stage views in `D/screens/voice/`. Lanes split the voice files at dispatch |
+| 9 PTT AltGr on Linux | A | the ptt key filter in `D/screens/voice/mod.rs`, the vendored `gpui-pre` patch, `core/vendor/README.md`, `DT/vendored_patches.rs` |
+| 10 screen gaps | A | 10a `D/screens/messages/`, `D/screens/timeline.rs`; 10b `D/screens/create/`, `D/screens/members/roles.rs`; 10c `D/screens/bot_admin/`, `D/screens/commands/`; 10d `D/screens/boot.rs`, `D/screens/settings_host.rs` |
+| 11 screen readers | A (11.1), B | 11.1 `U/` (roles and names on the components); 11.2-11.4 the role and name lines in each area's screens, after that area's lane merged; new `DT/a11y.rs` |
+| 12 inline video | C | new `D/screens/attachments/video/`, `U/attachments/player.rs` |
+| 13 spell-check | after the switch | the composer's input (decided at dispatch) |
+
+Each package also owns its test files (`DT/<area>.rs` rows it names) and parity directories. Shared files
+(`Cargo.toml`, `Cargo.lock`, `BEHAVIOUR-GATES.md`, `deny.toml`, `.github/workflows/desktop-gpui.yml`, the module
+lists) follow the rules below: a package writes what it needs into its report, and the controller applies it at merge.
+
 ## Task 1's files: only the controller edits them in Wave 1, at merge
 
 - `C/lib.rs`, `C/features/mod.rs` (the `Area` enum), `C/state/mod.rs` (the `AppState` fields), `C/sync/route.rs` (the op

@@ -1536,10 +1536,14 @@ impl Render for AppView {
         // The focus outside the root (none, or a stale one on a control that went away) lets push to talk go and, while
         // the call is on, comes back to the root (review B; a stale focus is judged on the next frame, re-review B2).
         crate::screens::voice::guard_focus(w, &self.root_focus, window, cx);
+        // "Quit Dilla" from a focused window (the menu's key, Package 5) asks the quit guards first (the OS shell).
         crate::screens::voice::ptt_keys(
             w,
             div()
                 .track_focus(&self.root_focus)
+                .on_action(|_: &crate::native::Quit, _, cx| {
+                    crate::native::NativeShell::request_quit(cx)
+                })
                 .size_full()
                 .child(tracked(
                     "root",

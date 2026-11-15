@@ -20,6 +20,7 @@ use gpui::{
     WindowOptions, px, size,
 };
 
+use crate::native::NativeShell;
 use crate::screens::instances::copy;
 use crate::screens::instances::model::Manager;
 use crate::screens::instances::{ManagerEvent, ManagerView};
@@ -203,7 +204,8 @@ pub fn drop_client(cx: &mut App, id: InstanceId) {
 /// window shapes) and closes, so the registry follows the new one.
 pub fn moved_window(cx: &mut App, id: InstanceId, window: WindowHandle<AppView>) {
     if let Some(live) = Registry::of(cx).live.get_mut(&id.0) {
-        live.window = Some(window);
+        let from = live.window.replace(window).map(|w| w.window_id());
+        NativeShell::window_moved(from, window.window_id(), id, cx);
     }
 }
 
@@ -288,10 +290,12 @@ const RETIRE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 /// vanish with work in the background and nothing to bring it back), else quits. Wire it from `main`'s
 /// `on_window_closed`.
 pub fn after_window_closed(cx: &mut App, launch: &Launch, allow_loopback: bool) {
-    if !cx.windows().is_empty() {
+    if !cx.windows().is_empty() || NativeShell::stays_in_background(cx) {
         return;
     }
     if running_instances(cx).is_empty() || open_manager(cx, launch, allow_loopback).is_err() {
+        // Nothing runs: a plain quit, as before the shell (no client to release, and an instance window still
+        // starting keeps its hold until its start ends).
         cx.quit();
     }
 }
@@ -358,6 +362,7 @@ pub fn open_manager(
         })
         .map_err(|e| OpenError::Window(e.to_string()))?;
     Registry::of(cx).manager = Some(handle);
+    NativeShell::window_opened(handle.window_id(), None, cx);
     Ok(handle)
 }
 
@@ -425,6 +430,7 @@ pub fn open_instance(
             if let Some(live) = Registry::of(cx).live.get_mut(&cfg.id.0) {
                 live.window = Some(window);
             }
+            NativeShell::window_opened(window.window_id(), Some(cfg.id), cx);
             Ok(())
         }
         Err(e) => {
@@ -541,15 +547,14 @@ fn install_close_hook(cx: &mut App, launch: Launch, allow_loopback: bool) {
     cx.on_window_closed(move |cx, id| {
         on_closed(cx, id);
         let closed = note_closed(cx, id);
-        if cx.windows().is_empty() {
+        NativeShell::window_closed(id, cx);
+        // With the tray up the app stays in the background (beta.5 `window-all-closed` does not quit).
+        if cx.windows().is_empty() && !NativeShell::stays_in_background(cx) {
             // The last window of a manager closes the app; the last window of an instance falls back to the manager
             // when its client keeps running.
             match closed {
                 Closed::Instance(_) => after_window_closed(cx, &launch, allow_loopback),
-                _ => {
-                    release_all(cx);
-                    cx.quit();
-                }
+                _ => NativeShell::quit_now(cx),
             }
         }
     })
