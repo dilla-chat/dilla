@@ -1512,9 +1512,12 @@ mod live {
         // re-entry into the channel's group after a removal); a message the owner sends after re-admission never reaches
         // ada (measured: still `Resync` 60 s later). That is the sync engine's (Task 2 / Task 28), reported with this task.
         // The channel's timeline is published a moment after the open answers (a loaded runner showed the gap).
-        wait_for(&ada, Duration::from_secs(10), "ada holds the channel again", |s| {
-            s.timelines.contains_key(&ch)
-        })
+        wait_for(
+            &ada,
+            Duration::from_secs(10),
+            "ada holds the channel again",
+            |s| s.timelines.contains_key(&ch),
+        )
         .await;
     }
 
