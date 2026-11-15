@@ -32,6 +32,9 @@ const DETAIL_BORDER: f32 = 1.0;
 const ACTIONS_TOP: f32 = 4.0;
 const ACTIONS_GAP: f32 = 8.0;
 const BUTTON_HEIGHT: f32 = 32.0;
+/// MessageRow.css `::before`: the failed tone's x glyph is 0.875em, 0.25em left of its text.
+const GLYPH_SIZE: f32 = 0.875;
+const GLYPH_GAP: f32 = 0.25;
 
 /// MessageItem.tsx `gone`: a failed post whose file is no longer on the instance.
 fn gone(item: &TimelineItem) -> bool {
@@ -200,8 +203,8 @@ pub fn send_state(
         if p.failed {
             label = label.child(
                 div()
-                    .mr(px(0.25 * em))
-                    .child(Icon::new(IconName::X).size(px(0.875 * em)).color(tone)),
+                    .mr(px(GLYPH_GAP * em))
+                    .child(Icon::new(IconName::X).size(px(GLYPH_SIZE * em)).color(tone)),
             );
         }
         label = label.child(line(p.label, text::XS, line_height(text::XS, 1.5), tone));
