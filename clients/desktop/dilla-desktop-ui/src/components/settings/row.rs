@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use super::super::action_menu::{ActionMenu, MenuItem, opens_context_menu};
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
@@ -351,7 +352,10 @@ impl RenderOnce for SettingsRow {
         if self.menu.is_some() {
             let key_set = set.clone();
             let mouse_set = set.clone();
+            // A row with a menu is one tab stop (Shift+F10 opens it): named by its label.
             row = row
+                .a11y(Role::Group, self.label.clone())
+                .node_props(|n| n.set_has_popup(gpui::accesskit::HasPopup::Menu))
                 .track_focus(&focus)
                 .tab_stop(true)
                 .focus_visible(|s| s.shadow(focus_ring()))

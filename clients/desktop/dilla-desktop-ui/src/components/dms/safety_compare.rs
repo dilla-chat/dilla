@@ -11,6 +11,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::components::button::Button;
 use crate::components::qr_code::QrCode;
 use crate::icon::Icon;
@@ -159,6 +160,8 @@ impl RenderOnce for SafetyCompareBody {
             let mut details = div().flex().flex_col().child(
                 div()
                     .id("safety-details")
+                    .a11y(Role::Button, summary.clone())
+                    .aria_expanded(open)
                     .flex()
                     .items_center()
                     .min_h(px(CHECK))
@@ -263,6 +266,8 @@ impl RenderOnce for SafetyCompareBody {
         actions = actions.child(
             div()
                 .id("safety-confirm")
+                .a11y(Role::CheckBox, confirm_label.clone())
+                .toggled(checked)
                 .flex()
                 .items_center()
                 .gap(px(8.0))

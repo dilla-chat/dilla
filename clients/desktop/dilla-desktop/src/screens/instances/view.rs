@@ -740,5 +740,6 @@ impl Render for ManagerView {
                     .child(main),
             )
             .children(dialog)
+            .child(dilla_desktop_ui::a11y::announcer(window, cx))
     }
 }

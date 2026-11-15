@@ -8,6 +8,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::components::button::ClickHandler;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
@@ -27,6 +28,8 @@ pub struct BarButton {
     icon: IconName,
     pressed: bool,
     on_click: Option<ClickHandler>,
+    /// The accessible name when the shown label is not one (the members button shows only its count).
+    a11y_label: Option<SharedString>,
 }
 
 impl BarButton {
@@ -37,7 +40,14 @@ impl BarButton {
             icon,
             pressed: false,
             on_click: None,
+            a11y_label: None,
         }
+    }
+
+    /// Names the button for a screen reader in place of its shown label.
+    pub fn a11y_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.a11y_label = Some(label.into());
+        self
     }
 
     pub fn pressed(mut self, pressed: bool) -> Self {
@@ -73,6 +83,11 @@ impl RenderOnce for BarButton {
         };
         let base = div()
             .id(self.id)
+            .a11y(
+                Role::Button,
+                self.a11y_label.unwrap_or_else(|| self.label.clone()),
+            )
+            .toggled(self.pressed)
             .flex()
             .flex_none()
             .items_center()

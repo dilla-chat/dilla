@@ -1548,7 +1548,9 @@ impl Render for AppView {
                         .bg(color::BG)
                         .child(body)
                         .children(strips.into_iter().flatten()),
-                )),
+                ))
+                // The window's live region (Package 11): what `a11y::announce` reads out.
+                .child(dilla_desktop_ui::a11y::announcer(window, cx)),
         )
     }
 }

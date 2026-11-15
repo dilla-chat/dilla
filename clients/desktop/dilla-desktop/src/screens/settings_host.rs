@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render,
-    Styled, Window, div,
+    SharedString, Styled, Window, div,
 };
 
 use dilla_desktop_ui::IconName;
@@ -267,18 +267,25 @@ impl Render for UserSettingsHost {
         let this = cx.entity();
         let community = nav_community(&self.ctx.state, self.opened_over);
         let items = nav_items_with(&self.ctx.state, community);
-        let nav = SettingsNav::new("user-settings-nav", items, section.id()).on_select({
-            let this = this.clone();
-            move |id, _, cx| {
-                let dest = match id.strip_prefix("server:") {
-                    Some(s) => ServerSection::from_id(s).map(Dest::Server),
-                    None => UserSection::from_id(id).map(Dest::Section),
-                };
-                if let Some(dest) = dest {
-                    this.update(cx, |h, cx| h.request(dest, cx));
+        // The dialog is named by its open section (SettingsFrame.tsx `aria-labelledby` its title).
+        let title = items.iter().find(|i| i.id == section.id()).map_or_else(
+            || SharedString::from(t("settings.title")),
+            |i| i.label.clone(),
+        );
+        let nav = SettingsNav::new("user-settings-nav", items, section.id())
+            .label(t("settings.nav.label"))
+            .on_select({
+                let this = this.clone();
+                move |id, _, cx| {
+                    let dest = match id.strip_prefix("server:") {
+                        Some(s) => ServerSection::from_id(s).map(Dest::Server),
+                        None => UserSection::from_id(id).map(Dest::Section),
+                    };
+                    if let Some(dest) = dest {
+                        this.update(cx, |h, cx| h.request(dest, cx));
+                    }
                 }
-            }
-        });
+            });
 
         // Each host hands its own guard to its sections, so several windows never share one.
         let ctx = SlotCx {
@@ -296,6 +303,7 @@ impl Render for UserSettingsHost {
             (ws.footer(), ws.prompt())
         };
         let mut frame = SettingsFrame::new("user-settings", t("settings.close"))
+            .title(title)
             .nav(nav)
             .wide(matches!(
                 section,

@@ -9,12 +9,14 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_MUTED, focus_ring, shadow_menu};
 use crate::roving::menu_next;
 use crate::text::{line, line_height};
 use crate::tokens::{color, radius, text};
+use gpui::prelude::FluentBuilder as _;
 
 type PickHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
 
@@ -152,8 +154,13 @@ impl RenderOnce for Select {
         } else {
             color::CONTROL_EDGE_FIELD
         };
+        // A native `<select>` on the web: a combo box named by its label, its value the chosen option's label.
         let mut field = div()
             .id((self.id.clone(), "field"))
+            .a11y(Role::ComboBox, self.label.clone())
+            .aria_value(current.clone())
+            .aria_expanded(open)
+            .when_some(self.hint.clone(), |f, hint| f.aria_description(hint))
             .track_focus(&field_focus)
             .tab_stop(true)
             .flex()
@@ -181,7 +188,10 @@ impl RenderOnce for Select {
                 ),
             );
         field = if disabled {
-            field.opacity(OPACITY_MUTED).cursor_not_allowed()
+            field
+                .opacity(OPACITY_MUTED)
+                .cursor_not_allowed()
+                .node_props(|n| n.set_disabled())
         } else {
             let (click_set, key_set, key_pick) = (set_open.clone(), set_open.clone(), pick.clone());
             let count = values.len();
@@ -222,6 +232,7 @@ impl RenderOnce for Select {
             let down_out = set_open.clone();
             let mut list = div()
                 .id((self.id.clone(), "list"))
+                .a11y(Role::ListBox, self.label.clone())
                 .flex()
                 .flex_col()
                 .w_full()
@@ -233,12 +244,17 @@ impl RenderOnce for Select {
                 .shadow(shadow_menu())
                 .occlude()
                 .on_mouse_down_out(move |_, _, cx| down_out(false, selected, cx));
+            let count_options = self.options.len();
             for (i, (value, label)) in self.options.iter().enumerate() {
                 let pick = pick.clone();
                 let on = i == cursor;
                 list = list.child(
                     div()
                         .id((self.id.clone(), format!("option-{value}")))
+                        .a11y(Role::ListBoxOption, label.clone())
+                        .aria_selected(*value == self.value)
+                        .aria_position_in_set(i + 1)
+                        .aria_size_of_set(count_options)
                         .flex()
                         .items_center()
                         .h(px(28.0))

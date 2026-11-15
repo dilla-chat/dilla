@@ -7,6 +7,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, div,
 };
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::tooltip::tooltip;
 use dilla_desktop_ui::components::{Avatar, AvatarSize, Presence};
 use dilla_desktop_ui::metrics::focus_ring;
@@ -76,6 +77,8 @@ fn toggle(
     };
     div()
         .id(id)
+        .a11y(Role::Button, t(label))
+        .toggled(pressed)
         .tab_index(0)
         .flex()
         .flex_none()
@@ -142,6 +145,7 @@ pub fn render(model: &PanelModel<'_>, handlers: &PanelHandlers) -> impl IntoElem
         );
     let panel = div()
         .id(SharedString::from("user-panel"))
+        .landmark(Role::Region, t("panel.region"))
         .flex_none()
         .relative()
         .h(layout::USER_PANEL)

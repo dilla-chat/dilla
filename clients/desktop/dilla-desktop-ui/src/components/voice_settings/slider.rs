@@ -11,10 +11,11 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, RenderOnce, Styled,
-    Window, canvas, div, point, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, point, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::metrics::focus_ring;
 use crate::tokens::{color, radius};
 
@@ -129,6 +130,8 @@ pub struct Slider {
     disabled: bool,
     focus: Option<FocusHandle>,
     on_change: Option<ChangeHandler>,
+    /// The range's accessible name (the label beside it on the web, `aria-labelledby`).
+    label: SharedString,
 }
 
 impl Slider {
@@ -143,7 +146,14 @@ impl Slider {
             disabled: false,
             focus: None,
             on_change: None,
+            label: SharedString::default(),
         }
+    }
+
+    /// Names the range for a screen reader.
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = label.into();
+        self
     }
 
     /// Tracks `handle` as this range's focus, for a host that knows where the focus is (the automation `focused` query).
@@ -269,8 +279,14 @@ impl RenderOnce for Slider {
         let key_set = set.clone();
         let (down_bounds, down_dragging, down_set, down_focus) =
             (bounds.clone(), dragging.clone(), set.clone(), focus.clone());
+        // `<input type="range">`: a slider with its value and bounds.
         let mut root = div()
             .id(self.id)
+            .a11y(Role::Slider, self.label.clone())
+            .aria_numeric_value(f64::from(shown))
+            .aria_min_numeric_value(f64::from(min))
+            .aria_max_numeric_value(f64::from(max))
+            .aria_numeric_value_step(f64::from(step))
             .track_focus(&focus)
             .tab_stop(!disabled)
             .relative()

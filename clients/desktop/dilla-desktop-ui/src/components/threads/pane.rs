@@ -9,6 +9,7 @@ use gpui::{
 };
 use std::rc::Rc;
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::text::{line, line_height};
@@ -102,6 +103,7 @@ pub fn pane(parts: PaneParts) -> impl IntoElement {
             let on_close = parts.on_close.clone();
             let mut close = div()
                 .id(parts.close_id)
+                .a11y(Role::Button, parts.close_label.clone())
                 .flex()
                 .flex_none()
                 .items_center()

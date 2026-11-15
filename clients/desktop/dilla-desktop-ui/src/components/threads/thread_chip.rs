@@ -8,6 +8,7 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::text::{line, line_height};
@@ -69,8 +70,14 @@ impl RenderOnce for ThreadChip {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let size = text::XS;
         let lh = line_height(size, 1.5);
+        // Named by what it shows: "2 replies", then the last reply's time.
+        let name = match &self.last {
+            Some(last) => format!("{}, {last}", self.label),
+            None => self.label.to_string(),
+        };
         let mut chip = div()
             .id(self.id)
+            .a11y(Role::Button, name)
             .flex()
             .flex_none()
             .items_center()

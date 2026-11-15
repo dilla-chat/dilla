@@ -9,6 +9,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
@@ -211,6 +212,9 @@ impl RenderOnce for ChoiceCards {
             }
             let mut card = div()
                 .id((self.id.clone(), format!("card-{}", o.id)))
+                .a11y(Role::RadioButton, o.title.clone())
+                .aria_description(o.hint.clone())
+                .toggled(checked)
                 // The handle's own flag decides the tab stop of a tracked element.
                 .track_focus(&handles[i].clone().tab_stop(stop == Some(i)))
                 .flex()
