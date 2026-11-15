@@ -27,8 +27,9 @@ text channel `general` and a voice channel `lounge`.
    or "bullet", or nothing).
 5. Code from the app: the reader says "Code from the app, edit" and the hint "Six digits…".
 6. A wrong code: the refusal is read at once without moving the focus ("That code did not match…").
-7. The recovery key step (a new device): the field is named "Recovery key". The key shown at sign-up is **not** read
-   out (by design: Copy and Print are offered; check both are announced as buttons).
+7. The recovery key step (a new device): the field is named "Recovery key". The key shown at sign-up is **not** in
+   the tree: Tab reaches "Read the recovery key aloud" (drawn while focused); Enter or Space reads "Recovery key, in
+   groups of four. Group 1: …" once, with 0, 1, O and I spelled. The authenticator's setup key has the same control.
 
 ## 2. Find your way and send
 

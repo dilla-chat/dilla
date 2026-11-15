@@ -131,6 +131,8 @@ pub fn paragraph(
 #[derive(Default)]
 struct Announcements {
     by_window: HashMap<WindowId, (u64, SharedString, Live)>,
+    /// An announcement read on request ([`announce_once`]): the frames it may still be drawn in.
+    once: HashMap<WindowId, (u64, u8)>,
     seq: u64,
 }
 
@@ -146,13 +148,53 @@ pub fn announce_now(text: impl Into<SharedString>, window: &mut Window, cx: &mut
     announce_with(text, Live::Assertive, window, cx);
 }
 
-fn announce_with(text: impl Into<SharedString>, live: Live, window: &mut Window, cx: &mut App) {
+fn announce_with(
+    text: impl Into<SharedString>,
+    live: Live,
+    window: &mut Window,
+    cx: &mut App,
+) -> u64 {
     let id = window.window_handle().window_id();
     let state = cx.default_global::<Announcements>();
     state.seq += 1;
     let seq = state.seq;
     state.by_window.insert(id, (seq, text.into(), live));
     window.refresh();
+    seq
+}
+
+/// The frames a secret read on request is drawn in at most (the first one hands it to the adapter, which reads it out
+/// as the node appears); the timer below takes it away when no frames are drawn.
+pub const ONCE_FRAMES: u8 = 8;
+
+/// How long a secret read on request stays in the tree: long enough for the frame that carries it to reach the adapter
+/// (which reads it out as the node appears), then it is taken away.
+pub const READ_ONCE_MS: u64 = 1500;
+
+/// Reads `text` out once and then takes it out of the tree again ([`READ_ONCE_MS`] later, unless another announcement
+/// replaced it): for a secret a person asked to hear (the recovery key, an authenticator's setup key), which is never
+/// in the tree otherwise.
+pub fn announce_once(text: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
+    let seq = announce_with(text, Live::Assertive, window, cx);
+    let id = window.window_handle().window_id();
+    cx.global_mut::<Announcements>()
+        .once
+        .insert(id, (seq, ONCE_FRAMES));
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(READ_ONCE_MS))
+            .await;
+        cx.update(|cx| {
+            if let Some(state) = cx.try_global::<Announcements>()
+                && state.by_window.get(&id).is_some_and(|(s, _, _)| *s == seq)
+            {
+                cx.global_mut::<Announcements>().by_window.remove(&id);
+                let _ = handle.update(cx, |_, window, _| window.refresh());
+            }
+        });
+    })
+    .detach();
 }
 
 /// The latest announcement in `window`, for tests: its text.
@@ -175,8 +217,22 @@ pub fn announcement_seq(window: &Window, cx: &App) -> Option<u64> {
 /// The window's live region: one invisible node holding the latest announcement. Each window's root view draws it
 /// once. The node's id changes with every announcement, so the adapter sees a new live node and reads it even when the
 /// text repeats ("Copied" twice).
-pub fn announcer(window: &Window, cx: &App) -> impl IntoElement {
+pub fn announcer(window: &Window, cx: &mut App) -> impl IntoElement {
     let id = window.window_handle().window_id();
+    // A secret read on request is drawn for its few frames, then dropped.
+    if let Some(state) = cx.try_global::<Announcements>()
+        && let Some((seq, left)) = state.once.get(&id).copied()
+    {
+        let state = cx.global_mut::<Announcements>();
+        if state.by_window.get(&id).is_none_or(|(s, _, _)| *s != seq) {
+            state.once.remove(&id);
+        } else if left == 0 {
+            state.once.remove(&id);
+            state.by_window.remove(&id);
+        } else {
+            state.once.insert(id, (seq, left - 1));
+        }
+    }
     let latest = cx
         .try_global::<Announcements>()
         .and_then(|a| a.by_window.get(&id))

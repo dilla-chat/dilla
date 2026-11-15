@@ -454,3 +454,93 @@ fn headings_and_hints_have_nodes() {
         "a settings row's label is in the tree"
     );
 }
+
+/// Whether any node's name, value or description carries `secret`.
+fn carries(tree: &Tree, secret: &str) -> bool {
+    tree.nodes.iter().any(|n| {
+        [&n.label, &n.value, &n.description]
+            .into_iter()
+            .flatten()
+            .any(|s| s.contains(secret))
+    })
+}
+
+/// Jonas 2026-11-15, "readable on request": the recovery key is not in the tree; "Read aloud" (a Tab stop) reads it
+/// out once, in groups with look-alikes spelled, and the announcement leaves the tree again.
+#[test]
+fn the_recovery_key_is_read_aloud_on_request_only() {
+    let mut app = launch("onboarding/keys");
+    let at = tab_to(&mut app, "Button", 1);
+    let mut tree = at;
+    for _ in 0..12 {
+        if focused_name(&tree).1 == "Read the recovery key aloud" {
+            break;
+        }
+        app.press("tab");
+        tree = app.a11y_tree();
+    }
+    assert_eq!(
+        focused_name(&tree),
+        ("Button".into(), "Read the recovery key aloud".into()),
+        "the control is a named Tab stop"
+    );
+    assert!(
+        tree.by_role("Status").next().is_none(),
+        "nothing is read before the press"
+    );
+    app.press("enter");
+    let read = app.a11y_tree();
+    let said = read
+        .by_role("Status")
+        .find_map(|n| n.name().map(str::to_owned))
+        .unwrap_or_else(|| {
+            let named: Vec<String> = read
+                .nodes
+                .iter()
+                .filter_map(|n| n.name().map(|l| format!("{}({l})", n.role)))
+                .collect();
+            panic!(
+                "the key is announced; focus {:?}, tree {named:?}",
+                read.focused().map(|n| n.name())
+            )
+        });
+    assert!(
+        said.starts_with("Recovery key, in groups of four. Group 1: "),
+        "{said}"
+    );
+    assert!(
+        said.contains("Group 13: "),
+        "all 13 groups are read: {said}"
+    );
+    assert_eq!(
+        read.by_role("Status")
+            .next()
+            .and_then(|n| n.live.clone())
+            .as_deref(),
+        Some("assertive")
+    );
+    // The first group as the screen shows it (its spelled characters back to characters).
+    let first: String = said["Recovery key, in groups of four. Group 1: ".len()..]
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .split(", ")
+        .map(|c| match c {
+            "zero" => "0".to_owned(),
+            "one" => "1".to_owned(),
+            c => c.rsplit(' ').next().unwrap_or_default().to_owned(),
+        })
+        .collect();
+    assert_eq!(first.chars().count(), 4, "{first}");
+    assert!(
+        !carries(&tree, &first),
+        "the key is not in the tree before the press"
+    );
+    // A few frames later (or, with no frames, after `a11y::READ_ONCE_MS`) it is gone.
+    app.wait_idle();
+    let after = app.a11y_tree();
+    assert!(
+        after.by_role("Status").next().is_none() && !carries(&after, &first),
+        "the announcement leaves the tree again"
+    );
+}

@@ -165,7 +165,8 @@ the updater and packaging.
   its landmarks (servers, channels, the message log, the call controls), messages are read with their author and time,
   and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Tab reaches
   the newest message; Up, Down, Home and End step through the messages, Tab reaches the focused message's actions and
-  Escape goes back to the composer. Not yet: the recovery key and an authenticator secret are not read out (use Copy).
+  Escape goes back to the composer. The recovery key and an authenticator's setup key are read out only on request: Tab to "Read aloud" beside them
+  (shown while it has the focus) and press it; the key is read once, in groups of four.
 - **Push to talk outside the window:** the key works only while the app has focus. Operating-system-wide push to talk
   comes after the switch.
 - **Video playback speed:** a speed other than Normal changes the pitch of the sound (the browser kept it).

@@ -18,6 +18,7 @@ pub fn bind_all(cx: &mut App) {
     screens::members::keys::bind(cx);
     screens::server_settings::keys::bind(cx);
     screens::user_settings::keys::bind(cx);
+    screens::read_aloud::bind(cx);
     screens::voice::keys::bind(cx);
     screens::ring::keys::bind(cx);
     screens::voice_settings::keys::bind(cx);
