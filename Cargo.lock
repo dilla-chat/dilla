@@ -2179,6 +2179,7 @@ dependencies = [
  "gpui-pre-platform",
  "hmac 0.13.0",
  "image",
+ "libc",
  "log",
  "matroska-demuxer",
  "objc2 0.6.5",

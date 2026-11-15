@@ -430,10 +430,21 @@ async fn in_call(
     commands: &mut mpsc::UnboundedReceiver<Command>,
 ) {
     let (feed, slot, feeder) = feed_epochs(link);
-    // A muted or push-to-talk join: the microphone is muted before it is published.
-    let options = CallOptions {
-        muted: !mic_open(&ctx.states.borrow(), ctx.ptt_mode()),
-        ..ctx.options()
+    // A muted or push-to-talk join: the microphone is muted before it is published. A microphone the OS denies the app
+    // would only send silence (macOS, Windows): the call joins listen-only and says so (Package 7, beta.5's
+    // `voice.micDenied` after a native Deny).
+    let options = if crate::native::permissions::microphone_denied() {
+        ctx.voice.set_notice(Some(VoiceNotice::MicDenied));
+        CallOptions {
+            mic: Mic::None,
+            muted: true,
+            ..ctx.options()
+        }
+    } else {
+        CallOptions {
+            muted: !mic_open(&ctx.states.borrow(), ctx.ptt_mode()),
+            ..ctx.options()
+        }
     };
     let call = match Call::join_on(token_of(link), feed.clone(), options, ctx.host.clone()).await {
         Ok(call) => call,

@@ -101,6 +101,11 @@ before it joined are not shown on it. Keep another signed-in device and the reco
   operating system's keychain) and the end-to-end encryption run in the same process.
 - One window and one client per instance. Closing a window keeps its client running until you remove the instance or
   quit the app; opening the instance again shows a new window on the running client.
+- One app for all instances: starting Dilla again brings the running app forward, and a `dilla://invite/<host>/<code>`
+  link opens that instance's join step (an instance you have not added yet is asked about first).
+- Quitting during a call, or with files waiting to be sent or text typed in the last moment, asks first ("Quit
+  Dilla?"). Drafts are kept per channel across restarts. A microphone the operating system blocks joins calls
+  listen-only, with a notice.
 - Inline audio plays in the app (MP3, AAC, Vorbis, Opus, FLAC, WAV). Videos play in their card too, as in the
   browser: WebM and MP4 with VP8, VP9, AV1 or H.264 (and H.265 on macOS), with play and pause, the timeline, volume
   and full screen (Escape leaves it). A video the app cannot decode (Ogg Theora, or H.265 on Windows and Linux) opens
@@ -142,20 +147,18 @@ messages.
 The client does not do these yet. Most are planned after the screens: native integrations, capture,
 the updater and packaging.
 
-- **Tray and background:** no tray icon, close to tray, badge count, autostart. A second copy of the app cannot open an
-  instance that another copy holds, but it does not hand the launch over to the running one.
-- **Deep links:** `dilla://invite/...` is not handled. Join with the address and the invite code in the instances window.
+- **Tray and background:** no tray icon, close to tray, badge count, autostart.
+- **Deep links:** `dilla://invite/...` opens in the app when it is on the command line (or reaches a running app
+  through a second launch, which hands everything over and exits), but the system does not send such links to the app
+  until the installers register the `dilla:` scheme.
 - **Updater and packaging:** no automatic update: download each new alpha from its release. Linux has an AppImage,
   a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR); macOS and Windows have no DMG or
   installer yet, so build from source there.
-- **Window title:** the window is still titled "Dilla Preview".
 - **Screen capture and camera:** the camera and screen-share buttons are drawn but start nothing (the share is
   treated as cancelled), and there is no screen picker or per-application audio. You still see other people's camera
   and screen shares, and hear and speak in calls.
 - **Operating-system notifications:** none are raised, including for an incoming ring (the ring banner and sound
   work while the window is open). The Notifications settings are kept for when they arrive.
-- **Quit guards and permission prompts:** quitting does not warn about an active call or an unsent draft (the draft
-  is kept per channel), and the operating system's microphone prompt is the system's own.
 - **Screen readers:** the app exposes itself to Orca, VoiceOver and NVDA through AccessKit: every control is named, the shell has
   its landmarks (servers, channels, the message log, the call controls), messages are read with their author and time,
   and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Not yet:

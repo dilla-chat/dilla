@@ -128,10 +128,11 @@ As of 2026-10-22, in the web client:
 For the native desktop preview:
 
 - Starting a camera or screen share (a call can show other people's), the screen-capture picker and per-application audio.
-- Tray, close to tray and badge count, `dilla://invite` links, a second launch handing over to the running app,
-  autostart, and operating-system notifications (also for a ring, with Answer and Decline).
+- Tray, close to tray and badge count, autostart, and operating-system notifications (also for a ring, with Answer
+  and Decline).
 - The updater, and the macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
-  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand.
+  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand. Until the packages register it, the
+  system does not open `dilla://invite` links in the app by itself (passing one on the command line works).
 - Push to talk while another window has focus. Screen readers are supported (AccessKit), but
   messages cannot yet be stepped through with the arrow keys and the recovery key is not read out.
 
