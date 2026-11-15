@@ -19,9 +19,11 @@
 //! 3. an update restart with a provider that did not answer: "Dilla is still in use" (Keep Dilla open), since beta.5
 //!    never installs over an unknown guard.
 //!
-//! They are the platform's dialogs through `Window::prompt`, as beta.5's `dialog.showMessageBox` (macOS: an alert;
-//! Windows: a task dialog; Linux: GPUI's in-window prompt), shown on the active window, else the oldest, else the
-//! instances window opened for it.
+//! Jonas (2026-11-15): on every OS the question is the Signal design's in-app confirmation (`ConfirmDialog` over
+//! `Dialog`: a modal alert dialog for screen readers, focus on the safe button, Escape and the scrim keep the app), with
+//! beta.5's copy: the title is beta.5's dialog title, the body its message and detail. It is drawn by the window that
+//! carries it ([`overlay`], called from the app's and the instances window's roots): the active window, else the oldest,
+//! else the instances window opened for it.
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -29,7 +31,14 @@ use std::rc::Rc;
 use dilla_client::Client;
 use dilla_client::calls::CallPhase;
 use dilla_client::seams::InstanceId;
-use gpui::{AnyWindowHandle, App, Global, PromptButton, PromptLevel, WindowId};
+use dilla_desktop_ui::components::confirm_dialog::{ConfirmDialog, Tone};
+use dilla_desktop_ui::components::dialog::{Dialog as Modal, DialogKind, InitialFocus};
+use dilla_desktop_ui::text::{line_height, paragraph};
+use dilla_desktop_ui::tokens::{color, text};
+use gpui::{
+    AnyElement, AnyWindowHandle, App, Global, IntoElement, ParentElement, Styled, Window, WindowId,
+    div,
+};
 
 use super::{GuardState, NativeShell, QuitAnswer, QuitReason, QuitRequest, WindowEvent};
 
@@ -53,6 +62,9 @@ pub mod copy {
     pub const STILL_IN_USE_DETAIL: &str =
         "You can close the window to keep Dilla running in the tray.";
 }
+
+/// The element id of the quit dialog (its buttons are `(id, "confirm")` and `(id, "close-button")`).
+pub const DIALOG_ID: &str = "quit-dialog";
 
 /// One of beta.5's quit dialogs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,7 +91,7 @@ impl Dialog {
         }
     }
 
-    /// The window title beta.5 gave it (macOS shows none; GPUI's prompt takes no title, so it is kept for the record).
+    /// beta.5's dialog title: the dialog's heading.
     pub fn title(self) -> &'static str {
         match self {
             Self::NotResponding => copy::NOT_RESPONDING_TITLE,
@@ -88,49 +100,41 @@ impl Dialog {
         }
     }
 
-    pub fn level(self) -> PromptLevel {
+    /// beta.5's message, then its detail: the dialog's body.
+    pub fn body(self) -> String {
         match self {
-            Self::NotResponding => PromptLevel::Warning,
-            Self::InUse | Self::StillInUse => PromptLevel::Info,
+            Self::NotResponding => {
+                format!(
+                    "{} {}",
+                    copy::NOT_RESPONDING_MESSAGE,
+                    copy::NOT_RESPONDING_DETAIL
+                )
+            }
+            Self::InUse => copy::IN_USE_MESSAGE.to_owned(),
+            Self::StillInUse => {
+                format!(
+                    "{} {}",
+                    copy::STILL_IN_USE_MESSAGE,
+                    copy::STILL_IN_USE_DETAIL
+                )
+            }
         }
     }
 
-    pub fn message(self) -> &'static str {
+    /// The safe button (beta.5 `cancelId: 0`): it keeps the app, as Escape and the scrim do.
+    pub fn stay_label(self) -> &'static str {
         match self {
-            Self::NotResponding => copy::NOT_RESPONDING_MESSAGE,
-            Self::InUse => copy::IN_USE_MESSAGE,
-            Self::StillInUse => copy::STILL_IN_USE_MESSAGE,
+            Self::NotResponding | Self::StillInUse => copy::KEEP_OPEN,
+            Self::InUse => copy::CANCEL,
         }
     }
 
-    pub fn detail(self) -> Option<&'static str> {
+    /// The button that quits (`None`: the dialog only informs).
+    pub fn quit_label(self) -> Option<&'static str> {
         match self {
-            Self::NotResponding => Some(copy::NOT_RESPONDING_DETAIL),
-            Self::InUse => None,
-            Self::StillInUse => Some(copy::STILL_IN_USE_DETAIL),
-        }
-    }
-
-    /// The buttons, the safe one first (beta.5 `defaultId: 0, cancelId: 0`).
-    pub fn buttons(self) -> Vec<PromptButton> {
-        match self {
-            Self::NotResponding => vec![
-                PromptButton::cancel(copy::KEEP_OPEN),
-                PromptButton::new(copy::QUIT_ANYWAY),
-            ],
-            Self::InUse => vec![
-                PromptButton::cancel(copy::CANCEL),
-                PromptButton::new(copy::QUIT),
-            ],
-            Self::StillInUse => vec![PromptButton::cancel(copy::KEEP_OPEN)],
-        }
-    }
-
-    /// What the button at `index` means (`None`: the dialog went away unanswered).
-    pub fn answer(self, index: Option<usize>) -> QuitAnswer {
-        match (self, index) {
-            (Self::NotResponding | Self::InUse, Some(1)) => QuitAnswer::Quit,
-            _ => QuitAnswer::Stay,
+            Self::NotResponding => Some(copy::QUIT_ANYWAY),
+            Self::InUse => Some(copy::QUIT),
+            Self::StillInUse => None,
         }
     }
 }
@@ -150,6 +154,12 @@ pub fn install(cx: &mut App) {
                 instance: Some(id), ..
             }
             | WindowEvent::Moved { instance: id, .. } => guard(id, cx),
+            // The window carrying the quit question went away: the question ends as Stay.
+            WindowEvent::Closed { window, .. }
+                if showing(cx).is_some_and(|(asked, _)| asked == window) =>
+            {
+                answer(QuitAnswer::Stay, cx)
+            }
             _ => {}
         }),
         cx,
@@ -223,7 +233,16 @@ fn has_unwritten_text(id: InstanceId, client: &Rc<Client>, cx: &App) -> bool {
         })
 }
 
-/// The quit prompt: the dialog the request needs, on a window, then [`NativeShell::finish_quit`].
+/// The quit question now: its dialog and the window that draws it.
+struct Asking {
+    window: WindowId,
+    dialog: Dialog,
+}
+
+impl Global for Asking {}
+
+/// The quit prompt: the dialog the request needs, drawn in a window, then [`NativeShell::finish_quit`] through
+/// [`answer`].
 fn ask(request: QuitRequest, cx: &mut App) {
     let Some(dialog) = Dialog::for_request(&request) else {
         NativeShell::finish_quit(QuitAnswer::Quit, cx);
@@ -237,30 +256,78 @@ fn ask(request: QuitRequest, cx: &mut App) {
             .map(|m| m.into())
     });
     let Some(window) = window else {
-        log::warn!("dilla-desktop: no window to ask about quitting on; staying open");
+        log::warn!("dilla-desktop: no window to ask about quitting in; staying open");
         NativeShell::finish_quit(QuitAnswer::Stay, cx);
         return;
     };
-    let shown = window.update(cx, |_, window, cx| {
-        window.activate_window();
-        window.prompt(
-            dialog.level(),
-            dialog.message(),
-            dialog.detail(),
-            &dialog.buttons(),
-            cx,
-        )
+    cx.set_global(Asking {
+        window: window.window_id(),
+        dialog,
     });
-    match shown {
-        Ok(answer) => {
-            cx.activate(true);
-            cx.spawn(async move |cx| {
-                let index = answer.await.ok();
-                cx.update(|cx| NativeShell::finish_quit(dialog.answer(index), cx));
-            })
-            .detach();
+    let _ = window.update(cx, |_, window, _| window.activate_window());
+    cx.activate(true);
+    cx.refresh_windows();
+}
+
+/// The quit dialog showing now, if any.
+pub fn showing(cx: &App) -> Option<(WindowId, Dialog)> {
+    cx.try_global::<Asking>().map(|a| (a.window, a.dialog))
+}
+
+/// The person answered the quit dialog (a button, Escape or the scrim).
+pub fn answer(answer: QuitAnswer, cx: &mut App) {
+    if cx.try_global::<Asking>().is_none() {
+        return;
+    }
+    cx.remove_global::<Asking>();
+    cx.refresh_windows();
+    NativeShell::finish_quit(answer, cx);
+}
+
+/// The quit dialog, drawn by the window that carries it (the roots of the app's and the instances window call this).
+pub fn overlay(window: &Window, _cx: &App) -> Option<AnyElement> {
+    let (id, dialog) = showing(_cx)?;
+    if id != window.window_handle().window_id() {
+        return None;
+    }
+    Some(element(dialog))
+}
+
+/// The Signal confirmation for `dialog`: [`ConfirmDialog`] for a question, a [`Modal`] with only the safe button for
+/// "Dilla is still in use".
+pub fn element(dialog: Dialog) -> AnyElement {
+    let body = dialog.body();
+    match dialog.quit_label() {
+        Some(quit) => ConfirmDialog::new(
+            DIALOG_ID,
+            dialog.title(),
+            body,
+            quit,
+            quit,
+            dialog.stay_label(),
+        )
+        .tone(Tone::Danger)
+        .on_confirm(|_, cx| answer(QuitAnswer::Quit, cx))
+        .on_close(|_, cx| answer(QuitAnswer::Stay, cx))
+        .into_any_element(),
+        None => {
+            // ConfirmDialog's head and body without its confirm button.
+            let description = div().flex().flex_col().children(paragraph(
+                &body,
+                text::UI,
+                line_height(text::UI, 1.5),
+                color::FG_2,
+                440.0 - 36.0,
+            ));
+            Modal::new(DIALOG_ID, dialog.title(), dialog.stay_label())
+                .kind(DialogKind::Confirm)
+                .description(description)
+                .a11y_description(body)
+                .body(div())
+                .initial_focus(InitialFocus::Close)
+                .on_close(|_, cx| answer(QuitAnswer::Stay, cx))
+                .into_any_element()
         }
-        Err(_) => NativeShell::finish_quit(QuitAnswer::Stay, cx),
     }
 }
 
@@ -279,7 +346,7 @@ fn host_window(cx: &App) -> Option<AnyWindowHandle> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
+    use gpui::{Context, Render, TestAppContext, VisualTestContext};
 
     use super::*;
 
@@ -297,15 +364,26 @@ mod tests {
         }
     }
 
-    /// The quit dialogs installed, one window, and `guards` registered in order.
-    fn setup(cx: &mut TestAppContext, guards: Vec<GuardState>) {
-        cx.add_empty_window();
+    /// A window root that draws the quit overlay, as the app's and the instances window's roots do.
+    struct Root;
+
+    impl Render for Root {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(overlay(window, cx))
+        }
+    }
+
+    /// The quit dialogs installed, one window drawing the overlay, and `guards` registered in order.
+    fn setup(cx: &mut TestAppContext, guards: Vec<GuardState>) -> WindowId {
+        cx.update(crate::install);
+        let window = cx.add_window(|_, _| Root);
         cx.update(|cx| {
             install(cx);
             for (n, g) in guards.into_iter().enumerate() {
                 NativeShell::add_quit_guard(InstanceId(n as u8), Box::new(move |_| g), cx);
             }
         });
+        window.window_id()
     }
 
     fn quit(cx: &mut TestAppContext, reason: QuitReason) {
@@ -313,8 +391,12 @@ mod tests {
         cx.run_until_parked();
     }
 
-    fn answer(cx: &mut TestAppContext, button: &str) {
-        cx.simulate_prompt_answer(button);
+    fn showing_now(cx: &mut TestAppContext) -> Option<Dialog> {
+        cx.update(|cx| showing(cx)).map(|(_, d)| d)
+    }
+
+    fn reply(cx: &mut TestAppContext, a: QuitAnswer) {
+        cx.update(|cx| answer(a, cx));
         cx.run_until_parked();
     }
 
@@ -322,27 +404,34 @@ mod tests {
         cx.update(|cx| NativeShell::is_quitting(cx))
     }
 
-    /// beta.5: "Quit Dilla?" with a call on; Cancel keeps the app (and the next Quit asks again), Quit quits.
+    /// beta.5: "Quit Dilla?" with a call on, in the window that has the focus; Cancel keeps the app (and the next Quit
+    /// asks again), Quit quits.
     #[gpui::test]
     fn active_call_asks_before_quitting(cx: &mut TestAppContext) {
-        setup(cx, vec![GuardState::IDLE, in_call()]);
+        let window = setup(cx, vec![GuardState::IDLE, in_call()]);
         quit(cx, QuitReason::User);
-        assert!(cx.has_pending_prompt(), "a call asks first");
-        answer(cx, copy::CANCEL);
+        assert_eq!(
+            cx.update(|cx| showing(cx)),
+            Some((window, Dialog::InUse)),
+            "a call asks first"
+        );
+        reply(cx, QuitAnswer::Stay);
         assert!(!quitting(cx));
+        assert_eq!(showing_now(cx), None);
         assert!(!cx.update(|cx| NativeShell::is_asking_quit(cx)));
         quit(cx, QuitReason::User);
-        answer(cx, copy::QUIT);
+        assert_eq!(showing_now(cx), Some(Dialog::InUse));
+        reply(cx, QuitAnswer::Quit);
         assert!(quitting(cx));
     }
 
-    /// Unsent text asks the same question; nothing in use quits without one.
+    /// Unsent text asks the same question.
     #[gpui::test]
     fn unsaved_draft_asks(cx: &mut TestAppContext) {
         setup(cx, vec![drafting()]);
         quit(cx, QuitReason::User);
-        assert!(cx.has_pending_prompt());
-        answer(cx, copy::QUIT);
+        assert_eq!(showing_now(cx), Some(Dialog::InUse));
+        reply(cx, QuitAnswer::Quit);
         assert!(quitting(cx));
     }
 
@@ -352,12 +441,45 @@ mod tests {
     fn silent_window_counts_as_in_use(cx: &mut TestAppContext) {
         setup(cx, vec![in_call(), GuardState::UNANSWERED]);
         quit(cx, QuitReason::User);
-        answer(cx, copy::KEEP_OPEN);
+        assert_eq!(showing_now(cx), Some(Dialog::NotResponding));
+        reply(cx, QuitAnswer::Stay);
         assert!(!quitting(cx));
         quit(cx, QuitReason::User);
-        answer(cx, copy::QUIT_ANYWAY);
+        reply(cx, QuitAnswer::Quit);
         assert!(quitting(cx));
-        assert!(!cx.has_pending_prompt(), "one dialog per request");
+        assert_eq!(showing_now(cx), None, "one dialog per request");
+    }
+
+    /// The dialog is drawn in its window as the Signal confirmation: a modal alert dialog named by its title, its safe
+    /// button first in the tab order; Escape keeps the app.
+    #[gpui::test]
+    fn the_dialog_is_a_modal_signal_confirmation(cx: &mut TestAppContext) {
+        let window = setup(cx, vec![in_call()]);
+        quit(cx, QuitReason::User);
+        let handle = cx
+            .windows()
+            .into_iter()
+            .find(|w| w.window_id() == window)
+            .unwrap();
+        let mut vcx = VisualTestContext::from_window(handle, cx);
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert_eq!(showing_now(cx), None, "Escape answers Stay");
+        assert!(!quitting(cx));
+    }
+
+    /// The window carrying the question closing answers Stay, so a later Quit asks again.
+    #[gpui::test]
+    fn closing_the_dialogs_window_keeps_the_app(cx: &mut TestAppContext) {
+        let window = setup(cx, vec![in_call()]);
+        cx.update(|cx| NativeShell::window_opened(window, None, cx));
+        quit(cx, QuitReason::User);
+        assert!(showing_now(cx).is_some());
+        cx.update(|cx| NativeShell::window_closed(window, cx));
+        assert_eq!(showing_now(cx), None);
+        assert!(!cx.update(|cx| NativeShell::is_asking_quit(cx)));
+        assert!(!quitting(cx));
     }
 
     #[test]
@@ -392,8 +514,12 @@ mod tests {
             Dialog::for_request(&req(UpdateRestart, vec![GuardState::UNANSWERED])),
             Some(Dialog::StillInUse)
         );
-        assert_eq!(Dialog::StillInUse.answer(Some(0)), QuitAnswer::Stay);
-        assert_eq!(Dialog::InUse.answer(None), QuitAnswer::Stay);
+        assert_eq!(Dialog::StillInUse.quit_label(), None);
+        assert_eq!(Dialog::InUse.stay_label(), copy::CANCEL);
+        assert_eq!(
+            Dialog::NotResponding.body(),
+            "A Dilla window has not reported whether it is in use. Quitting may end a call or discard text you have not sent."
+        );
     }
 
     /// An instance without a running client has nothing to lose; each instance gets one guard however many windows

@@ -5,12 +5,13 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use dilla_client::seams::InstanceId;
-use dilla_desktop::native::quit::{self, copy};
-use dilla_desktop::native::{GuardState, NativeShell, QuitReason};
+use dilla_desktop::native::quit::{self, Dialog};
+use dilla_desktop::native::{GuardState, NativeShell, QuitAnswer, QuitReason};
 use gpui::TestAppContext;
 
-/// "Restart to update" with a call on asks first and does not restart on Cancel; once the call ended it restarts
-/// without a question. A guard that cannot tell holds the restart back ("Dilla is still in use", one button).
+/// "Restart to update" with a call on asks first ("Quit Dilla?") and does not restart on Cancel; a guard that cannot
+/// tell holds the restart back ("Dilla is still in use", one button); once the call ended it restarts without a
+/// question.
 #[gpui::test]
 fn an_update_restart_waits_for_the_call(cx: &mut TestAppContext) {
     let call = Rc::new(Cell::new(true));
@@ -33,24 +34,23 @@ fn an_update_restart_waits_for_the_call(cx: &mut TestAppContext) {
         cx.update(|cx| NativeShell::request_quit_for(QuitReason::UpdateRestart, cx));
         cx.run_until_parked();
     };
+    let showing = |cx: &mut TestAppContext| cx.update(|cx| quit::showing(cx)).map(|(_, d)| d);
+    let quitting = |cx: &mut TestAppContext| cx.update(|cx| NativeShell::is_quitting(cx));
 
     restart(cx);
-    cx.simulate_prompt_answer(copy::CANCEL);
-    cx.run_until_parked();
-    assert!(
-        !cx.update(|cx| NativeShell::is_quitting(cx)),
-        "the call holds the update back"
-    );
+    assert_eq!(showing(cx), Some(Dialog::InUse));
+    cx.update(|cx| quit::answer(QuitAnswer::Stay, cx));
+    assert!(!quitting(cx), "the call holds the update back");
 
     unknown.set(true);
     restart(cx);
-    cx.simulate_prompt_answer(copy::KEEP_OPEN);
-    cx.run_until_parked();
-    assert!(!cx.update(|cx| NativeShell::is_quitting(cx)));
+    assert_eq!(showing(cx), Some(Dialog::StillInUse));
+    cx.update(|cx| quit::answer(QuitAnswer::Stay, cx));
+    assert!(!quitting(cx));
 
     unknown.set(false);
     call.set(false);
     restart(cx);
-    assert!(!cx.has_pending_prompt(), "nothing in use: no question");
-    assert!(cx.update(|cx| NativeShell::is_quitting(cx)));
+    assert_eq!(showing(cx), None, "nothing in use: no question");
+    assert!(quitting(cx));
 }

@@ -743,6 +743,8 @@ impl Render for ManagerView {
                     .child(main),
             )
             .children(dialog)
+            // The quit question, when this window carries it (Package 7).
+            .children(crate::native::quit::overlay(window, cx))
             .child(dilla_desktop_ui::a11y::announcer(window, cx))
     }
 }
