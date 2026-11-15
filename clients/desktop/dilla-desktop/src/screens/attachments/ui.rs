@@ -86,6 +86,28 @@ pub enum Player {
 pub struct VideoState {
     pub playback: VideoPlayback,
     pub motion: Option<Instant>,
+    pub menu: VideoMenu,
+    /// The card's save, for the ⋮ menu's Download (set as the card draws: it holds the client and the file's name).
+    pub save: Option<SaveFn>,
+}
+
+/// A card's save, as the ⋮ menu's Download runs it.
+pub type SaveFn = Rc<dyn Fn(&mut App)>;
+
+/// The ⋮ menu's state.
+#[derive(Clone, Copy, Default)]
+pub struct VideoMenu {
+    pub open: bool,
+    pub at: gpui::Point<gpui::Pixels>,
+    pub speed_page: bool,
+    /// A page change is under way: the menu's close that follows the pick is not a close.
+    pub turning: bool,
+}
+
+/// The picture-in-picture window: the card it plays and the window.
+pub struct Pip {
+    pub key: CardKey,
+    pub window: gpui::AnyWindowHandle,
 }
 
 /// How long the controls of a playing video stay after the pointer last moved over it.
@@ -187,6 +209,8 @@ pub struct AttachmentsUi {
     pub instance_dirs: BTreeSet<PathBuf>,
     /// The video shown full screen, if any.
     pub fullscreen: Option<Fullscreen>,
+    /// The video in the picture-in-picture window, if any (one at a time, as in Chromium).
+    pub pip: Option<Pip>,
 }
 
 /// A window's composer target: its client and its open channel, and the window (its toasts show there).
@@ -865,6 +889,8 @@ pub fn play_from(
                     Ok(Prepared::Video(v)) => Some(Player::Video(Box::new(VideoState {
                         playback: VideoPlayback::start(*v),
                         motion: None,
+                        menu: VideoMenu::default(),
+                        save: None,
                     }))),
                     Ok(Prepared::Audio(decoder)) => match decoder
                         .map(|d| Box::new(d) as Box<dyn MediaDecoder>)
@@ -998,6 +1024,117 @@ pub fn video_motion(key: CardKey, cx: &mut App) {
     if !was {
         cx.refresh_windows();
     }
+}
+
+/// The ⋮ button or the menu's own close: opens it at `at` on its main page, or closes it (unless a pick only turned
+/// its page).
+pub fn open_video_menu(key: CardKey, open: bool, at: gpui::Point<gpui::Pixels>, cx: &mut App) {
+    with_video(key, cx, |v| {
+        if !open && v.menu.turning {
+            v.menu.turning = false;
+            return;
+        }
+        v.menu = VideoMenu {
+            open,
+            at,
+            ..VideoMenu::default()
+        };
+        v.motion = Some(Instant::now());
+    });
+}
+
+/// An item of the ⋮ menu: Download saves as the card's save does; Playback speed turns to the speed page and a speed
+/// sets it; Picture in picture moves the video to its own window.
+pub fn pick_video_menu(key: CardKey, id: &str, cx: &mut App) {
+    let mut save = None;
+    let mut pip = false;
+    with_video(key, cx, |v| match id {
+        "download" => save = v.save.clone(),
+        "speed" | "speed-back" => {
+            v.menu.speed_page = id == "speed";
+            v.menu.turning = true;
+        }
+        "pip" => pip = true,
+        _ => {
+            if let Some(r) = dilla_desktop_ui::components::attachments::video::picked_speed(id) {
+                v.playback.set_speed(r);
+            }
+        }
+    });
+    if let Some(f) = save {
+        f(cx);
+    }
+    if pip {
+        open_pip(key, cx);
+    }
+}
+
+/// The picture-in-picture window's size: Chromium's default, a 16:9 third of a 1280px screen's width.
+const PIP_W: f32 = 400.0;
+const PIP_H: f32 = 225.0;
+const PIP_MARGIN: f32 = 16.0;
+
+/// Moves the video into a small window above the others (Chromium's picture in picture): an X11 pop-up kept on top, a
+/// macOS floating panel or a Windows topmost window (`WindowKind::PopUp`); a Wayland compositor decides the stacking
+/// itself, as for Chromium. Another video already there goes back to its card first.
+pub fn open_pip(key: CardKey, cx: &mut App) {
+    close_pip(cx);
+    let display = cx.primary_display();
+    let area = display
+        .as_ref()
+        .map(|d| d.visible_bounds())
+        .unwrap_or_else(|| {
+            gpui::Bounds::new(
+                gpui::Point::default(),
+                gpui::size(gpui::px(1280.0), gpui::px(800.0)),
+            )
+        });
+    let size = gpui::size(gpui::px(PIP_W), gpui::px(PIP_H));
+    let origin = gpui::point(
+        area.origin.x + area.size.width - size.width - gpui::px(PIP_MARGIN),
+        area.origin.y + area.size.height - size.height - gpui::px(PIP_MARGIN),
+    );
+    let options = gpui::WindowOptions {
+        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+            origin, size,
+        ))),
+        titlebar: None,
+        focus: false,
+        show: true,
+        kind: gpui::WindowKind::PopUp,
+        is_movable: true,
+        is_resizable: true,
+        display_id: display.map(|d| d.id()),
+        window_min_size: Some(gpui::size(gpui::px(160.0), gpui::px(90.0))),
+        ..Default::default()
+    };
+    let opened = cx.open_window(options, |window, cx| {
+        window.on_window_should_close(cx, move |_, cx| {
+            // Closed by the system (or its own close): the video goes back to its card.
+            if ui(cx).pip.as_ref().is_some_and(|p| p.key == key) {
+                ui(cx).pip = None;
+                cx.refresh_windows();
+            }
+            true
+        });
+        gpui::AppContext::new(cx, |_| super::PipView { key })
+    });
+    if let Ok(handle) = opened {
+        ui(cx).pip = Some(Pip {
+            key,
+            window: handle.into(),
+        });
+    }
+    with_video(key, cx, |v| v.menu = VideoMenu::default());
+}
+
+/// Back to the card (the window's back button, its close, or another video taking the window).
+pub fn close_pip(cx: &mut App) {
+    let Some(p) = ui(cx).pip.take() else {
+        return;
+    };
+    let _ = p.window.update(cx, |_, window, _| window.remove_window());
+    cx.refresh_windows();
 }
 
 /// The full screen button: the video fills `window` (made full screen, as Chromium's does), or goes back to its card.

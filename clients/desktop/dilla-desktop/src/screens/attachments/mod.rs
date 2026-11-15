@@ -23,7 +23,9 @@ use dilla_desktop_ui::components::attachments::card::{
 };
 use dilla_desktop_ui::components::attachments::player::{MediaCardProps, PlayerState, media_card};
 use dilla_desktop_ui::components::attachments::tray::{Preview, Step, TrayEntry};
-use dilla_desktop_ui::components::attachments::video::{VideoView, video_fullscreen};
+use dilla_desktop_ui::components::attachments::video::{
+    MenuView, PipMode, VideoView, video_fullscreen,
+};
 use dilla_desktop_ui::components::attachments::{
     OnClick, ROW_GAP, drop_overlay, gif_picker, lightbox, tray as tray_view,
 };
@@ -328,8 +330,25 @@ pub fn attachment_cards(
                         duration: v.playback.duration(),
                     },
                 };
-                let video_view = match ui::ui(cx).players.get(&k) {
-                    Some(Player::Video(v)) => Some(video_view(k, v, false, &name)),
+                let in_pip = ui::ui(cx).pip.as_ref().is_some_and(|p| p.key == k);
+                let video_view = match ui::ui(cx).players.get_mut(&k) {
+                    Some(Player::Video(v)) => {
+                        // The ⋮ menu's Download is this card's save.
+                        let (c, n) = (ctx.client.clone(), save_name.clone());
+                        v.save = Some(Rc::new(move |cx: &mut App| {
+                            if let Some(c) = &c {
+                                ui::save(c, k, &n, cx)
+                            }
+                        }));
+                        let pip = if in_pip {
+                            PipMode::Elsewhere {
+                                notice: t("media.control.pipActive").into(),
+                            }
+                        } else {
+                            PipMode::Inline
+                        };
+                        Some(video_view(k, v, false, &name, pip))
+                    }
                     _ => None,
                 };
                 let mime = a.mime.clone();
@@ -724,17 +743,24 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
 }
 
 /// A ready video's picture and controls, wired to its card's player.
-fn video_view(key: CardKey, v: &ui::VideoState, fullscreen: bool, name: &str) -> VideoView {
+fn video_view(
+    key: CardKey,
+    v: &ui::VideoState,
+    fullscreen: bool,
+    name: &str,
+    pip: PipMode,
+) -> VideoView {
     let p = &v.playback;
     let frame = p.frame();
+    let place = match (&pip, fullscreen) {
+        (PipMode::Window { .. }, _) => "-pip",
+        (_, true) => "-full",
+        _ => "",
+    };
     VideoView {
         id: format!(
-            "video-{}-{}-{}-{}{}",
-            key.client,
-            key.channel,
-            key.seq,
-            key.index,
-            if fullscreen { "-full" } else { "" }
+            "video-{}-{}-{}-{}{place}",
+            key.client, key.channel, key.seq, key.index,
         )
         .into(),
         image: frame.image.clone(),
@@ -760,6 +786,77 @@ fn video_view(key: CardKey, v: &ui::VideoState, fullscreen: bool, name: &str) ->
         on_seek: Rc::new(move |f, _, cx| ui::seek_video(key, f, cx)),
         on_volume: Rc::new(move |f, _, cx| ui::set_video_volume(key, f, cx)),
         on_motion: Rc::new(move |_, cx| ui::video_motion(key, cx)),
+        menu: MenuView {
+            open: v.menu.open,
+            at: v.menu.at,
+            speed_page: v.menu.speed_page,
+            speed: p.speed(),
+            more_label: t("media.control.more").into(),
+            download_label: t("media.control.download").into(),
+            speed_label: t("media.control.speed").into(),
+            normal_label: t("media.control.speedNormal").into(),
+            pip_label: t("media.control.pip").into(),
+            on_open: Rc::new(move |open, at, _, cx| ui::open_video_menu(key, open, at, cx)),
+            on_pick: Rc::new(move |id, _, cx| ui::pick_video_menu(key, id, cx)),
+        },
+        pip,
+    }
+}
+
+/// The picture-in-picture window's view: the card's video filling the window, with play or pause, back to the card and
+/// close; it closes itself when the player goes (a released client, a replaced player).
+pub struct PipView {
+    pub key: CardKey,
+}
+
+impl gpui::Render for PipView {
+    fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let key = self.key;
+        let size = window.viewport_size();
+        let view = match ui::ui(cx).players.get(&key) {
+            Some(Player::Video(v)) => Some(video_view(
+                key,
+                v,
+                true,
+                "",
+                PipMode::Window {
+                    back_label: t("media.control.backToTab").into(),
+                    close_label: t("media.control.closePip").into(),
+                    on_back: click(|_, cx| ui::close_pip(cx)),
+                    on_close: click(move |_, cx| {
+                        with_paused(key, cx);
+                        ui::close_pip(cx)
+                    }),
+                },
+            )),
+            _ => None,
+        };
+        let Some(view) = view else {
+            if ui::ui(cx).pip.as_ref().is_some_and(|p| p.key == key) {
+                ui::ui(cx).pip = None;
+            }
+            window.remove_window();
+            return div().into_any_element();
+        };
+        div()
+            .id("video-pip")
+            .size_full()
+            .bg(gpui::black())
+            // Dragging the picture moves the window, where the platform lets an app move its own.
+            .on_mouse_down(gpui::MouseButton::Left, |_, w, _| w.start_window_move())
+            .child(video_fullscreen(
+                view,
+                f32::from(size.width),
+                f32::from(size.height),
+            ))
+            .into_any_element()
+    }
+}
+
+/// Chromium's close of the picture-in-picture window pauses the video; back to tab does not.
+fn with_paused(key: CardKey, cx: &mut App) {
+    if let Some(Player::Video(v)) = ui::ui(cx).players.get_mut(&key) {
+        v.playback.pause();
     }
 }
 
@@ -774,7 +871,7 @@ fn fullscreen_overlay(
         (f.key, f.focus.clone())
     };
     let view = match ui::ui(cx).players.get(&key) {
-        Some(Player::Video(v)) => video_view(key, v, true, ""),
+        Some(Player::Video(v)) => video_view(key, v, true, "", PipMode::Inline),
         // The player went (released, or its client signed out): full screen ends with it.
         _ => {
             ui::ui(cx).fullscreen = None;

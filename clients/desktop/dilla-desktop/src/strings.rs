@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2178] = [
+pub static STRINGS: [(&str, &str); 2186] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -896,11 +896,19 @@ pub static STRINGS: [(&str, &str); 2178] = [
     ("layout.search.hint.move", "move"),
     ("layout.search.hint.open", "open"),
     ("layout.sidebar.online", "{n} online"),
+    ("media.control.backToTab", "Back to tab"),
+    ("media.control.closePip", "Close"),
+    ("media.control.download", "Download"),
     ("media.control.exitFullscreen", "exit full screen"),
     ("media.control.fullscreen", "enter full screen"),
+    ("media.control.more", "show more media controls"),
     ("media.control.mute", "mute"),
     ("media.control.pause", "pause"),
+    ("media.control.pip", "Picture in picture"),
+    ("media.control.pipActive", "This video is playing in picture-in-picture mode."),
     ("media.control.play", "play"),
+    ("media.control.speed", "Playback speed"),
+    ("media.control.speedNormal", "Normal"),
     ("media.control.unmute", "unmute"),
     ("media.error", "This browser cannot play this file."),
     ("media.loading", "loading"),

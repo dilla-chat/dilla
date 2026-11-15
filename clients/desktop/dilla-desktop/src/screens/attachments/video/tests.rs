@@ -259,3 +259,94 @@ fn truncated_and_garbage_video_never_panics() {
         }
     }
 }
+
+/// The ⋮ menu end to end through the card's state: Playback speed turns the page and the menu's own close that
+/// follows the pick keeps it open; a speed sets the rate; Download runs the card's save; Picture in picture opens the
+/// window and the card shows the notice; back closes the window; a released player closes it too.
+#[gpui::test]
+fn the_more_menu_sets_speed_downloads_and_moves_to_picture_in_picture(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::super::ui::{self, CardKey, Player, VideoMenu, VideoState};
+    let key = CardKey {
+        client: 7,
+        channel: dilla_client::state::ChannelId([3; 16]),
+        seq: 1,
+        index: 0,
+    };
+    let saved = std::rc::Rc::new(std::cell::Cell::new(0));
+    cx.update(|cx| {
+        let s = saved.clone();
+        ui::ui(cx).players.insert(
+            key,
+            Player::Video(Box::new(VideoState {
+                playback: playing(open(bytes(VP9), "video/webm").unwrap()),
+                motion: None,
+                menu: VideoMenu::default(),
+                save: Some(std::rc::Rc::new(move |_| s.set(s.get() + 1))),
+            })),
+        );
+        let menu = |cx: &mut gpui::App| match ui::ui(cx).players.get(&key) {
+            Some(Player::Video(v)) => (v.menu.open, v.menu.speed_page, v.playback.speed()),
+            _ => panic!("the player"),
+        };
+        ui::open_video_menu(key, true, gpui::Point::default(), cx);
+        assert_eq!(menu(cx), (true, false, 1.0));
+        // ActionMenu answers a pick with the pick, then its own close.
+        ui::pick_video_menu(key, "speed", cx);
+        ui::open_video_menu(key, false, gpui::Point::default(), cx);
+        assert_eq!(menu(cx), (true, true, 1.0), "the speed page, still open");
+        ui::pick_video_menu(key, "speed-1.5", cx);
+        ui::open_video_menu(key, false, gpui::Point::default(), cx);
+        assert_eq!(menu(cx), (false, false, 1.5));
+        ui::pick_video_menu(key, "download", cx);
+        assert_eq!(saved.get(), 1, "Download is the card's save");
+        let windows = cx.windows().len();
+        ui::pick_video_menu(key, "pip", cx);
+        assert!(ui::ui(cx).pip.as_ref().is_some_and(|p| p.key == key));
+        assert_eq!(cx.windows().len(), windows + 1, "its own window");
+        ui::close_pip(cx);
+        assert!(ui::ui(cx).pip.is_none());
+        ui::open_pip(key, cx);
+        ui::ui(cx).players.remove(&key);
+    });
+    cx.run_until_parked();
+    // The window's view finds no player at its next draw and closes.
+    cx.update(|cx| {
+        if let Some(p) = ui::ui(cx).pip.as_ref() {
+            let _ = p.window.update(cx, |_, w, _| w.refresh());
+        }
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            ui::ui(cx).pip.is_none(),
+            "a released player takes its window along"
+        )
+    });
+}
+
+/// The ⋮ menu's playback speed: the clock (and the sound) run at the chosen rate from where they were; a rate not in
+/// Chromium's list is ignored.
+#[test]
+fn playback_speed_scales_the_clock() {
+    let mut p = playing(open(bytes(VP8), "video/webm").unwrap());
+    p.pause();
+    p.seek(Duration::ZERO);
+    p.set_speed(2.0);
+    assert_eq!(p.speed(), 2.0);
+    p.play();
+    std::thread::sleep(Duration::from_millis(200));
+    let at = p.position().as_secs_f32();
+    assert!((0.35..0.6).contains(&at), "{at} s after 200 ms at 2x");
+    p.set_speed(3.0);
+    assert_eq!(p.speed(), 2.0, "not one of Chromium's speeds");
+    p.set_speed(0.25);
+    let from = p.position();
+    std::thread::sleep(Duration::from_millis(200));
+    let moved = (p.position() - from).as_secs_f32();
+    assert!(
+        (0.03..0.1).contains(&moved),
+        "{moved} s after 200 ms at 0.25x"
+    );
+}

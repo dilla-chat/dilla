@@ -20,4 +20,9 @@ await p.evaluate(async () => { const v = document.getElementById('v'); v.current
 // Chromium's loading ring goes after the seek settles.
 await p.waitForTimeout(1500);
 await p.screenshot({ path: join(HERE, '..', 'video-player-ready-2x.png') });
+// The ⋮ overflow menu (download, playback speed, picture in picture), opened from its button; the pointer then leaves.
+await p.mouse.click(20 + 456, 20 + 222);
+await p.mouse.move(1, 1);
+await p.waitForTimeout(600);
+await p.screenshot({ path: join(HERE, '..', 'video-player-menu-2x.png') });
 await b.close();
