@@ -731,7 +731,8 @@ fn a_call_speaker_with_no_output_device_plays_nowhere_until_one_appears() {
     for _ in 0..50 {
         sink.push("a", &[3000; 480]);
     }
-    // The worker drains what nobody plays, at the device rate: 500 ms of samples are gone before a device appears.
+    // The worker drops what nobody plays (however irregular its ticks: macOS coalesces timers), so nothing is left to
+    // play late once a device appears.
     std::thread::sleep(Duration::from_millis(300));
     host.set_no_output(false);
     assert!(eventually(|| speaker.is_playing() && host.output_open()));

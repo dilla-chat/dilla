@@ -210,6 +210,17 @@ impl PlayoutSink {
         self.pool.deafened.store(on, Ordering::Release);
     }
 
+    /// Drops everything every source has queued (a speaker with no device: nothing plays, so nothing may wait to play
+    /// late). Only for a sink nothing mixes meanwhile: it consumes the rings as the device callback would.
+    fn discard(&self) {
+        for slot in &self.pool.slots {
+            slot.ring.skip(usize::MAX);
+            if slot.clear.load(Ordering::Acquire) {
+                slot.clear.store(false, Ordering::Release);
+            }
+        }
+    }
+
     /// Mixes the next `out.len()` samples of every source, clamped. Real-time safe: no allocation
     /// and no lock.
     pub fn mix(&self, out: &mut [i16]) {
@@ -306,11 +317,13 @@ impl Worker {
 
     /// With no device: the sources are drained as a device would (nothing queues up, nothing is
     /// played), and the system default is tried again every [`RETRY`].
-    fn wait_for_device(&mut self, scratch: &mut [i16]) {
+    fn wait_for_device(&mut self) {
         let Some((tried, announce)) = self.retry else {
             return;
         };
-        self.sink.mix(scratch);
+        // Everything queued is dropped, not drained a tick's worth at a time: a tick is only as regular as the OS's
+        // timers (macOS coalesces them well past 5 ms), and what was not drained would play late once a device opened.
+        self.sink.discard();
         if tried.elapsed() < RETRY {
             return;
         }
@@ -347,8 +360,6 @@ impl Worker {
 
     fn run(mut self, rx: mpsc::Receiver<Ctl>, waits: bool) {
         let mut frame = [0i16; FRAME_SAMPLES];
-        // One tick of samples at the device rate.
-        let mut scratch = [0i16; (RATE as usize * TICK.as_millis() as usize) / 1000];
         loop {
             match rx.recv_timeout(TICK) {
                 Ok(Ctl::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -377,7 +388,7 @@ impl Worker {
                 }
                 Ok(Ctl::Lost(_)) => {}
             }
-            self.wait_for_device(&mut scratch);
+            self.wait_for_device();
             self.feed_reference(&mut frame);
         }
     }
