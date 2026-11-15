@@ -1083,6 +1083,12 @@ pub fn pick_video_menu(key: CardKey, id: &str, cx: &mut App) {
 const PIP_W: f32 = 400.0;
 const PIP_H: f32 = 225.0;
 const PIP_MARGIN: f32 = 16.0;
+/// The smallest the picture-in-picture window may be made: 16:9 at 160px wide.
+const PIP_MIN_W: f32 = 160.0;
+const PIP_MIN_H: f32 = 90.0;
+/// The screen assumed when the platform names no display (a headless run).
+const FALLBACK_SCREEN_W: f32 = 1280.0;
+const FALLBACK_SCREEN_H: f32 = 800.0;
 
 /// Moves the video into a small window above the others (Chromium's picture in picture): an X11 pop-up kept on top, a
 /// macOS floating panel or a Windows topmost window (`WindowKind::PopUp`); a Wayland compositor decides the stacking
@@ -1096,7 +1102,7 @@ pub fn open_pip(key: CardKey, cx: &mut App) {
         .unwrap_or_else(|| {
             gpui::Bounds::new(
                 gpui::Point::default(),
-                gpui::size(gpui::px(1280.0), gpui::px(800.0)),
+                gpui::size(gpui::px(FALLBACK_SCREEN_W), gpui::px(FALLBACK_SCREEN_H)),
             )
         });
     let size = gpui::size(gpui::px(PIP_W), gpui::px(PIP_H));
@@ -1115,7 +1121,7 @@ pub fn open_pip(key: CardKey, cx: &mut App) {
         is_movable: true,
         is_resizable: true,
         display_id: display.map(|d| d.id()),
-        window_min_size: Some(gpui::size(gpui::px(160.0), gpui::px(90.0))),
+        window_min_size: Some(gpui::size(gpui::px(PIP_MIN_W), gpui::px(PIP_MIN_H))),
         ..Default::default()
     };
     let opened = cx.open_window(options, |window, cx| {
