@@ -145,6 +145,212 @@ fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     assert_eq!(area(cx, |ui| ui.focused.clone()), None);
 }
 
+/// Package 8b (VoiceView.tsx `personMenu`, Signal §5.4): a right-click on another person's tile opens their menu (their
+/// volume, Profile, Message, Mute for me, Copy username); Shift+F10 on the own tile opens yours (Mute, Deafen, Profile,
+/// Move to the server's other voice channel with its head count, the AFK channel left out, and Leave voice). Escape closes.
+#[gpui::test]
+fn the_tile_menu_opens_with_the_person_s_items(cx: &mut TestAppContext) {
+    let mut s = (*state(3)).clone();
+    let mut other = channel();
+    other.id = ChannelId([10; 16]);
+    other.name = "Upstairs".into();
+    s.channels.push(other);
+    let cx = host(cx, Arc::new(s));
+    let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
+    let bounds = area(cx, |ui| ui.menu.bounds.borrow().get(&tiles[1]).copied())
+        .expect("person 1's tile was laid out");
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: bounds.center(),
+        modifiers: gpui::Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| voice::menu::is_open(voice::wid(window), cx)));
+    for item in [
+        "menu-item-profile",
+        "menu-item-message",
+        "menu-item-mute-for-me",
+        "menu-item-copy",
+    ] {
+        assert!(cx.debug_bounds(item).is_some(), "{item} is offered");
+    }
+    assert!(
+        cx.debug_bounds("menu-item-leave").is_none(),
+        "Leave voice is your own"
+    );
+    press(cx, "escape");
+    assert!(!cx.update(|window, cx| voice::menu::is_open(voice::wid(window), cx)));
+
+    // Your own tile, from the keyboard.
+    let focus = stage_focus(cx);
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.run_until_parked();
+    assert_eq!(area(cx, |ui| ui.selected), 0);
+    press(cx, "shift-f10");
+    assert!(cx.update(|window, cx| voice::menu::is_open(voice::wid(window), cx)));
+    let upstairs: &'static str = format!("menu-item-move:{}", ChannelId([10; 16]).hex()).leak();
+    for item in [
+        "menu-item-mute",
+        "menu-item-deafen",
+        "menu-item-profile",
+        upstairs,
+        "menu-item-leave",
+    ] {
+        assert!(cx.debug_bounds(item).is_some(), "{item} is offered");
+    }
+    assert!(cx.debug_bounds("menu-item-mute-for-me").is_none());
+}
+
+/// Package 8c (CallTile.tsx `__tools`): the focused tile offers Grid, which goes back to the grid, and full screen; a
+/// tile in the grid offers neither.
+#[gpui::test]
+fn the_focused_tile_offers_grid_and_full_screen(cx: &mut TestAppContext) {
+    let cx = host(cx, state(3));
+    assert!(
+        cx.debug_bounds("voice-tile-grid").is_none(),
+        "the grid has no tools"
+    );
+    let focus = stage_focus(cx);
+    cx.update(|window, cx| focus.focus(window, cx));
+    press(cx, "enter");
+    assert!(area(cx, |ui| ui.focused.is_some()));
+    assert!(cx.debug_bounds("voice-tile-fullscreen").is_some());
+    let grid = cx.debug_bounds("voice-tile-grid").expect("Grid").center();
+    cx.simulate_click(grid, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(area(cx, |ui| ui.focused.clone()), None, "back to the grid");
+}
+
+/// Package 8c (VoiceChannelRow.tsx): a bot in a voice channel's row says "playback only" after its name; a person does not.
+#[gpui::test]
+fn a_bot_s_voice_row_says_playback_only(cx: &mut TestAppContext) {
+    let cx = host(cx, state(3));
+    assert!(cx.debug_bounds("voice-person-playback-only").is_none());
+    let mut s = (*state(3)).clone();
+    if let Some(m) = s.members.get_mut(&COMMUNITY) {
+        m[2].kind = 1;
+    }
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), Arc::new(s), None, cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("voice-person-playback-only").is_some());
+}
+
+/// Package 8c (UserPanel.tsx `ptt`): in push-to-talk mode the mute button carries the PTT tag; otherwise it has none.
+#[gpui::test]
+fn the_user_panel_tags_push_to_talk(cx: &mut TestAppContext) {
+    use dilla_desktop::screens::user_panel::{PanelHandlers, PanelModel, render};
+    struct Panel(Option<bool>);
+    impl Render for Panel {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let handlers = PanelHandlers {
+                on_mute: Rc::new(|_, _| {}),
+                on_deafen: Rc::new(|_, _| {}),
+            };
+            div().size_full().child(render(
+                &PanelModel {
+                    name: "Ada",
+                    status: "online",
+                    in_room: None,
+                    muted: false,
+                    deafened: false,
+                    ptt: self.0,
+                },
+                &handlers,
+            ))
+        }
+    }
+    let (_, vcx) = cx.add_window_view(|_, _| Panel(Some(false)));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("user-panel-ptt").is_some());
+    let (_, vcx) = cx.add_window_view(|_, _| Panel(None));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("user-panel-ptt").is_none());
+}
+
+/// Opens the user settings over `s` in a window of its own, with the routes it asks for.
+fn open_settings(
+    cx: &mut TestAppContext,
+    s: Arc<AppState>,
+) -> (
+    &mut VisualTestContext,
+    Rc<std::cell::RefCell<Vec<dilla_desktop::router::Route>>>,
+) {
+    use dilla_desktop::screens::settings_host::{SettingsEvent, UserSettingsHost};
+    let ctx = dilla_desktop::slots::SlotCx {
+        state: s,
+        ..dilla_desktop::slots::SlotCx::default()
+    };
+    let (host, vcx) = cx.add_window_view(|_, cx| UserSettingsHost::new(None, None, ctx, cx));
+    let routes = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = routes.clone();
+    vcx.update(|_, cx| {
+        cx.subscribe(&host, move |_, e: &SettingsEvent, _| {
+            let SettingsEvent::Navigate(route) = e;
+            log.borrow_mut().push(route.clone());
+        })
+        .detach();
+    });
+    vcx.run_until_parked();
+    (vcx, routes)
+}
+
+/// Package 8c (Shell.tsx `settingsActivity`): while this device is in a call, Settings offers Return to call, which goes to
+/// the call's channel; out of a call it is not there.
+#[gpui::test]
+fn settings_offer_return_to_call(cx: &mut TestAppContext) {
+    use dilla_desktop::router::Route;
+    cx.update(dilla_desktop::install);
+    let (vcx, _) = open_settings(cx, Arc::new(AppState::default()));
+    assert!(vcx.debug_bounds("settings-return-call").is_none());
+    let (vcx, routes) = open_settings(cx, state(3));
+    let back = vcx
+        .debug_bounds("settings-return-call")
+        .expect("Return to call")
+        .center();
+    vcx.simulate_click(back, gpui::Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(
+        routes.borrow().last(),
+        Some(&Route::Channel {
+            community: COMMUNITY,
+            channel: Some(VOICE)
+        })
+    );
+}
+
+/// Package 8b: the person's volume reads as call/volume.ts does (100 when absent or not a volume), and the rooms a move
+/// can go to are the server's other voice channels, the AFK channel and the current one left out, with their head count.
+#[test]
+fn the_menu_reads_volumes_and_rooms_as_the_web() {
+    use dilla_client::features::voice_prefs::values::VoiceValues;
+    let bob = UserId([1; 16]);
+    let mut v = VoiceValues::default();
+    assert_eq!(voice::menu::volume_of(&v, bob, false), 100);
+    v.volumes.insert(bob.hex(), 50);
+    v.stream_volumes.insert(bob.hex(), 0);
+    assert_eq!(voice::menu::volume_of(&v, bob, false), 50);
+    assert_eq!(voice::menu::volume_of(&v, bob, true), 0);
+    v.volumes.insert(bob.hex(), 55);
+    assert_eq!(voice::menu::volume_of(&v, bob, false), 100, "not a volume");
+
+    let mut s = (*state(3)).clone();
+    let mut up = channel();
+    up.id = ChannelId([10; 16]);
+    up.name = "Upstairs".into();
+    let mut text = channel();
+    text.id = ChannelId([11; 16]);
+    text.kind = 0;
+    s.channels.push(up);
+    s.channels.push(text);
+    let rooms = voice::menu::rooms(&s, &channel());
+    assert_eq!(rooms, vec![(ChannelId([10; 16]), "Upstairs".to_owned(), 0)]);
+}
+
 const DM: ChannelId = ChannelId([7; 16]);
 
 /// The DM between the viewer (user 0, "Alice") and Bob (user 1), as the shell hands it to the voice area.
@@ -615,6 +821,25 @@ fn push_to_talk_ignores_a_modified_key(cx: &mut TestAppContext) {
     assert!(
         !vcx.update(|_, cx| voice::ptt_sending(w, cx)),
         "a modifier: not push to talk"
+    );
+}
+
+/// Package 9 (web ptt.ts refuses `getModifierState('AltGraph')`): on Linux AltGr (xkb's Level3) with the key never opens
+/// the mic, though gpui reports no modifier for it; the bare key still does once AltGr is let go.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn altgr_with_the_ptt_key_does_not_open_the_mic(cx: &mut TestAppContext) {
+    let (vcx, w, _) = field_host(cx);
+    // The keyboard's state as xkb reports AltGr held: the keystroke itself looks bare.
+    gpui_linux::set_level3_shift_active(true);
+    key_down(vcx, "insert");
+    let opened = vcx.update(|_, cx| voice::ptt_sending(w, cx));
+    gpui_linux::set_level3_shift_active(false);
+    assert!(!opened, "AltGr with the key: not push to talk");
+    key_down(vcx, "insert");
+    assert!(
+        vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "the bare key opens the mic"
     );
 }
 
@@ -1594,6 +1819,313 @@ fn control_shift_m_and_d_show_muted_and_deafened_to_the_peer(cx: &mut TestAppCon
         false,
         "bob sees alice undeafened",
     );
+}
+
+/// A machine with no audio device at all: no microphone, no speaker.
+struct NoAudio;
+
+impl dilla_media::devices::AudioHost for NoAudio {
+    fn list(&self) -> dilla_media::devices::DeviceList {
+        dilla_media::devices::DeviceList::default()
+    }
+
+    fn open_input(
+        &self,
+        _: Option<&dilla_media::devices::DeviceId>,
+        _: dilla_media::devices::InputSink,
+        _: dilla_media::devices::OnLost,
+    ) -> Result<Box<dyn dilla_media::devices::Running>, dilla_media::MediaError> {
+        Err(dilla_media::MediaError::Audio("no microphone".into()))
+    }
+
+    fn open_output(
+        &self,
+        _: Option<&dilla_media::devices::DeviceId>,
+        _: dilla_media::devices::OutputSource,
+        _: dilla_media::devices::OnLost,
+    ) -> Result<Box<dyn dilla_media::devices::Running>, dilla_media::MediaError> {
+        Err(dilla_media::MediaError::Audio("no speaker".into()))
+    }
+}
+
+/// Package 8a (beta.5 on a machine with no sound devices): the join goes through, listening, with beta.5's one notice
+/// (voice.micMissing, "No microphone found. You can listen."), and stays: before, the listen-only retry failed on the
+/// missing speaker too, said "Could not join voice" (MediaFailed) and left.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn no_output_device_joins_with_a_notice(cx: &mut TestAppContext) {
+    let w = call_world("p8a-no-speaker");
+    cx.update(dilla_desktop::install);
+    cx.update(|cx| voice::use_audio_host(Arc::new(NoAudio), cx));
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    cx.run_until_parked();
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    w.rt.block_on(until(
+        &w.alice,
+        "alice is told there is no microphone",
+        |s| s.voice.notice == Some(dilla_client::state::voice::VoiceNotice::MicLost),
+    ));
+    // The media had its time to fail: the call stays, with the microphone notice and no other.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let s = w.alice.state().borrow().clone();
+    assert_eq!(s.voice.call.phase, CallPhase::In, "the call stays");
+    assert_eq!(
+        s.voice.notice,
+        Some(dilla_client::state::voice::VoiceNotice::MicLost)
+    );
+    // Bob joins and sees alice in the call.
+    w.rt.block_on(w.bob.voice().join(w.voice))
+        .unwrap()
+        .expect("bob joins");
+    let alice_device = s.account.device_id.unwrap();
+    w.rt.block_on(until(&w.bob, "bob lists alice in the call", |s| {
+        s.voice
+            .participants(w.voice)
+            .iter()
+            .any(|p| p.device_id == alice_device)
+    }));
+}
+
+/// A window that draws `channel`'s stage from its client's state (the live tests' voice channel is the world's).
+struct LiveStage {
+    client: Rc<dilla_client::Client>,
+    channel: ChannelId,
+}
+
+impl Render for LiveStage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.client.state().borrow().clone();
+        let ch = state.channel(self.channel).cloned();
+        div()
+            .size_full()
+            .flex()
+            .children(ch.and_then(|ch| voice::stage(&ch, window, cx)))
+    }
+}
+
+/// Opens a window on `client`'s stage of `channel`, its voice area synced.
+fn live_stage(
+    cx: &mut TestAppContext,
+    client: &Rc<dilla_client::Client>,
+    channel: ChannelId,
+) -> VisualTestContext {
+    let w = cx.add_window(|_, _| LiveStage {
+        client: client.clone(),
+        channel,
+    });
+    let id = w.window_id();
+    let state = client.state().borrow().clone();
+    cx.update(|cx| voice::sync(id, state, Some(client), cx));
+    VisualTestContext::from_window(w.into(), cx)
+}
+
+/// Syncs `vcx`'s voice area with `client`'s newest state and draws.
+fn resync(vcx: &mut VisualTestContext, client: &Rc<dilla_client::Client>) {
+    let state = client.state().borrow().clone();
+    vcx.update(|window, cx| {
+        voice::sync(voice::wid(window), state, Some(client), cx);
+        window.refresh();
+    });
+    vcx.run_until_parked();
+}
+
+fn click(vcx: &mut VisualTestContext, selector: &'static str) {
+    let at = vcx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"))
+        .center();
+    vcx.simulate_click(at, gpui::Modifiers::none());
+    vcx.run_until_parked();
+}
+
+/// Package 8b (VoiceView.tsx `personMenu`, call/volume.ts): in a live call, the person menu on bob's tile offers his
+/// volume; Mute for me sets it to 0 in this device's voice settings (which the call plays at), and again puts back what it
+/// was; the menu stays open meanwhile (an on/off item).
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn the_tile_menu_sets_volume_and_mute_for_me(cx: &mut TestAppContext) {
+    let w = call_world("p8b-menu");
+    cx.update(dilla_desktop::install);
+    let mut vcx = live_stage(cx, &w.alice, w.voice);
+    let wa = vcx.update(|window, _| voice::wid(window));
+    vcx.update(|_, cx| voice::join(w.voice, wa, cx));
+    vcx.run_until_parked();
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    // Bob joins with his media (a `call-peer`): a device is in the call's roster once its media is in the room.
+    let bob_media = bob_with_media(&w);
+    let bob = w.bob.state().borrow().account.user_id.unwrap();
+    w.rt.block_on(until(&w.alice, "alice sees bob in the call", |s| {
+        s.voice
+            .participants(w.voice)
+            .iter()
+            .any(|p| p.user_id == bob)
+    }));
+    resync(&mut vcx, &w.alice);
+    let key = vcx.update(|window, cx| {
+        let ui = voice::ui_of(voice::wid(window), cx).unwrap();
+        voice::tiles(&ui.state, w.voice)
+            .into_iter()
+            .find(|k| k.user == bob && !k.screen)
+            .expect("bob's tile")
+    });
+    let at = vcx
+        .update(|window, cx| {
+            voice::ui_of(voice::wid(window), cx)
+                .and_then(|u| u.menu.bounds.borrow().get(&key).copied())
+        })
+        .expect("bob's tile was laid out")
+        .center();
+    vcx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: at,
+        modifiers: gpui::Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    vcx.run_until_parked();
+    let volume =
+        |c: &dilla_client::Client| c.voice_prefs().values().volumes.get(&bob.hex()).copied();
+    assert_eq!(volume(&w.alice), None, "100 %: no entry");
+    click(&mut vcx, "menu-item-mute-for-me");
+    assert_eq!(volume(&w.alice), Some(0), "muted for alice");
+    assert!(
+        vcx.update(|window, cx| voice::menu::is_open(voice::wid(window), cx)),
+        "an on/off item keeps the menu open"
+    );
+    click(&mut vcx, "menu-item-mute-for-me");
+    assert_eq!(volume(&w.alice), None, "back to 100 %");
+    // A volume set in the menu is what the call plays bob at (the session's gains read the same values).
+    vcx.update(|_, cx| voice::menu::set_volume(wa, bob, false, 150, cx));
+    let s = w.alice.state().borrow().clone();
+    let gains = voice::session::gains(&w.alice.voice_prefs().values(), &s);
+    let bob_device = s
+        .voice
+        .participants(w.voice)
+        .iter()
+        .find(|p| p.user_id == bob)
+        .unwrap()
+        .device_id;
+    assert_eq!(gains[&(bob_device.hex(), false)], 1.5);
+    bob_media.quit();
+}
+
+/// Bob joins `w`'s call with his media in a `call-peer` process of its own (the frame hook is process-wide).
+fn bob_with_media(w: &CallWorld) -> call_world::MediaPeer {
+    w.rt.block_on(async {
+        tokio::task::spawn_blocking(call_world::MediaPeer::build)
+            .await
+            .unwrap();
+        w.bob
+            .voice()
+            .join(w.voice)
+            .await
+            .unwrap()
+            .expect("bob joins");
+        let link = w
+            .bob
+            .voice()
+            .media()
+            .borrow()
+            .clone()
+            .expect("a media link");
+        let url = w._host.rtc_url(&link.url);
+        let token = link.token.to_string();
+        let first = link.epochs.borrow().clone().expect("the join epoch");
+        tokio::task::spawn_blocking(move || {
+            let mut m = call_world::MediaPeer::start(&url, &token, 660);
+            m.epoch(&first);
+            m.next("connected", std::time::Duration::from_secs(30));
+            m
+        })
+        .await
+        .unwrap()
+    })
+}
+
+/// Package 8b (Shell.tsx `onMove`): your own menu's Move to joins the other room, which moves this device there, and says
+/// "You moved to {room}".
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn move_to_moves_the_member(cx: &mut TestAppContext) {
+    let media = media_slot();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let tag = "p8b-move";
+    let (_host, alice, voice_a, voice_b) = rt.block_on(async {
+        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
+        let (host, alice, a, b) = tokio::task::spawn_blocking(move || {
+            let (c, a) = call_world::voice_community(&host, &alice, &[]);
+            let (b, _, _) = call_world::ds_of(&host, &alice)
+                .create_channel(&c, 1, "upstairs")
+                .unwrap();
+            call_world::clear_session(&alice);
+            (host, alice, ChannelId(a), ChannelId(b))
+        })
+        .await
+        .unwrap();
+        let client = call_world::start(&alice).await;
+        call_world::connected(&client).await;
+        client.voice().start();
+        until(&client, "both voice channels are listed", |s| {
+            s.channel(a).is_some() && s.channel(b).is_some()
+        })
+        .await;
+        (host, client, a, b)
+    });
+    let alice = Rc::new(alice);
+    cx.update(dilla_desktop::install);
+    let mut vcx = live_stage(cx, &alice, voice_a);
+    let wa = vcx.update(|window, _| voice::wid(window));
+    vcx.update(|_, cx| voice::join(voice_a, wa, cx));
+    vcx.run_until_parked();
+    rt.block_on(until(&alice, "alice is in the first room", |s| {
+        s.voice.call.phase == CallPhase::In
+            && s.voice.call.channel == Some(voice_a)
+            && s.voice.participants(voice_a).iter().any(|p| p.own)
+    }));
+    resync(&mut vcx, &alice);
+    let own = vcx.update(|window, cx| {
+        let ui = voice::ui_of(voice::wid(window), cx).unwrap();
+        voice::tiles(&ui.state, voice_a)
+            .into_iter()
+            .next()
+            .expect("alice's own tile")
+    });
+    vcx.update(|window, cx| {
+        voice::menu::open_from_key(voice::wid(window), own, cx);
+        window.refresh();
+    });
+    vcx.run_until_parked();
+    let item: &'static str = format!("menu-item-move:{}", voice_b.hex()).leak();
+    click(&mut vcx, item);
+    // The move's join runs on the UI's executor (the handover), so it is pumped with the clients.
+    pump(cx, &rt, &alice, "alice moved to upstairs", |s| {
+        s.voice.call.phase == CallPhase::In && s.voice.call.channel == Some(voice_b)
+    });
+    let s = rt.block_on(until(&alice, "alice is listed upstairs", |s| {
+        s.voice.participants(voice_b).iter().any(|p| p.own)
+    }));
+    assert!(
+        !s.voice.participants(voice_a).iter().any(|p| p.own),
+        "and no longer in the first room"
+    );
+    drop(vcx);
+    drop(alice);
+    drop(rt);
+    drop(media);
 }
 
 /// Review L m1: one call per device, the newest join wins. A handover still waiting for another window's leave is dropped

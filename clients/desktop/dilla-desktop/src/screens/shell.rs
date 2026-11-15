@@ -1283,6 +1283,11 @@ impl Render for ShellView {
                 in_room: in_room.as_deref(),
                 muted,
                 deafened,
+                ptt: self.client.as_ref().and_then(|c| {
+                    use dilla_client::features::voice_prefs::values::{InputMode, VoiceValues};
+                    (VoiceValues::read(&c.prefs()).mode == InputMode::Ptt)
+                        .then_some(state.voice.ptt_held)
+                }),
             },
             &user_panel::PanelHandlers {
                 on_mute: Rc::new(move |_, cx| {
@@ -1433,6 +1438,15 @@ impl Render for ShellView {
             self.window_id,
             Rc::new(move |_, cx| {
                 let _ = back.update(cx, |shell, cx| shell.leave_afk(cx));
+            }),
+            cx,
+        );
+        // The person menu's Move to opens the room it moved to (Shell.tsx `openVoice`).
+        let open = shell.clone();
+        crate::screens::voice::set_open_voice(
+            self.window_id,
+            Rc::new(move |id, cx| {
+                let _ = open.update(cx, |shell, cx| shell.select(id, cx));
             }),
             cx,
         );

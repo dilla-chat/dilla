@@ -15,9 +15,11 @@ use dilla_client::Client;
 use dilla_client::features::voice::{CallStatsReport, MediaLink, Voice};
 use dilla_client::features::voice_prefs::speaking::SpeakingDetector;
 use dilla_client::features::voice_prefs::values::{InputMode, NoisePreference, VoiceValues};
+use dilla_client::features::voice_prefs::volume::{GainState, gain_of};
 use dilla_client::state::voice::{LocalShare, VoiceNotice};
 use dilla_client::state::{AppState, DeviceId};
 use dilla_media::apm::ApmFlags;
+use dilla_media::devices::AudioHost;
 use dilla_media::noise::NoiseMode;
 use dilla_media::{
     Call, CallOptions, CaptureSource, EpochFeed, IceServer, LiveKitToken, MediaEvent, Mic,
@@ -107,14 +109,19 @@ pub enum Command {
 /// The link's ping read (session.ts `linkTick`), polled beside the call loop's other arms rather than awaited in one, so
 /// a stalled read never holds up a leave, the room's end or a command: one read in flight at a time, answering none
 /// once [`LINK_STALL`] has passed.
-#[derive(Default)]
-struct PingRead<'a> {
-    read: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>>>,
+struct PingRead<'a, T = u32> {
+    read: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<T>> + Send + 'a>>>,
 }
 
-impl<'a> PingRead<'a> {
+impl<T> Default for PingRead<'_, T> {
+    fn default() -> Self {
+        Self { read: None }
+    }
+}
+
+impl<'a, T: Send + 'a> PingRead<'a, T> {
     /// A tick: starts a read unless one is still in flight.
-    fn start(&mut self, read: impl std::future::Future<Output = Option<u32>> + Send + 'a) {
+    fn start(&mut self, read: impl std::future::Future<Output = Option<T>> + Send + 'a) {
         if self.read.is_none() {
             self.read = Some(Box::pin(async move {
                 tokio::time::timeout(LINK_STALL, read).await.ok().flatten()
@@ -124,7 +131,7 @@ impl<'a> PingRead<'a> {
 
     /// The read's answer; pending while none is in flight. Cancel-safe: a read the loop's `select!` drops this for is
     /// kept and answers later.
-    async fn answer(&mut self) -> Option<u32> {
+    async fn answer(&mut self) -> Option<T> {
         let Some(read) = self.read.as_mut() else {
             return std::future::pending().await;
         };
@@ -214,8 +221,43 @@ pub fn default_sources() -> SourceFactory {
     })
 }
 
+/// Each remote device's playout gains in the call, `(device hex, stream)` to gain: its person's volume (or their
+/// stream's) times the output volume of Settings -> Voice (call/volume.ts `gainOf`; deafen is the speaker's own
+/// silence). The own devices are not played.
+pub fn gains(v: &VoiceValues, s: &AppState) -> std::collections::BTreeMap<(String, bool), f32> {
+    let Some(channel) = s.voice.call.channel else {
+        return std::collections::BTreeMap::new();
+    };
+    let state = GainState {
+        deafened: false,
+        paused: false,
+        output: Some(v.output_volume),
+    };
+    let mut out = std::collections::BTreeMap::new();
+    for p in s.voice.participants(channel).iter().filter(|p| !p.own) {
+        let user = hex(&p.user_id.0);
+        let device = hex(&p.device_id.0);
+        out.insert((device.clone(), false), gain_of(&user, &v.volumes, &state));
+        out.insert((device, true), gain_of(&user, &v.stream_volumes, &state));
+    }
+    out
+}
+
+fn hex(b: &[u8; 16]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 impl MediaSession {
     pub fn start(client: &Client, sources: SourceFactory) -> std::io::Result<MediaSession> {
+        Self::start_on(client, sources, dilla_media::devices::system())
+    }
+
+    /// As [`start`](MediaSession::start) on another audio host (a fake one in tests).
+    pub fn start_on(
+        client: &Client,
+        sources: SourceFactory,
+        host: Arc<dyn AudioHost>,
+    ) -> std::io::Result<MediaSession> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("dilla-call")
@@ -231,6 +273,7 @@ impl MediaSession {
             videos: videos.clone(),
             video_seq: video_seq.clone(),
             sources,
+            host,
         };
         runtime.spawn(run(ctx, rx));
         Ok(MediaSession {
@@ -267,6 +310,7 @@ struct Ctx {
     videos: Arc<Mutex<RemoteVideos>>,
     video_seq: Arc<AtomicU64>,
     sources: SourceFactory,
+    host: Arc<dyn AudioHost>,
 }
 
 impl Ctx {
@@ -391,10 +435,11 @@ async fn in_call(
         muted: !mic_open(&ctx.states.borrow(), ctx.ptt_mode()),
         ..ctx.options()
     };
-    let call = match Call::join_with(token_of(link), feed.clone(), options).await {
+    let call = match Call::join_on(token_of(link), feed.clone(), options, ctx.host.clone()).await {
         Ok(call) => call,
         Err(dilla_media::MediaError::Audio(e)) => {
-            // No microphone: the call goes on listen-only, and the person is told.
+            // No microphone: the call goes on listen-only, and the person is told (voice.micMissing, as beta.5). No
+            // output device is no failure: the call plays nowhere until one appears, and says nothing (beta.5).
             log::warn!("voice: the microphone did not open ({e}): listening only");
             ctx.voice.set_notice(Some(VoiceNotice::MicLost));
             let listen = CallOptions {
@@ -402,7 +447,7 @@ async fn in_call(
                 muted: true,
                 ..ctx.options()
             };
-            match Call::join_with(token_of(link), feed, listen).await {
+            match Call::join_on(token_of(link), feed, listen, ctx.host.clone()).await {
                 Ok(call) => call,
                 Err(e) => return failed(ctx, feeder, &e),
             }
@@ -423,10 +468,13 @@ async fn in_call(
     let mut speaking = Speaking::default();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
     let mut link_read = tokio::time::interval(LINK_EVERY);
-    let mut ping = PingRead::default();
+    let mut ping: PingRead<'_, dilla_media::LinkRead> = PingRead::default();
+    // The previous link read and when it answered: the rate is what moved since (stats.ts `linkSample`).
+    let mut last_link: Option<(Instant, dilla_media::LinkRead)> = None;
     let rtt = Arc::new(Mutex::new(RttReport::default()));
     let own = ctx.states.borrow().account.device_id;
     let mut applied: Option<(bool, bool)> = None;
+    let mut gained = std::collections::BTreeMap::new();
     loop {
         let s = states.borrow_and_update().clone();
         // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
@@ -435,6 +483,16 @@ async fn in_call(
             call.set_muted(want.0);
             call.set_deafened(want.1);
             applied = Some(want);
+        }
+        // The per-person volumes (the stage's person menu writes them, which wakes this loop as a mode switch does).
+        let now = gains(&ctx.values(), &s);
+        if now != gained {
+            for ((device, stream), gain) in &now {
+                if gained.get(&(device.clone(), *stream)) != Some(gain) {
+                    call.set_gain(device, *stream, *gain);
+                }
+            }
+            gained = now;
         }
         tokio::select! {
             r = links.changed() => {
@@ -487,9 +545,19 @@ async fn in_call(
             },
             // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
             // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
-            _ = link_read.tick() => ping.start(call.rtt_ms()),
-            ms = ping.answer() => {
+            _ = link_read.tick() => ping.start(call.link()),
+            read = ping.answer() => {
+                let ms = read.as_ref().and_then(|r| r.rtt_ms);
                 ctx.voice.set_ping(link.call_id, ms);
+                // A read that failed is no data: the next one spans the gap from the last that answered.
+                if let Some(read) = read {
+                    let now = Instant::now();
+                    if let Some((at, before)) = &last_link {
+                        let ms = now.duration_since(*at).as_secs_f64() * 1000.0;
+                        ctx.voice.set_rate(link.call_id, read.rate_since(before, ms));
+                    }
+                    last_link = Some((now, read));
+                }
                 // session.ts `publishRtt`: the others see this device's ping through the instance.
                 let send = ms.and_then(|ms| lock_rtt(&rtt).want(ms));
                 if let Some(send) = send {
@@ -750,6 +818,46 @@ mod tests {
             "push to talk, key up: muted"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Package 8b (call/volume.ts `gainOf`): each other device in the call plays at its person's volume times the output
+    /// volume, its stream at the person's stream volume; this device's own are not played.
+    #[test]
+    fn the_person_volumes_become_the_call_s_gains() {
+        use dilla_client::state::voice::VoiceParticipant;
+        let mut s = AppState::default();
+        let channel = dilla_client::state::ChannelId([9; 16]);
+        s.voice.call.channel = Some(channel);
+        s.voice.place(
+            channel,
+            Some([9; 16]),
+            vec![
+                VoiceParticipant {
+                    user_id: dilla_client::state::UserId([0xaa; 16]),
+                    device_id: DeviceId([1; 16]),
+                    flags: 0,
+                    own: true,
+                },
+                VoiceParticipant {
+                    user_id: dilla_client::state::UserId([0xbb; 16]),
+                    device_id: DeviceId([2; 16]),
+                    flags: 0,
+                    own: false,
+                },
+            ],
+        );
+        let bob = "bb".repeat(16);
+        let dev = "02".repeat(16);
+        let mut v = VoiceValues::default();
+        v.volumes.insert(bob.clone(), 50);
+        v.stream_volumes.insert(bob, 0);
+        v.output_volume = 200;
+        let g = gains(&v, &s);
+        assert_eq!(g.len(), 2, "the own device is not played: {g:?}");
+        assert_eq!(g[&(dev.clone(), false)], 1.0, "50 % of 200 %");
+        assert_eq!(g[&(dev, true)], 0.0, "the stream mute");
+        s.voice.call.channel = None;
+        assert!(gains(&v, &s).is_empty(), "no call, no gains");
     }
 
     #[test]

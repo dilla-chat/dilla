@@ -230,6 +230,23 @@ end; the colour gate failed at 0.63 %). Test: `parity_user_settings_profile` in 
 user_settings.rs` (the band against the web's). Linux only (see above): the DirectX renderer of Windows and the Metal
 renderer of macOS keep upstream's stretched geometry until their ports' tolerances are measured.
 
+## gpui-pre-linux 0.3.12
+
+Upstream: <https://crates.io/crates/gpui-pre-linux> (Zed's GPUI, the Linux platform: Wayland, X11, xkb). Apache-2.0. The
+copy is the published crate minus `.cargo-ok` and `Cargo.lock`. Linux only (nothing else builds it).
+
+One change (Package 9, 2026-11-15), marked `DILLA PATCH`: AltGr's state is kept for the app. xkb's Level3
+(ISO_Level3_Shift) is none of gpui's `Modifiers`, so AltGr with a key arrived as the bare key, and push to talk (which
+refuses Control, Alt, Shift and Super with its key, as the web's ptt.ts refuses those and `AltGraph`) opened the microphone.
+`src/linux/platform.rs` `modifiers_from_xkb`, which both backends call on every modifier change, records whether
+`LevelThree` (or `Mod5`, for libxkbcommon before 1.8) is active in a thread-local on the thread that handles the keyboard's
+events (the app's); `level3_shift_active()` reads it and `set_level3_shift_active()` sets it (tests), both re-exported from
+`src/linux.rs` and `src/gpui_linux.rs`. gpui's own key handling is unchanged: AltGr still types its characters in text
+fields. Test: `altgr_with_the_ptt_key_does_not_open_the_mic` in `clients/desktop/dilla-desktop/tests/voice.rs` and
+`altgr_s_state_is_kept_for_the_app` in `clients/desktop/dilla-desktop/tests/vendored_patches.rs`.
+
+Keep this patch until gpui reports AltGr itself (a Level3 modifier on `Modifiers`).
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs
