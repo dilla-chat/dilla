@@ -23,6 +23,9 @@ pub mod candidate;
 pub mod data_channel;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod desktop_capturer;
+// DILLA PATCH: the desktop client's camera (libwebrtc's VideoCaptureModule), core/vendor/README.md.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub mod dilla_camera;
 // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
 pub mod dilla_transform;
 // DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.

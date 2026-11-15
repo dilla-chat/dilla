@@ -17,6 +17,7 @@
 //! is dropped, a frame that does not authenticate is never decoded.
 
 pub mod apm;
+pub mod app_audio;
 pub mod capture;
 pub mod capture_source;
 pub mod devices;
@@ -25,10 +26,11 @@ pub mod noise;
 pub mod playout;
 pub mod ring;
 pub mod room;
+pub mod sources;
 pub mod transform;
 
 pub use capture_source::{
-    CaptureSource, RgbaFrame, ShareKind, ShareOptions, ShareResolution, TestPattern,
+    CaptureSource, Frame, PixelFormat, Pull, ShareKind, ShareOptions, ShareResolution, TestPattern,
 };
 pub use livekit::webrtc::peer_connection_factory::IceServer;
 pub use room::{

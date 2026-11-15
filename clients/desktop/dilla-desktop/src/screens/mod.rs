@@ -24,6 +24,8 @@ pub mod ring;
 pub mod search;
 pub mod server_settings;
 pub mod settings_host;
+// The screen-share picker (GPUI parity plan Package 2).
+pub mod share_picker;
 pub mod threads;
 pub mod user_settings;
 pub mod voice;

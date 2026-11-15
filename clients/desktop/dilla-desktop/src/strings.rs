@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2186] = [
+pub static STRINGS: [(&str, &str); 2198] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -465,9 +465,16 @@ pub static STRINGS: [(&str, &str); 2186] = [
     ("callStage.preview.many", "{names} are here"),
     ("callStage.preview.nobody", "Nobody is here yet"),
     ("callStage.preview.one", "{name} is here"),
+    ("callStage.share.appCancel", "Cancel"),
+    ("callStage.share.appChoose", "Choose the application others will hear"),
+    ("callStage.share.appNone", "No playback applications are available. Start audio in the application, then try again."),
+    ("callStage.share.appTitle", "Share application sound"),
     ("callStage.share.applied", "Stream set to {res} · {fps} fps"),
     ("callStage.share.apply", "Apply"),
     ("callStage.share.audio", "Also share system audio"),
+    ("callStage.share.audioApp", "Also share an application’s sound"),
+    ("callStage.share.audioAppNote", "Dilla’s own call audio is excluded."),
+    ("callStage.share.audioAppOf", "Sound from {app}"),
     ("callStage.share.audioScreen", "Sound from the whole system"),
     ("callStage.share.audioTab", "Sound from this tab"),
     ("callStage.share.audioTabOnly", "Chrome on Linux can share sound only from a tab"),
@@ -478,6 +485,11 @@ pub static STRINGS: [(&str, &str); 2186] = [
     ("callStage.share.go", "Go live"),
     ("callStage.share.live", "You’re live"),
     ("callStage.share.native", "Source"),
+    ("callStage.share.pickerCancel", "Cancel"),
+    ("callStage.share.pickerEmpty", "Nothing to share here"),
+    ("callStage.share.pickerScreens", "Screens"),
+    ("callStage.share.pickerShare", "Share"),
+    ("callStage.share.pickerWindows", "Windows"),
     ("callStage.share.previewScreen", "Display · {w}×{h}"),
     ("callStage.share.previewTab", "Tab · you pick it next"),
     ("callStage.share.previewWindow", "Window · you pick it next"),

@@ -266,6 +266,8 @@ pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyEleme
     out.extend(messages::overlays(window, cx));
     // The moderation commands' confirmation (Task 28 wave 2).
     out.extend(commands::confirm::overlay(ctx, window, cx));
+    // The screen-share picker (parity Package 2), over everything of its window.
+    out.extend(crate::screens::share_picker::overlay(window, cx));
     out
 }
 

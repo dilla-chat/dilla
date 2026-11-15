@@ -188,6 +188,9 @@ pub struct Dialog {
     on_close: Option<CloseHandler>,
     on_backdrop: Option<CloseHandler>,
     in_section: bool,
+    /// A wider form dialog's own width (`min(width, 100vw - 24px)`), as a component's CSS widens `.d-dialog` (the
+    /// screen-share picker's 680px).
+    wide: Option<f32>,
     a11y_description: Option<SharedString>,
 }
 
@@ -215,8 +218,15 @@ impl Dialog {
             on_close: None,
             on_backdrop: None,
             in_section: false,
+            wide: None,
             a11y_description: None,
         }
+    }
+
+    /// `.d-dialog:has(...) { width: min(<width>px, calc(100vw - 24px)) }`: a form dialog wider than 520px.
+    pub fn width(mut self, width: f32) -> Self {
+        self.wide = Some(width);
+        self
     }
 
     /// The web renders this dialog's `<dialog>` as a child of a settings section (`.d-settings-frame__body > section`, a
@@ -448,7 +458,10 @@ impl RenderOnce for Dialog {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(self.kind.width(f32::from(viewport.width))))
+            .w(px(self.wide.map_or_else(
+                || self.kind.width(f32::from(viewport.width)),
+                |w| w.min(f32::from(viewport.width) - 24.0),
+            )))
             .max_h(viewport.height - px(top_offset(f32::from(viewport.height)) + 20.0))
             .bg(color::SURFACE)
             .border_1()

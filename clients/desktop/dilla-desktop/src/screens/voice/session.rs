@@ -7,7 +7,7 @@
 //! on a runtime of its own: the client's runtime is the client's.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -21,6 +21,8 @@ use dilla_client::state::{AppState, DeviceId};
 use dilla_media::apm::ApmFlags;
 use dilla_media::devices::AudioHost;
 use dilla_media::noise::NoiseMode;
+use dilla_media::sources::OpenError;
+use dilla_media::sources::desktop::{self, DesktopSource};
 use dilla_media::{
     Call, CallOptions, CaptureSource, EpochFeed, IceServer, LiveKitToken, MediaEvent, Mic,
     RemoteVideos, ShareKind, ShareOptions,
@@ -102,8 +104,12 @@ const LINK_STALL: std::time::Duration = std::time::Duration::from_millis(1_500);
 /// What a share asks for.
 pub enum Command {
     Share(ShareKind, bool, ShareOptions),
-    /// The stream quality changed while sharing: the screen share starts again at it.
+    /// A screen share of the source the person chose in the picker.
+    ShareSource(DesktopSource, ShareOptions),
+    /// The stream quality changed while sharing: the running screen share goes on at it (the same source).
     Quality(ShareOptions),
+    /// The running screen share carries the sound of this application from now on (`None`: no sound).
+    AppAudio(Option<dilla_media::app_audio::AppSource>),
 }
 
 /// The link's ping read (session.ts `linkTick`), polled beside the call loop's other arms rather than awaited in one, so
@@ -189,36 +195,90 @@ pub struct MediaSession {
     videos: Arc<Mutex<RemoteVideos>>,
     /// Bumped on every new remote video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
+    /// The devices (hex) whose screen share carries sound.
+    screen_sound: Arc<Mutex<BTreeSet<String>>>,
 }
 
-/// Where share sources come from. The real screen and camera sources are the next plan's; the automation build (and
-/// a debug build with `DILLA_TEST_PATTERN=1`) uses the moving test pattern; a release build never does. Anything else
-/// has none, which is a cancelled selection.
-pub type SourceFactory =
-    Arc<dyn Fn(ShareKind, ShareOptions) -> Option<Box<dyn CaptureSource>> + Send + Sync>;
+/// What a share asks its [`SourceFactory`] for.
+pub struct ShareRequest {
+    pub kind: ShareKind,
+    pub options: ShareOptions,
+    /// The screen or window the person chose in the picker; `None` for the camera, and for a screen under the system
+    /// portal (Wayland), whose own dialog chooses.
+    pub source: Option<DesktopSource>,
+    /// Set when the selection is withdrawn (the share was switched off, the call or the window went away): an open that
+    /// is still waiting gives up.
+    pub cancel: Arc<AtomicBool>,
+}
 
+impl ShareRequest {
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+}
+
+/// Where share sources come from: called off the call's loop (it may wait for the portal's dialog or a camera), with
+/// the request; an error is a selection that gives no source (cancelled or unavailable), which publishes nothing.
+pub type SourceFactory =
+    Arc<dyn Fn(&ShareRequest) -> Result<Box<dyn CaptureSource>, OpenError> + Send + Sync>;
+
+/// The automation build (and a debug build with `DILLA_TEST_PATTERN=1`) shares the moving test pattern; everything else
+/// the real sources (`dilla_media::sources`).
 pub fn default_sources() -> SourceFactory {
-    Arc::new(|kind, options: ShareOptions| {
-        let test = cfg!(feature = "automation")
-            || (cfg!(debug_assertions)
-                && std::env::var("DILLA_TEST_PATTERN").is_ok_and(|v| v == "1"));
-        test.then(|| {
-            // The pattern at the asked size, at most 720p (it is drawn on the CPU).
-            let (w, h) = match kind {
-                ShareKind::Camera => (640, 360),
-                ShareKind::Screen => options
-                    .resolution
-                    .frame()
-                    .map_or((1280, 720), |(w, h)| (w.min(1280), h.min(720))),
-            };
-            let fps = if kind == ShareKind::Screen {
-                options.fps.min(30)
-            } else {
-                15
-            };
-            Box::new(dilla_media::TestPattern::new(kind, w, h, fps)) as Box<dyn CaptureSource>
-        })
-    })
+    let test = cfg!(feature = "automation")
+        || (cfg!(debug_assertions) && std::env::var("DILLA_TEST_PATTERN").is_ok_and(|v| v == "1"));
+    if test {
+        return Arc::new(|r: &ShareRequest| Ok(test_pattern(r.kind, r.options)));
+    }
+    Arc::new(real_source)
+}
+
+/// The moving test pattern at the asked size, at most 720p (it is drawn on the CPU).
+pub fn test_pattern(kind: ShareKind, options: ShareOptions) -> Box<dyn CaptureSource> {
+    let (w, h) = match kind {
+        ShareKind::Camera => (640, 360),
+        ShareKind::Screen => options
+            .resolution
+            .frame()
+            .map_or((1280, 720), |(w, h)| (w.min(1280), h.min(720))),
+    };
+    let fps = if kind == ShareKind::Screen {
+        options.fps.min(30)
+    } else {
+        15
+    };
+    Box::new(dilla_media::TestPattern::new(kind, w, h, fps))
+}
+
+/// The real sources: the camera, the chosen screen or window, or the portal's choice.
+fn real_source(r: &ShareRequest) -> Result<Box<dyn CaptureSource>, OpenError> {
+    let cancel = || r.cancelled();
+    match r.kind {
+        ShareKind::Camera => camera(&cancel),
+        // The picker's choice, or (Linux on Wayland, no choice) the system portal's own dialog. Never a source nobody
+        // chose: off the portal a request without a choice opens nothing.
+        ShareKind::Screen => match &r.source {
+            Some(s) => desktop::open(Some(s), r.options.fps, desktop::START_WAIT, &cancel),
+            None if desktop::portal() => {
+                desktop::open(None, r.options.fps, desktop::PORTAL_WAIT, &cancel)
+            }
+            None => Err(OpenError::Unavailable("no source was chosen".to_owned())),
+        }
+        .map(|c| Box::new(c) as Box<dyn CaptureSource>),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn camera(cancel: &dyn Fn() -> bool) -> Result<Box<dyn CaptureSource>, OpenError> {
+    dilla_media::sources::camera::open(None, desktop::START_WAIT, cancel)
+        .map(|c| Box::new(c) as Box<dyn CaptureSource>)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn camera(_cancel: &dyn Fn() -> bool) -> Result<Box<dyn CaptureSource>, OpenError> {
+    Err(OpenError::Unavailable(
+        "no camera source on this system yet".to_owned(),
+    ))
 }
 
 /// Each remote device's playout gains in the call, `(device hex, stream)` to gain: its person's volume (or their
@@ -266,12 +326,14 @@ impl MediaSession {
         let (commands, rx) = mpsc::unbounded_channel();
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
+        let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
         let ctx = Ctx {
             voice: client.voice(),
             states: client.state(),
             prefs: client.prefs(),
             videos: videos.clone(),
             video_seq: video_seq.clone(),
+            screen_sound: screen_sound.clone(),
             sources,
             host,
         };
@@ -281,6 +343,7 @@ impl MediaSession {
             commands,
             videos,
             video_seq,
+            screen_sound,
         })
     }
 
@@ -289,9 +352,27 @@ impl MediaSession {
         let _ = self.commands.send(Command::Share(kind, on, options));
     }
 
+    /// Starts a screen share of the source the person chose in the picker.
+    pub fn share_source(&self, source: DesktopSource, options: ShareOptions) {
+        let _ = self.commands.send(Command::ShareSource(source, options));
+    }
+
+    /// Shares the sound of `source` with the running screen share (`None` stops it). Nothing while no screen is shared.
+    pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>) {
+        let _ = self.commands.send(Command::AppAudio(source));
+    }
+
     /// Applies a new stream quality to the running screen share.
     pub fn quality(&self, options: ShareOptions) {
         let _ = self.commands.send(Command::Quality(options));
+    }
+
+    /// The devices (hex) whose screen share carries sound: a remote screen without it shows the "no sound" mark.
+    pub fn screen_sound(&self) -> BTreeSet<String> {
+        self.screen_sound
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Every remote video stream's newest frame.
@@ -309,6 +390,7 @@ struct Ctx {
     prefs: dilla_client::prefs::Prefs,
     videos: Arc<Mutex<RemoteVideos>>,
     video_seq: Arc<AtomicU64>,
+    screen_sound: Arc<Mutex<BTreeSet<String>>>,
     sources: SourceFactory,
     host: Arc<dyn AudioHost>,
 }
@@ -429,6 +511,8 @@ async fn in_call(
     links: &mut watch::Receiver<Option<Arc<MediaLink>>>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
 ) {
+    // A share asked for outside a call (a window's press as its last call ended) never carries into this one.
+    while commands.try_recv().is_ok() {}
     let (feed, slot, feeder) = feed_epochs(link);
     // A muted or push-to-talk join: the microphone is muted before it is published. A microphone the OS denies the app
     // would only send silence (macOS, Windows): the call joins listen-only and says so (Package 7, beta.5's
@@ -475,6 +559,7 @@ async fn in_call(
     let mut videos = call.remote_videos();
     let mut events = call.events();
     let mut ended = call.shares_ended();
+    let mut app_ended = call.app_audio_ended();
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
@@ -485,6 +570,10 @@ async fn in_call(
     let rtt = Arc::new(Mutex::new(RttReport::default()));
     let own = ctx.states.borrow().account.device_id;
     let mut applied: Option<(bool, bool)> = None;
+    let mut opens = Opens::default();
+    // The application sound asked for before the screen share is up: it starts with the share.
+    let mut pending_app: Option<dilla_media::app_audio::AppSource> = None;
+    let (opened_tx, mut opened) = mpsc::unbounded_channel::<Opened>();
     let mut gained = std::collections::BTreeMap::new();
     loop {
         let s = states.borrow_and_update().clone();
@@ -535,6 +624,7 @@ async fn in_call(
                 if r.is_ok() {
                     let next = videos.borrow_and_update().clone();
                     *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
+                    *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
                     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -546,14 +636,46 @@ async fn in_call(
                 set_kind(&mut share, kind, false);
                 let _ = ctx.voice.set_share(share).await;
             }
+            Some(()) = async { match app_ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                // The application went away: the share goes on without sound, and says so.
+                let mut share = ctx.states.borrow().voice.share;
+                share.screen_audio = false;
+                let _ = ctx.voice.set_share(share).await;
+                ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+            }
             Some(cmd) = commands.recv() => match cmd {
-                Command::Share(kind, on, options) => share(ctx, &call, kind, on, options).await,
+                Command::Share(kind, false, _) => stop_share(ctx, &call, &mut opens, kind).await,
+                Command::Share(kind, true, options) => opens.start(ctx, &opened_tx, kind, None, options),
+                Command::ShareSource(source, options) => {
+                    opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
+                }
+                Command::AppAudio(source) => {
+                    if source.is_some() && !ctx.states.borrow().voice.share.screen {
+                        pending_app = source;
+                    } else {
+                        pending_app = None;
+                        app_audio(ctx, &call, source).await;
+                    }
+                }
                 Command::Quality(options) => {
-                    if ctx.states.borrow().voice.share.screen {
-                        share(ctx, &call, ShareKind::Screen, true, options).await;
+                    if ctx.states.borrow().voice.share.screen
+                        && let Err(e) = call.configure_video(ShareKind::Screen, options).await
+                    {
+                        log::warn!("voice: the new stream quality did not apply: {e}");
                     }
                 }
             },
+            Some(done) = opened.recv() => {
+                if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
+                    publish_share(ctx, &call, done.kind, result, done.options).await;
+                    if done.kind == ShareKind::Screen
+                        && ctx.states.borrow().voice.share.screen
+                        && let Some(source) = pending_app.take()
+                    {
+                        app_audio(ctx, &call, Some(source)).await;
+                    }
+                }
+            }
             // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
             // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
             _ = link_read.tick() => ping.start(call.link()),
@@ -618,20 +740,147 @@ fn set_kind(share: &mut LocalShare, kind: ShareKind, on: bool) {
     }
 }
 
-/// Starts or stops a share: the instance's sharing slot first, then the track. A selection that gives no source (the
-/// person cancelled it) publishes nothing and says so.
-async fn share(ctx: &Ctx, call: &Call, kind: ShareKind, on: bool, options: ShareOptions) {
-    let mut next = ctx.states.borrow().voice.share;
-    if !on {
-        call.unpublish_video(kind).await;
-        set_kind(&mut next, kind, false);
-        let _ = ctx.voice.set_share(next).await;
-        return;
+/// A source the factory opened (or did not) for the share of `kind`, as the `generation`-th selection of that kind.
+struct Opened {
+    kind: ShareKind,
+    generation: u64,
+    options: ShareOptions,
+    result: Result<Box<dyn CaptureSource>, OpenError>,
+}
+
+/// Sets its flag when dropped: a selection whose waiting task goes away (the call's runtime shutting down with its
+/// window) withdraws the open it waits for.
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
-    let Some(source) = (ctx.sources)(kind, options) else {
-        ctx.voice.set_notice(Some(VoiceNotice::ShareCancelled));
+}
+
+/// The selections in flight, one per kind at most: a newer one, or switching the share off, withdraws the older one, and
+/// whatever it opens late is dropped (its capture stops) without being published.
+#[derive(Default)]
+struct Opens {
+    next: u64,
+    pending: HashMap<ShareKind, (u64, Arc<AtomicBool>)>,
+}
+
+impl Opens {
+    /// Asks the factory for a source off the call's loop; its answer comes back on `done`.
+    fn start(
+        &mut self,
+        ctx: &Ctx,
+        done: &mpsc::UnboundedSender<Opened>,
+        kind: ShareKind,
+        source: Option<DesktopSource>,
+        options: ShareOptions,
+    ) {
+        self.withdraw(kind);
+        self.next += 1;
+        let generation = self.next;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.pending.insert(kind, (generation, cancel.clone()));
+        let request = ShareRequest {
+            kind,
+            options,
+            source,
+            cancel: cancel.clone(),
+        };
+        let (factory, done) = (ctx.sources.clone(), done.clone());
+        tokio::spawn(async move {
+            let _withdraw = CancelOnDrop(cancel);
+            let result = tokio::task::spawn_blocking(move || factory(&request))
+                .await
+                .unwrap_or_else(|e| Err(OpenError::Unavailable(e.to_string())));
+            let _ = done.send(Opened {
+                kind,
+                generation,
+                options,
+                result,
+            });
+        });
+    }
+
+    /// Withdraws the selection of `kind` in flight, if any.
+    fn withdraw(&mut self, kind: ShareKind) {
+        if let Some((_, cancel)) = self.pending.remove(&kind) {
+            cancel.store(true, Ordering::Release);
+        }
+    }
+
+    /// The answer of a selection: kept when it is still the current one of its kind, dropped otherwise.
+    fn finish<T>(&mut self, kind: ShareKind, generation: u64, result: T) -> Option<T> {
+        match self.pending.get(&kind) {
+            Some((current, _)) if *current == generation => {
+                self.pending.remove(&kind);
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Starts or stops the screen share's application sound (parity plan Package 3). Only with a running screen share; the
+/// instance's sharing slot says whether the share carries sound. A capture that cannot start leaves the share silent and
+/// says so.
+async fn app_audio(ctx: &Ctx, call: &Call, source: Option<dilla_media::app_audio::AppSource>) {
+    let mut share = ctx.states.borrow().voice.share;
+    let Some(source) = source.filter(|_| share.screen) else {
+        call.unpublish_app_audio().await;
+        if share.screen_audio {
+            share.screen_audio = false;
+            let _ = ctx.voice.set_share(share).await;
+        }
         return;
     };
+    match call.publish_app_audio(&source).await {
+        Ok(_) => {
+            share.screen_audio = true;
+            let _ = ctx.voice.set_share(share).await;
+            ctx.voice.set_notice(None);
+        }
+        Err(e) => {
+            log::warn!("voice: the application sound did not start: {e}");
+            ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+        }
+    }
+}
+
+/// Stops a share: a selection in flight is withdrawn, the track is unpublished (its source let go) and the instance's
+/// sharing slot is freed.
+async fn stop_share(ctx: &Ctx, call: &Call, opens: &mut Opens, kind: ShareKind) {
+    opens.withdraw(kind);
+    let mut next = ctx.states.borrow().voice.share;
+    call.unpublish_video(kind).await;
+    if kind == ShareKind::Screen {
+        // The share's sound goes with it.
+        call.unpublish_app_audio().await;
+    }
+    set_kind(&mut next, kind, false);
+    let _ = ctx.voice.set_share(next).await;
+}
+
+/// Publishes an opened source: the instance's sharing slot first, then the track. A selection that gave no source (the
+/// person cancelled it, the source was unavailable) publishes nothing and says so.
+async fn publish_share(
+    ctx: &Ctx,
+    call: &Call,
+    kind: ShareKind,
+    result: Result<Box<dyn CaptureSource>, OpenError>,
+    options: ShareOptions,
+) {
+    let source = match result {
+        Ok(source) => source,
+        Err(e) => {
+            if e != OpenError::Cancelled {
+                log::warn!("voice: the {kind:?} share did not open: {e}");
+            }
+            ctx.voice.set_notice(Some(VoiceNotice::ShareCancelled));
+            return;
+        }
+    };
+    let mut next = ctx.states.borrow().voice.share;
     let audio = source.has_audio();
     set_kind(&mut next, kind, true);
     if kind == ShareKind::Screen {

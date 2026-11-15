@@ -126,6 +126,15 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   which the prebuilt library does not define); `build.rs` compiles them and defines
   `DILLA_TEST_FRAMES` only then.
 - `build.rs`, `src/lib.rs`: build and export the new bridge.
+- The desktop client's camera (GPUI parity plan Package 1, 2026-11-15), Linux and Windows only:
+  `include/livekit/dilla_camera.h`, `src/dilla_camera.{cpp,rs}` (`webrtc_sys::dilla_camera`:
+  `dilla_camera_devices`, `dilla_camera_open(id, sink)`, `DillaCamera::start(w, h, fps)`). It wraps
+  libwebrtc's own `VideoCaptureModule` of the prebuilt library (V4L2 on Linux, DirectShow on
+  Windows), converts each frame to I420 there and hands the planes to a Rust sink; the destructor
+  stops the capture and deregisters the sink before it returns. macOS's prebuilt has no
+  `VideoCaptureModule` implementation, so the bridge is not built there. Covered by
+  `clients/desktop/dilla-media/src/sources/camera.rs` (its packing test) and the manual
+  `capture-probe camera`.
 - `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
   `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
   back to LiveKit's own FrameCryptor or to no transform

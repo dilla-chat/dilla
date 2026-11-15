@@ -155,9 +155,10 @@ the updater and packaging.
 - **Updater and packaging:** no automatic update: download each new alpha from its release. Linux has an AppImage,
   a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR); macOS and Windows have no DMG or
   installer yet, so build from source there.
-- **Screen capture and camera:** the camera and screen-share buttons are drawn but start nothing (the share is
-  treated as cancelled), and there is no screen picker or per-application audio. You still see other people's camera
-  and screen shares, and hear and speak in calls.
+- **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
+  and macOS the system's own dialog chooses). A share's sound comes from one application (the share menu's sound
+  section) on Linux only; macOS and Windows shares carry no sound yet. The camera works on Linux and Windows, not yet
+  on macOS.
 - **Operating-system notifications:** none are raised, including for an incoming ring (the ring banner and sound
   work while the window is open). The Notifications settings are kept for when they arrive.
 - **Screen readers:** the app exposes itself to Orca, VoiceOver and NVDA through AccessKit: every control is named, the shell has
