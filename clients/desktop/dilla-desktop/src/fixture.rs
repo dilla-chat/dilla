@@ -65,6 +65,9 @@ pub enum FixtureScreen {
         community: CommunityId,
         section: Option<crate::router::ServerSection>,
     },
+    /// A device whose start was refused (Package 10d): the revoked device's or the lost store's splash, whatever the
+    /// route (the boot never reaches it).
+    Boot { store_lost: bool },
 }
 
 /// A loaded fixture: the state to draw, the route it opens and the clock it is drawn at.
@@ -174,6 +177,8 @@ impl Fixture {
 /// Wave 1 area that has not landed: the shell is never drawn in its place).
 pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
     match (route, phase) {
+        (_, Phase::Revoked) => Ok(FixtureScreen::Boot { store_lost: false }),
+        (_, Phase::StoreLost) => Ok(FixtureScreen::Boot { store_lost: true }),
         (
             Route::Channel {
                 channel: Some(channel),
@@ -533,7 +538,6 @@ mod tests {
             ("/activity", "ready"),
             ("/welcome", "ready"),
             ("/c/{midgard}/{midgard/general}", "signed_out"),
-            ("/c/{midgard}/{midgard/general}", "revoked"),
         ] {
             let err = Fixture::parse(&with_route(route, phase), None).unwrap_err();
             assert!(err.contains("cannot draw"), "{route} {phase}: {err}");
