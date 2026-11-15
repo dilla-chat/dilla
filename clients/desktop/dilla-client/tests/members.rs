@@ -1511,8 +1511,11 @@ mod live {
         // NOT ported yet: "messages flow again". The sync engine leaves the re-admitted device's group in `Resync` (no
         // re-entry into the channel's group after a removal); a message the owner sends after re-admission never reaches
         // ada (measured: still `Resync` 60 s later). That is the sync engine's (Task 2 / Task 28), reported with this task.
-        let s = ada.state().borrow().clone();
-        assert!(s.timelines.contains_key(&ch), "ada holds the channel again");
+        // The channel's timeline is published a moment after the open answers (a loaded runner showed the gap).
+        wait_for(&ada, Duration::from_secs(10), "ada holds the channel again", |s| {
+            s.timelines.contains_key(&ch)
+        })
+        .await;
     }
 
     /// The warning half of the moderation dialog: the instance's receipt; the same request id with another reason is
