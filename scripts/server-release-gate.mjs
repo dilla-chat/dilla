@@ -11,14 +11,20 @@ import { fileURLToPath } from 'node:url';
  * every 30 s for up to 60 min (release.yml's tag job has the default 360 min timeout). It refuses at once when the
  * commit has no such run at all or one concluded anything but success, and when the bound expires.
  *
- * Usage: GH_TOKEN=... GITHUB_REPOSITORY=owner/name node scripts/server-release-gate.mjs <tag commit sha>
+ * desktop-gpui-release.yml uses the same gate on the `desktop-gpui` workflow (`--workflow=desktop-gpui`): a
+ * desktop-gpui-v* tag needs a green desktop-gpui push run on main for exactly its commit, and a green server run never
+ * satisfies it (nor a desktop-gpui run the server gate).
+ *
+ * Usage: GH_TOKEN=... GITHUB_REPOSITORY=owner/name node scripts/server-release-gate.mjs [--workflow=desktop-gpui] <tag commit sha>
  */
 const API_ORIGIN = 'https://api.github.com';
 const RETRY_DELAYS = [1000, 3000];
 const COMMIT = /^[a-f0-9]{40}$/;
-const WORKFLOW_FILE = 'server.yml';
-const WORKFLOW_PATH = `.github/workflows/${WORKFLOW_FILE}`;
-const WORKFLOW_NAME = 'server';
+/** The workflows a release may gate on: the run's `name` and its file. */
+export const GATED_WORKFLOWS = {
+  server: { name: 'server', file: 'server.yml' },
+  'desktop-gpui': { name: 'desktop-gpui', file: 'desktop-gpui.yml' },
+};
 const POLL_MS = 30 * 1000;
 const BOUND_MS = 60 * 60 * 1000;
 
@@ -48,8 +54,8 @@ async function get({ token, fetchImpl, sleep, log, path }) {
   }
 }
 
-/** A run of the `server` workflow, pushed to main in this repository, for exactly this commit (whatever its status). */
-const isServerPushRun = (r, sha, repository) => r && r.name === WORKFLOW_NAME && r.path === WORKFLOW_PATH
+/** A run of the gated workflow, pushed to main in this repository, for exactly this commit (whatever its status). */
+const isGatedPushRun = (r, sha, repository, { name, file }) => r && r.name === name && r.path === `.github/workflows/${file}`
   && r.event === 'push' && r.head_branch === 'main' && r.head_sha === sha
   && r.repository?.full_name === repository && r.head_repository?.full_name === repository
   && Number.isSafeInteger(r.id) && r.id > 0 && Number.isSafeInteger(r.run_number);
@@ -61,31 +67,34 @@ const duration = (ms) => (ms % 60000 === 0 ? `${ms / 60000} min` : `${ms / 1000}
  * queued or in progress, it polls every `pollMs` for at most `boundMs`; it throws when there is no run, when one
  * completed without success, and when the bound expires.
  */
-export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(ms), log = (line) => console.log(line), now = () => Date.now(), pollMs = POLL_MS, boundMs = BOUND_MS } = {}) {
+export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(ms), log = (line) => console.log(line), now = () => Date.now(), pollMs = POLL_MS, boundMs = BOUND_MS, workflow = 'server' } = {}) {
+  if (!Object.hasOwn(GATED_WORKFLOWS, workflow)) throw new Error(`Unknown gated workflow: ${workflow}`);
+  const gated = GATED_WORKFLOWS[workflow];
+  const label = gated.name;
   const { GH_TOKEN: token, GITHUB_REPOSITORY: repository } = env;
   if (!token) throw new Error('GH_TOKEN is required');
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new Error('GITHUB_REPOSITORY must be owner/name');
   if (typeof sha !== 'string' || !COMMIT.test(sha)) throw new Error('The tag commit sha must be 40 lowercase hex characters');
 
-  const refuse = (why) => new Error(`There is no green server push run on main for ${sha}${why}; the server release needs one`);
+  const refuse = (why) => new Error(`There is no green ${label} push run on main for ${sha}${why}; the ${workflow === 'server' ? 'server' : label} release needs one`);
   const started = now();
   for (;;) {
     // No status filter in the query: the in-flight runs are listed too, and every filter is re-applied below.
-    const result = await get({ token, fetchImpl, sleep, log, path: `/repos/${repository}/actions/workflows/${WORKFLOW_FILE}/runs?head_sha=${sha}&event=push&branch=main&per_page=100` });
-    const runs = (Array.isArray(result?.workflow_runs) ? result.workflow_runs : []).filter((r) => isServerPushRun(r, sha, repository));
+    const result = await get({ token, fetchImpl, sleep, log, path: `/repos/${repository}/actions/workflows/${gated.file}/runs?head_sha=${sha}&event=push&branch=main&per_page=100` });
+    const runs = (Array.isArray(result?.workflow_runs) ? result.workflow_runs : []).filter((r) => isGatedPushRun(r, sha, repository, gated));
     const green = runs.filter((r) => r.status === 'completed' && r.conclusion === 'success');
     if (green.length) {
       const newest = green.reduce((best, r) => (r.run_number > best.run_number ? r : best));
-      log(`server run ${newest.id} (#${newest.run_number}) is green on main for ${sha}`);
+      log(`${label} run ${newest.id} (#${newest.run_number}) is green on main for ${sha}`);
       return newest;
     }
     const red = runs.find((r) => r.status === 'completed');
-    if (red) throw refuse(`: server run ${red.id} (#${red.run_number}) concluded ${String(red.conclusion)}`);
+    if (red) throw refuse(`: ${label} run ${red.id} (#${red.run_number}) concluded ${String(red.conclusion)}`);
     const pending = runs.find((r) => r.status !== 'completed');
     if (!pending) throw refuse('');
     const waited = now() - started;
-    if (waited + pollMs > boundMs) throw refuse(`: server run ${pending.id} (#${pending.run_number}) is still ${String(pending.status)} after ${duration(boundMs)}`);
-    log(`server run ${pending.id} (#${pending.run_number}) is ${String(pending.status)} for ${sha}; waiting ${duration(pollMs)} (${duration(waited)} of ${duration(boundMs)} so far)`);
+    if (waited + pollMs > boundMs) throw refuse(`: ${label} run ${pending.id} (#${pending.run_number}) is still ${String(pending.status)} after ${duration(boundMs)}`);
+    log(`${label} run ${pending.id} (#${pending.run_number}) is ${String(pending.status)} for ${sha}; waiting ${duration(pollMs)} (${duration(waited)} of ${duration(boundMs)} so far)`);
     await sleep(pollMs);
   }
 }
@@ -94,6 +103,8 @@ function isMain() {
   try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 }
 if (isMain()) {
-  if (process.argv.length !== 3) throw new Error('Usage: server-release-gate.mjs TAG_SHA');
-  await run(process.env, process.argv[2]);
+  const args = process.argv.slice(2);
+  const flag = args.length === 2 ? /^--workflow=(.+)$/.exec(args[0]) : null;
+  if (args.length !== 1 && !flag) throw new Error('Usage: server-release-gate.mjs [--workflow=desktop-gpui] TAG_SHA');
+  await run(process.env, args.at(-1), { workflow: flag ? flag[1] : 'server' });
 }

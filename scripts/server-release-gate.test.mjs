@@ -167,3 +167,29 @@ test('an in-flight run that is not a server push run on main for the SHA is not 
     assert.deepEqual(clock.sleeps, [], JSON.stringify(bad));
   }
 });
+
+// desktop-gpui-release.yml: the same gate on the desktop-gpui workflow, which a green server run never satisfies.
+const gpuiRun = (over = {}) => serverRun({ name: 'desktop-gpui', path: '.github/workflows/desktop-gpui.yml', ...over });
+
+test('the desktop-gpui gate accepts a green desktop-gpui push run and asks only desktop-gpui.yml', async () => {
+  const seen = [];
+  const fetchImpl = github({ [runsUrl('desktop-gpui.yml')]: [gpuiRun()] }, seen);
+  const found = await run(envFor({}), SHA, { ...opts(fetchImpl), workflow: 'desktop-gpui' });
+  assert.equal(found.id, 77);
+  assert.deepEqual(seen, [runsUrl('desktop-gpui.yml')]);
+});
+
+test('a green server run does not satisfy the desktop-gpui gate, nor a desktop-gpui run the server gate', async () => {
+  const both = github({ [runsUrl('desktop-gpui.yml')]: [serverRun()], [runsUrl('server.yml')]: [gpuiRun()] });
+  await assert.rejects(run(envFor({}), SHA, { ...opts(both), workflow: 'desktop-gpui' }), /no green desktop-gpui push run .*the desktop-gpui release needs one/);
+  await assert.rejects(run(envFor({}), SHA, opts(both)), /no green server push run/);
+  for (const bad of [{ conclusion: 'failure' }, { event: 'pull_request' }, { head_branch: 'feature' }]) {
+    await assert.rejects(run(envFor({}), SHA, { ...opts(github({ [runsUrl('desktop-gpui.yml')]: [gpuiRun(bad)] })), workflow: 'desktop-gpui' }), /no green desktop-gpui push run/, JSON.stringify(bad));
+  }
+});
+
+test('an unknown gated workflow is refused before any request', async () => {
+  const seen = [];
+  await assert.rejects(run(envFor({}), SHA, { ...opts(github({}, seen)), workflow: 'mobile' }), /Unknown gated workflow/);
+  assert.deepEqual(seen, []);
+});
