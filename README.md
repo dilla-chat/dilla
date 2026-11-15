@@ -74,6 +74,7 @@ measured). What works today, screen by screen:
 | Onboarding | Sign-up with an invite (the account, the recovery key shown once), the second factor set-up, the done step, sign-in on a new device with the recovery key, a passkey or the instance's identity provider (in the system browser), create server, create channel, join by invite and the invite link. |
 | Second factor | Required for every account: the forced-factor screen, set-up of an authenticator app or a passkey, backup codes, and the step-up dialog. |
 | Several instances | One window and one client per instance, and the "Dilla - your instances" window to connect by address, join by invite, open or remove an instance (up to 32). |
+| Tray and background | The tray icon with your open instances, "Start Dilla at login" and "Quit Dilla"; closing the last window keeps Dilla running in the tray; the unread count in the tray's tooltip, the macOS dock and the Linux launcher; start at login opens no window. On macOS, the Dilla, Edit, View and Window menus. |
 
 ![The native preview: Midgard Crew, #general](docs/user/screenshots/gpui-shell-conversation.png)
 
@@ -126,8 +127,7 @@ As of 2026-10-22, in the web client:
 For the native desktop preview:
 
 - Starting a camera or screen share (a call can show other people's), the screen-capture picker and per-application audio.
-- Tray, close to tray and badge count, `dilla://invite` links, a second launch handing over to the running app, and
-  autostart.
+- `dilla://invite` links, a second launch handing over to the running app, and zoom.
 - The updater, installers and packages (DMG, Windows installer, AppImage, deb, rpm, AUR). Build it from source.
 - Screen readers (they come after the switch) and push to talk while another window has focus.
 - On Linux, AltGr plus the push-to-talk key still opens the microphone (the other modifiers are refused).

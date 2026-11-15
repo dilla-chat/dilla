@@ -14,7 +14,7 @@ server's `/desktop-auth` routes; an older instance cannot take them, and the app
 ## The native client (GPUI)
 
 The native client is written in Rust with the GPUI toolkit (`clients/desktop`) and draws the Signal screens at pixel
-parity with the web client on Linux. **You build it from source.** It has no installer, no updater and no tray yet. The
+parity with the web client on Linux. **You build it from source.** It has no installer and no updater yet. The
 list of what works, screen by screen, is in the [README](../../README.md#the-native-desktop-client-gpui).
 
 ![The native client: Midgard Crew with the channel list, a conversation in #general and the members](screenshots/gpui-shell-conversation.png)
@@ -103,8 +103,13 @@ messages.
 The client does not do these yet. Most are planned after the screens: native integrations, capture,
 the updater and packaging.
 
-- **Tray and background:** no tray icon, close to tray, badge count, autostart. A second copy of the app cannot open an
-  instance that another copy holds, but it does not hand the launch over to the running one.
+- **Tray and background:** the tray icon (its menu lists your open instances, "Start Dilla at login" and "Quit
+  Dilla"), close to tray, the unread count (the tray's tooltip; the dock badge on macOS; the launcher badge on KDE and
+  Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
+  extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
+  builds only. There is no zoom (Control/⌘ with + or −) and no menu button in the title bar yet; F11 (Control-⌘-F on
+  macOS) toggles full screen. A second copy of the app cannot open an instance that another copy holds, but it does
+  not hand the launch over to the running one.
 - **Deep links:** `dilla://invite/...` is not handled. Join with the address and the invite code in the instances window.
 - **Updater and packaging:** no automatic update, DMG, Windows installer, AppImage, deb, rpm or AUR package. Build
   from source.

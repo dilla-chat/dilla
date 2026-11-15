@@ -831,6 +831,15 @@ fn a_hidden_window_raises_one_os_ring_with_answer_and_decline(cx: &mut TestAppCo
         state: with_rings(Vec::new()),
         other: cx.focus_handle(),
     });
+    // An instance's window (the OS shell knows it): its rings reach the OS.
+    vcx.update(|window, cx| {
+        let id = window.window_handle().window_id();
+        dilla_desktop::native::NativeShell::window_opened(
+            id,
+            Some(dilla_client::seams::InstanceId(1)),
+            cx,
+        );
+    });
     vcx.deactivate_window();
     host.update(vcx, |h, cx| {
         h.state = with_rings(vec![ring(DM, "Ada", false)]);
@@ -869,7 +878,15 @@ fn an_answer_from_the_notification_acts_only_on_the_current_ring(cx: &mut TestAp
         channel: Some(GENERAL),
     };
     let (shell, vcx) = shell_on(server(), general.clone(), cx);
-    vcx.update(|_, cx| dilla_desktop::native::notifier::install(cx));
+    vcx.update(|window, cx| {
+        dilla_desktop::native::notifier::install(cx);
+        let id = window.window_handle().window_id();
+        dilla_desktop::native::NativeShell::window_opened(
+            id,
+            Some(dilla_client::seams::InstanceId(1)),
+            cx,
+        );
+    });
     vcx.deactivate_window();
     vcx.run_until_parked();
     let ringing = |vcx: &mut VisualTestContext| {

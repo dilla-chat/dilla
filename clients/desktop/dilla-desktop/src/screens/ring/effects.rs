@@ -7,7 +7,8 @@
 //! - A ring raises one notification while this window is not focused (flow 06: Ring.tsx `useRingNotifications`), closed
 //!   when the ring ends or the window is focused again; a busy or quiet ring raises none. It goes to the OS
 //!   (`native::notifier::show_ring`, with Answer and Decline) and to the in-app record ([`RingNotifier`]).
-//! - Every frame also keeps the client's message notifications running (`native::notifier::attach`).
+//! - Every frame also keeps the client's message notifications and its unread badge running (`native::notifier::attach`,
+//!   `native::badge::attach`).
 
 use std::collections::HashSet;
 
@@ -36,6 +37,7 @@ pub fn audible(r: &IncomingRing) -> bool {
 pub fn sync(ctx: &SlotCx, window: &mut Window, cx: &mut App) {
     let id = window.window_handle().window_id();
     crate::native::notifier::attach(ctx, window, cx);
+    crate::native::badge::attach(ctx, window, cx);
     let rings = &ctx.state.ring.rings;
     let want_sound = rings.iter().any(audible);
     let visible = window.is_window_active();
@@ -137,8 +139,8 @@ pub fn release_notifier(cx: &mut App) {
 /// Raises the ring's notification through Task 22's notifier: `features::notify::ring_notification` decides (only while
 /// the window is hidden, with the permission granted, never for a busy or quiet ring or a DM whose mode is nothing), and
 /// the OS shows it with Answer and Decline (`native::notifier::show_ring`). Its click opens the DM
-/// (`Notification::channel`). Called only while the window is not focused. A window with no client (a fixture's) reads
-/// no stored settings.
+/// (`Notification::channel`). Called only while the window is not focused. A window with no client (a test's) reads no
+/// stored settings; only a window the OS shell knows (an instance's) raises the OS notification.
 pub fn ring_notification(window: WindowId, ring: &IncomingRing, ctx: &SlotCx, cx: &mut App) {
     let input = RingInput {
         channel: ring.channel,
@@ -171,7 +173,13 @@ pub fn ring_notification(window: WindowId, ring: &IncomingRing, ctx: &SlotCx, cx
     };
     if let Some(n) = decided {
         cx.default_global::<RingNotifier>().0.deliver(&n);
-        crate::native::notifier::show_ring(window, super::ring_key(ring), &n, cx);
+        // Only an instance's window (one the OS shell knows) reaches the OS: a parity fixture's never does.
+        if matches!(
+            crate::native::notifier::Owner::of_window(window, cx),
+            crate::native::notifier::Owner::Instance(_)
+        ) {
+            crate::native::notifier::show_ring(window, super::ring_key(ring), &n, cx);
+        }
     }
 }
 

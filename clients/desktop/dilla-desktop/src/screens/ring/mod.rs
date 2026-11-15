@@ -61,8 +61,9 @@ pub fn provide(env: RingEnv, window: &Window, cx: &mut App) {
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the windows whose banner read it forget
 /// their environment (the next render of a host provides a new one).
 pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
-    // Its notify engine stops and its OS notifications go (GPUI parity Package 4).
+    // Its notify engine and its badge watcher stop, and its OS notifications go (GPUI parity Packages 4 and 5).
     crate::native::notifier::release(client, cx);
+    crate::native::badge::release(client, cx);
     let gone: Vec<WindowId> = cx
         .default_global::<Windows>()
         .0

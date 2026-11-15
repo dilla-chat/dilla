@@ -33,6 +33,12 @@ confidence-threshold = 0.9
 crate = "sqlite3mc-src"
 allow = ["CC0-1.0", "Unlicense"]
 
+# ksni (the GPUI desktop's Linux tray, a StatusNotifierItem over D-Bus; GPUI parity Package 5) is Unlicense, a
+# public-domain dedication. Scoped to that one crate.
+[[licenses.exceptions]]
+crate = "ksni"
+allow = ["Unlicense"]
+
 # notify (a gpui-component dependency, file watching) is CC0-1.0; webpki-root-certs (reqwest's rustls platform
 # verifier) is CDLA-Permissive-2.0, a data licence for the Mozilla root list. Scoped to those crates.
 [[licenses.exceptions]]
