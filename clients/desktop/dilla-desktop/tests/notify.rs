@@ -235,7 +235,7 @@ mod os {
     #[gpui::test]
     fn os_notifier_shows_through_the_platform(cx: &mut TestAppContext) {
         installed(cx);
-        let n = cx.update(|cx| notifier::os_notifier(InstanceId(1), cx));
+        let n = cx.update(|cx| notifier::os_notifier(InstanceId(1), 1, cx));
         std::thread::spawn(move || n.deliver(&note("dilla:c1", Some(GENERAL))))
             .join()
             .unwrap();

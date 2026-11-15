@@ -26,6 +26,7 @@
 //! characters of a message the core already decrypted), as beta.5 did; nothing else leaves the process.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dilla_client::Client;
@@ -102,17 +103,30 @@ struct Live {
 }
 
 /// What the engine's thread hands the UI thread.
+/// Each carries the id of the engine that sent it: the pump drops it once that engine is gone (a sign-out's queue never
+/// shows the signed-out account's notifications).
 enum Command {
-    Show(InstanceId, Notification),
-    Withdraw(InstanceId, String),
+    Show(u64, InstanceId, Notification),
+    Withdraw(u64, InstanceId, String),
 }
 
 /// The notify engine of one client.
 struct Engine {
+    /// The engine's id, carried by its commands.
+    id: u64,
     client: usize,
     instance: InstanceId,
     env: Arc<Env>,
-    _task: NotifyTask,
+    /// Set when the engine goes ([`release`], a new client of its instance): its notifier sends nothing more.
+    stopped: Arc<AtomicBool>,
+    /// The client's notify task (`None` for a notifier made on its own, [`os_notifier`]).
+    _task: Option<NotifyTask>,
+}
+
+impl Engine {
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+    }
 }
 
 /// The registry of live notifications and running engines, one per app.
@@ -121,6 +135,7 @@ struct Notices {
     live: Vec<Live>,
     tx: Option<mpsc::UnboundedSender<Command>>,
     engines: Vec<Engine>,
+    next_engine: u64,
     untagged: u64,
     _pump: Option<Task<()>>,
 }
@@ -135,30 +150,63 @@ fn notices(cx: &mut App) -> &mut Notices {
 /// notification to the UI thread, which shows it.
 #[derive(Clone)]
 pub struct OsNotifier {
+    engine: u64,
     instance: InstanceId,
+    stopped: Arc<AtomicBool>,
     tx: mpsc::UnboundedSender<Command>,
 }
 
 impl Notifier for OsNotifier {
     fn deliver(&self, notification: &Notification) {
-        let _ = self
-            .tx
-            .send(Command::Show(self.instance, notification.clone()));
+        if self.stopped.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.tx.send(Command::Show(
+            self.engine,
+            self.instance,
+            notification.clone(),
+        ));
     }
 
     fn withdraw(&self, tag: &str) {
-        let _ = self
-            .tx
-            .send(Command::Withdraw(self.instance, tag.to_owned()));
+        if self.stopped.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.tx.send(Command::Withdraw(
+            self.engine,
+            self.instance,
+            tag.to_owned(),
+        ));
     }
 }
 
-/// The notifier of instance `instance`'s engine (what [`attach`] hands `Notify::start`).
-pub fn os_notifier(instance: InstanceId, cx: &mut App) -> OsNotifier {
-    OsNotifier {
+/// A notifier for instance `instance`'s engine on client `client` (`Rc::as_ptr` of it), registered as that engine: what
+/// [`attach`] hands `Notify::start`. It sends nothing once the engine goes ([`release_client_key`]).
+pub fn os_notifier(instance: InstanceId, client: usize, cx: &mut App) -> OsNotifier {
+    let tx = sender(cx);
+    let n = notices(cx);
+    n.next_engine += 1;
+    let engine = n.next_engine;
+    let stopped = Arc::new(AtomicBool::new(false));
+    n.engines.push(Engine {
+        id: engine,
+        client,
         instance,
-        tx: sender(cx),
+        env: Arc::new(Env::default()),
+        stopped: stopped.clone(),
+        _task: None,
+    });
+    OsNotifier {
+        engine,
+        instance,
+        stopped,
+        tx,
     }
+}
+
+fn engine_alive(engine: u64, cx: &App) -> bool {
+    cx.try_global::<Notices>()
+        .is_some_and(|n| n.engines.iter().any(|e| e.id == engine))
 }
 
 /// What the engine reads of the window (`NotifyEnv`): written on every frame of the window by [`attach`].
@@ -233,10 +281,17 @@ fn sender(cx: &mut App) -> mpsc::UnboundedSender<Command> {
     let pump = cx.spawn(async move |cx| {
         while let Some(command) = rx.recv().await {
             cx.update(|cx| match command {
-                Command::Show(id, n) => {
-                    show(Owner::Instance(id), &n, cx);
+                // A command of an engine that is gone (released, replaced) is dropped.
+                Command::Show(engine, id, n) => {
+                    if engine_alive(engine, cx) {
+                        show(Owner::Instance(id), &n, cx);
+                    }
                 }
-                Command::Withdraw(id, tag) => withdraw(Owner::Instance(id), &tag, cx),
+                Command::Withdraw(engine, id, tag) => {
+                    if engine_alive(engine, cx) {
+                        withdraw(Owner::Instance(id), &tag, cx);
+                    }
+                }
             });
         }
     });
@@ -266,37 +321,56 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
         return;
     }
     // A new client of this instance (a sign-in again): the old engine goes.
-    notices(cx).engines.retain(|e| e.instance != instance);
-    let env = Arc::new(Env::default());
+    notices(cx).engines.retain(|e| {
+        let keep = e.instance != instance;
+        if !keep {
+            e.stop();
+        }
+        keep
+    });
+    let notifier = os_notifier(instance, key, cx);
+    let engine = notifier.engine;
+    let Some(env) = notices(cx)
+        .engines
+        .iter()
+        .find(|e| e.id == engine)
+        .map(|e| e.env.clone())
+    else {
+        return;
+    };
     env.set(visible, ctx.channel);
-    let notifier = Arc::new(os_notifier(instance, cx));
     let task = client.notify().start(
         client,
-        notifier,
-        env.clone(),
+        Arc::new(notifier),
+        env,
         crate::screens::notify::text(),
     );
-    notices(cx).engines.push(Engine {
-        client: key,
-        instance,
-        env,
-        _task: task,
-    });
+    if let Some(e) = notices(cx).engines.iter_mut().find(|e| e.id == engine) {
+        e._task = Some(task);
+    }
 }
 
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client` through the ring area): its engine stops
 /// and its instance's notifications are withdrawn.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
+    release_client_key(Rc::as_ptr(client) as usize, cx);
+}
+
+/// [`release`] by the client's key (`Rc::as_ptr`): its engines stop first (their notifiers send nothing more, and
+/// what they queued is dropped), then its instance's notifications are withdrawn.
+pub fn release_client_key(key: usize, cx: &mut App) {
     if !cx.has_global::<Notices>() {
         return;
     }
-    let key = Rc::as_ptr(client) as usize;
     let n = notices(cx);
     let gone: Vec<InstanceId> = n
         .engines
         .iter()
         .filter(|e| e.client == key)
-        .map(|e| e.instance)
+        .map(|e| {
+            e.stop();
+            e.instance
+        })
         .collect();
     n.engines.retain(|e| e.client != key);
     for id in gone {
@@ -316,6 +390,33 @@ pub fn engine_runs(instance: InstanceId, cx: &App) -> bool {
 
 fn clip(s: &str, max: usize) -> SharedString {
     s.chars().take(max).collect::<String>().into()
+}
+
+/// XDG notification servers render a subset of HTML in the body (and some in the summary): text that came from a
+/// message is escaped so it shows as written and never as markup or a link.
+pub fn escape_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The title or body as the platform gets it: clipped to its cap on the original text, then escaped on Linux.
+fn os_text(s: &str, max: usize) -> SharedString {
+    let clipped = clip(s, max);
+    if cfg!(target_os = "linux") {
+        escape_markup(&clipped).into()
+    } else {
+        clipped
+    }
 }
 
 fn os_tag(owner: Owner, tag: &str, cx: &mut App) -> SharedString {
@@ -391,8 +492,8 @@ fn post(
     };
     cx.show_system_notification(SystemNotification {
         tag: tag.clone(),
-        title: clip(&notification.title, TITLE_MAX),
-        body: clip(&notification.body, BODY_MAX),
+        title: os_text(&notification.title, TITLE_MAX),
+        body: os_text(&notification.body, BODY_MAX),
         actions,
     });
     if is_ring {
@@ -592,5 +693,61 @@ mod tests {
         assert_eq!(shown[0].title.chars().count(), TITLE_MAX);
         assert_eq!(shown[0].body.chars().count(), BODY_MAX);
         assert_eq!(cx.delivered_system_notifications().len(), 2);
+    }
+
+    /// Security review: message text never reaches an XDG server as markup; the cap applies to the original text.
+    #[test]
+    fn markup_is_escaped_after_the_cap() {
+        assert_eq!(
+            escape_markup("<b>x</b> & <a href=\"https://e.example\">'y'</a>"),
+            "&lt;b&gt;x&lt;/b&gt; &amp; &lt;a href=&quot;https://e.example&quot;&gt;&#39;y&#39;&lt;/a&gt;"
+        );
+        let long = "<".repeat(BODY_MAX + 5);
+        let body = os_text(&long, BODY_MAX);
+        if cfg!(target_os = "linux") {
+            assert_eq!(body.as_ref(), "&lt;".repeat(BODY_MAX));
+        } else {
+            assert_eq!(body.chars().count(), BODY_MAX);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn the_platform_gets_escaped_text_on_linux(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            install(cx);
+            let mut n = note("t");
+            n.title = "<i>Bob</i>".into();
+            n.body = "<b>x</b> & <a href=\"https://e.example\">go</a>".into();
+            show(Owner::Instance(InstanceId(1)), &n, cx);
+        });
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown[0].title.as_ref(), "&lt;i&gt;Bob&lt;/i&gt;");
+        assert_eq!(
+            shown[0].body.as_ref(),
+            "&lt;b&gt;x&lt;/b&gt; &amp; &lt;a href=&quot;https://e.example&quot;&gt;go&lt;/a&gt;"
+        );
+    }
+
+    /// Security review: after a release, a notification its engine delivers late (or queued before) shows nothing.
+    #[gpui::test]
+    fn a_late_show_after_release_shows_nothing(cx: &mut gpui::TestAppContext) {
+        let (queued, late) = cx.update(|cx| {
+            install(cx);
+            let n = os_notifier(InstanceId(1), 77, cx);
+            n.deliver(&note("queued"));
+            release_client_key(77, cx);
+            (n.clone(), n)
+        });
+        drop(queued);
+        late.deliver(&note("late"));
+        cx.run_until_parked();
+        assert!(cx.shown_system_notifications().is_empty());
+        assert!(cx.update(|cx| live_tags(cx)).is_empty());
+        // A notifier still registered shows.
+        let n = cx.update(|cx| os_notifier(InstanceId(2), 78, cx));
+        n.deliver(&note("live"));
+        cx.run_until_parked();
+        assert_eq!(cx.shown_system_notifications().len(), 1);
     }
 }
