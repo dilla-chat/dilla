@@ -26,6 +26,8 @@ async-trait = "0.1"
 url = "2"
 http = "1"
 thiserror = "2"
+# The call join's failure lines (calls/join.rs; the desktop app installs the logger). Already in the lock.
+log = "0.4"
 zeroize = "1"
 serde = { version = "1", features = ["derive"] }
 # The wire value behind the typed routes (not a normative decoder: strict decoding stays in dilla-core).

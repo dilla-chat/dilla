@@ -617,14 +617,19 @@ impl Voice {
             {
                 Ok(Ok(Ok(join))) => join,
                 Ok(Ok(Err(block))) => {
+                    log::warn!("voice: the join was blocked by its DM gate: {}", block.code);
                     refused(block.code.clone());
                     return Err(ClientError::Sync(block.code));
                 }
                 Ok(Err(e)) => {
+                    log::warn!("voice: the join's gate failed: {e}");
                     refused(e.to_string());
                     return Err(e);
                 }
-                Err(_) => return Err(ClientError::Stopped),
+                Err(_) => {
+                    log::warn!("voice: the join's gate did not answer (client stopped)");
+                    return Err(ClientError::Stopped);
+                }
             },
         };
         let mut phase = join.phase();
@@ -675,10 +680,12 @@ impl Voice {
             // Left (or another join) while joining: cancelled and torn down above.
             None => return Err(ClientError::Sync("E_CANCELLED".into())),
             Some(Err(e)) => {
+                log::warn!("voice: the join's task failed: {e}");
                 refused(e.to_string());
                 return Err(e);
             }
             Some(Ok(Err(r))) => {
+                // join.rs logged the step, status and code that refused it.
                 refused(r.code.clone());
                 return Err(ClientError::Sync(r.code));
             }

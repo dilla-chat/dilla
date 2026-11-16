@@ -139,6 +139,24 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 - The screens are drawn, not laid out by a browser, so the keyboard works through the app's own focus order
   (Tab and Shift+Tab) and its own shortcuts, below.
 
+### Logs
+
+When something fails (a call that does not join, an update that does not apply), the app's log says why. It is a
+plain text file, also printed to the terminal when Dilla runs from one:
+
+| System | Log file |
+|---|---|
+| macOS | `~/Library/Logs/Dilla/dilla-desktop.log` (Console.app lists it under Log Reports) |
+| Linux | `$XDG_STATE_HOME/dilla/dilla-desktop.log`, usually `~/.local/state/dilla/dilla-desktop.log` |
+| Windows | `%LOCALAPPDATA%\Dilla\logs\dilla-desktop.log` |
+
+At about 5 MiB the file moves to `dilla-desktop.log.1` (the one before that is deleted). By default it holds warnings
+and errors, and Dilla's own progress notes. For more, start the app with `RUST_LOG` set, for example
+`RUST_LOG=debug` or `RUST_LOG=warn,dilla=debug,livekit=info` (a level, or `name=level` pairs separated by commas; a
+name matches every module whose name starts with it). On macOS, quit Dilla and run
+`open --env RUST_LOG=debug /Applications/Dilla.app`. The log never contains message text, keys, tokens,
+passwords or recovery codes, so you can attach it to a bug report.
+
 ### Keyboard shortcuts
 
 The Windows and Linux keys use Control; on macOS a chord takes ⌘ where the table says so (Control+End and
