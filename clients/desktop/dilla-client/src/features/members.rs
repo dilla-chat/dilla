@@ -69,6 +69,67 @@ impl Members {
     }
 }
 
+impl Members {
+    /// Tells the instance the person is here (op 57 `presence.activity`, gateway.ts `sendPresenceActivity`): the
+    /// instance shows an account idle once none of its devices reported input for 10 minutes (gateway presence.go), so
+    /// a client that never reports shows its own person idle while they use it. Sent only while connected; the caller
+    /// throttles ([`ActivityThrottle`]). Whether the frame went out.
+    pub fn presence_activity(&self) -> bool {
+        if self.inner.snapshot().connection.status != crate::state::ConnectionStatus::Online {
+            return false;
+        }
+        let frame = Frame {
+            op: crate::gateway::frames::Op::PRESENCE_ACTIVITY,
+            n: 0,
+            group_id: None,
+            payload: Vec::new(),
+        };
+        let Ok(bytes) = crate::gateway::frames::encode(&frame) else {
+            return false;
+        };
+        self.inner.engine().send_gateway_frame(bytes)
+    }
+}
+
+/// App.tsx's activity sampling: one report per 5 s of input at most (gateway.ts keeps the same 5 s).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ActivityThrottle {
+    last: Option<std::time::Instant>,
+}
+
+impl ActivityThrottle {
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Whether input at `now` is reported (and, if so, `now` is the last report).
+    pub fn due(&mut self, now: std::time::Instant) -> bool {
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < Self::EVERY)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::ActivityThrottle;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn input_is_reported_at_most_every_five_seconds() {
+        let t0 = Instant::now();
+        let mut t = ActivityThrottle::default();
+        assert!(t.due(t0), "the first input is reported");
+        assert!(!t.due(t0 + Duration::from_secs(1)));
+        assert!(!t.due(t0 + Duration::from_millis(4_999)));
+        assert!(t.due(t0 + Duration::from_secs(5)));
+        assert!(!t.due(t0 + Duration::from_secs(6)));
+    }
+}
+
 impl AreaFrames for Members {
     /// controller.ts `incomingPresence`: `[user_id, status]`, status 0..=3; anything else is ignored. A community whose
     /// presence is not read yet reads it whole.

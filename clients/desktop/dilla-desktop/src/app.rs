@@ -206,6 +206,8 @@ pub struct AppView {
     /// The window's root: it takes the focus when nothing else holds it, so every key reaches the root's handlers
     /// (push to talk, review I1).
     root_focus: gpui::FocusHandle,
+    /// Input in this window is reported to its instance at most every 5 s (App.tsx's presence activity).
+    activity: dilla_client::features::members::ActivityThrottle,
     /// The window going inactive lets push to talk go at once (review B).
     _activation: Subscription,
     /// The focused control went away (a drawn frame no longer has it): push to talk lets go (review B, re-review B2).
@@ -230,6 +232,7 @@ impl AppView {
             shell: None,
             shell_sub: None,
             root_focus: cx.focus_handle(),
+            activity: Default::default(),
             _focus_lost: cx.on_focus_lost(window, |this: &mut Self, window, cx| {
                 let root = this.root_focus.clone();
                 crate::screens::voice::focus_lost(
@@ -1500,6 +1503,20 @@ impl AppView {
         window.focus(&handle, cx);
     }
 
+    /// A key, a click or a pointer move in this window, while it is the active one: the person is here, so the instance
+    /// does not show them idle (App.tsx: `pointerdown`, `pointermove` and `keydown` while the page is visible).
+    fn note_activity(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !window.is_window_active() || !self.activity.due(std::time::Instant::now()) {
+            return;
+        }
+        if let Some(client) = self
+            .instance
+            .and_then(|id| crate::windows::running_client(cx, id))
+        {
+            client.members().presence_activity();
+        }
+    }
+
     /// Gives a compact screen its window shape (the start and authentication windows resize in place).
     fn fit_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mode = self.screen.mode();
@@ -1666,6 +1683,15 @@ impl Render for AppView {
             w,
             div()
                 .track_focus(&self.root_focus)
+                .capture_key_down(cx.listener(|this, _: &gpui::KeyDownEvent, window, cx| {
+                    this.note_activity(window, cx)
+                }))
+                .capture_any_mouse_down(cx.listener(
+                    |this, _: &gpui::MouseDownEvent, window, cx| this.note_activity(window, cx),
+                ))
+                .on_mouse_move(cx.listener(|this, _: &gpui::MouseMoveEvent, window, cx| {
+                    this.note_activity(window, cx)
+                }))
                 // Tab from nowhere (a splash with no focus yet) walks the screen's controls (Package 11): the screens'
                 // own roots hold these too, for when the focus is inside them.
                 .on_action(|_: &crate::screens::FocusNext, window, cx| window.focus_next(cx))
