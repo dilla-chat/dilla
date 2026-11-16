@@ -44,9 +44,20 @@ struct World {
 }
 
 async fn world(tag: &'static str) -> World {
-    let host = tokio::task::spawn_blocking(move || world::start_host(tag))
-        .await
-        .unwrap();
+    world_on(tag, false).await
+}
+
+/// [`world`] on a host whose rooms are `wss://` ([`world::start_host_wss`]) when `wss`.
+async fn world_on(tag: &'static str, wss: bool) -> World {
+    let host = tokio::task::spawn_blocking(move || {
+        if wss {
+            world::start_host_wss(tag)
+        } else {
+            world::start_host(tag)
+        }
+    })
+    .await
+    .unwrap();
     let invite = host.invites.last().unwrap().clone();
     let alice = world::sign_up(&host, &invite, "alice", tag).await;
     let bob = world::sign_up(&host, &invite, "bob", tag).await;
@@ -128,7 +139,19 @@ fn in_call(s: &AppState, voice: ChannelId, device: [u8; 16], bits: u8) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn two_clients_join_see_and_hear_no_key_in_state() {
-    let w = world("voice-talk").await;
+    two_clients_join_see_and_hear(world("voice-talk").await).await;
+}
+
+/// [`two_clients_join_see_and_hear_no_key_in_state`] in a `wss://` room, as every real instance hands out: LiveKit's
+/// signalling over TLS, under the test CA. The macOS voice join of 2026-11-16 failed here ("Could not join voice"): the
+/// livekit build had no TLS, and every `ws://` test passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn two_clients_join_see_and_hear_in_a_wss_room() {
+    two_clients_join_see_and_hear(world_on("voice-wss", true).await).await;
+}
+
+async fn two_clients_join_see_and_hear(w: World) {
     let a = client(&w.alice).await;
     let b = client(&w.bob).await;
     let mut a_media = join_with_media(&w.host, &a, w.voice, 440).await;

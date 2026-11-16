@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -60,6 +61,14 @@ type options struct {
 	bot botOptions
 	// parityFixture marks GET /v1/instance for the GPUI parity world's reference shots (-parity-fixture, Task 6c).
 	parityFixture bool
+	// rtcTLS is a second public listener over TLS (-rtc-tls-listen, -rtc-tls-cert, -rtc-tls-key): with -sfu its
+	// address is the LiveKit URL (wss://), so a call's room is reached over TLS as on a real instance (macOS CI plan).
+	rtcTLS rtcTLSOptions
+}
+
+// rtcTLSOptions are the -rtc-tls-* flags: the TLS listener's address and its PEM certificate chain and key.
+type rtcTLSOptions struct {
+	listen, cert, key string
 }
 
 func parseFlags(args []string) (options, error) {
@@ -88,6 +97,9 @@ func parseFlags(args []string) (options, error) {
 	botHelper := fs.String("bot-helper", "", "with -bot: the dilla-bot-core binary")
 	botWasi := fs.String("bot-wasi", "", "with -bot: the dilla_core_wasi.wasm the Bot loads")
 	botStateDir := fs.String("bot-state-dir", "", "with -bot: the Bot's state directory (default <data-dir>/bot-state)")
+	rtcTLSListen := fs.String("rtc-tls-listen", "", "a second public listener over TLS (host:port); with -sfu, call starts name it as the LiveKit URL (wss://)")
+	rtcTLSCert := fs.String("rtc-tls-cert", "", "with -rtc-tls-listen: the PEM certificate chain")
+	rtcTLSKey := fs.String("rtc-tls-key", "", "with -rtc-tls-listen: the PEM private key")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -97,6 +109,9 @@ func parseFlags(args []string) (options, error) {
 	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "wire" })
 	if explicit && *wire < 1 {
 		return options{}, fmt.Errorf("-wire %d: a wire version is 1 or more", *wire)
+	}
+	if (*rtcTLSListen == "") != (*rtcTLSCert == "") || (*rtcTLSListen == "") != (*rtcTLSKey == "") {
+		return options{}, errors.New("-rtc-tls-listen, -rtc-tls-cert and -rtc-tls-key go together")
 	}
 	root := *webRoot
 	if root != "" {
@@ -118,6 +133,7 @@ func parseFlags(args []string) (options, error) {
 		botRuntimeSecret: *botRuntimeSecret, adminInvite: *adminInvite,
 		wire:          *wire,
 		parityFixture: *parityFixtureFlag,
+		rtcTLS:        rtcTLSOptions{listen: *rtcTLSListen, cert: *rtcTLSCert, key: *rtcTLSKey},
 		bot:           botOptions{enabled: *withBot, executable: *botExecutable, helper: *botHelper, wasi: *botWasi, stateDir: *botStateDir},
 		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
@@ -147,6 +163,10 @@ func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostO
 	// proxy over plain ws://: the instance domain's wss:// URL resolves to nothing on loopback.
 	if o.sfu.enabled && o.webRoot != "" {
 		ho.LiveKitURL = "ws://" + o.public
+	}
+	// A TLS listener is the room's way in, web root or not: wss://, as a real instance hands out.
+	if o.sfu.enabled && o.rtcTLS.listen != "" {
+		ho.LiveKitURL = "wss://" + o.rtcTLS.listen
 	}
 	return ho
 }
@@ -241,9 +261,24 @@ func run(o options) error {
 		Handler:           requestDiagnostics.control(control),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 	go func() { errs <- publicSrv.Serve(publicLn) }()
 	go func() { errs <- controlSrv.Serve(controlLn) }()
+	var rtcTLSSrv *http.Server
+	if o.rtcTLS.listen != "" {
+		pair, err := tls.LoadX509KeyPair(o.rtcTLS.cert, o.rtcTLS.key)
+		if err != nil {
+			return fmt.Errorf("-rtc-tls-cert/-rtc-tls-key: %w", err)
+		}
+		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.rtcTLS.listen)
+		if err != nil {
+			return err
+		}
+		rtcTLSSrv = &http.Server{Handler: public, ReadHeaderTimeout: 10 * time.Second,
+			TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}
+		go func() { errs <- rtcTLSSrv.ServeTLS(ln, "", "") }()
+		fmt.Printf("rtc-tls wss://%s\n", ln.Addr())
+	}
 
 	fmt.Printf("public  http://%s\n", publicLn.Addr())
 	fmt.Printf("control http://%s\n", controlLn.Addr())
@@ -268,6 +303,9 @@ func run(o options) error {
 	defer cancel()
 	_ = publicSrv.Shutdown(shutdownCtx)
 	_ = controlSrv.Shutdown(shutdownCtx)
+	if rtcTLSSrv != nil {
+		_ = rtcTLSSrv.Shutdown(shutdownCtx)
+	}
 	return nil
 }
 

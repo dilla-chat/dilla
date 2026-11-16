@@ -91,6 +91,53 @@ fn a_window_source_is_video_only_and_encrypted() {
     assert!(video[0][1].as_u64().unwrap() > 0, "{sent}");
 }
 
+/// macOS CI: a real screen share from one macOS client to another. Alice shares the main display, captured through
+/// ScreenCaptureKit (call-peer `share display`: its picker off, needs Screen Recording, which the runner grants the
+/// shell); bob sees her screen stream move, opened under her key, with nothing refused.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "needs dilla-testhost (Go) and the WASI core"]
+fn a_real_display_share_reaches_a_viewer() {
+    let host = start_host();
+    let (_call, alice, bob, _) = call_raw_bob();
+    let (a_dev, b_dev) = (hex(&alice.device), hex(&bob.device));
+    let room = hex(&CALL);
+    let (url, a_token) = token(&host.control, &room, &a_dev);
+    let (_, b_token) = token(&host.control, &room, &b_dev);
+    let mut a = Peer::start(&url, &a_token, 0);
+    let mut b = Peer::start(&url, &b_token, 0);
+    let e = alice_epoch(&alice);
+    a.epoch(&e);
+    b.epoch(&bob_epoch(&bob));
+    a.next("connected", Duration::from_secs(30));
+    b.next("connected", Duration::from_secs(30));
+
+    a.send("share display");
+    let shared = a.next("share", Duration::from_secs(30));
+    assert_eq!(shared["error"], Value::Null, "the main display: {shared}");
+    let key = format!("{a_dev}:Screen");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let seen = loop {
+        b.send("videos");
+        let v = b.next("videos", Duration::from_secs(5));
+        if v["videos"][&key]["frames"].as_u64().is_some_and(|n| n > 5) {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "no {key} stream: {v}");
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    let streams = seen["videos"].as_object().unwrap();
+    assert_eq!(streams.keys().collect::<Vec<_>>(), vec![&key], "{seen}");
+    let a_kid = format!("{:x}", (e.own_leaf << 8) | (e.epoch & 0xff));
+    let (sa, sb) = (a.stats(), b.stats());
+    assert!(
+        sa["media"]["encrypted"][&a_kid].as_u64().unwrap_or(0) > 5,
+        "{sa}"
+    );
+    assert!(opened(&sb, &a_kid) > 5, "{sb}");
+    assert_eq!(failed(&sb), 0, "{sb}");
+}
+
 /// screen-capture.spec.ts "closing the selected source ends its consumer track and destroys the broker": alice's
 /// source closes after 45 frames (3 s at 15 fps). Her call says the share ended, and bob's stream of it goes.
 #[test]

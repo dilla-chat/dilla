@@ -19,6 +19,8 @@
 //!                                             ({"device","stream","t","audible"}), t in Unix ms
 //!   share camera|screen|window [frames]      publishes the test pattern in that slot (a window is a screen-slot source,
 //!                                             video only); with frames it ends after that many (the source closing)
+//!   share display                             (macOS) publishes the main display, captured through ScreenCaptureKit
+//!                                             without its picker, in the screen slot (needs Screen Recording)
 //!   unshare camera|screen
 //!   quality <720p|1080p|1440p|source> <fps>   the running screen share's new stream quality (the same source)
 //!   ended                                     prints {"event":"shares_ended","kinds":[...]}: the shares whose source ended
@@ -237,6 +239,18 @@ async fn main() {
                     .map(|e| e.to_string());
                 emit(json!({"event": "mic", "error": error}));
             }
+            #[cfg(target_os = "macos")]
+            ["share", "display"] => {
+                let error = match display::open() {
+                    Ok(source) => call
+                        .publish_video(Box::new(source))
+                        .await
+                        .err()
+                        .map(|e| e.to_string()),
+                    Err(e) => Some(e),
+                };
+                emit(json!({"event": "share", "error": error}));
+            }
             ["share", kind, rest @ ..] => {
                 let kind = if *kind == "camera" {
                     dilla_media::ShareKind::Camera
@@ -378,4 +392,135 @@ async fn main() {
     }
     call.leave().await;
     emit(json!({"event": "closed"}));
+}
+
+/// macOS: the main display through ScreenCaptureKit with its system picker off (the picker is the app's way; a test has
+/// no one to choose): libwebrtc's capturer then takes the first display. The macOS CI's real-screen share.
+#[cfg(target_os = "macos")]
+mod display {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use dilla_media::{CaptureSource, Frame, PixelFormat, Pull, ShareKind};
+    use livekit::webrtc::desktop_capturer::{
+        CaptureError, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions,
+        DesktopFrame,
+    };
+
+    const FPS: u32 = 15;
+
+    #[derive(Default)]
+    struct Shared {
+        frame: Option<Frame>,
+        ended: bool,
+    }
+
+    pub struct Display {
+        shared: Arc<Mutex<Shared>>,
+        stop: Arc<AtomicBool>,
+        size: (u32, u32),
+    }
+
+    impl Drop for Display {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+        }
+    }
+
+    /// Starts the capture and waits for its first frame (15 s at most).
+    pub fn open() -> Result<Display, String> {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (s, st) = (shared.clone(), stop.clone());
+        std::thread::Builder::new()
+            .name("dilla-display".into())
+            .spawn(move || {
+                let mut o = DesktopCapturerOptions::new(DesktopCaptureSourceType::Screen);
+                o.set_sck_system_picker(false);
+                let Some(mut capturer) = DesktopCapturer::new(o) else {
+                    s.lock().unwrap().ended = true;
+                    return;
+                };
+                let sink = s.clone();
+                capturer.start_capture(None, move |r| match r {
+                    Ok(f) => {
+                        if let Some(f) = copy(&f) {
+                            sink.lock().unwrap().frame = Some(f);
+                        }
+                    }
+                    Err(CaptureError::Permanent) => sink.lock().unwrap().ended = true,
+                    Err(CaptureError::Temporary) => {}
+                });
+                while !st.load(Ordering::Acquire) && !s.lock().unwrap().ended {
+                    capturer.capture_frame();
+                    std::thread::sleep(Duration::from_millis(1000 / u64::from(FPS)));
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            {
+                let g = shared.lock().unwrap();
+                if let Some(f) = &g.frame {
+                    let size = (f.width, f.height);
+                    drop(g);
+                    return Ok(Display { shared, stop, size });
+                }
+                if g.ended {
+                    return Err("the main display's capture ended before its first frame".into());
+                }
+            }
+            if Instant::now() >= deadline {
+                stop.store(true, Ordering::Release);
+                return Err("no frame from the main display within 15 s".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The capturer's BGRA frame, rows packed.
+    fn copy(frame: &DesktopFrame) -> Option<Frame> {
+        let (w, h) = (
+            u32::try_from(frame.width()).ok()?,
+            u32::try_from(frame.height()).ok()?,
+        );
+        let stride = frame.stride() as usize;
+        let row = w as usize * 4;
+        if w == 0 || h == 0 || stride < row {
+            return None;
+        }
+        let src = frame.data();
+        let mut data = Vec::with_capacity(row * h as usize);
+        for y in 0..h as usize {
+            data.extend_from_slice(src.get(y * stride..y * stride + row)?);
+        }
+        Some(Frame {
+            width: w,
+            height: h,
+            format: PixelFormat::Bgra,
+            stride: w * 4,
+            data,
+        })
+    }
+
+    impl CaptureSource for Display {
+        fn kind(&self) -> ShareKind {
+            ShareKind::Screen
+        }
+        fn size(&self) -> (u32, u32) {
+            self.size
+        }
+        fn fps(&self) -> u32 {
+            FPS
+        }
+        fn pull(&mut self) -> Pull {
+            let mut g = self.shared.lock().unwrap();
+            match g.frame.take() {
+                Some(f) => Pull::Frame(f),
+                None if g.ended => Pull::Ended,
+                None => Pull::Idle,
+            }
+        }
+    }
 }

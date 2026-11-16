@@ -1577,10 +1577,55 @@ export const GPUI_PINNED_STEPS = {
     '    # The Bot music timing tests (G3) are latency budgets: measured one at a time, not beside a Bot restart or a browser call.',
     '    cargo test -p dilla-media --test call --locked -- --ignored --exact --test-threads=1 bot_play_from_enter_to_first_audio_frame_meets_g3 bot_next_queued_track_gap_is_under_150_ms bot_repeated_track_starts_within_500_ms_at_p95 a_new_device_uses_play_within_its_first_session',
   ].join('\n'),
+  // macOS CI plan (2026-11-16), Task 4 and D-D: a real CoreAudio default input and output for the macOS call tests, the
+  // runner's own when present, else BlackHole 2ch pinned by SHA-256.
+  macAudio: [
+    '- name: A sound device for the call tests (macOS)',
+    "  if: runner.os == 'macOS' && !cancelled()",
+    '  shell: bash',
+    '  env:',
+    '    BLACKHOLE_URL: https://existential.audio/downloads/BlackHole2ch-0.7.1.pkg',
+    '    BLACKHOLE_SHA256: 57b540f27a3e29c37e310e01bee0fdfab76733087e47f997ef9dccf851400dcf',
+    '  run: |',
+    '    swiftc -O scripts/mac-audio-devices.swift -o "$RUNNER_TEMP/mac-audio-devices"',
+    "    both() { grep -q '^default-input ' <<<\"$1\" && grep -q '^default-output ' <<<\"$1\"; }",
+    '    list="$("$RUNNER_TEMP/mac-audio-devices")"',
+    '    echo "$list"',
+    '    if both "$list"; then echo "the runner\'s own sound devices"; exit 0; fi',
+    '    curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/BlackHole2ch.pkg" "$BLACKHOLE_URL"',
+    "    printf '%s  %s\\n' \"$BLACKHOLE_SHA256\" \"$RUNNER_TEMP/BlackHole2ch.pkg\" | shasum -a 256 -c",
+    '    sudo installer -pkg "$RUNNER_TEMP/BlackHole2ch.pkg" -target /',
+    '    sudo killall coreaudiod',
+    '    deadline=$((SECONDS + 20))',
+    '    until both "$list"; do',
+    '      if [ "$SECONDS" -ge "$deadline" ]; then',
+    '        echo "$list"',
+    '        echo "::error::no default CoreAudio input and output 20 s after installing BlackHole 2ch"',
+    '        exit 1',
+    '      fi',
+    '      sleep 1',
+    '      list="$("$RUNNER_TEMP/mac-audio-devices")"',
+    '    done',
+    '    echo "$list"',
+    '    echo "BlackHole 2ch"',
+  ].join('\n'),
+  // Task 4: the real-server call tests on macOS, including the two-client join and the app's own voice join.
+  macCalls: [
+    '- name: Run the call tests (macOS)',
+    "  if: runner.os == 'macOS' && !cancelled()",
+    '  shell: bash',
+    '  run: |',
+    '    cargo test -p dilla-client --test gateway --test http_sign_in --test calls --locked -- --ignored',
+    '    cargo test -p dilla-client --test voice --test ring --locked -- --ignored',
+    '    cargo build -p dilla-testkit --bin dilla-testkit --locked',
+    '    cargo test -p dilla-client --test dms --locked -- --ignored',
+    '    cargo test -p dilla-media --test live --test e2e_call --test capture --locked -- --ignored',
+    '    cargo test -p dilla-desktop --test voice --test ring --locked -- --ignored --skip parity_',
+  ].join('\n'),
 };
 
 /** The job(s) each GPUI_PINNED_STEPS entry must be in; an entry not named here belongs to the gpui-linux job. */
-const GPUI_PIN_JOBS = { tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'] };
+const GPUI_PIN_JOBS = { tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'] };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];

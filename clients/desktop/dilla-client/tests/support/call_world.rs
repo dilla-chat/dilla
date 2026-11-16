@@ -89,6 +89,8 @@ pub struct Host {
     pub control: String,
     pub invites: Vec<String>,
     data: PathBuf,
+    /// The room is reached over TLS ([`start_host_wss`]): call starts answer `wss://`, kept as is by [`Host::rtc_url`].
+    wss: bool,
 }
 
 impl Drop for Host {
@@ -101,16 +103,75 @@ impl Drop for Host {
 
 /// dilla-testhost with production's ACL and its in-process LiveKit.
 pub fn start_host(tag: &str) -> Host {
-    start_host_with(tag, false)
+    start_host_with(tag, false, false)
 }
 
 /// [`start_host`] whose call starts name its own listener as the LiveKit URL (`ws://127.0.0.1:<port>`, dilla-testhost's
 /// `-web-root` rule), so a client's own media layer (the desktop's media session) reaches the SFU unchanged.
 pub fn start_host_reachable(tag: &str) -> Host {
-    start_host_with(tag, true)
+    start_host_with(tag, true, false)
 }
 
-fn start_host_with(tag: &str, reachable: bool) -> Host {
+/// [`start_host_reachable`] whose call starts name a TLS listener of the host as the LiveKit URL
+/// (`wss://127.0.0.1:<port>`, dilla-testhost's `-rtc-tls-*` flags), as a real instance's `wss://` room is: LiveKit's
+/// signalling then needs TLS on this side (the macOS voice join failed on 2026-11-16 with no TLS in the livekit build,
+/// and every ws:// test passed). Its leaf is `tests/fixtures/tls/server.der` (IP 127.0.0.1), under the throwaway test
+/// CA `ca.der`, which this process and its children trust through `SSL_CERT_FILE` ([`trust_test_ca`]).
+pub fn start_host_wss(tag: &str) -> Host {
+    trust_test_ca();
+    start_host_with(tag, true, true)
+}
+
+/// `tests/fixtures/tls/<name>` (DER) as PEM `label`.
+fn fixture_pem(name: &str, label: &str) -> String {
+    let der = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../dilla-client/tests/fixtures/tls")
+            .join(name),
+    )
+    .expect("the TLS test fixture");
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut b64 = String::new();
+    for chunk in der.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            b64.push(if i <= chunk.len() {
+                B64[(n >> (18 - 6 * i)) as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+    }
+    let lines: Vec<&str> = b64
+        .as_bytes()
+        .chunks(64)
+        .map(|l| std::str::from_utf8(l).unwrap())
+        .collect();
+    format!(
+        "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
+        lines.join("\n")
+    )
+}
+
+/// Points `SSL_CERT_FILE` at the test CA, once per process, before any TLS connection: rustls-native-certs (the roots
+/// of tokio-tungstenite's and LiveKit's `rustls-tls-native-roots`) then loads exactly that file on every OS, and the
+/// `call-peer` children inherit it.
+#[allow(unsafe_code)]
+pub fn trust_test_ca() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let path = std::env::temp_dir().join(format!("dilla-test-ca-{}.pem", std::process::id()));
+        std::fs::write(&path, fixture_pem("ca.der", "CERTIFICATE")).unwrap();
+        // SAFETY: set once, before this test binary's first TLS connection reads the environment; nothing else in
+        // these tests writes it.
+        unsafe { std::env::set_var("SSL_CERT_FILE", &path) };
+    });
+}
+
+fn start_host_with(tag: &str, reachable: bool, wss: bool) -> Host {
     let root = repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
         .map_or_else(|| root.join("target/dilla-testhost"), PathBuf::from);
@@ -152,6 +213,16 @@ fn start_host_with(tag: &str, reachable: bool) -> Host {
         .unwrap();
         cmd.arg("-web-root").arg(web);
     }
+    if wss {
+        let (cert, key) = (data.join("rtc-tls.pem"), data.join("rtc-tls.key"));
+        std::fs::write(&cert, fixture_pem("server.der", "CERTIFICATE")).unwrap();
+        std::fs::write(&key, fixture_pem("server.key.der", "PRIVATE KEY")).unwrap();
+        cmd.args(["-rtc-tls-listen", &format!("127.0.0.1:{}", free_port())])
+            .arg("-rtc-tls-cert")
+            .arg(&cert)
+            .arg("-rtc-tls-key")
+            .arg(&key);
+    }
     let mut child = cmd
         .args(["-listen", &listen, "-control", "127.0.0.1:0"])
         .args(["-log-level", "warn", "-production-acl", "-sfu"])
@@ -186,6 +257,7 @@ fn start_host_with(tag: &str, reachable: bool) -> Host {
         control: control.unwrap(),
         invites: invites.unwrap(),
         data,
+        wss,
     }
 }
 
@@ -194,7 +266,16 @@ impl Host {
     /// token, leaf and grant checks): dillad hands the instance domain's `wss://` URL,
     /// whose `/rtc` gate this host serves on its own listener, and that name resolves to nothing here. dilla-testhost
     /// itself hands a browser `ws://<listen>` for the same reason (its `LiveKitURL` with a web root); the path is kept.
+    ///
+    /// A [`start_host_wss`] host answers its own TLS listener (`wss://127.0.0.1:<port>`), reachable as it is.
     pub fn rtc_url(&self, answered: &str) -> String {
+        if self.wss {
+            assert!(
+                answered.starts_with("wss://"),
+                "a TLS host answers a wss:// room, not {answered}"
+            );
+            return answered.to_owned();
+        }
         let rest = answered.split_once("://").map_or(answered, |(_, r)| r);
         let path = rest.find('/').map_or("", |i| &rest[i..]);
         let authority = self

@@ -1330,6 +1330,11 @@ fn a_live_call_in_the_process_holds_the_next_call_test_until_its_media_ends() {
 }
 
 fn call_world(tag: &'static str) -> CallWorld {
+    call_world_on(tag, false)
+}
+
+/// [`call_world`] on a host whose rooms are `wss://` (`call_world::start_host_wss`) when `wss`.
+fn call_world_on(tag: &'static str, wss: bool) -> CallWorld {
     let media = media_slot();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1337,9 +1342,15 @@ fn call_world(tag: &'static str) -> CallWorld {
         .build()
         .unwrap();
     let (host, alice, bob, voice) = rt.block_on(async {
-        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
-            .await
-            .unwrap();
+        let host = tokio::task::spawn_blocking(move || {
+            if wss {
+                call_world::start_host_wss(tag)
+            } else {
+                call_world::start_host_reachable(tag)
+            }
+        })
+        .await
+        .unwrap();
         let invite = host.invites.last().unwrap().clone();
         let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
         let bob = call_world::sign_up(&host, &invite, "bob", tag).await;
@@ -1463,6 +1474,69 @@ fn window_for(
     let state = client.state().borrow().clone();
     cx.update(|cx| voice::sync(id, state, Some(client), cx));
     w
+}
+
+/// The app's own voice join (the voice row's join, its media session on the system's sound devices) in a `wss://` room,
+/// as every real instance hands out: the media comes up (its ping is read) and nothing says "Could not join voice". The
+/// macOS join of 2026-11-16 failed here: the livekit build had no TLS, and every `ws://` test passed. The media layer's
+/// own words for a failure (`voice: the call's media did not start: ...`) are printed by [`warnings_to_stderr`].
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn the_app_joins_a_wss_room(cx: &mut TestAppContext) {
+    warnings_to_stderr();
+    let w = call_world_on("t-wss-join", true);
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    // No other call: the handover starts the join in its first turn.
+    cx.run_until_parked();
+    let s = w.rt.block_on(until(
+        &w.alice,
+        "alice's media is up in the wss room (its ping is read), or it failed",
+        |s| {
+            s.voice.notice == Some(dilla_client::state::voice::VoiceNotice::MediaFailed)
+                || (s.voice.call.phase == CallPhase::In && s.voice.call.ping_ms.is_some())
+        },
+    ));
+    assert_ne!(
+        s.voice.notice,
+        Some(dilla_client::state::voice::VoiceNotice::MediaFailed),
+        "the call's media did not start in a wss:// room (\"Could not join voice\"); the media layer's warning is above"
+    );
+    assert_eq!(s.voice.call.phase, CallPhase::In);
+    let link = w
+        .alice
+        .voice()
+        .media()
+        .borrow()
+        .clone()
+        .expect("a media link");
+    assert!(
+        link.url.starts_with("wss://"),
+        "the room is wss://, not {}",
+        link.url
+    );
+}
+
+/// Prints this process's `warn` and `error` log records to stderr (the test shows them when it fails): the app's media
+/// layer says why a call's media did not start only in its log.
+fn warnings_to_stderr() {
+    struct Stderr;
+    impl log::Log for Stderr {
+        fn enabled(&self, m: &log::Metadata<'_>) -> bool {
+            m.level() <= log::Level::Warn
+        }
+        fn log(&self, r: &log::Record<'_>) {
+            if self.enabled(r.metadata()) {
+                eprintln!("[{} {}] {}", r.level(), r.target(), r.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    if log::set_logger(&Stderr).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
 }
 
 /// Review I4: closing the window of a call leaves the call at once (no other shell needs to sync): the media link is
