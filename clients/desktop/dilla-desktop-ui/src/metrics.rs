@@ -140,6 +140,11 @@ pub fn shadow_menu() -> Vec<BoxShadow> {
     shadow(black(0.6), 18.0, 48.0)
 }
 
+/// `--shadow-status` (the user panel's status menu): `0 16px 40px rgba(0,0,0,0.55)`.
+pub fn shadow_status() -> Vec<BoxShadow> {
+    shadow(black(0.55), 16.0, 40.0)
+}
+
 /// `--shadow-toast`: `0 12px 30px rgba(0,0,0,0.5)`.
 pub fn shadow_toast() -> Vec<BoxShadow> {
     shadow(black(0.5), 12.0, 30.0)

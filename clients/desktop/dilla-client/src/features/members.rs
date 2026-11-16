@@ -85,6 +85,11 @@ impl AreaFrames for Members {
         };
         let user = UserId(user);
         let s = inner.snapshot();
+        // controller.ts `incomingPresence`: this account's own presence changed (a choice made on another device, or
+        // here): its choice is read again.
+        if s.account.user_id == Some(user) {
+            crate::features::profile::refresh_presence_choice(inner);
+        }
         let mut unread = Vec::new();
         for c in &s.communities {
             if !s

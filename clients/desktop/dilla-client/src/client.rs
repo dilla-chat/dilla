@@ -194,6 +194,10 @@ impl SyncHooks for Hooks {
         // Task 20: the Bot area's connect hooks (catalog sync and Bot user lookup on ready, secrets dropped on a refusal).
         if let Some(inner) = self.inner.get().and_then(Weak::upgrade) {
             crate::features::bot::on_connection(&inner, &event);
+            // controller.ts: every ready reads the account's presence choice (the user panel's status).
+            if matches!(event, ConnectionEvent::Ready(_)) {
+                crate::features::profile::refresh_presence_choice(&inner);
+            }
         }
         let _ = self.tx.send(Update::Connection(event));
     }
