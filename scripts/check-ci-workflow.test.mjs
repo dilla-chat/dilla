@@ -2641,6 +2641,15 @@ test('the macOS parity and VideoToolbox steps cannot lose a line, their guard or
   }
 });
 
+test('desktop-gpui.yml never sets DILLA_PARITY_MEASURE (it turns every parity check into a pass)', () => {
+  const step = 'cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_';
+  for (const edit of [`DILLA_PARITY_MEASURE=1 ${step}`, `export DILLA_PARITY_MEASURE=1; ${step}`]) {
+    const problems = gpuiProblems((text) => { assert.ok(text.includes(step), step); return text.replace(step, edit); });
+    assert.ok(problems.some((p) => p.includes('DILLA_PARITY_MEASURE')), `${edit}: ${problems.join('|')}`);
+  }
+  assert.ok(!checkDesktopGpuiWorkflow(REPO_ROOT).some((p) => p.includes('DILLA_PARITY_MEASURE')));
+});
+
 test('the desktop-gpui macOS package job is pinned: macos-15, no secrets, and every packaging and verification command', () => {
   for (const fragment of GPUI_MAC_PACKAGE_RUNS) {
     const problems = gpuiProblems((text) => { assert.ok(text.includes(fragment), fragment); return text.replace(fragment, 'true'); });

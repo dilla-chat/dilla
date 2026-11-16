@@ -1705,6 +1705,9 @@ export function checkDesktopGpuiWorkflow(root) {
     }
   }
   problems.push(...gpuiMacPackageProblems(text, file));
+  // The macOS CI plan, Task 6: DILLA_PARITY_MEASURE turns every parity comparison into a printed MEASURE line that always
+  // passes (gpui-proofs.yml's manual mac-parity-measure job sets it). A CI gate must never set it.
+  if (/DILLA_PARITY_MEASURE/.test(text)) problems.push(`${file}: DILLA_PARITY_MEASURE skips every parity comparison; it belongs to gpui-proofs.yml's measurement job only`);
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
   problems.push(...gpuiWinPackageProblems(text, file));
