@@ -35,6 +35,7 @@ use dilla_client::features::notify::{
 };
 use dilla_client::seams::InstanceId;
 use dilla_client::state::ChannelId;
+use dilla_client::state::profile::PresenceChoice;
 use gpui::{
     App, Global, SharedString, SystemNotification, SystemNotificationAction,
     SystemNotificationResponse, Task, Window, WindowId,
@@ -209,23 +210,40 @@ fn engine_alive(engine: u64, cx: &App) -> bool {
         .is_some_and(|n| n.engines.iter().any(|e| e.id == engine))
 }
 
-/// What the engine reads of the window (`NotifyEnv`): written on every frame of the window by [`attach`].
-#[derive(Default)]
-struct Env(Mutex<(bool, Option<ChannelId>)>);
+/// What the engine reads of the window (`NotifyEnv`): written on every frame of the window by [`attach`]: whether it is
+/// focused, the channel it shows, and the account's presence choice (the user panel's status menu).
+struct Env(Mutex<(bool, Option<ChannelId>, Presence)>);
+
+impl Default for Env {
+    fn default() -> Self {
+        Self(Mutex::new((false, None, Presence::Online)))
+    }
+}
 
 impl Env {
-    fn set(&self, visible: bool, on_screen: Option<ChannelId>) {
+    fn set(&self, visible: bool, on_screen: Option<ChannelId>, presence: Presence) {
         *self
             .0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (visible, on_screen);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (visible, on_screen, presence);
     }
 
-    fn get(&self) -> (bool, Option<ChannelId>) {
+    fn get(&self) -> (bool, Option<ChannelId>, Presence) {
         *self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// `ctx.presenceChoice` of the notify decision. Not read yet, the choice counts as online (the app notified before the
+/// choice was read at all; the web's worker holds every notice until its first read).
+pub(crate) fn presence_of(choice: Option<PresenceChoice>) -> Presence {
+    match choice {
+        None | Some(PresenceChoice::Online) => Presence::Online,
+        Some(PresenceChoice::Idle) => Presence::Idle,
+        Some(PresenceChoice::Dnd) => Presence::Dnd,
+        Some(PresenceChoice::Invisible) => Presence::Invisible,
     }
 }
 
@@ -239,8 +257,7 @@ impl NotifyEnv for Env {
     }
 
     fn presence(&self) -> Presence {
-        // The slice holds no presence choice of its own yet (as the ring's notification): online.
-        Presence::Online
+        self.get().2
     }
 }
 
@@ -261,7 +278,8 @@ pub fn install(cx: &mut App) {
                 if let Some(id) = instance {
                     withdraw_owner(Owner::Instance(id), cx);
                     if let Some(e) = notices(cx).engines.iter().find(|e| e.instance == id) {
-                        e.env.set(false, None);
+                        let presence = e.env.get().2;
+                        e.env.set(false, None, presence);
                     }
                 }
                 withdraw_rings_of(window, cx);
@@ -316,8 +334,9 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
     };
     let key = Rc::as_ptr(client) as usize;
     let visible = window.is_window_active();
+    let presence = presence_of(ctx.state.profile.presence_choice);
     if let Some(e) = notices(cx).engines.iter().find(|e| e.client == key) {
-        e.env.set(visible, ctx.channel);
+        e.env.set(visible, ctx.channel, presence);
         return;
     }
     // A new client of this instance (a sign-in again): the old engine goes.
@@ -338,7 +357,7 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
     else {
         return;
     };
-    env.set(visible, ctx.channel);
+    env.set(visible, ctx.channel, presence);
     let task = client.notify().start(
         client,
         Arc::new(notifier),
@@ -693,6 +712,22 @@ mod tests {
         assert_eq!(shown[0].title.chars().count(), TITLE_MAX);
         assert_eq!(shown[0].body.chars().count(), BODY_MAX);
         assert_eq!(cx.delivered_system_notifications().len(), 2);
+    }
+
+    /// The status menu's choice reaches the notify decision (do not disturb holds the notices); not read yet is online.
+    #[test]
+    fn the_presence_choice_is_the_decisions_presence() {
+        assert_eq!(presence_of(None), Presence::Online);
+        assert_eq!(presence_of(Some(PresenceChoice::Dnd)), Presence::Dnd);
+        assert_eq!(presence_of(Some(PresenceChoice::Idle)), Presence::Idle);
+        assert_eq!(
+            presence_of(Some(PresenceChoice::Invisible)),
+            Presence::Invisible
+        );
+        let env = Env::default();
+        assert_eq!(env.presence(), Presence::Online);
+        env.set(true, None, Presence::Dnd);
+        assert_eq!(env.presence(), Presence::Dnd);
     }
 
     /// Security review: message text never reaches an XDG server as markup; the cap applies to the original text.

@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
+    AnyElement, App, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement,
     Pixels, Point, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, anchored,
     deferred, div, px,
 };
@@ -19,7 +19,7 @@ use super::dialog::{MENU_CONTEXT, MenuNext, MenuPrevious};
 use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring, shadow_menu};
+use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring, shadow_menu, shadow_status};
 use crate::roving::menu_next;
 pub use crate::roving::opens_context_menu;
 use crate::text::{line, line_height};
@@ -45,6 +45,8 @@ pub struct MenuItem {
     pub heading: Option<SharedString>,
     /// A room row of the person menu's "Move to" block (30px, indented).
     pub room: bool,
+    /// An 8px dot before the label in this colour (the status menu's presence dots, UserPanel.css `::before`).
+    pub dot: Option<Hsla>,
 }
 
 impl MenuItem {
@@ -96,11 +98,31 @@ impl MenuItem {
         self
     }
 
+    pub fn dot(mut self, colour: Hsla) -> Self {
+        self.dot = Some(colour);
+        self
+    }
+
     /// Whether choosing the item leaves the menu open.
     pub fn keeps_open(&self) -> bool {
         self.check.is_some()
     }
 }
+
+/// How a menu's popup is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MenuLook {
+    /// The prototype's context menu.
+    #[default]
+    Context,
+    /// The user panel's status menu (UserPanel.css `.d-user-panel__menu`): the `--control-edge-field` edge, 8px corners
+    /// (`--r-lg`), the `--shadow-status`; items 10px in on both sides, the chosen one on the `--hover` fill while the
+    /// pointer and the focus are elsewhere.
+    Status,
+}
+
+/// The status menu's popup width: 220px of rows, plus its 4px padding and 1px edge on each side.
+pub const STATUS_MENU_WIDTH: f32 = 230.0;
 
 type OpenHandler = Rc<dyn Fn(bool, &mut Window, &mut App) + 'static>;
 type SelectHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
@@ -125,6 +147,11 @@ pub struct ActionMenu {
     width: Option<Pixels>,
     return_focus: Option<FocusHandle>,
     head: Option<AnyElement>,
+    /// A trigger drawn by the caller (`triggerContent`): its group name, its accessible name and its content.
+    trigger_content: Option<(SharedString, SharedString, AnyElement)>,
+    /// The popup opens above the trigger, this far from it (`data-placement="top"` plus the caller's margin).
+    above: Option<Pixels>,
+    look: MenuLook,
     on_open_change: Option<OpenHandler>,
     on_select: Option<SelectHandler>,
 }
@@ -149,9 +176,36 @@ impl ActionMenu {
             width: None,
             return_focus: None,
             head: None,
+            trigger_content: None,
+            above: None,
+            look: MenuLook::Context,
             on_open_change: None,
             on_select: None,
         }
+    }
+
+    /// The trigger is `content` (ActionMenu.tsx `triggerContent`), filling the menu's box from the left, 3px 6px in, the
+    /// `--hover` fill on hover and while open; `name` names it (`labelledBy`), and `group` is its hover group, for content
+    /// that changes on hover. The menu itself grows to fill its row.
+    pub fn trigger_content(
+        mut self,
+        group: impl Into<SharedString>,
+        name: impl Into<SharedString>,
+        content: impl IntoElement,
+    ) -> Self {
+        self.trigger_content = Some((group.into(), name.into(), content.into_any_element()));
+        self
+    }
+
+    /// The popup opens above the trigger, `gap` from it, at its left edge.
+    pub fn above(mut self, gap: Pixels) -> Self {
+        self.above = Some(gap);
+        self
+    }
+
+    pub fn look(mut self, look: MenuLook) -> Self {
+        self.look = look;
+        self
     }
 
     pub fn open(mut self, open: bool) -> Self {
@@ -217,13 +271,24 @@ impl ActionMenu {
     }
 }
 
+/// The status menu's presence dot: 8px.
+pub const STATUS_DOT: f32 = 8.0;
+
+/// An item's left and right padding: 8px (a room row 12px on the left), the status menu's 10px.
+pub fn item_padding(item: &MenuItem, look: MenuLook) -> (f32, f32) {
+    match look {
+        MenuLook::Status => (10.0, 10.0),
+        MenuLook::Context => (if item.room { 12.0 } else { 8.0 }, 8.0),
+    }
+}
+
 /// The item's height: 32px, a room row 30px.
 pub fn item_height(item: &MenuItem) -> f32 {
     if item.room { 30.0 } else { 32.0 }
 }
 
 impl RenderOnce for ActionMenu {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let memory = window.use_keyed_state((self.id.clone(), "menu"), cx, |_, cx| Memory {
             trigger: cx.focus_handle().tab_stop(true),
             was_open: false,
@@ -258,8 +323,58 @@ impl RenderOnce for ActionMenu {
             }
         };
 
-        let mut root = div().id(self.id.clone()).relative().flex().flex_none();
-        if !self.no_trigger {
+        let mut root = div().id(self.id.clone()).relative().flex();
+        root = if self.trigger_content.is_some() {
+            root.flex_1().min_w_0()
+        } else {
+            root.flex_none()
+        };
+        if let Some((group, name, content)) =
+            self.trigger_content.take().filter(|_| !self.no_trigger)
+        {
+            let (open, memory_for_keys) = (self.open, memory.clone());
+            let open_with = open_with.clone();
+            let click_open = open_with.clone();
+            let mut button = div()
+                .id((self.id.clone(), "trigger"))
+                .group(group)
+                .a11y(Role::Button, name)
+                .aria_expanded(open)
+                .node_props(|n| n.set_has_popup(HasPopup::Menu))
+                .track_focus(&trigger)
+                .tab_stop(true)
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .justify_start()
+                .px(px(6.0))
+                .py(px(3.0))
+                .rounded(radius::MD)
+                .cursor_pointer()
+                .hover(|s| s.bg(color::HOVER))
+                .focus_visible(|s| s.shadow(focus_ring()))
+                .child(content)
+                .on_click(move |_, window, cx| click_open(!open, window, cx))
+                .on_key_down(move |event, window, cx| {
+                    let key = &event.keystroke;
+                    let from_start = match key.key.as_str() {
+                        "down" => Some(false),
+                        "up" => Some(true),
+                        _ if opens_context_menu(key) => Some(false),
+                        _ => None,
+                    };
+                    if let Some(last) = from_start {
+                        cx.stop_propagation();
+                        memory_for_keys.update(cx, |m, _| m.start_last = last);
+                        open_with(true, window, cx);
+                    }
+                });
+            if open {
+                button = button.bg(color::HOVER);
+            }
+            root = root.child(button);
+        } else if !self.no_trigger {
             let (open, memory_for_keys) = (self.open, memory.clone());
             let open_with = open_with.clone();
             let glyph = match self.icon {
@@ -329,16 +444,24 @@ impl RenderOnce for ActionMenu {
             .a11y(Role::Menu, self.label.clone())
             .flex()
             .flex_col()
-            .min_w(px(176.0))
             .max_w(px(300.0))
             .p(px(4.0))
             .bg(color::SURFACE_2)
             .border_1()
-            .border_color(color::LINE_STRONG)
-            .rounded(radius::MENU)
-            .shadow(shadow_menu())
             .key_context(MENU_CONTEXT)
             .occlude();
+        popup = match self.look {
+            MenuLook::Context => popup
+                .min_w(px(176.0))
+                .border_color(color::LINE_STRONG)
+                .rounded(radius::MENU)
+                .shadow(shadow_menu()),
+            MenuLook::Status => popup
+                .w(px(STATUS_MENU_WIDTH))
+                .border_color(color::CONTROL_EDGE_FIELD)
+                .rounded(radius::LG)
+                .shadow(shadow_status()),
+        };
         if let Some(width) = self.width {
             popup = popup.w(width);
         }
@@ -414,6 +537,7 @@ impl RenderOnce for ActionMenu {
                 on_select.clone(),
                 open_with.clone(),
                 back.clone(),
+                self.look,
             ));
         }
 
@@ -421,6 +545,13 @@ impl RenderOnce for ActionMenu {
             Some(at) if self.no_trigger => anchored()
                 .position(at)
                 .snap_to_window()
+                .child(popup)
+                .into_any_element(),
+            _ if self.above.is_some() => div()
+                .absolute()
+                .bottom_full()
+                .left_0()
+                .pb(self.above.unwrap_or_default())
                 .child(popup)
                 .into_any_element(),
             _ => div()
@@ -442,6 +573,7 @@ fn menu_row(
     on_select: Option<SelectHandler>,
     open_with: impl Fn(bool, &mut Window, &mut App) + Clone + 'static,
     back: FocusHandle,
+    look: MenuLook,
 ) -> impl IntoElement {
     let fg = if item.danger {
         color::DANGER
@@ -465,12 +597,26 @@ fn menu_row(
         .items_center()
         .gap(px(10.0))
         .h(px(item_height(item)))
-        .pl(px(if item.room { 12.0 } else { 8.0 }))
-        .pr(px(8.0))
+        .pl(px(item_padding(item, look).0))
+        .pr(px(item_padding(item, look).1))
         .rounded(radius::ROW)
-        .cursor_pointer()
+        .cursor_pointer();
+    // The status menu draws its chosen row on the `--hover` fill; the pointer and the focus keep `--surface-hi`.
+    if look == MenuLook::Status && item.checked == Some(true) {
+        row = row.bg(color::HOVER);
+    }
+    row = row
         .hover(move |s| s.bg(hover))
         .focus_visible(move |s| s.bg(hover).shadow(focus_ring_inset()));
+    if let Some(dot) = item.dot {
+        row = row.child(
+            div()
+                .flex_none()
+                .size(px(STATUS_DOT))
+                .rounded(radius::PILL)
+                .bg(dot),
+        );
+    }
     if let Some(icon) = item.icon {
         row = row.child(
             div()
@@ -578,5 +724,18 @@ mod tests {
         assert_eq!(item_height(&plain.clone().room()), 30.0);
         assert!(!plain.keeps_open());
         assert!(MenuItem::new("b", "Mute").check(false).keeps_open());
+    }
+
+    #[test]
+    fn the_status_look_follows_user_panel_css() {
+        let plain = MenuItem::new("online", "online");
+        assert_eq!(item_padding(&plain, MenuLook::Status), (10.0, 10.0));
+        assert_eq!(item_padding(&plain, MenuLook::Context), (8.0, 8.0));
+        assert_eq!(
+            item_padding(&plain.clone().room(), MenuLook::Context),
+            (12.0, 8.0)
+        );
+        assert_eq!(STATUS_MENU_WIDTH, 220.0 + 2.0 * 4.0 + 2.0 * 1.0);
+        assert_eq!(STATUS_DOT, 8.0);
     }
 }

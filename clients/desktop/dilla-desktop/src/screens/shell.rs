@@ -172,6 +172,10 @@ pub struct ShellView {
     menu: Option<ChannelMenu>,
     /// The channel list head's server menu (the ⌄) is open.
     server_menu_open: bool,
+    /// The user panel's status menu is open (UserPanel.tsx `menuOpen`).
+    status_menu_open: bool,
+    /// The last status choice was refused (UserPanel.tsx `error`: `presence.error` under the panel).
+    status_error: bool,
     /// Something is drawn over the shell (the channel menu, a dialog or another overlay of `slots::overlays`), as of the
     /// last frame: Ctrl+K does not open the search palette over it (the web's guard; Task 23).
     overlay_open: bool,
@@ -252,6 +256,8 @@ impl ShellView {
             aside: None,
             menu: None,
             server_menu_open: false,
+            status_menu_open: false,
+            status_error: false,
             overlay_open: false,
             dm_view: false,
             call_key: keys::RepeatLatch::default(),
@@ -889,6 +895,37 @@ impl ShellView {
         cx.notify();
     }
 
+    // ---- the user panel's status menu -----------------------------------------------------------------------------
+
+    fn set_status_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.status_menu_open = open;
+        cx.notify();
+    }
+
+    /// UserPanel.tsx `onChoose`: sends the account's presence choice; a refusal says `presence.error` under the panel until
+    /// the next choice.
+    fn choose_status(
+        &mut self,
+        choice: dilla_client::state::profile::PresenceChoice,
+        cx: &mut Context<Self>,
+    ) {
+        self.status_menu_open = false;
+        self.status_error = false;
+        cx.notify();
+        let Some(client) = &self.client else {
+            return;
+        };
+        let reply = client.profile().set_presence_choice(choice);
+        cx.spawn(async move |this, cx| {
+            let failed = !matches!(reply.await, Ok(Ok(())));
+            let _ = this.update(cx, |this, cx| {
+                this.status_error = failed;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     // ---- the channel list head's server menu ----------------------------------------------------------------------
 
     fn set_server_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
@@ -1007,7 +1044,8 @@ impl ShellView {
         cx.notify();
     }
 
-    fn me(&self) -> (String, &'static str) {
+    /// The panel's name and custom status (UserPanel.tsx `name`, `statusMsg`): the own member row's, else the account's.
+    fn me(&self) -> (String, String) {
         let user = self.state.account.user_id;
         let me = self
             .community
@@ -1023,12 +1061,18 @@ impl ShellView {
                 }
             },
         );
-        let status = match self.state.connection.status {
-            ConnectionStatus::Online => "online",
-            ConnectionStatus::Connecting => "connecting",
-            ConnectionStatus::Offline => "offline",
-        };
-        (name, status)
+        let status_msg = me.map_or_else(
+            || {
+                self.state
+                    .profile
+                    .me
+                    .as_ref()
+                    .map(|p| p.status_msg.clone())
+                    .unwrap_or_default()
+            },
+            |m| m.status_msg.clone(),
+        );
+        (name, status_msg)
     }
 }
 
@@ -1077,7 +1121,7 @@ impl Render for ShellView {
             .and_then(|c| state.members.get(&c))
             .map_or(0, Vec::len);
         let online = usize::from(state.connection.status == ConnectionStatus::Online);
-        let (me, status) = self.me();
+        let (me, status_msg) = self.me();
         // UserPanel.tsx: in a call the panel's line says where ("in {channel}"), else the presence.
         let in_room = crate::screens::voice::in_room(&state)
             .map(|room| crate::strings::tf("members.inChannel", &[("channel", &room)]));
@@ -1312,11 +1356,14 @@ impl Render for ShellView {
         };
 
         let (w_mic, w_deaf) = (shell.clone(), shell.clone());
+        let (w_status_open, w_status_pick) = (shell.clone(), shell.clone());
         let (muted, deafened) = self.mic_and_deaf();
         let panel = user_panel::render(
             &user_panel::PanelModel {
                 name: &me,
-                status,
+                choice: state.profile.presence_choice.unwrap_or_default(),
+                status_msg: &status_msg,
+                status_menu_open: self.status_menu_open,
                 in_room: in_room.as_deref(),
                 muted,
                 deafened,
@@ -1332,6 +1379,13 @@ impl Render for ShellView {
                 }),
                 on_deafen: Rc::new(move |_, cx| {
                     let _ = w_deaf.update(cx, |shell, cx| shell.set_deaf(cx));
+                }),
+                on_status_open: Rc::new(move |open, _, cx| {
+                    let _ =
+                        w_status_open.update(cx, |shell, cx| shell.set_status_menu_open(open, cx));
+                }),
+                on_status_pick: Rc::new(move |choice, _, cx| {
+                    let _ = w_status_pick.update(cx, |shell, cx| shell.choose_status(choice, cx));
                 }),
             },
         );
@@ -1365,7 +1419,8 @@ impl Render for ShellView {
             )
             // The voice dock and now playing (17, 21) over the user panel.
             .children(dock)
-            .child(panel);
+            .child(panel)
+            .children(self.status_error.then(user_panel::status_error));
         #[cfg(feature = "automation")]
         let sidebar = sidebar.child(crate::automation::bounds_probe("shell-sidebar"));
 
