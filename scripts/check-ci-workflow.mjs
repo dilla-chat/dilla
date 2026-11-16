@@ -1639,6 +1639,7 @@ export const GPUI_MAC_PACKAGE_RUNS = [
   'out="$("$app/Contents/MacOS/dilla-desktop" --version)"',
   'codesign -dv --verbose=4 "$app"',
   'plutil -lint "$app/Contents/Info.plist"',
+  'plutil -extract CFBundleURLTypes xml1 -o - "$app/Contents/Info.plist"', // the dilla: scheme (D12 superseded 2026-11-16)
 ];
 
 /** The problems with the gpui-mac-package job of desktop-gpui.yml's text, if any. */
@@ -1723,6 +1724,9 @@ export const GPUI_WIN_PACKAGE_STEPS = [
   '--version',
   'System.AppUserModel.ID',
   'unins000.exe',
+  // The dilla: scheme: registered after setup, gone after uninstall (D12 superseded 2026-11-16).
+  "the dilla: protocol is not registered",
+  "the dilla: protocol registration is left",
 ];
 function gpuiWinPackageProblems(text, file) {
   const fail = (message) => [`${file}: gpui-win-package ${message}`];

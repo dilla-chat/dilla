@@ -9,7 +9,8 @@
 ; Install: per user (no elevation) to %LOCALAPPDATA%\Programs\Dilla. beta.5 (one-click NSIS) used %LOCALAPPDATA%\Programs\@dilladesktop;
 ; the takeover below finds it through its registry entries, never by path.
 ; The Start-menu shortcut carries AppUserModelID dev.dilla.desktop, which Windows needs to show the app's toasts
-; (dilla-desktop's APP_ID, src/native/notifier.rs). No dilla:// protocol is registered (D12).
+; (dilla-desktop's APP_ID, src/native/notifier.rs). The dilla:// protocol is registered per user
+; ([Registry] below; D12 superseded 2026-11-16) and removed with the app.
 ; Silent: `setup.exe /VERYSILENT /SUPPRESSMSGBOXES` installs and `unins000.exe /VERYSILENT /SUPPRESSMSGBOXES` removes
 ; it; the updater (Task 14) uses the same flags.
 ; User data (%APPDATA%\Dilla from beta.5, `Dilla Preview` for the GPUI app) is never touched, by install or uninstall.
@@ -81,6 +82,13 @@ Name: "{userprograms}\Dilla"; Filename: "{app}\{#Exe}"; AppUserModelID: "{#AppId
 [Registry]
 ; The app's own "start at login" value (src/native/autostart.rs); removed with the app, nothing created.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Dilla"; Flags: dontcreatekey uninsdeletevalue
+
+; The dilla:// scheme (beta.5's electron-builder protocols): the app takes the link as its one argument, a second launch
+; hands it to the running copy (src/native/single_instance.rs). Per user, so no elevation; removed on uninstall.
+Root: HKCU; Subkey: "Software\Classes\dilla"; ValueType: string; ValueName: ""; ValueData: "URL:Dilla"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\dilla"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\dilla\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#Exe},0"
+Root: HKCU; Subkey: "Software\Classes\dilla\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#Exe}"" ""%1"""
 
 [Run]
 Filename: "{app}\{#Exe}"; Description: "Start Dilla"; Flags: nowait postinstall skipifsilent

@@ -69,8 +69,9 @@ emoji need the Noto Color Emoji font.
 Arch recipe provides and conflicts with `dilla`), so installing one replaces an installed beta.5 in place. Beta's
 files in `/opt/Dilla` are removed (an rpm upgrade can leave its empty folders behind). Beta's app data stays on disk
 but is not used, and nothing deletes it. The native app is a **new device** on your account (see below), so keep
-another signed-in device and your recovery key at hand. `dilla://` invite links stop opening the app until the native
-app handles them; join with the address and the invite code instead. An AppImage or tar.gz runs beside an installed
+another signed-in device and your recovery key at hand. Clicking a `dilla://` invite link opens the native app, as it
+did in beta (the deb, rpm and Arch packages register
+the scheme). An AppImage or tar.gz runs beside an installed
 beta.
 
 ### Install on macOS and Windows
@@ -177,9 +178,12 @@ the updater and packaging.
   Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
   extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
   builds only. There is no menu button in the title bar yet; F11 (Control-⌘-F on macOS) toggles full screen.
-- **Deep links:** `dilla://invite/...` opens in the app when it is on the command line (or reaches a running app
-  through a second launch, which hands everything over and exits), but the system does not send such links to the app
-  until the installers register the `dilla:` scheme.
+- **Deep links:** clicking a `dilla://invite/...` link opens it in Dilla, started if it is not running: the deb, rpm
+  and Arch packages register the `dilla:` scheme in the desktop entry, the macOS app in its Info.plist (the link
+  reaches a running app as an open-URL event) and the Windows installer per user in the registry (removed on
+  uninstall). A second launch hands the link to the running app and exits. An AppImage registers it only through an
+  integration tool such as AppImageLauncher or appimaged; the tar.gz does not register it. Passing the link on the
+  command line works everywhere.
 - **Updater and packaging:** from the first signed alpha on, the app checks its signed update feed at start, every 6
   hours and on the tray's "Check for updates". An AppImage, the macOS app in a folder you can write to and the Windows
   per-user install download the update, check it (the feed's signature, the file's size and SHA-512, and on macOS the

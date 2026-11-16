@@ -132,8 +132,9 @@ For the native desktop preview:
 
 - Application audio for a share on macOS and Windows, and the camera on macOS.
 - The macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
-  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand. Until the packages register it, the
-  system does not open `dilla://invite` links in the app by itself (passing one on the command line works).
+  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand. Clicking a `dilla://invite` link opens it in the
+  app: the deb, rpm and Arch packages register the `dilla:` scheme, as do the macOS and Windows packages (an AppImage
+  only through an integration tool such as AppImageLauncher; the tar.gz does not).
 - Push to talk while another window has focus. Screen readers are supported (AccessKit).
 
 Beyond the web client: the native [desktop client](docs/user/desktop.md) has Linux alpha releases and is built from

@@ -64,6 +64,9 @@ bash "$root/scripts/check-desktop-release-binary.sh" "$bin"
 stage=$work/dilla-$version
 mkdir -p "$stage/licenses" "$stage/icons"
 install -m 0755 "$bin" "$stage/dilla-desktop"
+# The entry every format ships registers the dilla: scheme and takes the link as %U (the app handles invite links).
+grep -qx 'MimeType=x-scheme-handler/dilla;' "$linux/dev.dilla.desktop.desktop" && grep -qx 'Exec=dilla-desktop %U' "$linux/dev.dilla.desktop.desktop" \
+  || { echo "desktop-gpui-package-linux: the desktop entry does not register x-scheme-handler/dilla with Exec=dilla-desktop %U" >&2; exit 1; }
 install -m 0644 "$linux/dev.dilla.desktop.desktop" "$linux/dev.dilla.desktop.metainfo.xml" "$stage/"
 # The deb's /usr/share/doc/dilla/copyright and the deb and rpm's /usr/bin/dilla-desktop (nfpm.yaml's `../` sources),
 # outside the tarball's directory.

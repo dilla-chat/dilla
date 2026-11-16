@@ -17,7 +17,7 @@
 | D9 | Updates come from our own minimal Rust updater on every OS: signed feed, sha512, and on macOS a Developer ID team check before an atomic bundle swap. There is no Sparkle. A throwaway tag `desktop-gpui-v0.0.0-alpha.0` may be used to dry-run the workflow and is deleted before anything is published. |
 | D10 | Windows: Inno Setup, per-user, unsigned for alpha. The SmartScreen step is documented. Signing is decided before beta. |
 | D11 | Platforms: linux-x64, mac-arm64, win-x64 only. |
-| D12 | No `dilla://` link handler until the GPUI app handles invite links (a separate phase-3 task). Replacing beta.5 drops its handler in the meantime. |
+| D12 | No `dilla://` link handler until the GPUI app handles invite links (a separate phase-3 task). Replacing beta.5 drops its handler in the meantime. **Superseded 2026-11-16 by Jonas: registered in M2** (desktop entry `MimeType`/`%U`, Info.plist `CFBundleURLTypes`, the installer's HKCU keys), because the app handles invite links itself. |
 | D13 | M1 provenance = GitHub build-provenance attestations + SHA256SUMS on every asset. |
 | D14 | Release builds pin libwebrtc's SHA-256 (`LK_CUSTOM_WEBRTC`). CI keeps downloading. |
 | D15 | How beta.5 installs move over at the switch (the spec's Electron "bridge release", whose sources #173 removed) is out of scope here. It is decided in the phase-4 plan. |
@@ -181,7 +181,7 @@ Parallel lanes: **Tasks 1, 2, 3 and 4 run in parallel** (disjoint files). Task 5
   - `Name=Dilla`, `Exec=dilla-desktop %U`, `Icon=dev.dilla.desktop`;
   - `StartupWMClass=dev.dilla.desktop`, which must equal `APP_ID` (Wayland matches icons by it);
   - `Categories=Network;InstantMessaging;Chat;`;
-  - no `MimeType` (D12).
+  - no `MimeType` (D12; superseded 2026-11-16: `MimeType=x-scheme-handler/dilla;`).
   - Check beta.5's desktop file name (`dpkg-deb -c` on the published `dilla-0.1.0-beta.5-linux-x64.deb`). If it differs, the upgrade removes it anyway, because the package is the same.
 - **`nfpm.yaml`:**
   - `name: dilla`, `version_schema: none`;
@@ -454,7 +454,7 @@ Without `CSC_LINK`, the script signs ad hoc.
 - Install: per-user to `%LOCALAPPDATA%\Programs\Dilla`, `PrivilegesRequired=lowest`.
 - Start-menu shortcut with `AppUserModelID=dev.dilla.desktop`.
 - Uninstaller, with `/VERYSILENT /SUPPRESSMSGBOXES` support for the updater.
-- No `dilla:` protocol (D12).
+- No `dilla:` protocol (D12; superseded 2026-11-16: registered under HKCU, removed on uninstall).
 - **beta.5 takeover:** before installing, read beta.5's NSIS uninstall entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\` (electron-builder's GUID for `dev.dilla.desktop`) and run its uninstaller with `/S`. That keeps app data (`deleteAppDataOnUninstall: false`).
 - Output: `dilla-<v>-win-x64-setup.exe`.
 - Build with `RUSTFLAGS=-C target-feature=+crt-static`.

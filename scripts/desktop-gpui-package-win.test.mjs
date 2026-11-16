@@ -40,13 +40,18 @@ test("the shortcut's AppUserModelID is the app's APP_ID", () => {
   assert.match(read('clients/desktop/dilla-desktop/src/native/notifier.rs'), /set_app_identity\(crate::APP_ID, crate::PRODUCT_NAME\)/);
 });
 
-test('dilla.iss is per user, silent-capable, takes over beta.5 and registers no protocol', () => {
+test('dilla.iss is per user, silent-capable, takes over beta.5 and registers the dilla: protocol', () => {
   assert.match(iss, /^PrivilegesRequired=lowest$/m);
   assert.match(iss, /^DefaultDirName=\{localappdata\}\\Programs\\Dilla$/m);
   assert.match(iss, /^OutputBaseFilename=dilla-\{#AppVersion\}-win-x64-setup$/m);
   assert.match(iss, /function PrepareToInstall/);
   assert.match(iss, /'\/S \/KEEP_APP_DATA \/currentuser --updated _\?=' \+ Dir/, "electron-builder's own old-uninstaller call");
-  assert.ok(!/URL Protocol|Classes\\dilla|"dilla:|dilla:\/\//i.test(iss.replace(/^;.*$/gm, '').replace(/\/\/.*$/gm, '')), 'no dilla: protocol (D12)');
+  const reg = iss.replace(/^;.*$/gm, '');
+  assert.match(reg, /Subkey: "Software\\Classes\\dilla"; ValueType: string; ValueName: ""; ValueData: "URL:Dilla"; Flags: uninsdeletekey/, 'the scheme key is removed on uninstall');
+  assert.match(reg, /Subkey: "Software\\Classes\\dilla"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""/);
+  assert.match(reg, /Subkey: "Software\\Classes\\dilla\\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "\{app\}\\\{#Exe\},0"/);
+  assert.match(reg, /Subkey: "Software\\Classes\\dilla\\shell\\open\\command"; ValueType: string; ValueName: ""; ValueData: """\{app\}\\\{#Exe\}"" ""%1"""/, 'the link is the one argument');
+  assert.ok(!/Root: HKLM/.test(reg), 'per user: nothing under HKLM');
   assert.ok(!/AppData|APPDATA|Roaming/.test(iss.replace(/^;.*$/gm, '').replace(/\/\/.*$/gm, '')), 'user data is never touched');
   assert.match(iss, /ValueName: "Dilla"; Flags: dontcreatekey uninsdeletevalue/, "the app's autostart value goes with the app");
 });
