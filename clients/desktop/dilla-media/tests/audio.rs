@@ -479,28 +479,48 @@ fn run_frames(mode: NoiseMode, input: &[Vec<i16>]) -> Vec<Vec<i16>> {
     let host = Fake::new();
     let mut mic = Mic::open_with(config(&host, Apm::default(), embedded()), None, mode).unwrap();
     let mut rx = mic.take_frames().unwrap();
-    let mut out = Vec::new();
+    // A reader that never falls behind, as the call's consumer does not: the capture thread drops a frame when its
+    // bounded output queue is full (right for a live call), and a reader that only looked between the pushes' 5 ms
+    // sleeps let a burst from the catching-up noise model overflow it (PR #176, run 43854164612: fewer frames out
+    // than in).
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let want = input.len();
+    let reader = {
+        let out = out.clone();
+        std::thread::spawn(move || {
+            while let Some(o) = rx.blocking_recv() {
+                let mut out = out.lock().unwrap();
+                out.push(o);
+                if out.len() == want {
+                    break;
+                }
+            }
+        })
+    };
     for f in input {
         host.push(f);
         std::thread::sleep(Duration::from_millis(5));
-        while let Ok(o) = rx.try_recv() {
-            out.push(o);
-        }
     }
     // A stall bound, not a budget: it ends as soon as every frame is out, and gives up only when no frame came for
     // 30 s. A fixed total was too short on a busy runner (the Windows debug build of the enhanced model needed more
     // than 10 s for 800 frames; the Linux one, beside 17 other tests, more than 60 s).
-    let mut last = Instant::now();
-    while out.len() < input.len() && last.elapsed() < Duration::from_secs(30) {
-        match rx.try_recv() {
-            Ok(o) => {
-                out.push(o);
-                last = Instant::now();
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+    let (mut seen, mut last) = (0, Instant::now());
+    loop {
+        let n = out.lock().unwrap().len();
+        if n == want || reader.is_finished() {
+            break;
         }
+        if n != seen {
+            (seen, last) = (n, Instant::now());
+        } else if last.elapsed() >= Duration::from_secs(30) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
-    out
+    // Closing the microphone ends the reader if it is still waiting.
+    drop(mic);
+    let _ = reader.join();
+    Arc::try_unwrap(out).unwrap().into_inner().unwrap()
 }
 
 /// A voiced, speech-like frame: 150 Hz harmonics with a 4 Hz syllable envelope.
