@@ -36,7 +36,9 @@ look at them again before committing.
 `node clients/desktop/parity/shoot.mjs clients/desktop/parity/fixtures/<area>/<state>.json` (from the repository root,
 Linux):
 
-1. `cargo run -p dilla-desktop --example parity_world -- <fixture> <out>` starts dilla-testhost serving `packages/web/dist`,
+1. `cargo run -p dilla-desktop --example parity_world -- <fixture> <out>` starts dilla-testhost serving `packages/web/dist-desktop-strings`
+   (the web client with the desktop app's wording, `packages/web/src/strings/desktopOverrides.ts` put over `en`, so a
+   reference says "this device" where the web says "this browser", as the GPUI frame does),
    signs the world's people up the way the app does (each with an authenticator app, a password and a sealed backup), makes
    its servers and channels and stops for the browser.
 2. A fresh Chromium signs the viewer in on a new device the way a person does (password, authenticator code, recovery key,
@@ -63,13 +65,13 @@ export CC=clang CXX=clang++
 npm ci                                                                  #   3 s
 wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install \
   --out-dir ../../packages/core-wasm/pkg                                # 1 m 48 s: the web client imports @dilla/core-wasm
-npm run build -w @dilla/web                                             #  15 s (fails with "Failed to resolve entry for package
+npm run build:desktop-strings -w @dilla/web                             #  15 s (fails with "Failed to resolve entry for package
                                                                         #  @dilla/core-wasm" if the wasm-pack step is missing)
 go build -o target/dilla-testhost ./cmd/dilla-testhost                  #   9 s
 cargo build -p dilla-core-wasi --target wasm32-wasip1 --release         # 2 m 01 s
 ```
 
-`npm run build -w @dilla/web` does NOT build `packages/core-wasm/pkg`; run `wasm-pack` yourself as above. Playwright's
+`npm run build:desktop-strings -w @dilla/web` does NOT build `packages/core-wasm/pkg`; run `wasm-pack` yourself as above. Playwright's
 Chromium (revision 1248) must be in `~/.cache/ms-playwright` (`npx playwright install chromium` otherwise).
 
 ## Shooting

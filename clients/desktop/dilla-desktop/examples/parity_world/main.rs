@@ -2,7 +2,7 @@
 //! (`clients/desktop/parity/shoot.mjs` runs this; see `parity/references/linux/README.md`).
 //!
 //! `cargo run -p dilla-desktop --example parity_world -- <fixture.json> <out-dir>` reads a screen fixture
-//! (`dilla_client::testing::spec`), starts dilla-testhost serving `packages/web/dist`, signs the world's people up,
+//! (`dilla_client::testing::spec`), starts dilla-testhost serving `packages/web/dist-desktop-strings` (the web client with the desktop's wording), signs the world's people up,
 //! makes its servers and channels and writes `<out-dir>/state.json` (the viewer's throwaway secrets, the channels the
 //! browser visits so it can read their history, the window, the host's clock and every local id's real id) before it
 //! prints `SIGNIN <out-dir>`. The browser signs the viewer in on a new device and visits those channels meanwhile, then
@@ -90,10 +90,12 @@ async fn main() {
         missing.join(", ")
     );
     std::fs::create_dir_all(&out).unwrap();
-    let web = world::repo_root().join("packages/web/dist");
+    // The web client built with the desktop's wording (packages/web/src/strings/desktopOverrides.ts over `en`): a
+    // reference is the frame the desktop must match, so it says "this device", not "this browser".
+    let web = world::repo_root().join("packages/web/dist-desktop-strings");
     assert!(
         web.join("index.html").exists(),
-        "build the web client first: npm run build -w @dilla/web"
+        "build the web client with the desktop's wording first: npm run build:desktop-strings -w @dilla/web"
     );
     // A fixture whose viewer joins a call in the browser needs the host's LiveKit (seed/calls.rs).
     let sfu = seed::needs_sfu(&f);
