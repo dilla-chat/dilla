@@ -473,3 +473,45 @@ once CI runs the proof there"), and it costs no new goldens.
 - **D-E nightly:** the whole workflow nightly on main, plus a nightly `macos-26` leg and the Bot suites on macOS.
 - **Cadence:** pull requests matching desktop-gpui.yml's path filter, plus nightly on main. The repo is public, so
   macOS minutes are free. The free plan allows about 5 concurrent macOS jobs.
+
+## Addendum (Jonas, 2026-11-16): no manual Mac pass; everything below is automated
+
+The manual pass stopped. Its remaining items, and every bug it found, become CI assertions. Each lane owns its rows.
+**Stays manual:** one smoke run per release candidate on the dilla-MacBook (build, launch, voice join, log file),
+plus anything a runner cannot do. Each such item names why in RELEASING.md.
+
+### Remaining manual items → lane
+
+| Item | Lane | How |
+|---|---|---|
+| Quit dialog during an upload | 3 (app) | Start an upload in the packaged app via the automation hook or a scripted drag/file pick, press ⌘Q, assert the dialog's AX elements, cancel, assert still running |
+| Inline video: controls, Download, speed, PiP | 1 (render) | In-process GPUI tests on macOS through Metal, using the existing video tests run on the mac leg; PiP window opens (window count) |
+| H.264/H.265 handoff on macOS | 1 (render) | Assert macOS hands H.264/H.265 to the system player path (as documented) |
+| dilla-video-toolbox crash check | 1 (render) | Nightly: build with `--features webrtc-sys/dilla-video-toolbox` and run the decode test; it must not SIGSEGV (known crash: red until fixed, tracked) |
+| Dock badge | 3 (app) | Two profiles (`DILLA_DATA_DIR`): profile B sends a message, assert profile A's Dock tile badge label via AX (`AXStatusLabel` of the Dock item) |
+| Notifications, ring Answer/Decline | 2 (calls) + 3 (app) | Lane 2: in-process ring tests on macOS. Lane 3: two profiles, B rings A, assert A's notification request reached the notification center (delivered notifications via `osascript`/log line); banners are off on runners, so assert delivery, not pixels |
+| Screen share to a second client | 2 (calls) | Two clients on macOS, one shares a test pattern (ScreenCaptureKit needs Screen Recording; grant via TCC.db as the spike found), the other receives frames |
+| Print sheet | 3 (app) | Trigger Print on backup codes via the automation hook, assert an AXSheet with the print dialog appears, cancel |
+| AX tree | 3 (app) | The picker exposes AXTextField "Instance address", AXButton "Connect", AXTextField "Invite link", AXButton "Join"; the workspace exposes the channel list and composer |
+
+### Every bug found on 2026-11-16 → the check that catches it
+
+| Bug | Check (lane) |
+|---|---|
+| No text (font-kit missing) | glyph presence + NoopTextSystem control (1); `cargo tree` font-kit guard (mac-package) |
+| Empty AX tree | AX walker assertions (3); `activation_hands_a_lazy_adapter_the_whole_tree` (unit) |
+| Voice join fails (no TLS for wss) | two-client voice join on macOS against a **wss** room (2); `wss_rooms_reach_a_tls_handshake` (unit) |
+| No logger | the log file exists after launch and has the startup line (3) |
+| ⌘Q dead, the app menu copied the tray | menu items + shortcuts + ⌘Q quits (3); cmd-q keymap test (unit) |
+| Popovers dead (status picker, server menu) | click the chevron and the avatar in the packaged app, assert the menu's AX elements (3) |
+| Segment buttons and Copy dead | click a segment, assert its selected state; Copy, then `pbpaste` (3) |
+| The picker rejects an https invite link | unit test (polish lane) + paste the https link in the packaged picker (3) |
+| Expiry rounding, stale revoked card | unit tests (polish lane) |
+| Web wording ×2 | unit test: no desktop string contains "browser", "page" or "tab" in a web sense (polish lane) |
+| Idle vs online mismatch | unit test (polish lane) |
+| Traffic lights over the brand mark | traffic-light clearance (1) |
+| The picker stays open | `connect_closes_the_manager` (unit) + window count after connect (3) |
+| 400×280 instance window | window size after connect ≥ the workspace minimum (3); unit (polish lane) |
+| Bot tag missing | row badge unit test; parity row (1) when fixtures can express a Bot channel |
+| E_STORE with a fake HOME | two-profile run uses `DILLA_DATA_DIR` (3) |
+| README Metal Toolchain step, video-toolbox feature name | docs (done) |
