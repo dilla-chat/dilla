@@ -18,8 +18,9 @@ import (
 // The GPUI feed cross-test (GPUI release plan, Task 9): testdata/gpui-feed holds a feed that
 // scripts/desktop-gpui-feed.mjs signed under a THROWAWAY test key (throwaway-test-key.pem), never a
 // release key. scripts/desktop-gpui-feed.test.mjs rebuilds the same bytes. This test checks the
-// Node signature and the format-1 shape with crypto/ed25519 directly; once Channel lands in
-// desktopdownload.Verify (Task 11), the same fixture should also verify there under GPUIAlpha.
+// Node signature and the format-1 shape with crypto/ed25519 directly;
+// TestGPUIFeedFixtureVerifiesOnlyUnderGPUIAlpha (gpui_feed_verify_test.go) runs the same
+// fixture through desktopdownload.Verify (Task 11).
 
 type gpuiFeedAsset struct {
 	Name   string `json:"name"`

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/clock"
+	"github.com/dilla-chat/dilla/internal/desktopdownload"
 	"github.com/dilla-chat/dilla/internal/dillad"
 )
 
@@ -36,6 +37,33 @@ func TestDesktopDownloadRoutesFollowTheServerOption(t *testing.T) {
 			}
 			if root := serveOne(t, srv.Handler(), "GET", "/download", ""); selected && !strings.Contains(root.Body.String(), "Download Dilla") {
 				t.Fatalf("download page = %q", root.Body.String())
+			}
+		})
+	}
+}
+
+// The zero DesktopDownloadChannel is beta.5's table (no linux-tar), and GPUIAlpha reaches the
+// default handler: its feed is fetched (unreachable here, so a 503) for the tarball route.
+func TestDesktopDownloadChannelReachesTheDefaultRoutes(t *testing.T) {
+	unreachable := desktopdownload.GPUIAlpha
+	unreachable.FeedURL = "https://127.0.0.1:1/dilla/gpui-alpha/desktop-gpui-alpha.json"
+	for name, tc := range map[string]struct {
+		ch   desktopdownload.Channel
+		want int
+	}{
+		"zero value is beta": {desktopdownload.Channel{}, http.StatusNotFound},
+		"beta":               {desktopdownload.Beta, http.StatusNotFound},
+		"gpui-alpha":         {unreachable, http.StatusServiceUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, _ := testConfigInvite(t)
+			srv, err := dillad.New(t.Context(), dillad.Options{Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t), Web: webTree(t, map[string]string{"index.html": `<!doctype html>`}), DesktopDownloads: true, DesktopDownloadChannel: tc.ch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer srv.Shutdown(context.Background())
+			if rec := serveOne(t, srv.Handler(), "GET", "/download/linux-tar", ""); rec.Code != tc.want {
+				t.Fatalf("/download/linux-tar = %d, want %d", rec.Code, tc.want)
 			}
 		})
 	}
