@@ -2194,7 +2194,11 @@ mod tests {
         let focus = shell.update(vcx, |s, _| s.focus.clone());
         vcx.update(|window, cx| focus.focus(window, cx));
         vcx.run_until_parked();
-        vcx.simulate_keystrokes("ctrl-,");
+        vcx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        });
         vcx.run_until_parked();
         assert_eq!(*asked.borrow(), vec![Route::Settings(None)]);
     }
