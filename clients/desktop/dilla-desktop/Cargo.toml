@@ -13,7 +13,7 @@ workspace = true
 [features]
 # Test-only automation interface (src/automation.rs): a headless window driven over stdin/stdout, with
 # screenshots. It needs GPUI's test-support renderer, so release builds never enable it.
-automation = ["test-hooks", "dep:serde", "dep:serde_json", "dilla-client/testing", "gpui/test-support", "gpui-platform/test-support"]
+automation = ["test-hooks", "dilla-client/testing", "gpui/test-support", "gpui-platform/test-support"]
 # The AppView hooks the tests drive (review M6: `forget_from_forced` signs out and wipes, so release builds do not have
 # it). The crate's own tests turn it on through the dev-dependency on itself below.
 test-hooks = []
@@ -35,9 +35,16 @@ log = "0.4"
 # Message times in the local zone (already in the lock through gpui-component).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-# The automation build's channel-view fixture (src/fixture.rs).
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1.0.151", optional = true }
+# The automation build's channel-view fixture (src/fixture.rs), and the updater's feed document (src/updater/feed.rs).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+# The updater (release plan Task 14b, src/updater/): the feed's Ed25519 signature, the assets' SHA-512 and the version
+# order. All already in the lock (dilla-core's ed25519-dalek 3.0 and its sha2 0.11).
+ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize"] }
+sha2 = "0.11"
+semver = "1.0.28"
+# The updater's feed and downloads, on the HTTP client dilla-client uses (already in the lock).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 # Wave 0/1 (plan R1), declared by Task 1 so Cargo.lock is settled once:
 # - Task 6's format.rs follows the OS locale;
 # - Task 12's inline audio (Jonas 2026-11-12: symphonia + rodio, no FFmpeg).

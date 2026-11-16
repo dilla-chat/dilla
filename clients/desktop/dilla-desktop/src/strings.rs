@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2207] = [
+pub static STRINGS: [(&str, &str); 2220] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -592,6 +592,19 @@ pub static STRINGS: [(&str, &str); 2207] = [
     ("create.server.retry", "Try again"),
     ("create.server.submit", "Create"),
     ("create.server.title", "Start a server"),
+    ("desktop.update.available", "Dilla {version} is available. Update using your package manager."),
+    ("desktop.update.availableDownload", "Dilla {version} is available. Download it from the release page."),
+    ("desktop.update.check", "Check for updates"),
+    ("desktop.update.checking", "Checking for updates…"),
+    ("desktop.update.error.install", "The update could not be installed. Check for updates to retry."),
+    ("desktop.update.error.invalid", "The update did not pass its checks, so Dilla did not install it."),
+    ("desktop.update.error.network", "Dilla could not reach the update server. Try again later."),
+    ("desktop.update.failedTitle", "Could not update Dilla"),
+    ("desktop.update.packageManager", "Update using your package manager"),
+    ("desktop.update.releasePage", "Open the release page"),
+    ("desktop.update.restart", "Restart to update"),
+    ("desktop.update.retry", "Update failed — retry"),
+    ("desktop.update.upToDate", "Dilla is up to date."),
     ("devices.body", "Every browser that holds your keys."),
     ("devices.cap.one", "One device"),
     ("devices.cap.other", "{n} devices"),

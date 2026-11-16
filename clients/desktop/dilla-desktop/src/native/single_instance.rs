@@ -108,7 +108,7 @@ pub fn claim_at(root: &Path, argv: &[String]) -> Claim {
             return Claim::Primary(Primary::default());
         }
     };
-    match lock.try_lock() {
+    match take_lock(&lock, argv) {
         Ok(()) => {
             let endpoint = Endpoint::listen(root)
                 .map_err(|e| log::warn!("dilla-desktop: second launches cannot hand over: {e}"))
@@ -144,6 +144,25 @@ pub fn claim_at(root: &Path, argv: &[String]) -> Claim {
         Err(std::fs::TryLockError::Error(e)) => {
             log::warn!("dilla-desktop: the single-instance lock failed: {e}");
             Claim::Primary(Primary::default())
+        }
+    }
+}
+
+/// How long a launch the updater started waits for the app it replaces to let go of the lock.
+const RELAUNCH_WAIT: Duration = Duration::from_secs(15);
+
+/// `File::try_lock`, except for a launch the updater started (`crate::updater::RELAUNCHED`): the app it replaces is
+/// still quitting and holds the lock for a moment, and handing over to it would end both, so this launch waits for
+/// the lock instead (at most [`RELAUNCH_WAIT`], then it hands over as any second launch does).
+fn take_lock(lock: &File, argv: &[String]) -> Result<(), std::fs::TryLockError> {
+    let relaunched = argv.iter().skip(1).any(|a| a == crate::updater::RELAUNCHED);
+    let until = Instant::now() + RELAUNCH_WAIT;
+    loop {
+        match lock.try_lock() {
+            Err(std::fs::TryLockError::WouldBlock) if relaunched && Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            other => return other,
         }
     }
 }
@@ -828,5 +847,27 @@ mod tests {
             Claim::HandedOver
         ));
         assert!(started.elapsed() >= CONNECT_FOR);
+    }
+
+    /// A launch the updater started waits for the quitting app's lock instead of handing over to it.
+    #[test]
+    fn a_relaunch_after_an_update_waits_for_the_lock() {
+        let root = super::super::links::tests::temp_root("single-relaunch");
+        let held = open_lock(&root).unwrap();
+        held.try_lock().unwrap();
+        let mine = open_lock(&root).unwrap();
+        // Any other launch finds the lock taken at once.
+        assert!(matches!(
+            take_lock(&mine, &argv(&["dilla-desktop"])),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        let started = Instant::now();
+        take_lock(&mine, &argv(&["dilla-desktop", crate::updater::RELAUNCHED])).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        releaser.join().unwrap();
     }
 }

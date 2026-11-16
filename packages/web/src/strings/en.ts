@@ -37,6 +37,7 @@ import { storeNewer } from './storeNewer.ts';
 import { settingsWorkspace } from './settingsWorkspace.ts';
 import { botCommand } from './botCommand.ts';
 import { utility } from './utility.ts';
+import { desktopUpdate } from './desktopUpdate.ts';
 export const en = {
   'privateResult.dismiss': 'Dismiss: {text}',
   'privateResult.failed': 'That didn’t work. Try again.',
@@ -59,6 +60,7 @@ export const en = {
   // Final review I2 (new copy, for Jonas's approval): the Bot refused the sender's device as one it cannot check yet.
   'commands.botCantCheckDevice': "The Bot can't check this device yet. Try again in a moment",
   ...utility,
+  ...desktopUpdate,
   ...botCommand,
   ...settingsWorkspace,
   ...gif,
