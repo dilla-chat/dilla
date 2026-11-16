@@ -14,12 +14,12 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use dilla_client::Client;
 use dilla_client::state::trust::{TrustSummary, privacy_row};
 use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItemState, UserId};
 use dilla_client::testing::host::{
     Host, Person, clear_session, community, repo_root, sign_up, start, start_host, wait_for,
 };
+use dilla_client::{Client, ClientError};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(60);
@@ -171,7 +171,20 @@ async fn browser(host: &Host, name: &str, tag: &str) -> Person {
 
 /// `joinCommunity` + `openChannel` of the e2e helpers: the browser joins the peer's community by its invite, reads its
 /// lists again and opens the channel (joining the peer's group).
-async fn join_and_open(host: &Host, person: &Person, client: &Client, setup: &Value) -> ChannelId {
+///
+/// The instance materialises a registered group's members after `POST /v1/groups` has answered
+/// (`SyncRegisteredGroup`, run after the response): when the browser's community join lands first, the browser is
+/// proposed for an instance Add and its external join is refused 425 `E_COMMIT_REQUIRED` until a member commits the
+/// Add (invariant 5: the peer, holding the only leaf, is online). A real client commits on `mls.commit_needed`; the
+/// web driver commits only when it is driven, so each refusal drives the peer's sync, which commits what is
+/// outstanding and sends the browser its Welcome.
+async fn join_and_open(
+    host: &Host,
+    person: &Person,
+    client: &Client,
+    peer: &Peer,
+    setup: &Value,
+) -> ChannelId {
     let community = hex16(setup["community_id"].as_str().unwrap());
     let channel = ChannelId(hex16(setup["channel_id"].as_str().unwrap()));
     let code = setup["invite_code"].as_str().unwrap().to_owned();
@@ -197,6 +210,10 @@ async fn join_and_open(host: &Host, person: &Person, client: &Client, setup: &Va
             Ok(()) => break,
             Err(e) if Instant::now() < deadline => {
                 eprintln!("open retried: {e}");
+                if matches!(&e, ClientError::Sync(code) if code == "E_COMMIT_REQUIRED") {
+                    peer.call("sync", json!({ "channel_id": setup["channel_id"] }))
+                        .await;
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
             Err(e) => panic!("the browser never opened the channel: {e}"),
@@ -215,7 +232,7 @@ async fn enter(host: &Host, person: &Person, client: &Client, peer: &Peer) -> (V
         )
         .await;
     peer.call("register", json!({})).await;
-    let channel = join_and_open(host, person, client, &setup).await;
+    let channel = join_and_open(host, person, client, peer, &setup).await;
     peer.wait_for_devices(2, setup["channel_id"].as_str()).await;
     // The browser has pinned the peer's key (first seen) before anything rotates it: otherwise the rotated key is the
     // first this device sees, which is trust on first use, not a change (the Playwright suite pins it while joining).
@@ -511,7 +528,7 @@ async fn remove_changed_device_restores_sending_here_only() {
         )
         .await;
     let registered = peer.call("register", json!({})).await;
-    let channel = join_and_open(&host, &me, &client, &setup).await;
+    let channel = join_and_open(&host, &me, &client, &peer, &setup).await;
     let channel_hex = setup["channel_id"].as_str().unwrap().to_owned();
     peer.wait_for_devices(2, Some(&channel_hex)).await;
 
