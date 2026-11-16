@@ -17,6 +17,7 @@ on:
       - 'packages/media/**'
       - 'scripts/gen-gpui-*.mjs'
       - 'scripts/check-glibc-max.sh'
+      - 'scripts/desktop-gpui-package-mac.sh'
       - 'cmd/dilla-testhost/**'
       - 'cmd/dillabot/**'
       - 'internal/**'
@@ -37,6 +38,7 @@ on:
       - 'packages/media/**'
       - 'scripts/gen-gpui-*.mjs'
       - 'scripts/check-glibc-max.sh'
+      - 'scripts/desktop-gpui-package-mac.sh'
       - 'cmd/dilla-testhost/**'
       - 'cmd/dillabot/**'
       - 'internal/**'
@@ -366,3 +368,74 @@ jobs:
           cargo test -p dilla-media --test live --test call --test e2e_call --test capture --test app_audio --locked -- --ignored --skip bot_play_from_enter_to_first_audio_frame_meets_g3 --skip bot_next_queued_track_gap_is_under_150_ms --skip bot_repeated_track_starts_within_500_ms_at_p95 --skip a_new_device_uses_play_within_its_first_session
           # The Bot music timing tests (G3) are latency budgets: measured one at a time, not beside a Bot restart or a browser call.
           cargo test -p dilla-media --test call --locked -- --ignored --exact --test-threads=1 bot_play_from_enter_to_first_audio_frame_meets_g3 bot_next_queued_track_gap_is_under_150_ms bot_repeated_track_starts_within_500_ms_at_p95 a_new_device_uses_play_within_its_first_session
+  # The macOS bundle, unsigned (no secrets in a PR): the release binary goes through scripts/desktop-gpui-package-mac.sh,
+  # which signs ad hoc without CSC_LINK, and the DMG is opened and the app inside it run. The signed and notarized build
+  # is desktop-gpui-sign.yml's (release plan, Tasks 12 and 14); this proves the bundle's shape on every PR.
+  gpui-mac-package:
+    name: gpui-mac-package
+    if: ${{ !cancelled() }}
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Free disk space (macOS)
+        run: |
+          df -h /
+          keep="$(cd "$(xcode-select -p)/../.." && pwd -P)"  # the real app, also when Xcode.app is a link to it
+          for app in /Applications/Xcode*.app; do
+            if [ ! -L "$app" ] && [ "$(cd "$app" && pwd -P)" != "$keep" ]; then sudo rm -rf "$app"; fi
+          done
+          sudo rm -rf "$HOME/Library/Android" /usr/local/share/dotnet "$HOME/.dotnet" "$HOME/Library/Developer/CoreSimulator/Caches"
+          df -h /
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - run: rustup show active-toolchain
+      # Restore only: the gpui job's macOS leg saves this cache (a release build differs in profile only, so the
+      # registry is a warm start at best, never a correctness input).
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: Build the release binary
+        run: cargo build -p dilla-desktop --release --locked
+      - name: Package Dilla.app and the DMG (ad hoc)
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/dilla-desktop/Cargo.toml | head -n 1)"
+          [ -n "$version" ]
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          bash scripts/desktop-gpui-package-mac.sh "$version" target/release/dilla-desktop "$RUNNER_TEMP/mac-dist"
+      - name: Open the DMG and run the app
+        shell: bash
+        run: |
+          mount="$RUNNER_TEMP/dilla-dmg"
+          mkdir -p "$mount"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$RUNNER_TEMP/mac-dist/dilla-$VERSION-mac-arm64.dmg"
+          app="$mount/Dilla.app"
+          ls -l "$app/Contents" "$app/Contents/MacOS"
+          out="$("$app/Contents/MacOS/dilla-desktop" --version)"
+          echo "$out"
+          [[ "$out" == "Dilla $VERSION ("* ]]
+          codesign -dv --verbose=4 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q 'Identifier=dev.dilla.desktop' "$RUNNER_TEMP/codesign.txt"
+          grep -q 'flags=.*runtime' "$RUNNER_TEMP/codesign.txt"
+          codesign -d --entitlements - "$app" 2>&1 | grep -q 'com.apple.security.device.audio-input'
+          plutil -lint "$app/Contents/Info.plist"
+          plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist" | grep -qx 'dev.dilla.desktop'
+          plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist" | grep -qx 'dilla-desktop'
+          plutil -extract LSMinimumSystemVersion raw "$app/Contents/Info.plist" | grep -qx '13.0'
+          plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist"
+          plutil -extract NSCameraUsageDescription raw "$app/Contents/Info.plist"
+          plutil -lint clients/desktop/packaging/macos/entitlements.plist
+          hdiutil detach "$mount"
+      - name: The updater's zip holds the same app
+        shell: bash
+        run: |
+          unzip -q "$RUNNER_TEMP/mac-dist/dilla-$VERSION-mac-arm64.zip" -d "$RUNNER_TEMP/zip-check"
+          codesign --verify --strict "$RUNNER_TEMP/zip-check/Dilla.app"
+          "$RUNNER_TEMP/zip-check/Dilla.app/Contents/MacOS/dilla-desktop" --version

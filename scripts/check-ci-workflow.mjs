@@ -1627,6 +1627,37 @@ function gpuiIgnoredRunLines(text) {
   return lines;
 }
 
+/**
+ * The gpui-mac-package job (GPUI release plan, Task 12): an unsigned PR build of the macOS bundle on macos-15. Each fragment must
+ * appear in one of the job's run blocks, so the job cannot quietly stop building the release binary, packaging it, opening the DMG,
+ * running the app or checking the signature and plists. It carries no secret and no environment (Apple keys are desktop-gpui-sign's).
+ */
+export const GPUI_MAC_PACKAGE_RUNS = [
+  'cargo build -p dilla-desktop --release --locked',
+  'bash scripts/desktop-gpui-package-mac.sh "$version" target/release/dilla-desktop "$RUNNER_TEMP/mac-dist"',
+  'hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$RUNNER_TEMP/mac-dist/dilla-$VERSION-mac-arm64.dmg"',
+  'out="$("$app/Contents/MacOS/dilla-desktop" --version)"',
+  'codesign -dv --verbose=4 "$app"',
+  'plutil -lint "$app/Contents/Info.plist"',
+];
+
+/** The problems with the gpui-mac-package job of desktop-gpui.yml's text, if any. */
+function gpuiMacPackageProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; } // the caller's other checks report an unparsable file
+  const job = doc?.jobs?.['gpui-mac-package'];
+  if (!job) return [`${file}: the gpui-mac-package job is missing`];
+  const problems = [];
+  if (job['runs-on'] !== 'macos-15') problems.push(`${file}: gpui-mac-package must run on macos-15`);
+  if (!String(job.if ?? '').includes('!cancelled()')) problems.push(`${file}: gpui-mac-package must run with \`if: !cancelled()\` (independent of the Linux jobs)`);
+  if ('environment' in job || /secrets\./.test(JSON.stringify(job))) problems.push(`${file}: gpui-mac-package is a PR build: no secrets and no environment (the Apple keys belong to desktop-gpui-sign.yml)`);
+  const runs = (Array.isArray(job.steps) ? job.steps : []).filter((s) => !/\bfalse\b/.test(String(s?.if ?? ''))).map((s) => String(s?.run ?? '')).join('\n');
+  for (const fragment of GPUI_MAC_PACKAGE_RUNS) {
+    if (!runs.includes(fragment)) problems.push(`${file}: gpui-mac-package must run \`${fragment}\``);
+  }
+  return problems;
+}
+
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
   let text;
@@ -1664,6 +1695,7 @@ export function checkDesktopGpuiWorkflow(root) {
       if (!ran) problems.push(`${file}: ${rel} has ignored tests but no \`cargo test -p ${crate} --test ${name} ... -- --ignored\` line in a Linux ignored step runs them`);
     }
   }
+  problems.push(...gpuiMacPackageProblems(text, file));
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
   return problems;
