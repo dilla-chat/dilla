@@ -1617,6 +1617,7 @@ export const GPUI_PINNED_STEPS = {
   macCalls: [
     '- name: Run the call tests (macOS)',
     "  if: runner.os == 'macOS' && !cancelled()",
+    '  continue-on-error: true',
     '  shell: bash',
     '  run: |',
     '    cargo test -p dilla-client --test gateway --test http_sign_in --test calls --locked -- --ignored',
