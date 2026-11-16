@@ -1503,7 +1503,9 @@ impl AppView {
     /// Gives a compact screen its window shape (the start and authentication windows resize in place).
     fn fit_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mode = self.screen.mode();
-        if !self.launch.shipping || !mode.is_compact() {
+        // The loading line is the moment between two screens: it draws in whatever compact shape the window has, so a
+        // window opened in the authentication shape (`opening_mode`) is not shrunk to 400x280 and grown back.
+        if !self.launch.shipping || !mode.is_compact() || matches!(self.screen, Screen::Starting) {
             return;
         }
         // A workspace window that signs out takes the compact chrome: on macOS its traffic lights go (beta.5

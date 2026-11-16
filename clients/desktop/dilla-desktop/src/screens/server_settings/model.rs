@@ -198,35 +198,37 @@ pub fn category_slots(categories: &[&Channel], c: &Channel) -> (bool, bool) {
     }
 }
 
-/// InvitesSection.tsx `inTime`: "in 5 days", "in 3 hours", "in 12 minutes", from `now`.
+/// InvitesSection.tsx `inTime`: "in 5 days", "in 3 hours", "in 12 minutes", from `now`. The unit is the largest one
+/// left, as the web picks it, but the count is rounded to the nearest, not floored: a 7-day link reads "in 7 days" until
+/// 6½ days are left, instead of turning to "in 6 days" a second after it was made. A count that rounds up to the next unit
+/// is said in that unit (23 h 40 min is "in 1 day"), so the text never goes back up as time passes.
 pub fn in_time(expires: u64, now: u64) -> String {
     let left = expires.saturating_sub(now);
-    let days = left / 86_400;
-    if days >= 1 {
-        return if days == 1 {
-            t("serverSettings.invites.in.day").to_owned()
-        } else {
-            tf(
-                "serverSettings.invites.in.days",
-                &[("n", &days.to_string())],
-            )
-        };
+    let rounded = |unit: u64| (left + unit / 2) / unit;
+    let (days, hours) = if left >= 86_400 {
+        (rounded(86_400), 0)
+    } else if left >= 3600 {
+        match rounded(3600) {
+            24 => (1, 0),
+            h => (0, h),
+        }
+    } else {
+        match rounded(60).max(1) {
+            60 => (0, 1),
+            m => {
+                return tf(
+                    "serverSettings.invites.in.minutes",
+                    &[("n", &m.to_string())],
+                );
+            }
+        }
+    };
+    match (days, hours) {
+        (1, _) => t("serverSettings.invites.in.day").to_owned(),
+        (0, 1) => t("serverSettings.invites.in.hour").to_owned(),
+        (0, h) => tf("serverSettings.invites.in.hours", &[("n", &h.to_string())]),
+        (d, _) => tf("serverSettings.invites.in.days", &[("n", &d.to_string())]),
     }
-    let hours = left / 3600;
-    if hours >= 1 {
-        return if hours == 1 {
-            t("serverSettings.invites.in.hour").to_owned()
-        } else {
-            tf(
-                "serverSettings.invites.in.hours",
-                &[("n", &hours.to_string())],
-            )
-        };
-    }
-    tf(
-        "serverSettings.invites.in.minutes",
-        &[("n", &(left / 60).max(1).to_string())],
-    )
 }
 
 /// InvitesSection.tsx `TTL_OPTIONS`: seconds and the string key of the label. 0 is "never".
@@ -590,6 +592,36 @@ mod tests {
         assert_eq!(in_time(1000 + 3600, 1000), "in 1 hour");
         assert_eq!(in_time(1000 + 3 * 3600, 1000), "in 3 hours");
         assert_eq!(in_time(1000 + 12 * 60, 1000), "in 12 minutes");
+    }
+
+    #[test]
+    fn a_new_link_keeps_its_whole_expiry_and_never_counts_up() {
+        // Made with "7 days": a minute (or a second) later it still reads 7 days; the floor read 6.
+        assert_eq!(in_time(604_800, 60), "in 7 days");
+        assert_eq!(in_time(604_800, 1), "in 7 days");
+        assert_eq!(in_time(604_800, 43_199), "in 7 days");
+        assert_eq!(in_time(604_800, 43_201), "in 6 days");
+        // A count that rounds up to the next unit is said in it.
+        assert_eq!(in_time(86_399, 0), "in 1 day");
+        assert_eq!(in_time(23 * 3600 + 40 * 60, 0), "in 1 day");
+        assert_eq!(in_time(3599, 0), "in 1 hour");
+        assert_eq!(in_time(90 * 60, 0), "in 2 hours");
+        assert_eq!(in_time(10, 0), "in 1 minutes");
+        // Never up as time passes, over the whole first week.
+        let mut last = u64::MAX;
+        for now in (0..604_800).step_by(97) {
+            let s = in_time(604_800, now);
+            let n: u64 = s.split(' ').nth(1).unwrap().parse().unwrap();
+            let unit = if s.contains("day") {
+                86_400
+            } else if s.contains("hour") {
+                3600
+            } else {
+                60
+            };
+            assert!(n * unit <= last, "{now}: {s}");
+            last = n * unit;
+        }
         assert_eq!(in_time(1000 + 5, 1000), "in 1 minutes");
         assert_eq!(in_time(5, 1000), "in 1 minutes");
     }

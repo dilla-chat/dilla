@@ -27,7 +27,7 @@ use gpui::{
     WindowOptions, div, point, prelude::*, px, size,
 };
 use screens::shell::window::{
-    SavedBounds, Screen, WORKSPACE_MIN, WindowMode, restore_bounds, window_shape,
+    SavedBounds, Screen, WORKSPACE_MIN, WindowMode, opening_mode, restore_bounds, window_shape,
 };
 
 pub use app::{AppView, Launch};
@@ -115,13 +115,11 @@ pub fn open_main_window(cx: &mut App) -> Result<WindowHandle<AppView>> {
     open_main_window_with(cx, Launch::os())
 }
 
-/// Opens the main window for `launch`: a shipping launch starts in the start shape, any other at `launch.window`.
+/// Opens the main window for `launch`: a shipping launch in [`opening_mode`]'s shape, any other at `launch.window`.
 pub fn open_main_window_with(cx: &mut App, launch: Launch) -> Result<WindowHandle<AppView>> {
-    let mode = match (launch.shipping, launch.handoff.is_some()) {
-        (false, _) => None,
-        (true, true) => Some(WindowMode::Workspace),
-        (true, false) => Some(WindowMode::Starting),
-    };
+    let mode = launch
+        .shipping
+        .then(|| opening_mode(launch.handoff.is_some(), has_store(&launch)));
     match mode {
         Some(mode) => open_window_in(cx, launch, mode),
         None => {
@@ -134,6 +132,24 @@ pub fn open_main_window_with(cx: &mut App, launch: Launch) -> Result<WindowHandl
             })
         }
     }
+}
+
+/// Whether the instance this launch opens (its `instance`, else the first listed, as `AppView::new` picks it) has a
+/// store on disk: without one there is no account to start, only the sign-up or the sign-in.
+fn has_store(launch: &Launch) -> bool {
+    let Some(list) = launch
+        .root
+        .as_deref()
+        .filter(|_| launch.resume)
+        .and_then(|root| dilla_client::instances::Instances::load(root).ok())
+    else {
+        return false;
+    };
+    let cfg = match launch.instance {
+        Some(id) => list.get(id),
+        None => list.list().first(),
+    };
+    cfg.is_some_and(|cfg| cfg.data_dir.join(dilla_client::store::DB_FILE).exists())
 }
 
 /// The height of the largest display's work area, logical px (1080 where the platform names no display).

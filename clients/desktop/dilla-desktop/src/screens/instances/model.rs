@@ -31,7 +31,10 @@ pub struct Connect {
 /// Why a connect, an invite or a removal did not happen. [`Refusal::message`] is what the window shows.
 #[derive(Debug)]
 pub enum Refusal {
+    /// The Instance address field holds no address the client connects to.
     Address(InvalidAddress),
+    /// The Invite link field holds no invite link (neither `https://<instance>/i/<code>` nor `dilla://invite/...`).
+    Invite(InvalidAddress),
     TooMany,
     /// The instance is open in a window (here or in another process).
     InUse,
@@ -48,6 +51,7 @@ impl Refusal {
     pub fn message(&self) -> String {
         match self {
             Self::Address(_) => copy::ERROR_CONNECT.into(),
+            Self::Invite(_) => copy::ERROR_INVITE.into(),
             Self::TooMany => copy::ERROR_TOO_MANY.replace("{max}", &MAX_INSTANCES.to_string()),
             Self::InUse => copy::ERROR_IN_USE.into(),
             Self::Keychain => copy::ERROR_KEYCHAIN.into(),
@@ -139,16 +143,28 @@ impl Manager {
         self.connect(parsed)
     }
 
-    /// Connects to a pasted `dilla://invite/<host>/<code>` link.
+    /// Connects to a pasted invite link: the `https://<instance>/i/<code>` link the server mints (dillad invites.go
+    /// `NewInvites`: `<base URL>/i/<code>`), or a `dilla://invite/<host>/<code>` link.
     pub fn connect_invite(&mut self, input: &str) -> Result<Connect, Refusal> {
-        let parsed = address::parse_invite(input.trim()).map_err(Refusal::Address)?;
+        let parsed = self.parse_invite(input)?;
         self.connect(parsed)
+    }
+
+    /// A pasted invite in either form; anything else is a [`Refusal::Invite`], so the window names the invite field.
+    pub fn parse_invite(&self, input: &str) -> Result<address::Input, Refusal> {
+        let input = input.trim();
+        let parsed = if input.starts_with("dilla:") {
+            address::parse_invite(input)
+        } else {
+            address::invite_link(input, self.allow_loopback)
+        };
+        parsed.map_err(Refusal::Invite)
     }
 
     /// Whether `input`, a pasted invite, names an instance that is not listed yet (the window asks before it adds it,
     /// as the shell does for an invite link: only continue if you recognise the address).
     pub fn invite_names_new_instance(&mut self, input: &str) -> Result<bool, Refusal> {
-        let parsed = address::parse_invite(input.trim()).map_err(Refusal::Address)?;
+        let parsed = self.parse_invite(input)?;
         self.instances.refresh()?;
         Ok(self.instances.find(&parsed.instance).is_none())
     }
@@ -198,6 +214,8 @@ mod tests {
     fn refusals_never_echo_the_input() {
         let r = Refusal::Address(InvalidAddress("Invalid instance URL"));
         assert_eq!(r.message(), copy::ERROR_CONNECT);
+        let r = Refusal::Invite(InvalidAddress("Invalid invite"));
+        assert_eq!(r.message(), copy::ERROR_INVITE);
         assert!(Refusal::TooMany.message().contains("32"));
     }
 }

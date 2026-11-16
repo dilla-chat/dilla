@@ -16,7 +16,7 @@ pub const ADDRESS_PLACEHOLDER: &str = "https://chat.example.com";
 pub const CONNECT: &str = "Connect";
 pub const CONNECT_BUSY: &str = "Connecting\u{2026}";
 pub const INVITE_LABEL: &str = "Invite link";
-pub const INVITE_PLACEHOLDER: &str = "dilla://invite/chat.example.com/code";
+pub const INVITE_PLACEHOLDER: &str = "https://chat.example.com/i/code";
 pub const INVITE_HINT: &str = "Paste an invite link to join its community.";
 pub const INVITE_CONNECT: &str = "Join";
 pub const LIST_TITLE: &str = "Your instances";
@@ -38,6 +38,8 @@ pub const CONFIRM_CONNECT: &str = "Connect";
 pub const NEW_BODY: &str = "Connect to {host}? Only continue if you recognize this address.";
 pub const ERROR_CONNECT: &str =
     "Could not connect. Enter a complete HTTPS instance address, then try again.";
+/// The Invite link field's own refusal: the address field's words would point at the wrong field.
+pub const ERROR_INVITE: &str = "Could not join. Paste a complete invite link, such as https://chat.example.com/i/code, then try again.";
 pub const ERROR_TOO_MANY: &str =
     "This device already has {max} instances. Remove one to connect another.";
 pub const ERROR_IN_USE: &str = "This instance is open in a window. Close it first.";
