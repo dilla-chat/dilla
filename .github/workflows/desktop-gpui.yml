@@ -18,6 +18,8 @@ on:
       - 'scripts/gen-gpui-*.mjs'
       - 'scripts/check-glibc-max.sh'
       - 'scripts/desktop-gpui-package-mac.sh'
+      - 'scripts/desktop-gpui-package-win.*'
+      - 'scripts/fetch-libwebrtc.sh'
       - 'cmd/dilla-testhost/**'
       - 'cmd/dillabot/**'
       - 'internal/**'
@@ -39,6 +41,8 @@ on:
       - 'scripts/gen-gpui-*.mjs'
       - 'scripts/check-glibc-max.sh'
       - 'scripts/desktop-gpui-package-mac.sh'
+      - 'scripts/desktop-gpui-package-win.*'
+      - 'scripts/fetch-libwebrtc.sh'
       - 'cmd/dilla-testhost/**'
       - 'cmd/dillabot/**'
       - 'internal/**'
@@ -439,3 +443,141 @@ jobs:
           unzip -q "$RUNNER_TEMP/mac-dist/dilla-$VERSION-mac-arm64.zip" -d "$RUNNER_TEMP/zip-check"
           codesign --verify --strict "$RUNNER_TEMP/zip-check/Dilla.app"
           "$RUNNER_TEMP/zip-check/Dilla.app/Contents/MacOS/dilla-desktop" --version
+  # The Windows installer (GPUI release plan, Task 13, D10), built and exercised on a clean windows-latest runner, keyless:
+  # beta.5's NSIS installer goes on first (pinned by SHA-256), then the new setup takes it over silently; the release
+  # binary is the static-CRT build the plan names. Independent of the gpui jobs' results.
+  gpui-win-package:
+    name: gpui-win-package
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 120  # a cold release build with the static CRT
+    env:
+      BETA5_WIN_SHA256: 0cf2c3ad5c94b9cd4aa21956e6d37209dafe06fa525fcd7866240379fadcf1bb
+      # electron-builder's uninstall key for appId dev.dilla.desktop (UUID v5; scripts/desktop-gpui-package-win.test.mjs).
+      BETA5_UNINSTALL_GUID: f6db60e4-10df-5b69-9206-408d5f2cebe9
+      DILLA_INNO_APP_ID: '{6F0A3C1E-5D2B-4B7A-9E43-1C8D2A7B5F10}_is1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - run: node --test scripts/desktop-gpui-package-win.test.mjs
+      - run: rustup show active-toolchain
+      # LiveKit's prebuilt libwebrtc on Windows links the static MSVC runtime (/MT); the shipped binary is built the same way.
+      - name: Static MSVC runtime
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+      # The release's libwebrtc, pinned by SHA-256 (fetch-libwebrtc.sh): it also supplies the licence the bundle ships.
+      - name: Fetch the pinned libwebrtc
+        shell: bash
+        run: |
+          line=$(bash scripts/fetch-libwebrtc.sh x86_64-pc-windows-msvc "$RUNNER_TEMP/libwebrtc")
+          echo "LK_CUSTOM_WEBRTC=$(cygpath -m "${line#LK_CUSTOM_WEBRTC=}")" >> "$GITHUB_ENV"
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-win-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      # beta.5's Windows installer, from its release, checked against its pinned SHA-256.
+      - name: Download beta.5's installer
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            "https://github.com/dilla-chat/dilla/releases/download/desktop-v0.1.0-beta.5/dilla-0.1.0-beta.5-win-x64.exe" \
+            -o "$RUNNER_TEMP/dilla-0.1.0-beta.5-win-x64.exe"
+          printf '%s  %s\n' "$BETA5_WIN_SHA256" "$RUNNER_TEMP/dilla-0.1.0-beta.5-win-x64.exe" | sha256sum --check --strict
+      # Wait-Process on the installer alone: beta.5 may start the app it installed, which Start-Process -Wait would also wait for.
+      - name: Install beta.5 (silent)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\dilla-0.1.0-beta.5-win-x64.exe" -ArgumentList '/S' -PassThru
+          Wait-Process -Id $p.Id -Timeout 600
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:BETA5_UNINSTALL_GUID"
+          if (-not (Test-Path $key)) { throw "beta.5's uninstall entry $key is not there: electron-builder's GUID for dev.dilla.desktop is wrong" }
+          $entry = Get-ItemProperty $key
+          Write-Host "DisplayName=$($entry.DisplayName) DisplayVersion=$($entry.DisplayVersion) UninstallString=$($entry.UninstallString)"
+          if ($entry.DisplayVersion -ne '0.1.0-beta.5') { throw "expected beta.5, found $($entry.DisplayVersion)" }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Dilla'
+          if (-not (Test-Path (Join-Path $dir 'dilla-desktop.exe'))) { throw "beta.5's dilla-desktop.exe is not in $dir" }
+          # The user data beta.5 keeps (deleteAppDataOnUninstall: false) must outlive the takeover.
+          $data = Join-Path $env:APPDATA 'Dilla'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          Set-Content -Path (Join-Path $data 'takeover-sentinel.txt') -Value 'kept'
+      - name: Build the release binary (static CRT)
+        shell: bash
+        run: cargo build -p dilla-desktop --release --locked
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path clients/desktop/dilla-desktop/Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          "DILLA_VERSION=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          & scripts/desktop-gpui-package-win.ps1 -Version $version -Binary target/release/dilla-desktop.exe -OutDir dist
+      # The plan's own check, independent of the script's: no Visual C++ redistributable runtime.
+      - name: No VCRUNTIME140.dll in the binary's dependents
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $dumpbin = & $vswhere -latest -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | Select-Object -First 1
+          $out = & $dumpbin /dependents target/release/dilla-desktop.exe
+          $out | ForEach-Object { Write-Host $_ }
+          if ($out -match 'VCRUNTIME140') { throw 'dilla-desktop.exe needs VCRUNTIME140.dll: the CRT is not static' }
+      - name: Setup over beta.5 (silent)
+        shell: pwsh
+        run: |
+          $setup = "dist/dilla-$env:DILLA_VERSION-win-x64-setup.exe"
+          $log = Join-Path $env:RUNNER_TEMP 'setup.log'
+          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait -PassThru
+          if (Test-Path $log) { Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "setup exited with $($p.ExitCode)" }
+      - name: beta.5 is gone, its data kept, the app runs
+        shell: pwsh
+        run: |
+          $uninstall = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          if (Test-Path "$uninstall\$env:BETA5_UNINSTALL_GUID") { throw "beta.5's uninstall entry is still there" }
+          if (Test-Path "HKCU:\Software\$env:BETA5_UNINSTALL_GUID") { throw "beta.5's install-location key is still there" }
+          if (-not (Test-Path -LiteralPath "$uninstall\$env:DILLA_INNO_APP_ID")) { throw 'the new uninstall entry is missing' }
+          $sentinel = Join-Path $env:APPDATA 'Dilla\takeover-sentinel.txt'
+          if (-not (Test-Path $sentinel)) { throw "$sentinel is gone: the takeover deleted beta.5's user data" }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Dilla'
+          $exe = Join-Path $dir 'dilla-desktop.exe'
+          if (Test-Path (Join-Path $dir 'Uninstall Dilla.exe')) { throw "beta.5's uninstaller is left in $dir" }
+          foreach ($left in 'resources', 'locales', 'Dilla.exe') {
+            if (Test-Path (Join-Path $dir $left)) { throw "an Electron file is left in ${dir}: $left" }
+          }
+          $reported = (& $exe --version) -join "`n"
+          Write-Host $reported
+          if ($LASTEXITCODE -ne 0 -or $reported -notmatch "^Dilla $([regex]::Escape($env:DILLA_VERSION)) ") { throw "dilla-desktop.exe --version said '$reported'" }
+          if (-not (Test-Path (Join-Path $dir 'licenses/THIRD-PARTY.md'))) { throw 'the licence bundle is not installed' }
+          # The Start-menu shortcut carries the app's AppUserModelID.
+          $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Dilla.lnk'
+          if (-not (Test-Path $lnk)) { throw "$lnk is missing" }
+          $item = (New-Object -ComObject Shell.Application).NameSpace((Split-Path $lnk)).ParseName((Split-Path $lnk -Leaf))
+          $aumid = $item.ExtendedProperty('System.AppUserModel.ID')
+          if ($aumid -ne 'dev.dilla.desktop') { throw "the shortcut's AppUserModelID is '$aumid'" }
+          if (Test-Path 'HKCU:\Software\Classes\dilla') { throw 'a dilla: protocol is registered (D12)' }
+      - name: Silent uninstall leaves no program files
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Dilla'
+          $p = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "the uninstaller exited with $($p.ExitCode)" }
+          # Inno's uninstaller finishes in a copy of itself; wait for the folder to go.
+          for ($i = 0; $i -lt 60 -and (Test-Path $dir); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path $dir) { throw "program files are left: $((Get-ChildItem -Recurse -Force $dir).FullName -join ', ')" }
+          if (Test-Path -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:DILLA_INNO_APP_ID") { throw 'the uninstall entry is left' }
+          if (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Dilla.lnk')) { throw 'the Start-menu shortcut is left' }
+          if (-not (Test-Path (Join-Path $env:APPDATA 'Dilla\takeover-sentinel.txt'))) { throw 'the uninstall deleted user data' }
+      # Saved even when a step fails: a cold Windows release build with the static CRT takes most of an hour.
+      - if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-win-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
