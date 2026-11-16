@@ -160,14 +160,15 @@ update with a lower `versionCode`.
 ### The `mobile-release` environment
 
 The deployment branch policy is `main` only, and must stay so (a `v*` tag policy would hand the secrets to whatever
-workflow file a pushed tag carries). The secrets and the variable live only here.
+workflow file a pushed tag carries). The Android secrets and the variable live only here. The iOS job reads the App
+Store Connect API key from the repo-level secrets that `desktop-gpui-sign.yml` notarizes with.
 
 | Name | Kind | Value |
 | --- | --- | --- |
 | `ANDROID_KEYSTORE_B64` | secret | the release keystore, base64 |
 | `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD` | secret | keystore password, key password (the key alias, `dilla`, is set in the workflow) |
-| `ASC_KEY_ID`, `ASC_ISSUER_ID` | secret | from the App Store Connect API key |
-| `ASC_KEY_P8` | secret | the contents of the `.p8` file |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | repo secret | the App Store Connect API key's key id and issuer id |
+| `APPLE_API_KEY` | repo secret | the `.p8` file's contents or their base64 (not a path) |
 | `APPLE_TEAM_ID` | variable | developer.apple.com, Membership |
 
 Set them with `gh secret set --env mobile-release NAME` and `gh variable set --env mobile-release APPLE_TEAM_ID`.
@@ -178,8 +179,8 @@ The Android secrets are already set.
 1. App Store Connect, Apps, **+ New App**: iOS, name Dilla (Dilla Chat if taken), bundle id `chat.dilla.app`, SKU
    `dilla-ios`.
 2. Users and Access, Integrations, **App Store Connect API**: create a **Team** key with the **Admin** role. App
-   Manager is not enough, because cloud signing needs Admin. Set `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` and the
-   variable `APPLE_TEAM_ID`.
+   Manager is not enough, because cloud signing needs Admin. Set the repo secrets `APPLE_API_KEY_ID`,
+   `APPLE_API_ISSUER`, `APPLE_API_KEY` (shared with macOS notarization) and the environment variable `APPLE_TEAM_ID`.
 3. TestFlight: add the beta app description and a feedback email, then create an **external group** with a **public
    link** and send the first build to beta review. Put the public link in one place, the marked `TestFlight link` line in [`docs/user/mobile.md`](../../docs/user/mobile.md#install).
 4. First build, export compliance: `Info.plist` declares `ITSAppUsesNonExemptEncryption` as `YES` (standard
