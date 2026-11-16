@@ -91,6 +91,31 @@ impl Members {
     }
 }
 
+/// The presence the members views show for `user` in `community`. Anyone else: the instance's snapshot (op 48). This
+/// account: its own presence choice, the one the user panel shows (`ProfileState::presence_choice`), so the panel and
+/// the list never disagree, even before the instance's next presence frame: do not disturb and idle as chosen,
+/// invisible as others see it (offline), and online as online unless the instance says idle (no input for 10 minutes,
+/// gateway presence.go's auto-idle). With no choice read yet, the snapshot.
+pub fn shown_presence(
+    state: &crate::state::AppState,
+    community: CommunityId,
+    user: UserId,
+) -> Presence {
+    use crate::state::profile::PresenceChoice;
+    let snapshot = state.people.presence_of(community, user);
+    if state.account.user_id != Some(user) {
+        return snapshot;
+    }
+    match state.profile.presence_choice {
+        None => snapshot,
+        Some(PresenceChoice::Invisible) => Presence::Offline,
+        Some(PresenceChoice::Dnd) => Presence::Dnd,
+        Some(PresenceChoice::Idle) => Presence::Idle,
+        Some(PresenceChoice::Online) if snapshot == Presence::Idle => Presence::Idle,
+        Some(PresenceChoice::Online) => Presence::Online,
+    }
+}
+
 /// App.tsx's activity sampling: one report per 5 s of input at most (gateway.ts keeps the same 5 s).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ActivityThrottle {
@@ -117,6 +142,41 @@ impl ActivityThrottle {
 mod activity_tests {
     use super::ActivityThrottle;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn your_own_row_follows_your_choice_and_auto_idle() {
+        use super::shown_presence;
+        use crate::state::members::Presence;
+        use crate::state::profile::PresenceChoice;
+        use crate::state::{AppState, CommunityId, UserId};
+        let (c, me, ada) = (CommunityId([1; 16]), UserId([2; 16]), UserId([3; 16]));
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        let snapshot = |s: &mut AppState, mine: Presence| {
+            s.people
+                .presence
+                .insert(c, [(me, mine), (ada, Presence::Idle)].into_iter().collect());
+        };
+        // The panel says online (the choice); the instance's snapshot says idle only after 10 minutes without input.
+        snapshot(&mut s, Presence::Online);
+        s.profile.presence_choice = Some(PresenceChoice::Online);
+        assert_eq!(shown_presence(&s, c, me), Presence::Online);
+        snapshot(&mut s, Presence::Idle);
+        assert_eq!(shown_presence(&s, c, me), Presence::Idle, "auto-idle");
+        // A choice made here shows at once, before the instance's next presence frame.
+        snapshot(&mut s, Presence::Online);
+        s.profile.presence_choice = Some(PresenceChoice::Dnd);
+        assert_eq!(shown_presence(&s, c, me), Presence::Dnd);
+        s.profile.presence_choice = Some(PresenceChoice::Idle);
+        assert_eq!(shown_presence(&s, c, me), Presence::Idle);
+        s.profile.presence_choice = Some(PresenceChoice::Invisible);
+        assert_eq!(shown_presence(&s, c, me), Presence::Offline);
+        // No choice read yet: the snapshot. Anyone else: always the snapshot.
+        s.profile.presence_choice = None;
+        assert_eq!(shown_presence(&s, c, me), Presence::Online);
+        s.profile.presence_choice = Some(PresenceChoice::Dnd);
+        assert_eq!(shown_presence(&s, c, ada), Presence::Idle);
+    }
 
     #[test]
     fn input_is_reported_at_most_every_five_seconds() {

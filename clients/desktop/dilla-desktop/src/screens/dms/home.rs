@@ -46,7 +46,7 @@ pub fn presence_anywhere(state: &AppState, user: UserId) -> Presence {
     state
         .communities
         .iter()
-        .map(|c| state.people.presence_of(c.id, user))
+        .map(|c| dilla_client::features::members::shown_presence(state, c.id, user))
         .find(|p| *p != Presence::Offline)
         .unwrap_or(Presence::Offline)
 }
