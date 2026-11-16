@@ -734,7 +734,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.DesktopDownloads {
 		downloads = o.DesktopDownloadRoutes
 		if downloads == nil {
-			downloads = desktopdownload.New(desktopdownload.Options{})
+			downloads = desktopdownload.New(desktopdownload.Options{Channel: o.DesktopDownloadChannel})
 		}
 	}
 	mux.Handle("GET /download/{platform}", downloads)

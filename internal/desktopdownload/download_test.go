@@ -91,6 +91,7 @@ func feedServer(t *testing.T, s *served) (*httptest.Server, *time.Time) {
 func handler(t *testing.T, s *served, keys []ed25519.PublicKey) (http.Handler, *time.Time) {
 	t.Helper()
 	srv, clock := feedServer(t, s)
+	// The zero Options.Channel is the beta channel: every beta test runs through it.
 	h := desktopdownload.New(desktopdownload.Options{FeedURL: srv.URL + "/dilla/beta/desktop-beta.json", Client: srv.Client(), Keys: keys, Now: func() time.Time { return *clock }})
 	mux := http.NewServeMux()
 	mux.Handle("GET /download/{platform}", h)

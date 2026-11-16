@@ -22,6 +22,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/botsupervisor"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/desktopdownload"
 	"github.com/dilla-chat/dilla/internal/dillad"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/exit"
@@ -133,8 +134,14 @@ func newMetrics() *obs.Metrics {
 func runServe(args []string, stdout, stderr io.Writer) error {
 	fs, cfgPath := newFlagSet("serve", stderr)
 	desktopDownloads := fs.Bool("desktop-downloads", false, "serve desktop downloads for browser navigation (enable only after desktop acceptance)")
+	downloadsChannel := fs.String("desktop-downloads-channel", "beta", "desktop release line --desktop-downloads serves: beta (Electron beta.5) or gpui-alpha (native GPUI alpha)")
 	if err := parse(fs, args, stdout); err != nil {
 		return err
+	}
+	// An unknown channel fails here, before anything starts, and never falls back to beta.
+	channel, err := desktopdownload.ChannelNamed(*downloadsChannel)
+	if err != nil {
+		return usageError(stderr, "serve", "--desktop-downloads-channel: %v", err)
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -329,7 +336,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
 		Blobs: blobStore, Relay: relayRev,
-		DesktopDownloads: *desktopDownloads,
+		DesktopDownloads: *desktopDownloads, DesktopDownloadChannel: channel,
 	}
 	var bot *botsupervisor.Supervisor
 	if keeper != nil {
