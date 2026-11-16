@@ -858,7 +858,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("home.tab", "Home"),
     ("home.tile", "direct messages"),
     ("home.tileLabel", "direct messages, unread {unread}, mentions {mentions}"),
-    ("invite.blocked", "This browser did not copy the link. Press copy link to try again, or select the link and copy it yourself."),
+    ("invite.blocked", "dilla could not copy the link. Press copy link to try again, or select the link and copy it yourself."),
     ("invite.copied", "Invite link copied."),
     ("invite.copy", "copy link"),
     ("invite.creating", "Making an invite link…"),

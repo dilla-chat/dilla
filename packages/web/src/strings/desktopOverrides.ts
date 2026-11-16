@@ -67,4 +67,6 @@ export const desktopOverrides = {
   'voice.micDenied': 'The microphone is blocked. You can listen; allow dilla to use the microphone in the system settings to talk.',
   'voice.otherTab': 'Voice is open in another dilla window.',
   'voice.why.noShare': 'not available here',
+  // Invites: the system clipboard, not the browser's.
+  'invite.blocked': 'dilla could not copy the link. Press copy link to try again, or select the link and copy it yourself.',
 };
