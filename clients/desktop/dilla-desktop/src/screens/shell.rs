@@ -1684,6 +1684,7 @@ impl Render for ShellView {
                 reminders_open,
                 bell_focus: Some(bell_focus),
                 voice: call_room,
+                menu_open: titlebar::window_menu_open(window, cx),
             },
             &titlebar::TitlebarHandlers {
                 // TopBar.tsx's voice chip opens the call.
@@ -1704,6 +1705,9 @@ impl Render for ShellView {
                 }),
             },
             reminders,
+            self.controls
+                .then(|| titlebar::window_menu(window, cx))
+                .flatten(),
         );
 
         div()
