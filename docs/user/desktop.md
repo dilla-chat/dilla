@@ -2,7 +2,8 @@
 
 The desktop client is the native Rust/GPUI program in `clients/desktop`. On Linux it is released as an **alpha**
 (`desktop-gpui-v0.2.0-alpha.N`): an AppImage, a tar.gz, a deb, an rpm and an AUR recipe, [installed by
-hand](#install-the-linux-alpha). It does not update itself yet. On macOS and Windows it is built from source. Keep
+hand](#install-the-linux-alpha). From the first signed alpha on it checks for updates itself (the tray's "Check for
+updates"). On macOS and Windows it is built from source. Keep
 using the browser client or the [mobile app](mobile.md) for everyday use.
 
 **The Electron desktop app is discontinued.** Its last release is `desktop-v0.1.0-beta.5`. A copy you already
@@ -16,7 +17,7 @@ server's `/desktop-auth` routes; an older instance cannot take them, and the app
 
 The native client is written in Rust with the GPUI toolkit (`clients/desktop`) and draws the Signal screens at pixel
 parity with the web client on Linux. On Linux you install an alpha release; on macOS and Windows you build it from
-source. It has no updater yet. The list of what works, screen by screen, is in the
+source. The list of what works, screen by screen, is in the
 [README](../../README.md#the-native-desktop-client-gpui).
 
 ![The native client: Midgard Crew with the channel list, a conversation in #general and the members](screenshots/gpui-shell-conversation.png)
@@ -156,9 +157,13 @@ the updater and packaging.
 - **Deep links:** `dilla://invite/...` opens in the app when it is on the command line (or reaches a running app
   through a second launch, which hands everything over and exits), but the system does not send such links to the app
   until the installers register the `dilla:` scheme.
-- **Updater and packaging:** no automatic update: download each new alpha from its release. Linux has an AppImage,
-  a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR); macOS and Windows have no DMG or
-  installer yet, so build from source there.
+- **Updater and packaging:** from the first signed alpha on, the app checks its signed update feed at start, every 6
+  hours and on the tray's "Check for updates". An AppImage, the macOS app in a folder you can write to and the Windows
+  per-user install download the update, check it (the feed's signature, the file's size and SHA-512, and on macOS the
+  Developer ID signature) and offer "Restart to update"; the restart asks first when a call or unsent text would be
+  lost. A deb, rpm, AUR or tar.gz install only says that a new version is available: update it with your package
+  manager or from the release page. An alpha before the first signed one does not check: download the next alpha by
+  hand. Linux has an AppImage, a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR).
 - **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
   and macOS the system's own dialog chooses). A share's sound comes from one application (the share menu's sound
   section) on Linux only; macOS and Windows shares carry no sound yet. The camera works on Linux and Windows, not yet

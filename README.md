@@ -52,7 +52,9 @@ As of the screens wave 1 (2026-11-13). The Rust/GPUI desktop client in `clients/
 app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). Linux has alpha
 releases (`desktop-gpui-v0.2.0-alpha.N`: AppImage, tar.gz, deb, rpm and an AUR recipe; the packages replace an
 installed beta.5, [how to install it](docs/user/desktop.md#install-the-linux-alpha)); on macOS and Windows you build
-it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)). It does not update itself yet.
+it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)). From the first signed alpha on
+it checks for updates itself (an AppImage, the Mac app and the Windows install update in place; a package says a new
+version is available).
 It draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
 measured). What works today, screen by screen:
 
@@ -129,7 +131,7 @@ As of 2026-10-22, in the web client:
 For the native desktop preview:
 
 - Application audio for a share on macOS and Windows, and the camera on macOS.
-- The updater, and the macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
+- The macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
   alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand. Until the packages register it, the
   system does not open `dilla://invite` links in the app by itself (passing one on the command line works).
 - Push to talk while another window has focus. Screen readers are supported (AccessKit).
