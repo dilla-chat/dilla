@@ -100,7 +100,8 @@ enum Update {
     /// A re-establishment of a refused session ended.
     Renewed(Renewal),
     Structure,
-    Loaded(Box<Loaded>),
+    /// A structure read ended: its start's number ([`StructureOrder::start`]) and what it read.
+    Loaded(u64, Box<Loaded>),
     Focus(Option<ChannelId>),
     MarkRead(ChannelId, oneshot::Sender<Result<(), ClientError>>),
     /// An area's change to its own slice ([`Inner::publish`]).
@@ -536,6 +537,7 @@ impl Client {
             upkeep,
             inner: area_inner,
             removals_due: false,
+            structure: StructureOrder::default(),
             removals: RemovalGate::default(),
             taps,
         };
@@ -1277,6 +1279,8 @@ struct Publisher {
     inner: Arc<OnceLock<Weak<Inner>>>,
     /// A ready came since the last structure load: the next one reads the removal feeds first.
     removals_due: bool,
+    /// Which structure read's answer may still land (an older one finishing late is dropped).
+    structure: StructureOrder,
     /// Which timelines may not be read yet because a removal feed is unread.
     removals: RemovalGate,
     taps: Taps,
@@ -1285,6 +1289,33 @@ struct Publisher {
 fn lock_taps(taps: &Taps) -> std::sync::MutexGuard<'_, Vec<mpsc::UnboundedSender<Arc<AppState>>>> {
     taps.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The structure reads run concurrently (every `community_changed`, ready and refresh starts one), so they may end out of
+/// order: a read that began before a channel was created can end after one that began later and saw it. Only an answer
+/// newer than the last one shown lands; an older one finishing late would put back a list without the new channel, and
+/// nothing would read it again until the next change.
+#[derive(Debug, Default)]
+struct StructureOrder {
+    started: u64,
+    shown: u64,
+}
+
+impl StructureOrder {
+    /// A read starts: its number.
+    fn start(&mut self) -> u64 {
+        self.started += 1;
+        self.started
+    }
+
+    /// Whether read `seq`'s answer is shown (no newer one is); if so, it is the one shown.
+    fn lands(&mut self, seq: u64) -> bool {
+        if seq <= self.shown {
+            return false;
+        }
+        self.shown = seq;
+        true
+    }
 }
 
 /// What keeps a timeline unread until its removal feed is: a ready's read in flight (every timeline), and each group
@@ -1435,7 +1466,11 @@ impl Publisher {
                         }
                     }
                     Update::Structure => structure = true,
-                    Update::Loaded(loaded) => self.on_loaded(*loaded).await,
+                    Update::Loaded(seq, loaded) => {
+                        if self.structure.lands(seq) {
+                            self.on_loaded(*loaded).await;
+                        }
+                    }
                     Update::Focus(channel) => {
                         self.focus = channel;
                         if let Some(c) = channel {
@@ -1728,6 +1763,7 @@ impl Publisher {
         // Until the feeds are read, no timeline is read (a trust refresh or a catch-up of this ready may report a
         // group changed first): the store may still hold a message removed while this device was away.
         let generation = removals.as_ref().map(|_| self.removals.start());
+        let seq = self.structure.start();
         tokio::spawn(async move {
             if let (Some(inner), Some((generation, started))) = (removals, generation) {
                 let unread = crate::sync::removals::recover_moderation_removals(&inner).await;
@@ -1738,7 +1774,7 @@ impl Publisher {
                 });
             }
             if let Ok(loaded) = load_structure(&api).await {
-                let _ = updates.send(Update::Loaded(Box::new(loaded)));
+                let _ = updates.send(Update::Loaded(seq, Box::new(loaded)));
             }
         });
     }
