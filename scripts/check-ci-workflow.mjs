@@ -1562,7 +1562,11 @@ export const GPUI_PINNED_STEPS = {
     '- name: Playwright Chromium (Linux)',
     "  if: runner.os == 'Linux' && !cancelled()",
     '  timeout-minutes: 8',
-    '  run: npx playwright install --with-deps chromium',
+    '  # --with-deps runs apt-get update over the apt.llvm.org source added above, which can be briefly unreachable.',
+    '  run: >-',
+    '    node scripts/retry-on.mjs --attempts 4 --wait 30',
+    "    --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch|Network is unreachable|no longer has a Release file'",
+    '    -- npx playwright install --with-deps chromium',
   ].join('\n'),
   media: [
     '- name: Run the media call tests (Linux)',
