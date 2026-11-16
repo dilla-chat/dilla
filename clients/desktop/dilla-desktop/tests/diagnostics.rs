@@ -36,14 +36,20 @@ fn fixture_path(name: &str) -> PathBuf {
 const NEEDS_HOST: &str = "the diagnostics/section fixture loads in the settings host";
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_diagnostics_section() {
     assert_screen(&fixture_path("diagnostics/section"))
         .unwrap_or_else(|e| panic!("diagnostics/section differs from its web reference: {e}"));
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_diagnostics_section_b() {
     assert_screen(&fixture_path("diagnostics/section-b"))
         .unwrap_or_else(|e| panic!("diagnostics/section-b differs from its web reference: {e}"));

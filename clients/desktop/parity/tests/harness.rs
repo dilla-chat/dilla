@@ -170,9 +170,39 @@ fn scale_mismatch_fails() {
 
 #[test]
 fn tolerance_file_ships_measured_linux_and_exact_placeholders() {
-    for os in [Os::MacOs, Os::Windows] {
-        assert_eq!(tolerance_for(os).unwrap(), EXACT);
-    }
+    assert_eq!(tolerance_for(Os::Windows).unwrap(), EXACT);
+    // macOS: measured on macos-15 against the Linux references (TOLERANCES.md "macOS"), with per-screen colour limits.
+    let mac = tolerance_for(Os::MacOs).unwrap();
+    assert_eq!(
+        (
+            mac.max_delta,
+            mac.max_pct,
+            mac.chrome_max_delta,
+            mac.chrome_max_pct
+        ),
+        (96, 0.8, 16, 0.4)
+    );
+    assert_eq!(
+        (mac.colour_max_delta, mac.colour_radius, mac.colour_max_pct),
+        (2, 2, 0.3)
+    );
+    let profile = dilla_parity::tolerance_for_screen(Os::MacOs, "user-settings/profile").unwrap();
+    assert_eq!(
+        profile,
+        Tolerance {
+            colour_max_pct: 0.92,
+            ..mac
+        }
+    );
+    assert_eq!(
+        dilla_parity::tolerance_for_screen(Os::Linux, "user-settings/profile").unwrap(),
+        tolerance_for(Os::Linux).unwrap(),
+        "the per-screen limits are macOS only"
+    );
+    assert_eq!(
+        dilla_parity::tolerance_for_screen(Os::MacOs, "shell/channel-view").unwrap(),
+        mac
+    );
     assert_eq!(
         tolerance_for(Os::Linux).unwrap(),
         Tolerance {
@@ -253,8 +283,9 @@ fn channel_view_glyphs(env: &[(&str, &str)]) -> GlyphCoverage {
 
 /// The bug of 2026-11-16: a macOS build without gpui-pre-platform's `font-kit` drew every line of text as nothing
 /// (gpui-pre-macos falls back to `NoopTextSystem`). Every line box the app reports must hold ink.
-/// Measured on `shell/channel-view` (GLYPHS line): Linux (lavapipe) 66 lines, 66 inked, ink 15.2 %; macOS (Metal,
-/// macos-15) see TOLERANCES.md "Glyph presence". The thresholds (30 lines, 90 % inked) sit far from the Noop control's 0.
+/// Measured on `shell/channel-view` (GLYPHS line): Linux (lavapipe) 66 lines, 66 inked, ink 15.2 %; macOS (Metal on
+/// macos-15, gpui-proofs run 43833315593) 66 lines, 66 inked, ink 17.2 %. Under `NoopTextSystem` both report 66 lines
+/// and 0 inked. The thresholds (30 lines, 90 % inked) sit far from both.
 #[test]
 #[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
 fn text_draws_glyphs() {

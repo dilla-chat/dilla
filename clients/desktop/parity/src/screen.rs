@@ -12,7 +12,8 @@ use image::RgbaImage;
 use crate::fixture::{self, LoadedFixture, Step};
 use crate::{
     Driver, ElementInfo, Os, ParityFailure, Rect, TextMask, assert_parity_masked_with,
-    chrome_difference_pct, colour_difference_pct, tolerance_for, whole_difference_pct,
+    chrome_difference_pct, colour_difference_pct, tolerance_for, tolerance_for_screen,
+    whole_difference_pct,
 };
 
 /// Device pixels the mask grows every reported line box by. Measured (`text_fringe_is_the_measured_reach_of_glyphs`):
@@ -152,7 +153,7 @@ pub fn assert_screen_with(
             fixture,
         ));
     }
-    let tolerance = tolerance_for(os)?;
+    let tolerance = tolerance_for_screen(os, &loaded.fixture.name)?;
     let mut driver = Driver::launch_fixture(fixture, loaded.shot_path.as_deref(), env);
     let (shot, mask, text_lines, fixture_line) = capture(&mut driver, &loaded);
     let out = crate::target_dir().join("screen-parity");

@@ -1,0 +1,55 @@
+name: tmp-macci-render
+# TEMPORARY (gpui-macci/render lane): the new macOS steps of desktop-gpui.yml's gpui leg, alone, on pushes to this branch.
+# Deleted before the lane reports.
+on:
+  push:
+    branches: [gpui-macci/render]
+permissions:
+  contents: read
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+jobs:
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: sudo rm -rf "$HOME/Library/Android" /usr/local/share/dotnet "$HOME/.dotnet" "$HOME/Library/Developer/CoreSimulator/Caches"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-
+      - name: dilla-parity (plain, as the gpui leg runs it)
+        run: cargo test -p dilla-parity --locked --no-fail-fast -- --nocapture
+      - name: The macOS hand-off test
+        if: ${{ !cancelled() }}
+        run: cargo test -p dilla-desktop --locked --lib -- macos_hands_h264_and_h265_to_the_system_player --nocapture
+      - name: Run the parity screens (macOS)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_ 2>&1 | tee "$RUNNER_TEMP/parity.txt"
+          cargo test -p dilla-desktop --features automation --locked --test video_player_shot
+      - name: Controls and quit, measured
+        if: ${{ !cancelled() }}
+        env:
+          DILLA_PARITY_MEASURE: '1'
+        run: |
+          cargo test -p dilla-parity --locked --test screen parity_negative_controls_measured -- --nocapture
+          cargo test -p dilla-desktop --features automation --locked --test quit parity_ -- --nocapture
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: tmp-macci-render
+          path: |
+            target/screen-parity
+            target/parity-video
+          if-no-files-found: error

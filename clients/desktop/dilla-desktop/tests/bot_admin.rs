@@ -228,25 +228,37 @@ fn parity(name: &str) {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_bot_admin_health_channels() {
     parity("bot-admin/health-channels.json");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_bot_admin_health_channels_b() {
     parity("bot-admin/health-channels-b.json");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_bot_admin_music() {
     parity("bot-admin/music.json");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_bot_admin_music_b() {
     parity("bot-admin/music-b.json");
 }

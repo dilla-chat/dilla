@@ -83,7 +83,7 @@ macro_rules! parity {
     ($($test:ident => $name:literal $(, $why:literal)?);* $(;)?) => {$(
         #[test]
         $(#[ignore = $why])?
-        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]
         fn $test() {
             let report = dilla_parity::screen::assert_screen(&fixture_path($name))
                 .unwrap_or_else(|e| panic!("{} differs from its web reference: {e}", $name));

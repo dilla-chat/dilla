@@ -2385,8 +2385,8 @@ fn parity_fixture(name: &str) -> std::path::PathBuf {
 macro_rules! parity {
     ($($test:ident => $name:literal $(; $why:literal)?),* $(,)?) => {$(
         #[test]
-        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-        $(#[cfg_attr(target_os = "linux", ignore = $why)])?  // off Linux the line above already ignores it
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]
+        $(#[cfg_attr(any(target_os = "linux", target_os = "macos"), ignore = $why)])?  // elsewhere the line above already ignores it
         fn $test() {
             let report = dilla_parity::screen::assert_screen(&parity_fixture($name))
                 .unwrap_or_else(|e| panic!("voice/{} differs from its web reference: {e}", $name));

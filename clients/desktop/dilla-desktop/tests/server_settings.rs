@@ -31,7 +31,7 @@ fn parity(name: &str) {
 macro_rules! parity_tests {
     ($($test:ident => $state:literal),* $(,)?) => {$(
         #[test]
-        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]
         fn $test() {
             parity($state);
         }

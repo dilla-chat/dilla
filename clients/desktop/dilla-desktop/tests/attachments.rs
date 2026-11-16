@@ -68,8 +68,8 @@ fn fixtures_parse_and_b_varies_a() {
 macro_rules! parity {
     ($($test:ident => $name:literal $(, $why:literal)?);* $(;)?) => {$(
         #[test]
-        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-        $(#[cfg_attr(target_os = "linux", ignore = $why)])?  // off Linux the line above already ignores it
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]
+        $(#[cfg_attr(any(target_os = "linux", target_os = "macos"), ignore = $why)])?  // elsewhere the line above already ignores it
         fn $test() {
             if let Err(e) = assert_screen(&fixture($name)) {
                 panic!("{e}");

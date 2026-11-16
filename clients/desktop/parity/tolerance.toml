@@ -8,7 +8,9 @@
 #                                      within colour_max_delta of some reference pixel within colour_radius device pixels;
 #                                      fails if more than colour_max_pct percent of the unmasked pixels are not.
 # Linux numbers are measured (experiments/gpui-pixel-proof, Task 3; see TOLERANCES.md).
-# macOS and Windows stay exact placeholders until CI measures them (PENDING-CI).
+# macOS numbers are measured on macos-15 against the Linux web references (decision D-A of the macOS CI plan; gpui-proofs
+# mac-parity-measure, see TOLERANCES.md "macOS"), with per-screen limits in [macos_screens."<fixture>"] where a screen's
+# honest score is over the shared one. Windows stays an exact placeholder until CI measures it (PENDING-CI).
 [linux]
 max_delta = 64
 max_pct = 0.5
@@ -19,13 +21,13 @@ colour_radius = 2
 colour_max_pct = 0.3
 
 [macos]
-max_delta = 0
-max_pct = 0.0
-chrome_max_delta = 0
-chrome_max_pct = 0.0
-colour_max_delta = 0
-colour_radius = 0
-colour_max_pct = 0.0
+max_delta = 96
+max_pct = 0.8
+chrome_max_delta = 16
+chrome_max_pct = 0.4
+colour_max_delta = 2
+colour_radius = 2
+colour_max_pct = 0.3
 
 [windows]
 max_delta = 0
@@ -35,3 +37,22 @@ chrome_max_pct = 0.0
 colour_max_delta = 0
 colour_radius = 0
 colour_max_pct = 0.0
+
+# Per-screen macOS colour limits: twice the screen's honest macOS score (run 43838350768). Each is a screen with an
+# avatar or a picture, whose scaled image samples otherwise on Metal than in Chromium (TOLERANCES.md "macOS").
+[macos_screens."user-settings/profile"]
+colour_max_pct = 0.92
+[macos_screens."user-settings/profile-b"]
+colour_max_pct = 0.73
+[macos_screens."user-settings/profile-short-wide"]
+colour_max_pct = 1.11
+[macos_screens."user-settings/profile-short-wide-b"]
+colour_max_pct = 1.36
+[macos_screens."members/profile-card"]
+colour_max_pct = 0.88
+[macos_screens."members/profile-card-b"]
+colour_max_pct = 0.74
+[macos_screens."voice/stage-focused"]
+colour_max_pct = 0.77
+[macos_screens."voice/person-menu"]
+colour_max_pct = 0.66

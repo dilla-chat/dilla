@@ -1460,6 +1460,10 @@ export function checkMobileReleaseWorkflow(root) {
  * Without them the real-server tests would be ignored everywhere and nothing would say so.
  */
 export const GPUI_PINNED_STEPS = {
+  // The macOS CI plan, Task 3: the parity screens and the video player through Metal on the gpui job's macOS leg.
+  macParity: ['# The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the', '# Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run', '# above builds dilla-desktop\'s test files without the automation interface, so they hold no test there.', '- name: Run the parity screens (macOS)', '  if: runner.os == \'macOS\' && !cancelled()', '  shell: bash', '  run: |', '    cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_', '    cargo test -p dilla-desktop --features automation --locked --test video_player_shot'].join('\n'),
+  // The macOS CI plan's addendum: the nightly VideoToolbox decode check (known SIGSEGV, red until fixed).
+  macVideoToolbox: ['# VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV', '# (core/vendor/README.md): nightly only, and red until that is fixed.', '- name: Decode with VideoToolbox (macOS, nightly)', '  if: runner.os == \'macOS\' && github.event_name == \'schedule\' && !cancelled()', '  shell: bash', '  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order'].join('\n'),
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
   // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
   strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
@@ -1580,7 +1584,7 @@ export const GPUI_PINNED_STEPS = {
 };
 
 /** The job(s) each GPUI_PINNED_STEPS entry must be in; an entry not named here belongs to the gpui-linux job. */
-const GPUI_PIN_JOBS = { tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'] };
+const GPUI_PIN_JOBS = { macParity: ['gpui'], macVideoToolbox: ['gpui'], tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'] };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];

@@ -179,6 +179,21 @@ jobs:
       # The window test runs on GPUI's test platform, so it needs no display.
       - run: cargo test $GPUI_CRATES --locked --no-fail-fast  # every OS reports all its failing test binaries in one run
         shell: bash
+      # The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the
+      # Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run
+      # above builds dilla-desktop's test files without the automation interface, so they hold no test there.
+      - name: Run the parity screens (macOS)
+        if: runner.os == 'macOS' && !cancelled()
+        shell: bash
+        run: |
+          cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_
+          cargo test -p dilla-desktop --features automation --locked --test video_player_shot
+      # VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV
+      # (core/vendor/README.md): nightly only, and red until that is fixed.
+      - name: Decode with VideoToolbox (macOS, nightly)
+        if: runner.os == 'macOS' && github.event_name == 'schedule' && !cancelled()
+        shell: bash
+        run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order
       # Saved even when a leg fails or is cancelled (actions/cache only saves on success): a cold Windows build
       # with the static CRT takes most of an hour, so the next run must start warm.
       - if: always() && steps.cache.outputs.cache-hit != 'true'

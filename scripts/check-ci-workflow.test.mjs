@@ -2629,6 +2629,18 @@ test('the desktop-gpui token test, test-host build and --ignored runs are each p
   }
 });
 
+test('the macOS parity and VideoToolbox steps cannot lose a line, their guard or their nightly gate (macOS CI plan)', () => {
+  const edits = [
+    ['    cargo test -p dilla-desktop --features automation --locked --test video_player_shot\n', '', 'macParity'],
+    ["  if: runner.os == 'macOS' && !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", "  if: !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", 'macParity'],
+    ["  if: runner.os == 'macOS' && github.event_name == 'schedule' && !cancelled()", "  if: runner.os == 'macOS' && !cancelled()", 'macVideoToolbox'],
+  ];
+  for (const [from, to, name] of edits) {
+    const problems = gpuiProblems((text) => { const f = indent(from); assert.ok(text.includes(f), from); return text.replace(f, indent(to)); });
+    assert.ok(problems.some((p) => p.includes(`the ${name} step`)), `${from}: ${problems.join('|')}`);
+  }
+});
+
 test('the desktop-gpui macOS package job is pinned: macos-15, no secrets, and every packaging and verification command', () => {
   for (const fragment of GPUI_MAC_PACKAGE_RUNS) {
     const problems = gpuiProblems((text) => { assert.ok(text.includes(fragment), fragment); return text.replace(fragment, 'true'); });

@@ -110,8 +110,9 @@ fn every_inline_format_decodes_its_frames_in_presentation_order() {
         };
         assert!(
             out.status.success(),
-            "format #{i} ({mime}) failed: {how}\n{}",
-            String::from_utf8_lossy(&out.stdout)
+            "format #{i} ({mime}) failed: {how}\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 }
