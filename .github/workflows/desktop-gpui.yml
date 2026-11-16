@@ -179,6 +179,54 @@ jobs:
       # The window test runs on GPUI's test platform, so it needs no display.
       - run: cargo test $GPUI_CRATES --locked --no-fail-fast  # every OS reports all its failing test binaries in one run
         shell: bash
+      # The macOS call tests open a real CoreAudio unit (the app's voice join). D-D: the runner's own default input and
+      # output when it has them (macos-15 had "Apple Virtual Sound Device" in every spike run, 2026-11-16), else
+      # BlackHole 2ch, pinned by SHA-256 (the Null Audio Device is intermittently missing, runner-images #13668;
+      # BlackHole and a coreaudiod restart, #11746).
+      - name: A sound device for the call tests (macOS)
+        if: runner.os == 'macOS' && !cancelled()
+        shell: bash
+        env:
+          BLACKHOLE_URL: https://existential.audio/downloads/BlackHole2ch-0.7.1.pkg
+          BLACKHOLE_SHA256: 57b540f27a3e29c37e310e01bee0fdfab76733087e47f997ef9dccf851400dcf
+        run: |
+          swiftc -O scripts/mac-audio-devices.swift -o "$RUNNER_TEMP/mac-audio-devices"
+          both() { grep -q '^default-input ' <<<"$1" && grep -q '^default-output ' <<<"$1"; }
+          list="$("$RUNNER_TEMP/mac-audio-devices")"
+          echo "$list"
+          if both "$list"; then echo "the runner's own sound devices"; exit 0; fi
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/BlackHole2ch.pkg" "$BLACKHOLE_URL"
+          printf '%s  %s\n' "$BLACKHOLE_SHA256" "$RUNNER_TEMP/BlackHole2ch.pkg" | shasum -a 256 -c
+          sudo installer -pkg "$RUNNER_TEMP/BlackHole2ch.pkg" -target /
+          sudo killall coreaudiod
+          deadline=$((SECONDS + 20))
+          until both "$list"; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "$list"
+              echo "::error::no default CoreAudio input and output 20 s after installing BlackHole 2ch"
+              exit 1
+            fi
+            sleep 1
+            list="$("$RUNNER_TEMP/mac-audio-devices")"
+          done
+          echo "$list"
+          echo "BlackHole 2ch"
+      # dilla's real-server call tests on macOS, against the dilla-testhost built above: one suite per line, so a failure
+      # names its suite, and one at a time, so two suites never contend for the one CoreAudio device. They include the
+      # wss:// room joins (two_clients_join_see_and_hear_in_a_wss_room, the_app_joins_a_wss_room: the Mac's "Could not join
+      # voice" of 2026-11-16) and a real ScreenCaptureKit share between two clients (a_real_display_share_reaches_a_viewer;
+      # the shell holds Screen Recording on the runner). The rest of the ignored suites, the web peer's call test and the
+      # Bot suites stay on Linux (gpui-linux): dillabot builds for Linux only (cmd/dillabot/main.go).
+      - name: Run the call tests (macOS)
+        if: runner.os == 'macOS' && !cancelled()
+        shell: bash
+        run: |
+          cargo test -p dilla-client --test gateway --test http_sign_in --test calls --locked -- --ignored
+          cargo test -p dilla-client --test voice --test ring --locked -- --ignored
+          cargo build -p dilla-testkit --bin dilla-testkit --locked
+          cargo test -p dilla-client --test dms --locked -- --ignored
+          cargo test -p dilla-media --test live --test e2e_call --test capture --locked -- --ignored
+          cargo test -p dilla-desktop --test voice --test ring --locked -- --ignored --skip parity_
       # Saved even when a leg fails or is cancelled (actions/cache only saves on success): a cold Windows build
       # with the static CRT takes most of an hour, so the next run must start warm.
       - if: always() && steps.cache.outputs.cache-hit != 'true'

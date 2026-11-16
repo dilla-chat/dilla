@@ -2629,6 +2629,18 @@ test('the desktop-gpui token test, test-host build and --ignored runs are each p
   }
 });
 
+test('the desktop-gpui macOS call tests are pinned: the app voice suite, the macOS guard, the BlackHole hash', () => {
+  for (const [what, from, to] of [
+    ['the dilla-desktop voice line', '          cargo test -p dilla-desktop --test voice --test ring --locked -- --ignored --skip parity_\n', ''],
+    ['the two-client voice line', '          cargo test -p dilla-client --test voice --test ring --locked -- --ignored\n', ''],
+    ['the macOS guard', "      - name: Run the call tests (macOS)\n        if: runner.os == 'macOS' && !cancelled()", '      - name: Run the call tests (macOS)\n        if: ${{ !cancelled() }}'],
+    ['the BlackHole hash', 'BLACKHOLE_SHA256: 57b540f27a3e29c37e310e01bee0fdfab76733087e47f997ef9dccf851400dcf', 'BLACKHOLE_SHA256: 0000'],
+  ]) {
+    const problems = gpuiProblems((text) => { assert.ok(text.includes(from), what); return text.replace(from, to); });
+    assert.ok(problems.some((p) => /the mac(Calls|Audio) step/.test(p)), `${what}: ${problems.join('|')}`);
+  }
+});
+
 test('the desktop-gpui macOS package job is pinned: macos-15, no secrets, and every packaging and verification command', () => {
   for (const fragment of GPUI_MAC_PACKAGE_RUNS) {
     const problems = gpuiProblems((text) => { assert.ok(text.includes(fragment), fragment); return text.replace(fragment, 'true'); });
