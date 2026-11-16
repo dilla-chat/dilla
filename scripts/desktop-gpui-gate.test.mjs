@@ -81,7 +81,7 @@ async function refuses(over, pattern) {
 test('the gate passes a consistent draft and writes its outputs', async () => {
   const w = world();
   const out = await w.gate();
-  assert.deepEqual(out, { tag: TAG, version: VERSION, sha: SHA, run: RUN, release_id: '99', sums_sha256: hex(w.files.SHA256SUMS), dry_run: 'false' });
+  assert.deepEqual(out, { tag: TAG, version: VERSION, sha: SHA, release_run: RUN, release_id: '99', sums_sha256: hex(w.files.SHA256SUMS), dry_run: 'false' });
   assert.equal(readFileSync(w.env.GITHUB_OUTPUT, 'utf8'), Object.entries(out).map(([k, v]) => `${k}=${v}\n`).join(''));
   assert.deepEqual(w.greenCalls, [{ genv: { GH_TOKEN: 't', GITHUB_REPOSITORY: REPO }, sha: SHA, workflow: 'desktop-gpui' }]);
   // One attestation check per Linux asset, pinned to the release workflow, the tag, the commit and hosted runners.

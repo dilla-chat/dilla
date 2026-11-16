@@ -16,7 +16,7 @@
 //   7. the downloaded files' SHA-256 equal the API's asset digests and SHA256SUMS, and each Linux asset verifies under
 //      `gh attestation verify` (signed by desktop-gpui-release.yml at that tag and commit, in the triggering run, on a
 //      GitHub-hosted runner) with an attestation whose subjects are exactly the five assets and their digests.
-// Outputs (GITHUB_OUTPUT): tag, version, sha, run, release_id, sums_sha256, dry_run. The verified files stay in the
+// Outputs (GITHUB_OUTPUT): tag, version, sha, release_run, release_id, sums_sha256, dry_run. The verified files stay in the
 // download directory for the workflow to pass on as an artifact.
 //
 // `check-feed` is the publish job's cross-check: a signed feed verifies under the pinned key, names the release's
@@ -214,7 +214,7 @@ export async function runGate({ env, api, git, gh, downloadDir, greenRun = green
     if (!match) throw new Error(`${name}: no attestation from run ${env.HINT_RUN} whose subjects are exactly the five Linux assets of the draft`);
   }
 
-  const outputs = { tag, version, sha, run: env.HINT_RUN, release_id: String(release.id), sums_sha256: local.get('SHA256SUMS'), dry_run: String(version === DRY_RUN_VERSION) };
+  const outputs = { tag, version, sha, release_run: env.HINT_RUN, release_id: String(release.id), sums_sha256: local.get('SHA256SUMS'), dry_run: String(version === DRY_RUN_VERSION) };
   for (const [key, value] of Object.entries(outputs)) {
     if (/[\r\n]/.test(value)) throw new Error(`output ${key} has a line break`);
   }
