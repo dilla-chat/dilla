@@ -292,6 +292,18 @@ pub fn member_name(m: &Member) -> &str {
     }
 }
 
+/// bot-name.ts `installationBotName` without its fallback: the community's own Bot (`bot_user`, never another Bot of the
+/// community) by its member row's name, the display name its managers set with `PATCH /bot/profile`, else its username.
+/// `None` while the Bot or its row is unknown or nameless (the caller shows its own fallback).
+pub fn installation_bot_name(members: Option<&[Member]>, bot_user: Option<UserId>) -> Option<&str> {
+    let user = bot_user?;
+    members?
+        .iter()
+        .find(|m| m.user_id == user)
+        .map(member_name)
+        .filter(|n| !n.is_empty())
+}
+
 /// `localeCompare` as the web sorts names: case and accents only break ties.
 pub fn by_name(a: &str, b: &str) -> Ordering {
     let fold = |s: &str| -> String {

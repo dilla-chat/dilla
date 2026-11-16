@@ -746,7 +746,6 @@ mod tests {
             },
             bot_channels: Some(vec![]),
             bot_user: None,
-            bot_name: String::new(),
             fingerprint: None,
         };
         assert_eq!(reason(Some(&view), &d), Some(Text::NeedsBotChannel));
