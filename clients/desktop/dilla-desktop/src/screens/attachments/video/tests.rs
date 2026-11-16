@@ -162,6 +162,45 @@ fn what_cannot_play_inline_is_unsupported() {
     assert!(unsupported(H264, "application/octet-stream"));
 }
 
+/// macOS (the macOS CI plan's addendum, the manual pass's H.264/H.265 item): the default build has no H.264 or H.265
+/// decoder (the prebuilt libwebrtc's FFmpeg lacks H.264; VideoToolbox is behind webrtc-sys's `dilla-video-toolbox`,
+/// off), so both open as Unsupported, the card's cue for the system player (`ui.rs` `play_from`), and both files are
+/// accepted by `media::write_for_system_player`, the hand-off itself. Strict: a decoder that appears here without the
+/// feature, or a hand-off that refuses the file, fails. Not run by the nightly `dilla-video-toolbox` build, which runs
+/// the decode test alone.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_hands_h264_and_h265_to_the_system_player() {
+    use webrtc_sys::dilla_video_decoder::VideoCodec;
+    assert!(
+        !decodes(VideoCodec::H264),
+        "an H.264 decoder in the default macOS build"
+    );
+    assert!(
+        !decodes(VideoCodec::H265),
+        "an H.265 decoder in the default macOS build"
+    );
+    let dir = std::env::temp_dir().join(format!("dilla-macos-handoff-{}", std::process::id()));
+    for (file, name) in [(H264, "H.264"), (HEVC, "H.265"), (ROT90, "H.264 rotated")] {
+        assert!(
+            matches!(
+                open(bytes(file), "video/mp4"),
+                Err(MediaError::Unsupported(_))
+            ),
+            "{name} must be Unsupported on macOS (the system player plays it)"
+        );
+        let written =
+            crate::screens::attachments::media::write_for_system_player(&dir, "video/mp4", file)
+                .unwrap_or_else(|e| panic!("{name}: the system player hand-off refused it: {e}"));
+        assert_eq!(
+            written.extension().and_then(|e| e.to_str()),
+            Some("mp4"),
+            "{name}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A phone's portrait clip is shown turned, as the track header says (90 degrees anticlockwise here: the source's
 /// right half, white, ends up on top).
 #[test]

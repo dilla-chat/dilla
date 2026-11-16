@@ -181,15 +181,29 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p dilla-parity -p dilla-desktop --features dilla-desktop/automation --locked --no-fail-fast parity_ -- --include-ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/measure.txt"
+      # The inline video player through Metal (the addendum's video row): its own loose bounds, printed per frame.
+      - name: The video player's shots
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          cargo test -p dilla-desktop --features automation --locked --test video_player_shot -- --include-ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/video.txt"
+          mkdir -p target/screen-parity
+          cp target/parity-video/*.png target/screen-parity/
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
           mkdir -p target/screen-parity
           grep -E '^MEASURE |^test .*(FAILED|ok)$' "$RUNNER_TEMP/measure.txt" > target/screen-parity/measure.txt || true
-          { echo '### mac parity measure'; echo '```'; grep '^MEASURE ' "$RUNNER_TEMP/measure.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^video player |^test ' "$RUNNER_TEMP/video.txt" >> target/screen-parity/measure.txt || true
+          { echo '### mac parity measure'; echo '```'; cat target/screen-parity/measure.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:
           name: mac-parity-measure
           path: target/screen-parity
           if-no-files-found: error
+      # The nightly VideoToolbox check of desktop-gpui.yml, run once here to show its state: the decode test on the
+      # `dilla-video-toolbox` build crashed (SIGSEGV) on macOS CI (core/vendor/README.md). Expected red until fixed.
+      - name: Decode with VideoToolbox (known SIGSEGV)
+        if: ${{ !cancelled() }}
+        run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order
