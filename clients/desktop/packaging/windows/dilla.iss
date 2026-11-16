@@ -6,7 +6,8 @@
 ;   /DOutDir=<dir>               where dilla-<v>-win-x64-setup.exe goes
 ;   /DWithSigning                only when a signtool command is configured (a disabled hook until signing is decided)
 ;
-; Install: per user (no elevation) to %LOCALAPPDATA%\Programs\Dilla, the folder beta.5's one-click NSIS installer used.
+; Install: per user (no elevation) to %LOCALAPPDATA%\Programs\Dilla. beta.5 (one-click NSIS) used %LOCALAPPDATA%\Programs\@dilladesktop;
+; the takeover below finds it through its registry entries, never by path.
 ; The Start-menu shortcut carries AppUserModelID dev.dilla.desktop, which Windows needs to show the app's toasts
 ; (dilla-desktop's APP_ID, src/native/notifier.rs). No dilla:// protocol is registered (D12).
 ; Silent: `setup.exe /VERYSILENT /SUPPRESSMSGBOXES` installs and `unins000.exe /VERYSILENT /SUPPRESSMSGBOXES` removes

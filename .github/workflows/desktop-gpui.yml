@@ -502,8 +502,13 @@ jobs:
           $entry = Get-ItemProperty $key
           Write-Host "DisplayName=$($entry.DisplayName) DisplayVersion=$($entry.DisplayVersion) UninstallString=$($entry.UninstallString)"
           if ($entry.DisplayVersion -ne '0.1.0-beta.5') { throw "expected beta.5, found $($entry.DisplayVersion)" }
-          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Dilla'
-          if (-not (Test-Path (Join-Path $dir 'dilla-desktop.exe'))) { throw "beta.5's dilla-desktop.exe is not in $dir" }
+          # beta.5 installs where electron-builder put it (%LOCALAPPDATA%\Programs\@dilladesktop, from the package name),
+          # not where the new setup installs: read it from the uninstall entry, as dilla.iss does.
+          $beta5 = (Get-ItemProperty "HKCU:\Software\$env:BETA5_UNINSTALL_GUID" -ErrorAction SilentlyContinue).InstallLocation
+          if (-not $beta5) { $beta5 = Split-Path ($entry.UninstallString -replace '^"([^"]+)".*$', '$1') }
+          Write-Host "beta.5 is installed in $beta5"
+          if (-not (Get-ChildItem -Path $beta5 -Filter *.exe)) { throw "beta.5's install folder $beta5 has no program" }
+          echo "BETA5_DIR=$beta5" >> $env:GITHUB_ENV
           # The user data beta.5 keeps (deleteAppDataOnUninstall: false) must outlive the takeover.
           $data = Join-Path $env:APPDATA 'Dilla'
           New-Item -ItemType Directory -Force -Path $data | Out-Null
@@ -543,6 +548,7 @@ jobs:
           if (-not (Test-Path -LiteralPath "$uninstall\$env:DILLA_INNO_APP_ID")) { throw 'the new uninstall entry is missing' }
           $sentinel = Join-Path $env:APPDATA 'Dilla\takeover-sentinel.txt'
           if (-not (Test-Path $sentinel)) { throw "$sentinel is gone: the takeover deleted beta.5's user data" }
+          if ((Test-Path -LiteralPath $env:BETA5_DIR) -and (Get-ChildItem -LiteralPath $env:BETA5_DIR -Recurse -File)) { throw "beta.5's files are left in $env:BETA5_DIR" }
           $dir = Join-Path $env:LOCALAPPDATA 'Programs\Dilla'
           $exe = Join-Path $dir 'dilla-desktop.exe'
           if (Test-Path (Join-Path $dir 'Uninstall Dilla.exe')) { throw "beta.5's uninstaller is left in $dir" }
