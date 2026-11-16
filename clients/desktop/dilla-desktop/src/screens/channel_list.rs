@@ -681,6 +681,18 @@ pub fn render(
                     )),
             )
         }))
+        // Mac report (2026-11-16): a click on the chevron opened nothing. At debug level the log says whether the press
+        // reached the chevron at all (`server menu: press`) and whether the click then asked to open it
+        // (`server menu: open`), which tells an occluded hitbox from a lost click.
+        .on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
+            log::debug!(
+                "server menu: press in the list head at {:?} (click_count {}, first_mouse {}, scale {})",
+                e.position,
+                e.click_count,
+                e.first_mouse,
+                window.scale_factor()
+            );
+        })
         .child(crate::tracked_box(
             "server-settings-open",
             // Shell.tsx `serverMenu`: the ⌄ is the server's menu, labelled `admin.open`, in the head's 26px button.
@@ -689,7 +701,10 @@ pub fn render(
                 .icon_size(Pixels::from(css::GLYPH))
                 .trigger_size(Pixels::from(css::MENU_HIT))
                 .open(model.server_menu_open)
-                .on_open_change(move |open, window, cx| on_server_menu_open(open, window, cx))
+                .on_open_change(move |open, window, cx| {
+                    log::debug!("server menu: open {open}");
+                    on_server_menu_open(open, window, cx)
+                })
                 .on_select(move |item, window, cx| {
                     if item == SERVER_SETTINGS {
                         on_server_settings(window, cx);

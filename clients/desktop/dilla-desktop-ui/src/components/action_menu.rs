@@ -131,6 +131,9 @@ struct Memory {
     trigger: FocusHandle,
     was_open: bool,
     start_last: bool,
+    /// The press now going on started on the trigger: the open popup's press-outside leaves it to the trigger's click,
+    /// which closes the menu. Else the press-outside closed it and the click, drawn closed by then, opened it again.
+    trigger_press: bool,
 }
 
 #[derive(IntoElement)]
@@ -293,6 +296,7 @@ impl RenderOnce for ActionMenu {
             trigger: cx.focus_handle().tab_stop(true),
             was_open: false,
             start_last: false,
+            trigger_press: false,
         });
         let trigger = memory.read(cx).trigger.clone();
         let count = self.items.len();
@@ -304,6 +308,7 @@ impl RenderOnce for ActionMenu {
         if self.open != was_open {
             let start_last = memory.update(cx, |m, _| {
                 m.was_open = self.open;
+                m.trigger_press = false;
                 std::mem::take(&mut m.start_last)
             });
             if self.open && count > 0 {
@@ -391,6 +396,7 @@ impl RenderOnce for ActionMenu {
                 )),
             };
             let click_open = open_with.clone();
+            let (press_memory, click_memory) = (memory.clone(), memory.clone());
             let label = self.label.clone();
             // `aria-haspopup="menu" aria-expanded`.
             let mut button = div()
@@ -410,7 +416,15 @@ impl RenderOnce for ActionMenu {
                 .child(glyph)
                 .tooltip(super::tooltip::tooltip(label, &[]))
                 .tooltip_show_delay(super::tooltip::SHOW_DELAY)
-                .on_click(move |_, window, cx| click_open(!open, window, cx))
+                // Capture runs back to front, so this marks the press before the (deferred, later painted) popup's
+                // press-outside sees it.
+                .capture_any_mouse_down(move |_, _, cx| {
+                    press_memory.update(cx, |m, _| m.trigger_press = true);
+                })
+                .on_click(move |_, window, cx| {
+                    click_memory.update(cx, |m, _| m.trigger_press = false);
+                    click_open(!open, window, cx)
+                })
                 .on_key_down(move |event, window, cx| {
                     let key = &event.keystroke;
                     let from_start = match key.key.as_str() {
@@ -477,7 +491,7 @@ impl RenderOnce for ActionMenu {
                 back.focus(window, cx);
             }
         };
-        let down_out = open_with.clone();
+        let (down_out, out_memory) = (open_with.clone(), memory.clone());
         let (next_close, prev_close) = (open_with.clone(), open_with.clone());
         let (next_back, prev_back) = (back.clone(), back.clone());
         // Tab closes the menu and moves on from where it was opened (a binding runs before key listeners, so this is an
@@ -493,7 +507,11 @@ impl RenderOnce for ActionMenu {
                 prev_close(false, window, cx);
                 window.focus_prev(cx);
             })
-            .on_mouse_down_out(move |_, window, cx| down_out(false, window, cx))
+            .on_mouse_down_out(move |_, window, cx| {
+                if !out_memory.update(cx, |m, _| std::mem::take(&mut m.trigger_press)) {
+                    down_out(false, window, cx);
+                }
+            })
             .on_key_down(move |event, window, cx| {
                 let key = event.keystroke.key.as_str();
                 match key {
