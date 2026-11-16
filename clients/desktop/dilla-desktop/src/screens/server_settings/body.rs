@@ -227,8 +227,16 @@ enum Dialogue {
 
 /// A link made and not yet copied (shown once).
 struct Made {
+    /// The invite the link opens: a revoke of it takes the card away with the row.
+    id: InviteId,
     url: String,
     note: String,
+}
+
+/// The made link's card after `revoked` is revoked: gone when it showed that link, which no longer opens anything (the
+/// "Active links" row and the card go together; beta.5's web left a dead link with a working Copy), else as it was.
+fn after_revoke(made: Option<Made>, revoked: InviteId) -> Option<Made> {
+    made.filter(|m| m.id != revoked)
 }
 
 pub struct Body {
@@ -1424,6 +1432,7 @@ impl Body {
                 Ok(created) => {
                     this.host = host_of(&created.url);
                     this.made = Some(Made {
+                        id: created.id,
                         url: created.url,
                         note,
                     });
@@ -1472,10 +1481,13 @@ impl Body {
         self.busy_invite = Some(invite);
         self.invite_message = None;
         let reply = client.server_admin().revoke_invite(self.community, invite);
-        self.run(reply, window, cx, |this, result, _, cx| {
+        self.run(reply, window, cx, move |this, result, _, cx| {
             this.busy_invite = None;
             match result {
-                Ok(()) => this.say(t("admin.invites.revoked").to_owned(), cx),
+                Ok(()) => {
+                    this.made = after_revoke(this.made.take(), invite);
+                    this.say(t("admin.invites.revoked").to_owned(), cx);
+                }
                 Err(e) => {
                     this.invite_message = Some((
                         if e.forbidden() {
@@ -1610,6 +1622,22 @@ mod tests {
             retry_after_ms: None,
             extra: Vec::new(),
         }
+    }
+
+    #[test]
+    fn revoking_the_made_link_takes_its_card_away() {
+        let made = || {
+            Some(Made {
+                id: InviteId([7; 16]),
+                url: "https://dilla.chat/i/CODE".into(),
+                note: String::new(),
+            })
+        };
+        assert!(after_revoke(made(), InviteId([7; 16])).is_none());
+        let other =
+            after_revoke(made(), InviteId([8; 16])).expect("another link's revoke keeps the card");
+        assert_eq!(other.url, "https://dilla.chat/i/CODE");
+        assert!(after_revoke(None, InviteId([7; 16])).is_none());
     }
 
     /// BotSection.tsx `joinRoleDirty` and `reset`: dirty only once the setting is read and the pick differs from it;

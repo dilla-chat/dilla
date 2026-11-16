@@ -205,7 +205,8 @@ impl ManagerView {
         };
         match model.invite_names_new_instance(&input) {
             Ok(true) => {
-                let host = dilla_client::instances::address::parse_invite(input.trim())
+                let host = model
+                    .parse_invite(&input)
                     .map(|i| label_of(&i.instance))
                     .unwrap_or_default();
                 self.error = None;

@@ -413,7 +413,7 @@ fn nothing_found_says_so(cx: &mut TestAppContext) {
     assert!(rows(cx).is_empty());
     assert_eq!(
         status(cx).as_deref(),
-        Some("Nothing in this browser matches “lantern”.")
+        Some("Nothing on this device matches “lantern”.")
     );
 }
 

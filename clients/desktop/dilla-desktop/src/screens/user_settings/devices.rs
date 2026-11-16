@@ -3,7 +3,7 @@
 //!
 //! A device is titled by what the client knows ("Desktop on Linux"), never by an opaque id. Any other device shows the label it
 //! stored, and a nameless one "Unnamed device" (never a guess). The device's own id is on every row (a label is the server's to
-//! change): "this browser · active now · d3f9a1" for this device, "active 2 days ago · 8b20ce" for another.
+//! change): "this device · active now · d3f9a1" for this device, "active 2 days ago · 8b20ce" for another.
 
 use dilla_client::features::devices::{
     DEVICE_NAME_MAX, device_label, order_devices, own_platform_tag,
@@ -259,7 +259,7 @@ mod tests {
         let own = device(0xd3, true, 5, None, true);
         let other = device(0x8b, false, 1_000_000_000 - 2 * 86_400, None, true);
         let m = meta_of(&own, 1_000_000_000);
-        assert_eq!(m.seen, "this browser · active now · d3d3d3");
+        assert_eq!(m.seen, "this device · active now · d3d3d3");
         let m = meta_of(&other, 1_000_000_000);
         assert_eq!(m.seen, "active 2 days ago · 8b8b8b");
         assert_eq!(m.state, None);

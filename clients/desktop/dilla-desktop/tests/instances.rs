@@ -211,10 +211,48 @@ fn manager_lists_and_connects_by_url_and_invite(cx: &mut TestAppContext) {
             "{bad:?}"
         );
     }
-    app.type_invite(cx, "https://chat.example.org/i/not-a-dilla-link");
-    app.join(cx);
-    assert_eq!(app.error(cx).as_deref(), Some(copy::ERROR_CONNECT));
+    // The Invite link field's refusal names that field, not the address field.
+    for bad in [
+        "https://chat.example.org/welcome",
+        "http://chat.example.org/i/CODE",
+        "chat.example.org/i/CODE",
+        "dilla://invite/chat.example.org/",
+    ] {
+        app.type_invite(cx, bad);
+        app.join(cx);
+        assert_eq!(
+            app.error(cx).as_deref(),
+            Some(copy::ERROR_INVITE),
+            "{bad:?}"
+        );
+    }
     assert_eq!(app.entries(cx).len(), 2);
+
+    // The https link the server mints (`<base URL>/i/<code>`) joins, as the dilla:// form does.
+    app.type_invite(cx, "https://chat.example.org/i/CODE-3");
+    app.join(cx);
+    assert!(!app.confirming(cx), "a listed instance opens at once");
+    assert_eq!(app.error(cx), None);
+    assert_eq!(
+        app.opened.borrow()[4].0.server.as_str(),
+        "https://chat.example.org/"
+    );
+    assert_eq!(app.opened.borrow()[4].1.as_deref(), Some("CODE-3"));
+    app.type_invite(cx, "https://third.example.org/team/i/CODE-4");
+    app.join(cx);
+    assert!(
+        app.confirming(cx),
+        "an unlisted instance is confirmed first"
+    );
+    app.window
+        .update(cx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    assert_eq!(
+        app.opened.borrow()[5].0.server.as_str(),
+        "https://third.example.org/team/"
+    );
+    assert_eq!(app.opened.borrow()[5].1.as_deref(), Some("CODE-4"));
+    assert_eq!(app.entries(cx).len(), 3);
 }
 
 /// The 33rd instance is refused in the window, with its own words, and the list stays at 32.

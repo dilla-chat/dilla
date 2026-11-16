@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use dilla_client::Client;
 use dilla_client::features::members::{
-    GroupKind as Kind, MenuAction, member_card, member_groups, member_name,
+    GroupKind as Kind, MenuAction, member_card, member_groups, member_name, shown_presence,
 };
 use dilla_client::features::moderation::{BanLength, ReasonProblem, TimeoutLength, reason_problem};
 use dilla_client::features::roles::perm::{PermKey, ROLE_PERM_GROUPS};
@@ -283,7 +283,7 @@ fn groups(state: &AppState, community: CommunityId) -> Option<Vec<ListGroup>> {
             .filter(|_| Some(id) != me)
             .map_or("", |m| m.status_msg.as_str());
         if custom.is_empty() {
-            presence_word(state.people.presence_of(community, id)).into()
+            presence_word(shown_presence(state, community, id)).into()
         } else {
             custom.to_owned().into()
         }
@@ -334,7 +334,7 @@ fn groups(state: &AppState, community: CommunityId) -> Option<Vec<ListGroup>> {
                             .any(|m| m.user_id == row.user_id && m.kind == 1),
                         status: status(row.user_id),
                         color: row.color,
-                        presence: presence_of(state.people.presence_of(community, row.user_id)),
+                        presence: presence_of(shown_presence(state, community, row.user_id)),
                     })
                     .collect(),
             })
@@ -589,7 +589,7 @@ pub fn profile_card(
     let owner = state.communities.iter().find(|c| c.id == community)?.owner;
     let access = state.roles.access.get(&community);
     let card = member_card(member, access, me, owner, state.roles.roles_of(community));
-    let presence = state.people.presence_of(community, user);
+    let presence = shown_presence(state, community, user);
     let sub = if card.status.is_empty() {
         format!("@{} · {}", card.username, presence_word(presence))
     } else {

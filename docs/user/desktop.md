@@ -114,7 +114,22 @@ $env:RUSTFLAGS="-C target-feature=+crt-static"; cargo run -p dilla-desktop
 The first window is "Dilla - your instances". Type the instance's address (HTTPS) to connect, or paste an invite to
 join, then sign in or sign up. Each instance gets its own window; `--instance=<n>` opens only instance `n` (a second
 copy of the app on another instance, beside the first), and a debug build accepts `--allow-loopback` for an
-`http://localhost` test instance. Per-OS build notes are in `clients/desktop/README.md`.
+`http://localhost` test instance. Per-OS build notes are in `clients/desktop/README.md`. The Invite link field takes
+the link the instance shows under Server settings → Invites (`https://<instance>/i/<code>`) as well as a
+`dilla://invite/<host>/<code>` link.
+
+**A second profile (a testing aid).** To run two separate clients on one machine (two accounts talking to each
+other, or CI), start the second with `DILLA_DATA_DIR` set to an absolute folder of its own:
+
+```sh
+DILLA_DATA_DIR="$HOME/dilla-profile-b" dilla-desktop
+```
+
+Everything of a profile lives in its folder: the instance list, the stores, the lock that keeps one app per profile
+and the socket a second launch hands over through, so the two run side by side and a second launch reaches only its
+own profile's app. The database keys stay in the operating system's keychain, named by each profile's own install id,
+so the two profiles never share a key. A relative path is refused (the app says it cannot store anything); unset or
+empty, the usual data folder is used.
 
 The client keeps its data apart from the browser and from any installed Electron app. Like them, it is a **new device** on your
 account: sign in, complete your second factor, then enrol it with your saved 52-character recovery key. Messages sent
@@ -127,7 +142,7 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 - One window and one client per instance. Opening an instance from "Dilla - your instances" closes that window (the
   instance's window replaces it); "Your instances…" in the tray or the app menu brings it back. Closing a window keeps its client running until you remove the instance or
   quit the app; opening the instance again shows a new window on the running client.
-- One app for all instances: starting Dilla again brings the running app forward, and a `dilla://invite/<host>/<code>`
+- One app for all instances (per profile): starting Dilla again brings the running app forward, and a `dilla://invite/<host>/<code>`
   link opens that instance's join step (an instance you have not added yet is asked about first).
 - Quitting during a call, or with files waiting to be sent or text typed in the last moment, asks first ("Quit
   Dilla?"). Drafts are kept per channel across restarts. A microphone the operating system blocks joins calls

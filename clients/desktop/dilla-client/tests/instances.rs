@@ -36,6 +36,43 @@ fn settings_contain(core: &dilla_core::client::ClientCore, needle: &str) -> bool
     cbor.windows(needle.len()).any(|w| w == needle.as_bytes())
 }
 
+/// `DILLA_DATA_DIR`: an absolute override is the root; a relative one is refused; unset or empty, the OS data dir's
+/// `Dilla Preview`. Two roots are two profiles: each mints its own install id, so their keychain accounts never meet.
+#[test]
+fn the_data_dir_override_picks_the_root_and_profiles_do_not_share_keys() {
+    use dilla_client::instances::{PRODUCT_DIR, root_from};
+    use dilla_client::store::keychain_account;
+    let os = Some(PathBuf::from("/home/u/.local/share"));
+    let other = root();
+    assert_eq!(
+        root_from(Some(other.clone().into_os_string()), os.clone()).unwrap(),
+        other
+    );
+    assert_eq!(
+        root_from(None, os.clone()).unwrap(),
+        Path::new("/home/u/.local/share").join(PRODUCT_DIR)
+    );
+    assert_eq!(
+        root_from(Some("".into()), os.clone()).unwrap(),
+        Path::new("/home/u/.local/share").join(PRODUCT_DIR)
+    );
+    assert!(matches!(
+        root_from(Some("profile-b".into()), os),
+        Err(StoreError::NoDataDir)
+    ));
+    assert!(matches!(root_from(None, None), Err(StoreError::NoDataDir)));
+
+    let (a, b) = (root(), root());
+    let a = Instances::load(&a).unwrap();
+    let b = Instances::load(&b).unwrap();
+    assert_ne!(a.install_id(), b.install_id());
+    let id = InstanceId(0);
+    assert_ne!(
+        keychain_account(a.install_id(), id),
+        keychain_account(b.install_id(), id)
+    );
+}
+
 /// `instance identity includes scheme, port and the entire canonical URL` (policy.test.ts).
 #[test]
 fn instance_identity_is_the_canonical_url() {
