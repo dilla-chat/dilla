@@ -440,6 +440,8 @@ jobs:
           plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist" | grep -qx 'dev.dilla.desktop'
           plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist" | grep -qx 'dilla-desktop'
           plutil -extract LSMinimumSystemVersion raw "$app/Contents/Info.plist" | grep -qx '13.0'
+          plutil -extract CFBundleURLTypes xml1 -o - "$app/Contents/Info.plist" | grep -q '<string>dilla</string>'
+          plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw "$app/Contents/Info.plist" | grep -qx 'dilla'
           plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist"
           plutil -extract NSCameraUsageDescription raw "$app/Contents/Info.plist"
           plutil -lint clients/desktop/packaging/macos/entitlements.plist
@@ -572,7 +574,13 @@ jobs:
           $item = (New-Object -ComObject Shell.Application).NameSpace((Split-Path $lnk)).ParseName((Split-Path $lnk -Leaf))
           $aumid = $item.ExtendedProperty('System.AppUserModel.ID')
           if ($aumid -ne 'dev.dilla.desktop') { throw "the shortcut's AppUserModelID is '$aumid'" }
-          if (Test-Path 'HKCU:\Software\Classes\dilla') { throw 'a dilla: protocol is registered (D12)' }
+          # The dilla: scheme (HKCU\Software\Classes\dilla), beta.5's registration: the app takes the link as its argument.
+          $scheme = Get-Item 'HKCU:\Software\Classes\dilla' -ErrorAction SilentlyContinue
+          if (-not $scheme) { throw 'the dilla: protocol is not registered' }
+          if ($null -eq $scheme.GetValue('URL Protocol')) { throw 'the dilla: key has no URL Protocol value' }
+          $command = (Get-ItemProperty 'HKCU:\Software\Classes\dilla\shell\open\command').'(default)'
+          if ($command -ne "`"$exe`" `"%1`"") { throw "the dilla: open command is '$command'" }
+          if (-not (Test-Path 'HKCU:\Software\Classes\dilla\DefaultIcon')) { throw 'the dilla: key has no DefaultIcon' }
       - name: Silent uninstall leaves no program files
         shell: pwsh
         run: |
@@ -584,6 +592,7 @@ jobs:
           if (Test-Path $dir) { throw "program files are left: $((Get-ChildItem -Recurse -Force $dir).FullName -join ', ')" }
           if (Test-Path -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:DILLA_INNO_APP_ID") { throw 'the uninstall entry is left' }
           if (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Dilla.lnk')) { throw 'the Start-menu shortcut is left' }
+          if (Test-Path 'HKCU:\Software\Classes\dilla') { throw 'the dilla: protocol registration is left' }
           if (-not (Test-Path (Join-Path $env:APPDATA 'Dilla\takeover-sentinel.txt'))) { throw 'the uninstall deleted user data' }
       # Saved even when a step fails: a cold Windows release build with the static CRT takes most of an hour.
       - if: always() && steps.cache.outputs.cache-hit != 'true'

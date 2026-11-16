@@ -5,8 +5,9 @@
 ## linux/
 
 - `dev.dilla.desktop.desktop`: the desktop entry. `StartupWMClass` and the file name equal `APP_ID`
-  (`dilla-desktop/src/lib.rs`), which Wayland matches the window's icon by. No `MimeType`: `dilla://` links are not
-  handled yet (release plan D12). Check with `desktop-file-validate`.
+  (`dilla-desktop/src/lib.rs`), which Wayland matches the window's icon by. `MimeType=x-scheme-handler/dilla;` and `Exec=dilla-desktop %U`
+  register the `dilla:` scheme (D12, superseded 2026-11-16); the deb and rpm need no maintainer script, their package
+  manager's desktop-database trigger indexes it. Check with `desktop-file-validate`.
 - `dev.dilla.desktop.metainfo.xml`: the AppStream metadata. Check with `appstreamcli validate --no-net` (appimagetool
   runs it too).
 - `AppRun`: the AppImage's entry point, the binary alone (nothing is bundled, no `LD_LIBRARY_PATH`).
@@ -42,7 +43,7 @@ rpm and Arch package, `usr/share/licenses/dilla/` in the AppImage):
 `iscc`, preinstalled on `windows-latest`):
 
 - Per user, no elevation, to `%LOCALAPPDATA%\Programs\Dilla` (beta.5's folder). The Start-menu shortcut carries
-  AppUserModelID `dev.dilla.desktop`, the app's `APP_ID`, which Windows needs for toasts. No `dilla:` protocol (D12).
+  AppUserModelID `dev.dilla.desktop`, the app's `APP_ID`, which Windows needs for toasts. The `dilla:` protocol is registered per user under `HKCU\Software\Classes\dilla` and removed on uninstall (D12, superseded 2026-11-16).
 - `/VERYSILENT /SUPPRESSMSGBOXES` installs; `unins000.exe` with the same flags removes everything it installed. User data
   (`%APPDATA%\Dilla` from beta.5, `Dilla Preview` for this app) is never touched.
 - The beta.5 takeover: before copying files, `PrepareToInstall` reads beta.5's uninstall entry under

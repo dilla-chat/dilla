@@ -15,8 +15,9 @@
 //! - an instance that is not listed: the instances window takes the link and asks first ("Connect to {host}? Only
 //!   continue if you recognize this address.", beta.5 `confirmInstance`), and nothing is stored until Connect.
 //!
-//! **Scheme registration** (beta.5 `app.setAsDefaultProtocolClient('dilla')` when packaged) belongs to the packages
-//! (release plan Tasks 2, 12 and 13; this lifts its D12). [`REGISTRATION`] lists what each needs.
+//! **Scheme registration** (beta.5 `app.setAsDefaultProtocolClient('dilla')` when packaged) belongs to the packages,
+//! which register it (release plan Tasks 2, 12 and 13; D12 was superseded on 2026-11-16, registered in M2): the
+//! desktop entry (deb, rpm, AppImage), Info.plist and the Windows installer. [`REGISTRATION`] lists what each holds.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -36,8 +37,8 @@ use crate::windows;
 pub const REGISTRATION: &[(&str, &str)] = &[
     (
         "linux (.desktop, Task 2)",
-        "MimeType=x-scheme-handler/dilla; and Exec=dilla-desktop %U; the package's postinst runs update-desktop-database \
-         (xdg-mime default <desktop file> x-scheme-handler/dilla for the AppImage's own integration)",
+        "MimeType=x-scheme-handler/dilla; and Exec=dilla-desktop %U; deb and rpm have no maintainer script (the package manager's desktop-database \
+         trigger indexes the entry); an AppImage registers it only through an integration tool that reads the entry",
     ),
     (
         "macos (Info.plist, Task 12)",
@@ -103,6 +104,20 @@ pub fn prepare(app: &Application) {
     });
 }
 
+/// The invites among the URLs macOS handed over (`application:openURLs:`): the same grammar as the command line
+/// ([`parse`]); any other `dilla://` URL is logged and ignored.
+fn links_in(list: &[String]) -> Vec<Link> {
+    list.iter()
+        .filter_map(|raw| {
+            let link = parse(raw);
+            if link.is_none() {
+                log::warn!("dilla-desktop: a dilla:// link that is not an invite was ignored");
+            }
+            link
+        })
+        .collect()
+}
+
 /// Called once by [`super::install`]: the link handler, and the drain of macOS `open-url`.
 pub fn install(cx: &mut App) {
     NativeShell::on_link(Box::new(route), cx);
@@ -115,15 +130,8 @@ pub fn install(cx: &mut App) {
         cx.spawn(async move |cx| {
             while let Some(list) = rx.recv().await {
                 cx.update(|cx| {
-                    for raw in &list {
-                        match parse(raw) {
-                            Some(link) => {
-                                NativeShell::open_link(link, cx);
-                            }
-                            None => log::warn!(
-                                "dilla-desktop: a dilla:// link that is not an invite was ignored"
-                            ),
-                        }
+                    for link in links_in(&list) {
+                        NativeShell::open_link(link, cx);
                     }
                 });
             }
@@ -241,6 +249,24 @@ pub(crate) mod tests {
     }
 
     /// beta.5 `test/policy.test.ts` "invites carry only a validated HTTPS instance and code, with no credentials".
+    #[test]
+    fn open_urls_keep_only_invites_in_order() {
+        let list = [
+            "dilla://invite/a.example/ONE".to_owned(),
+            "dilla://auth/a.example/token".to_owned(),
+            "https://a.example/".to_owned(),
+            "dilla://invite/b.example:8443/TWO".to_owned(),
+        ];
+        assert_eq!(
+            links_in(&list),
+            [
+                invite("a.example", "ONE").unwrap(),
+                invite("b.example:8443", "TWO").unwrap()
+            ]
+        );
+        assert!(links_in(&[]).is_empty());
+    }
+
     #[test]
     fn parses_only_the_invite_grammar() {
         assert_eq!(

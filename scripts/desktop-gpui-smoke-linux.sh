@@ -44,6 +44,11 @@ says_version() {
   echo "$got"
   [[ $got == "Dilla $version ("*")" ]] || fail "$* --version printed '$got', not 'Dilla $version (...)'"
 }
+# The desktop entry registers the dilla: scheme (the app takes the link as %u): the OS hands an invite link to the app.
+scheme_registered() {  # <desktop file>
+  grep -qx 'MimeType=x-scheme-handler/dilla;' "$1" || fail "$1 does not register x-scheme-handler/dilla"
+  grep -qx 'Exec=dilla-desktop %U' "$1" || fail "$1 does not pass the link to the app (Exec=dilla-desktop %U)"
+}
 apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q
@@ -75,12 +80,16 @@ case "$check" in
     says_version dilla-desktop
     [ "$(command -v dilla-desktop)" = /usr/bin/dilla-desktop ] || fail "dilla-desktop is not /usr/bin/dilla-desktop"
     test -f /usr/share/applications/dev.dilla.desktop.desktop
+    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
     test -f /usr/share/icons/hicolor/512x512/apps/dev.dilla.desktop.png
     test -f /opt/Dilla/licenses/THIRD-PARTY.md
     if [ "$check" = ubuntu-deb ]; then
       cp "$assets/$base.AppImage" /tmp/dilla.AppImage
       chmod +x /tmp/dilla.AppImage
       (cd /tmp && says_version ./dilla.AppImage --appimage-extract-and-run)
+      # The AppImage carries the same entry (appimaged and AppImageLauncher integrate it from the file).
+      (cd /tmp && ./dilla.AppImage --appimage-extract dev.dilla.desktop.desktop >/dev/null)
+      scheme_registered /tmp/squashfs-root/dev.dilla.desktop.desktop
     fi
     apt-get remove -y -q dilla
     [ ! -e /opt/Dilla ] && [ ! -e /usr/bin/dilla-desktop ] || fail "removing the package left files behind"
@@ -89,6 +98,7 @@ case "$check" in
     dnf install -y -q --setopt=install_weak_deps=False "$assets/$base.rpm"
     [ "$(rpm -q --qf '%{VERSION}-%{RELEASE}' dilla)" = "$core-0.alpha.$alpha.1" ] || fail "rpm reports $(rpm -q dilla)"
     says_version dilla-desktop
+    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
     rpm -V dilla || fail "rpm -V found changed files"
     dnf remove -y -q dilla
     [ ! -e /opt/Dilla ] && [ ! -e /usr/bin/dilla-desktop ] || fail "removing the package left files behind"
@@ -117,6 +127,7 @@ case "$check" in
     [ "$(pacman -Q dilla-bin)" = "dilla-bin ${core}alpha$alpha-1" ] || fail "pacman reports $(pacman -Q dilla-bin)"
     [ "$(vercmp "${core}alpha$alpha-1" 0.1.0beta5-1)" = 1 ] || fail "vercmp orders the release below beta.5"
     says_version dilla-desktop
+    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
     ;;
   ubuntu-upgrade)
     pinned "$beta5" "$BETA5_DEB" "$BETA5_DEB_SHA256"
@@ -129,6 +140,7 @@ case "$check" in
     [ "$(dpkg-query -W -f '${Version}' dilla)" = "$core~alpha.$alpha-1" ] || fail "dpkg reports $(dpkg-query -W -f '${Version}' dilla) after the upgrade"
     opt_is_gpui_only
     user_data_kept
+    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
     says_version /usr/bin/dilla-desktop
     says_version dilla-desktop
     # beta.5's postrm removed its update-alternatives group during the upgrade; nothing of it is left.
@@ -148,6 +160,7 @@ case "$check" in
     [ "$(rpm -q --qf '%{VERSION}-%{RELEASE}' dilla)" = "$core-0.alpha.$alpha.1" ] || fail "rpm reports $(rpm -q dilla) after the upgrade"
     opt_is_gpui_only
     user_data_kept
+    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
     says_version /usr/bin/dilla-desktop
     ;;
   launch)
