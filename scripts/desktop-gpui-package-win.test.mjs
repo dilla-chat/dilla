@@ -66,6 +66,6 @@ test('the script guards the version, the release binary, the static CRT, --versi
   assert.ok(ps1.includes('check-desktop-release-binary.sh'));
   assert.ok(ps1.includes('/dependents') && ps1.includes('VCRUNTIME'));
   assert.ok(ps1.includes('--version') && ps1.includes('dilla-$Version-win-x64-setup.exe'));
-  assert.ok(ps1.includes("-notmatch '^6\\.'"), 'iscc must be Inno Setup 6');
+  assert.ok(ps1.includes("-notmatch '^6(\\.|$)'") && ps1.includes("& $iscc '/?'"), 'iscc must be Inno Setup 6, read from its banner');
   assert.ok(ps1.includes('x86_64-pc-windows-msvc'), 'the licence bundle lists the Windows crates');
 });

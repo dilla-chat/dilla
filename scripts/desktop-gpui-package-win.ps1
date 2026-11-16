@@ -61,8 +61,8 @@ if (-not $iscc) { Fail 'iscc (Inno Setup 6) not found (set DILLA_ISCC)' }
 # The version from ISCC's own banner ("Inno Setup 6.x.y Command-Line Compiler"): on windows-latest the file's version
 # resource reads 0.0.0.0, both for the Chocolatey shim and for ISCC.exe in its install folder.
 $banner = (& $iscc '/?' 2>&1 | Out-String)
-if ($banner -match 'Inno Setup (\d+\.\d+(\.\d+)?)') { $isccVersion = $Matches[1] } else { $isccVersion = 'unknown' }
-if ($isccVersion -notmatch '^6\.') { Fail "Inno Setup 6 is required, found $isccVersion ($iscc)" }
+if ($banner -match 'Inno Setup (\d+(\.\d+)*)') { $isccVersion = $Matches[1] } else { $isccVersion = 'unknown' }
+if ($isccVersion -notmatch '^6(\.|$)') { Fail "Inno Setup 6 is required, found $isccVersion ($iscc); its banner: $($banner.Trim())" }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
