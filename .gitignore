@@ -37,6 +37,7 @@ internal/web/dist/*
 !internal/web/dist/index.html
 !internal/web/dist/dilla-manifest.json
 packages/web/dist/
+packages/web/dist-desktop-strings/
 packages/client-core/harness-dist/
 
 # go build output when run from the repository root (CI builds it in a runner)

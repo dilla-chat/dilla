@@ -1,14 +1,14 @@
 {
   "digest": "a01bfc828398be98b29848308bbfb5e7151798d7f64b89e835654f364d97c5e4",
-  "shift": 72310,
+  "shift": 340571,
   "hand_migrated": false,
   "ids": {
-    "channel:asgard/general": "9ff0a388282a38063c9adc470ec610bc",
-    "channel:midgard/general": "1d22b5b7fd8d420cf8a47171a039fb31",
-    "person:ada": "518e214812d5c111863ffe919f2c2bf1",
-    "person:bjorn": "d33a86405379d2103cd1160a05e73c7d",
-    "person:mira": "0b6698fff1c77209a00cc6aa8de17a75",
-    "server:asgard": "21ea74b38294c967c871a2ab189007b6",
-    "server:midgard": "d8f60ae97fd37115e2601ef9fd594818"
+    "channel:asgard/general": "17d9cb302ddce5154b1c81bb5257798c",
+    "channel:midgard/general": "730f78296a714d8470448dd8e429b768",
+    "person:ada": "da70e236967882e0639ae8024bba6d04",
+    "person:bjorn": "9ee8f77e685230f029d42d9292c8c680",
+    "person:mira": "29f930282e57c3bf97eb70ac9cffd4b0",
+    "server:asgard": "231ce616ef58b1b38da88803a58d2f63",
+    "server:midgard": "d10bfd3e818ef7fa746618a8082c7090"
   }
 }

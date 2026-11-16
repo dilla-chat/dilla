@@ -63,16 +63,34 @@ function stripRnnoiseInlineWasm(): Plugin {
 // worker's mobile-only branches (a cross-origin instance, per-URL storage keys) are folded out of the bundle.
 const MOBILE_BUILD = process.env.DILLA_MOBILE_BUILD === '1';
 
+// The parity references' build (clients/desktop/parity/shoot.mjs): DILLA_DESKTOP_STRINGS=1 builds the web client with the
+// native desktop app's wording (src/strings/desktopOverrides.ts put over `en`, as scripts/gen-gpui-strings.mjs does for
+// the desktop's strings.rs) into its own directory, so a reference frame and the GPUI frame draw the same text. The
+// shipping web build never carries the overrides.
+const DESKTOP_STRINGS = process.env.DILLA_DESKTOP_STRINGS === '1';
+const EN_STRINGS = /\/src\/strings\/en\.ts$/;
+function desktopStrings(): Plugin {
+  return {
+    name: 'dilla-desktop-strings',
+    enforce: 'pre',
+    transform(source, id) {
+      if (!DESKTOP_STRINGS || !EN_STRINGS.test(id.split('?')[0].replaceAll('\\', '/'))) return null;
+      if (!source.includes('export const en = {')) throw new Error('strings/en.ts changed: `export const en` not found');
+      return `${source}\nimport { desktopOverrides as __desktopOverrides } from './desktopOverrides.ts';\nObject.assign(en, __desktopOverrides);\n`;
+    },
+  };
+}
+
 export default defineConfig({
   base: '/',
   define: { __DILLA_MOBILE__: JSON.stringify(MOBILE_BUILD) },
-  plugins: [noiseBuild(), react(), oneCoreWasm(), stripRnnoiseInlineWasm()],
+  plugins: [noiseBuild(), desktopStrings(), react(), oneCoreWasm(), stripRnnoiseInlineWasm()],
   resolve: {
     // @dilla/media ships TypeScript sources and no package entry; tsconfig.json maps the same path for tsc.
     alias: [{ find: /^@dilla\/media$/, replacement: resolve(packages, 'media/src/index.ts') }],
   },
   build: {
-    target: 'es2022', outDir: 'dist', emptyOutDir: true, sourcemap: false, assetsInlineLimit: 0,
+    target: 'es2022', outDir: DESKTOP_STRINGS ? 'dist-desktop-strings' : 'dist', emptyOutDir: true, sourcemap: false, assetsInlineLimit: 0,
     // The shell imports call/load.ts (task 9), whose dynamic import is the only way to the call chunks; there is one input.
     rollupOptions: { input: { index: resolve(here, 'index.html') } },
   },

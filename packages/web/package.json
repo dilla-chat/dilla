@@ -8,6 +8,8 @@
     "dev": "vite --config vite.config.ts",
     "prebuild": "node ../media/scripts/extract-rnnoise-wasm.mjs",
     "build": "vite build --config vite.config.ts && node scripts/write-manifest.mjs dist && node scripts/check-entry-chunk.mjs dist",
+    "prebuild:desktop-strings": "node ../media/scripts/extract-rnnoise-wasm.mjs",
+    "build:desktop-strings": "DILLA_DESKTOP_STRINGS=1 vite build --config vite.config.ts && node scripts/write-manifest.mjs dist-desktop-strings && node scripts/check-entry-chunk.mjs dist-desktop-strings",
     "pretest": "node ../media/scripts/extract-rnnoise-wasm.mjs",
     "test": "vitest run --config vitest.config.ts",
     "test:dist": "vitest run --config vitest.dist.config.ts",

@@ -3,7 +3,8 @@
 // the GPUI side is compared with: clients/desktop/parity/references/<os>/<area>/<state>[-b]-2x.png, and the sidecar
 // <state>[-b].shot.json beside it (the fixture's digest, the clock shift and the ids the real dillad handed out).
 //
-// Usage (from the repository root, after `npm run build -w @dilla/web`, `go build -o target/dilla-testhost
+// Usage (from the repository root, after `npm run build:desktop-strings -w @dilla/web` (the web client with the
+// desktop app's wording), `go build -o target/dilla-testhost
 // ./cmd/dilla-testhost` and the WASI core build, see references/linux/README.md):
 //   node clients/desktop/parity/shoot.mjs clients/desktop/parity/fixtures/<area>/<state>.json [--out <dir>]
 //   node clients/desktop/parity/shoot.mjs <fixture.json> --check      # no browser, no host: prints the fixture line
@@ -24,10 +25,13 @@ import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../../..');
+// The web client the world serves is built with the desktop app's wording (packages/web `build:desktop-strings`), so the
+// shooter's own selectors read the same table: "Add this device", not the web's "Add this browser".
+const { desktopOverrides: DESKTOP } = await import(pathToFileURL(join(REPO, 'packages/web/src/strings/desktopOverrides.ts')).href);
 const WAIT = 60_000;
 
 // ---- The fixture line (shared with spec.rs: `derive_id`, `ScreenFixture::ids`, `ids_line`, `digest`) ----------------
@@ -261,9 +265,9 @@ async function shoot(args, fixture, text) {
       await page.getByRole('button', { name: 'Continue', exact: true }).click();
       await page.getByRole('heading', { name: 'Enter your code' }).waitFor();
       await page.getByLabel('Code', { exact: true }).fill(await nextCode(state));
-      await page.getByRole('heading', { name: 'Add this browser' }).waitFor();
+      await page.getByRole('heading', { name: DESKTOP['signin.key.title'] }).waitFor();
       await page.getByLabel('Recovery key', { exact: true }).fill(state.recoveryKey);
-      await page.getByRole('button', { name: 'Add browser', exact: true }).click();
+      await page.getByRole('button', { name: DESKTOP['signin.key.submit'], exact: true }).click();
       await page.getByRole('button', { name: 'Open dilla', exact: true }).click();
       // A viewer in no server lands on the shell's empty view ("You are not in a server yet"), with no channel header.
       await page.locator('.d-channel-header').or(page.getByText('You are not in a server yet', { exact: true })).first().waitFor();
@@ -295,7 +299,7 @@ async function shoot(args, fixture, text) {
       page.setDefaultTimeout(WAIT);
       await page.clock.setFixedTime(state.now * 1000);
       await page.goto(`${state.publicUrl}/`);
-      const status = fixture.phase === 'revoked' ? 'This browser was signed out' : 'This browser can no longer open its saved data';
+      const status = DESKTOP[fixture.phase === 'revoked' ? 'boot.revoked.status' : 'boot.storeLost.status'];
       await page.getByText(status, { exact: true }).waitFor();
     }
     // The route: in-app, with the real ids.
