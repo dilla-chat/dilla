@@ -10,6 +10,7 @@ pub mod fixture;
 pub mod format;
 pub mod fullscreen;
 pub mod keys;
+pub mod logging;
 pub mod native;
 pub mod per_window;
 pub mod print;

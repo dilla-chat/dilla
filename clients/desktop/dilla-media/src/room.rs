@@ -830,9 +830,19 @@ impl Call {
             Mic::None => PreparedMic::None,
         };
 
+        // dillad's rooms are `wss://`: the signalling socket's rustls needs a process provider (src/tls.rs).
+        crate::tls::ensure_provider();
         let (room, events) = Room::connect(&token.url, &token.token, room_options)
             .await
-            .map_err(|e| MediaError::Room(e.to_string()))?;
+            .map_err(|e| {
+                // The scheme and host only: the token never goes into a log (it is a separate argument here, and the
+                // URL's query, if any, is dropped).
+                log::warn!(
+                    "dilla-media: the room did not connect ({}): {e}",
+                    crate::tls::redacted_url(&token.url)
+                );
+                MediaError::Room(e.to_string())
+            })?;
 
         let (levels_tx, levels) = watch::channel(RemoteLevels::new());
         let (videos_tx, videos) = watch::channel(RemoteVideos::new());

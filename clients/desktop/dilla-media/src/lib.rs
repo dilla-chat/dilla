@@ -27,6 +27,7 @@ pub mod playout;
 pub mod ring;
 pub mod room;
 pub mod sources;
+pub mod tls;
 pub mod transform;
 
 pub use capture_source::{
