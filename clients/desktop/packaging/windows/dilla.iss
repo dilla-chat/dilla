@@ -84,6 +84,9 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#Exe}"; Description: "Start Dilla"; Flags: nowait postinstall skipifsilent
+; The in-app updater (src/updater/apply_win.rs) runs Setup silently with /relaunch=1 while the app quits: start the new
+; app with --updated, which waits for the quitting copy's single-instance lock (src/native/single_instance.rs).
+Filename: "{app}\{#Exe}"; Parameters: "--updated"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
 [UninstallDelete]
 ; Nothing else lives in the program folder; a leftover file must not keep it on disk.
@@ -98,6 +101,11 @@ Type: filesandordirs; Name: "{app}"
 // recomputes it). The uninstaller runs as electron-builder's own installer runs an old one on an update
 // (installUtil.nsh, uninstallOldVersion): `/S /KEEP_APP_DATA /currentuser --updated _?=<install dir>`, which waits
 // for it and keeps %APPDATA%\Dilla. It lives in the folder this installer writes to, so it goes before any file is copied.
+function RelaunchRequested(): Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;
+
 const
   Beta5Guid = 'f6db60e4-10df-5b69-9206-408d5f2cebe9';
   UninstallRoot = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\';

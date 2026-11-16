@@ -6,8 +6,9 @@
 //! replaces the app is the one that passed. The swap is one `renamex_np(RENAME_SWAP)`: the bundle's path holds the old
 //! app or the new one, never a mix. The old bundle (now in the staging directory) is removed and the new one opened.
 //!
-//! Only a Developer-ID-signed bundle the person can replace updates itself; any other copy (a debug build, a build
-//! without [`TEAM_ID`], a bundle in a folder this user cannot write) shows the release page instead.
+//! A release build running from a bundle the person can replace updates itself (whatever signs the running copy, the
+//! incoming bundle must pass [`requirement`]); any other copy (a debug build, a binary run outside a bundle, a bundle
+//! in a folder this user cannot write) shows the release page instead.
 
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
@@ -16,11 +17,10 @@ use std::process::Command;
 
 use super::{Error, Installed, RELAUNCHED};
 
-/// The Apple Developer team that signs Dilla (beta.5's team: Task 12 signs with the same certificate, so the bundle id
-/// keeps its macOS permissions). The repository does not carry the team id (mobile-release keeps it in the
-/// `APPLE_TEAM_ID` environment variable), so the signing workflow's Mac build passes that variable in as
-/// `DILLA_APPLE_TEAM_ID`. A build without it never replaces itself.
-pub const TEAM_ID: Option<&str> = option_env!("DILLA_APPLE_TEAM_ID");
+/// The Apple Developer team that signs Dilla: beta.5's "Developer ID Application" certificate (its signed DMG,
+/// tag desktop-v0.1.0-beta.5), which Task 12 signs with too, so the bundle id keeps its macOS permissions. A team id is
+/// public (every signed app carries it); committing it keeps the check reviewable and present in every build.
+pub const TEAM_ID: Option<&str> = Some("456U2Z5LYK");
 
 /// The bundle id the update must carry (release plan D3).
 pub const BUNDLE_ID: &str = "dev.dilla.desktop";

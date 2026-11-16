@@ -73,6 +73,28 @@ another signed-in device and your recovery key at hand. `dilla://` invite links 
 app handles them; join with the address and the invite code instead. An AppImage or tar.gz runs beside an installed
 beta.
 
+### Install on macOS and Windows
+
+From the first signed alpha on, the same release also carries:
+
+| System | File | Install |
+|---|---|---|
+| macOS 13 or newer, Apple silicon | `dilla-<v>-mac-arm64.dmg` | Open it and drag **Dilla** to Applications. It is signed and notarized by Apple. |
+| Windows 10 or 11, x64 | `dilla-<v>-win-x64-setup.exe` | Run it. It installs for your user only, into `%LOCALAPPDATA%\Programs\Dilla`, with no administrator prompt. |
+
+The Windows installer is **not code-signed** during the alpha, so Windows SmartScreen says "Windows protected your
+PC". Choose **More info**, check that the App line names the file you downloaded (the publisher shows as unknown), then
+**Run anyway**.
+
+**Upgrading from Dilla beta (the Electron app).**
+- **Windows:** the installer removes an installed beta.5 for you first, keeping its app data, which the new app does
+  not use.
+- **macOS:** beta.5 is `dilla-desktop.app` in Applications, and the new app is `Dilla.app`, so dragging it in leaves
+  beta.5 beside it. Move `dilla-desktop.app` to the Bin. Both have the same bundle id and signer, so the microphone and
+  camera permissions you gave beta should carry over; macOS may ask for screen recording again.
+
+As on Linux, the native app is a **new device** on your account.
+
 ### Build and run it
 
 You need the pinned Rust toolchain (`rust-toolchain.toml`) and, on Linux, clang 21 or newer and the X11 and Wayland
