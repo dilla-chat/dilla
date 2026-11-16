@@ -783,6 +783,10 @@ impl Link {
         if slot.is_some() || self.engine.stopped() || self.app_offline.load(Ordering::Acquire) {
             return;
         }
+        // Queued before the gateway exists: its ready reaches the publisher through the same channel, after this
+        // `Connecting`. Sent after the gateway's start, it could land after a quick ready and leave a connected client
+        // showing `Connecting` (and refusing what needs `Online`) until the next reconnect.
+        let _ = self.updates.send(Update::Connection(ConnectionEvent::Down));
         let gateway = Arc::new(WsGateway::connect_checked(
             self.server.clone(),
             self.auth.clone(),
@@ -794,7 +798,6 @@ impl Link {
         self.socket.attach(Some(gateway.clone()));
         self.socket.on_starting();
         tokio::spawn(self.engine.clone().run_events(gateway.clone(), events));
-        let _ = self.updates.send(Update::Connection(ConnectionEvent::Down));
         *slot = Some(gateway);
     }
 
