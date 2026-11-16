@@ -35,3 +35,20 @@ rpm and Arch package, `usr/share/licenses/dilla/` in the AppImage):
 - `THIRD-PARTY.md`: every crate linked into `dilla-desktop` on x86_64 Linux, from `cargo metadata --locked
   --filter-platform x86_64-unknown-linux-gnu` (normal dependencies only), with its licence and repository. A crate
   that declares no licence fails the build.
+
+## windows/
+
+`scripts/desktop-gpui-package-win.ps1` builds `dilla-<v>-win-x64-setup.exe` from `windows/dilla.iss` (Inno Setup 6, run by
+`iscc`, preinstalled on `windows-latest`):
+
+- Per user, no elevation, to `%LOCALAPPDATA%\Programs\Dilla` (beta.5's folder). The Start-menu shortcut carries
+  AppUserModelID `dev.dilla.desktop`, the app's `APP_ID`, which Windows needs for toasts. No `dilla:` protocol (D12).
+- `/VERYSILENT /SUPPRESSMSGBOXES` installs; `unins000.exe` with the same flags removes everything it installed. User data
+  (`%APPDATA%\Dilla` from beta.5, `Dilla Preview` for this app) is never touched.
+- The beta.5 takeover: before copying files, `PrepareToInstall` reads beta.5's uninstall entry under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\f6db60e4-10df-5b69-9206-408d5f2cebe9` (electron-builder's UUID v5 of
+  `dev.dilla.desktop`, derived in `scripts/desktop-gpui-package-win.test.mjs`) and runs its uninstaller the way electron-builder's
+  own installer does on an update (`/S /KEEP_APP_DATA /currentuser --updated _?=<dir>`).
+- Unsigned for the alpha (D10); users meet SmartScreen. `DILLA_SIGNTOOL_COMMAND` switches the disabled signtool hook on.
+- The binary is built with `RUSTFLAGS="-C target-feature=+crt-static"`; the script fails if `dumpbin /dependents` lists a
+  Visual C++ runtime. The `gpui-win-package` job in `desktop-gpui.yml` installs beta.5, runs the setup over it and uninstalls.

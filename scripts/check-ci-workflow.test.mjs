@@ -2802,3 +2802,19 @@ test('the GPUI release tag gate, permissions and triggers are enforced', () => {
   assertReported(gpuiReleaseProblems((t) => t.replace('uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8', 'uses: actions/attest-build-provenance@v4')), 'must use a 40-hex commit SHA');
   assertReported(gpuiReleaseProblems((t) => t.replace('          persist-credentials: false\n      - name: The checkout is the tagged commit', '          persist-credentials: false\n          ref: main\n      - name: The checkout is the tagged commit')), 'checks out ref main');
 });
+
+test('the gpui-win-package job pins beta.5\'s installer, the uninstall GUID, the static CRT, the order and no secrets', () => {
+  for (const [what, from, to, expect] of [
+    ['sha', '0cf2c3ad5c94b9cd4aa21956e6d37209dafe06fa525fcd7866240379fadcf1bb', '0'.repeat(64), 'SHA-256'],
+    ['guid', 'BETA5_UNINSTALL_GUID: f6db60e4-10df-5b69-9206-408d5f2cebe9', 'BETA5_UNINSTALL_GUID: 00000000-0000-5000-8000-000000000000', 'uninstall GUID'],
+    ['crt', 'echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"\n      # The release\'s', 'echo nothing\n      # The release\'s', 'pinned step'],
+    ['build', 'cargo build -p dilla-desktop --release --locked', 'cargo build -p dilla-desktop --release', 'pinned step'],
+    ['runner', 'runs-on: windows-latest\n    timeout-minutes: 120  # a cold release', 'runs-on: ubuntu-24.04\n    timeout-minutes: 120  # a cold release', 'windows-latest'],
+    ['secret', "    env:\n      BETA5_WIN_SHA256", "    env:\n      X: ${{ secrets.X }}\n      BETA5_WIN_SHA256", 'no secret'],
+    ['order', "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/LOG=", "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/LOGX=", 'in that order'],
+  ]) {
+    const problems = gpuiProblems((text) => { assert.ok(text.includes(from), what); return text.replace(from, to); });
+    assert.ok(problems.some((p) => p.includes('gpui-win-package') && p.includes(expect)), `${what}: ${problems.join('|')}`);
+  }
+  assert.ok(gpuiProblems((text) => text.replace('  gpui-win-package:\n', '  gpui-win-package-x:\n')).some((p) => p.includes('job is missing')));
+});

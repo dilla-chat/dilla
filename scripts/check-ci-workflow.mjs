@@ -1666,6 +1666,59 @@ export function checkDesktopGpuiWorkflow(root) {
   }
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
+  problems.push(...gpuiWinPackageProblems(text, file));
+  return problems;
+}
+
+/**
+ * The gpui-win-package job (GPUI release plan, Task 13): the Windows installer built and exercised on windows-latest, keyless.
+ * Pinned: beta.5's installer by SHA-256 and electron-builder's uninstall GUID (the same value scripts/desktop-gpui-package-win.test.mjs
+ * derives and dilla.iss reads), the static CRT, the pinned libwebrtc, the release build and the script, and the order of the
+ * plan's Verify list (install beta.5, build, setup over it, takeover assertions, silent uninstall), with no secrets or environment.
+ */
+export const GPUI_WIN_PACKAGE_SHA256 = '0cf2c3ad5c94b9cd4aa21956e6d37209dafe06fa525fcd7866240379fadcf1bb';
+export const GPUI_WIN_PACKAGE_GUID = 'f6db60e4-10df-5b69-9206-408d5f2cebe9';
+export const GPUI_WIN_PACKAGE_STEPS = [
+  'run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"',
+  'bash scripts/fetch-libwebrtc.sh x86_64-pc-windows-msvc "$RUNNER_TEMP/libwebrtc"',
+  'printf \'%s  %s\\n\' "$BETA5_WIN_SHA256" "$RUNNER_TEMP/dilla-0.1.0-beta.5-win-x64.exe" | sha256sum --check --strict',
+  "-ArgumentList '/S'",
+  'run: cargo build -p dilla-desktop --release --locked',
+  '& scripts/desktop-gpui-package-win.ps1 -Version $version -Binary target/release/dilla-desktop.exe -OutDir dist',
+  "if ($out -match 'VCRUNTIME140')",
+  "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'",
+  'takeover-sentinel.txt',
+  '--version',
+  'System.AppUserModel.ID',
+  'unins000.exe',
+];
+function gpuiWinPackageProblems(text, file) {
+  const fail = (message) => [`${file}: gpui-win-package ${message}`];
+  let doc;
+  try { doc = yaml.load(text); } catch (error) { return fail(`workflow is invalid YAML (${error.message.split('\n')[0]})`); }
+  const job = doc?.jobs?.['gpui-win-package'];
+  if (!job) return fail('job is missing');
+  const problems = [];
+  if (job['runs-on'] !== 'windows-latest') problems.push(...fail('runs on windows-latest'));
+  if (job.if !== '${{ !cancelled() }}') problems.push(...fail('runs independently of the other jobs (if: ${{ !cancelled() }})'));
+  if (Object.hasOwn(job, 'environment') || Object.hasOwn(job, 'needs') || Object.hasOwn(job, 'permissions')) problems.push(...fail('is keyless: no environment, needs or permissions'));
+  if (/\bsecrets\b/.test(JSON.stringify(job))) problems.push(...fail('reads no secret'));
+  if (job.env?.BETA5_WIN_SHA256 !== GPUI_WIN_PACKAGE_SHA256) problems.push(...fail(`pins beta.5's win-x64 installer to SHA-256 ${GPUI_WIN_PACKAGE_SHA256}`));
+  if (job.env?.BETA5_UNINSTALL_GUID !== GPUI_WIN_PACKAGE_GUID) problems.push(...fail(`names beta.5's uninstall GUID ${GPUI_WIN_PACKAGE_GUID}`));
+  const steps = job.steps ?? [];
+  const body = (step) => [step?.run, step?.uses].filter((v) => typeof v === 'string').join('\n');
+  const all = steps.map(body).join('\n');
+  for (const pin of GPUI_WIN_PACKAGE_STEPS) {
+    if (!all.includes(pin.replace(/^run: /, '')) || (pin.startsWith('run: ') && !steps.some((s) => s?.run === pin.slice(5)))) problems.push(...fail(`lost its pinned step: ${pin}`));
+  }
+  // The plan's Verify order: beta.5 installed, then the build, then the setup over it, then the checks, the uninstall last.
+  const at = (needle) => steps.findIndex((s) => body(s).includes(needle));
+  const order = ["-ArgumentList '/S'", 'run: cargo build'.slice(5), 'desktop-gpui-package-win.ps1 -Version', "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/LOG=", 'the takeover deleted beta.5', 'unins000.exe'].map(at);
+  const sorted = order.every((v, i) => v >= 0 && (i === 0 || order[i - 1] <= v));
+  if (!sorted) problems.push(...fail('runs install beta.5, build, package, setup, takeover checks and uninstall in that order'));
+  for (const step of steps) {
+    if (isCheckout(step) && step.with?.['persist-credentials'] !== false) problems.push(...fail('checks out with persist-credentials: false'));
+  }
   return problems;
 }
 
