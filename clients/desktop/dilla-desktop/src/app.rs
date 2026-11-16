@@ -876,6 +876,11 @@ impl AppView {
                 return self.show_sign_in(Some(copy), window, cx);
             }
             Err(e) => {
+                // The splash shows the stable code only; the log keeps the cause (the macOS UI check's E_STORE).
+                log::error!(
+                    "dilla-desktop: the start failed ({}): {e}",
+                    boot::fatal_code(&e)
+                );
                 self.boot_confirming = false;
                 self.screen = Screen::Fatal(e, cfg);
                 self.fit_window(window, cx);
