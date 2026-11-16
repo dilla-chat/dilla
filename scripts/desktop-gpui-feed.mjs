@@ -23,6 +23,7 @@
 // DESKTOP_METADATA_KEY_A is the beta.5 secret as it is: single-line base64 of the key's 48-byte PKCS8 DER
 // (release-sign-job.mjs in beta.5). A PKCS8 PEM block is accepted too. The key is never printed or written.
 import { createHash, createPrivateKey, createPublicKey, KeyObject, sign, verify as ed25519Verify } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -208,7 +209,8 @@ export async function buildCommand(assetsDir, version, outDir, { env = process.e
   return out;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run directly, on every OS: a Windows path (D:\a\...) or one with a space never equals `file://` + argv[1].
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const [command, ...args] = process.argv.slice(2);
   try {
     if (command === 'build' && args.length === 3) {

@@ -13,8 +13,8 @@
 // Usage: desktop-third-party.mjs <out-dir> --webrtc-license FILE [--target TRIPLE] [--metadata FILE]
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const ROOT_CRATE = 'dilla-desktop';
@@ -79,7 +79,8 @@ export function writeBundle(outDir, { metadata, webrtcLicense, root = ROOT }) {
   writeFileSync(join(outDir, 'THIRD-PARTY.md'), thirdPartyMarkdown(metadata));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run directly, on every OS: a Windows path (D:\a\...) or one with a space never equals `file://` + argv[1].
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
   const webrtcLicense = flag('--webrtc-license');

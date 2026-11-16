@@ -4,6 +4,8 @@
 //
 // Usage: desktop-gpui-release-notes.mjs <version> <commit>   (in a full clone: it reads the tags and the log)
 import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { linuxPackageVersion } from './desktop-gpui-aur.mjs';
 
 export const REPO = 'dilla-chat/dilla';
@@ -73,7 +75,8 @@ function previousTag(tag, commit) {
   return null;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run directly, on every OS: a Windows path (D:\a\...) or one with a space never equals `file://` + argv[1].
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const [version, commit] = process.argv.slice(2);
   if (!version || !/^[0-9a-f]{40}$/.test(commit ?? '')) {
     console.error('usage: desktop-gpui-release-notes.mjs <version> <commit sha>');

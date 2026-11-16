@@ -29,6 +29,7 @@
 //       after the deploy: the live site serves the signed GPUI feed, the live beta files still check out, and (given
 //       siteDir) every built file is served byte for byte
 import { createPublicKey, verify as ed25519Verify } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -207,7 +208,8 @@ export async function verify(signedDir, { siteDir, trust, fetchImpl = fetch, att
 
 const describeBeta = (beta) => `beta ${beta.version} (${beta.expired ? `EXPIRED at ${beta.expiresAt}, kept as it is` : `expires ${beta.expiresAt}`})`;
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run directly, on every OS: a Windows path (D:\a\...) or one with a space never equals `file://` + argv[1].
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const [command, ...args] = process.argv.slice(2);
   try {
     if (command === 'build' && args.length === 2) {
