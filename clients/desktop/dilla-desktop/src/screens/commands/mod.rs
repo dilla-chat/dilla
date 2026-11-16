@@ -18,10 +18,10 @@ pub mod reminders;
 
 use dilla_client::features::bot::{self, Plan, run};
 use dilla_client::features::utilities::polls;
+use dilla_client::state::TimelineItem;
 use dilla_client::state::bot::{
     Conversation, PollView, PrivateResult, ResultProvider, ResultStatus,
 };
-use dilla_client::state::{AppState, TimelineItem};
 use gpui::{AnyElement, App, ElementId, IntoElement, ParentElement, Styled, Window, div};
 
 use dilla_desktop_ui::components::commands::bot_result::{self, Author, BotResult, Status};
@@ -479,7 +479,7 @@ fn result_row(
             name: copy::AUTHOR_BUILTIN.into(),
         },
         ResultProvider::Bot => Author::Bot {
-            name: bot_name(&ctx.state, ctx).into(),
+            name: picker::bot_name(&ctx.state, ctx.community).into(),
         },
     };
     let client = ctx.client.clone();
@@ -528,15 +528,6 @@ fn result_row(
             .left_0()
             .child(crate::tracked_box(marker, div())),
     )
-}
-
-/// The name a Bot's private result shows (`result-bot-name.ts`): the community Bot's display name, else "Glenn".
-fn bot_name(state: &AppState, ctx: &SlotCx) -> String {
-    ctx.community
-        .and_then(|c| state.bot.catalogs.get(&c))
-        .map(|v| v.bot_name.clone())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| copy::AUTHOR_BOT.to_owned())
 }
 
 #[cfg(test)]

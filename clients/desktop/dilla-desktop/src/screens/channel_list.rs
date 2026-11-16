@@ -920,7 +920,6 @@ mod tests {
                 },
                 bot_channels: Some(vec![ChannelId([4; 16])]),
                 bot_user: None,
-                bot_name: String::new(),
                 fingerprint: None,
             },
         );

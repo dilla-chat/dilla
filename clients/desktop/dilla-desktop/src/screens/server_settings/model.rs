@@ -408,7 +408,6 @@ mod tests {
                 },
                 bot_channels: Some(vec![text.id]),
                 bot_user: None,
-                bot_name: String::new(),
                 fingerprint: None,
             },
         );

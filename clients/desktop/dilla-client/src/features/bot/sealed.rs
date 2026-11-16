@@ -162,7 +162,6 @@ struct Store {
     list_held: HashSet<[u8; 16]>,
     /// Bot users whose device list this connection pinned (current or held): not read again.
     list_settled: HashSet<[u8; 16]>,
-    bot_names: HashMap<CommunityId, String>,
     /// Each community's newest key check (t28-bot-review M2): an answer of an older one changes nothing, so an older
     /// failure never clears a newer verdict and an older `Ok` never lands after a newer refusal.
     checks: HashMap<CommunityId, u64>,
@@ -206,7 +205,6 @@ impl Store {
             status: self.status_of(community, e),
             bot_channels: e.bot_channels.clone(),
             bot_user: self.pins.get(&community).copied().map(UserId),
-            bot_name: self.bot_names.get(&community).cloned().unwrap_or_default(),
             fingerprint: e.verified.as_ref().map(|v| v.fingerprint.clone()),
         })
     }
@@ -342,11 +340,6 @@ impl Sealed {
     /// The community's catalog view.
     pub fn view(&self, community: CommunityId) -> Option<BotCatalogView> {
         lock(&self.store).view(community)
-    }
-
-    /// The Bot's display name for the source tag.
-    pub fn set_bot_name(&self, community: CommunityId, name: String) {
-        lock(&self.store).bot_names.insert(community, name);
     }
 
     fn pin_of(&self, community: CommunityId) -> Option<[u8; 16]> {

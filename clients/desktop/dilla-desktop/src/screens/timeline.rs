@@ -1575,7 +1575,6 @@ mod tests {
                 },
                 bot_channels: None,
                 bot_user: Some(bot),
-                bot_name: "Glenn".into(),
                 fingerprint: None,
             },
         );
@@ -1637,7 +1636,6 @@ mod tests {
                 },
                 bot_channels: None,
                 bot_user: Some(UserId([9; 16])),
-                bot_name: "Glenn".into(),
                 fingerprint: None,
             },
         );

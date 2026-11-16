@@ -226,6 +226,22 @@ pub fn entry(command: &CommandDefinition, bot_name: &str) -> Entry {
     }
 }
 
+/// The community Bot's name wherever the command UI names it: the picker's source tag and a private result's author.
+/// CommandHost.tsx and result-bot-name.ts both use bot-name.ts `installationBotName`: the installation's Bot member's
+/// display name (`PATCH /bot/profile`), else its username, else "Glenn". Read live from the member list, so a rename
+/// shows as soon as the list is read again.
+pub fn bot_name(state: &AppState, community: Option<CommunityId>) -> String {
+    community
+        .and_then(|c| {
+            let user = state.bot.catalogs.get(&c)?.bot_user;
+            dilla_client::features::members::installation_bot_name(
+                state.members.get(&c).map(Vec::as_slice),
+                user,
+            )
+        })
+        .map_or_else(|| copy::AUTHOR_BOT.to_owned(), str::to_owned)
+}
+
 /// Whether the community's GIF search is on (Task 12's setting); until that area publishes it, `/giphy` stays unlisted,
 /// as the web lists it only with GIFs enabled.
 fn gifs_enabled(_state: &AppState, _community: Option<CommunityId>) -> bool {
@@ -343,7 +359,7 @@ pub fn list(
         .collect::<Vec<_>>()
         .join(" ");
     let view = community.and_then(|c| state.bot.catalogs.get(&c));
-    let bot_name = view.map_or("", |v| v.bot_name.as_str());
+    let bot_name = bot_name(state, community);
     let starts = defs.iter().filter(|c| c.id.starts_with(&query));
     let contains = defs
         .iter()
@@ -353,7 +369,7 @@ pub fn list(
             .chain(contains)
             .map(|c| Row {
                 id: c.id.clone(),
-                entry: entry(c, bot_name),
+                entry: entry(c, &bot_name),
                 reason: greyed(view, c, zone),
             })
             .collect(),
@@ -456,13 +472,45 @@ mod tests {
                     since: Some(1_700_000_000),
                 },
                 bot_channels: channels,
-                bot_user: None,
-                bot_name: "Dilla Bot".into(),
+                bot_user: Some(BOT),
                 fingerprint: None,
             },
         );
         s.bot.catalogs = catalogs;
+        // The community renamed its Bot (`PATCH /bot/profile`): the member list names it "Mr. Kim".
+        s.members.insert(c, vec![bot_member("Mr. Kim", "bot-7f3a")]);
         (s, c)
+    }
+
+    const BOT: dilla_client::state::UserId = dilla_client::state::UserId([9; 16]);
+
+    fn bot_member(display: &str, username: &str) -> dilla_client::state::Member {
+        dilla_client::state::Member {
+            user_id: BOT,
+            username: username.into(),
+            display: display.into(),
+            kind: 1,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        }
+    }
+
+    /// bot-name.ts `installationBotName`: the source tag and a result's author name the community's own Bot by its member
+    /// row (the renamed "Mr. Kim"), else its username, else "Glenn"; never another Bot, and a rename shows at once.
+    #[test]
+    fn the_bot_is_named_from_its_member_row_live() {
+        let (mut s, c) = state(BotStatusState::Ready, Some(vec![]));
+        assert_eq!(bot_name(&s, Some(c)), "Mr. Kim");
+        s.members.insert(c, vec![bot_member("Kim II", "bot-7f3a")]);
+        assert_eq!(bot_name(&s, Some(c)), "Kim II", "a later rename shows");
+        s.members.insert(c, vec![bot_member("", "bot-7f3a")]);
+        assert_eq!(bot_name(&s, Some(c)), "bot-7f3a");
+        let mut other = bot_member("Another Bot", "x");
+        other.user_id = dilla_client::state::UserId([8; 16]);
+        s.members.insert(c, vec![other]);
+        assert_eq!(bot_name(&s, Some(c)), "Glenn", "not the installation's Bot");
+        assert_eq!(bot_name(&s, None), "Glenn");
     }
 
     #[test]
@@ -506,7 +554,7 @@ mod tests {
         assert_eq!(rows[0].entry.description, "List commands, or explain one");
         assert_eq!(rows[0].entry.source, "built-in");
         assert_eq!(rows[1].entry.args, "<language> <text>");
-        assert_eq!(rows[2].entry.source, "Dilla Bot");
+        assert_eq!(rows[2].entry.source, "Mr. Kim");
         assert_eq!(rows[2].entry.args, "<when> <text>");
         assert_eq!(rows[3].entry.args, "opens a form");
     }

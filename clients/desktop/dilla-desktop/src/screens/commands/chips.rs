@@ -839,13 +839,10 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         .cloned()
         .unwrap_or_default();
     let listed: Vec<(String, Entry)> = if suggest_for(&definition, option) == Suggest::Command {
-        let bot_name = ctx
-            .community
-            .and_then(|c| ctx.state.bot.catalogs.get(&c))
-            .map_or("", |v| v.bot_name.as_str());
+        let bot_name = picker::bot_name(&ctx.state, ctx.community);
         picker::definitions(&ctx.state, ctx.community)
             .iter()
-            .map(|d| (d.id.clone(), picker::entry(d, bot_name)))
+            .map(|d| (d.id.clone(), picker::entry(d, &bot_name)))
             .collect()
     } else {
         Vec::new()
@@ -1003,11 +1000,8 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
         super::picker_state_mut(wid, cx).chips = None;
         return None;
     };
-    let bot_name = ctx
-        .community
-        .and_then(|c| ctx.state.bot.catalogs.get(&c))
-        .map_or("", |v| v.bot_name.as_str());
-    let entry: Entry = picker::entry(&definition, bot_name);
+    let bot_name = picker::bot_name(&ctx.state, ctx.community);
+    let entry: Entry = picker::entry(&definition, &bot_name);
     let n = entry.fields.len();
     {
         let s = super::picker_state_mut(wid, cx);

@@ -996,7 +996,6 @@ mod tests {
                 },
                 bot_channels: None,
                 bot_user: None,
-                bot_name: String::new(),
                 fingerprint: None,
             },
         );

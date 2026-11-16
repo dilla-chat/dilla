@@ -85,8 +85,6 @@ pub struct BotCatalogView {
     pub bot_channels: Option<Vec<ChannelId>>,
     /// The Bot user this device pinned for the community.
     pub bot_user: Option<UserId>,
-    /// The Bot's display name (the picker's source tag).
-    pub bot_name: String,
     /// The verified command key's fingerprint (12 Crockford characters); `None` while no key checked.
     pub fingerprint: Option<String>,
 }
