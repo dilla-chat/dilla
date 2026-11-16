@@ -30,14 +30,29 @@ async function copied(text: string): Promise<boolean> {
   try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
 }
 
-/** "in 5 days", "in 3 hours", "in 12 minutes": the prototype's expiry, from now. */
-function inTime(expires: number, nowMs: number): string {
+/**
+ * "in 5 days", "in 3 hours", "in 12 minutes": the prototype's expiry, from now. The unit is the largest one left and the
+ * count is rounded to the nearest, not floored, so a 7-day link reads "in 7 days" until 6½ days are left (Jonas,
+ * 2026-11-16; the desktop's `in_time` says the same). A count that rounds up to the next unit is said in that unit
+ * (23 h 40 min is "in 1 day"), so the text never goes back up as time passes.
+ */
+export function inTime(expires: number, nowMs: number): string {
   const left = Math.max(0, expires - Math.floor(nowMs / 1000));
-  const days = Math.floor(left / 86_400);
+  const rounded = (unit: number) => Math.floor((left + Math.floor(unit / 2)) / unit);
+  let days = 0;
+  let hours = 0;
+  if (left >= 86_400) days = rounded(86_400);
+  else if (left >= 3600) {
+    const h = rounded(3600);
+    if (h === 24) days = 1;
+    else hours = h;
+  } else {
+    const m = Math.max(1, rounded(60));
+    if (m === 60) hours = 1;
+    else return t('serverSettings.invites.in.minutes', { n: m });
+  }
   if (days >= 1) return t(days === 1 ? 'serverSettings.invites.in.day' : 'serverSettings.invites.in.days', { n: days });
-  const hours = Math.floor(left / 3600);
-  if (hours >= 1) return t(hours === 1 ? 'serverSettings.invites.in.hour' : 'serverSettings.invites.in.hours', { n: hours });
-  return t('serverSettings.invites.in.minutes', { n: Math.max(1, Math.floor(left / 60)) });
+  return t(hours === 1 ? 'serverSettings.invites.in.hour' : 'serverSettings.invites.in.hours', { n: hours });
 }
 
 /**

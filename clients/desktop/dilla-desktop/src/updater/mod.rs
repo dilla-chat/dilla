@@ -223,6 +223,7 @@ fn staging_dir(parent: &Path) -> Result<PathBuf, Error> {
     getrandom::fill(&mut id).map_err(|e| Error::Apply(e.to_string()))?;
     let hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
     let dir = parent.join(format!("{STAGING_PREFIX}{hex}"));
+    #[cfg_attr(not(unix), expect(unused_mut, reason = "only Unix sets the mode"))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

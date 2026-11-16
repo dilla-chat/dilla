@@ -43,18 +43,19 @@ if (-not $webrtcLicense -or -not (Test-Path -LiteralPath $webrtcLicense -PathTyp
   Fail "libwebrtc's LICENSE.md not found (set DILLA_WEBRTC_LICENSE or LK_CUSTOM_WEBRTC)"
 }
 
-# iscc: Inno Setup 6 (preinstalled on windows-latest).
+# iscc: Inno Setup 6 (preinstalled on windows-latest). The install folder comes first: the `iscc` on PATH there is a
+# Chocolatey shim, whose own file version is the shim's (0.0.0.0), not Inno Setup's.
 $iscc = $env:DILLA_ISCC
-if (-not $iscc) {
-  $found = Get-Command iscc -ErrorAction SilentlyContinue
-  if ($found) { $iscc = $found.Source }
-}
 if (-not $iscc) {
   foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, "$env:LOCALAPPDATA\Programs")) {
     if (-not $base) { continue }
     $candidate = Join-Path $base 'Inno Setup 6/ISCC.exe'
     if (Test-Path -LiteralPath $candidate) { $iscc = $candidate; break }
   }
+}
+if (-not $iscc) {
+  $found = Get-Command iscc -ErrorAction SilentlyContinue
+  if ($found) { $iscc = $found.Source }
 }
 if (-not $iscc) { Fail 'iscc (Inno Setup 6) not found (set DILLA_ISCC)' }
 $isccVersion = (Get-Item -LiteralPath $iscc).VersionInfo.ProductVersion

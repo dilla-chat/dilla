@@ -10,6 +10,7 @@ use crate::screens::shell::window::WindowMode;
 
 /// Shows or hides `window`'s traffic lights for `mode`, and places them where [`crate::mac_window_buttons`] says.
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)] // One cast of GPUI's AppKit view handle to an NSView reference; its SAFETY note is at the cast.
 pub fn apply(window: &mut Window, mode: WindowMode) {
     use objc2_app_kit::{NSView, NSWindowButton};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
