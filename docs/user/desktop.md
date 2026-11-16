@@ -196,7 +196,7 @@ the updater and packaging.
   Dilla"), close to tray, the unread count (the tray's tooltip; the dock badge on macOS; the launcher badge on KDE and
   Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
   extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
-  builds only. There is no menu button in the title bar yet; F11 (Control-⌘-F on macOS) toggles full screen. On macOS
+  builds only. The ☰ button at the left of the title bar (and of "Dilla - your instances") opens the app menu; F11 (Control-⌘-F on macOS) toggles full screen. On macOS
   the Dilla menu also has About Dilla, Settings… (⌘,), Services, Hide Dilla (⌘H), Hide Others (⌥⌘H), Show All and Quit
   Dilla (⌘Q, which asks first during a call as above); Window has Minimize (⌘M) and Bring All to Front. The sign-in and
   sign-up windows are moved by their top edge and closed with the × in their top-right corner, on every system.

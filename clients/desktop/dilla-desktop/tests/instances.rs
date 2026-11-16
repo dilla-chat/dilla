@@ -387,7 +387,7 @@ fn an_open_instance_is_held_until_released(cx: &mut TestAppContext) {
 }
 
 /// Keyboard: Tab runs the address field, Connect, the invite field, Join, and then the list, which is one tab stop that
-/// Up, Down, Home and End rove.
+/// Up, Down, Home and End rove, then the title bar's menu button.
 #[gpui::test]
 fn keyboard_instances_focus_order(cx: &mut TestAppContext) {
     let root = root();
@@ -408,7 +408,7 @@ fn keyboard_instances_focus_order(cx: &mut TestAppContext) {
         "the address field starts focused"
     );
     let mut order = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..9 {
         vcx.simulate_keystrokes("tab");
         let (a, i) =
             vcx.update(|window, _| (address.is_focused(window), invite.is_focused(window)));
@@ -421,7 +421,14 @@ fn keyboard_instances_focus_order(cx: &mut TestAppContext) {
     // Connect (a button), the invite field, Join (a button), the list's one stop, then back around.
     assert_eq!(order[..3], ["other", "invite", "other"], "{order:?}");
     assert_eq!(order[3], "other", "the list is one stop: {order:?}");
-    assert_eq!(order[4], "address", "then back around: {order:?}");
+    // Then the title bar (manager.html's header comes before main): "☰ dilla", and on Linux and Windows the window's
+    // three buttons; then back around.
+    let back = if cfg!(target_os = "macos") { 5 } else { 8 };
+    assert!(
+        order[4..back].iter().all(|o| *o == "other"),
+        "the title bar: {order:?}"
+    );
+    assert_eq!(order[back], "address", "then back around: {order:?}");
 }
 
 /// Keyboard: the list is roving; Enter opens; Delete removes after a confirmation.

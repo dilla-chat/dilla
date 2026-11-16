@@ -1636,6 +1636,13 @@ impl Render for AppView {
         // strip along the top and the close button (DesktopTitlebar.tsx in the starting/authentication modes).
         let compact_chrome = (self.launch.shipping && self.screen.mode().is_compact())
             .then(crate::screens::titlebar::compact_chrome);
+        // The authentication window's card fills it (beta.5 DesktopTitlebar.css:24-26): the screens' frames read this
+        // mark as they draw, after this view.
+        dilla_desktop_ui::components::onboarding::frame::set_desktop_window(
+            window,
+            self.launch.shipping && self.screen.mode() == WindowMode::Authentication,
+            cx,
+        );
         // Push to talk is heard at the root, whatever screen shows, and lets go when the screen is not the shell
         // (review I1: the settings replacing the shell's dock left a held key's microphone open).
         let w = crate::screens::voice::wid(window);

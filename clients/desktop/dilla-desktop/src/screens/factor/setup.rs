@@ -1018,7 +1018,7 @@ impl FactorSetupView {
 }
 
 impl Render for FactorSetupView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.title();
         let (body, action, below) = self.body(cx);
         let banner = self.problem.clone().map(|p| (BannerTone::Danger, p));
@@ -1078,7 +1078,7 @@ impl Render for FactorSetupView {
         div()
             .id("factor-setup")
             .size_full()
-            .child(frame.render())
+            .child(frame.render(window, cx))
             .into_any_element()
     }
 }

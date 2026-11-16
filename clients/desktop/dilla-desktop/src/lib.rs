@@ -257,6 +257,30 @@ mod tests {
         });
     }
 
+    /// beta.5 DesktopTitlebar.css:24-26: the full-window card is drawn in the window the app marks as its
+    /// authentication window, and only there.
+    #[gpui::test]
+    fn the_full_window_card_follows_the_windows_mark(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop_ui::components::onboarding::frame::{desktop_window, set_desktop_window};
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            assert!(
+                !desktop_window(window, cx),
+                "a fixture draws the web's card"
+            );
+            set_desktop_window(window, true, cx);
+            assert!(desktop_window(window, cx));
+        });
+        let b = cx.add_empty_window();
+        b.update(|window, cx| assert!(!desktop_window(window, cx), "another window"));
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            set_desktop_window(window, true, cx);
+            set_desktop_window(window, false, cx);
+            assert!(!desktop_window(window, cx), "the workspace drops the mark");
+        });
+    }
+
     #[gpui::test]
     fn install_gives_the_bot_page_the_factor_step_up(cx: &mut gpui::TestAppContext) {
         cx.update(super::install);

@@ -187,20 +187,17 @@ fn dots(n: u8, total: u8) -> impl IntoElement {
 }
 
 impl RenderOnce for OnboardingFrame {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let mut card = div()
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let desktop = desktop_window(window, cx);
+        let card = div()
             .id(self.id.clone())
-            .w(px(CARD_W))
             .flex_none()
             .p(px(CARD_PAD))
             .flex()
             .flex_col()
             .gap(px(CARD_GAP))
-            .bg(color::BG_2)
-            .border_1()
-            .border_color(color::HAIRLINE)
-            .rounded(radius::XXL)
-            .shadow(shadow_card());
+            .bg(color::BG_2);
+        let mut card = card_edge(card, desktop, |c| c.w(px(CARD_W)));
         if self.step.is_some() || self.progress.is_some() {
             card = card.child(
                 div()
@@ -274,6 +271,7 @@ impl RenderOnce for OnboardingFrame {
         centred_scroll(
             (self.id, "page"),
             PAGE_PAD,
+            desktop,
             div()
                 .absolute()
                 .left(px(24.0))
@@ -284,6 +282,52 @@ impl RenderOnce for OnboardingFrame {
     }
 }
 
+/// The windows that show an authentication card as the desktop app's own compact window (beta.5
+/// `html[data-desktop-window="authentication"]`), by id. The app marks a window while it is in that mode
+/// ([`set_desktop_window`]); a fixture or a browser-sized page is never marked and keeps the web's frame.
+#[derive(Default)]
+struct DesktopAuthWindows(std::collections::HashSet<gpui::WindowId>);
+
+impl gpui::Global for DesktopAuthWindows {}
+
+/// Marks `window` as the desktop app's authentication window (`on`), or not.
+pub fn set_desktop_window(window: &Window, on: bool, cx: &mut App) {
+    let id = window.window_handle().window_id();
+    let marked = cx
+        .try_global::<DesktopAuthWindows>()
+        .is_some_and(|w| w.0.contains(&id));
+    if marked == on {
+        return;
+    }
+    let set = &mut cx.default_global::<DesktopAuthWindows>().0;
+    if on {
+        set.insert(id);
+    } else {
+        set.remove(&id);
+    }
+}
+
+/// `window` is the desktop app's authentication window: its card fills the window (DesktopTitlebar.css:24-26).
+pub fn desktop_window(window: &Window, cx: &App) -> bool {
+    cx.try_global::<DesktopAuthWindows>()
+        .is_some_and(|w| w.0.contains(&window.window_handle().window_id()))
+}
+
+/// The card's edge: on the web (and in a fixture) the 400px card with its hairline, `--r-xxl` and `--shadow-card`;
+/// in the desktop authentication window (beta.5 DesktopTitlebar.css:26, `max-width: none; border: 0; border-radius: 0;
+/// box-shadow: none`) the card is the window's whole width, with no edge. `web_width` sizes the web card.
+pub fn card_edge<E: Styled>(card: E, desktop: bool, web_width: impl FnOnce(E) -> E) -> E {
+    if desktop {
+        card.w_full()
+    } else {
+        web_width(card)
+            .border_1()
+            .border_color(color::HAIRLINE)
+            .rounded(radius::XXL)
+            .shadow(shadow_card())
+    }
+}
+
 /// The page's padding round the card.
 const PAGE_PAD: f32 = 20.0;
 
@@ -291,30 +335,38 @@ const PAGE_PAD: f32 = 20.0;
 /// fits, and a vertical scroll when it does not, as the web's page scrolls a card taller than the window. The compact
 /// authentication window keeps its fixed size (Task 8), so every step's controls stay reachable by scrolling. `brand`
 /// is drawn over the page's top-left corner (absolutely placed by the caller) and scrolls with the card.
+///
+/// `desktop`: the desktop app's authentication window (beta.5 DesktopTitlebar.css:24-25,
+/// `.d-onboarding-frame { padding: 0; background: var(--bg-2); align-items: start }`, the bar hidden): no glow, no
+/// brand, no padding, `--bg-2`, the card at the top.
 pub fn centred_scroll(
     id: impl Into<ElementId>,
     pad: f32,
+    desktop: bool,
     brand: impl IntoElement,
     card: impl IntoElement,
 ) -> AnyElement {
+    let page = div()
+        .relative()
+        .w_full()
+        .min_h_full()
+        .flex()
+        .justify_center();
+    let page = if desktop {
+        page.items_start().child(card)
+    } else {
+        page.items_center()
+            .p(px(pad))
+            .child(brand_glow())
+            .child(brand)
+            .child(card)
+    };
     div()
         .id(id.into())
         .size_full()
-        .bg(color::BG)
+        .bg(if desktop { color::BG_2 } else { color::BG })
         .overflow_y_scroll()
-        .child(
-            div()
-                .relative()
-                .w_full()
-                .min_h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .p(px(pad))
-                .child(brand_glow())
-                .child(brand)
-                .child(card),
-        )
+        .child(page)
         .into_any_element()
 }
 
