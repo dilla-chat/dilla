@@ -168,11 +168,8 @@ fn lets_check_plays_back_shows_level_releases_mic() {
         "{levels:?}"
     );
     // Played back live, through the speaker's sink: the loopback is the tone, not silence.
-    assert!(
-        rms(&played[played.len() / 2..]) > 2000.0,
-        "{}",
-        rms(&played)
-    );
+    let tail = rms(&played[played.len() / 2..]);
+    assert!(tail > 2000.0, "the second half's rms: {tail}");
     assert_eq!(events.started().map(|s| s.effective), Some(Processor::Off));
 
     // Stop testing: the microphone and the speaker are released, and the test says it ended.
@@ -207,6 +204,11 @@ fn under_threshold_not_sent_threshold_persists() {
     let (loader, _) = no_model();
     let mut manual = settings();
     manual.threshold_db = 0;
+    // The gate is under test, not the echo canceller. Once the gate opens, the loopback plays the tone, and the speaker
+    // feeds that tone to the canceller as its reference. A steady sine looks like its own delayed echo, so the canceller
+    // adapts and cancels it (the microphone level drops from about -4 to -49 dB). How long it takes to re-converge depends
+    // on the timing, so under CPU load the measured tail could be silent (main CI after #176).
+    manual.echo = false;
     let test = start(&host, manual.clone(), loader, &events);
     wait_until("the microphone", || host.inputs_open() == 1);
     let mut tone = Tone(0.0);
@@ -226,11 +228,8 @@ fn under_threshold_not_sent_threshold_persists() {
     open.threshold_db = -100;
     test.update(open);
     let played = run(&host, &mut tone, 1200);
-    assert!(
-        rms(&played[played.len() / 2..]) > 2000.0,
-        "{}",
-        rms(&played)
-    );
+    let tail = rms(&played[played.len() / 2..]);
+    assert!(tail > 2000.0, "the second half's rms: {tail}");
     test.stop();
 
     // The threshold and the levels persist across a restart: -100 dB, 150 %.
