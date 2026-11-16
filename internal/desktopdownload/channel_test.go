@@ -16,13 +16,11 @@ import (
 
 const alphaVersion = "0.2.0-alpha.1"
 
-var alphaSuffixes = []string{"linux-x64.AppImage", "linux-x64.deb", "linux-x64.rpm", "linux-x64.aur.tar.gz", "linux-x64.tar.gz", "mac-arm64.dmg", "win-x64-setup.exe"}
-
 // alphaDoc is a GPUI feed document as scripts/desktop-gpui-feed.mjs writes it: beta.5 format 1,
 // channel "alpha", JSON.stringify bytes plus a newline.
 func alphaDoc(mutate func(map[string]any)) []byte {
 	var assets []map[string]any
-	for _, suffix := range alphaSuffixes {
+	for _, suffix := range gpuiFeedSuffixes {
 		assets = append(assets, map[string]any{"name": "dilla-" + alphaVersion + "-" + suffix, "size": 1, "sha512": "x"})
 	}
 	doc := map[string]any{
@@ -97,7 +95,7 @@ func TestCrossChannelReplayIsRefused(t *testing.T) {
 		"gpui document on the beta channel":       {desktopdownload.Beta, alphaFeed},
 		// Only the channel field differs: the version alone must not let it through.
 		"alpha version labelled beta, on gpui-alpha": {desktopdownload.GPUIAlpha, alphaDoc(func(d map[string]any) { d["channel"] = "beta" })},
-		"beta version labelled alpha, on beta": {desktopdownload.Beta, feedDoc(func(d map[string]any) { d["channel"] = "alpha" })},
+		"beta version labelled alpha, on beta":       {desktopdownload.Beta, feedDoc(func(d map[string]any) { d["channel"] = "alpha" })},
 		// Only the version differs: the channel field alone must not let it through.
 		"beta version labelled alpha, on gpui-alpha": {desktopdownload.GPUIAlpha, feedDoc(func(d map[string]any) { d["channel"] = "alpha" })},
 		"alpha version labelled beta, on beta":       {desktopdownload.Beta, alphaDoc(func(d map[string]any) { d["channel"] = "beta" })},
@@ -125,15 +123,19 @@ func TestCrossChannelReplayIsRefused(t *testing.T) {
 func TestGPUIAlphaRefusesForeignVersions(t *testing.T) {
 	pub, priv := newKey(t)
 	for name, mutate := range map[string]func(map[string]any){
-		"stable version":                func(d map[string]any) { d["version"] = "0.2.0" },
-		"leading zero":                  func(d map[string]any) { d["version"] = "0.2.0-alpha.01" },
-		"setup.exe not listed":          func(d map[string]any) { d["assets"] = []map[string]any{{"name": "dilla-" + alphaVersion + "-linux-x64.deb"}} },
-		"version with a path":           func(d map[string]any) { d["version"] = "0.2.0-alpha.1/../../evil" },
-		"lifetime past 93 days":         func(d map[string]any) { d["expiresAt"] = now.Add(93 * 24 * time.Hour).Format(time.RFC3339) },
-		"published in the future":       func(d map[string]any) { d["publishedAt"] = now.Add(time.Hour).Format(time.RFC3339) },
-		"format 2":                      func(d map[string]any) { d["format"] = 2 },
-		"empty channel":                 func(d map[string]any) { d["channel"] = "" },
-		"setup.exe listed twice": func(d map[string]any) { d["assets"] = append(d["assets"].([]map[string]any), map[string]any{"name": "dilla-" + alphaVersion + "-win-x64-setup.exe"}) },
+		"stable version": func(d map[string]any) { d["version"] = "0.2.0" },
+		"leading zero":   func(d map[string]any) { d["version"] = "0.2.0-alpha.01" },
+		"setup.exe not listed": func(d map[string]any) {
+			d["assets"] = []map[string]any{{"name": "dilla-" + alphaVersion + "-linux-x64.deb"}}
+		},
+		"version with a path":     func(d map[string]any) { d["version"] = "0.2.0-alpha.1/../../evil" },
+		"lifetime past 93 days":   func(d map[string]any) { d["expiresAt"] = now.Add(93 * 24 * time.Hour).Format(time.RFC3339) },
+		"published in the future": func(d map[string]any) { d["publishedAt"] = now.Add(time.Hour).Format(time.RFC3339) },
+		"format 2":                func(d map[string]any) { d["format"] = 2 },
+		"empty channel":           func(d map[string]any) { d["channel"] = "" },
+		"setup.exe listed twice": func(d map[string]any) {
+			d["assets"] = append(d["assets"].([]map[string]any), map[string]any{"name": "dilla-" + alphaVersion + "-win-x64-setup.exe"})
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			feed := alphaDoc(mutate)
