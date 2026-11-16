@@ -279,6 +279,7 @@ impl AppView {
                             window,
                             cx,
                         )
+                        .with_controls(crate::automation::fixture_window_controls())
                     });
                     this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);

@@ -734,37 +734,55 @@ mod parity {
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
     fn parity_voice_settings_section() {
         check("section");
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
     fn parity_voice_settings_section_b() {
         check("section-b");
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
     fn parity_voice_settings_mic_test_running() {
         check("mic-test-running");
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
     fn parity_voice_settings_mic_test_running_b() {
         check("mic-test-running-b");
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
     fn parity_voice_settings_enhanced_unavailable() {
         check("enhanced-unavailable");
     }
 
     #[test]
-    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
     fn parity_voice_settings_enhanced_unavailable_b() {
         check("enhanced-unavailable-b");
     }

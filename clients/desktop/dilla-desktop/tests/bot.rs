@@ -61,13 +61,19 @@ fn parity_polls_card_b() {
 
 /// The reminders popover open under the bell (Signal §6.7), nothing kept: the Upcoming tab and its empty line.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_commands_reminders() {
     dilla_parity::screen::assert_screen(&fixture("commands/reminders.json")).unwrap();
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_commands_reminders_b() {
     dilla_parity::screen::assert_screen(&fixture("commands/reminders-b.json")).unwrap();
 }

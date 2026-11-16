@@ -206,15 +206,51 @@ struct ToleranceFile {
     linux: Tolerance,
     macos: Tolerance,
     windows: Tolerance,
+    /// Per-screen macOS limits (decision D-A of the macOS CI plan: measured per-screen tolerances), by fixture name:
+    /// each value replaces the `[macos]` one it names. Only where a screen's honest macOS score sits over half the
+    /// shared limit; every entry carries its measurement in TOLERANCES.md.
+    #[serde(default)]
+    macos_screens: std::collections::BTreeMap<String, ToleranceOverride>,
+}
+
+/// One screen's own macOS limits ([`tolerance_for_screen`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToleranceOverride {
+    max_pct: Option<f64>,
+    chrome_max_pct: Option<f64>,
+    colour_max_pct: Option<f64>,
+}
+
+fn read_tolerance_file() -> Result<ToleranceFile, ParityFailure> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tolerance.toml");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| ParityFailure::Tolerance(format!("{}: {e}", path.display())))?;
+    toml::from_str(&text).map_err(|e| ParityFailure::Tolerance(e.to_string()))
+}
+
+/// The tolerance of the screen fixture `name` on `os`: [`tolerance_for`], with the screen's own macOS limits
+/// (`[macos_screens."<name>"]` in `tolerance.toml`) in place on macOS.
+pub fn tolerance_for_screen(os: Os, name: &str) -> Result<Tolerance, ParityFailure> {
+    let file = read_tolerance_file()?;
+    let mut t = match os {
+        Os::Linux => file.linux,
+        Os::MacOs => file.macos,
+        Os::Windows => file.windows,
+    };
+    if os == Os::MacOs
+        && let Some(o) = file.macos_screens.get(name)
+    {
+        t.max_pct = o.max_pct.unwrap_or(t.max_pct);
+        t.chrome_max_pct = o.chrome_max_pct.unwrap_or(t.chrome_max_pct);
+        t.colour_max_pct = o.colour_max_pct.unwrap_or(t.colour_max_pct);
+    }
+    Ok(t)
 }
 
 /// Reads `tolerance.toml` (next to this crate's manifest) for `os`.
 pub fn tolerance_for(os: Os) -> Result<Tolerance, ParityFailure> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tolerance.toml");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| ParityFailure::Tolerance(format!("{}: {e}", path.display())))?;
-    let file: ToleranceFile =
-        toml::from_str(&text).map_err(|e| ParityFailure::Tolerance(e.to_string()))?;
+    let file = read_tolerance_file()?;
     Ok(match os {
         Os::Linux => file.linux,
         Os::MacOs => file.macos,
@@ -409,6 +445,28 @@ pub fn colour_difference_pct(
         }
     }
     Ok(percent(missing, total))
+}
+
+/// Share (percent) of all pixels whose largest channel delta exceeds `max_delta`: the whole-frame gate's score. Both
+/// images must have the same size.
+pub fn whole_difference_pct(
+    actual: &RgbaImage,
+    reference: &RgbaImage,
+    max_delta: u8,
+) -> Result<f64, ParityFailure> {
+    let (a, r) = (actual.dimensions(), reference.dimensions());
+    if a != r {
+        return Err(ParityFailure::Size {
+            actual: a,
+            reference: r,
+        });
+    }
+    let differing = actual
+        .pixels()
+        .zip(reference.pixels())
+        .filter(|(p, q)| pixel_delta(p, q) > max_delta)
+        .count() as u64;
+    Ok(percent(differing, u64::from(a.0) * u64::from(a.1)))
 }
 
 /// Share (percent) of the pixels outside `mask` whose largest channel delta exceeds `max_delta`.

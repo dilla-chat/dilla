@@ -2641,6 +2641,27 @@ test('the desktop-gpui macOS call tests are pinned: the app voice suite, the mac
   }
 });
 
+test('the macOS parity and VideoToolbox steps cannot lose a line, their guard or their nightly gate (macOS CI plan)', () => {
+  const edits = [
+    ['    cargo test -p dilla-desktop --features automation --locked --test video_player_shot\n', '', 'macParity'],
+    ["  if: runner.os == 'macOS' && !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", "  if: !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", 'macParity'],
+    ["  if: runner.os == 'macOS' && github.event_name == 'schedule' && !cancelled()", "  if: runner.os == 'macOS' && !cancelled()", 'macVideoToolbox'],
+  ];
+  for (const [from, to, name] of edits) {
+    const problems = gpuiProblems((text) => { const f = indent(from); assert.ok(text.includes(f), from); return text.replace(f, indent(to)); });
+    assert.ok(problems.some((p) => p.includes(`the ${name} step`)), `${from}: ${problems.join('|')}`);
+  }
+});
+
+test('desktop-gpui.yml never sets DILLA_PARITY_MEASURE (it turns every parity check into a pass)', () => {
+  const step = 'cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_';
+  for (const edit of [`DILLA_PARITY_MEASURE=1 ${step}`, `export DILLA_PARITY_MEASURE=1; ${step}`]) {
+    const problems = gpuiProblems((text) => { assert.ok(text.includes(step), step); return text.replace(step, edit); });
+    assert.ok(problems.some((p) => p.includes('DILLA_PARITY_MEASURE')), `${edit}: ${problems.join('|')}`);
+  }
+  assert.ok(!checkDesktopGpuiWorkflow(REPO_ROOT).some((p) => p.includes('DILLA_PARITY_MEASURE')));
+});
+
 test('the desktop-gpui macOS package job is pinned: macos-15, no secrets, and every packaging and verification command', () => {
   for (const fragment of GPUI_MAC_PACKAGE_RUNS) {
     const problems = gpuiProblems((text) => { assert.ok(text.includes(fragment), fragment); return text.replace(fragment, 'true'); });
@@ -2757,6 +2778,17 @@ test('parity tests parked until the shared-component pass need no --ignored run,
   assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-only forwarded R22 reason needs no run line');
   writeFileSync(join(dir, 'parked.rs'), linuxOnly('needs dillad'));
   assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-only forwarded other reason still needs its run line');
+  // The Linux-and-macOS forwarding spelling (macOS CI plan, Task 3) reads the same.
+  const linuxMac = (why) => `macro_rules! p { ($($t:ident $(; $why:literal)?),*) => {$(#[test] #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "refs")] $(#[cfg_attr(any(target_os = "linux", target_os = "macos"), ignore = $why)])? fn $t() {})*}; }\np!(a; "${why}", b);\n`;
+  writeFileSync(join(dir, 'parked.rs'), linuxMac('parity after T6c: chrome 0.3 %'));
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-and-macOS forwarded R22 reason needs no run line');
+  writeFileSync(join(dir, 'parked.rs'), linuxMac('needs dillad'));
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-and-macOS forwarded other reason still needs its run line');
+  // The Linux-and-macOS spelling (macOS CI plan, Task 3) is off Linux too; an ignore off macOS alone is not.
+  writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]\nfn parity_a() {}\n');
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'an ignore off Linux and macOS needs no Linux run line');
+  writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[cfg_attr(not(target_os = "macos"), ignore = "macOS only")]\nfn mac_only() {}\n');
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'an ignore off macOS alone is ignored on Linux and still needs its run line');
   rmSync(root, { recursive: true, force: true });
 });
 

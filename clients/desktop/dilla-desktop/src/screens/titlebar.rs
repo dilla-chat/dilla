@@ -458,21 +458,25 @@ pub fn render(
     menu: Option<gpui::AnyElement>,
 ) -> impl IntoElement + use<> {
     let brand_name_line = line_height(text::XS, 1.5);
+    let mark = centred(
+        Pixels::from(css::BRAND_MARK),
+        line("D", text::XS, line_height(text::XS, 1.0), color::BRAND_INK)
+            .weight(font::WEIGHT_DISPLAY),
+    )
+    .rounded(radius::SM)
+    .bg(color::BRAND);
+    // The bar's leftmost drawing, which the macOS traffic-light clearance test keeps out of the lights.
+    #[cfg(feature = "automation")]
+    let mark = mark
+        .relative()
+        .child(crate::automation::bounds_probe("topbar-brand"));
     let brand = div()
         .flex_1()
         .min_w_0()
         .flex()
         .items_center()
         .gap(Pixels::from(css::BRAND_GAP))
-        .child(
-            centred(
-                Pixels::from(css::BRAND_MARK),
-                line("D", text::XS, line_height(text::XS, 1.0), color::BRAND_INK)
-                    .weight(font::WEIGHT_DISPLAY),
-            )
-            .rounded(radius::SM)
-            .bg(color::BRAND),
-        )
+        .child(mark)
         .child(
             line("DILLA", text::XS, brand_name_line, color::FG)
                 .weight(font::WEIGHT_DISPLAY)

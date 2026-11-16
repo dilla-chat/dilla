@@ -20,6 +20,9 @@
 //! wait-idle               -> ok <frames> | err not idle         (frames drawn until nothing on screen changed twice running;
 //!                                                                60 frames without that is an error)
 //! text-bounds             -> ok [<x> <y> <w> <h>[;<x> <y> <w> <h>]...]   (every painted text line, logical pixels)
+//! elements                -> ok [<id> <x> <y> <w> <h>[;...]]     (every tracked element of the latest frame, sorted by id)
+//! traffic-lights          -> ok <x> <y> <w> <h>                 (where macOS draws the workspace window's traffic lights,
+//!                                                                logical px: `crate::MAC_TRAFFIC_LIGHTS`)
 //! fixture                 -> ok <fixture line> | none           (what the screen was drawn from: `ScreenFixture::fixture_line`)
 //! a11y                    -> ok <json> | none                   (the accessibility tree a screen reader gets: see `a11y_json`;
 //!                                                                the first call switches accessibility on, as a reader does)
@@ -41,6 +44,12 @@
 //! in-memory keychain so a test never touches the OS keychain; a `.json` file is a screen fixture
 //! ([`crate::fixture`], `dilla_client::testing::spec`), drawn without a network. `--shot <path>` is the reference's
 //! sidecar (`<state>.shot.json`): the ids and the time shift the web shooter recorded.
+//!
+//! Test controls, read from the environment at launch: `DILLA_AUTOMATION_FALLBACK_FONT` (every line asks for a missing
+//! family), `DILLA_AUTOMATION_HIDE_TEXT` (every line transparent), `DILLA_AUTOMATION_TEXT_SYSTEM=noop` (GPUI's
+//! `NoopTextSystem` instead of the platform's: no glyph is drawn, the glyph test's negative control, which is what a macOS
+//! build without gpui-pre-platform's `font-kit` got) and `DILLA_AUTOMATION_WINDOW_CONTROLS` (a shell fixture draws the
+//! shipping window's title bar, as the real window does: the macOS traffic-light clearance test).
 //!
 //! `--harness`: no app at all, a small view of the harness's own (see [`HarnessView`]) that the harness tests drive to
 //! prove the interface itself: two focusable fields that log the keys they receive, a hover box and a scroll box.
@@ -71,6 +80,18 @@ pub const FALLBACK_FONT_VAR: &str = "DILLA_AUTOMATION_FALLBACK_FONT";
 /// Set, every line of text is painted transparent: the frame shows exactly the pixels the glyphs cover when it is
 /// compared with the normal one (the text mask's control).
 pub const HIDE_TEXT_VAR: &str = "DILLA_AUTOMATION_HIDE_TEXT";
+
+/// Set to `noop`, the session draws with GPUI's `NoopTextSystem` (no glyph at all): the glyph test's negative control.
+pub const TEXT_SYSTEM_VAR: &str = "DILLA_AUTOMATION_TEXT_SYSTEM";
+
+/// Set, a shell fixture draws the shipping window's title bar (`ShellView::with_controls`): on macOS the bar's inset for
+/// the traffic lights, which a fixture otherwise leaves out to match the web's frame.
+pub const WINDOW_CONTROLS_VAR: &str = "DILLA_AUTOMATION_WINDOW_CONTROLS";
+
+/// Whether a shell fixture draws the shipping window's title bar ([`WINDOW_CONTROLS_VAR`]).
+pub fn fixture_window_controls() -> bool {
+    std::env::var_os(WINDOW_CONTROLS_VAR).is_some()
+}
 
 /// Marks a binary as an automation build. The release-build test greps for it.
 pub const AUTOMATION_MARKER: &str = "dilla-automation-interface/1";
@@ -381,8 +402,14 @@ struct Session {
 impl Session {
     fn open(mode: Mode) -> Self {
         let platform = gpui_platform::current_platform(true);
+        let text_system: std::sync::Arc<dyn gpui::PlatformTextSystem> =
+            if std::env::var(TEXT_SYSTEM_VAR).is_ok_and(|v| v == "noop") {
+                std::sync::Arc::new(gpui::NoopTextSystem::new())
+            } else {
+                platform.text_system()
+            };
         let mut cx = HeadlessAppContext::with_platform(
-            platform.text_system(),
+            text_system,
             std::sync::Arc::new(dilla_desktop_ui::theme::Assets),
             gpui_platform::current_headless_renderer,
         );
@@ -867,6 +894,20 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
         (Some("pointer"), None, None) => {
             let p = session.pointer();
             format!("ok {} {}", f32::from(p.x), f32::from(p.y))
+        }
+        (Some("elements"), None, None) => {
+            session.frame();
+            let mut all: Vec<String> = with_bounds(|map| {
+                map.iter()
+                    .map(|(id, b)| format!("{id} {}", rect(b)))
+                    .collect()
+            });
+            all.sort();
+            format!("ok {}", all.join(";")).trim_end().to_owned()
+        }
+        (Some("traffic-lights"), None, None) => {
+            let (x, y, w, h) = crate::MAC_TRAFFIC_LIGHTS;
+            format!("ok {x} {y} {w} {h}")
         }
         (Some("text-bounds"), None, None) => {
             let rects: Vec<String> = session.text_bounds().iter().map(rect).collect();

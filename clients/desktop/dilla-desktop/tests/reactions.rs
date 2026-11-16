@@ -1,7 +1,7 @@
 //! Task 10's parity, behaviour and keyboard tests for the reactions area (standard procedure S4-S6).
 //!
 //! - Parity (`parity_reactions_*`): each fixture of `parity/fixtures/reactions/` against the web client's reference, under the
-//!   committed tolerance. Linux only (the references are shot there).
+//!   committed tolerance. Linux and macOS (the references are shot on Linux; macOS compares with them under its own tolerance).
 //! - Keyboard (`keyboard_reactions_*`): the bar's arrows and Enter, the grid's arrows, Home, End, Enter and Escape, in a real
 //!   (test) window; and the composer's emoji button through the automation build.
 //! - Behaviour: `react_and_unreact_between_two_devices` and `own_second_device_sees_reaction` run against a real dillad in
@@ -32,7 +32,7 @@ fn fixture(name: &str) -> PathBuf {
         .join(format!("{name}.json"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn parity(name: &str) {
     let report = dilla_parity::screen::assert_screen(&fixture(name))
         .unwrap_or_else(|e| panic!("reactions/{name}: {e}"));
@@ -42,40 +42,40 @@ fn parity(name: &str) {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn parity_reactions_bar() {
     parity("bar");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn parity_reactions_bar_b() {
     parity("bar-b");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore = "parity after T6c: chrome 0.2392 % (the colour emoji glyphs: the bitmap face scaled to 15px samples otherwise than Skia's, and a chip's width follows the emoji's advance, so some chips' edges sit a device px apart; re-measured in the wave 2 fix round; which advance each side gives the emoji is not measured yet, so the root is still open)"]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore = "parity after T6c: chrome 0.2331 % (as many-wrapping: the emoji glyphs and the chip edges they move)"]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore = "parity after T6c: chrome 0.2812 % (the picker grid's colour emoji glyphs, as many-wrapping)"]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn parity_reactions_emoji_grid_b() {
     parity("emoji-grid-b");

@@ -1,6 +1,7 @@
 //! Task 5: the screen harness against the app's own screens and the harness view.
 //!
-//! The channel-view tests need Linux (the references are shot there; macOS and Windows tolerances are PENDING-CI).
+//! The channel-view tests need Linux or macOS (the references are shot on Linux; macOS compares with them under its own
+//! tolerance, decision D-A of the macOS CI plan; Windows's is PENDING-CI).
 //! Everything that drives the app needs GPUI's headless renderer, which Windows lacks.
 
 use std::path::{Path, PathBuf};
@@ -49,7 +50,10 @@ fn shoot_with(name: &str, env: &[(&str, &str)], grow: f32) -> (RgbaImage, TextMa
 // ---- Step 1, 2, 3: the screens ----------------------------------------------------------------------------------
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn text_mask_matches_painted_lines() {
     let (normal, mask_normal) = shoot("shell/channel-view", &[]);
     let (width, height) = normal.dimensions();
@@ -92,7 +96,10 @@ fn text_mask_matches_painted_lines() {
 /// `TEXT_FRINGE_PX` is the measured reach of glyph pixels beyond the line boxes the app reports: the largest distance
 /// (Chebyshev, device px) from a glyph pixel to the nearest ungrown line box, over both shell fixtures, must be within it.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn text_fringe_is_the_measured_reach_of_glyphs() {
     let mut reach = 0u32;
     for name in ["shell/channel-view", "shell/channel-view-b"] {
@@ -123,7 +130,10 @@ fn text_fringe_is_the_measured_reach_of_glyphs() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn channel_view_two_fixtures() {
     for name in ["shell/channel-view", "shell/channel-view-b"] {
         let report = assert_screen(&fixture_path(name))
@@ -141,7 +151,10 @@ fn channel_view_two_fixtures() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn a_reference_shot_from_another_fixture_is_refused() {
     // The sidecar records the digest of the fixture file the shot was made from.
     let dir = tempfile::tempdir().unwrap();
@@ -177,7 +190,10 @@ fn a_reference_shot_from_another_fixture_is_refused() {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn a_missing_sidecar_is_a_reference_failure() {
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("parity");
@@ -303,44 +319,53 @@ fn recolour(img: &RgbaImage, from: [u8; 3], to: [u8; 3]) -> (RgbaImage, u64) {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn wrong_fill_colour_fails() {
     let (shot, mask) = shoot("shell/channel-view", &[]);
     let reference = reference("shell/channel-view");
     // Positive control: the honest frame passes.
-    assert_parity_masked(&shot, &reference, Os::Linux, &mask).unwrap();
+    assert_parity_masked(&shot, &reference, Os::current(), &mask).unwrap();
     // The panel surface one token step off (BG_2 to BG_3): far under the chrome gate's delta, so only the colour gate sees it.
     let (wrong, changed) = recolour(&shot, BG_2, BG_3);
     assert!(
         changed > 500_000,
         "the frame has no BG_2 surface to recolour ({changed} pixels)"
     );
-    match assert_parity_masked(&wrong, &reference, Os::Linux, &mask) {
+    match assert_parity_masked(&wrong, &reference, Os::current(), &mask) {
         Err(ParityFailure::Colour { pct, max_pct, .. }) => assert!(pct > max_pct * 10.0, "{pct}"),
         other => panic!("a fill one token step off must fail the colour gate, got {other:?}"),
     }
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn wrong_border_colour_fails() {
     let (shot, mask) = shoot("shell/channel-view", &[]);
     let reference = reference("shell/channel-view");
-    assert_parity_masked(&shot, &reference, Os::Linux, &mask).unwrap();
+    assert_parity_masked(&shot, &reference, Os::current(), &mask).unwrap();
     // Every hairline one token step off (HAIRLINE to HAIRLINE_2).
     let (wrong, changed) = recolour(&shot, HAIRLINE, HAIRLINE_2);
     assert!(
         changed > 5_000,
         "the frame has no hairlines to recolour ({changed} pixels)"
     );
-    match assert_parity_masked(&wrong, &reference, Os::Linux, &mask) {
+    match assert_parity_masked(&wrong, &reference, Os::current(), &mask) {
         Err(ParityFailure::Colour { pct, max_pct, .. }) => assert!(pct > max_pct, "{pct}"),
         other => panic!("a border one token step off must fail the colour gate, got {other:?}"),
     }
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn fallback_font_fails() {
     let result = assert_screen_with(
         &fixture_path("shell/channel-view"),
@@ -350,6 +375,48 @@ fn fallback_font_fails() {
         matches!(result, Err(ParityFailure::Pixels { .. })),
         "a fallback face must fail the whole-frame gate, got {result:?}"
     );
+}
+
+/// The macOS CI plan's measurement run (Task 3; `DILLA_PARITY_MEASURE=1`, gpui-proofs.yml `mac-parity-measure`): the
+/// negative controls of both shell fixtures scored as the honest frames are, one `MEASURE` line each, so an OS's limits
+/// can be put between the honest scores and the controls'. Without the variable it does nothing.
+#[test]
+#[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
+fn parity_negative_controls_measured() {
+    if std::env::var_os(dilla_parity::screen::MEASURE_VAR).is_none() {
+        return;
+    }
+    for name in ["shell/channel-view", "shell/channel-view-b"] {
+        let reference = image::open(reference(name)).unwrap().to_rgba8();
+        let (shot, mask) = shoot(name, &[]);
+        let line = |label: &str, frame: &RgbaImage, mask: &TextMask| {
+            dilla_parity::screen::measure_line(&format!("{name}+{label}"), frame, &reference, mask)
+                .unwrap()
+        };
+        println!("{}", line("honest", &shot, &mask));
+        println!(
+            "{}",
+            line("bg2-to-bg3", &recolour(&shot, BG_2, BG_3).0, &mask)
+        );
+        println!(
+            "{}",
+            line(
+                "hairline-to-hairline2",
+                &recolour(&shot, HAIRLINE, HAIRLINE_2).0,
+                &mask
+            )
+        );
+        // The chrome gate's control (Linux's b2, a layout shift): the whole frame one CSS px (2 device px) to the right.
+        let mut shifted = shot.clone();
+        for (x, y, p) in shot.enumerate_pixels() {
+            if x + 2 < shot.width() {
+                shifted.put_pixel(x + 2, y, *p);
+            }
+        }
+        println!("{}", line("shift-1px", &shifted, &mask));
+        let (fallback, fallback_mask) = shoot(name, &[("DILLA_AUTOMATION_FALLBACK_FONT", "1")]);
+        println!("{}", line("fallback-font", &fallback, &fallback_mask));
+    }
 }
 
 // ---- Step 4: named keys, focus, hover ----------------------------------------------------------------------------

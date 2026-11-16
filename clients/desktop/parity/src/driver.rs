@@ -410,6 +410,54 @@ impl Driver {
             .collect()
     }
 
+    /// Every tracked element of the latest frame (`elements`), sorted by id, logical pixels.
+    pub fn elements(&mut self) -> Vec<ElementInfo> {
+        let reply = self.request("elements");
+        let rest = reply
+            .strip_prefix("ok")
+            .unwrap_or_else(|| panic!("`elements` failed: {reply}"))
+            .trim();
+        rest.split(';')
+            .filter(|r| !r.is_empty())
+            .map(|r| {
+                let parts: Vec<&str> = r.split(' ').collect();
+                let [id, x, y, width, height] = parts[..] else {
+                    panic!("bad elements reply: {reply}");
+                };
+                let n = |v: &str| v.parse::<f32>().expect("a number");
+                ElementInfo {
+                    id: id.to_owned(),
+                    x: n(x),
+                    y: n(y),
+                    width: n(width),
+                    height: n(height),
+                }
+            })
+            .collect()
+    }
+
+    /// Where macOS draws the workspace window's traffic lights (`traffic-lights`: the app's `MAC_TRAFFIC_LIGHTS`),
+    /// logical pixels.
+    pub fn traffic_lights(&mut self) -> ElementInfo {
+        let reply = self.request("traffic-lights");
+        let n: Vec<f32> = reply
+            .strip_prefix("ok ")
+            .unwrap_or_else(|| panic!("`traffic-lights` failed: {reply}"))
+            .split(' ')
+            .map(|v| v.parse().expect("a number"))
+            .collect();
+        let [x, y, width, height] = n[..] else {
+            panic!("bad traffic-lights reply: {reply}");
+        };
+        ElementInfo {
+            id: String::from("traffic-lights"),
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
     /// Waits until the element `id` is on screen (the app keeps working between requests), at most `timeout`.
     pub fn wait_for(&mut self, id: &str, timeout: Duration) -> ElementInfo {
         let deadline = std::time::Instant::now() + timeout;

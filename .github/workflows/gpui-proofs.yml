@@ -3,11 +3,19 @@ name: gpui-proofs
 # every image (beta.5 reference, GPUI render, diff, worst-region crops) as an artifact named after the OS.
 on:
   workflow_dispatch:
+    inputs:
+      # One job per dispatch: the org has about five macOS runners, so a manual run never takes more than it needs.
+      job:
+        description: 'Which proof to run'
+        type: choice
+        default: pixel-proof
+        options: [pixel-proof, mac-render-spike, mac-parity-measure]
 permissions:
   contents: read
 jobs:
   pixel-proof:
     name: pixel-proof-${{ matrix.label }}
+    if: inputs.job == 'pixel-proof'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -74,3 +82,128 @@ jobs:
           name: pixel-proof-${{ matrix.label }}
           path: experiments/gpui-pixel-proof/out/${{ matrix.label }}
           if-no-files-found: error
+  # The macOS CI plan (docs/superpowers/plans/2026-11-16-gpui-macos-ci.md), Task 0, rendering part: the shipping debug
+  # build opens its real, on-screen window on the runner's logged-in session; the window is found through CGWindowList,
+  # shot with screencapture and read with Vision (experiments/gpui-mac-render/window-check.swift). A frame with glyphs in it
+  # means AppKit, Metal and CoreText all draw on a hosted macos-15. Also the in-process (headless Metal) checks of Tasks 1
+  # and 2, with their numbers.
+  mac-render-spike:
+    if: inputs.job == 'mac-render-spike'
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Free disk space (macOS)
+        run: |
+          df -h /
+          keep="$(cd "$(xcode-select -p)/../.." && pwd -P)"  # the real app, also when Xcode.app is a link to it
+          for app in /Applications/Xcode*.app; do
+            if [ ! -L "$app" ] && [ "$(cd "$app" && pwd -P)" != "$keep" ]; then sudo rm -rf "$app"; fi
+          done
+          sudo rm -rf "$HOME/Library/Android" /usr/local/share/dotnet "$HOME/.dotnet" "$HOME/Library/Developer/CoreSimulator/Caches"
+          df -h /
+      - run: rustup show active-toolchain
+      # Restore only: desktop-gpui.yml's macOS leg saves it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-
+      - name: Session and graphics
+        run: |
+          launchctl print "gui/$(id -u)" | head -n 15
+          system_profiler SPDisplaysDataType
+      - name: Glyphs and the traffic lights, headless (Tasks 1 and 2)
+        run: cargo test -p dilla-parity --locked --test harness -- --nocapture text_draws_glyphs noop_text_system_draws_no_glyphs a_bar_without_the_inset_is_under_the_traffic_lights macos_header_clears_the_traffic_lights
+      - name: Build the shipping debug binary
+        run: cargo build -p dilla-desktop --locked
+      - name: Open the real window, shoot it and read it
+        run: |
+          out="$RUNNER_TEMP/mac-render"
+          mkdir -p "$out"
+          check=experiments/gpui-mac-render/window-check.swift
+          RUST_LOG=info target/debug/dilla-desktop > "$out/app.log" 2>&1 &
+          pid=$!
+          swift "$check" wait "$pid" 60 | tee "$out/windows.txt"
+          sleep 3  # the compact start window grows to the sign-in shape
+          swift "$check" wait "$pid" 5 | tee "$out/windows.txt"
+          wid="$(awk '/^window /{print $2; exit}' "$out/windows.txt")"
+          screencapture -x -o -l "$wid" "$out/window.png"
+          screencapture -x "$out/screen.png"
+          pgrep -l SecurityAgent && echo "::warning::a SecurityAgent (keychain prompt) is up" || echo "no SecurityAgent"
+          swift "$check" look "$out/screen.png" | tee "$out/screen-ocr.txt" || true  # the whole screen: context only
+          swift "$check" look "$out/window.png" | tee "$out/window-ocr.txt"
+          kill "$pid"
+          { echo '### mac render spike'; echo '```'; cat "$out/windows.txt" "$out/window-ocr.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: mac-render-spike
+          path: ${{ runner.temp }}/mac-render
+          if-no-files-found: error
+  # Task 3 (decision D-A): every parity screen scored on macOS against the Linux web references, at the Linux deltas and
+  # wider ones, plus the negative controls of the two shell fixtures (DILLA_PARITY_MEASURE prints a MEASURE line per frame
+  # and skips the comparison). The [macos] limits in clients/desktop/parity/tolerance.toml are chosen from this run.
+  mac-parity-measure:
+    if: inputs.job == 'mac-parity-measure'
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Free disk space (macOS)
+        run: |
+          df -h /
+          keep="$(cd "$(xcode-select -p)/../.." && pwd -P)"  # the real app, also when Xcode.app is a link to it
+          for app in /Applications/Xcode*.app; do
+            if [ ! -L "$app" ] && [ "$(cd "$app" && pwd -P)" != "$keep" ]; then sudo rm -rf "$app"; fi
+          done
+          sudo rm -rf "$HOME/Library/Android" /usr/local/share/dotnet "$HOME/.dotnet" "$HOME/Library/Developer/CoreSimulator/Caches"
+          df -h /
+      - run: rustup show active-toolchain
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-
+      - name: Measure every parity screen and the controls
+        env:
+          DILLA_PARITY_MEASURE: '1'
+        run: |
+          set -o pipefail
+          cargo test -p dilla-parity -p dilla-desktop --features dilla-desktop/automation --locked --no-fail-fast parity_ -- --include-ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/measure.txt"
+      # The inline video player through Metal (the addendum's video row): its own loose bounds, printed per frame.
+      - name: The video player's shots
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          cargo test -p dilla-desktop --features automation --locked --test video_player_shot -- --include-ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/video.txt"
+          mkdir -p target/screen-parity
+          cp target/parity-video/*.png target/screen-parity/
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p target/screen-parity
+          grep -E '^MEASURE |^test .*(FAILED|ok)$' "$RUNNER_TEMP/measure.txt" > target/screen-parity/measure.txt || true
+          grep -E '^video player |^test ' "$RUNNER_TEMP/video.txt" >> target/screen-parity/measure.txt || true
+          { echo '### mac parity measure'; echo '```'; cat target/screen-parity/measure.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: mac-parity-measure
+          path: target/screen-parity
+          if-no-files-found: error
+      # The nightly VideoToolbox check of desktop-gpui.yml, run once here to show its state: the decode test on the
+      # `dilla-video-toolbox` build crashed (SIGSEGV) on macOS CI (core/vendor/README.md). Expected red until fixed.
+      - name: Decode with VideoToolbox (known SIGSEGV)
+        if: ${{ !cancelled() }}
+        run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order

@@ -1460,6 +1460,10 @@ export function checkMobileReleaseWorkflow(root) {
  * Without them the real-server tests would be ignored everywhere and nothing would say so.
  */
 export const GPUI_PINNED_STEPS = {
+  // The macOS CI plan, Task 3: the parity screens and the video player through Metal on the gpui job's macOS leg.
+  macParity: ['# The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the', '# Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run', '# above builds dilla-desktop\'s test files without the automation interface, so they hold no test there.', '- name: Run the parity screens (macOS)', '  if: runner.os == \'macOS\' && !cancelled()', '  shell: bash', '  run: |', '    cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_', '    cargo test -p dilla-desktop --features automation --locked --test video_player_shot'].join('\n'),
+  // The macOS CI plan's addendum: the nightly VideoToolbox decode check (known SIGSEGV, red until fixed).
+  macVideoToolbox: ['# VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV', '# (core/vendor/README.md): nightly only, and red until that is fixed.', '- name: Decode with VideoToolbox (macOS, nightly)', '  if: runner.os == \'macOS\' && github.event_name == \'schedule\' && !cancelled()', '  shell: bash', '  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order'].join('\n'),
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
   // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
   strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
@@ -1625,7 +1629,7 @@ export const GPUI_PINNED_STEPS = {
 };
 
 /** The job(s) each GPUI_PINNED_STEPS entry must be in; an entry not named here belongs to the gpui-linux job. */
-const GPUI_PIN_JOBS = { tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'] };
+const GPUI_PIN_JOBS = { macParity: ['gpui'], macVideoToolbox: ['gpui'], tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'] };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
@@ -1637,15 +1641,19 @@ const GPUI_IGNORED_BY_HAND = new Set(['clients/desktop/dilla-client/tests/store.
  * Temporary: the parity sweep removes every such attribute, and this exemption with them.
  */
 const GPUI_PARKED_PARITY = /#\[\s*ignore\s*=\s*"parity after T6c[^"]*"\s*\]/g;
-/** An ignore that applies only off Linux: the plain Linux run already runs those tests, so no `--ignored` line is owed for it. */
-const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*target_os\s*=\s*"linux"\s*\)\s*,\s*ignore\b[^\]]*\]/g;
+/**
+ * An ignore that applies only off Linux: the plain Linux run already runs those tests, so no `--ignored` line is owed for it.
+ * Both spellings: `not(target_os = "linux")`, and `not(any(target_os = "linux", target_os = "macos"))` for the parity tests
+ * macOS also runs (the macOS CI plan, Task 3: the Linux references with macOS-measured tolerances).
+ */
+const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*(?:target_os\s*=\s*"linux"|any\(\s*target_os\s*=\s*"linux"\s*,\s*target_os\s*=\s*"macos"\s*\))\s*\)\s*,\s*ignore\b[^\]]*\]/g;
 
 /** A test file's source with the ignores that need no Linux `--ignored` run removed (see the two patterns above). */
 function liveIgnoreSource(source) {
   let s = source.replace(GPUI_PARKED_PARITY, '').replace(GPUI_OFF_LINUX_IGNORE, '');
-  // A macro that forwards its reason (`#[ignore = $why]`, or `#[cfg_attr(target_os = "linux", ignore = $why)]` beside an
-  // off-Linux ignore) is parked only when every reason literal passed to it is the R22 one.
-  const forwarded = /#\[\s*(?:cfg_attr\(\s*target_os\s*=\s*"linux"\s*,\s*ignore\s*=\s*\$\w+\s*\)|ignore\s*=\s*\$\w+)\s*\]/g;
+  // A macro that forwards its reason (`#[ignore = $why]`, or `#[cfg_attr(target_os = "linux", ignore = $why)]` or its
+  // Linux-and-macOS spelling beside an off-Linux ignore) is parked only when every reason literal passed to it is the R22 one.
+  const forwarded = /#\[\s*(?:cfg_attr\(\s*(?:target_os\s*=\s*"linux"|any\(\s*target_os\s*=\s*"linux"\s*,\s*target_os\s*=\s*"macos"\s*\))\s*,\s*ignore\s*=\s*\$\w+\s*\)|ignore\s*=\s*\$\w+)\s*\]/g;
   if (forwarded.test(s)) {
     const reasons = [...s.matchAll(/;\s*"([^"]*)"/g)].map((m) => m[1]);
     if (reasons.length > 0 && reasons.every((r) => r.startsWith('parity after T6c'))) s = s.replace(forwarded, '');
@@ -1742,6 +1750,9 @@ export function checkDesktopGpuiWorkflow(root) {
     }
   }
   problems.push(...gpuiMacPackageProblems(text, file));
+  // The macOS CI plan, Task 6: DILLA_PARITY_MEASURE turns every parity comparison into a printed MEASURE line that always
+  // passes (gpui-proofs.yml's manual mac-parity-measure job sets it). A CI gate must never set it.
+  if (/DILLA_PARITY_MEASURE/.test(text)) problems.push(`${file}: DILLA_PARITY_MEASURE skips every parity comparison; it belongs to gpui-proofs.yml's measurement job only`);
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
   problems.push(...gpuiWinPackageProblems(text, file));

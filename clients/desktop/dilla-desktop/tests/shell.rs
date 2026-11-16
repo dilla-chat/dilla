@@ -35,7 +35,7 @@ macro_rules! parity {
     ($($test:ident => $name:literal $(; $why:literal)?),* $(,)?) => {$(
         #[test]
         $(#[ignore = $why])?
-        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]
         fn $test() {
             assert_screen(&fixture($name))
                 .unwrap_or_else(|e| panic!("{} differs from its web reference: {e}", $name));
@@ -542,13 +542,19 @@ fn revoked_device_boot_explains_and_resets(cx: &mut TestAppContext) {
 
 /// Package 10d: the revoked device's and the lost store's boot splashes (Boot.tsx), against their web references.
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_boot_revoked() {
     assert_screen(&fixture("boot/revoked")).unwrap_or_else(|f| panic!("{f}"));
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_boot_store_lost() {
     assert_screen(&fixture("boot/store-lost")).unwrap_or_else(|f| panic!("{f}"));
 }
