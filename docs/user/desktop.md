@@ -156,6 +156,24 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 - The screens are drawn, not laid out by a browser, so the keyboard works through the app's own focus order
   (Tab and Shift+Tab) and its own shortcuts, below.
 
+### Logs
+
+When something fails (a call that does not join, an update that does not apply), the app's log says why. It is a
+plain text file, also printed to the terminal when Dilla runs from one:
+
+| System | Log file |
+|---|---|
+| macOS | `~/Library/Logs/Dilla/dilla-desktop.log` (Console.app lists it under Log Reports) |
+| Linux | `$XDG_STATE_HOME/dilla/dilla-desktop.log`, usually `~/.local/state/dilla/dilla-desktop.log` |
+| Windows | `%LOCALAPPDATA%\Dilla\logs\dilla-desktop.log` |
+
+At about 5 MiB the file moves to `dilla-desktop.log.1` (the one before that is deleted). By default it holds warnings
+and errors, and Dilla's own progress notes. For more, start the app with `RUST_LOG` set, for example
+`RUST_LOG=debug` or `RUST_LOG=warn,dilla=debug,livekit=info` (a level, or `name=level` pairs separated by commas; a
+name matches every module whose name starts with it). On macOS, quit Dilla and run
+`open --env RUST_LOG=debug /Applications/Dilla.app`. The log never contains message text, keys, tokens,
+passwords or recovery codes, so you can attach it to a bug report.
+
 ### Keyboard shortcuts
 
 The Windows and Linux keys use Control; on macOS a chord takes ⌘ where the table says so (Control+End and
@@ -193,7 +211,7 @@ the updater and packaging.
   Dilla"), close to tray, the unread count (the tray's tooltip; the dock badge on macOS; the launcher badge on KDE and
   Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
   extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
-  builds only. There is no menu button in the title bar yet; F11 (Control-⌘-F on macOS) toggles full screen. On macOS
+  builds only. The ☰ button at the left of the title bar (and of "Dilla - your instances") opens the app menu; F11 (Control-⌘-F on macOS) toggles full screen. On macOS
   the Dilla menu also has About Dilla, Settings… (⌘,), Services, Hide Dilla (⌘H), Hide Others (⌥⌘H), Show All and Quit
   Dilla (⌘Q, which asks first during a call as above); Window has Minimize (⌘M) and Bring All to Front. The sign-in and
   sign-up windows are moved by their top edge and closed with the × in their top-right corner, on every system.

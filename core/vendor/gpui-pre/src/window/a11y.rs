@@ -105,6 +105,7 @@ pub(crate) mod debug;
 use crate::{App, Bounds, FocusId, Pixels, SharedString, Window};
 use accesskit::{Action, NodeId, TreeUpdate};
 use collections::{FxHashMap, FxHashSet};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::hash::{Hash, Hasher};
 use std::sync::{
@@ -114,6 +115,25 @@ use std::sync::{
 
 /// The fixed AccessKit node ID used for the root of every window's a11y tree.
 pub(crate) const ROOT_NODE_ID: NodeId = NodeId(0);
+
+/// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the sixth change): the platforms whose AccessKit adapter
+/// activates lazily, inside the first accessibility query, and so needs the whole tree from the activation callback.
+pub(crate) const BUILDS_BEFORE_ACTIVATION: bool =
+    cfg!(any(target_os = "macos", target_os = "windows"));
+
+/// DILLA PATCH (the sixth change): the tree a platform adapter's activation callback hands AccessKit: the last frame's
+/// whole tree where one was kept, else `fallback` (the root-only tree, upstream's answer every time). On macOS the
+/// answer is what the first query (VoiceOver, an AX walker) reads, and AccessKit raises no event when the refresh that
+/// activation forces later adds children to that root, so a root-only answer left the window an empty group.
+pub(crate) fn tree_for_activation(
+    latest_tree: &Mutex<Option<TreeUpdate>>,
+    fallback: &TreeUpdate,
+) -> TreeUpdate {
+    latest_tree
+        .lock()
+        .clone()
+        .unwrap_or_else(|| fallback.clone())
+}
 
 /// A listener for an accessibility action on a specific node.
 pub(crate) type A11yActionListener =
@@ -158,6 +178,15 @@ pub(crate) struct A11y {
     /// Retains the last tree update (and, in debug builds, per-node provenance)
     /// so it can be dumped via [`crate::Window::debug_a11y_tree_json`].
     debug: debug::A11yDebug,
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the sixth change): whether this window builds its tree
+    /// before any assistive technology activated it. True where the platform adapter activates lazily, from inside the
+    /// first accessibility query (macOS `accesskit_macos::SubclassingAdapter`, Windows UIA's `WM_GETOBJECT`): that
+    /// query needs the window's whole tree at once, and upstream's root-only placeholder answered it with an empty
+    /// group. False on Linux, where AT-SPI activates the adapter ahead of any query.
+    builds_before_activation: bool,
+    /// DILLA PATCH (the sixth change): the last frame's whole tree, shared with the platform adapter's activation
+    /// callback ([`tree_for_activation`]); only kept while [`Self::builds_before_activation`].
+    latest_tree: Arc<Mutex<Option<TreeUpdate>>>,
     /// Maps a view's [`EntityId`] to its `Render` type name
     #[cfg(debug_assertions)]
     pub(crate) view_type_names: FxHashMap<EntityId, &'static str>,
@@ -180,9 +209,47 @@ impl A11y {
             window_title,
             last_focus_without_node: None,
             debug: debug::A11yDebug::default(),
+            builds_before_activation: BUILDS_BEFORE_ACTIVATION,
+            latest_tree: Arc::default(),
             #[cfg(debug_assertions)]
             view_type_names: FxHashMap::default(),
         }
+    }
+
+    /// DILLA PATCH (the sixth change): keeps each frame's tree in `latest_tree`, the slot the window's activation
+    /// callback reads ([`tree_for_activation`]).
+    pub(crate) fn sharing_latest_tree(
+        mut self,
+        latest_tree: Arc<Mutex<Option<TreeUpdate>>>,
+    ) -> Self {
+        self.latest_tree = latest_tree;
+        self
+    }
+
+    /// DILLA PATCH (the sixth change): whether a screen reader (or any accessibility client) has activated this
+    /// window's adapter, as opposed to [`Self::is_active`], which says whether this frame builds a tree.
+    pub(crate) fn is_activated(&self) -> bool {
+        self.active_flag.load(Ordering::SeqCst)
+    }
+
+    /// DILLA PATCH (the sixth change): keeps `update`, the frame's whole tree, for the activation callback.
+    pub(crate) fn keep_latest_tree(&self, update: &TreeUpdate) {
+        if self.builds_before_activation {
+            *self.latest_tree.lock() = Some(update.clone());
+        }
+    }
+
+    /// DILLA PATCH (the sixth change, test support): builds the tree before activation, as macOS and Windows do, so a
+    /// Linux test can exercise their hand-off.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn build_before_activation_for_test(&mut self) {
+        self.builds_before_activation = true;
+    }
+
+    /// DILLA PATCH (the sixth change, test support): what the platform adapter's activation callback would answer now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn tree_for_activation_now(&self, fallback: &TreeUpdate) -> TreeUpdate {
+        tree_for_activation(&self.latest_tree, fallback)
     }
 
     /// Logs (once per focus change) that the focused element is not exposed to
@@ -210,7 +277,9 @@ impl A11y {
     /// See the docs for [`Self::active_flag`] and [`Self::active_this_frame`]
     /// for more commentary.
     pub(crate) fn sync_active_flag(&mut self) {
-        self.active_this_frame = self.is_enabled() && self.active_flag.load(Ordering::SeqCst);
+        // DILLA PATCH (the sixth change): a window whose adapter activates lazily builds its tree from the first frame.
+        self.active_this_frame = self.is_enabled()
+            && (self.builds_before_activation || self.active_flag.load(Ordering::SeqCst));
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
@@ -679,9 +748,40 @@ mod tests {
                 a11y.sync_active_flag();
 
                 assert_eq!(a11y.is_enabled(), !force_disabled);
-                assert_eq!(a11y.is_active(), !force_disabled && active);
+                // DILLA PATCH (the sixth change): macOS and Windows build before activation.
+                assert_eq!(
+                    a11y.is_active(),
+                    !force_disabled && (active || super::BUILDS_BEFORE_ACTIVATION)
+                );
             }
         }
+    }
+
+    /// DILLA PATCH (the sixth change): the activation callback hands over the last frame's whole tree, and the
+    /// root-only fallback only before any frame was kept.
+    #[test]
+    fn activation_hands_over_the_last_frames_whole_tree() {
+        let fallback = {
+            let mut builder = new_builder();
+            builder.finalize()
+        };
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(false)), false, None);
+        a11y.build_before_activation_for_test();
+        assert_eq!(a11y.tree_for_activation_now(&fallback).nodes.len(), 1);
+
+        a11y.sync_active_flag();
+        assert!(a11y.is_active(), "builds before any activation");
+        assert!(!a11y.is_activated());
+        a11y.begin_frame();
+        a11y.nodes
+            .push(NodeId(7), accesskit::Node::new(Role::Button));
+        a11y.nodes.pop();
+        let update = a11y.end_frame(Default::default());
+        a11y.keep_latest_tree(&update);
+
+        let handed = a11y.tree_for_activation_now(&fallback);
+        assert!(handed.nodes.iter().any(|(id, _)| *id == NodeId(7)));
+        assert_eq!(handed.tree.map(|t| t.root), Some(ROOT_NODE_ID));
     }
 
     #[test]

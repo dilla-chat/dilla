@@ -66,6 +66,9 @@ fn main() {
         println!("{}", version_line(option_env!("DILLA_BUILD_SHA")));
         return;
     }
+    // The logger before anything else that can log (stderr and the OS log file, src/logging.rs). After `--version`
+    // only, so the packages' smoke tests leave no log file behind.
+    dilla_desktop::logging::install();
     // One process for all instances: a second launch hands its arguments to the running app and ends here.
     let startup = match native::claim(&argv) {
         native::Claimed::Primary(startup) => startup,

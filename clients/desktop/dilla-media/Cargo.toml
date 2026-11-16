@@ -13,7 +13,13 @@ workspace = true
 [dependencies]
 dilla-core = { path = "../../../core/dilla-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
-livekit = "=0.10.1"
+# `rustls-tls-native-roots`: the signalling socket's TLS. Without it livekit-net's tokio-tungstenite 0.29 has no TLS at
+# all and every `wss://` room (dillad hands out `wss://<host>`) fails with "TLS support not compiled in"; only the
+# tests' `ws://` rooms connected. The crates are already in the lock (rustls, tokio-rustls, rustls-native-certs).
+livekit = { version = "=0.10.1", features = ["rustls-tls-native-roots"] }
+# The process-wide rustls provider that socket's `ClientConfig::builder()` needs: rustls is built with both ring and
+# aws-lc-rs here, so none is chosen on its own (src/tls.rs). Already in the lock.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 # The dilla-sframe/1 hook (core/vendor/webrtc-sys, patched in the root Cargo.toml): the same crate
 # livekit links, used directly for `dilla_transform`.
 webrtc-sys = "=0.3.53"
@@ -55,6 +61,8 @@ dilla-testkit = { path = "../../../testkit" }
 hmac = "0.13"
 sha1 = "0.11"
 tokio = { version = "1", features = ["io-std", "io-util"] }
+# src/tls.rs's test: LiveKit's own WebSocket transport opens a `wss://` URL (already in the lock through livekit).
+livekit-net = "=0.1.4"
 
 # Application audio on Linux (parity plan Package 3): the PipeWire client (registry, links, a capture stream), as beta.5's
 # native/linux.cpp used libpipewire. Needs libpipewire-0.3-dev to build (CI installs it).

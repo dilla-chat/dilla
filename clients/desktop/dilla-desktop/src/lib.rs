@@ -10,6 +10,7 @@ pub mod fixture;
 pub mod format;
 pub mod fullscreen;
 pub mod keys;
+pub mod logging;
 pub mod native;
 pub mod per_window;
 pub mod print;
@@ -269,6 +270,30 @@ mod tests {
             assert_eq!(current_in(b, cx), None, "B shows none");
             show_toast_in(None, "everywhere", cx);
             assert_eq!(current_in(b, cx).as_deref(), Some("everywhere"));
+        });
+    }
+
+    /// beta.5 DesktopTitlebar.css:24-26: the full-window card is drawn in the window the app marks as its
+    /// authentication window, and only there.
+    #[gpui::test]
+    fn the_full_window_card_follows_the_windows_mark(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop_ui::components::onboarding::frame::{desktop_window, set_desktop_window};
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            assert!(
+                !desktop_window(window, cx),
+                "a fixture draws the web's card"
+            );
+            set_desktop_window(window, true, cx);
+            assert!(desktop_window(window, cx));
+        });
+        let b = cx.add_empty_window();
+        b.update(|window, cx| assert!(!desktop_window(window, cx), "another window"));
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            set_desktop_window(window, true, cx);
+            set_desktop_window(window, false, cx);
+            assert!(!desktop_window(window, cx), "the workspace drops the mark");
         });
     }
 

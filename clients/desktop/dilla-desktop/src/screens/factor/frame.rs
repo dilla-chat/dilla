@@ -244,7 +244,11 @@ impl AuthFrame {
         self
     }
 
-    pub fn render(self) -> AnyElement {
+    /// The frame in `window`: the desktop app's authentication window draws beta.5's full-window card
+    /// ([`dilla_desktop_ui::components::onboarding::frame::desktop_window`]).
+    pub fn render(self, window: &Window, cx: &App) -> AnyElement {
+        use dilla_desktop_ui::components::onboarding::frame::{card_edge, desktop_window};
+        let desktop = desktop_window(window, cx);
         let banner = self.banner.clone();
         let has_banner = banner.is_some();
         let head = (self.step.is_some() || self.progress.is_some()).then(|| {
@@ -314,73 +318,68 @@ impl AuthFrame {
                     .child(Icon::new(IconName::ArrowRight).size(px(ARROW)).color(ink)),
             )
         });
-        let card = div()
-            .w_full()
-            .max_w(px(CARD_MAX))
-            .p(px(CARD_PAD))
-            .bg(color::BG_2)
-            .border_1()
-            .border_color(color::HAIRLINE)
-            .rounded(radius::XXL)
-            .shadow(dilla_desktop_ui::components::onboarding::frame::shadow_card())
-            .flex()
-            .flex_col()
-            .gap(px(CARD_GAP))
-            .children(head)
-            // The step's `<h1>`: a heading node a reader jumps to.
-            .child(
-                div()
-                    .id("auth-title")
-                    .a11y(Role::Heading, self.title.clone())
-                    .aria_level(1)
-                    .child(
-                        line(
-                            self.title,
-                            text::HEADING,
-                            line_height(text::HEADING, 1.5),
-                            color::FG,
-                        )
-                        .weight(font::WEIGHT_DISPLAY)
-                        .tracking(-0.01),
-                    ),
-            )
-            .child(
+        let card = card_edge(div().p(px(CARD_PAD)).bg(color::BG_2), desktop, |c| {
+            c.w_full().max_w(px(CARD_MAX))
+        })
+        .flex()
+        .flex_col()
+        .gap(px(CARD_GAP))
+        .children(head)
+        // The step's `<h1>`: a heading node a reader jumps to.
+        .child(
+            div()
+                .id("auth-title")
+                .a11y(Role::Heading, self.title.clone())
+                .aria_level(1)
+                .child(
+                    line(
+                        self.title,
+                        text::HEADING,
+                        line_height(text::HEADING, 1.5),
+                        color::FG,
+                    )
+                    .weight(font::WEIGHT_DISPLAY)
+                    .tracking(-0.01),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(BODY_GAP))
+                .mt(px(-BODY_GAP))
+                .min_w_0()
+                .when_some(banner, |d, (tone, t)| {
+                    d.child(tracked_box(
+                        "auth-banner",
+                        Banner::new("auth-banner", tone, t),
+                    ))
+                })
+                // `.d-onboarding-frame__body > p:first-child`: a banner drawn first in the body takes the place
+                // of the first child, and the paragraph after it keeps no 6px.
+                .children(self.body.into_iter().enumerate().map(|(i, part)| {
+                    if i == 0 && !has_banner {
+                        div().mb(px(FIRST_PARA_GAP)).child(part).into_any_element()
+                    } else {
+                        part
+                    }
+                })),
+        )
+        .when(action.is_some() || !self.below.is_empty(), |d| {
+            d.child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(BODY_GAP))
-                    .mt(px(-BODY_GAP))
-                    .min_w_0()
-                    .when_some(banner, |d, (tone, t)| {
-                        d.child(tracked_box(
-                            "auth-banner",
-                            Banner::new("auth-banner", tone, t),
-                        ))
-                    })
-                    // `.d-onboarding-frame__body > p:first-child`: a banner drawn first in the body takes the place
-                    // of the first child, and the paragraph after it keeps no 6px.
-                    .children(self.body.into_iter().enumerate().map(|(i, part)| {
-                        if i == 0 && !has_banner {
-                            div().mb(px(FIRST_PARA_GAP)).child(part).into_any_element()
-                        } else {
-                            part
-                        }
-                    })),
+                    .gap(px(FOOTER_GAP))
+                    .mt(px(-FOOTER_PULL))
+                    .children(action)
+                    .children(self.below),
             )
-            .when(action.is_some() || !self.below.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(FOOTER_GAP))
-                        .mt(px(-FOOTER_PULL))
-                        .children(action)
-                        .children(self.below),
-                )
-            });
+        });
         dilla_desktop_ui::components::onboarding::frame::centred_scroll(
             "auth-page",
             0.0,
+            desktop,
             brand_mark(),
             card,
         )

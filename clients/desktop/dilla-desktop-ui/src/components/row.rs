@@ -10,6 +10,7 @@ use super::badge::{Badge, BadgeKind, capped};
 use super::button::ClickHandler;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
+use crate::metrics::LABEL_TRACKING;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, layout, radius, text};
 
@@ -55,6 +56,8 @@ pub struct Row {
     mentions: u32,
     muted: bool,
     private: bool,
+    /// Short notes after the name, in order ("Bot", "slow mode"; ChannelRow.tsx `badges`).
+    badges: Vec<SharedString>,
     person: Option<Person>,
     /// A voice row (VoiceChannelRow.css): the people in its call (the count at the right) and whether this device is in it.
     voice_count: usize,
@@ -74,6 +77,7 @@ impl Row {
             mentions: 0,
             muted: false,
             private: false,
+            badges: Vec::new(),
             person: None,
             voice_count: 0,
             joined: false,
@@ -126,6 +130,12 @@ impl Row {
         self
     }
 
+    /// The notes after the name ("Bot", "slow mode"), drawn in order as [`row_badge`]s.
+    pub fn badges(mut self, badges: impl IntoIterator<Item = impl Into<SharedString>>) -> Self {
+        self.badges = badges.into_iter().map(Into::into).collect();
+        self
+    }
+
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -133,6 +143,28 @@ impl Row {
         self.on_click = Some(Box::new(handler));
         self
     }
+}
+
+/// ChannelRow.css `.d-chrow__badge`: a quiet note after the name, never shrunk: padding 0 4px, 10px (`--text-micro`) at the
+/// label weight (600) and tracking (0.08em), uppercase, `--fg-2` (text on a row that may be selected), a 1px `--hairline-2`
+/// edge, 4px corners (`--r-sm`); its line is the row's 1.5.
+pub fn row_badge(text: SharedString) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(4.0))
+        .border_1()
+        .border_color(color::HAIRLINE_2)
+        .rounded(radius::SM)
+        .child(
+            line(
+                text.to_uppercase(),
+                text::MICRO,
+                line_height(text::MICRO, 1.5),
+                color::FG_2,
+            )
+            .weight(font::WEIGHT_LABEL)
+            .tracking(LABEL_TRACKING),
+        )
 }
 
 /// The glyph's icon (a DM draws a dot instead).
@@ -221,6 +253,9 @@ impl RenderOnce for Row {
                     .rounded(px(2.0))
                     .bg(color::ACCENT),
             );
+        }
+        for badge in self.badges {
+            row = row.child(row_badge(badge));
         }
         if self.private {
             row = row.child(

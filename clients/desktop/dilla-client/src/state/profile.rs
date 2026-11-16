@@ -102,6 +102,62 @@ pub struct ProfileState {
     /// so the fixture's own device is that browser, named from it and with no platform tag. Set only by the automation
     /// build's fixture (`dilla-desktop/src/fixture/devices.rs`); `None` in the app, which names itself.
     pub fixture_browser: Option<String>,
+    /// The account-wide presence choice (`AccountState.presenceChoice`): the user panel's status menu. `None` until the
+    /// first read of `GET /v1/accounts/me` lands (the panel then shows `online`, as the web's `?? 'online'`).
+    pub presence_choice: Option<PresenceChoice>,
+    /// Bumped when a presence choice is sent, so a read that began before it does not undo it (client-core
+    /// `presenceChoiceWriteSeq`).
+    pub presence_writes: u64,
+}
+
+/// client-core `PresenceChoice`: what the account asks others to see, on the wire 1 online, 2 idle, 3 dnd, 4 invisible
+/// (`PATCH /v1/accounts/me/presence`, `GET /v1/accounts/me` index 6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PresenceChoice {
+    #[default]
+    Online,
+    Idle,
+    Dnd,
+    Invisible,
+}
+
+impl PresenceChoice {
+    /// The status menu's order (UserPanel.tsx `CHOICES`).
+    pub const ALL: [PresenceChoice; 4] = [Self::Online, Self::Idle, Self::Dnd, Self::Invisible];
+
+    /// The wire value (1..=4).
+    pub fn wire(self) -> u8 {
+        match self {
+            Self::Online => 1,
+            Self::Idle => 2,
+            Self::Dnd => 3,
+            Self::Invisible => 4,
+        }
+    }
+
+    /// controller.ts `PRESENCE_CHOICES[(choice ?? 1) - 1] ?? 'online'`: an unknown value reads as online.
+    pub fn of_wire(v: u64) -> Self {
+        match v {
+            2 => Self::Idle,
+            3 => Self::Dnd,
+            4 => Self::Invisible,
+            _ => Self::Online,
+        }
+    }
+
+    /// The id the strings and the menu use (`presence.<id>`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Idle => "idle",
+            Self::Dnd => "dnd",
+            Self::Invisible => "invisible",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.id() == id)
+    }
 }
 
 /// `AccountState.user`'s profile fields.
