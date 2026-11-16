@@ -187,13 +187,17 @@ mod os {
         }
     }
 
+    // muda's popup entry points are `unsafe fn`s taking the raw NSView / HWND; the SAFETY note is at the call.
+    #[allow(unsafe_code)]
     pub fn show(window: &mut Window, at: (f32, f32), cx: &mut App) -> bool {
         let Some(native) = native_handle(window) else {
             return false;
         };
         let (rows, actions) = super::rows(crate::native::menus::menus(cx));
         let focus = window.focused(cx);
-        let handle = window.window_handle();
+        // GPUI's own handle, by its full path: with `HasWindowHandle` in scope, `window.window_handle()` resolves to
+        // raw-window-handle's method (its blanket impl for references wins), which is not a GPUI window handle.
+        let handle = Window::window_handle(window);
         cx.spawn(async move |cx| {
             let items = build(&rows);
             let refs: Vec<&dyn IsMenuItem> = items.iter().map(|c| c.as_ref()).collect();
