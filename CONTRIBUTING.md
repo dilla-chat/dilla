@@ -124,3 +124,10 @@ A release needs a green push run of its own workflow on main for the tagged comm
 native desktop client (none is released yet), `server` for `release.yml` (`scripts/server-release-gate.mjs`, which waits up to
 60 minutes for the commit's `server` run while it is still queued or in progress). A `v*` tag on a main
 commit from before this change runs that commit's own `release.yml`, which has no server gate.
+
+Server release notes are written by hand: `release.yml` uses `docs/deploy/releases/<tag>.md` as the release body when it
+exists (draft it in `docs/deploy/releases/unreleased.md` and rename it when the tag is cut). Checklist for the notes:
+
+- If `deploy/dilla.service` (or the copies `install.sh` and `install-bot.sh` embed) changed since the previous tag, say
+  so, say what the change trades, and say that `install.sh --upgrade` and `install-bot.sh --upgrade` of the release
+  must both run: only `install-bot.sh` rewrites `dilla.service`, and `install.sh` alone leaves the old unit.

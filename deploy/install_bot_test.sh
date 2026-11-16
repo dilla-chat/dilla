@@ -250,6 +250,9 @@ grep -q "^  domain = 'chat.example.org'$" "$R/etc/dilla/dilla.toml" || fail "the
 grep -q "^install -m 0755 -o root -g root .*/dillabot-linux-amd64 $R/usr/local/bin/dillabot.new$" "$LOG" || fail "dillabot was not installed root:root 0755"
 grep -q "^install -m 0755 -o root -g root .*/dilla-bot-core-linux-amd64 $R/usr/local/lib/dilla/dilla-bot-core.new$" "$LOG" || fail "dilla-bot-core was not installed root:root 0755"
 grep -q "^install -d -m 0755 -o root -g root $R/usr/local/lib/dilla$" "$LOG" || fail "/usr/local/lib/dilla was not made root:root 0755"
+# The replaced binaries stay beside the new ones for a rollback by hand, as install.sh keeps dillad.prev.
+[ "$(cat "$R/usr/local/bin/dillabot.prev")" = bot-binary-v1 ] || fail "the previous dillabot was not kept as dillabot.prev"
+[ ! -e "$R/usr/local/lib/dilla/dilla-bot-core.prev" ] || fail "a v1 host had no dilla-bot-core at /usr/local/lib/dilla, yet a .prev appeared"
 [ ! -e "$R/usr/local/libexec/dilla-bot-core" ] && [ ! -e "$R/usr/local/lib/dilla/dilla_core_wasi.wasm" ] || fail "the v1 helper and module were left behind"
 cmp -s "$HERE/dilla.service" "$R/etc/systemd/system/dilla.service" || fail "dilla.service is not the release's deploy/dilla.service"
 grep -qx 'usermod -aG dillabot dillad' "$LOG" || fail "dillad was not added to the dillabot group"
@@ -266,6 +269,7 @@ for line in \
 	"stopped and disabled dillabot.service" \
 	"added dillad to the dillabot group" \
 	"moved the runtime credential to /var/lib/dillabot/runtime.token, unchanged" \
+	"no live rooms, so restarting dilla ends no call" \
 	"installed dillabot and dilla-bot-core (root:root 0755)" \
 	"installed dilla.service from this release" \
 	"removed dillabot.service and /etc/dillabot/bot.toml" \
@@ -273,6 +277,7 @@ for line in \
 	"dillad doctor: bot OK, runs /usr/local/bin/dillabot as user dillabot" \
 	"restarted dilla.service" \
 	"the Bot runs under dilla.service as dillabot (pid 101), holding no capabilities" \
+	"kept the previous dillabot as $R/usr/local/bin/dillabot.prev" \
 	"removed the v1 credential copy /etc/dillabot/runtime.token" \
 	"removed the v1 helper and module" \
 	"removed pre-upgrade copy $R/var/backups/dillabot/20200101T000000Z-aaaaaaa1"; do
@@ -292,6 +297,18 @@ grep -qx 'install-bot: nothing to change: the Bot already runs under dillad from
 grep -qx 'install-bot: the Bot runs under dilla.service as dillabot (pid 101), holding no capabilities' "$TMP/err" || fail "the second run did not check the Bot"
 no_secret_printed "the second run"
 pass "upgrade run twice is a no-op the second time"
+
+# ------------------------- an upgrade between v2 releases keeps both binaries as .prev ----
+printf 'bot-binary-old\n' >"$R/usr/local/bin/dillabot"
+printf 'native-helper-old\n' >"$R/usr/local/lib/dilla/dilla-bot-core"
+inst "$R" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "an upgrade from an older v2 failed: $(cat "$TMP/err")"
+[ "$(cat "$R/usr/local/bin/dillabot")" = bot-binary-v2 ] && [ "$(cat "$R/usr/local/lib/dilla/dilla-bot-core")" = native-helper-v2 ] || fail "the v2 binaries were not upgraded"
+[ "$(cat "$R/usr/local/bin/dillabot.prev")" = bot-binary-old ] || fail "dillabot.prev is not the replaced dillabot"
+[ "$(cat "$R/usr/local/lib/dilla/dilla-bot-core.prev")" = native-helper-old ] || fail "dilla-bot-core.prev is not the replaced helper"
+grep -qxF "install-bot: kept the previous dilla-bot-core as $R/usr/local/lib/dilla/dilla-bot-core.prev" "$TMP/err" || fail "the helper's .prev was not logged: $(cat "$TMP/err")"
+[ -z "$(find "$R/var/backups/dilla" -name 'prev-*' 2>/dev/null)" ] || fail "the backup kept its prev-* copies after a confirmed upgrade"
+pass "an upgrade between v2 releases keeps dillabot.prev and dilla-bot-core.prev"
 
 # -------------------------------------------- fresh install has no dillabot.service ----
 # dillad installed without a Bot (no [bot] enabled, no account): install-bot.sh puts the Bot under it.

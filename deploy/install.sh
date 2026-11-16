@@ -692,7 +692,10 @@ live_calls_preflight() {
 		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
 		if [ -z "$_busy" ]; then
 			case "$_rooms" in
-			"no live rooms" | *participants*) return 0 ;;
+			"no live rooms" | *participants*)
+				log "no live rooms, so restarting dilla ends no call"
+				return 0
+				;;
 			esac
 			_why="dillad media --rooms printed something unexpected: $_rooms"
 		else
