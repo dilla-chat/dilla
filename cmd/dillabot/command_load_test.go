@@ -341,9 +341,14 @@ func waitUntil(t testing.TB, cond func() bool) {
 	}
 }
 
+// rusageThread is Linux's RUSAGE_THREAD (the syscall package names only SELF and CHILDREN).
+const rusageThread = 1
+
+// cpuTime is the CPU time of the calling OS thread, so goroutines a shuffled earlier test left running (a Bot
+// playback loop, say) are not charged to the commands being measured. Callers lock their goroutine to its thread.
 func cpuTime() time.Duration {
 	var u syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &u); err != nil {
+	if err := syscall.Getrusage(rusageThread, &u); err != nil {
 		return 0
 	}
 	return time.Duration(u.Utime.Nano() + u.Stime.Nano())
@@ -399,9 +404,12 @@ func TestCommandCostIsFlatAt200Members600Devices(t *testing.T) {
 	if allocLarge > 1.1*allocSmall {
 		t.Fatalf("allocations per command: %.0f at 200 members, %.0f at 20 (ratio %.2f > 1.1)", allocLarge, allocSmall, allocLarge/allocSmall)
 	}
-	// CPU is process-wide (rusage), so it also charges the collector for whatever heap is live. Each round builds both
-	// worlds before measuring either, so both runs share one heap, collects before each run, and alternates which goes
-	// first; the best of five rounds per size discards a noisy neighbour on a shared runner.
+	// CPU is the measuring thread's own (rusage per thread, goroutine locked to it), so other goroutines in the test
+	// binary are not charged; GC assists still are. Each round builds both worlds before measuring either, so both runs
+	// share one heap, collects before each run, and alternates which goes first; the best of five rounds per size
+	// discards a noisy neighbour on a shared runner.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	run := func(lw *loadWorld) time.Duration {
 		runtime.GC()
 		start := cpuTime()
