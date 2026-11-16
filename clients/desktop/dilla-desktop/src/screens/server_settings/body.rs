@@ -1447,11 +1447,18 @@ impl Body {
     }
 
     fn copy_invite(&mut self, cx: &mut Context<Self>) {
-        let Some(made) = self.made.take() else {
+        let Some(url) = self.made.as_ref().map(|m| m.url.clone()) else {
+            log::debug!("invite copy: pressed with no link shown");
             return;
         };
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(made.url));
-        self.say(t("serverSettings.invites.copied").to_owned(), cx);
+        // InvitesSection.tsx `copy`: the link goes away only once it is on the clipboard; a refused copy keeps it and
+        // says so (`invite.blocked`).
+        if copy_link(&url, cx) {
+            self.made = None;
+            self.say(t("serverSettings.invites.copied").to_owned(), cx);
+        } else {
+            self.invite_message = Some((t("invite.blocked").to_owned().into(), false));
+        }
         cx.notify();
     }
 
@@ -1568,9 +1575,32 @@ impl Render for Body {
     }
 }
 
+/// Puts `url` on the clipboard and reads it back: whether the clipboard now holds it (the web's `copied()` promise).
+/// The debug line tells a press that never arrived (no line) from a clipboard that refused the text (`false`).
+fn copy_link(url: &str, cx: &mut gpui::App) -> bool {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.to_owned()));
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .is_some_and(|text| text == url);
+    log::debug!("invite copy: pressed, the clipboard holds the link: {copied}");
+    copied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Settings → Invites → Copy puts the link on the clipboard and says so (Mac report, 2026-11-16).
+    #[gpui::test]
+    fn copy_puts_the_link_on_the_clipboard(cx: &mut gpui::TestAppContext) {
+        let url = "https://chat.example/invite/Zk3x9QmT2vPLw8";
+        assert!(cx.update(|cx| copy_link(url, cx)));
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|i| i.text()).as_deref(),
+            Some(url)
+        );
+    }
 
     fn refusal(status: u16, code: &str) -> ApiError {
         ApiError {

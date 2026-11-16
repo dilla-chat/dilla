@@ -314,6 +314,85 @@ fn the_server_menu_is_keyboard_reachable_and_lists_the_web_items(cx: &mut gpui::
     );
 }
 
+/// Mac report (2026-11-16): a person's click on the server menu's chevron opened nothing. A person's pointer arrives
+/// first and rests (the hover style and the tooltip's timer run, the tooltip shows) before it presses; the test above
+/// presses with no pointer move. A second click on the chevron closes the menu again.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn a_persons_click_on_the_server_chevron_opens_and_closes_the_menu(cx: &mut gpui::TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures/shell/channel-view.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (_app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let chevron = vcx
+        .debug_bounds("server-settings-open")
+        .expect("the server menu's chevron")
+        .center();
+    person_click(vcx, chevron);
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_some(),
+        "a click on the chevron opens the server menu"
+    );
+    person_click(vcx, chevron);
+    assert!(
+        vcx.debug_bounds("menu-item-settings").is_none(),
+        "a second click closes it"
+    );
+}
+
+/// The invite panel's "Expires after" and "Uses" choices take a person's click (Mac report, 2026-11-16: they kept 7 days
+/// and 10).
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn a_click_chooses_the_invites_expiry_and_uses(cx: &mut gpui::TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let loaded = dilla_desktop::fixture::Fixture::load(&fixture("invites"), None)
+        .expect("the invites fixture");
+    cx.update(dilla_desktop::install);
+    let (_app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    for (option, now, was) in [
+        (
+            "segmented-invite-ttl-3600",
+            "segmented-invite-ttl-3600-checked",
+            "segmented-invite-ttl-604800-checked",
+        ),
+        (
+            "segmented-invite-uses-choice-1",
+            "segmented-invite-uses-choice-1-checked",
+            "segmented-invite-uses-choice-10-checked",
+        ),
+    ] {
+        assert!(vcx.debug_bounds(was).is_some(), "{was} at first");
+        let at = vcx
+            .debug_bounds(option)
+            .unwrap_or_else(|| panic!("{option} drew"))
+            .center();
+        person_click(vcx, at);
+        assert!(vcx.debug_bounds(now).is_some(), "a click checks {option}");
+        assert!(
+            vcx.debug_bounds(was).is_none(),
+            "{was} is no longer checked"
+        );
+    }
+}
+
+/// A person's click: the pointer moves there and rests past the tooltip delay, then presses and lets go.
+#[cfg(feature = "automation")]
+fn person_click(vcx: &mut gpui::VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+    vcx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    vcx.run_until_parked();
+    vcx.simulate_click(at, gpui::Modifiers::none());
+    vcx.run_until_parked();
+}
+
 /// Enter as a person presses it: a click on the focused control fires on the key's release (gpui's keyboard click), which
 /// `simulate_keystrokes` does not send.
 #[cfg(feature = "automation")]
