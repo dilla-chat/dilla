@@ -1919,8 +1919,8 @@ test('a job-level if: that runs a secret or publishing job past its needs is rep
 test('a secret outside the signing and export steps is reported', () => {
   assertReported(mobileReleaseProblems((t) => t.replace('          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}\n', '          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}\n')), 'names a secret it may not');
   assertReported(mobileReleaseProblems((t) => t.replace('\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n', '\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n      K: ${{ secrets.ANDROID_KEY_PASSWORD }}\n')), 'names a secret at job level');
-  // The export step may hold the ASC key, not the Android keystore.
-  assertReported(mobileReleaseProblems((t) => t.replace('          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n', '          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}\n')), 'names a secret it may not');
+  // The export step may hold the App Store Connect API key, not the Android keystore.
+  assertReported(mobileReleaseProblems((t) => t.replace('          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}\n          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}\n', '          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}\n          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}\n')), 'names a secret it may not');
 });
 
 test('a commented-out gate line does not count (review L2)', () => {

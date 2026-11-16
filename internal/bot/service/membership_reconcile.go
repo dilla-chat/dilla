@@ -691,7 +691,7 @@ func (r *MembershipReconciler) reconcileBotChannels(ctx context.Context, session
 	r.mu.Lock()
 	for ch := range needsReAdd {
 		if !r.reAdd[ch] {
-			log.Warn("bot channel group needs the Bot re-added: no Welcome to join it from", "channel_id", ch.String())
+			log.Warn("bot channel group needs the Bot re-added: no Welcome on this pass", "channel_id", ch.String())
 		}
 	}
 	r.reAdd = needsReAdd

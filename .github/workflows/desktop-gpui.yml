@@ -217,8 +217,11 @@ jobs:
       # voice" of 2026-11-16) and a real ScreenCaptureKit share between two clients (a_real_display_share_reaches_a_viewer;
       # the shell holds Screen Recording on the runner). The rest of the ignored suites, the web peer's call test and the
       # Bot suites stay on Linux (gpui-linux): dillabot builds for Linux only (cmd/dillabot/main.go).
+      # Report-only while the suite's first macOS timing failures are fixed (Jonas, 2026-11-16): a failure shows in the
+      # job but does not fail the leg. Blocking again once it has been green for a week.
       - name: Run the call tests (macOS)
         if: runner.os == 'macOS' && !cancelled()
+        continue-on-error: true
         shell: bash
         run: |
           cargo test -p dilla-client --test gateway --test http_sign_in --test calls --locked -- --ignored

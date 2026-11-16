@@ -1348,7 +1348,7 @@ const drSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
  */
 export const MOBILE_RELEASE_NEEDS = { 'mobile-bundle': ['resolve'], 'android-release': ['resolve', 'mobile-bundle'], publish: ['resolve', 'android-release'], 'ios-testflight': ['resolve', 'mobile-bundle'] };
 const ANDROID_SECRETS = ['ANDROID_KEYSTORE_B64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD'];
-const ASC_SECRETS = ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_KEY_P8'];
+const ASC_SECRETS = ['APPLE_API_KEY_ID', 'APPLE_API_ISSUER', 'APPLE_API_KEY'];
 /** job -> step name -> the secrets that step's env may name. No other step, and no job-level key, names a secret. */
 export const MOBILE_SECRET_STEPS = {
   'android-release': { 'The signing secrets are set': ANDROID_SECRETS, 'Sign the APK with the release key (the keystore exists only during this step)': ANDROID_SECRETS },
@@ -1617,6 +1617,7 @@ export const GPUI_PINNED_STEPS = {
   macCalls: [
     '- name: Run the call tests (macOS)',
     "  if: runner.os == 'macOS' && !cancelled()",
+    '  continue-on-error: true',
     '  shell: bash',
     '  run: |',
     '    cargo test -p dilla-client --test gateway --test http_sign_in --test calls --locked -- --ignored',

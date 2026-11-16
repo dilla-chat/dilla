@@ -23,5 +23,24 @@ instead of SQLCipher. Nothing needs doing when you upgrade, but a few things are
 
 The new store cannot lock its memory pages, so the service no longer asks for that. `dilla.service` sets
 `MemorySwapMax=0` instead: the unit, and the Bot it runs, can never be written to swap, so the store key and decrypted
-pages stay out of swap. `LimitMEMLOCK` is gone from the unit. The installers write the new unit when you upgrade.
-This needs systemd with cgroup v2, which is what the supported Debian setup uses.
+pages stay out of swap. `LimitMEMLOCK=256M` is gone from the unit, so the locked-memory limit drops to systemd's default
+of 8 MiB: a trade, not an addition. This needs systemd with cgroup v2, which is what the supported Debian setup uses.
+
+**Upgrade `dillad` and the Bot together.** Only `install-bot.sh --upgrade` writes the new `dilla.service`;
+`install.sh --upgrade` leaves the old unit and logs `dilla.service was not rewritten`. Run both installers of this
+release, in this order:
+
+```sh
+sudo sh install.sh --upgrade
+sudo sh install-bot.sh --upgrade
+```
+
+## Installer changes
+
+- `install-bot.sh` keeps the Bot binaries it replaces as `/usr/local/bin/dillabot.prev` and
+  `/usr/local/lib/dilla/dilla-bot-core.prev`, as `install.sh` keeps `dillad.prev`.
+- Both installers log `no live rooms, so restarting dilla ends no call` when the live-call check passes, so a run shows
+  the check ran.
+- The Bot's journal line `bot channel group needs the Bot re-added: no Welcome to join it from` now reads
+  `bot channel group needs the Bot re-added: no Welcome on this pass`. Its meaning is unchanged: no Welcome was found on
+  that pass, and it can precede a successful `bot joined Bot channel group`.

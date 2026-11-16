@@ -466,11 +466,15 @@ fn enhanced_lowers_noise_10db_on_device_path() {
     );
 }
 
-/// Pushes `input` frame by frame (faster than real time) and returns every output frame.
+/// Pushes `input` frame by frame (faster than real time, but never more than [`MAX_AHEAD`] frames ahead of the capture
+/// thread) and returns every output frame.
 /// Held by the tests that load every core (the playout test's four spinning pushers) and by the ones that need CPU time
 /// to finish ([`run_frames`]'s noise suppression): side by side on a 4-vCPU runner, the pushers starved the suppression
 /// thread past its stall bound and the playout callback past its budget (PR #176, run 43839509719).
 static CPU_HEAVY: Mutex<()> = Mutex::new(());
+
+/// Half a second of audio: well inside the capture's 1 s device ring, so the fake device never overflows it.
+const MAX_AHEAD: usize = 50;
 
 fn run_frames(mode: NoiseMode, input: &[Vec<i16>]) -> Vec<Vec<i16>> {
     let _cpu = CPU_HEAVY
@@ -497,26 +501,32 @@ fn run_frames(mode: NoiseMode, input: &[Vec<i16>]) -> Vec<Vec<i16>> {
             }
         })
     };
-    for f in input {
-        host.push(f);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    // A stall bound, not a budget: it ends as soon as every frame is out, and gives up only when no frame came for
-    // 30 s. A fixed total was too short on a busy runner (the Windows debug build of the enhanced model needed more
-    // than 10 s for 800 frames; the Linux one, beside 17 other tests, more than 60 s).
+    // Waits until at most `ahead` pushed frames are still unprocessed. A stall bound, not a budget: it gives up only
+    // when no frame came out for 30 s. A fixed total was too short on a busy runner (the Windows debug build of the
+    // enhanced model needed more than 10 s for 800 frames; the Linux one, beside 17 other tests, more than 60 s).
     let (mut seen, mut last) = (0, Instant::now());
-    loop {
+    let mut wait_for = |pushed: usize, ahead: usize| loop {
         let n = out.lock().unwrap().len();
-        if n == want || reader.is_finished() {
-            break;
+        if n + ahead >= pushed || reader.is_finished() {
+            return;
         }
         if n != seen {
             (seen, last) = (n, Instant::now());
         } else if last.elapsed() >= Duration::from_secs(30) {
-            break;
+            return;
         }
         std::thread::sleep(Duration::from_millis(5));
+    };
+    for (i, f) in input.iter().enumerate() {
+        // The fake device runs at most MAX_AHEAD frames ahead of the capture thread. Pushing at twice real time with
+        // no flow control overflowed the capture's 1 s device ring (its callback drops what does not fit, as a live
+        // call must) whenever the debug-build noise model ran slower than 2 ms per frame (PR #177, run 43920504317:
+        // fewer frames out than in; reproduced under a 25 % CPU quota: 181 frames dropped at the ring).
+        wait_for(i, MAX_AHEAD);
+        host.push(f);
+        std::thread::sleep(Duration::from_millis(5));
     }
+    wait_for(want, 0);
     // Closing the microphone ends the reader if it is still waiting.
     drop(mic);
     let _ = reader.join();

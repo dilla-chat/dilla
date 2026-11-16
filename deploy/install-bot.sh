@@ -334,7 +334,10 @@ live_calls_preflight() {
 		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
 		if [ -z "$_busy" ]; then
 			case "$_rooms" in
-			"no live rooms" | *participants*) return 0 ;;
+			"no live rooms" | *participants*)
+				log "no live rooms, so restarting dilla ends no call"
+				return 0
+				;;
 			esac
 			_why="dillad media --rooms printed something unexpected: $_rooms"
 		else
@@ -789,6 +792,17 @@ bot_health || rollback "the Bot did not come up healthy under dillad"
 # the v1 leftovers, and with them every copy of the database key.
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
+# The Bot binaries this run replaced stay beside the new ones as dillabot.prev and dilla-bot-core.prev, the way
+# install.sh keeps dillad.prev, for a rollback by hand. Root-owned 0755 like the binaries (cp -p from the backup copy).
+for pair in "dillabot:$BIN_DIR/dillabot" "dilla-bot-core:$LIB_DIR/dilla-bot-core"; do
+	name="${pair%%:*}"
+	[ -f "$BACKUP/prev-$name" ] || continue
+	if restore "$BACKUP/prev-$name" "${pair#*:}.prev"; then
+		log "kept the previous $name as ${pair#*:}.prev"
+	else
+		log "warning: could not keep the previous $name as ${pair#*:}.prev"
+	fi
+done
 rm -f "$BACKUP/pending" "$BACKUP/state" "$BACKUP/prev-dillabot" "$BACKUP/prev-dilla-bot-core" "$TOML_PREV"
 if [ -f "$LEGACY_CREDENTIAL" ]; then
 	if rm -f "$LEGACY_CREDENTIAL"; then log "removed the v1 credential copy /etc/dillabot/runtime.token"; else log "warning: could not remove $LEGACY_CREDENTIAL"; fi

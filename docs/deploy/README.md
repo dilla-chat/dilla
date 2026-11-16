@@ -25,6 +25,24 @@ a v1 Bot is refused by the new `dillad`; the scripts say what to run next. The B
 own (see [Dilla Bot installation](#dilla-bot-installation)). Read the backup of your old `bot.toml` before you
 rely on the new defaults: a custom `reconcile_interval` or `[rate_limits]` in it is not carried over.
 
+### The `dilla.service` memory change (the release after v0.1.0-bot2.4)
+
+This release changes the `dilla.service` unit the installers embed: `LimitMEMLOCK=256M` is gone and
+`MemorySwapMax=0` takes its place, because the Bot's store (SQLite3 Multiple Ciphers) cannot lock its pages in memory.
+The unit, and the Bot it runs, can no longer be written to swap. It is a trade, not an addition: without the
+`LimitMEMLOCK` line the locked-memory limit falls back to systemd's default of 8 MiB. `MemorySwapMax` needs cgroup v2,
+which the supported Debian setup uses.
+
+Only `install-bot.sh --upgrade` rewrites `dilla.service`; `install.sh --upgrade` leaves it as it is and logs
+`dilla.service was not rewritten`. Upgrade `dillad` and the Bot together, with both installers of the same release:
+
+```sh
+sudo sh install.sh --upgrade
+sudo sh install-bot.sh --upgrade
+```
+
+`install.sh` alone leaves the old unit in place.
+
 ### Retired music provider settings and queues
 
 Spotify integration has been removed. Older generated server configurations can
@@ -571,8 +589,9 @@ stops the old combined process, changes `livekit.mode` to `sidecar`, and starts 
 That one-time migration briefly interrupts calls. Later API restarts leave the SFU running;
 media restarts end their rooms; updated community voice clients try to rejoin during the upgrade
 window. The installer writes
-`dilla-media.service`; it leaves an existing `dilla.service` untouched, so compare that unit with
-the release copy after an upgrade.
+`dilla-media.service`; it leaves an existing `dilla.service` untouched and logs `dilla.service was not rewritten`.
+`install-bot.sh --upgrade` installs the release's `dilla.service`, so run both installers of a release together:
+`install.sh` alone leaves the old unit (see [the `dilla.service` memory change](#the-dillaservice-memory-change-the-release-after-v010-bot24)).
 
 Before it replaces anything, it reads the database's schema version with the installed binary
 (`dillad migrate status`) and refuses the upgrade if it cannot. If the restart fails, it rolls
@@ -759,9 +778,18 @@ so are two different runtime credentials. If doctor, the restart or the Bot chec
 back, restarts `dilla` on the previous `dilla.toml`, and starts the v1 Bot again. A second run changes nothing and
 logs `nothing to change: the Bot already runs under dillad from this release`, then checks the Bot again.
 
+When it replaced the Bot binaries and the Bot came up healthy, it keeps the replaced ones beside the new ones, as
+`install.sh` keeps `dillad.prev`: `/usr/local/bin/dillabot.prev` and `/usr/local/lib/dilla/dilla-bot-core.prev`
+(root:root 0755, each logged as `kept the previous … as …`). A v1 host had no helper at `/usr/local/lib/dilla`, so its
+first upgrade keeps only `dillabot.prev`. To go back by hand, stop `dilla`, copy both back with `cp -p` (for example
+`cp -p /usr/local/bin/dillabot.prev /usr/local/bin/dillabot`), and start `dilla`; go back to the `dillad` of the same
+release as well (see [Rolling back by hand](#rolling-back-by-hand)).
+
 `install-bot.sh` also does the following:
 
 - **Live calls.** It refuses while a room has people in it, or when it cannot list the rooms, and changes nothing.
+  When the check passes it logs `no live rooms, so restarting dilla ends no call` (or that `dilla-media` is not
+  running), as `install.sh --upgrade` does.
   The refusal names the rooms and the counts, not who is in them. `--yes` goes ahead and warns, as
   `install.sh --upgrade --yes` does.
 - **Interrupted runs.** The backup carries a `pending` mark until the Bot is healthy. A killed run leaves the
@@ -924,8 +952,8 @@ again** on **Server settings → Bot**, and **Add the Bot again** fixes it.
 
 ### Reading the Bot's journal
 
-- `bot channel group needs the Bot re-added: no Welcome to join it from` means the Bot found no Welcome for that channel
-  on one pass. It can precede a successful `bot joined Bot channel group` by a couple of seconds. A channel that keeps
+- `bot channel group needs the Bot re-added: no Welcome on this pass` (up to v0.1.0-bot2.4: `… no Welcome to join it
+  from`) means the Bot found no Welcome for that channel on one pass. It can precede a successful `bot joined Bot channel group` by a couple of seconds. A channel that keeps
   logging it and never logs `bot joined Bot channel group` needs **Add the Bot again**.
 - The first music item in a freshly prepared call logs 9 start stages, not 11: `call_token` and
   `call_fields` are skipped.

@@ -196,7 +196,7 @@ func TestAKeptWelcomeIsDroppedNeverApplied(t *testing.T) {
 	if _, reAdd := channels.reported(); !reAdd[channel] {
 		t.Fatalf("needs re-add %v, want the marked channel", reAdd)
 	}
-	if got := len(logs.with("bot channel group needs the Bot re-added: no Welcome to join it from")); got != 1 {
+	if got := len(logs.with("bot channel group needs the Bot re-added: no Welcome on this pass")); got != 1 {
 		t.Fatalf("needs re-add logged %d times, want once", got)
 	}
 }

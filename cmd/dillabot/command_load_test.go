@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -405,13 +406,17 @@ func TestCommandCostIsFlatAt200Members600Devices(t *testing.T) {
 		t.Fatalf("allocations per command: %.0f at 200 members, %.0f at 20 (ratio %.2f > 1.1)", allocLarge, allocSmall, allocLarge/allocSmall)
 	}
 	// CPU is the measuring thread's own (rusage per thread, goroutine locked to it), so other goroutines in the test
-	// binary are not charged; GC assists still are. Each round builds both worlds before measuring either, so both runs
-	// share one heap, collects before each run, and alternates which goes first; the best of five rounds per size
-	// discards a noisy neighbour on a shared runner.
+	// binary are not charged. The collector is off while a run is measured: its assists are charged to the allocating
+	// thread and scale with the live heap, which the 200-member world makes larger, so they measured the heap, not the
+	// command (PR #177's ratio 1.33). The allocation check above already pins the memory side per command. Each round
+	// builds both worlds before measuring either, collects before each run, and alternates which goes first; the best
+	// of five rounds per size discards a noisy neighbour on a shared runner.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	run := func(lw *loadWorld) time.Duration {
 		runtime.GC()
+		gc := debug.SetGCPercent(-1)
+		defer debug.SetGCPercent(gc)
 		start := cpuTime()
 		for range loadCommands {
 			lw.handleNext(ctx)
