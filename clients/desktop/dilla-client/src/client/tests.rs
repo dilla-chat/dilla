@@ -257,6 +257,7 @@ fn offline_publisher() -> (
         upkeep,
         inner: Arc::default(),
         removals_due: false,
+        structure: StructureOrder::default(),
         removals: RemovalGate::default(),
         taps: Taps::default(),
     };
@@ -730,4 +731,20 @@ fn a_409_adopts_a_served_list_at_or_past_the_candidate() {
         "an older list"
     );
     assert_eq!(list_conflict(None, 3), ListConflict::Race, "no list served");
+}
+
+#[test]
+fn a_structure_read_ending_after_a_newer_one_is_dropped() {
+    // Reads 1 and 2 start (a channel is created between them); 2 ends first and lands, 1 ends late and must not put
+    // back its older list.
+    let mut order = StructureOrder::default();
+    let (first, second) = (order.start(), order.start());
+    assert!(order.lands(second));
+    assert!(!order.lands(first), "the older read is dropped");
+    // A newer read still lands, and in order every read lands.
+    let third = order.start();
+    assert!(order.lands(third));
+    let (a, b) = (order.start(), order.start());
+    assert!(order.lands(a));
+    assert!(order.lands(b));
 }
