@@ -411,6 +411,28 @@ pub fn colour_difference_pct(
     Ok(percent(missing, total))
 }
 
+/// Share (percent) of all pixels whose largest channel delta exceeds `max_delta`: the whole-frame gate's score. Both
+/// images must have the same size.
+pub fn whole_difference_pct(
+    actual: &RgbaImage,
+    reference: &RgbaImage,
+    max_delta: u8,
+) -> Result<f64, ParityFailure> {
+    let (a, r) = (actual.dimensions(), reference.dimensions());
+    if a != r {
+        return Err(ParityFailure::Size {
+            actual: a,
+            reference: r,
+        });
+    }
+    let differing = actual
+        .pixels()
+        .zip(reference.pixels())
+        .filter(|(p, q)| pixel_delta(p, q) > max_delta)
+        .count() as u64;
+    Ok(percent(differing, u64::from(a.0) * u64::from(a.1)))
+}
+
 /// Share (percent) of the pixels outside `mask` whose largest channel delta exceeds `max_delta`.
 /// Both images must have the same size. Fails with [`ParityFailure::Mask`] when the mask covers
 /// more than half of the frame.

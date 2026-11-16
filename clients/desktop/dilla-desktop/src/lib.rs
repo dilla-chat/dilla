@@ -185,6 +185,18 @@ pub fn open_window_in(
 /// logical px from the window's top left.
 pub const MAC_WINDOW_BUTTONS: (f32, f32) = (12.0, 16.0);
 
+/// The rect macOS draws the workspace window's three traffic lights in, logical px from the window's top left
+/// (`x, y, width, height`): GPUI puts the close button's frame at [`MAC_WINDOW_BUTTONS`] and the other two after it
+/// (gpui-pre-macos `move_traffic_light`). AppKit's button frames are 14x16 pt, 6 pt apart, around 12 pt circles 8 pt
+/// apart; the rect is the frames' union (54x16), a superset of the circles (52x12). Nothing of the top bar may be drawn
+/// in it (`macos_header_clears_the_traffic_lights`, dilla-parity tests/harness.rs).
+pub const MAC_TRAFFIC_LIGHTS: (f32, f32, f32, f32) = (
+    MAC_WINDOW_BUTTONS.0,
+    MAC_WINDOW_BUTTONS.1,
+    3.0 * 14.0 + 2.0 * 6.0,
+    16.0,
+);
+
 /// The macOS traffic lights of a window in `mode` (beta.5 `setWindowMode`, main.ts:138): at [`MAC_WINDOW_BUTTONS`] in
 /// the workspace, hidden (`None`) in the compact windows, which draw their own close button. Pure; the native side is
 /// [`native::window_buttons::apply`].

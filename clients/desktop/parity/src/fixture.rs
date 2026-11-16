@@ -47,6 +47,17 @@ pub fn os_dir(os: Os) -> &'static str {
     }
 }
 
+/// The directory under `references` that holds `name`'s reference on `os`. macOS compares against the Linux web
+/// references (decision D-A of the macOS CI plan, with macOS-measured tolerances): `references/macos/<name>` when there
+/// is one (the GPUI-only frames, blessed on macOS), else `references/linux/<name>`.
+pub fn reference_dir(references: &Path, os: Os, name: &str) -> std::path::PathBuf {
+    let own = references.join(os_dir(os));
+    if os == Os::MacOs && !own.join(format!("{name}-2x.png")).exists() {
+        return references.join(os_dir(Os::Linux));
+    }
+    own
+}
+
 /// Reads and validates the fixture at `path`, which must sit at `<parity>/fixtures/<name>.json`.
 pub fn load(path: &Path, os: Os) -> Result<LoadedFixture, FixtureError> {
     let shown = path.display().to_string();
@@ -71,7 +82,7 @@ pub fn load(path: &Path, os: Os) -> Result<LoadedFixture, FixtureError> {
             name: fixture.name.clone(),
         });
     };
-    let base = parity.join("references").join(os_dir(os));
+    let base = reference_dir(&parity.join("references"), os, &fixture.name);
     let reference = base.join(format!("{}-2x.png", fixture.name));
     let sidecar = base.join(format!("{}.shot.json", fixture.name));
     let (shot_path, shot) = if sidecar.exists() {

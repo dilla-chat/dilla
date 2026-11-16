@@ -352,6 +352,40 @@ fn fallback_font_fails() {
     );
 }
 
+/// The macOS CI plan's measurement run (Task 3; `DILLA_PARITY_MEASURE=1`, gpui-proofs.yml `mac-parity-measure`): the
+/// negative controls of both shell fixtures scored as the honest frames are, one `MEASURE` line each, so an OS's limits
+/// can be put between the honest scores and the controls'. Without the variable it does nothing.
+#[test]
+#[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
+fn parity_negative_controls_measured() {
+    if std::env::var_os(dilla_parity::screen::MEASURE_VAR).is_none() {
+        return;
+    }
+    for name in ["shell/channel-view", "shell/channel-view-b"] {
+        let reference = image::open(reference(name)).unwrap().to_rgba8();
+        let (shot, mask) = shoot(name, &[]);
+        let line = |label: &str, frame: &RgbaImage, mask: &TextMask| {
+            dilla_parity::screen::measure_line(&format!("{name}+{label}"), frame, &reference, mask)
+                .unwrap()
+        };
+        println!("{}", line("honest", &shot, &mask));
+        println!(
+            "{}",
+            line("bg2-to-bg3", &recolour(&shot, BG_2, BG_3).0, &mask)
+        );
+        println!(
+            "{}",
+            line(
+                "hairline-to-hairline2",
+                &recolour(&shot, HAIRLINE, HAIRLINE_2).0,
+                &mask
+            )
+        );
+        let (fallback, fallback_mask) = shoot(name, &[("DILLA_AUTOMATION_FALLBACK_FONT", "1")]);
+        println!("{}", line("fallback-font", &fallback, &fallback_mask));
+    }
+}
+
 // ---- Step 4: named keys, focus, hover ----------------------------------------------------------------------------
 
 #[test]
