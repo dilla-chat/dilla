@@ -630,6 +630,10 @@ mod os {
         }));
         let chosen = paths.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            // muda has one handler per process: the title bar's popup menu takes its own rows.
+            if crate::native::popup_menu::route(event.id().as_ref()) {
+                return;
+            }
             let found = chosen
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

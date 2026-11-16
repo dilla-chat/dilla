@@ -280,6 +280,44 @@ mod tests {
         });
     }
 
+    /// beta.5 `startDesktopWindowLayout` + `windowShape`: the authentication window is as tall as its card (rounded up,
+    /// 160 to 1600), at least 220 and at most the work area less 80.
+    #[test]
+    fn the_authentication_window_fits_its_card() {
+        use crate::app::card_window_height;
+        use crate::screens::shell::window::{WindowMode, window_shape};
+        assert_eq!(card_window_height(412.3), 413.0);
+        assert_eq!(card_window_height(90.0), 160.0);
+        assert_eq!(card_window_height(4000.0), 1600.0);
+        let fit = |card: f32, work: f32| {
+            window_shape(
+                WindowMode::Authentication,
+                Some(card_window_height(card)),
+                work,
+            )
+            .height
+        };
+        assert_eq!(fit(412.3, 1080.0), 413.0);
+        assert_eq!(fit(150.0, 1080.0), 220.0);
+        assert_eq!(fit(1200.0, 900.0), 820.0);
+    }
+
+    /// A card notes its height per window; the same height again changes nothing.
+    #[gpui::test]
+    fn a_card_notes_its_height_per_window(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop_ui::components::onboarding::frame::{
+            desktop_card_height, note_card_height,
+        };
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            assert_eq!(desktop_card_height(window, cx), None);
+            note_card_height(window, 431.5, cx);
+            assert_eq!(desktop_card_height(window, cx), Some(431.5));
+        });
+        let b = cx.add_empty_window();
+        b.update(|window, cx| assert_eq!(desktop_card_height(window, cx), None));
+    }
+
     #[gpui::test]
     fn install_gives_the_bot_page_the_factor_step_up(cx: &mut gpui::TestAppContext) {
         cx.update(super::install);

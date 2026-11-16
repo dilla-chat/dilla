@@ -197,7 +197,9 @@ impl RenderOnce for OnboardingFrame {
             .flex_col()
             .gap(px(CARD_GAP))
             .bg(color::BG_2);
-        let mut card = card_edge(card, desktop, |c| c.w(px(CARD_W)));
+        let mut card = card_edge(card, desktop, |c| c.w(px(CARD_W)))
+            .relative()
+            .children(card_measure(desktop));
         if self.step.is_some() || self.progress.is_some() {
             card = card.child(
                 div()
@@ -311,6 +313,46 @@ pub fn set_desktop_window(window: &Window, on: bool, cx: &mut App) {
 pub fn desktop_window(window: &Window, cx: &App) -> bool {
     cx.try_global::<DesktopAuthWindows>()
         .is_some_and(|w| w.0.contains(&window.window_handle().window_id()))
+}
+
+/// The card heights of the desktop authentication windows, by window: what the window fits its height to (beta.5
+/// `startDesktopWindowLayout`: the card's `offsetHeight`, watched with a ResizeObserver).
+#[derive(Default)]
+struct DesktopCardHeights(std::collections::HashMap<gpui::WindowId, f32>);
+
+impl gpui::Global for DesktopCardHeights {}
+
+/// The height the card of `window` last drew at, logical px, while `window` is a desktop authentication window.
+pub fn desktop_card_height(window: &Window, cx: &App) -> Option<f32> {
+    cx.try_global::<DesktopCardHeights>()?
+        .0
+        .get(&window.window_handle().window_id())
+        .copied()
+}
+
+/// Notes the height of `window`'s card; a new height draws the window again, so the app can fit it.
+pub fn note_card_height(window: &mut Window, height: f32, cx: &mut App) {
+    let id = window.window_handle().window_id();
+    let heights = &mut cx.default_global::<DesktopCardHeights>().0;
+    if heights.get(&id) != Some(&height) {
+        heights.insert(id, height);
+        window.refresh();
+    }
+}
+
+/// Measures the card it is placed in (absolutely, over the whole card) for [`note_card_height`]: only in the desktop
+/// authentication window.
+pub fn card_measure(desktop: bool) -> Option<impl IntoElement> {
+    desktop.then(|| {
+        gpui::canvas(
+            |bounds, window, cx| note_card_height(window, f32::from(bounds.size.height), cx),
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    })
 }
 
 /// The card's edge: on the web (and in a fixture) the 400px card with its hairline, `--r-xxl` and `--shadow-card`;

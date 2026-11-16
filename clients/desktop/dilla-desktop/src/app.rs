@@ -194,6 +194,8 @@ pub struct AppView {
     instance: Option<InstanceId>,
     /// The workspace window's bounds are kept a moment after the last change.
     bounds_task: Option<gpui::Task<()>>,
+    /// The card height the authentication window was last fitted to (beta.5 `window-mode` `height`).
+    fitted_card: Option<f32>,
     bounds_sub: Option<Subscription>,
     /// The client about to start is a new account's: once its factor is in place, the invite's server is joined and
     /// the done step shows (Task 25).
@@ -224,6 +226,7 @@ impl AppView {
             launch,
             screen: Screen::Starting,
             bounds_task: None,
+            fitted_card: None,
             bounds_sub: None,
             after_signup: false,
             signup_codes: None,
@@ -1509,7 +1512,15 @@ impl AppView {
         // A workspace window that signs out takes the compact chrome: on macOS its traffic lights go (beta.5
         // `setWindowMode`).
         crate::native::window_buttons::apply(window, mode);
-        let shape = window_shape(mode, None, crate::work_area_height(cx));
+        // The authentication window fits its card, once the card has drawn (render, below).
+        let content = (mode == WindowMode::Authentication)
+            .then(|| {
+                dilla_desktop_ui::components::onboarding::frame::desktop_card_height(window, cx)
+            })
+            .flatten()
+            .map(card_window_height);
+        self.fitted_card = content;
+        let shape = window_shape(mode, content, crate::work_area_height(cx));
         window.resize(gpui::size(
             gpui::Pixels::from(shape.width),
             gpui::Pixels::from(shape.height),
@@ -1557,6 +1568,12 @@ impl AppView {
             true
         });
     }
+}
+
+/// The window height a card of `card` px asks for: beta.5's `Math.max(160, Math.min(1600, Math.ceil(card.offsetHeight)))`
+/// (`window_shape` then keeps it within the work area and at least 220).
+pub fn card_window_height(card: f32) -> f32 {
+    card.ceil().clamp(160.0, 1600.0)
 }
 
 impl Render for AppView {
@@ -1638,11 +1655,34 @@ impl Render for AppView {
             .then(crate::screens::titlebar::compact_chrome);
         // The authentication window's card fills it (beta.5 DesktopTitlebar.css:24-26): the screens' frames read this
         // mark as they draw, after this view.
+        let authentication =
+            self.launch.shipping && self.screen.mode() == WindowMode::Authentication;
         dilla_desktop_ui::components::onboarding::frame::set_desktop_window(
             window,
-            self.launch.shipping && self.screen.mode() == WindowMode::Authentication,
+            authentication,
             cx,
         );
+        // beta.5 `startDesktopWindowLayout`: the authentication window is as tall as its card (a ResizeObserver there;
+        // the card notes its height as it draws here).
+        if authentication
+            && let Some(card) =
+                dilla_desktop_ui::components::onboarding::frame::desktop_card_height(window, cx)
+            && self.fitted_card != Some(card_window_height(card))
+        {
+            let content = card_window_height(card);
+            self.fitted_card = Some(content);
+            let shape = window_shape(
+                WindowMode::Authentication,
+                Some(content),
+                crate::work_area_height(cx),
+            );
+            window.defer(cx, move |window, _| {
+                window.resize(gpui::size(
+                    gpui::Pixels::from(shape.width),
+                    gpui::Pixels::from(shape.height),
+                ));
+            });
+        }
         // Push to talk is heard at the root, whatever screen shows, and lets go when the screen is not the shell
         // (review I1: the settings replacing the shell's dock left a held key's microphone open).
         let w = crate::screens::voice::wid(window);

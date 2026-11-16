@@ -793,7 +793,7 @@ pub fn manager_bar_left(mac: bool) -> f32 {
 /// then "Your instances"; on Linux and Windows the window's buttons at the right (beta.5's `titleBarOverlay`). The bar
 /// is the window's drag region (a double click maximises).
 fn manager_titlebar(menu_open: bool) -> impl IntoElement {
-    use crate::screens::titlebar::{CLOSE, MAXIMIZE, MINIMIZE, set_window_menu, window_button};
+    use crate::screens::titlebar::{CLOSE, MAXIMIZE, MINIMIZE, press_window_menu, window_button};
     use gpui::{MouseButton, MouseDownEvent, Pixels};
     let mac = cfg!(target_os = "macos");
     let small = |s: &'static str, ink| {
@@ -824,7 +824,7 @@ fn manager_titlebar(menu_open: bool) -> impl IntoElement {
             window.prevent_default();
             cx.stop_propagation();
         })
-        .on_click(move |_: &ClickEvent, window, cx| set_window_menu(window, !menu_open, cx))
+        .on_click(|_: &ClickEvent, window, cx| press_window_menu(window, cx))
         .child(small("\u{2630}", color::FG_2).weight(font::WEIGHT_DISPLAY))
         .child(small(copy::TITLEBAR_NAME, color::FG_2).weight(font::WEIGHT_DISPLAY));
     let controls = (!mac).then(|| {
