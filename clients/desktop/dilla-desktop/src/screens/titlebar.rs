@@ -43,14 +43,35 @@ mod css {
     pub const VOICE_PAD_X: f32 = 10.0;
     /// DesktopTitlebar.css: the window buttons are 28px with a 14px glyph; the menu button the same.
     pub const WINDOW_GLYPH: f32 = 14.0;
-    /// The macOS traffic lights sit in the bar's left corner: the brand moves right of them.
-    pub const TRAFFIC_LIGHTS: f32 = 64.0;
+    /// DesktopTitlebar.css `html[data-desktop-platform="darwin"] .d-topbar { padding-left: 112px }`: the macOS traffic
+    /// lights (at 12, 16; `crate::MAC_WINDOW_BUTTONS`) and beta.5's menu button (`left: 78px`, 32px wide) sit left of
+    /// the brand.
+    pub const DARWIN_LEFT: f32 = 112.0;
+    /// `.dw-desktop-card-close` in the compact (starting and authentication) windows: 22px, 6px in from the top right,
+    /// its glyph 14px.
+    pub const CARD_CLOSE: f32 = 22.0;
+    pub const CARD_CLOSE_INSET: f32 = 6.0;
+    /// `.dw-desktop-card-drag`: the compact windows' drag strip, `inset: 0 34px auto 0; height: 26px`.
+    pub const CARD_DRAG_H: f32 = 26.0;
+    pub const CARD_DRAG_RIGHT: f32 = 34.0;
+}
+
+/// The bar's left padding: beta.5's 112px on macOS, where the traffic lights sit in the bar, else TopBar.css's 14px. A
+/// fixture (no window controls) draws the web's bar on every platform.
+pub fn left_inset(mac: bool, controls: bool) -> f32 {
+    if mac && controls {
+        css::DARWIN_LEFT
+    } else {
+        css::LEFT
+    }
 }
 
 /// The window buttons' names (packages/web DesktopTitlebar.tsx holds them as literals; `strings.rs` has no key).
 const MINIMIZE: &str = "Minimize window";
 const MAXIMIZE: &str = "Maximize or restore window";
 const CLOSE: &str = "Close window";
+/// The compact windows' close button (DesktopTitlebar.tsx `dw-desktop-card-close`).
+const CLOSE_LOGIN: &str = "Close login window";
 
 /// The bar is the window's drag region except where the web excludes it (`button, input, a, .d-topbar__search`): an
 /// interactive child takes its own press, so a click on it is a click and not the start of a window move.
@@ -404,13 +425,10 @@ pub fn render(
         .border_color(color::HAIRLINE)
         .flex()
         .items_center()
-        .pl(Pixels::from(
-            if cfg!(target_os = "macos") && model.controls {
-                css::TRAFFIC_LIGHTS
-            } else {
-                css::LEFT
-            },
-        ))
+        .pl(Pixels::from(left_inset(
+            cfg!(target_os = "macos"),
+            model.controls,
+        )))
         .pr(Pixels::from(css::RIGHT))
         .gap(Pixels::from(css::GAP))
         .child(brand)
@@ -433,4 +451,81 @@ pub fn render(
             .into_any_element();
     }
     bar.into_any_element()
+}
+
+/// The compact windows' own chrome (DesktopTitlebar.tsx in the `starting` and `authentication` window modes, every
+/// platform): no top bar, a 26px drag strip along the top edge (short of the close button) and the 22px close button
+/// in the top right corner. Drawn over the screen, as beta.5's fixed elements are.
+pub fn compact_chrome() -> impl IntoElement {
+    let drag = div()
+        .id("window-drag")
+        .absolute()
+        .top_0()
+        .left_0()
+        .right(Pixels::from(css::CARD_DRAG_RIGHT))
+        .h(Pixels::from(css::CARD_DRAG_H))
+        // A compact window is not maximisable (beta.5 `setMaximizable(false)`): a press moves it, a double click does
+        // nothing more.
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, window, cx| {
+            cx.stop_propagation();
+            window.start_window_move();
+        });
+    let close = interactive(div().id("window-card-close"))
+        .a11y(Role::Button, CLOSE_LOGIN)
+        .tab_index(0)
+        .absolute()
+        .top(Pixels::from(css::CARD_CLOSE_INSET))
+        .right(Pixels::from(css::CARD_CLOSE_INSET))
+        .size(Pixels::from(css::CARD_CLOSE))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::SM)
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .hover(|s| s.bg(color::HOVER))
+        .on_click(|_: &ClickEvent, window, _| window.remove_window())
+        .child(
+            Icon::new(IconName::X)
+                .size(Pixels::from(css::WINDOW_GLYPH))
+                .color(color::FG_2),
+        );
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .child(drag)
+        .child(close)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// beta.5 DesktopTitlebar.css: the macOS bar starts its brand at 112px, right of the traffic lights; elsewhere, and
+    /// in a fixture without window controls, TopBar.css's 14px.
+    #[test]
+    fn the_bar_leaves_room_for_the_traffic_lights_on_macos() {
+        assert_eq!(left_inset(true, true), 112.0);
+        assert_eq!(left_inset(true, false), 14.0);
+        assert_eq!(left_inset(false, true), 14.0);
+        assert_eq!(left_inset(false, false), 14.0);
+    }
+
+    /// beta.5 DesktopTitlebar.css: the compact windows' drag strip (`inset: 0 34px auto 0`) stops short of the close
+    /// button (22px, 6px in), so a press on the button is a click.
+    #[test]
+    fn the_compact_drag_strip_stops_short_of_the_close_button() {
+        assert_eq!(
+            (css::CARD_DRAG_RIGHT, css::CARD_DRAG_H),
+            (34.0, 26.0),
+            "the strip"
+        );
+        assert_eq!(
+            (css::CARD_CLOSE, css::CARD_CLOSE_INSET),
+            (22.0, 6.0),
+            "the button: 28px from the right edge, inside the strip's 34px gap"
+        );
+    }
 }

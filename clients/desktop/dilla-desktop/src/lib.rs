@@ -176,13 +176,26 @@ pub fn open_window_in(
     let options = window_options_for(mode, bounds);
     cx.open_window(options, |window, cx| {
         window.set_window_title(PRODUCT_NAME);
+        native::window_buttons::apply(window, mode);
         cx.new(|cx| AppView::new(launch, window, cx))
     })
 }
 
+/// beta.5 `setWindowButtonPosition({ x: 12, y: 16 })`: where the macOS traffic lights sit in the workspace's top bar,
+/// logical px from the window's top left.
+pub const MAC_WINDOW_BUTTONS: (f32, f32) = (12.0, 16.0);
+
+/// The macOS traffic lights of a window in `mode` (beta.5 `setWindowMode`, main.ts:138): at [`MAC_WINDOW_BUTTONS`] in
+/// the workspace, hidden (`None`) in the compact windows, which draw their own close button. Pure; the native side is
+/// [`native::window_buttons::apply`].
+pub fn mac_window_buttons(mode: WindowMode) -> Option<(f32, f32)> {
+    (mode == WindowMode::Workspace).then_some(MAC_WINDOW_BUTTONS)
+}
+
 /// The options of the shipping window in `mode` at `bounds`: the shape's minimum size (the workspace cannot be resized
-/// below 900x600; the compact windows are fixed), and the app's own title bar (no OS frame where the window can be drawn
-/// without one; macOS keeps its traffic lights, inset into the bar).
+/// below 900x600; the compact windows are fixed, and on macOS not zoomable either, as beta.5's `setMaximizable`), and
+/// the app's own title bar (no OS frame where the window can be drawn without one; macOS keeps its traffic lights in the
+/// workspace, inset into the bar at [`MAC_WINDOW_BUTTONS`], and hides them in the compact windows).
 pub fn window_options_for(mode: WindowMode, bounds: Bounds<Pixels>) -> WindowOptions {
     let shape = window_shape(mode, None, bounds.size.height.into());
     let mut options = main_window_options(bounds);
@@ -192,7 +205,8 @@ pub fn window_options_for(mode: WindowMode, bounds: Bounds<Pixels>) -> WindowOpt
         titlebar.appears_transparent = true;
         #[cfg(target_os = "macos")]
         {
-            titlebar.traffic_light_position = Some(point(px(18.0), px(14.0)));
+            titlebar.traffic_light_position =
+                mac_window_buttons(mode).map(|(x, y)| point(px(x), px(y)));
         }
     }
     #[cfg(not(target_os = "macos"))]
