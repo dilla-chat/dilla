@@ -22,6 +22,21 @@ impl WindowMode {
     }
 }
 
+/// The shape a shipping window opens in. A handed-over client goes to the workspace. An instance with no store yet (just
+/// connected from the manager, or nothing listed: the sign-up) can only show the sign-up or the sign-in, so its window
+/// opens in the authentication shape at once. Opening it in the start shape and resizing it a few milliseconds later,
+/// when the start answers "no account", lost the resize to the compositor's first configure of the new window on Linux
+/// (Wayland): the window stayed 400x280 with the sign-up clipped in it. Anything else starts in the start shape.
+pub fn opening_mode(handoff: bool, has_store: bool) -> WindowMode {
+    if handoff {
+        WindowMode::Workspace
+    } else if has_store {
+        WindowMode::Starting
+    } else {
+        WindowMode::Authentication
+    }
+}
+
 /// `WORKSPACE_MINIMUM`.
 pub const WORKSPACE_MIN: (f32, f32) = (900.0, 600.0);
 /// The compact windows' width, and their shortest height.
@@ -173,6 +188,16 @@ mod tests {
             (s.min_width, s.min_height, s.resizable),
             (900.0, 600.0, true)
         );
+    }
+
+    #[test]
+    fn a_new_instance_opens_in_the_sign_up_shape_not_the_400x280_start() {
+        assert_eq!(opening_mode(false, false), WindowMode::Authentication);
+        let opened = window_shape(opening_mode(false, false), None, 1080.0);
+        assert_eq!((opened.width, opened.height), (400.0, 620.0));
+        assert_eq!(opening_mode(false, true), WindowMode::Starting);
+        assert_eq!(opening_mode(true, false), WindowMode::Workspace);
+        assert_eq!(opening_mode(true, true), WindowMode::Workspace);
     }
 
     #[test]

@@ -27,11 +27,32 @@ const INSTANCES_DIR: &str = "instances";
 const LIST_VERSION: u32 = 1;
 const INSTALL_ID_BYTES: usize = 16;
 
-/// `<OS data dir>/Dilla Preview`, the root [`Instances::load`] takes in the shipping app.
+/// The environment variable that names another data root: a second, separate profile on one machine (testers and CI
+/// running two clients side by side; docs/user/desktop.md).
+pub const DATA_DIR_ENV: &str = "DILLA_DATA_DIR";
+
+/// `<OS data dir>/Dilla Preview`, the root [`Instances::load`] takes in the shipping app, or `$DILLA_DATA_DIR` when that
+/// is set ([`root_from`]). Everything of a profile lives under its root: the instance list (and its install id, which
+/// names every keychain entry, so two roots never share a key), the stores, the single-instance lock and the handover
+/// socket.
 pub fn default_root() -> Result<PathBuf, StoreError> {
-    dirs::data_dir()
-        .map(|d| d.join(PRODUCT_DIR))
-        .ok_or(StoreError::NoDataDir)
+    root_from(std::env::var_os(DATA_DIR_ENV), dirs::data_dir())
+}
+
+/// [`default_root`] from the override's value and the OS data dir: an absolute, non-empty override is the root as it
+/// stands; a relative one is refused ([`StoreError::NoDataDir`]) rather than resolved against whatever the working
+/// directory is; unset or empty, `<data dir>/Dilla Preview`.
+pub fn root_from(
+    over: Option<std::ffi::OsString>,
+    data_dir: Option<PathBuf>,
+) -> Result<PathBuf, StoreError> {
+    match over.filter(|v| !v.is_empty()).map(PathBuf::from) {
+        Some(root) if root.is_absolute() => Ok(root),
+        Some(_) => Err(StoreError::NoDataDir),
+        None => data_dir
+            .map(|d| d.join(PRODUCT_DIR))
+            .ok_or(StoreError::NoDataDir),
+    }
 }
 
 #[derive(Serialize, Deserialize)]

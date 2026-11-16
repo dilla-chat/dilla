@@ -1094,10 +1094,19 @@ pub fn handover(
                     joining += HANDOVER_POLL;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    log::warn!("voice: the join's answer was dropped (its client task ended)");
                     break Some(Some("voice.failed"));
                 }
                 Ok(Ok(())) => break None,
-                Ok(Err(e)) => break Some(join_failure_key(&e)),
+                Ok(Err(e)) => {
+                    let key = join_failure_key(&e);
+                    log::warn!(
+                        "voice: the join failed: {} -> notice {}",
+                        join_error_line(&e),
+                        key.unwrap_or("none")
+                    );
+                    break Some(key);
+                }
             }
         };
         cx.update(|cx| {
@@ -1186,6 +1195,24 @@ pub fn join_failure_key(e: &dilla_client::ClientError) -> Option<&'static str> {
         | "E_TIER_MISMATCH" | "E_BINDING" => None,
         _ => Some("voice.failed"),
     }
+}
+
+/// A join's error for the log: its kind and, for a refusal, its `E_*` code (the HTTP status was logged where it was
+/// known, dilla-client calls/join.rs). Never a message, key or token: [`dilla_client::ClientError`] carries none.
+pub fn join_error_line(e: &dilla_client::ClientError) -> String {
+    use dilla_client::ClientError as E;
+    let kind = match e {
+        E::Store(_) => "store",
+        E::NoIdentity => "no identity",
+        E::Revoked => "revoked",
+        E::FactorRequired => "factor required",
+        E::Network(_) => "network",
+        E::Sync(_) => "refused",
+        E::UnknownChannel => "unknown channel",
+        E::Stopped => "stopped",
+        E::Runtime(_) => "runtime",
+    };
+    format!("{kind}: {e}")
 }
 
 /// A join that did not happen: `window` says so (VoiceView.tsx's `voice.failed`).

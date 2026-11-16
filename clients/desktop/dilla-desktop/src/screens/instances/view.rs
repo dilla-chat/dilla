@@ -205,7 +205,8 @@ impl ManagerView {
         };
         match model.invite_names_new_instance(&input) {
             Ok(true) => {
-                let host = dilla_client::instances::address::parse_invite(input.trim())
+                let host = model
+                    .parse_invite(&input)
                     .map(|i| label_of(&i.instance))
                     .unwrap_or_default();
                 self.error = None;
@@ -724,6 +725,18 @@ impl Render for ManagerView {
             })
         });
 
+        // A window that draws its own frame is resized from strips at its rim (Linux, Windows).
+        let size = window.viewport_size();
+        let strips = (window.is_resizable()
+            && !window.is_maximized()
+            && matches!(
+                window.window_decorations(),
+                gpui::Decorations::Client { .. }
+            ))
+        .then(|| {
+            crate::screens::shell::resize::render(f32::from(size.width), f32::from(size.height))
+        });
+        let menu_open = crate::screens::titlebar::window_menu_open(window, cx);
         div()
             .id("instances")
             .key_context("Instances")
@@ -732,19 +745,146 @@ impl Render for ManagerView {
             .size_full()
             .relative()
             .bg(color::BG)
+            .flex()
+            .flex_col()
+            .child(manager_titlebar(menu_open))
             .child(
                 div()
                     .id("instances-scroll")
-                    .size_full()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
                     .overflow_y_scroll()
                     .flex()
                     .justify_center()
                     .py_12()
                     .child(main),
             )
+            .children(crate::screens::titlebar::window_menu(window, cx))
+            .children(strips.into_iter().flatten())
             .children(dialog)
             // The quit question, when this window carries it (Package 7).
             .children(crate::native::quit::overlay(window, cx))
             .child(dilla_desktop_ui::a11y::announcer(window, cx))
+    }
+}
+
+/// manager.css `.titlebar`: 32px, the page's colour, 11px `--fg-2` text, 12px in (80px on macOS, right of the traffic
+/// lights), 16px between its parts.
+mod bar {
+    pub const H: f32 = 32.0;
+    pub const LEFT: f32 = 12.0;
+    pub const LEFT_DARWIN: f32 = 80.0;
+    pub const GAP: f32 = 16.0;
+    pub const TEXT: f32 = 11.0;
+    /// `.titlebar button`: 26px, `padding: 0 6px; margin-left: -6px`, 8px between the glyph and the name, 4px corners.
+    pub const BUTTON_H: f32 = 26.0;
+    pub const BUTTON_PAD: f32 = 6.0;
+    pub const BUTTON_GAP: f32 = 8.0;
+    pub const BUTTON_RADIUS: f32 = 4.0;
+}
+
+/// The bar's left padding: beta.5 manager.css `[data-platform="darwin"] .titlebar { padding-left: max(80px, ...) }`,
+/// else 12px.
+pub fn manager_bar_left(mac: bool) -> f32 {
+    if mac { bar::LEFT_DARWIN } else { bar::LEFT }
+}
+
+/// The manager's own title bar (beta.5 manager.html `<header class="titlebar">`): "☰ dilla", the window menu's button,
+/// then "Your instances"; on Linux and Windows the window's buttons at the right (beta.5's `titleBarOverlay`). The bar
+/// is the window's drag region (a double click maximises).
+fn manager_titlebar(menu_open: bool) -> impl IntoElement {
+    use crate::screens::titlebar::{CLOSE, MAXIMIZE, MINIMIZE, press_window_menu, window_button};
+    use gpui::{MouseButton, MouseDownEvent, Pixels};
+    let mac = cfg!(target_os = "macos");
+    let small = |s: &'static str, ink| {
+        line(
+            s,
+            Pixels::from(bar::TEXT),
+            line_height(Pixels::from(bar::TEXT), 1.6),
+            ink,
+        )
+    };
+    let menu = div()
+        .id("instances-menu")
+        .a11y(Role::Button, "Dilla menu")
+        .aria_expanded(menu_open)
+        .node_props(|n| n.set_has_popup(gpui::accesskit::HasPopup::Menu))
+        .tab_index(0)
+        .flex()
+        .items_center()
+        .gap(Pixels::from(bar::BUTTON_GAP))
+        .h(Pixels::from(bar::BUTTON_H))
+        .px(Pixels::from(bar::BUTTON_PAD))
+        .ml(Pixels::from(-bar::BUTTON_PAD))
+        .rounded(Pixels::from(bar::BUTTON_RADIUS))
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .hover(|s| s.bg(color::HOVER))
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
+        .on_click(|_: &ClickEvent, window, cx| press_window_menu(window, cx))
+        .child(small("\u{2630}", color::FG_2).weight(font::WEIGHT_DISPLAY))
+        .child(small(copy::TITLEBAR_NAME, color::FG_2).weight(font::WEIGHT_DISPLAY));
+    let controls = (!mac).then(|| {
+        div()
+            .ml_auto()
+            .flex()
+            .items_center()
+            .child(window_button(
+                "instances-minimize",
+                IconName::Minimize,
+                MINIMIZE,
+                false,
+                |w, _| w.minimize_window(),
+            ))
+            .child(window_button(
+                "instances-maximize",
+                IconName::Maximize,
+                MAXIMIZE,
+                false,
+                |w, _| w.zoom_window(),
+            ))
+            .child(window_button(
+                "instances-close",
+                IconName::X,
+                CLOSE,
+                true,
+                |w, _| w.remove_window(),
+            ))
+    });
+    div()
+        .id("instances-titlebar")
+        .flex_none()
+        .w_full()
+        .h(Pixels::from(bar::H))
+        .bg(color::BG)
+        .flex()
+        .items_center()
+        .gap(Pixels::from(bar::GAP))
+        .pl(Pixels::from(manager_bar_left(mac)))
+        .pr(Pixels::from(bar::LEFT))
+        .on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
+            if e.click_count == 2 {
+                window.zoom_window();
+            } else {
+                window.start_window_move();
+            }
+        })
+        .child(menu)
+        .child(small(copy::TITLEBAR_SECTION, color::FG_2))
+        .children(controls)
+}
+
+#[cfg(test)]
+mod bar_tests {
+    /// beta.5 manager.css: the bar starts 12px in, 80px on macOS (the traffic lights at 12, 10 sit left of it).
+    #[test]
+    fn the_manager_bar_clears_the_traffic_lights() {
+        assert_eq!(super::manager_bar_left(false), 12.0);
+        assert_eq!(super::manager_bar_left(true), 80.0);
+        assert_eq!(crate::windows::MANAGER_TRAFFIC_LIGHTS, (12.0, 10.0));
     }
 }

@@ -17,7 +17,7 @@ use dilla_client::instances::Instances;
 use dilla_client::keychain::MemoryKeychain;
 use dilla_client::seams::InstanceConfig;
 use dilla_client::signin::{Owed, SignIn};
-use dilla_client::state::profile::{DensitySetting, DeviceEntry, MotionSetting};
+use dilla_client::state::profile::{DensitySetting, DeviceEntry, MotionSetting, PresenceChoice};
 use dilla_client::state::{AppState, DeviceId};
 use dilla_client::testing::host::{
     Host, PASSWORD, Person, clear_session, repo_root, sign_up, start, start_host, wait_for,
@@ -159,6 +159,54 @@ async fn profile_saves_changed_fields_and_another_device_reads_them() {
     let me = s.profile.me.clone().unwrap();
     assert_eq!(me.status_msg, "at the desk");
     assert_eq!(me.bio, "");
+}
+
+/// The user panel's status menu: the ready reads the account's presence choice (online for a new account); a choice is
+/// stored and shown; another device of the account reads it at its ready, and follows a later change live (the instance's
+/// presence frame to the account's own devices).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn presence_choice_is_stored_and_followed_by_the_other_device() {
+    let (host, mut alice) = account("us-presence").await;
+    let a = start(&alice).await;
+    wait_for(
+        &a,
+        Duration::from_secs(30),
+        "the choice read at ready",
+        |s| s.profile.presence_choice == Some(PresenceChoice::Online),
+    )
+    .await;
+    ok(a.profile().set_presence_choice(PresenceChoice::Dnd)).await;
+    wait_for(&a, Duration::from_secs(10), "the choice shown", |s| {
+        s.profile.presence_choice == Some(PresenceChoice::Dnd)
+    })
+    .await;
+
+    let (b, _) = second_device(&host, &mut alice, "us-presence").await;
+    wait_for(
+        &b,
+        Duration::from_secs(30),
+        "the second device reads the choice at its ready",
+        |s| s.profile.presence_choice == Some(PresenceChoice::Dnd),
+    )
+    .await;
+    ok(a.profile().set_presence_choice(PresenceChoice::Invisible)).await;
+    wait_for(
+        &b,
+        Duration::from_secs(30),
+        "the second device follows a change live",
+        |s| s.profile.presence_choice == Some(PresenceChoice::Invisible),
+    )
+    .await;
+    // Back to online: the instance shows the account again.
+    ok(b.profile().set_presence_choice(PresenceChoice::Online)).await;
+    wait_for(
+        &a,
+        Duration::from_secs(30),
+        "the first device follows",
+        |s| s.profile.presence_choice == Some(PresenceChoice::Online),
+    )
+    .await;
 }
 
 /// Appearance: density and reduced motion are kept in the store and read back.

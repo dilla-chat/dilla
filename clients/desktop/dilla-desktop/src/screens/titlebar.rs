@@ -3,6 +3,7 @@
 //! buttons. The bar is also the window's drag region (a press moves the window, a double click maximises it). A fixture
 //! draws the bar without the window controls, as the web client does in a browser.
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, ClickEvent, FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
     ParentElement, Pixels, StatefulInteractiveElement, Styled, Window, canvas, div,
@@ -43,14 +44,233 @@ mod css {
     pub const VOICE_PAD_X: f32 = 10.0;
     /// DesktopTitlebar.css: the window buttons are 28px with a 14px glyph; the menu button the same.
     pub const WINDOW_GLYPH: f32 = 14.0;
-    /// The macOS traffic lights sit in the bar's left corner: the brand moves right of them.
-    pub const TRAFFIC_LIGHTS: f32 = 64.0;
+    /// DesktopTitlebar.css `html[data-desktop] .d-topbar { padding-left: 46px }`: the menu button (6px in, 32px wide)
+    /// sits left of the brand.
+    pub const DESKTOP_LEFT: f32 = 46.0;
+    /// `.dw-desktop-titlebar__menu`: `top: 8px; left: 6px` (`78px` on macOS), 32x28.
+    pub const MENU_TOP: f32 = 8.0;
+    pub const MENU_LEFT: f32 = 6.0;
+    pub const MENU_LEFT_DARWIN: f32 = 78.0;
+    pub const MENU_W: f32 = 32.0;
+    pub const MENU_H: f32 = 28.0;
+    /// DesktopTitlebar.css `html[data-desktop-platform="darwin"] .d-topbar { padding-left: 112px }`: the macOS traffic
+    /// lights (at 12, 16; `crate::MAC_WINDOW_BUTTONS`) and beta.5's menu button (`left: 78px`, 32px wide) sit left of
+    /// the brand.
+    pub const DARWIN_LEFT: f32 = 112.0;
+    /// `.dw-desktop-card-close` in the compact (starting and authentication) windows: 22px, 6px in from the top right,
+    /// its glyph 14px.
+    pub const CARD_CLOSE: f32 = 22.0;
+    pub const CARD_CLOSE_INSET: f32 = 6.0;
+    /// `.dw-desktop-card-drag`: the compact windows' drag strip, `inset: 0 34px auto 0; height: 26px`.
+    pub const CARD_DRAG_H: f32 = 26.0;
+    pub const CARD_DRAG_RIGHT: f32 = 34.0;
+}
+
+/// The bar's left padding: beta.5's 112px on macOS, where the traffic lights sit in the bar, else TopBar.css's 14px. A
+/// fixture (no window controls) draws the web's bar on every platform.
+pub fn left_inset(mac: bool, controls: bool) -> f32 {
+    match (controls, mac) {
+        (false, _) => css::LEFT,
+        (true, true) => css::DARWIN_LEFT,
+        (true, false) => css::DESKTOP_LEFT,
+    }
+}
+
+/// Where the menu button sits (DesktopTitlebar.css:9-10): 6px in, 78px on macOS (right of the traffic lights); 8px down.
+pub fn menu_button_left(mac: bool) -> f32 {
+    if mac {
+        css::MENU_LEFT_DARWIN
+    } else {
+        css::MENU_LEFT
+    }
+}
+
+/// Where the menu opens (beta.5 `showWindowMenu`: `x: process.platform === 'darwin' ? 80 : 8, y: 32`).
+pub fn menu_popup_at(mac: bool) -> (f32, f32) {
+    (if mac { 80.0 } else { 8.0 }, 32.0)
+}
+
+/// The windows whose drawn title-bar menu is open, by id, with the focus the window had when it opened (the menu's
+/// Edit rows act on it).
+#[derive(Default)]
+struct WindowMenus(std::collections::HashMap<gpui::WindowId, Option<FocusHandle>>);
+
+impl gpui::Global for WindowMenus {}
+
+/// The title-bar menu of `window` is open.
+pub fn window_menu_open(window: &Window, cx: &App) -> bool {
+    cx.try_global::<WindowMenus>()
+        .is_some_and(|m| m.0.contains_key(&window.window_handle().window_id()))
+}
+
+fn set_window_menu(window: &mut Window, open: bool, cx: &mut App) -> Option<FocusHandle> {
+    let id = window.window_handle().window_id();
+    let focus = window.focused(cx);
+    let set = &mut cx.default_global::<WindowMenus>().0;
+    let before = if open {
+        set.insert(id, focus);
+        None
+    } else {
+        set.remove(&id).flatten()
+    };
+    window.refresh();
+    before
+}
+
+/// The title bar's menu button was pressed: the OS's own popup of the application menu where there is one (macOS,
+/// Windows: [`crate::native::popup_menu`]), else the drawn list ([`window_menu`]) opens or closes.
+pub(crate) fn press_window_menu(window: &mut Window, cx: &mut App) {
+    let at = menu_popup_at(cfg!(target_os = "macos"));
+    if crate::native::popup_menu::show(window, at, cx) {
+        return;
+    }
+    let open = window_menu_open(window, cx);
+    set_window_menu(window, !open, cx);
+}
+
+/// The menu's rows: the application menu's (beta.5 popped `Menu.getApplicationMenu()` up, so the button shows what the
+/// menu bar has: Dilla, Edit, View, Window), each menu under its name as a heading, a submenu's rows under its own; a
+/// disabled row (a status line) and the OS's own menus (Services) are left out. The second value holds each row's
+/// action, by the row's index (its id).
+pub fn menu_rows(
+    menus: Vec<gpui::Menu>,
+) -> (
+    Vec<dilla_desktop_ui::components::action_menu::MenuItem>,
+    Vec<Box<dyn gpui::Action>>,
+) {
+    use dilla_desktop_ui::components::action_menu::MenuItem as Row;
+    fn walk(
+        items: Vec<gpui::MenuItem>,
+        heading: Option<gpui::SharedString>,
+        rows: &mut Vec<Row>,
+        actions: &mut Vec<Box<dyn gpui::Action>>,
+    ) {
+        let mut heading = heading;
+        let mut sep = false;
+        for item in items {
+            match item {
+                gpui::MenuItem::Separator => sep = !rows.is_empty(),
+                gpui::MenuItem::Submenu(menu) => {
+                    walk(menu.items, Some(menu.name), rows, actions);
+                    sep = false;
+                }
+                gpui::MenuItem::Action {
+                    name,
+                    action,
+                    checked,
+                    disabled,
+                    ..
+                } => {
+                    if disabled {
+                        continue;
+                    }
+                    let mut row = Row::new(actions.len().to_string(), name);
+                    if checked {
+                        row = row.checked(true);
+                    }
+                    if let Some(h) = heading.take() {
+                        row = row.heading(h);
+                    } else if sep {
+                        row = row.sep();
+                    }
+                    sep = false;
+                    rows.push(row);
+                    actions.push(action);
+                }
+                _ => {}
+            }
+        }
+    }
+    let (mut rows, mut actions) = (Vec::new(), Vec::new());
+    for menu in menus {
+        walk(menu.items, Some(menu.name), &mut rows, &mut actions);
+    }
+    (rows, actions)
+}
+
+/// The title-bar menu while it is open in `window` (beta.5 `window-menu`): the application menu's rows at
+/// [`menu_popup_at`]. A row's action goes to the window, as a menu-bar choice does.
+pub fn window_menu(window: &Window, cx: &App) -> Option<gpui::AnyElement> {
+    use dilla_desktop_ui::components::action_menu::ActionMenu;
+    if !window_menu_open(window, cx) {
+        return None;
+    }
+    let (rows, actions) = menu_rows(crate::native::menus::menus(cx));
+    let (x, y) = menu_popup_at(cfg!(target_os = "macos"));
+    Some(
+        ActionMenu::new("window-menu-popup", MENU, rows)
+            .open(true)
+            .no_trigger(None)
+            .at(gpui::point(Pixels::from(x), Pixels::from(y)))
+            .on_open_change(|open, window, cx| {
+                if !open && let Some(focus) = set_window_menu(window, false, cx) {
+                    window.focus(&focus, cx);
+                }
+            })
+            .on_select(move |id, window, cx| {
+                // The row acts where the focus was when the menu opened (Edit's rows on the focused text field).
+                if let Some(focus) = set_window_menu(window, false, cx) {
+                    window.focus(&focus, cx);
+                }
+                if let Some(action) = id.parse::<usize>().ok().and_then(|i| actions.get(i)) {
+                    window.dispatch_action(action.boxed_clone(), cx);
+                }
+            })
+            .into_any_element(),
+    )
+}
+
+/// The menu button (`.dw-desktop-titlebar__menu`): 32x28, 8px down, [`menu_button_left`] in, `--fg-2` on clear, the
+/// three-line glyph (14px, 1.5 stroke on a 16 grid). It opens and closes the window's menu.
+/// Its tooltip is the window's instance (DesktopTitlebar.tsx `title={info.instance}`).
+fn menu_button(open: bool, host: gpui::SharedString) -> impl IntoElement {
+    // `M2 4h12M2 8h12M2 12h12` in a 16px box drawn at 14px: 10.5px lines, 1.3px thick, at 3.5, 7 and 10.5.
+    let scale = css::WINDOW_GLYPH / 16.0;
+    let glyph = div()
+        .relative()
+        .size(Pixels::from(css::WINDOW_GLYPH))
+        .children([4.0_f32, 8.0, 12.0].map(|y| {
+            div()
+                .absolute()
+                .left(Pixels::from(2.0 * scale))
+                .top(Pixels::from((y - 0.75) * scale))
+                .w(Pixels::from(12.0 * scale))
+                .h(Pixels::from(1.5 * scale))
+                .bg(color::FG_2)
+        }));
+    interactive(div().id("window-menu"))
+        .a11y(Role::Button, MENU)
+        .aria_expanded(open)
+        .node_props(|n| n.set_has_popup(gpui::accesskit::HasPopup::Menu))
+        .tab_index(0)
+        .absolute()
+        .top(Pixels::from(css::MENU_TOP))
+        .left(Pixels::from(menu_button_left(cfg!(target_os = "macos"))))
+        .w(Pixels::from(css::MENU_W))
+        .h(Pixels::from(css::MENU_H))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::SM)
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .hover(|s| s.bg(color::HOVER))
+        .when(!host.is_empty(), |b| {
+            b.tooltip(tooltip(host.clone(), &[]))
+                .tooltip_show_delay(SHOW_DELAY)
+        })
+        .on_click(|_: &ClickEvent, window, cx| press_window_menu(window, cx))
+        .child(glyph)
 }
 
 /// The window buttons' names (packages/web DesktopTitlebar.tsx holds them as literals; `strings.rs` has no key).
-const MINIMIZE: &str = "Minimize window";
-const MAXIMIZE: &str = "Maximize or restore window";
-const CLOSE: &str = "Close window";
+pub(crate) const MINIMIZE: &str = "Minimize window";
+pub(crate) const MAXIMIZE: &str = "Maximize or restore window";
+pub(crate) const CLOSE: &str = "Close window";
+/// The title bar's menu button (DesktopTitlebar.tsx `aria-label="Dilla menu"`).
+const MENU: &str = "Dilla menu";
+/// The compact windows' close button (DesktopTitlebar.tsx `dw-desktop-card-close`).
+const CLOSE_LOGIN: &str = "Close login window";
 
 /// The bar is the window's drag region except where the web excludes it (`button, input, a, .d-topbar__search`): an
 /// interactive child takes its own press, so a click on it is a click and not the start of a window move.
@@ -74,6 +294,10 @@ pub struct TitlebarModel {
     pub bell_focus: Option<FocusHandle>,
     /// The voice chip: where this device's call is, while it is joining or in one.
     pub voice: Option<String>,
+    /// The title-bar menu is open ([`window_menu_open`]).
+    pub menu_open: bool,
+    /// The window's instance, the menu button's tooltip (beta.5 `info.instance`).
+    pub instance: String,
 }
 
 #[derive(Clone)]
@@ -192,7 +416,7 @@ fn bell(
     wrap
 }
 
-fn window_button(
+pub(crate) fn window_button(
     id: &'static str,
     icon: IconName,
     label: &'static str,
@@ -231,23 +455,28 @@ pub fn render(
     model: &TitlebarModel,
     handlers: &TitlebarHandlers,
     reminders: Option<gpui::AnyElement>,
+    menu: Option<gpui::AnyElement>,
 ) -> impl IntoElement + use<> {
     let brand_name_line = line_height(text::XS, 1.5);
+    let mark = centred(
+        Pixels::from(css::BRAND_MARK),
+        line("D", text::XS, line_height(text::XS, 1.0), color::BRAND_INK)
+            .weight(font::WEIGHT_DISPLAY),
+    )
+    .rounded(radius::SM)
+    .bg(color::BRAND);
+    // The bar's leftmost drawing, which the macOS traffic-light clearance test keeps out of the lights.
+    #[cfg(feature = "automation")]
+    let mark = mark
+        .relative()
+        .child(crate::automation::bounds_probe("topbar-brand"));
     let brand = div()
         .flex_1()
         .min_w_0()
         .flex()
         .items_center()
         .gap(Pixels::from(css::BRAND_GAP))
-        .child(
-            centred(
-                Pixels::from(css::BRAND_MARK),
-                line("D", text::XS, line_height(text::XS, 1.0), color::BRAND_INK)
-                    .weight(font::WEIGHT_DISPLAY),
-            )
-            .rounded(radius::SM)
-            .bg(color::BRAND),
-        )
+        .child(mark)
         .child(
             line("DILLA", text::XS, brand_name_line, color::FG)
                 .weight(font::WEIGHT_DISPLAY)
@@ -404,22 +633,22 @@ pub fn render(
         .border_color(color::HAIRLINE)
         .flex()
         .items_center()
-        .pl(Pixels::from(
-            if cfg!(target_os = "macos") && model.controls {
-                css::TRAFFIC_LIGHTS
-            } else {
-                css::LEFT
-            },
-        ))
+        .pl(Pixels::from(left_inset(
+            cfg!(target_os = "macos"),
+            model.controls,
+        )))
         .pr(Pixels::from(css::RIGHT))
         .gap(Pixels::from(css::GAP))
         .child(brand)
         .child(search)
-        .child(end);
-    #[cfg(feature = "automation")]
-    let bar = bar
+        .child(end)
         .relative()
-        .child(crate::automation::bounds_probe("shell-topbar"));
+        .when(model.controls, |bar| {
+            bar.child(menu_button(model.menu_open, model.instance.clone().into()))
+                .children(menu)
+        });
+    #[cfg(feature = "automation")]
+    let bar = bar.child(crate::automation::bounds_probe("shell-topbar"));
     if model.controls {
         // The bar is the window's drag region: a press moves the window, a double click maximises it.
         return bar
@@ -433,4 +662,147 @@ pub fn render(
             .into_any_element();
     }
     bar.into_any_element()
+}
+
+/// The compact windows' own chrome (DesktopTitlebar.tsx in the `starting` and `authentication` window modes, every
+/// platform): no top bar, a 26px drag strip along the top edge (short of the close button) and the 22px close button
+/// in the top right corner. Drawn over the screen, as beta.5's fixed elements are.
+pub fn compact_chrome() -> impl IntoElement {
+    let drag = div()
+        .id("window-drag")
+        .absolute()
+        .top_0()
+        .left_0()
+        .right(Pixels::from(css::CARD_DRAG_RIGHT))
+        .h(Pixels::from(css::CARD_DRAG_H))
+        // A compact window is not maximisable (beta.5 `setMaximizable(false)`): a press moves it, a double click does
+        // nothing more.
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, window, cx| {
+            cx.stop_propagation();
+            window.start_window_move();
+        });
+    let close = interactive(div().id("window-card-close"))
+        .a11y(Role::Button, CLOSE_LOGIN)
+        .tab_index(0)
+        .absolute()
+        .top(Pixels::from(css::CARD_CLOSE_INSET))
+        .right(Pixels::from(css::CARD_CLOSE_INSET))
+        .size(Pixels::from(css::CARD_CLOSE))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::SM)
+        .cursor_pointer()
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .hover(|s| s.bg(color::HOVER))
+        .on_click(|_: &ClickEvent, window, _| window.remove_window())
+        .child(
+            Icon::new(IconName::X)
+                .size(Pixels::from(css::WINDOW_GLYPH))
+                .color(color::FG_2),
+        );
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .child(drag)
+        .child(close)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// beta.5 DesktopTitlebar.css: the macOS bar starts its brand at 112px, right of the traffic lights; elsewhere, and
+    /// in a fixture without window controls, TopBar.css's 14px.
+    #[test]
+    fn the_bar_leaves_room_for_the_traffic_lights_on_macos() {
+        assert_eq!(left_inset(true, true), 112.0);
+        assert_eq!(left_inset(true, false), 14.0);
+        assert_eq!(left_inset(false, true), 46.0);
+        assert_eq!(left_inset(false, false), 14.0);
+    }
+
+    /// DesktopTitlebar.css:9-10 and main.ts:123: the menu button at 6px (78px on macOS), its menu at (8, 32) ((80, 32)
+    /// on macOS); the brand starts 8px right of the button.
+    #[test]
+    fn the_menu_button_sits_where_beta5_put_it() {
+        assert_eq!(menu_button_left(false), 6.0);
+        assert_eq!(menu_button_left(true), 78.0);
+        assert_eq!(menu_popup_at(false), (8.0, 32.0));
+        assert_eq!(menu_popup_at(true), (80.0, 32.0));
+        // The brand clears the button: 8px after it elsewhere (6 + 32 + 8 = 46), 2px on macOS (78 + 32 + 2 = 112).
+        assert_eq!(
+            menu_button_left(false) + css::MENU_W + 8.0,
+            left_inset(false, true)
+        );
+        assert_eq!(
+            menu_button_left(true) + css::MENU_W + 2.0,
+            left_inset(true, true)
+        );
+    }
+
+    /// The menu lists the menu bar's rows under their menus' names; separators become rules, disabled rows go, and a
+    /// row's id is its action's index.
+    /// The drawn menu keeps the focus the window had when it opened, and gives it back on closing, so an Edit row acts
+    /// on the focused text field.
+    #[gpui::test]
+    fn the_drawn_menu_gives_the_focus_back(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let field = cx.focus_handle();
+            window.focus(&field, cx);
+            assert_eq!(set_window_menu(window, true, cx), None);
+            assert!(window_menu_open(window, cx));
+            let back = set_window_menu(window, false, cx);
+            assert!(
+                back.is_some_and(|h| h == field),
+                "the field's focus comes back"
+            );
+            assert!(!window_menu_open(window, cx));
+        });
+    }
+
+    #[test]
+    fn the_menu_lists_the_menu_bars_rows() {
+        use gpui::{Menu, MenuItem};
+        gpui::actions!(menu_test, [A, B, C, D]);
+        let menus = vec![
+            Menu::new("Dilla").items([
+                MenuItem::action("Your instances…", A),
+                MenuItem::separator(),
+                MenuItem::action("Status", B).disabled(true),
+                MenuItem::action("Start at login", C).checked(true),
+            ]),
+            Menu::new("Window").items([MenuItem::action("Minimize", D)]),
+        ];
+        let (rows, actions) = menu_rows(menus);
+        let labels: Vec<_> = rows.iter().map(|r| r.label.to_string()).collect();
+        assert_eq!(labels, ["Your instances…", "Start at login", "Minimize"]);
+        assert_eq!(rows[0].heading.as_deref(), Some("Dilla"));
+        assert!(rows[1].sep && rows[1].checked == Some(true));
+        assert_eq!(rows[2].heading.as_deref(), Some("Window"));
+        assert_eq!(
+            rows.iter().map(|r| r.id.to_string()).collect::<Vec<_>>(),
+            ["0", "1", "2"]
+        );
+        assert!(actions[1].partial_eq(&C));
+    }
+
+    /// beta.5 DesktopTitlebar.css: the compact windows' drag strip (`inset: 0 34px auto 0`) stops short of the close
+    /// button (22px, 6px in), so a press on the button is a click.
+    #[test]
+    fn the_compact_drag_strip_stops_short_of_the_close_button() {
+        assert_eq!(
+            (css::CARD_DRAG_RIGHT, css::CARD_DRAG_H),
+            (34.0, 26.0),
+            "the strip"
+        );
+        assert_eq!(
+            (css::CARD_CLOSE, css::CARD_CLOSE_INSET),
+            (22.0, 6.0),
+            "the button: 28px from the right edge, inside the strip's 34px gap"
+        );
+    }
 }

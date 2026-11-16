@@ -393,6 +393,44 @@ fn segmented_arrows_select_and_wrap(cx: &mut TestAppContext) {
     assert_eq!(value(&host, cx), "compact");
 }
 
+/// A click on an option chooses it, as the web's radio does (Segmented.tsx `onClick`): the pointer arrives, rests past the
+/// tooltip delay, and presses, as a person's does. The options once had only the keyboard, so a click on the invite's
+/// "Expires after" or "Uses" did nothing (Mac report, 2026-11-16).
+#[gpui::test]
+fn segmented_a_click_chooses_the_option(cx: &mut TestAppContext) {
+    install(cx);
+    let (host, cx) = cx.add_window_view(|_, cx| SegmentedHost {
+        value: "regular".into(),
+        root: cx.focus_handle(),
+    });
+    cx.run_until_parked();
+    let value = |host: &Entity<SegmentedHost>, cx: &mut VisualTestContext| {
+        host.read_with(cx, |h, _| h.value.clone())
+    };
+    for (selector, want) in [
+        ("segmented-density-cozy", "cozy"),
+        ("segmented-density-compact", "compact"),
+        // The checked option again: no change.
+        ("segmented-density-compact-checked", "compact"),
+    ] {
+        let at = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} drew"))
+            .center();
+        person_click(cx, at);
+        assert_eq!(value(&host, cx), want, "a click on {selector}");
+    }
+}
+
+/// A person's click: the pointer moves there, rests (hover styles and tooltip timers run), then presses and releases.
+fn person_click(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+    cx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    cx.simulate_click(at, gpui::Modifiers::none());
+    cx.run_until_parked();
+}
+
 // The gallery draws every component in each of its states; this draws it once with every overlay open, so a component that
 // panics on layout or paint fails here and not in front of a person.
 #[allow(dead_code)]

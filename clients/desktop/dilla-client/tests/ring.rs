@@ -892,7 +892,7 @@ mod real {
             )
             .await;
         peer.call("register", json!({})).await;
-        join_and_open(&host, &me, &client, &setup).await;
+        join_and_open(&host, &me, &client, &peer, &setup).await;
         peer.wait_for_devices(2, setup["channel_id"].as_str().unwrap())
             .await;
         let pair = Pair {
@@ -922,7 +922,17 @@ mod real {
         }
     }
 
-    pub async fn join_and_open(host: &Host, person: &Person, client: &Client, setup: &Value) {
+    /// The device joins the peer's community and opens its channel. As dms.rs's `join_and_open`: when the join lands
+    /// before the instance materialised the registered group's members, the device is proposed for an instance Add and
+    /// its external join is refused 425 `E_COMMIT_REQUIRED` until a member commits the Add; the web driver commits only
+    /// when driven, so each refusal drives the peer's sync.
+    pub async fn join_and_open(
+        host: &Host,
+        person: &Person,
+        client: &Client,
+        peer: &Peer,
+        setup: &Value,
+    ) {
         let community = hex16(setup["community_id"].as_str().unwrap());
         let channel = ChannelId(hex16(setup["channel_id"].as_str().unwrap()));
         let code = setup["invite_code"].as_str().unwrap().to_owned();
@@ -947,6 +957,11 @@ mod real {
                 Ok(()) => break,
                 Err(e) if Instant::now() < deadline => {
                     eprintln!("open retried: {e}");
+                    if matches!(&e, dilla_client::ClientError::Sync(code) if code == "E_COMMIT_REQUIRED")
+                    {
+                        peer.call("sync", json!({ "channel_id": setup["channel_id"] }))
+                            .await;
+                    }
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 Err(e) => panic!("never opened the channel: {e}"),

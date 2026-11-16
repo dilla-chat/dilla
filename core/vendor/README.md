@@ -183,7 +183,7 @@ player, wholly dilla's: `include/livekit/dilla_video_decoder.h`, `src/dilla_vide
 (`webrtc_sys::dilla_video_decoder::VideoDecoder`), built and exported from `build.rs` and `src/lib.rs`. It makes
 libwebrtc's own software decoders directly (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg H.264 on Linux and
 Windows; the macOS prebuilt's FFmpeg has no H.264, so macOS sends H.264 to the system player). VideoToolbox (macOS
-H.264/H.265, through LiveKit's `VideoDecoderFactory`) only with the crate feature `dilla-video-toolbox`
+H.264/H.265, through LiveKit's `VideoDecoderFactory`) only with the webrtc-sys feature `dilla-video-toolbox` (`cargo build -p dilla-desktop --features webrtc-sys/dilla-video-toolbox`)
 (`DILLA_VIDEO_TOOLBOX`), off by default: that path crashed the decode test on macOS CI (SIGSEGV) and waits for a
 Mac to fix it on. Teardown releases the decoder before dropping its callback, and a callback during teardown keeps
 nothing. It feeds the decoder access units Rust demuxed from the decrypted file, and converts
@@ -357,3 +357,19 @@ the window's active flag) and refreshes; `Window::a11y_tree_update` hands back t
 `#[cfg(any(test, feature = "test-support"))]` (`src/window.rs`, `src/window/a11y.rs`, `src/window/a11y/debug.rs`), so a
 release build has neither. The automation build's `a11y` command reads the tree through them and
 `clients/desktop/dilla-desktop/tests/a11y.rs` lints it per screen. Keep it until upstream's test window can be activated.
+
+A sixth change (screen readers on macOS, 2026-11-16, owner's decision D3), marked `DILLA PATCH`
+(`src/window.rs`, `src/window/a11y.rs`): a window whose AccessKit adapter activates lazily (macOS and Windows,
+`a11y::BUILDS_BEFORE_ACTIVATION`) builds its accessibility tree from the first frame and keeps each frame's whole tree
+(`A11y::keep_latest_tree`), and the activation callback hands that tree over (`a11y::tree_for_activation`) instead of
+upstream's root-only placeholder; updates still go to the adapter only once it is activated. Why: gpui-pre-macos's
+`accesskit_macos::SubclassingAdapter` activates inside the first accessibility query (VoiceOver, or an AX client such
+as System Events) and answers it from whatever the callback returned. Upstream returned the root alone and forced a
+refresh, but that frame comes later, AccessKit raises no event when it adds children under the root, and a hidden or
+occluded window (its display link stopped) draws no frame at all. On a real Mac (macOS 27, Dilla.app 0d26bf33d) every
+window's tree was therefore `AXWindow > AXGroup` with no children. Linux is unchanged (AT-SPI activates the adapter
+before any query, so the forced frame lands first) and builds nothing until then. Cost on macOS and Windows: the tree is
+built and cloned every frame even with no screen reader. Test-support hooks `Window::build_a11y_before_activation_for_test`
+and `Window::a11y_tree_for_activation`; tests `activation_hands_a_lazy_adapter_the_whole_tree` in
+`clients/desktop/dilla-desktop/tests/vendored_patches.rs` and `activation_hands_over_the_last_frames_whole_tree` in
+`src/window/a11y.rs`. Keep it until upstream's activation callback returns a full tree.

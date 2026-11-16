@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Dilla.app's Info.plist (GPUI release plan, Task 12). scripts/desktop-gpui-package-mac.sh replaces @SHORT_VERSION@
+     (X.Y.Z, the only shape CFBundleShortVersionString allows) and @BUILD_VERSION@ (the release version with
+     "-alpha." written "a", beta.5's CFBundleVersion style: 0.2.0-alpha.1 is 0.2.0a1). The bundle id and the team are
+     beta.5's, so a drag-replaced /Applications/Dilla.app keeps its macOS permissions.
+     CFBundleURLTypes registers the dilla:// scheme (beta.5's electron-builder protocols; D12 superseded 2026-11-16):
+     a click arrives as application:openURLs: (gpui's on_open_urls, native/links.rs), never as argv.
+     The usage strings are clients/desktop/dilla-desktop/src/native/permissions.rs MACOS_USAGE, which are beta.5's
+     electron-builder extendInfo word for word. Nothing here is for notifications (UNUserNotificationCenter needs no
+     key), the tray (NSStatusItem) or the autostart LaunchAgent (a file in ~/Library). The app sends no Apple Events,
+     so there is no NSAppleEventsUsageDescription. -->
+<plist version="1.0">
+  <dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>dilla-desktop</string>
+    <key>CFBundleIconFile</key>
+    <string>Dilla</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.dilla.desktop</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Dilla</string>
+    <key>CFBundleDisplayName</key>
+    <string>Dilla</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@SHORT_VERSION@</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleURLName</key>
+        <string>Dilla invite</string>
+        <key>CFBundleURLSchemes</key>
+        <array>
+          <string>dilla</string>
+        </array>
+      </dict>
+    </array>
+    <key>CFBundleVersion</key>
+    <string>@BUILD_VERSION@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.social-networking</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Dilla uses your microphone in encrypted calls.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Dilla uses your camera when you enable video in a call.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Dilla shares the screen or application you choose in a call.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Dilla connects to your chosen instance and encrypted calls on your local network.</string>
+  </dict>
+</plist>

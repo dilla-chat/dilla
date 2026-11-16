@@ -52,13 +52,15 @@ As of the screens wave 1 (2026-11-13). The Rust/GPUI desktop client in `clients/
 app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). Linux has alpha
 releases (`desktop-gpui-v0.2.0-alpha.N`: AppImage, tar.gz, deb, rpm and an AUR recipe; the packages replace an
 installed beta.5, [how to install it](docs/user/desktop.md#install-the-linux-alpha)); on macOS and Windows you build
-it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)). It does not update itself yet.
+it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)). From the first signed alpha on
+it checks for updates itself (an AppImage, the Mac app and the Windows install update in place; a package says a new
+version is available).
 It draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
 measured). What works today, screen by screen:
 
 | Screen | State |
 |---|---|
-| Shell | The server rail, the channel list with categories you can fold, the user panel, the channel header and the members aside, with a splitter between panes (widths and folded categories are kept per instance). Back and forward through the places you have been (Alt+Left, Alt+Right), the previous and next channel (Alt+Up, Alt+Down), Control/⌘+, for your settings. The boot screen, "dilla could not start" with a Try again action, a device the instance no longer accepts or whose stored key is gone explained, with Forget or Reset after a confirmation, and the offline and "this instance needs a newer app" banners. |
+| Shell | The server rail, the channel list with categories you can fold (a Bot channel and a slow-mode channel say so on their row), the user panel (click your name for your status: online, idle, do not disturb, invisible; do not disturb holds the notifications; mute and deafen beside it), the channel header and the members aside, with a splitter between panes (widths and folded categories are kept per instance). Back and forward through the places you have been (Alt+Left, Alt+Right), the previous and next channel (Alt+Up, Alt+Down), Control/⌘+, for your settings. The boot screen, "dilla could not start" with a Try again action, a device the instance no longer accepts or whose stored key is gone explained, with Forget or Reset after a confirmation, and the offline and "this instance needs a newer app" banners. |
 | Messages | Markdown and code blocks, mentions with a list as you type, edit (Up in an empty composer edits your newest message) and delete of your own messages, pin and unpin, a draft kept per channel, a failed send with its reason and retry or discard, the typing signal, slow-mode and announcement-channel notices, the timed-out notice, Page Up and Page Down in the log. A member allowed to manage messages removes someone else's message for everyone, with a reason. |
 | Threads | The reply line, the reply bar, the thread pane with its own composer, the reply count on the root (Escape closes the pane). |
 | Reactions | The reaction bar, the emoji grid from the composer and from the message toolbar, and who reacted. |
@@ -72,7 +74,7 @@ measured). What works today, screen by screen:
 | Bot | The `/` command picker with named fields and greyed commands, private results, poll cards, reminders; in the server settings, the Bot page (its card with Restart and a menu to rename, refresh or disable the Bot, capabilities, health, Bot channels, webhooks, each change behind "Confirm it is you") and the Music page (which roles may DJ), with the Now playing row in the dock. |
 | Notifications | The settings rows: the mode for the selected server and its @everyone switch, desktop notifications on this device, and one switch for the join, leave and ring sounds. Messages, mentions and rings raise operating-system notifications (a ring with Answer and Decline); a click opens the conversation. |
 | Search | The palette (Control/⌘+K or Ctrl+/) with Channels, People, Settings, Messages and Actions. Messages are found in this device's own decrypted history; the query never leaves the device. |
-| Diagnostics | Settings → Diagnostics: the connection, the slowest requests and the last 20 error codes, with Copy codes (codes only, nothing of your content). |
+| Diagnostics | Settings → Diagnostics: the connection, the slowest requests and the last 20 error codes, with Copy codes (codes only, nothing of your content). A log file for bug reports ([where it is](docs/user/desktop.md#logs); no content, keys or tokens). |
 | Onboarding | Sign-up with an invite (the account, the recovery key shown once), the second factor set-up, the done step, sign-in on a new device with the recovery key, a passkey or the instance's identity provider (in the system browser), create server, create channel (private from birth with the roles that may see it, or an announcement channel with the roles that may post), join by invite and the invite link. |
 | Second factor | Required for every account: the forced-factor screen, set-up of an authenticator app or a passkey, backup codes, and the step-up dialog. |
 | Several instances | One window and one client per instance, and the "Dilla - your instances" window to connect by address, join by invite, open or remove an instance (up to 32). |
@@ -129,9 +131,10 @@ As of 2026-10-22, in the web client:
 For the native desktop preview:
 
 - Application audio for a share on macOS and Windows, and the camera on macOS.
-- The updater, and the macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
-  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand. Until the packages register it, the
-  system does not open `dilla://invite` links in the app by itself (passing one on the command line works).
+- The macOS and Windows packages (DMG, Windows installer): build it from source there. Linux has
+  alpha packages (AppImage, tar.gz, deb, rpm, AUR recipe), installed by hand. Clicking a `dilla://invite` link opens it in the
+  app: the deb, rpm and Arch packages register the `dilla:` scheme, as do the macOS and Windows packages (an AppImage
+  only through an integration tool such as AppImageLauncher; the tar.gz does not).
 - Push to talk while another window has focus. Screen readers are supported (AccessKit).
 
 Beyond the web client: the native [desktop client](docs/user/desktop.md) has Linux alpha releases and is built from

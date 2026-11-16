@@ -1,8 +1,10 @@
 // Package desktopdownload answers /download/<platform> on a desktop-only instance
-// (`dillad serve --desktop-downloads`): it reads the desktop beta channel's signed
-// update feed from GitHub Pages, verifies it under the metadata keys the desktop app
-// pins (the former Electron shell's release-trust.json, tag desktop-v0.1.0-beta.5), and redirects to that release's asset
-// for the platform. The redirect URL is built from the verified version and the
+// (`dillad serve --desktop-downloads`): it reads one desktop channel's signed update feed
+// from GitHub Pages (`--desktop-downloads-channel`: Beta, the Electron beta.5 feed, or
+// GPUIAlpha, the native GPUI client's feed), verifies it under the metadata keys the desktop
+// app pins (the former Electron shell's release-trust.json, tag desktop-v0.1.0-beta.5), and
+// redirects to that release's asset for the platform. Both feeds are signed under the same key;
+// the document's channel field and version form keep them apart, in both directions. The redirect URL is built from the verified version and the
 // expected asset name, never taken from the feed's text; anything that does not
 // verify gets a 503 page that links to the releases page instead.
 package desktopdownload
@@ -25,12 +27,11 @@ import (
 )
 
 const (
-	// FeedURL is the beta channel's signed metadata, as the desktop updater reads it.
-	FeedURL = "https://dilla-chat.github.io/dilla/beta/desktop-beta.json"
 	// ReleasesPage is where a person goes when no verified download can be offered.
 	ReleasesPage = "https://github.com/dilla-chat/dilla/releases"
-	// downloadBase is the only host and path a redirect may point at.
-	downloadBase = "https://github.com/dilla-chat/dilla/releases/download/desktop-v"
+	// downloadBase is the only host and path a redirect may point at; the channel's tag
+	// prefix and the verified version follow it.
+	downloadBase = "https://github.com/dilla-chat/dilla/releases/download/"
 
 	maxFeedBytes      = 1 << 20
 	maxSignatureBytes = 128
@@ -39,19 +40,83 @@ const (
 	NegativeTTL = 30 * time.Second
 )
 
-// Platforms maps each /download/<platform> to the asset suffix the release workflow publishes
-// (the release feed script): dilla-<version>-<suffix>. There is no macOS Intel build.
-var Platforms = map[string]string{
-	"linux-appimage": "linux-x64.AppImage",
-	"linux-deb":      "linux-x64.deb",
-	"linux-rpm":      "linux-x64.rpm",
-	"linux-aur":      "linux-x64.aur.tar.gz",
-	"mac-arm64":      "mac-arm64.dmg",
-	"win-x64":        "win-x64.exe",
+// Channel is one desktop release line: the feed it is read from, the document channel field it
+// must carry, the release tag prefix and version form its redirects use, and the
+// /download/<platform> table, each mapped to the asset suffix the release publishes
+// (dilla-<version>-<suffix>). There is no macOS Intel build on either channel.
+type Channel struct {
+	// Name is the feed document's channel field, exactly.
+	Name string
+	// FeedURL is the channel's signed metadata; FeedURL+".sig" is its detached signature.
+	FeedURL string
+	// TagPrefix is the release tag before the version: releases/download/<TagPrefix><version>/.
+	TagPrefix string
+	// Version is the only version form the channel accepts.
+	Version *regexp.Regexp
+	// Platforms maps /download/<platform> to the asset suffix.
+	Platforms map[string]string
 }
 
 var (
-	versionPattern   = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$`)
+	// Beta is the Electron beta.5 line (`--desktop-downloads-channel=beta`, the default), read
+	// from the feed the beta.5 updater reads.
+	Beta = Channel{
+		Name:      "beta",
+		FeedURL:   "https://dilla-chat.github.io/dilla/beta/desktop-beta.json",
+		TagPrefix: "desktop-v",
+		Version:   regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$`),
+		Platforms: map[string]string{
+			"linux-appimage": "linux-x64.AppImage",
+			"linux-deb":      "linux-x64.deb",
+			"linux-rpm":      "linux-x64.rpm",
+			"linux-aur":      "linux-x64.aur.tar.gz",
+			"mac-arm64":      "mac-arm64.dmg",
+			"win-x64":        "win-x64.exe",
+		},
+	}
+	// GPUIAlpha is the native GPUI client's alpha line (`--desktop-downloads-channel=gpui-alpha`):
+	// tags desktop-gpui-v<version>, documents with channel "alpha" (scripts/desktop-gpui-feed.mjs),
+	// beta's platforms plus the Linux tarball, and the Inno Setup installer on Windows.
+	GPUIAlpha = Channel{
+		Name:      "alpha",
+		FeedURL:   "https://dilla-chat.github.io/dilla/gpui-alpha/desktop-gpui-alpha.json",
+		TagPrefix: "desktop-gpui-v",
+		Version:   regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.(0|[1-9][0-9]*)$`),
+		Platforms: map[string]string{
+			"linux-appimage": "linux-x64.AppImage",
+			"linux-deb":      "linux-x64.deb",
+			"linux-rpm":      "linux-x64.rpm",
+			"linux-aur":      "linux-x64.aur.tar.gz",
+			"linux-tar":      "linux-x64.tar.gz",
+			"mac-arm64":      "mac-arm64.dmg",
+			"win-x64":        "win-x64-setup.exe",
+		},
+	}
+)
+
+// ChannelNamed returns the channel a `--desktop-downloads-channel` value selects: beta or
+// gpui-alpha. The flag names the release line; the channel's Name is the feed's own field, so
+// gpui-alpha reads documents marked "alpha".
+func ChannelNamed(flag string) (Channel, error) {
+	switch flag {
+	case "beta":
+		return Beta, nil
+	case "gpui-alpha":
+		return GPUIAlpha, nil
+	}
+	return Channel{}, fmt.Errorf("unknown desktop download channel %q (want beta or gpui-alpha)", flag)
+}
+
+// orBeta is the channel itself, or Beta for the zero Channel, so a zero Options behaves as it
+// did before channels existed.
+func (ch Channel) orBeta() Channel {
+	if ch.Name == "" {
+		return Beta
+	}
+	return ch
+}
+
+var (
 	signaturePattern = regexp.MustCompile(`^[A-Za-z0-9+/]{86}==$`)
 	timePattern      = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$`)
 )
@@ -60,6 +125,7 @@ var (
 type Feed struct {
 	Version   string
 	ExpiresAt time.Time
+	channel   Channel
 	assets    map[string]int
 }
 
@@ -75,9 +141,11 @@ type document struct {
 }
 
 // Verify checks the detached Ed25519 signature (base64, one optional trailing newline) over the
-// exact feed bytes under any of keys, then the document: format 1, the beta channel, a beta
-// version, a publication not in the future and an expiry after now, at most 93 days after it.
-func Verify(feed, signature []byte, keys []ed25519.PublicKey, now time.Time) (Feed, error) {
+// exact feed bytes under any of keys, then the document: format 1, ch's channel field, ch's
+// version form, a publication not in the future and an expiry after now, at most 93 days after
+// it. The zero Channel is Beta.
+func Verify(ch Channel, feed, signature []byte, keys []ed25519.PublicKey, now time.Time) (Feed, error) {
+	ch = ch.orBeta()
 	if len(keys) == 0 {
 		return Feed{}, errors.New("no pinned desktop metadata key")
 	}
@@ -106,8 +174,8 @@ func Verify(feed, signature []byte, keys []ed25519.PublicKey, now time.Time) (Fe
 	if err := json.Unmarshal(feed, &doc); err != nil {
 		return Feed{}, fmt.Errorf("feed document: %w", err)
 	}
-	if doc.Format != 1 || doc.Channel != "beta" || !versionPattern.MatchString(doc.Version) {
-		return Feed{}, errors.New("feed format, channel or version is not a beta release")
+	if doc.Format != 1 || doc.Channel != ch.Name || !ch.Version.MatchString(doc.Version) {
+		return Feed{}, fmt.Errorf("feed format, channel or version is not a %s release", ch.Name)
 	}
 	published, err := parseUTC(doc.PublishedAt)
 	if err != nil {
@@ -120,7 +188,7 @@ func Verify(feed, signature []byte, keys []ed25519.PublicKey, now time.Time) (Fe
 	if published.After(now.Add(5*time.Minute)) || !expires.After(now) || !expires.After(published) || expires.Sub(published) > 93*24*time.Hour {
 		return Feed{}, errors.New("feed is expired or its dates are invalid")
 	}
-	f := Feed{Version: doc.Version, ExpiresAt: expires, assets: map[string]int{}}
+	f := Feed{Version: doc.Version, ExpiresAt: expires, channel: ch, assets: map[string]int{}}
 	for _, a := range doc.Assets {
 		f.assets[a.Name]++
 	}
@@ -138,25 +206,29 @@ func parseUTC(value string) (time.Time, error) {
 	return t, nil
 }
 
-// AssetURL is the release download for platform: dilla-<version>-<suffix> under
-// desktop-v<version>, when the verified feed lists exactly that asset once.
+// AssetURL is the release download for platform: dilla-<version>-<suffix> under the verified
+// channel's <TagPrefix><version>, when the verified feed lists exactly that asset once.
 func (f Feed) AssetURL(platform string) (string, error) {
-	suffix, ok := Platforms[platform]
+	ch := f.channel.orBeta()
+	suffix, ok := ch.Platforms[platform]
 	if !ok {
 		return "", errors.New("unknown platform")
 	}
-	if !versionPattern.MatchString(f.Version) {
+	if !ch.Version.MatchString(f.Version) {
 		return "", errors.New("unverified version")
 	}
 	name := "dilla-" + f.Version + "-" + suffix
 	if f.assets[name] != 1 {
 		return "", fmt.Errorf("the feed does not list %s exactly once", name)
 	}
-	return downloadBase + f.Version + "/" + name, nil
+	return downloadBase + ch.TagPrefix + f.Version + "/" + name, nil
 }
 
-// Options configure a Handler; the zero value reads FeedURL under the pinned keys.
+// Options configure a Handler; the zero value reads Beta's feed under the pinned keys.
 type Options struct {
+	// Channel is the release line served; the zero value is Beta.
+	Channel Channel
+	// FeedURL replaces the channel's FeedURL (tests).
 	FeedURL string
 	Client  *http.Client
 	Keys    []ed25519.PublicKey
@@ -165,6 +237,7 @@ type Options struct {
 
 // Handler serves GET /download/{platform}.
 type Handler struct {
+	channel Channel
 	feedURL string
 	client  *http.Client
 	keys    []ed25519.PublicKey
@@ -178,9 +251,9 @@ type Handler struct {
 
 // New returns a Handler over the channel feed.
 func New(o Options) *Handler {
-	h := &Handler{feedURL: o.FeedURL, client: o.Client, keys: o.Keys, now: o.Now}
+	h := &Handler{channel: o.Channel.orBeta(), feedURL: o.FeedURL, client: o.Client, keys: o.Keys, now: o.Now}
 	if h.feedURL == "" {
-		h.feedURL = FeedURL
+		h.feedURL = h.channel.FeedURL
 	}
 	if h.client == nil {
 		h.client = &http.Client{Timeout: 10 * time.Second}
@@ -200,7 +273,7 @@ func New(o Options) *Handler {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	platform := r.PathValue("platform")
-	if _, ok := Platforms[platform]; !ok {
+	if _, ok := h.channel.Platforms[platform]; !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -251,7 +324,7 @@ func (h *Handler) fetch(ctx context.Context, now time.Time) (Feed, error) {
 	if err != nil {
 		return Feed{}, err
 	}
-	return Verify(feed, sig, h.keys, now)
+	return Verify(h.channel, feed, sig, h.keys, now)
 }
 
 func (h *Handler) get(ctx context.Context, url string, limit int64) ([]byte, error) {

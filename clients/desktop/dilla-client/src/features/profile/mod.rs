@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 
 use crate::client::{Client, ClientError, Inner};
 use crate::state::profile::{
-    DensitySetting, KEY_DENSITY, KEY_REDUCE_MOTION, MotionSetting, MyProfile,
+    DensitySetting, KEY_DENSITY, KEY_REDUCE_MOTION, MotionSetting, MyProfile, PresenceChoice,
 };
 use crate::sync::api::{ApiError, try_core};
 use crate::sync::value::{self, at_least, text as text_of};
@@ -114,19 +114,83 @@ pub(crate) fn decode_me(raw: &[u8]) -> Result<MyProfile, ApiError> {
     })
 }
 
+/// `GET /v1/accounts/me` index 6, the account's presence choice (routes.ts `getAccountMe`: `a.length > 6 ? a[6] : 1`).
+pub(crate) fn decode_presence_choice(raw: &[u8]) -> Result<PresenceChoice, ApiError> {
+    let fail = |e: value::DecodeError| ApiError::local(0, "E_DECODE", e.0);
+    let v = value::decode(raw).map_err(fail)?;
+    let a = at_least(&v, 5).map_err(fail)?;
+    Ok(match a.get(6) {
+        Some(v) => PresenceChoice::of_wire(value::u53(v).map_err(fail)?),
+        None => PresenceChoice::Online,
+    })
+}
+
+/// Applies a read presence choice unless a choice was sent since the read began (controller.ts
+/// `refreshPresenceChoice`: a write in flight or landed wins over an older read).
+fn apply_read_choice(s: &mut crate::state::AppState, writes: u64, choice: PresenceChoice) {
+    if s.profile.presence_writes == writes {
+        s.profile.presence_choice = Some(choice);
+    }
+}
+
+/// controller.ts `refreshPresenceChoice`: reads the account's presence choice into the slice (at each ready, and when the
+/// instance tells this account's devices its presence changed). A failure keeps what is held: the next ready reads again.
+pub(crate) fn refresh_presence_choice(inner: &Arc<Inner>) {
+    let reading = inner.clone();
+    drop(inner.spawn(async move {
+        let writes = reading.snapshot().profile.presence_writes;
+        let raw = reading.api().get_account_me().await.map_err(refusal)?;
+        let choice = decode_presence_choice(&raw).map_err(refusal)?;
+        reading.publish(move |s| apply_read_choice(s, writes, choice));
+        Ok(())
+    }));
+}
+
 impl Profile {
-    /// Reads the account's profile from the instance into the slice.
+    /// Reads the account's profile (and its presence choice) from the instance into the slice.
     pub fn load(&self) -> oneshot::Receiver<Result<(), ClientError>> {
         let inner = self.inner.clone();
         self.inner.spawn(async move {
-            let saves = inner.snapshot().profile.saves;
+            let snapshot = inner.snapshot();
+            let (saves, writes) = (snapshot.profile.saves, snapshot.profile.presence_writes);
+            drop(snapshot);
             let raw = inner.api().get_account_me().await.map_err(refusal)?;
             let me = decode_me(&raw).map_err(refusal)?;
+            let choice = decode_presence_choice(&raw).map_err(refusal)?;
             inner.publish(move |s| {
                 // A profile saved while this read was in flight is newer than what the read saw: keep the saved text.
                 // Otherwise the read replaces the whole profile (a partial one included).
                 if s.profile.saves == saves || s.profile.me.is_none() {
                     s.profile.me = Some(me);
+                }
+                apply_read_choice(s, writes, choice);
+            });
+            Ok(())
+        })
+    }
+
+    /// controller.ts `setPresenceChoice`: sends the account's presence choice (the user panel's status menu) and shows it
+    /// once the instance took it, unless another choice was sent meanwhile. A refusal leaves the held choice as it was.
+    pub fn set_presence_choice(
+        &self,
+        choice: PresenceChoice,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            let (tx, rx) = oneshot::channel();
+            inner.publish(move |s| {
+                s.profile.presence_writes += 1;
+                let _ = tx.send(s.profile.presence_writes);
+            });
+            let write = rx.await.unwrap_or(0);
+            inner
+                .api()
+                .set_presence_choice(choice.wire())
+                .await
+                .map_err(refusal)?;
+            inner.publish(move |s| {
+                if s.profile.presence_writes == write {
+                    s.profile.presence_choice = Some(choice);
                 }
             });
             Ok(())
@@ -263,6 +327,54 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn me_with(choice: Option<u64>) -> Vec<u8> {
+        let mut e = dilla_core::cbor::Encoder::new();
+        e.array(if choice.is_some() { 9 } else { 5 });
+        e.bytes(&[1; 16]).text("ada").text("Ada").uint(0).uint(0);
+        if let Some(c) = choice {
+            e.uint(0).uint(c).text("").text("");
+        }
+        e.into_vec()
+    }
+
+    #[test]
+    fn the_presence_choice_is_index_six_and_online_when_absent_or_unknown() {
+        assert_eq!(
+            decode_presence_choice(&me_with(Some(3))).unwrap(),
+            PresenceChoice::Dnd
+        );
+        assert_eq!(
+            decode_presence_choice(&me_with(Some(4))).unwrap(),
+            PresenceChoice::Invisible
+        );
+        assert_eq!(
+            decode_presence_choice(&me_with(None)).unwrap(),
+            PresenceChoice::Online
+        );
+        assert_eq!(
+            decode_presence_choice(&me_with(Some(9))).unwrap(),
+            PresenceChoice::Online
+        );
+        for c in PresenceChoice::ALL {
+            assert_eq!(PresenceChoice::of_wire(u64::from(c.wire())), c);
+            assert_eq!(PresenceChoice::from_id(c.id()), Some(c));
+        }
+    }
+
+    #[test]
+    fn a_read_that_began_before_a_choice_was_sent_is_not_applied() {
+        let mut s = crate::state::AppState::default();
+        apply_read_choice(&mut s, 0, PresenceChoice::Idle);
+        assert_eq!(s.profile.presence_choice, Some(PresenceChoice::Idle));
+        s.profile.presence_writes = 1;
+        apply_read_choice(&mut s, 0, PresenceChoice::Online);
+        assert_eq!(
+            s.profile.presence_choice,
+            Some(PresenceChoice::Idle),
+            "the older read lost"
+        );
+    }
 
     #[test]
     fn appearance_reads_the_two_settings_and_defaults_the_rest() {

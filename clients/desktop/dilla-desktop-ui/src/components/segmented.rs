@@ -107,6 +107,7 @@ impl RenderOnce for Segmented {
         let (disabled, on_change) = (self.disabled, self.on_change);
         let group_values: Vec<SharedString> = self.options.iter().map(|(v, _)| v.clone()).collect();
         let group_handles = handles.clone();
+        let key_change = on_change.clone();
         let mut group = div()
             .id(self.id.clone())
             .role(Role::RadioGroup)
@@ -134,13 +135,16 @@ impl RenderOnce for Segmented {
             }
             group_handles[next].focus(window, cx);
             if next != from
-                && let Some(on_change) = &on_change
+                && let Some(on_change) = &key_change
             {
                 on_change(&group_values[next], window, cx);
             }
         });
         for (i, (value, label)) in self.options.iter().enumerate() {
             let checked = *value == self.value;
+            // Segmented.tsx: a click chooses the option (`onClick={() => { if (!disabled) onChange(o.value); }}`); the
+            // press itself focuses it, as a browser focuses a clicked button.
+            let (on_click, picked) = (on_change.clone(), value.clone());
             let fg = if checked {
                 color::ACCENT_INK
             } else {
@@ -170,7 +174,24 @@ impl RenderOnce for Segmented {
                     line_height(text::BTN, 1.5),
                     fg,
                 ))
-                .children(self.option_child.as_ref().and_then(|f| f(value)));
+                .children(self.option_child.as_ref().and_then(|f| f(value)))
+                // Tests find an option by `segmented-<group>-<value>`, and the checked one by its `-checked` suffix.
+                .debug_selector({
+                    let selector = format!(
+                        "segmented-{}-{value}{}",
+                        self.id,
+                        if checked { "-checked" } else { "" }
+                    );
+                    move || selector.clone()
+                })
+                .on_click(move |_, window, cx| {
+                    if disabled {
+                        return;
+                    }
+                    if let Some(on_change) = &on_click {
+                        on_change(&picked, window, cx);
+                    }
+                });
             option = if disabled {
                 option.cursor_not_allowed().opacity(OPACITY_MUTED)
             } else if checked {

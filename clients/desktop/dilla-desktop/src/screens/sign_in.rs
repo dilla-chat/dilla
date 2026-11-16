@@ -962,7 +962,7 @@ impl SignInView {
 }
 
 impl Render for SignInView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let instance = self.instance_name();
         let total: u8 = if self.shown == Shown::Login || self.factor_shown {
             4
@@ -1287,7 +1287,7 @@ impl Render for SignInView {
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .size_full()
-            .child(frame.render())
+            .child(frame.render(window, cx))
     }
 }
 

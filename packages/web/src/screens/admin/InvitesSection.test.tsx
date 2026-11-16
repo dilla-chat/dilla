@@ -7,7 +7,35 @@ import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { en } from '../../strings/index.ts';
-import { InvitesSection } from './InvitesSection.tsx';
+import { InvitesSection, inTime } from './InvitesSection.tsx';
+
+describe('inTime (rounded to the nearest, as the desktop says it)', () => {
+  const at = (s: number) => s * 1000;
+  it('keeps a new link at its whole expiry: a 7-day link reads 7 days, not 6, a minute later', () => {
+    expect(inTime(604_800, at(60))).toBe('in 7 days');
+    expect(inTime(604_800, at(1))).toBe('in 7 days');
+    expect(inTime(604_800, at(43_199))).toBe('in 7 days');
+    expect(inTime(604_800, at(43_201))).toBe('in 6 days');
+  });
+  it('says a count that rounds up to the next unit in that unit', () => {
+    expect(inTime(86_399, at(0))).toBe('in 1 day');
+    expect(inTime(23 * 3600 + 40 * 60, at(0))).toBe('in 1 day');
+    expect(inTime(3599, at(0))).toBe('in 1 hour');
+    expect(inTime(90 * 60, at(0))).toBe('in 2 hours');
+  });
+  it('never counts up as time passes over the first week', () => {
+    const rank = (s: string) => {
+      const n = Number(s.split(' ')[1] ?? 1) || 1;
+      return s.includes('day') ? n * 86_400 : s.includes('hour') ? n * 3600 : n * 60;
+    };
+    let last = Infinity;
+    for (let now = 0; now < 604_800; now += 97) {
+      const r = rank(inTime(604_800, at(now)));
+      expect(r).toBeLessThanOrEqual(last);
+      last = r;
+    }
+  });
+});
 
 const SERVER = 'a1'.repeat(16);
 const BOB = '28'.repeat(16);

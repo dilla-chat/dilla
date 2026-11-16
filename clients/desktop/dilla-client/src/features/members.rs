@@ -69,6 +69,127 @@ impl Members {
     }
 }
 
+impl Members {
+    /// Tells the instance the person is here (op 57 `presence.activity`, gateway.ts `sendPresenceActivity`): the
+    /// instance shows an account idle once none of its devices reported input for 10 minutes (gateway presence.go), so
+    /// a client that never reports shows its own person idle while they use it. Sent only while connected; the caller
+    /// throttles ([`ActivityThrottle`]). Whether the frame went out.
+    pub fn presence_activity(&self) -> bool {
+        if self.inner.snapshot().connection.status != crate::state::ConnectionStatus::Online {
+            return false;
+        }
+        let frame = Frame {
+            op: crate::gateway::frames::Op::PRESENCE_ACTIVITY,
+            n: 0,
+            group_id: None,
+            payload: Vec::new(),
+        };
+        let Ok(bytes) = crate::gateway::frames::encode(&frame) else {
+            return false;
+        };
+        self.inner.engine().send_gateway_frame(bytes)
+    }
+}
+
+/// The presence the members views show for `user` in `community`. Anyone else: the instance's snapshot (op 48). This
+/// account: its own presence choice, the one the user panel shows (`ProfileState::presence_choice`), so the panel and
+/// the list never disagree, even before the instance's next presence frame: do not disturb and idle as chosen,
+/// invisible as others see it (offline), and online as online unless the instance says idle (no input for 10 minutes,
+/// gateway presence.go's auto-idle). With no choice read yet, the snapshot.
+pub fn shown_presence(
+    state: &crate::state::AppState,
+    community: CommunityId,
+    user: UserId,
+) -> Presence {
+    use crate::state::profile::PresenceChoice;
+    let snapshot = state.people.presence_of(community, user);
+    if state.account.user_id != Some(user) {
+        return snapshot;
+    }
+    match state.profile.presence_choice {
+        None => snapshot,
+        Some(PresenceChoice::Invisible) => Presence::Offline,
+        Some(PresenceChoice::Dnd) => Presence::Dnd,
+        Some(PresenceChoice::Idle) => Presence::Idle,
+        Some(PresenceChoice::Online) if snapshot == Presence::Idle => Presence::Idle,
+        Some(PresenceChoice::Online) => Presence::Online,
+    }
+}
+
+/// App.tsx's activity sampling: one report per 5 s of input at most (gateway.ts keeps the same 5 s).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ActivityThrottle {
+    last: Option<std::time::Instant>,
+}
+
+impl ActivityThrottle {
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Whether input at `now` is reported (and, if so, `now` is the last report).
+    pub fn due(&mut self, now: std::time::Instant) -> bool {
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < Self::EVERY)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::ActivityThrottle;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn your_own_row_follows_your_choice_and_auto_idle() {
+        use super::shown_presence;
+        use crate::state::members::Presence;
+        use crate::state::profile::PresenceChoice;
+        use crate::state::{AppState, CommunityId, UserId};
+        let (c, me, ada) = (CommunityId([1; 16]), UserId([2; 16]), UserId([3; 16]));
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        let snapshot = |s: &mut AppState, mine: Presence| {
+            s.people
+                .presence
+                .insert(c, [(me, mine), (ada, Presence::Idle)].into_iter().collect());
+        };
+        // The panel says online (the choice); the instance's snapshot says idle only after 10 minutes without input.
+        snapshot(&mut s, Presence::Online);
+        s.profile.presence_choice = Some(PresenceChoice::Online);
+        assert_eq!(shown_presence(&s, c, me), Presence::Online);
+        snapshot(&mut s, Presence::Idle);
+        assert_eq!(shown_presence(&s, c, me), Presence::Idle, "auto-idle");
+        // A choice made here shows at once, before the instance's next presence frame.
+        snapshot(&mut s, Presence::Online);
+        s.profile.presence_choice = Some(PresenceChoice::Dnd);
+        assert_eq!(shown_presence(&s, c, me), Presence::Dnd);
+        s.profile.presence_choice = Some(PresenceChoice::Idle);
+        assert_eq!(shown_presence(&s, c, me), Presence::Idle);
+        s.profile.presence_choice = Some(PresenceChoice::Invisible);
+        assert_eq!(shown_presence(&s, c, me), Presence::Offline);
+        // No choice read yet: the snapshot. Anyone else: always the snapshot.
+        s.profile.presence_choice = None;
+        assert_eq!(shown_presence(&s, c, me), Presence::Online);
+        s.profile.presence_choice = Some(PresenceChoice::Dnd);
+        assert_eq!(shown_presence(&s, c, ada), Presence::Idle);
+    }
+
+    #[test]
+    fn input_is_reported_at_most_every_five_seconds() {
+        let t0 = Instant::now();
+        let mut t = ActivityThrottle::default();
+        assert!(t.due(t0), "the first input is reported");
+        assert!(!t.due(t0 + Duration::from_secs(1)));
+        assert!(!t.due(t0 + Duration::from_millis(4_999)));
+        assert!(t.due(t0 + Duration::from_secs(5)));
+        assert!(!t.due(t0 + Duration::from_secs(6)));
+    }
+}
+
 impl AreaFrames for Members {
     /// controller.ts `incomingPresence`: `[user_id, status]`, status 0..=3; anything else is ignored. A community whose
     /// presence is not read yet reads it whole.
@@ -85,6 +206,11 @@ impl AreaFrames for Members {
         };
         let user = UserId(user);
         let s = inner.snapshot();
+        // controller.ts `incomingPresence`: this account's own presence changed (a choice made on another device, or
+        // here): its choice is read again.
+        if s.account.user_id == Some(user) {
+            crate::features::profile::refresh_presence_choice(inner);
+        }
         let mut unread = Vec::new();
         for c in &s.communities {
             if !s
@@ -164,6 +290,18 @@ pub fn member_name(m: &Member) -> &str {
     } else {
         &m.display
     }
+}
+
+/// bot-name.ts `installationBotName` without its fallback: the community's own Bot (`bot_user`, never another Bot of the
+/// community) by its member row's name, the display name its managers set with `PATCH /bot/profile`, else its username.
+/// `None` while the Bot or its row is unknown or nameless (the caller shows its own fallback).
+pub fn installation_bot_name(members: Option<&[Member]>, bot_user: Option<UserId>) -> Option<&str> {
+    let user = bot_user?;
+    members?
+        .iter()
+        .find(|m| m.user_id == user)
+        .map(member_name)
+        .filter(|n| !n.is_empty())
 }
 
 /// `localeCompare` as the web sorts names: case and accents only break ties.

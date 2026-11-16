@@ -9,3 +9,4 @@ Terminal=false
 StartupWMClass=dev.dilla.desktop
 Categories=Network;InstantMessaging;Chat;
 Keywords=messaging;voice;video;encrypted;
+MimeType=x-scheme-handler/dilla;

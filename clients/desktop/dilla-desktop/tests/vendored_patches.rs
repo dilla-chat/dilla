@@ -512,6 +512,51 @@ fn the_scene_carries_the_scale_it_was_painted_at(cx: &mut TestAppContext) {
     assert_eq!(painted, scale);
 }
 
+/// A window with one named button, as the instances picker's Continue is.
+struct Labelled;
+
+impl Render for Labelled {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui::InteractiveElement as _;
+        use gpui::StatefulInteractiveElement as _;
+        div().size_full().child(
+            div()
+                .id("continue")
+                .size(px(40.0))
+                .role(gpui::Role::Button)
+                .aria_label("Continue"),
+        )
+    }
+}
+
+/// The sixth change (core/vendor/README.md, "gpui-pre 0.3.12"): a macOS window's AccessKit adapter activates inside the
+/// first accessibility query and answers it with what the activation callback hands over. Upstream handed over the
+/// root alone, so VoiceOver and an AX walker saw the window as one empty AXGroup. A window that builds before
+/// activation (macOS, Windows) hands over the last frame's whole tree, its button included.
+#[gpui::test]
+fn activation_hands_a_lazy_adapter_the_whole_tree(cx: &mut TestAppContext) {
+    let (_, vcx) = cx.add_window_view(|_, _| Labelled);
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    // A window that waits for activation (Linux, and upstream everywhere) has only the root to hand over. On macOS and
+    // Windows the patch builds from the first frame by default, so there the tree already holds the button.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let upstream = vcx.update(|window, _| window.a11y_tree_for_activation());
+        assert_eq!(upstream.nodes.len(), 1, "the root alone: {upstream:?}");
+    }
+
+    vcx.update(|window, _| window.build_a11y_before_activation_for_test());
+    vcx.run_until_parked();
+    let handed = vcx.update(|window, _| window.a11y_tree_for_activation());
+    let button = handed
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == gpui::Role::Button)
+        .map(|(_, node)| node.label().map(str::to_owned));
+    assert_eq!(button, Some(Some("Continue".to_owned())), "{handed:?}");
+}
+
 /// A focusable box with a click that handles Escape on key-down itself (stopping propagation, as a dialog's or a
 /// popover's own Escape does).
 struct EscapeGuard {

@@ -12,7 +12,8 @@ use image::RgbaImage;
 use crate::fixture::{self, LoadedFixture, Step};
 use crate::{
     Driver, ElementInfo, Os, ParityFailure, Rect, TextMask, assert_parity_masked_with,
-    chrome_difference_pct, tolerance_for,
+    chrome_difference_pct, colour_difference_pct, tolerance_for, tolerance_for_screen,
+    whole_difference_pct,
 };
 
 /// Device pixels the mask grows every reported line box by. Measured (`text_fringe_is_the_measured_reach_of_glyphs`):
@@ -20,6 +21,46 @@ use crate::{
 /// for the other renderer: Chromium's anti-aliasing of the reference glyphs, which the chrome gate must not read as
 /// chrome. The test fails if GPUI's glyphs ever reach past it. The one number of the mask, so no screen picks its own.
 pub const TEXT_FRINGE_PX: f32 = 2.0;
+
+/// Set, `assert_screen_with` prints a [`measure_line`] for the frame and skips the comparison: the macOS CI plan's
+/// measurement run (gpui-proofs.yml `mac-parity-measure`), which picks an OS's tolerances. Test support only: no CI gate
+/// may set it (desktop-gpui.yml never does).
+pub const MEASURE_VAR: &str = "DILLA_PARITY_MEASURE";
+
+/// The deltas a measurement scores the whole-frame and chrome gates at, beside the Linux ones (64 and 16), in case an
+/// OS's anti-aliasing needs a wider delta.
+const MEASURE_WHOLE_DELTAS: [u8; 3] = [64, 96, 128];
+const MEASURE_CHROME_DELTAS: [u8; 2] = [16, 24];
+
+/// One `MEASURE` line: `label`'s frame scored against `reference` the way each gate scores it, at the Linux deltas
+/// (`whole` at 64, `chrome` at 16, `colour` at 2 within 2 px) and at the wider ones (`whole96`, `whole128`, `chrome24`).
+pub fn measure_line(
+    label: &str,
+    shot: &RgbaImage,
+    reference: &RgbaImage,
+    mask: &TextMask,
+) -> Result<String, ParityFailure> {
+    let linux = tolerance_for(Os::Linux)?;
+    let whole: Vec<f64> = MEASURE_WHOLE_DELTAS
+        .iter()
+        .map(|d| whole_difference_pct(shot, reference, *d))
+        .collect::<Result<_, _>>()?;
+    let chrome: Vec<f64> = MEASURE_CHROME_DELTAS
+        .iter()
+        .map(|d| chrome_difference_pct(shot, reference, *d, mask))
+        .collect::<Result<_, _>>()?;
+    let colour = colour_difference_pct(
+        shot,
+        reference,
+        linux.colour_max_delta,
+        linux.colour_radius,
+        mask,
+    )?;
+    Ok(format!(
+        "MEASURE {label} whole={:.4} chrome={:.4} colour={:.4} whole96={:.4} whole128={:.4} chrome24={:.4}",
+        whole[0], chrome[0], colour, whole[1], whole[2], chrome[1]
+    ))
+}
 
 /// The headless platform renders at scale 2.0 (`dilla-desktop/src/automation.rs`).
 const SCALE: f32 = 2.0;
@@ -112,7 +153,7 @@ pub fn assert_screen_with(
             fixture,
         ));
     }
-    let tolerance = tolerance_for(os)?;
+    let tolerance = tolerance_for_screen(os, &loaded.fixture.name)?;
     let mut driver = Driver::launch_fixture(fixture, loaded.shot_path.as_deref(), env);
     let (shot, mask, text_lines, fixture_line) = capture(&mut driver, &loaded);
     let out = crate::target_dir().join("screen-parity");
@@ -122,10 +163,29 @@ pub fn assert_screen_with(
     ));
     std::fs::create_dir_all(&out).expect("the screen-parity directory");
     shot.save(&shot_path).expect("the shot is saved");
-    assert_parity_masked_with(&shot, &loaded.reference, tolerance, &mask)?;
     let reference = image::open(&loaded.reference)
         .map_err(|e| fixture_failure(e.to_string(), &loaded.reference))?
         .to_rgba8();
+    if std::env::var_os(MEASURE_VAR).is_some() {
+        println!(
+            "{}",
+            measure_line(&loaded.fixture.name, &shot, &reference, &mask)?
+        );
+        return Ok(ScreenReport {
+            name: loaded.fixture.name.clone(),
+            digest: loaded.digest.clone(),
+            fixture_line,
+            text_lines,
+            chrome_pct: chrome_difference_pct(
+                &shot,
+                &reference,
+                tolerance.chrome_max_delta,
+                &mask,
+            )?,
+            shot: shot_path,
+        });
+    }
+    assert_parity_masked_with(&shot, &loaded.reference, tolerance, &mask)?;
     let chrome_pct = chrome_difference_pct(&shot, &reference, tolerance.chrome_max_delta, &mask)?;
     Ok(ScreenReport {
         name: loaded.fixture.name.clone(),

@@ -13,7 +13,7 @@ workspace = true
 [features]
 # Test-only automation interface (src/automation.rs): a headless window driven over stdin/stdout, with
 # screenshots. It needs GPUI's test-support renderer, so release builds never enable it.
-automation = ["test-hooks", "dep:serde", "dep:serde_json", "dilla-client/testing", "gpui/test-support", "gpui-platform/test-support"]
+automation = ["test-hooks", "dilla-client/testing", "gpui/test-support", "gpui-platform/test-support"]
 # The AppView hooks the tests drive (review M6: `forget_from_forced` signs out and wipes, so release builds do not have
 # it). The crate's own tests turn it on through the dev-dependency on itself below.
 test-hooks = []
@@ -35,9 +35,16 @@ log = "0.4"
 # Message times in the local zone (already in the lock through gpui-component).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-# The automation build's channel-view fixture (src/fixture.rs).
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1.0.151", optional = true }
+# The automation build's channel-view fixture (src/fixture.rs), and the updater's feed document (src/updater/feed.rs).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+# The updater (release plan Task 14b, src/updater/): the feed's Ed25519 signature, the assets' SHA-512 and the version
+# order. All already in the lock (dilla-core's ed25519-dalek 3.0 and its sha2 0.11).
+ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize"] }
+sha2 = "0.11"
+semver = "1.0.28"
+# The updater's feed and downloads, on the HTTP client dilla-client uses (already in the lock).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 # Wave 0/1 (plan R1), declared by Task 1 so Cargo.lock is settled once:
 # - Task 6's format.rs follows the OS locale;
 # - Task 12's inline audio (Jonas 2026-11-12: symphonia + rodio, no FFmpeg).
@@ -79,9 +86,12 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 # Printing on macOS (src/print.rs): AppKit's print operation, run on the main thread. All already in the lock (through
 # GPUI's macOS platform and cpal).
 [target.'cfg(target_os = "macos")'.dependencies]
+# On macOS the text system is behind `font-kit`: without it gpui-pre-macos installs `NoopTextSystem` and draws no glyph
+# at all (only a log warning says so). The dilla-MacBook check of #174 found exactly that: boxes and borders, no text.
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["font-kit"] }
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSData", "NSGeometry", "NSObject", "NSString"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSControl", "NSDockTile", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow"] }
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 # The deallocator block of the NSData that owns the printed copy (already in the lock through objc2-foundation).
 block2 = "0.6.2"
@@ -90,12 +100,22 @@ block2 = "0.6.2"
 # Linux backends (Linux uses ksni above).
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon = { version = "0.26.1", default-features = false }
+# The window's NSView (src/native/window_buttons.rs: the traffic lights per window mode) and its NSView or HWND
+# (src/native/popup_menu.rs: the title bar's native menu) from GPUI's window handle. Already in the lock (through GPUI's
+# platforms).
+raw-window-handle = "0.6"
 
 # Printing on Windows (src/print.rs): the system's print dialog and GDI. Already in the lock. The parity plan's
 # Package 6 (native/single_instance.rs: the handover's named pipe) adds Security, Storage_FileSystem, System_IO and
 # System_Pipes; Package 7 (native/permissions.rs: the privacy settings) adds System_Registry.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Xps", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
+
+# The video player's parity shots run in their own `main` on the main thread (GPUI's macOS platform requires it).
+[[test]]
+name = "video_player_shot"
+harness = false
+required-features = ["automation"]
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }

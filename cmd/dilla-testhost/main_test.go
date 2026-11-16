@@ -64,6 +64,32 @@ func TestASFUHostWithAWebRootNamesItsListenerAsTheLiveKitURL(t *testing.T) {
 	}
 }
 
+// macOS CI plan: a TLS listener (-rtc-tls-*) is the LiveKit URL over wss://, with or without a web root, and only with
+// an SFU; its three flags go together.
+func TestARTCTLSListenerIsTheLiveKitURLOverWSS(t *testing.T) {
+	dir := t.TempDir()
+	tlsArgs := []string{"-rtc-tls-listen", "127.0.0.1:8482", "-rtc-tls-cert", "c.pem", "-rtc-tls-key", "k.pem"}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{append([]string{"-listen", "127.0.0.1:8481", "-sfu", "-web-root", dir}, tlsArgs...), "wss://127.0.0.1:8482"},
+		{append([]string{"-listen", "127.0.0.1:8481", "-sfu"}, tlsArgs...), "wss://127.0.0.1:8482"},
+		{append([]string{"-listen", "127.0.0.1:8481"}, tlsArgs...), ""},
+	} {
+		o, err := parseFlags(c.args)
+		if err != nil {
+			t.Fatalf("parseFlags %v: %v", c.args, err)
+		}
+		if got := o.hostOptions("/data", "/core.wasm", "").LiveKitURL; got != c.want {
+			t.Errorf("%v: LiveKitURL = %q, want %q", c.args, got, c.want)
+		}
+	}
+	if _, err := parseFlags([]string{"-sfu", "-rtc-tls-listen", "127.0.0.1:8482"}); err == nil {
+		t.Error("-rtc-tls-listen without its certificate and key must be refused")
+	}
+}
+
 // Task-10 fix review N3: -sfu-departure-timeout reaches the host options; absent, it is zero (the
 // instance default).
 func TestTheSFUDepartureTimeoutFlagReachesTheHostOptions(t *testing.T) {

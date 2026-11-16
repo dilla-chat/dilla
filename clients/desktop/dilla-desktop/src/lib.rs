@@ -10,6 +10,7 @@ pub mod fixture;
 pub mod format;
 pub mod fullscreen;
 pub mod keys;
+pub mod logging;
 pub mod native;
 pub mod per_window;
 pub mod print;
@@ -18,6 +19,7 @@ pub mod router;
 pub mod screens;
 pub mod slots;
 pub mod strings;
+pub mod updater;
 pub mod windows;
 
 use dilla_client::prefs::Prefs;
@@ -26,7 +28,7 @@ use gpui::{
     WindowOptions, div, point, prelude::*, px, size,
 };
 use screens::shell::window::{
-    SavedBounds, Screen, WORKSPACE_MIN, WindowMode, restore_bounds, window_shape,
+    SavedBounds, Screen, WORKSPACE_MIN, WindowMode, opening_mode, restore_bounds, window_shape,
 };
 
 pub use app::{AppView, Launch};
@@ -114,13 +116,11 @@ pub fn open_main_window(cx: &mut App) -> Result<WindowHandle<AppView>> {
     open_main_window_with(cx, Launch::os())
 }
 
-/// Opens the main window for `launch`: a shipping launch starts in the start shape, any other at `launch.window`.
+/// Opens the main window for `launch`: a shipping launch in [`opening_mode`]'s shape, any other at `launch.window`.
 pub fn open_main_window_with(cx: &mut App, launch: Launch) -> Result<WindowHandle<AppView>> {
-    let mode = match (launch.shipping, launch.handoff.is_some()) {
-        (false, _) => None,
-        (true, true) => Some(WindowMode::Workspace),
-        (true, false) => Some(WindowMode::Starting),
-    };
+    let mode = launch
+        .shipping
+        .then(|| opening_mode(launch.handoff.is_some(), has_store(&launch)));
     match mode {
         Some(mode) => open_window_in(cx, launch, mode),
         None => {
@@ -133,6 +133,24 @@ pub fn open_main_window_with(cx: &mut App, launch: Launch) -> Result<WindowHandl
             })
         }
     }
+}
+
+/// Whether the instance this launch opens (its `instance`, else the first listed, as `AppView::new` picks it) has a
+/// store on disk: without one there is no account to start, only the sign-up or the sign-in.
+fn has_store(launch: &Launch) -> bool {
+    let Some(list) = launch
+        .root
+        .as_deref()
+        .filter(|_| launch.resume)
+        .and_then(|root| dilla_client::instances::Instances::load(root).ok())
+    else {
+        return false;
+    };
+    let cfg = match launch.instance {
+        Some(id) => list.get(id),
+        None => list.list().first(),
+    };
+    cfg.is_some_and(|cfg| cfg.data_dir.join(dilla_client::store::DB_FILE).exists())
 }
 
 /// The height of the largest display's work area, logical px (1080 where the platform names no display).
@@ -175,13 +193,38 @@ pub fn open_window_in(
     let options = window_options_for(mode, bounds);
     cx.open_window(options, |window, cx| {
         window.set_window_title(PRODUCT_NAME);
+        native::window_buttons::apply(window, mode);
         cx.new(|cx| AppView::new(launch, window, cx))
     })
 }
 
+/// beta.5 `setWindowButtonPosition({ x: 12, y: 16 })`: where the macOS traffic lights sit in the workspace's top bar,
+/// logical px from the window's top left.
+pub const MAC_WINDOW_BUTTONS: (f32, f32) = (12.0, 16.0);
+
+/// The rect macOS draws the workspace window's three traffic lights in, logical px from the window's top left
+/// (`x, y, width, height`): GPUI puts the close button's frame at [`MAC_WINDOW_BUTTONS`] and the other two after it
+/// (gpui-pre-macos `move_traffic_light`). AppKit's button frames are 14x16 pt, 6 pt apart, around 12 pt circles 8 pt
+/// apart; the rect is the frames' union (54x16), a superset of the circles (52x12). Nothing of the top bar may be drawn
+/// in it (`macos_header_clears_the_traffic_lights`, dilla-parity tests/harness.rs).
+pub const MAC_TRAFFIC_LIGHTS: (f32, f32, f32, f32) = (
+    MAC_WINDOW_BUTTONS.0,
+    MAC_WINDOW_BUTTONS.1,
+    3.0 * 14.0 + 2.0 * 6.0,
+    16.0,
+);
+
+/// The macOS traffic lights of a window in `mode` (beta.5 `setWindowMode`, main.ts:138): at [`MAC_WINDOW_BUTTONS`] in
+/// the workspace, hidden (`None`) in the compact windows, which draw their own close button. Pure; the native side is
+/// [`native::window_buttons::apply`].
+pub fn mac_window_buttons(mode: WindowMode) -> Option<(f32, f32)> {
+    (mode == WindowMode::Workspace).then_some(MAC_WINDOW_BUTTONS)
+}
+
 /// The options of the shipping window in `mode` at `bounds`: the shape's minimum size (the workspace cannot be resized
-/// below 900x600; the compact windows are fixed), and the app's own title bar (no OS frame where the window can be drawn
-/// without one; macOS keeps its traffic lights, inset into the bar).
+/// below 900x600; the compact windows are fixed, and on macOS not zoomable either, as beta.5's `setMaximizable`), and
+/// the app's own title bar (no OS frame where the window can be drawn without one; macOS keeps its traffic lights in the
+/// workspace, inset into the bar at [`MAC_WINDOW_BUTTONS`], and hides them in the compact windows).
 pub fn window_options_for(mode: WindowMode, bounds: Bounds<Pixels>) -> WindowOptions {
     let shape = window_shape(mode, None, bounds.size.height.into());
     let mut options = main_window_options(bounds);
@@ -191,7 +234,8 @@ pub fn window_options_for(mode: WindowMode, bounds: Bounds<Pixels>) -> WindowOpt
         titlebar.appears_transparent = true;
         #[cfg(target_os = "macos")]
         {
-            titlebar.traffic_light_position = Some(point(px(18.0), px(14.0)));
+            titlebar.traffic_light_position =
+                mac_window_buttons(mode).map(|(x, y)| point(px(x), px(y)));
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -239,6 +283,68 @@ mod tests {
             show_toast_in(None, "everywhere", cx);
             assert_eq!(current_in(b, cx).as_deref(), Some("everywhere"));
         });
+    }
+
+    /// beta.5 DesktopTitlebar.css:24-26: the full-window card is drawn in the window the app marks as its
+    /// authentication window, and only there.
+    #[gpui::test]
+    fn the_full_window_card_follows_the_windows_mark(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop_ui::components::onboarding::frame::{desktop_window, set_desktop_window};
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            assert!(
+                !desktop_window(window, cx),
+                "a fixture draws the web's card"
+            );
+            set_desktop_window(window, true, cx);
+            assert!(desktop_window(window, cx));
+        });
+        let b = cx.add_empty_window();
+        b.update(|window, cx| assert!(!desktop_window(window, cx), "another window"));
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            set_desktop_window(window, true, cx);
+            set_desktop_window(window, false, cx);
+            assert!(!desktop_window(window, cx), "the workspace drops the mark");
+        });
+    }
+
+    /// beta.5 `startDesktopWindowLayout` + `windowShape`: the authentication window is as tall as its card (rounded up,
+    /// 160 to 1600), at least 220 and at most the work area less 80.
+    #[test]
+    fn the_authentication_window_fits_its_card() {
+        use crate::app::card_window_height;
+        use crate::screens::shell::window::{WindowMode, window_shape};
+        assert_eq!(card_window_height(412.3), 413.0);
+        assert_eq!(card_window_height(90.0), 160.0);
+        assert_eq!(card_window_height(4000.0), 1600.0);
+        let fit = |card: f32, work: f32| {
+            window_shape(
+                WindowMode::Authentication,
+                Some(card_window_height(card)),
+                work,
+            )
+            .height
+        };
+        assert_eq!(fit(412.3, 1080.0), 413.0);
+        assert_eq!(fit(150.0, 1080.0), 220.0);
+        assert_eq!(fit(1200.0, 900.0), 820.0);
+    }
+
+    /// A card notes its height per window; the same height again changes nothing.
+    #[gpui::test]
+    fn a_card_notes_its_height_per_window(cx: &mut gpui::TestAppContext) {
+        use dilla_desktop_ui::components::onboarding::frame::{
+            desktop_card_height, note_card_height,
+        };
+        let a = cx.add_empty_window();
+        a.update(|window, cx| {
+            assert_eq!(desktop_card_height(window, cx), None);
+            note_card_height(window, 431.5, cx);
+            assert_eq!(desktop_card_height(window, cx), Some(431.5));
+        });
+        let b = cx.add_empty_window();
+        b.update(|window, cx| assert_eq!(desktop_card_height(window, cx), None));
     }
 
     #[gpui::test]

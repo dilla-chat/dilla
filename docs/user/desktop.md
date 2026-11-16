@@ -2,7 +2,8 @@
 
 The desktop client is the native Rust/GPUI program in `clients/desktop`. On Linux it is released as an **alpha**
 (`desktop-gpui-v0.2.0-alpha.N`): an AppImage, a tar.gz, a deb, an rpm and an AUR recipe, [installed by
-hand](#install-the-linux-alpha). It does not update itself yet. On macOS and Windows it is built from source. Keep
+hand](#install-the-linux-alpha). From the first signed alpha on it checks for updates itself (the tray's "Check for
+updates"). On macOS and Windows it is built from source. Keep
 using the browser client or the [mobile app](mobile.md) for everyday use.
 
 **The Electron desktop app is discontinued.** Its last release is `desktop-v0.1.0-beta.5`. A copy you already
@@ -16,7 +17,7 @@ server's `/desktop-auth` routes; an older instance cannot take them, and the app
 
 The native client is written in Rust with the GPUI toolkit (`clients/desktop`) and draws the Signal screens at pixel
 parity with the web client on Linux. On Linux you install an alpha release; on macOS and Windows you build it from
-source. It has no updater yet. The list of what works, screen by screen, is in the
+source. The list of what works, screen by screen, is in the
 [README](../../README.md#the-native-desktop-client-gpui).
 
 ![The native client: Midgard Crew with the channel list, a conversation in #general and the members](screenshots/gpui-shell-conversation.png)
@@ -68,9 +69,32 @@ emoji need the Noto Color Emoji font.
 Arch recipe provides and conflicts with `dilla`), so installing one replaces an installed beta.5 in place. Beta's
 files in `/opt/Dilla` are removed (an rpm upgrade can leave its empty folders behind). Beta's app data stays on disk
 but is not used, and nothing deletes it. The native app is a **new device** on your account (see below), so keep
-another signed-in device and your recovery key at hand. `dilla://` invite links stop opening the app until the native
-app handles them; join with the address and the invite code instead. An AppImage or tar.gz runs beside an installed
+another signed-in device and your recovery key at hand. Clicking a `dilla://` invite link opens the native app, as it
+did in beta (the deb, rpm and Arch packages register
+the scheme). An AppImage or tar.gz runs beside an installed
 beta.
+
+### Install on macOS and Windows
+
+From the first signed alpha on, the same release also carries:
+
+| System | File | Install |
+|---|---|---|
+| macOS 13 or newer, Apple silicon | `dilla-<v>-mac-arm64.dmg` | Open it and drag **Dilla** to Applications. It is signed and notarized by Apple. |
+| Windows 10 or 11, x64 | `dilla-<v>-win-x64-setup.exe` | Run it. It installs for your user only, into `%LOCALAPPDATA%\Programs\Dilla`, with no administrator prompt. |
+
+The Windows installer is **not code-signed** during the alpha, so Windows SmartScreen says "Windows protected your
+PC". Choose **More info**, check that the App line names the file you downloaded (the publisher shows as unknown), then
+**Run anyway**.
+
+**Upgrading from Dilla beta (the Electron app).**
+- **Windows:** the installer removes an installed beta.5 for you first, keeping its app data, which the new app does
+  not use.
+- **macOS:** beta.5 is `dilla-desktop.app` in Applications, and the new app is `Dilla.app`, so dragging it in leaves
+  beta.5 beside it. Move `dilla-desktop.app` to the Bin. Both have the same bundle id and signer, so the microphone and
+  camera permissions you gave beta should carry over; macOS may ask for screen recording again.
+
+As on Linux, the native app is a **new device** on your account.
 
 ### Build and run it
 
@@ -80,7 +104,8 @@ development packages (the list is in `.github/workflows/desktop-gpui.yml`). From
 ```sh
 # Linux
 CC=clang-21 CXX=clang++-21 cargo run -p dilla-desktop
-# macOS: nothing extra
+# macOS: Xcode with its Metal Toolchain (a separate download in recent Xcode versions, needed once)
+xcodebuild -downloadComponent MetalToolchain
 cargo run -p dilla-desktop
 # Windows (PowerShell): libwebrtc uses the static MSVC runtime
 $env:RUSTFLAGS="-C target-feature=+crt-static"; cargo run -p dilla-desktop
@@ -89,7 +114,22 @@ $env:RUSTFLAGS="-C target-feature=+crt-static"; cargo run -p dilla-desktop
 The first window is "Dilla - your instances". Type the instance's address (HTTPS) to connect, or paste an invite to
 join, then sign in or sign up. Each instance gets its own window; `--instance=<n>` opens only instance `n` (a second
 copy of the app on another instance, beside the first), and a debug build accepts `--allow-loopback` for an
-`http://localhost` test instance. Per-OS build notes are in `clients/desktop/README.md`.
+`http://localhost` test instance. Per-OS build notes are in `clients/desktop/README.md`. The Invite link field takes
+the link the instance shows under Server settings → Invites (`https://<instance>/i/<code>`) as well as a
+`dilla://invite/<host>/<code>` link.
+
+**A second profile (a testing aid).** To run two separate clients on one machine (two accounts talking to each
+other, or CI), start the second with `DILLA_DATA_DIR` set to an absolute folder of its own:
+
+```sh
+DILLA_DATA_DIR="$HOME/dilla-profile-b" dilla-desktop
+```
+
+Everything of a profile lives in its folder: the instance list, the stores, the lock that keeps one app per profile
+and the socket a second launch hands over through, so the two run side by side and a second launch reaches only its
+own profile's app. The database keys stay in the operating system's keychain, named by each profile's own install id,
+so the two profiles never share a key. A relative path is refused (the app says it cannot store anything); unset or
+empty, the usual data folder is used.
 
 The client keeps its data apart from the browser and from any installed Electron app. Like them, it is a **new device** on your
 account: sign in, complete your second factor, then enrol it with your saved 52-character recovery key. Messages sent
@@ -99,9 +139,10 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 
 - It is one native program: no embedded browser, no web worker, no bundled web client. The store, the keys (in the
   operating system's keychain) and the end-to-end encryption run in the same process.
-- One window and one client per instance. Closing a window keeps its client running until you remove the instance or
+- One window and one client per instance. Opening an instance from "Dilla - your instances" closes that window (the
+  instance's window replaces it); "Your instances…" in the tray or the app menu brings it back. Closing a window keeps its client running until you remove the instance or
   quit the app; opening the instance again shows a new window on the running client.
-- One app for all instances: starting Dilla again brings the running app forward, and a `dilla://invite/<host>/<code>`
+- One app for all instances (per profile): starting Dilla again brings the running app forward, and a `dilla://invite/<host>/<code>`
   link opens that instance's join step (an instance you have not added yet is asked about first).
 - Quitting during a call, or with files waiting to be sent or text typed in the last moment, asks first ("Quit
   Dilla?"). Drafts are kept per channel across restarts. A microphone the operating system blocks joins calls
@@ -114,6 +155,24 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 - Message search runs on this device's own decrypted history, as in the browser.
 - The screens are drawn, not laid out by a browser, so the keyboard works through the app's own focus order
   (Tab and Shift+Tab) and its own shortcuts, below.
+
+### Logs
+
+When something fails (a call that does not join, an update that does not apply), the app's log says why. It is a
+plain text file, also printed to the terminal when Dilla runs from one:
+
+| System | Log file |
+|---|---|
+| macOS | `~/Library/Logs/Dilla/dilla-desktop.log` (Console.app lists it under Log Reports) |
+| Linux | `$XDG_STATE_HOME/dilla/dilla-desktop.log`, usually `~/.local/state/dilla/dilla-desktop.log` |
+| Windows | `%LOCALAPPDATA%\Dilla\logs\dilla-desktop.log` |
+
+At about 5 MiB the file moves to `dilla-desktop.log.1` (the one before that is deleted). By default it holds warnings
+and errors, and Dilla's own progress notes. For more, start the app with `RUST_LOG` set, for example
+`RUST_LOG=debug` or `RUST_LOG=warn,dilla=debug,livekit=info` (a level, or `name=level` pairs separated by commas; a
+name matches every module whose name starts with it). On macOS, quit Dilla and run
+`open --env RUST_LOG=debug /Applications/Dilla.app`. The log never contains message text, keys, tokens,
+passwords or recovery codes, so you can attach it to a bug report.
 
 ### Keyboard shortcuts
 
@@ -152,13 +211,23 @@ the updater and packaging.
   Dilla"), close to tray, the unread count (the tray's tooltip; the dock badge on macOS; the launcher badge on KDE and
   Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
   extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
-  builds only. There is no menu button in the title bar yet; F11 (Control-⌘-F on macOS) toggles full screen.
-- **Deep links:** `dilla://invite/...` opens in the app when it is on the command line (or reaches a running app
-  through a second launch, which hands everything over and exits), but the system does not send such links to the app
-  until the installers register the `dilla:` scheme.
-- **Updater and packaging:** no automatic update: download each new alpha from its release. Linux has an AppImage,
-  a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR); macOS and Windows have no DMG or
-  installer yet, so build from source there.
+  builds only. The ☰ button at the left of the title bar (and of "Dilla - your instances") opens the app menu (the system's own menu on macOS and Windows); F11 (Control-⌘-F on macOS) toggles full screen. On macOS
+  the Dilla menu also has About Dilla, Settings… (⌘,), Services, Hide Dilla (⌘H), Hide Others (⌥⌘H), Show All and Quit
+  Dilla (⌘Q, which asks first during a call as above); Window has Minimize (⌘M) and Bring All to Front. The sign-in and
+  sign-up windows are moved by their top edge and closed with the × in their top-right corner, on every system.
+- **Deep links:** clicking a `dilla://invite/...` link opens it in Dilla, started if it is not running: the deb, rpm
+  and Arch packages register the `dilla:` scheme in the desktop entry, the macOS app in its Info.plist (the link
+  reaches a running app as an open-URL event) and the Windows installer per user in the registry (removed on
+  uninstall). A second launch hands the link to the running app and exits. An AppImage registers it only through an
+  integration tool such as AppImageLauncher or appimaged; the tar.gz does not register it. Passing the link on the
+  command line works everywhere.
+- **Updater and packaging:** from the first signed alpha on, the app checks its signed update feed at start, every 6
+  hours and on the tray's "Check for updates". An AppImage, the macOS app in a folder you can write to and the Windows
+  per-user install download the update, check it (the feed's signature, the file's size and SHA-512, and on macOS the
+  Developer ID signature) and offer "Restart to update"; the restart asks first when a call or unsent text would be
+  lost. A deb, rpm, AUR or tar.gz install only says that a new version is available: update it with your package
+  manager or from the release page. An alpha before the first signed one does not check: download the next alpha by
+  hand. Linux has an AppImage, a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR).
 - **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
   and macOS the system's own dialog chooses). A share's sound comes from one application (the share menu's sound
   section) on Linux only; macOS and Windows shares carry no sound yet. The camera works on Linux and Windows, not yet

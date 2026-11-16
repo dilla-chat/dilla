@@ -15,7 +15,9 @@ pub const MEMBERS_PAGE: usize = 200;
 pub struct Member {
     pub user_id: UserId,
     pub username: String,
-    /// The server nickname when set, else the account's display name.
+    /// The account's display name (controller.ts `members:` rows: `display: m.display`). The member row's server
+    /// nickname is not shown: the web never reads it, and the managed Bot's nick stays the "Dilla Bot" it was enrolled
+    /// with while its name (`PATCH /bot/profile`) is the account's display.
     pub display: String,
     /// 0 a person, 1 a Bot.
     pub kind: u8,
@@ -30,7 +32,7 @@ pub(crate) fn decode_members(raw: &[u8]) -> Result<Vec<Member>, DecodeError> {
         .iter()
         .map(|row| {
             let a = at_least(row, 7)?;
-            let nick = text(&a[2])?;
+            text(&a[2])?; // the nickname: checked, not shown (the web's `members:` rows carry `display` only)
             let role_ids = match &a[3] {
                 crate::gateway::frames::Value::Null => Vec::new(),
                 v => v
@@ -49,7 +51,7 @@ pub(crate) fn decode_members(raw: &[u8]) -> Result<Vec<Member>, DecodeError> {
             Ok(Member {
                 user_id: UserId(bin16(&a[0])?),
                 username: text(&a[4])?,
-                display: if nick.is_empty() { display } else { nick },
+                display,
                 kind,
                 role_ids,
                 status_msg: a.get(7).map(text).transpose()?.unwrap_or_default(),
@@ -116,5 +118,43 @@ impl PeopleState {
             .and_then(|m| m.get(&user))
             .copied()
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::frames::Value;
+
+    fn row(nick: &str, username: &str, display: &str, kind: u64) -> Value {
+        Value::Array(vec![
+            Value::Bytes(vec![7; 16]),
+            Value::Uint(1),
+            Value::Text(nick.into()),
+            Value::Null,
+            Value::Text(username.into()),
+            Value::Text(display.into()),
+            Value::Uint(kind),
+        ])
+    }
+
+    /// The community renamed its Bot to "Mr. Kim" (`PATCH /bot/profile` sets the account's display); the member row's
+    /// nick is still the enrolled "Dilla Bot". The web shows "Mr. Kim", so the desktop does too.
+    #[test]
+    fn a_renamed_bot_shows_its_profile_name_not_the_enrolled_nick() {
+        let raw = Value::Array(vec![row("Dilla Bot", "bot-abc", "Mr. Kim", 1)]).encode();
+        let members = decode_members(&raw).unwrap();
+        assert_eq!(members[0].display, "Mr. Kim");
+        assert_eq!(members[0].kind, 1);
+    }
+
+    /// A person's row: the account's display, whatever the nick holds.
+    #[test]
+    fn a_member_shows_the_account_display_name() {
+        let raw = Value::Array(vec![row("nick", "ada", "Ada", 0), row("", "bo", "", 0)]).encode();
+        let members = decode_members(&raw).unwrap();
+        assert_eq!(members[0].display, "Ada");
+        assert_eq!(members[1].display, "");
+        assert_eq!(members[1].username, "bo");
     }
 }

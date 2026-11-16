@@ -434,6 +434,38 @@ Two directives are absent on purpose, and each has a comment in the unit:
 Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 (`RestartPreventExitStatus=78`), so read `journalctl -u dilla`, fix the file and start it again.
 
+### Desktop downloads: `--desktop-downloads` and `--desktop-downloads-channel`
+
+`dillad serve --desktop-downloads` (off by default) shows browser visitors the Download Dilla page, and
+`/download/<platform>` redirects to the current desktop release. dillad reads the channel's signed feed from GitHub
+Pages and its `.sig`, and verifies the Ed25519 signature under the metadata key it pins. It checks the feed's
+`channel` field, version form and expiry. The redirect is built from the verified version and goes only to
+`github.com/dilla-chat/dilla/releases/download/<tag>/`. A feed that does not verify gets a 503 page that links to
+the releases page.
+
+`--desktop-downloads-channel` picks the release line. It has an effect only with `--desktop-downloads`, but its
+value is checked either way:
+
+| Value | Feed | Feed `channel` | Release tag | Platforms |
+|---|---|---|---|---|
+| `beta` (default) | `https://dilla-chat.github.io/dilla/beta/desktop-beta.json` | `beta` | `desktop-v<X.Y.Z-beta.N>` | `linux-appimage`, `linux-deb`, `linux-rpm`, `linux-aur`, `mac-arm64`, `win-x64` (`…-win-x64.exe`) |
+| `gpui-alpha` | `https://dilla-chat.github.io/dilla/gpui-alpha/desktop-gpui-alpha.json` | `alpha` | `desktop-gpui-v<X.Y.Z-alpha.N>` | the same, plus `linux-tar` (`…-linux-x64.tar.gz`); `win-x64` is `…-win-x64-setup.exe` |
+
+Both feeds are signed with the same key. The `channel` field and the version form keep them apart, so a `gpui-alpha`
+server never serves a beta document, and a `beta` server never serves a GPUI one. An unknown value stops `serve`
+at startup with a usage error (exit 2, and no fallback to `beta`). Exit 2 is not in `RestartPreventExitStatus`, so
+check `journalctl -u dilla` after changing the flag. To switch an instance to the native GPUI client, add the flag
+to `ExecStart` with `systemctl edit dilla` and restart. The empty `ExecStart=` clears the unit's own line first:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/dillad serve --config=%E/dilla/dilla.toml --desktop-downloads --desktop-downloads-channel=gpui-alpha
+```
+
+Switch only after the GPUI feed is live (the first signed GPUI release). Until then every `/download/<platform>`
+answers 503.
+
 ### Install script
 
 `deploy/install.sh` does everything in this section on a Debian 13 machine, LXC container or VM, as

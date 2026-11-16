@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Hardened runtime entitlements of the native Dilla.app (GPUI release plan, Task 12). Under the hardened runtime a
+         Developer ID build is asked for the microphone and the camera only with these (the usage strings in
+         Info.plist say why). Screen capture needs no entitlement.
+         Deliberately absent, unlike beta.5's Electron entitlements: allow-jit and allow-unsigned-executable-memory
+         (V8's; this Rust binary generates no code at run time and links no JIT or scripting engine) and disable-library-validation (it loaded Sparkle and fixtures signed by another
+         team; this app is one signed executable and loads no plug-ins or frameworks). -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+  </dict>
+</plist>

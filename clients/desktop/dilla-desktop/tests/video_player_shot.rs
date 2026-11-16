@@ -3,8 +3,10 @@
 //! in the same 480 x 270 frame (parity/references/linux/attachments/video-player-ready-2x.png, shot by the script
 //! beside it). It writes the GPUI shot and a difference image to `target/parity-video/` for review.
 //!
-//! Run: `cargo test -p dilla-desktop --features automation --test video_player_shot`.
-#![cfg(feature = "automation")]
+//! Run: `cargo test -p dilla-desktop --features automation --test video_player_shot`. A `harness = false` target
+//! (Cargo.toml): GPUI's macOS platform must be created on the main thread, and libtest runs every test on a thread of its
+//! own ("Mac platform not created on main thread", gpui-proofs run 43838350768), so `main` runs both checks itself, on
+//! Linux (lavapipe) and macOS (Metal), against the same Chromium references.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -158,8 +160,6 @@ fn compare(shot: &image::RgbaImage, reference: &image::RgbaImage, name: &str) ->
     share
 }
 
-#[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "the reference is Linux only")]
 fn the_ready_video_matches_chromium_s_player() {
     let (p, duration) = picture_at_three_seconds();
     let shot = shoot(view(&p, duration, false));
@@ -172,8 +172,6 @@ fn the_ready_video_matches_chromium_s_player() {
 
 /// The ⋮ menu open, against Chromium's overflow menu opened from the same button: the same three items in the app's
 /// own menu (Signal style), so the menu's own box differs by design; everything around it matches as above.
-#[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "the reference is Linux only")]
 fn the_more_menu_opens_with_chromium_s_three_items() {
     let (p, duration) = picture_at_three_seconds();
     let closed = shoot(view(&p, duration, false));
@@ -191,4 +189,15 @@ fn the_more_menu_opens_with_chromium_s_three_items() {
     );
     // 14.5 % on the reference machine: nearly all of it the menu box itself (Chromium's is white, the app's dark).
     assert!(share < 0.2, "{:.2} % differ", share * 100.0);
+}
+
+fn main() {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        println!("video_player_shot: skipped, the headless renderer is Linux and macOS only");
+        return;
+    }
+    the_ready_video_matches_chromium_s_player();
+    println!("test the_ready_video_matches_chromium_s_player ... ok");
+    the_more_menu_opens_with_chromium_s_three_items();
+    println!("test the_more_menu_opens_with_chromium_s_three_items ... ok");
 }

@@ -1460,6 +1460,10 @@ export function checkMobileReleaseWorkflow(root) {
  * Without them the real-server tests would be ignored everywhere and nothing would say so.
  */
 export const GPUI_PINNED_STEPS = {
+  // The macOS CI plan, Task 3: the parity screens and the video player through Metal on the gpui job's macOS leg.
+  macParity: ['# The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the', '# Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run', '# above builds dilla-desktop\'s test files without the automation interface, so they hold no test there.', '- name: Run the parity screens (macOS)', '  if: runner.os == \'macOS\' && !cancelled()', '  shell: bash', '  run: |', '    cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_', '    cargo test -p dilla-desktop --features automation --locked --test video_player_shot'].join('\n'),
+  // The macOS CI plan's addendum: the nightly VideoToolbox decode check (known SIGSEGV, red until fixed).
+  macVideoToolbox: ['# VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV', '# (core/vendor/README.md): nightly only, and red until that is fixed.', '- name: Decode with VideoToolbox (macOS, nightly)', '  if: runner.os == \'macOS\' && github.event_name == \'schedule\' && !cancelled()', '  shell: bash', '  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order'].join('\n'),
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
   // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
   strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
@@ -1577,10 +1581,55 @@ export const GPUI_PINNED_STEPS = {
     '    # The Bot music timing tests (G3) are latency budgets: measured one at a time, not beside a Bot restart or a browser call.',
     '    cargo test -p dilla-media --test call --locked -- --ignored --exact --test-threads=1 bot_play_from_enter_to_first_audio_frame_meets_g3 bot_next_queued_track_gap_is_under_150_ms bot_repeated_track_starts_within_500_ms_at_p95 a_new_device_uses_play_within_its_first_session',
   ].join('\n'),
+  // macOS CI plan (2026-11-16), Task 4 and D-D: a real CoreAudio default input and output for the macOS call tests, the
+  // runner's own when present, else BlackHole 2ch pinned by SHA-256.
+  macAudio: [
+    '- name: A sound device for the call tests (macOS)',
+    "  if: runner.os == 'macOS' && !cancelled()",
+    '  shell: bash',
+    '  env:',
+    '    BLACKHOLE_URL: https://existential.audio/downloads/BlackHole2ch-0.7.1.pkg',
+    '    BLACKHOLE_SHA256: 57b540f27a3e29c37e310e01bee0fdfab76733087e47f997ef9dccf851400dcf',
+    '  run: |',
+    '    swiftc -O scripts/mac-audio-devices.swift -o "$RUNNER_TEMP/mac-audio-devices"',
+    "    both() { grep -q '^default-input ' <<<\"$1\" && grep -q '^default-output ' <<<\"$1\"; }",
+    '    list="$("$RUNNER_TEMP/mac-audio-devices")"',
+    '    echo "$list"',
+    '    if both "$list"; then echo "the runner\'s own sound devices"; exit 0; fi',
+    '    curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/BlackHole2ch.pkg" "$BLACKHOLE_URL"',
+    "    printf '%s  %s\\n' \"$BLACKHOLE_SHA256\" \"$RUNNER_TEMP/BlackHole2ch.pkg\" | shasum -a 256 -c",
+    '    sudo installer -pkg "$RUNNER_TEMP/BlackHole2ch.pkg" -target /',
+    '    sudo killall coreaudiod',
+    '    deadline=$((SECONDS + 20))',
+    '    until both "$list"; do',
+    '      if [ "$SECONDS" -ge "$deadline" ]; then',
+    '        echo "$list"',
+    '        echo "::error::no default CoreAudio input and output 20 s after installing BlackHole 2ch"',
+    '        exit 1',
+    '      fi',
+    '      sleep 1',
+    '      list="$("$RUNNER_TEMP/mac-audio-devices")"',
+    '    done',
+    '    echo "$list"',
+    '    echo "BlackHole 2ch"',
+  ].join('\n'),
+  // Task 4: the real-server call tests on macOS, including the two-client join and the app's own voice join.
+  macCalls: [
+    '- name: Run the call tests (macOS)',
+    "  if: runner.os == 'macOS' && !cancelled()",
+    '  shell: bash',
+    '  run: |',
+    '    cargo test -p dilla-client --test gateway --test http_sign_in --test calls --locked -- --ignored',
+    '    cargo test -p dilla-client --test voice --test ring --locked -- --ignored',
+    '    cargo build -p dilla-testkit --bin dilla-testkit --locked',
+    '    cargo test -p dilla-client --test dms --locked -- --ignored',
+    '    cargo test -p dilla-media --test live --test e2e_call --test capture --locked -- --ignored',
+    '    cargo test -p dilla-desktop --test voice --test ring --locked -- --ignored --skip parity_',
+  ].join('\n'),
 };
 
 /** The job(s) each GPUI_PINNED_STEPS entry must be in; an entry not named here belongs to the gpui-linux job. */
-const GPUI_PIN_JOBS = { tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'] };
+const GPUI_PIN_JOBS = { macParity: ['gpui'], macVideoToolbox: ['gpui'], tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'] };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
@@ -1592,15 +1641,19 @@ const GPUI_IGNORED_BY_HAND = new Set(['clients/desktop/dilla-client/tests/store.
  * Temporary: the parity sweep removes every such attribute, and this exemption with them.
  */
 const GPUI_PARKED_PARITY = /#\[\s*ignore\s*=\s*"parity after T6c[^"]*"\s*\]/g;
-/** An ignore that applies only off Linux: the plain Linux run already runs those tests, so no `--ignored` line is owed for it. */
-const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*target_os\s*=\s*"linux"\s*\)\s*,\s*ignore\b[^\]]*\]/g;
+/**
+ * An ignore that applies only off Linux: the plain Linux run already runs those tests, so no `--ignored` line is owed for it.
+ * Both spellings: `not(target_os = "linux")`, and `not(any(target_os = "linux", target_os = "macos"))` for the parity tests
+ * macOS also runs (the macOS CI plan, Task 3: the Linux references with macOS-measured tolerances).
+ */
+const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*(?:target_os\s*=\s*"linux"|any\(\s*target_os\s*=\s*"linux"\s*,\s*target_os\s*=\s*"macos"\s*\))\s*\)\s*,\s*ignore\b[^\]]*\]/g;
 
 /** A test file's source with the ignores that need no Linux `--ignored` run removed (see the two patterns above). */
 function liveIgnoreSource(source) {
   let s = source.replace(GPUI_PARKED_PARITY, '').replace(GPUI_OFF_LINUX_IGNORE, '');
-  // A macro that forwards its reason (`#[ignore = $why]`, or `#[cfg_attr(target_os = "linux", ignore = $why)]` beside an
-  // off-Linux ignore) is parked only when every reason literal passed to it is the R22 one.
-  const forwarded = /#\[\s*(?:cfg_attr\(\s*target_os\s*=\s*"linux"\s*,\s*ignore\s*=\s*\$\w+\s*\)|ignore\s*=\s*\$\w+)\s*\]/g;
+  // A macro that forwards its reason (`#[ignore = $why]`, or `#[cfg_attr(target_os = "linux", ignore = $why)]` or its
+  // Linux-and-macOS spelling beside an off-Linux ignore) is parked only when every reason literal passed to it is the R22 one.
+  const forwarded = /#\[\s*(?:cfg_attr\(\s*(?:target_os\s*=\s*"linux"|any\(\s*target_os\s*=\s*"linux"\s*,\s*target_os\s*=\s*"macos"\s*\))\s*,\s*ignore\s*=\s*\$\w+\s*\)|ignore\s*=\s*\$\w+)\s*\]/g;
   if (forwarded.test(s)) {
     const reasons = [...s.matchAll(/;\s*"([^"]*)"/g)].map((m) => m[1]);
     if (reasons.length > 0 && reasons.every((r) => r.startsWith('parity after T6c'))) s = s.replace(forwarded, '');
@@ -1625,6 +1678,38 @@ function gpuiIgnoredRunLines(text) {
     for (const l of body.split('\n')) if (l.includes('cargo test') && l.includes('--ignored')) lines.push(l);
   }
   return lines;
+}
+
+/**
+ * The gpui-mac-package job (GPUI release plan, Task 12): an unsigned PR build of the macOS bundle on macos-15. Each fragment must
+ * appear in one of the job's run blocks, so the job cannot quietly stop building the release binary, packaging it, opening the DMG,
+ * running the app or checking the signature and plists. It carries no secret and no environment (Apple keys are desktop-gpui-sign's).
+ */
+export const GPUI_MAC_PACKAGE_RUNS = [
+  'cargo build -p dilla-desktop --release --locked',
+  'bash scripts/desktop-gpui-package-mac.sh "$version" target/release/dilla-desktop "$RUNNER_TEMP/mac-dist"',
+  'hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$RUNNER_TEMP/mac-dist/dilla-$VERSION-mac-arm64.dmg"',
+  'out="$("$app/Contents/MacOS/dilla-desktop" --version)"',
+  'codesign -dv --verbose=4 "$app"',
+  'plutil -lint "$app/Contents/Info.plist"',
+  'plutil -extract CFBundleURLTypes xml1 -o - "$app/Contents/Info.plist"', // the dilla: scheme (D12 superseded 2026-11-16)
+];
+
+/** The problems with the gpui-mac-package job of desktop-gpui.yml's text, if any. */
+function gpuiMacPackageProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; } // the caller's other checks report an unparsable file
+  const job = doc?.jobs?.['gpui-mac-package'];
+  if (!job) return [`${file}: the gpui-mac-package job is missing`];
+  const problems = [];
+  if (job['runs-on'] !== 'macos-15') problems.push(`${file}: gpui-mac-package must run on macos-15`);
+  if (!String(job.if ?? '').includes('!cancelled()')) problems.push(`${file}: gpui-mac-package must run with \`if: !cancelled()\` (independent of the Linux jobs)`);
+  if ('environment' in job || /secrets\./.test(JSON.stringify(job))) problems.push(`${file}: gpui-mac-package is a PR build: no secrets and no environment (the Apple keys belong to desktop-gpui-sign.yml)`);
+  const runs = (Array.isArray(job.steps) ? job.steps : []).filter((s) => !/\bfalse\b/.test(String(s?.if ?? ''))).map((s) => String(s?.run ?? '')).join('\n');
+  for (const fragment of GPUI_MAC_PACKAGE_RUNS) {
+    if (!runs.includes(fragment)) problems.push(`${file}: gpui-mac-package must run \`${fragment}\``);
+  }
+  return problems;
 }
 
 export function checkDesktopGpuiWorkflow(root) {
@@ -1664,8 +1749,68 @@ export function checkDesktopGpuiWorkflow(root) {
       if (!ran) problems.push(`${file}: ${rel} has ignored tests but no \`cargo test -p ${crate} --test ${name} ... -- --ignored\` line in a Linux ignored step runs them`);
     }
   }
+  problems.push(...gpuiMacPackageProblems(text, file));
+  // The macOS CI plan, Task 6: DILLA_PARITY_MEASURE turns every parity comparison into a printed MEASURE line that always
+  // passes (gpui-proofs.yml's manual mac-parity-measure job sets it). A CI gate must never set it.
+  if (/DILLA_PARITY_MEASURE/.test(text)) problems.push(`${file}: DILLA_PARITY_MEASURE skips every parity comparison; it belongs to gpui-proofs.yml's measurement job only`);
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
+  problems.push(...gpuiWinPackageProblems(text, file));
+  return problems;
+}
+
+/**
+ * The gpui-win-package job (GPUI release plan, Task 13): the Windows installer built and exercised on windows-latest, keyless.
+ * Pinned: beta.5's installer by SHA-256 and electron-builder's uninstall GUID (the same value scripts/desktop-gpui-package-win.test.mjs
+ * derives and dilla.iss reads), the static CRT, the pinned libwebrtc, the release build and the script, and the order of the
+ * plan's Verify list (install beta.5, build, setup over it, takeover assertions, silent uninstall), with no secrets or environment.
+ */
+export const GPUI_WIN_PACKAGE_SHA256 = '0cf2c3ad5c94b9cd4aa21956e6d37209dafe06fa525fcd7866240379fadcf1bb';
+export const GPUI_WIN_PACKAGE_GUID = 'f6db60e4-10df-5b69-9206-408d5f2cebe9';
+export const GPUI_WIN_PACKAGE_STEPS = [
+  'run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"',
+  'bash scripts/fetch-libwebrtc.sh x86_64-pc-windows-msvc "$RUNNER_TEMP/libwebrtc"',
+  'printf \'%s  %s\\n\' "$BETA5_WIN_SHA256" "$RUNNER_TEMP/dilla-0.1.0-beta.5-win-x64.exe" | sha256sum --check --strict',
+  "-ArgumentList '/S'",
+  'run: cargo build -p dilla-desktop --release --locked',
+  '& scripts/desktop-gpui-package-win.ps1 -Version $version -Binary target/release/dilla-desktop.exe -OutDir dist',
+  "if ($out -match 'VCRUNTIME140')",
+  "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'",
+  'takeover-sentinel.txt',
+  '--version',
+  'System.AppUserModel.ID',
+  'unins000.exe',
+  // The dilla: scheme: registered after setup, gone after uninstall (D12 superseded 2026-11-16).
+  "the dilla: protocol is not registered",
+  "the dilla: protocol registration is left",
+];
+function gpuiWinPackageProblems(text, file) {
+  const fail = (message) => [`${file}: gpui-win-package ${message}`];
+  let doc;
+  try { doc = yaml.load(text); } catch (error) { return fail(`workflow is invalid YAML (${error.message.split('\n')[0]})`); }
+  const job = doc?.jobs?.['gpui-win-package'];
+  if (!job) return fail('job is missing');
+  const problems = [];
+  if (job['runs-on'] !== 'windows-latest') problems.push(...fail('runs on windows-latest'));
+  if (job.if !== '${{ !cancelled() }}') problems.push(...fail('runs independently of the other jobs (if: ${{ !cancelled() }})'));
+  if (Object.hasOwn(job, 'environment') || Object.hasOwn(job, 'needs') || Object.hasOwn(job, 'permissions')) problems.push(...fail('is keyless: no environment, needs or permissions'));
+  if (/\bsecrets\b/.test(JSON.stringify(job))) problems.push(...fail('reads no secret'));
+  if (job.env?.BETA5_WIN_SHA256 !== GPUI_WIN_PACKAGE_SHA256) problems.push(...fail(`pins beta.5's win-x64 installer to SHA-256 ${GPUI_WIN_PACKAGE_SHA256}`));
+  if (job.env?.BETA5_UNINSTALL_GUID !== GPUI_WIN_PACKAGE_GUID) problems.push(...fail(`names beta.5's uninstall GUID ${GPUI_WIN_PACKAGE_GUID}`));
+  const steps = job.steps ?? [];
+  const body = (step) => [step?.run, step?.uses].filter((v) => typeof v === 'string').join('\n');
+  const all = steps.map(body).join('\n');
+  for (const pin of GPUI_WIN_PACKAGE_STEPS) {
+    if (!all.includes(pin.replace(/^run: /, '')) || (pin.startsWith('run: ') && !steps.some((s) => s?.run === pin.slice(5)))) problems.push(...fail(`lost its pinned step: ${pin}`));
+  }
+  // The plan's Verify order: beta.5 installed, then the build, then the setup over it, then the checks, the uninstall last.
+  const at = (needle) => steps.findIndex((s) => body(s).includes(needle));
+  const order = ["-ArgumentList '/S'", 'run: cargo build'.slice(5), 'desktop-gpui-package-win.ps1 -Version', "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/LOG=", 'the takeover deleted beta.5', 'unins000.exe'].map(at);
+  const sorted = order.every((v, i) => v >= 0 && (i === 0 || order[i - 1] <= v));
+  if (!sorted) problems.push(...fail('runs install beta.5, build, package, setup, takeover checks and uninstall in that order'));
+  for (const step of steps) {
+    if (isCheckout(step) && step.with?.['persist-credentials'] !== false) problems.push(...fail('checks out with persist-credentials: false'));
+  }
   return problems;
 }
 
@@ -1674,7 +1819,8 @@ export function checkDesktopGpuiWorkflow(root) {
  * Pinned: the tag gate (tag shape, ref, main ancestry, green desktop-gpui push run, Cargo version, no release yet), a
  * clean build (no cache action or setup cache, `--locked`, default features only, pinned libwebrtc), the glibc and
  * release-binary guards, the pinned packaging tools, attestations over exactly the five assets, the smoke job before
- * publishing, and a draft-then-publish release. No secret and no environment anywhere (review focus 3).
+ * publishing, and a draft release it never publishes (desktop-gpui-sign.yml completes and publishes it). No secret and
+ * no environment anywhere (review focus 3).
  */
 export const GPUI_RELEASE_JOBS = ['tag', 'build-linux', 'smoke', 'publish'];
 export const GPUI_RELEASE_NEEDS = { 'build-linux': ['tag'], smoke: ['tag', 'build-linux'], publish: ['tag', 'build-linux', 'smoke'] };
@@ -1713,7 +1859,6 @@ export const GPUI_RELEASE_STEPS = {
     'gh release create "$TAG" --verify-tag --draft --prerelease',
     'gh release download "$TAG" --dir "$RUNNER_TEMP/check"',
     'cmp SHA256SUMS "$GITHUB_WORKSPACE/dist/SHA256SUMS"',
-    'run: gh release edit "$TAG" --draft=false',
   ],
 };
 const GPUI_RELEASE_PERMISSIONS = {
@@ -1790,17 +1935,202 @@ export function checkDesktopGpuiReleaseWorkflow(root) {
   const checks = (jobs.smoke?.strategy?.matrix?.include ?? []).map((m) => m?.check);
   if (!drSame([...checks].sort(), [...GPUI_SMOKE_CHECKS].sort())) fail(`smoke runs exactly the checks ${GPUI_SMOKE_CHECKS.join(', ')}`);
   if (jobs.smoke?.strategy?.['fail-fast'] !== false) fail('smoke runs every distribution to the end (fail-fast: false)');
-  // Publish: the draft holds every asset before it is published.
+  // Publish: a draft holding every Linux asset, re-downloaded and checked, and left a draft. desktop-gpui-sign.yml
+  // (main's workflow_run workflow) adds the macOS and Windows files and publishes it (Task 14a).
   const publishRuns = (jobs.publish?.steps ?? []).map((s) => s?.run ?? '').join('\n');
   const create = publishRuns.indexOf('gh release create');
   const verify = publishRuns.indexOf('gh release download');
-  const publish = publishRuns.indexOf('gh release edit "$TAG" --draft=false');
-  if (!(create >= 0 && verify > create && publish > verify)) fail('publish creates a draft, re-downloads and checks it, and only then publishes it');
+  if (!(create >= 0 && verify > create)) fail('publish creates a draft, then re-downloads and checks it');
+  if (/--draft[= ]+false|gh release edit|gh api\b[^\n]*releases/.test(code)) fail('takes the release out of draft; it stays a draft for desktop-gpui-sign.yml to complete and publish');
   for (const ext of GPUI_RELEASE_ASSET_EXTS) {
     if (!publishRuns.includes(`"$base.${ext}"`)) fail(`publish does not attach the .${ext} asset`);
   }
   if (!publishRuns.includes('dist/SHA256SUMS')) fail('publish does not attach SHA256SUMS');
   if (/aur\.archlinux\.org|ssh:\/\/aur@/.test(code)) fail('publishes to the AUR; the recipe is a release asset only (D4)');
+  return problems;
+}
+
+/**
+ * desktop-gpui-sign.yml (GPUI release plan, Task 14a; Review Focus 3): main's workflow_run workflow, the only place that
+ * holds the release keys. Pinned: the trigger (completed runs of desktop-gpui-release.yml's workflow, by its name), no
+ * workflow token and no workflow concurrency group, the six jobs and their needs, the environments, each job's
+ * permissions, every secret named only in its one step's env (in a desktop-release job), first-attempt-only on every job
+ * but feed, the gate script, the keyed jobs checking out exactly the gated commit (everything else main's code), a clean
+ * --locked build, digest-checked artifact downloads, and a publish that attaches, re-checks and only then (never on the
+ * D9 dry-run tag) takes the release out of draft. No AUR job (D4).
+ */
+export const GPUI_SIGN_JOBS = ['gate', 'build-mac', 'build-win', 'sign', 'publish', 'feed'];
+export const GPUI_SIGN_NEEDS = { 'build-mac': ['gate'], 'build-win': ['gate'], sign: ['gate', 'build-mac', 'build-win'], publish: ['gate', 'build-mac', 'build-win', 'sign'], feed: ['gate', 'sign', 'publish'] };
+export const GPUI_SIGN_IF = { gate: "github.event.workflow_run.conclusion == 'success'", feed: "needs.gate.outputs.dry_run == 'false'" };
+export const GPUI_SIGN_ENVIRONMENTS = { 'build-mac': 'desktop-release', sign: 'desktop-release', feed: 'github-pages' };
+const GPUI_APPLE_SECRETS = ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER'];
+/** job -> the one step whose env may name secrets -> those secrets. No other step, and no job-level key, names one. */
+export const GPUI_SIGN_SECRET_STEPS = {
+  'build-mac': { 'Package, sign and notarize Dilla.app and the DMG (the only step with the Apple secrets)': GPUI_APPLE_SECRETS },
+  sign: { 'Sign the feed (the only step with DESKTOP_METADATA_KEY_A)': ['DESKTOP_METADATA_KEY_A'] },
+};
+const GPUI_SIGN_PERMISSIONS = {
+  gate: { contents: 'write', actions: 'read', attestations: 'read' },
+  'build-mac': { contents: 'read', 'id-token': 'write', attestations: 'write' },
+  'build-win': { contents: 'read', 'id-token': 'write', attestations: 'write' },
+  sign: { contents: 'read' },
+  publish: { contents: 'write' },
+  feed: { contents: 'read', pages: 'write', 'id-token': 'write' },
+};
+const GATED_SHA = '${{ needs.gate.outputs.sha }}';
+const FIRST_ATTEMPT = 'test "$GITHUB_RUN_ATTEMPT" = 1';
+export const GPUI_SIGN_PUBLISH_IF = "needs.gate.outputs.dry_run == 'false'";
+export const GPUI_SIGN_STEPS = {
+  gate: [
+    'run: node scripts/desktop-gpui-gate.mjs gate "$RUNNER_TEMP/draft"',
+    '${{ github.event.workflow_run.head_branch }}',
+    '${{ github.event.workflow_run.id }}',
+    'desktop-gpui-linux-verified',
+  ],
+  'build-mac': [
+    'test "$(git rev-parse HEAD)" = "$SHA"',
+    'run: bash scripts/fetch-libwebrtc.sh aarch64-apple-darwin "$RUNNER_TEMP/libwebrtc" >> "$GITHUB_ENV"',
+    'run: cargo build --release --locked -p dilla-desktop',
+    'test "$got" = "Dilla $VERSION (${SHA:0:12})"',
+    '[ -z "$missing" ] || { echo "missing secrets:$missing',
+    'bash scripts/desktop-gpui-package-mac.sh "$VERSION" target/release/dilla-desktop "$RUNNER_TEMP/mac-dist"',
+    'spctl -a -t open --context context:primary-signature -vv "$dmg"',
+    'xcrun stapler validate "$dmg"',
+    "grep -q '^Authority=Developer ID Application: '",
+  ],
+  'build-win': [
+    'test "$(git rev-parse HEAD)" = "$SHA"',
+    'echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"',
+    'bash scripts/fetch-libwebrtc.sh x86_64-pc-windows-msvc "$RUNNER_TEMP/libwebrtc"',
+    'run: cargo build --release --locked -p dilla-desktop',
+    'test "$got" = "Dilla $VERSION (${SHA:0:12})"',
+    'scripts/desktop-gpui-package-win.ps1 -Version $env:VERSION',
+  ],
+  sign: [
+    'printf \'%s  SHA256SUMS\\n\' "$SUMS_SHA256" | sha256sum --check --strict',
+    'sha256sum --check --strict SHA256SUMS',
+    '"$SETUP_SHA256" "dilla-$VERSION-win-x64-setup.exe" | sha256sum --check --strict',
+    'run: node scripts/desktop-gpui-feed.mjs build assets "$VERSION" "$RUNNER_TEMP/signed"',
+    'node scripts/desktop-gpui-gate.mjs check-feed',
+  ],
+  publish: [
+    'printf \'%s  SHA256SUMS\\n\' "$SUMS_SHA256" | sha256sum --check --strict',
+    'desktop-gpui-gate.mjs check-feed ../signed/desktop-gpui-alpha.json',
+    'for f in *; do cmp "$f" "$GITHUB_WORKSPACE/assets/$f"; done',
+    'gh release upload "$TAG" "$mac.dmg" "$mac.zip" "$win"',
+    'gh release upload "$TAG" "$RUNNER_TEMP/sums/SHA256SUMS" --clobber',
+    'test "$(ls | wc -l)" -eq 9',
+    'cmp SHA256SUMS "$RUNNER_TEMP/sums/SHA256SUMS"',
+    'run: gh release edit "$TAG" --draft=false',
+  ],
+  feed: [
+    'node scripts/desktop-gpui-feed.mjs verify "$RUNNER_TEMP/signed/desktop-gpui-alpha.json"',
+    'test "$(jq -r .version "$RUNNER_TEMP/signed/desktop-gpui-alpha.json")" = "$VERSION"',
+    'run: node scripts/desktop-gpui-pages.mjs build "$RUNNER_TEMP/signed" "$RUNNER_TEMP/site"',
+    'run: node scripts/desktop-gpui-pages.mjs verify "$RUNNER_TEMP/signed" "$RUNNER_TEMP/site"',
+  ],
+};
+
+export function checkDesktopGpuiSignWorkflow(root) {
+  const file = 'desktop-gpui-sign.yml';
+  const problems = [];
+  const fail = (message) => problems.push(`${file}: ${message}`);
+  let text, doc;
+  try {
+    text = readFileSync(join(root, '.github', 'workflows', file), 'utf8');
+    doc = yaml.load(text);
+  } catch (error) { return [`${file}: ${error.code === 'ENOENT' ? 'missing' : `invalid YAML (${error.message.split('\n')[0]})`}`]; }
+  const code = text.replace(/^\s*#.*$/gm, '');
+  text.split('\n').forEach((line, i) => {
+    checkActionReference(line, file, i + 1, problems);
+    for (const { re, what } of FORBIDDEN) {
+      if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — a release is fail-closed (R22)`);
+    }
+    if (/^\s*run:.*\$\{\{/.test(line)) problems.push(`${file}:${i + 1}: an expression is interpolated inline in a run command; pass it through env`);
+  });
+  // The trigger: the release workflow by its own name, so renaming it cannot silently unhook this one.
+  let releaseName = 'desktop gpui release';
+  try { releaseName = yaml.load(readFileSync(join(root, '.github', 'workflows', 'desktop-gpui-release.yml'), 'utf8'))?.name ?? releaseName; } catch { /* checkDesktopGpuiReleaseWorkflow reports it */ }
+  if (!drSame(doc?.on, { workflow_run: { workflows: [releaseName], types: ['completed'] } })) fail(`must run only on workflow_run of ["${releaseName}"], types [completed] (GitHub then runs main's file)`);
+  if (!drSame(doc?.permissions, {})) fail('the workflow permissions must be exactly {} (each job asks for its own)');
+  if (Object.hasOwn(doc ?? {}, 'concurrency')) fail('has a workflow concurrency group, which silently cancels a pending run; the gate refuses overlapping runs instead');
+  if (Object.hasOwn(doc ?? {}, 'env')) fail('has a workflow-level env; each job and step names what it needs');
+  for (const expr of expressions(text)) {
+    if (/toJSON\s*\(\s*secrets\b/i.test(expr)) fail('toJSON(secrets) exposes every secret');
+    if (/\bgithub\.event\.workflow_run\.(head_sha|head_repository|pull_requests|head_commit)/.test(expr)) fail(`trusts the triggering run's ${expr.trim()}; the gate re-derives the commit`);
+  }
+  if (/uses:\s*actions\/cache[@/]/.test(code)) fail('restores or saves a cache; the release build is clean');
+  if (/aur\.archlinux\.org|ssh:\/\/aur@|makepkg|aurpublish/.test(code)) fail('publishes to the AUR; the recipe is a release asset only (D4)');
+  const jobs = doc?.jobs ?? {};
+  if (!drSame(Object.keys(jobs), GPUI_SIGN_JOBS)) fail(`jobs must be exactly ${GPUI_SIGN_JOBS.join(', ')}, in that order`);
+  const stepText = (step) => [step?.name, step?.run, step?.uses, ...Object.values(step?.with ?? {}), ...Object.values(step?.env ?? {})].filter((v) => typeof v === 'string').join('\n');
+  for (const [name, job] of Object.entries(jobs)) {
+    const steps = Array.isArray(job?.steps) ? job.steps : [];
+    const needs = [job?.needs ?? []].flat();
+    if (!drSame([...needs].sort(), [...(GPUI_SIGN_NEEDS[name] ?? [])].sort())) fail(`job "${name}" must need exactly ${(GPUI_SIGN_NEEDS[name] ?? []).join(', ') || 'nothing'}`);
+    if (Object.hasOwn(GPUI_SIGN_IF, name) ? job?.if !== GPUI_SIGN_IF[name] : Object.hasOwn(job ?? {}, 'if')) {
+      fail(`job "${name}" must carry ${GPUI_SIGN_IF[name] ? `exactly if: ${GPUI_SIGN_IF[name]}` : 'no job-level if:'} (it runs only when its needs succeeded), got ${job?.if === undefined ? 'none' : `if: ${job.if}`}`);
+    }
+    if (job?.environment !== GPUI_SIGN_ENVIRONMENTS[name]) fail(`job "${name}" must ${GPUI_SIGN_ENVIRONMENTS[name] ? `run in environment: ${GPUI_SIGN_ENVIRONMENTS[name]}` : 'enter no environment'}`);
+    if (!drSame(job?.permissions, GPUI_SIGN_PERMISSIONS[name])) fail(`job "${name}" permissions must be exactly ${JSON.stringify(GPUI_SIGN_PERMISSIONS[name])}`);
+    if (name === 'feed' ? !drSame(job?.concurrency, { group: 'desktop-release-feed', 'cancel-in-progress': false }) : Object.hasOwn(job ?? {}, 'concurrency')) {
+      fail(name === 'feed' ? 'job "feed" must hold concurrency group desktop-release-feed, cancel-in-progress: false' : `job "${name}" has a concurrency group`);
+    }
+    // First attempt only: a partial re-run would reuse the gate's outputs without re-running it. feed may be re-run.
+    if (name !== 'gate' && name !== 'feed' && steps[0]?.run !== FIRST_ATTEMPT) fail(`job "${name}" must start with the step \`${FIRST_ATTEMPT}\` (first attempt only)`);
+    // Secrets only in the env of their one step; nowhere at job level, in a with:, or in a script.
+    const { steps: _steps, ...jobKeys } = job ?? {};
+    for (const expr of expressions(JSON.stringify(jobKeys))) if (/\bsecrets\b/.test(expr)) fail(`job "${name}" names a secret at job level (\${{${expr}}})`);
+    const allowedSteps = GPUI_SIGN_SECRET_STEPS[name] ?? {};
+    for (const stepName of Object.keys(allowedSteps)) if (!steps.some((s) => s?.name === stepName)) fail(`job "${name}" lost its signing step "${stepName}"`);
+    steps.forEach((step, index) => {
+      const label = step?.name ?? step?.uses ?? step?.run?.split('\n')[0] ?? `step ${index + 1}`;
+      const allowed = allowedSteps[step?.name];
+      const { env = {}, ...rest } = step ?? {};
+      for (const expr of expressions(JSON.stringify(rest))) if (/\bsecrets\b/.test(expr)) fail(`job "${name}" step "${label}" names a secret outside its env (\${{${expr}}})`);
+      for (const [key, value] of Object.entries(env ?? {})) {
+        for (const expr of expressions(String(value))) {
+          if (!/\bsecrets\b/.test(expr)) continue;
+          const secret = /^\s*secrets\.([A-Z0-9_]+)\s*$/.exec(expr)?.[1];
+          if (allowed === undefined || secret === undefined || !allowed.includes(secret) || key !== secret) {
+            fail(`job "${name}" step "${label}" names a secret it may not (${key}: \${{${expr}}}); secrets live only in ${Object.entries(GPUI_SIGN_SECRET_STEPS).map(([j, s]) => `${j}: ${Object.keys(s).join(', ')}`).join('; ')}`);
+          }
+        }
+      }
+      if (isCheckout(step)) {
+        if (step.with?.['persist-credentials'] !== false) fail(`job "${name}" keeps the checkout's credentials; set persist-credentials: false`);
+        const ref = step.with?.ref;
+        if (name === 'build-mac' || name === 'build-win') {
+          if (ref !== GATED_SHA) fail(`job "${name}" must check out ref: ${GATED_SHA} (the gated commit)`);
+        } else if (ref !== undefined) fail(`job "${name}" checks out ref ${ref}; it runs main's code only`);
+      }
+      if (typeof step?.uses === 'string' && /^actions\/setup-(node|go)@/.test(step.uses) && (Object.hasOwn(step.with ?? {}, 'cache') || step.with?.['package-manager-cache'] !== false)) {
+        fail(`job "${name}" must set package-manager-cache: false and no cache on ${step.uses.split('@')[0]}; the release is clean`);
+      }
+      if (typeof step?.uses === 'string' && step.uses.startsWith('actions/download-artifact@') && step.with?.['digest-mismatch'] !== 'error') fail(`job "${name}" downloads an artifact without digest-mismatch: error`);
+      if (typeof step?.uses === 'string' && step.uses.startsWith('actions/download-artifact@') && (Object.hasOwn(step.with ?? {}, 'run-id') || Object.hasOwn(step.with ?? {}, 'github-token'))) fail(`job "${name}" downloads another run's artifact; only this run's jobs feed the release`);
+      if (typeof step?.uses === 'string' && step.uses.startsWith('actions/upload-artifact@') && step.with?.['if-no-files-found'] !== 'error') fail(`job "${name}" uploads an artifact without if-no-files-found: error`);
+    });
+    const all = steps.map(stepText).join('\n');
+    for (const pin of GPUI_SIGN_STEPS[name] ?? []) {
+      if (!all.includes(pin.replace(/^run: /, '')) || (pin.startsWith('run: ') && !steps.some((s) => s?.run === pin.slice(5)))) fail(`job "${name}" lost its pinned step: ${pin}`);
+    }
+  }
+  // Each keyed build is one clean `cargo build --release --locked -p dilla-desktop`, default features only.
+  for (const name of ['build-mac', 'build-win']) {
+    const builds = (jobs[name]?.steps ?? []).filter((s) => typeof s?.run === 'string' && /\bcargo (build|install|rustc)\b/.test(s.run));
+    if (builds.length !== 1 || builds[0].run !== 'cargo build --release --locked -p dilla-desktop' || builds[0].env?.DILLA_BUILD_SHA !== GATED_SHA) fail(`${name} runs exactly one \`cargo build --release --locked -p dilla-desktop\` with DILLA_BUILD_SHA: ${GATED_SHA}`);
+  }
+  // Publish: attach, re-download and check, and only then take the draft out of draft, never on the dry-run tag.
+  const publishSteps = jobs.publish?.steps ?? [];
+  const at = (needle) => publishSteps.findIndex((s) => typeof s?.run === 'string' && s.run.includes(needle));
+  const upload = at('gh release upload');
+  const check = at(`gh release download "$TAG" --dir "$RUNNER_TEMP/check"`);
+  const undraft = at('--draft=false');
+  if (!(upload >= 0 && check > upload && undraft > check && undraft === publishSteps.length - 1)) fail('publish attaches the files, re-downloads and checks them, and only then, as its last step, publishes');
+  if (undraft >= 0 && publishSteps[undraft]?.if !== GPUI_SIGN_PUBLISH_IF) fail(`publish's last step must carry exactly if: ${GPUI_SIGN_PUBLISH_IF} (the D9 dry-run tag is never published)`);
+  const undrafts = Object.values(jobs).flatMap((job) => job?.steps ?? []).filter((s) => /--draft[= ]+false|gh release edit/.test(stepText(s)));
+  if (undrafts.length !== 1) fail('exactly one step, publish\'s last, may take the release out of draft');
   return problems;
 }
 
@@ -1863,7 +2193,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkDesktopGpuiReleaseWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkDesktopGpuiReleaseWorkflow(root), ...checkDesktopGpuiSignWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

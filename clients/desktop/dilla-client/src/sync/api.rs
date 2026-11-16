@@ -920,6 +920,15 @@ impl Api {
         Ok(())
     }
 
+    /// routes.ts `setPresenceChoice`: `[choice]` (1 online, 2 idle, 3 dnd, 4 invisible) -> 204.
+    pub async fn set_presence_choice(&self, choice: u8) -> Result<(), ApiError> {
+        let mut e = dilla_core::cbor::Encoder::new();
+        e.array(1).uint(u64::from(choice));
+        self.socket_call::<r::SetPresenceChoice>(&[], Some(e.into_vec()), None, true)
+            .await?;
+        Ok(())
+    }
+
     /// routes.ts `listDevices`: the account's devices, raw.
     pub async fn list_devices(&self) -> Result<Vec<u8>, ApiError> {
         Ok(self

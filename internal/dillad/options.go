@@ -16,6 +16,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/blob"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
+	"github.com/dilla-chat/dilla/internal/desktopdownload"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
@@ -91,6 +92,9 @@ type Options struct {
 	// DesktopDownloadRoutes answers GET /download/{platform} when DesktopDownloads is on;
 	// nil means desktopdownload.New over the pinned GitHub Pages feed. Tests pass their own.
 	DesktopDownloadRoutes http.Handler
+	// DesktopDownloadChannel is the release line the default routes serve
+	// (`--desktop-downloads-channel`); the zero value is desktopdownload.Beta.
+	DesktopDownloadChannel desktopdownload.Channel
 	// LiveKitURL replaces the signalling URL the call routes hand a client ("wss://" plus the
 	// instance's host); "" keeps it. `dillad serve` never sets it: the test host passes its own
 	// ws:// listener, which a browser on loopback can reach (web-3 task 3).

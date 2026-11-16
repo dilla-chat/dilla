@@ -29,9 +29,55 @@ Limits: one fixture, one Linux GPU, one Chromium. Anti-aliased glyph fringes wid
 
 **The bright-pixel mask is fixture-only.** It treats every pixel with a channel >= 70 as text. That holds for the pixel-proof fixture (borders and fills peak at ~58) but not for real screens: Signal accent (#5AA8E6), brand, ok/warn/danger fills, focus rings, avatar fills, selected rows and icons are all brighter, so they and a 3 px fringe are masked and NOT checked by the chrome gate. A wrong border or fill on an accent button passes under that mask (`bright_pixel_mask_hides_accent_chrome_but_rect_mask_catches_it` demonstrates it). Screens must use `TextMask::from_rects` with real text bounds.
 
-## macOS, Windows
+## macOS
 
-All four values are exact placeholders (0 / 0.0): PENDING-CI. The chrome pair must be measured per OS the same way once CI runs the proof there.
+Measured on macos-15 (Metal) against the **Linux web references** (macOS CI plan, decision D-A: no macOS goldens), over
+119 honest screens (run 43838350768), with the deliberate defects on `shell/channel-view` and `-b` (run 43847238361):
+
+| gate (`[macos]`) | honest median | honest worst | limit | defect it must catch |
+|---|---|---|---|---|
+| whole frame, delta 96 | 0.12 % | 0.36 % (`commands/reminders`) | 0.8 % | fallback font 1.78 / 2.14 %; 1 px shift 1.59 / 1.76 % |
+| chrome, delta 16 | 0.056 % | 0.185 % (`sign-in/factor`) | 0.4 % | 1 px shift 0.73 / 0.61 % |
+| colour, 2 px radius, delta 2 | 0.087 % | 0.68 % (avatar and picture screens) | 0.3 % | hairline recoloured 0.58 / 0.60 %; surface recoloured 27.6 / 24.8 % |
+
+The eight avatar and picture screens get their own colour limit in `[macos_screens."<fixture>"]`, 2x their honest score.
+
+**Margins.** The plan asks every limit to sit at least 2x above the worst honest screen and 2x below the defect. Whole
+frame clears both (2.2x / 2.2x). Chrome is 2.16x above honest but 1.5–1.8x below the shift; colour is 1.9x below the
+recoloured hairline, and the screens that score above 0.3 % honestly carry their own per-screen limits. **Jonas, 2026-11-16: accepted as measured; tighten later
+with more data.** Every screen passes under these limits (run 43847238361).
+
+CI never sets `DILLA_PARITY_MEASURE` (it turns every check into a measurement): `check-ci-workflow.mjs` refuses it.
+
+### Glyph presence (macOS CI plan, Task 1)
+
+`text_draws_glyphs` (tests/harness.rs, `glyph_coverage` in src/glyphs.rs): every line box `text-bounds` reports on
+`shell/channel-view` must hold ink, a pixel whose largest channel is more than 48 off the box's most common colour, on
+at least 2 % of the box. A line is inked at that share; the test asks for at least 30 lines, 90 % of them inked.
+`noop_text_system_draws_no_glyphs` draws the same screen with GPUI's `NoopTextSystem`
+(`DILLA_AUTOMATION_TEXT_SYSTEM=noop`), which is what a macOS build without gpui-pre-platform's `font-kit` gets: the
+"no text at all" bug of 2026-11-16.
+
+| frame | lines | inked | ink % |
+|---|---|---|---|
+| Linux (lavapipe), honest | 66 | 66 | 15.2 |
+| macOS (Metal, macos-15), honest | 66 | 66 | 17.2 |
+| either OS, `NoopTextSystem` | 66 | 0 | 0.0 |
+
+The Noop text system still lays the lines out (its metrics are fixed), so the boxes come back and stay empty.
+
+### Traffic-light clearance (macOS CI plan, Task 2)
+
+`macos_header_clears_the_traffic_lights` (macOS only) draws `shell/channel-view` and `-b` with the shipping title bar
+(`DILLA_AUTOMATION_WINDOW_CONTROLS`) and asks that no text line and no tracked element but the window's root, the bar
+and the drag strip intersect `dilla_desktop::MAC_TRAFFIC_LIGHTS` (12, 16, 54 x 16: the three AppKit button frames at
+`MAC_WINDOW_BUTTONS`). On macos-15 nothing does. Its control, `a_bar_without_the_inset_is_under_the_traffic_lights`
+(every OS), draws the web bar 14 px in and finds the brand mark (`topbar-brand` 14,13 18x18) and two text lines there.
+
+## Windows
+
+All four values are exact placeholders (0 / 0.0): PENDING-CI. GPUI's headless mode has no renderer on Windows, so
+Windows parity is measured with a real window later.
 
 ## How screens supply the mask
 
@@ -57,7 +103,7 @@ Measured on the two shell fixtures, share of unmasked pixels with no such neighb
 Chosen: `colour_max_pct = 0.3` (honest 2.5x under, a recoloured border 2x over, a recoloured surface 80x over). The
 honest numbers are the layout's real 1 px differences beyond the radius and anti-aliased curves; a border recoloured on
 only part of a screen moves the share less, so the gate sees whole-class errors (every hairline, every panel), not one
-divider. macOS and Windows are exact placeholders (PENDING-CI).
+divider. macOS: see "macOS" above; Windows is a placeholder (PENDING-CI).
 
 The Task 3 evidence images in `tests/fixtures/` are cropped to the bottom 1000 rows (y 600..1600) of the 2560x1600 renders:
 the margins above were measured on the full frames, and the tests still hold on the crop.

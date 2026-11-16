@@ -249,6 +249,20 @@ fn kind_of(c: &Channel) -> RowKind {
     }
 }
 
+/// The string keys of a row's notes after its name, in order (Shell.tsx `channelRows`, Bot v2 Task 22 and Jonas's ruling):
+/// `bot.channel.badge` for a Bot channel this member can view (the community's Bot catalog lists it), then `slow.badge`
+/// for a channel in slow mode.
+pub fn row_badge_keys(state: &AppState, c: &Channel) -> Vec<&'static str> {
+    let mut keys = Vec::new();
+    if crate::screens::server_settings::model::is_bot_channel(state, c) {
+        keys.push("bot.channel.badge");
+    }
+    if c.slowmode > 0 {
+        keys.push("slow.badge");
+    }
+    keys
+}
+
 /// The element id of a channel's row: `channel-<name>`.
 pub fn row_id(name: &str) -> SharedString {
     format!("channel-{name}").into()
@@ -347,6 +361,7 @@ fn row(
     muted: bool,
     voice: (usize, bool),
     after_text_row: bool,
+    badges: &[&'static str],
     handlers: &ListHandlers,
     window: &mut Window,
     cx: &mut App,
@@ -354,7 +369,14 @@ fn row(
     let id = c.id;
     let on_select = handlers.on_select.clone();
     let on_click = handlers.on_select.clone();
+    let badges: Vec<&'static str> = badges.iter().map(|k| t(k)).collect();
+    // ChannelList.tsx: the row is named with its notes ("city-wok, Bot").
+    let named = std::iter::once(c.name.as_str())
+        .chain(badges.iter().copied())
+        .collect::<Vec<_>>()
+        .join(", ");
     let row = Row::new(row_id(&c.name), c.name.clone(), kind_of(c))
+        .badges(badges.iter().copied())
         .voice(voice.0, voice.1)
         .active(active)
         .unread(badge.0)
@@ -373,7 +395,7 @@ fn row(
         .id(SharedString::from(format!("channel-focus-{}", c.id.hex())))
         .a11y(
             Role::Link,
-            row_label(&c.name, badge.0, badge.1, muted, voice.1),
+            row_label(&named, badge.0, badge.1, muted, voice.1),
         )
         .aria_selected(active)
         // The row inside takes the pointer's click; a screen reader's "activate" lands here.
@@ -659,6 +681,18 @@ pub fn render(
                     )),
             )
         }))
+        // Mac report (2026-11-16): a click on the chevron opened nothing. At debug level the log says whether the press
+        // reached the chevron at all (`server menu: press`) and whether the click then asked to open it
+        // (`server menu: open`), which tells an occluded hitbox from a lost click.
+        .on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
+            log::debug!(
+                "server menu: press in the list head at {:?} (click_count {}, first_mouse {}, scale {})",
+                e.position,
+                e.click_count,
+                e.first_mouse,
+                window.scale_factor()
+            );
+        })
         .child(crate::tracked_box(
             "server-settings-open",
             // Shell.tsx `serverMenu`: the ⌄ is the server's menu, labelled `admin.open`, in the head's 26px button.
@@ -667,7 +701,10 @@ pub fn render(
                 .icon_size(Pixels::from(css::GLYPH))
                 .trigger_size(Pixels::from(css::MENU_HIT))
                 .open(model.server_menu_open)
-                .on_open_change(move |open, window, cx| on_server_menu_open(open, window, cx))
+                .on_open_change(move |open, window, cx| {
+                    log::debug!("server menu: open {open}");
+                    on_server_menu_open(open, window, cx)
+                })
                 .on_select(move |item, window, cx| {
                     if item == SERVER_SETTINGS {
                         on_server_settings(window, cx);
@@ -745,6 +782,7 @@ pub fn render(
                     crate::screens::voice::joined(state, ch.id),
                 ),
                 after_text(i),
+                &row_badge_keys(state, ch),
                 handlers,
                 window,
                 cx,
@@ -856,6 +894,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["mode:mentions"]
         );
+    }
+
+    #[test]
+    fn a_bot_channel_says_bot_then_slow_mode_and_only_when_the_catalog_lists_it() {
+        let mut s = world();
+        let community = CommunityId([1; 16]);
+        let at = |s: &AppState, n: u8| {
+            let c = s
+                .channels
+                .iter()
+                .find(|c| c.id == ChannelId([n; 16]))
+                .unwrap();
+            row_badge_keys(s, c)
+        };
+        assert!(at(&s, 2).is_empty(), "no catalog read yet: no note");
+        s.bot.catalogs.insert(
+            community,
+            dilla_client::state::bot::BotCatalogView {
+                revision: 1,
+                commands: Vec::new(),
+                status: dilla_client::state::bot::BotStatus {
+                    state: dilla_client::state::bot::BotStatusState::Ready,
+                    since: None,
+                },
+                bot_channels: Some(vec![ChannelId([4; 16])]),
+                bot_user: None,
+                fingerprint: None,
+            },
+        );
+        assert_eq!(at(&s, 4), ["bot.channel.badge"]);
+        assert!(at(&s, 2).is_empty(), "general is not a Bot channel");
+        s.channels
+            .iter_mut()
+            .find(|c| c.id == ChannelId([4; 16]))
+            .unwrap()
+            .slowmode = 30;
+        assert_eq!(at(&s, 4), ["bot.channel.badge", "slow.badge"]);
+        assert_eq!(t("bot.channel.badge"), "Bot");
     }
 
     #[test]

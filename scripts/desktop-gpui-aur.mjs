@@ -15,6 +15,7 @@
 //   desktop-gpui-aur.mjs recipe <version> <tarball> <out-dir>  writes <out-dir>/dilla-<v>-linux-x64.aur.tar.gz
 //   desktop-gpui-aur.mjs verify <version> <tarball> <recipe>   checks a recipe archive pins exactly that tarball
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { lstat, open, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -190,7 +191,8 @@ export async function writeAurRecipe(version, tarball, outDir) {
   return archive;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run directly, on every OS: a Windows path (D:\a\...) or one with a space never equals `file://` + argv[1].
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const [command, ...args] = process.argv.slice(2);
   if (command === 'versions' && args.length === 1) {
     const v = linuxPackageVersion(args[0]);

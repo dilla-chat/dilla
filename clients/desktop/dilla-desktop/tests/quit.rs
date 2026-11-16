@@ -87,24 +87,45 @@ fn shoot_quit(state: &str) {
         shot.save(&path).unwrap();
         return;
     }
-    dilla_parity::assert_parity_masked(&shot, &path, dilla_parity::Os::Linux, &mask)
+    // macOS compares with the same Linux frames under its own tolerance (decision D-A: no macOS goldens).
+    if std::env::var_os(dilla_parity::screen::MEASURE_VAR).is_some() {
+        let golden = image::open(&path).unwrap().to_rgba8();
+        let line = dilla_parity::screen::measure_line(
+            &format!("native/quit-{state}"),
+            &shot,
+            &golden,
+            &mask,
+        );
+        println!("{}", line.unwrap());
+        return;
+    }
+    dilla_parity::assert_parity_masked(&shot, &path, dilla_parity::Os::current(), &mask)
         .unwrap_or_else(|e| panic!("the quit dialog ({state}) differs from its golden shot: {e}"));
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_quit_dialog_active_call() {
     shoot_quit("active-call");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_quit_dialog_unsent_draft() {
     shoot_quit("unsent-draft");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_quit_dialog_not_responding() {
     shoot_quit("not-responding");
 }

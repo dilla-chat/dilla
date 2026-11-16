@@ -194,6 +194,8 @@ pub struct AppView {
     instance: Option<InstanceId>,
     /// The workspace window's bounds are kept a moment after the last change.
     bounds_task: Option<gpui::Task<()>>,
+    /// The card height the authentication window was last fitted to (beta.5 `window-mode` `height`).
+    fitted_card: Option<f32>,
     bounds_sub: Option<Subscription>,
     /// The client about to start is a new account's: once its factor is in place, the invite's server is joined and
     /// the done step shows (Task 25).
@@ -206,6 +208,8 @@ pub struct AppView {
     /// The window's root: it takes the focus when nothing else holds it, so every key reaches the root's handlers
     /// (push to talk, review I1).
     root_focus: gpui::FocusHandle,
+    /// Input in this window is reported to its instance at most every 5 s (App.tsx's presence activity).
+    activity: dilla_client::features::members::ActivityThrottle,
     /// The window going inactive lets push to talk go at once (review B).
     _activation: Subscription,
     /// The focused control went away (a drawn frame no longer has it): push to talk lets go (review B, re-review B2).
@@ -224,12 +228,14 @@ impl AppView {
             launch,
             screen: Screen::Starting,
             bounds_task: None,
+            fitted_card: None,
             bounds_sub: None,
             after_signup: false,
             signup_codes: None,
             shell: None,
             shell_sub: None,
             root_focus: cx.focus_handle(),
+            activity: Default::default(),
             _focus_lost: cx.on_focus_lost(window, |this: &mut Self, window, cx| {
                 let root = this.root_focus.clone();
                 crate::screens::voice::focus_lost(
@@ -273,6 +279,7 @@ impl AppView {
                             window,
                             cx,
                         )
+                        .with_controls(crate::automation::fixture_window_controls())
                     });
                     this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);
@@ -1500,13 +1507,40 @@ impl AppView {
         window.focus(&handle, cx);
     }
 
+    /// A key, a click or a pointer move in this window, while it is the active one: the person is here, so the instance
+    /// does not show them idle (App.tsx: `pointerdown`, `pointermove` and `keydown` while the page is visible).
+    fn note_activity(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !window.is_window_active() || !self.activity.due(std::time::Instant::now()) {
+            return;
+        }
+        if let Some(client) = self
+            .instance
+            .and_then(|id| crate::windows::running_client(cx, id))
+        {
+            client.members().presence_activity();
+        }
+    }
+
     /// Gives a compact screen its window shape (the start and authentication windows resize in place).
     fn fit_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mode = self.screen.mode();
-        if !self.launch.shipping || !mode.is_compact() {
+        // The loading line is the moment between two screens: it draws in whatever compact shape the window has, so a
+        // window opened in the authentication shape (`opening_mode`) is not shrunk to 400x280 and grown back.
+        if !self.launch.shipping || !mode.is_compact() || matches!(self.screen, Screen::Starting) {
             return;
         }
-        let shape = window_shape(mode, None, crate::work_area_height(cx));
+        // A workspace window that signs out takes the compact chrome: on macOS its traffic lights go (beta.5
+        // `setWindowMode`).
+        crate::native::window_buttons::apply(window, mode);
+        // The authentication window fits its card, once the card has drawn (render, below).
+        let content = (mode == WindowMode::Authentication)
+            .then(|| {
+                dilla_desktop_ui::components::onboarding::frame::desktop_card_height(window, cx)
+            })
+            .flatten()
+            .map(card_window_height);
+        self.fitted_card = content;
+        let shape = window_shape(mode, content, crate::work_area_height(cx));
         window.resize(gpui::size(
             gpui::Pixels::from(shape.width),
             gpui::Pixels::from(shape.height),
@@ -1554,6 +1588,12 @@ impl AppView {
             true
         });
     }
+}
+
+/// The window height a card of `card` px asks for: beta.5's `Math.max(160, Math.min(1600, Math.ceil(card.offsetHeight)))`
+/// (`window_shape` then keeps it within the work area and at least 220).
+pub fn card_window_height(card: f32) -> f32 {
+    card.ceil().clamp(160.0, 1600.0)
 }
 
 impl Render for AppView {
@@ -1629,6 +1669,40 @@ impl Render for AppView {
         .then(|| {
             crate::screens::shell::resize::render(f32::from(size.width), f32::from(size.height))
         });
+        // The compact windows (start, sign-in, sign-up, factor) draw beta.5's own chrome on every platform: the drag
+        // strip along the top and the close button (DesktopTitlebar.tsx in the starting/authentication modes).
+        let compact_chrome = (self.launch.shipping && self.screen.mode().is_compact())
+            .then(crate::screens::titlebar::compact_chrome);
+        // The authentication window's card fills it (beta.5 DesktopTitlebar.css:24-26): the screens' frames read this
+        // mark as they draw, after this view.
+        let authentication =
+            self.launch.shipping && self.screen.mode() == WindowMode::Authentication;
+        dilla_desktop_ui::components::onboarding::frame::set_desktop_window(
+            window,
+            authentication,
+            cx,
+        );
+        // beta.5 `startDesktopWindowLayout`: the authentication window is as tall as its card (a ResizeObserver there;
+        // the card notes its height as it draws here).
+        if authentication
+            && let Some(card) =
+                dilla_desktop_ui::components::onboarding::frame::desktop_card_height(window, cx)
+            && self.fitted_card != Some(card_window_height(card))
+        {
+            let content = card_window_height(card);
+            self.fitted_card = Some(content);
+            let shape = window_shape(
+                WindowMode::Authentication,
+                Some(content),
+                crate::work_area_height(cx),
+            );
+            window.defer(cx, move |window, _| {
+                window.resize(gpui::size(
+                    gpui::Pixels::from(shape.width),
+                    gpui::Pixels::from(shape.height),
+                ));
+            });
+        }
         // Push to talk is heard at the root, whatever screen shows, and lets go when the screen is not the shell
         // (review I1: the settings replacing the shell's dock left a held key's microphone open).
         let w = crate::screens::voice::wid(window);
@@ -1657,6 +1731,15 @@ impl Render for AppView {
             w,
             div()
                 .track_focus(&self.root_focus)
+                .capture_key_down(cx.listener(|this, _: &gpui::KeyDownEvent, window, cx| {
+                    this.note_activity(window, cx)
+                }))
+                .capture_any_mouse_down(cx.listener(
+                    |this, _: &gpui::MouseDownEvent, window, cx| this.note_activity(window, cx),
+                ))
+                .on_mouse_move(cx.listener(|this, _: &gpui::MouseMoveEvent, window, cx| {
+                    this.note_activity(window, cx)
+                }))
                 // Tab from nowhere (a splash with no focus yet) walks the screen's controls (Package 11): the screens'
                 // own roots hold these too, for when the focus is inside them.
                 .on_action(|_: &crate::screens::FocusNext, window, cx| window.focus_next(cx))
@@ -1671,7 +1754,8 @@ impl Render for AppView {
                         .size_full()
                         .bg(color::BG)
                         .child(body)
-                        .children(strips.into_iter().flatten()),
+                        .children(strips.into_iter().flatten())
+                        .children(compact_chrome),
                 ))
                 // The quit question, when this window carries it (Package 7).
                 .children(crate::native::quit::overlay(window, cx))

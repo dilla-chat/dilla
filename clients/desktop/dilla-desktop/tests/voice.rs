@@ -363,11 +363,15 @@ fn the_user_panel_tags_push_to_talk(cx: &mut TestAppContext) {
             let handlers = PanelHandlers {
                 on_mute: Rc::new(|_, _| {}),
                 on_deafen: Rc::new(|_, _| {}),
+                on_status_open: Rc::new(|_, _, _| {}),
+                on_status_pick: Rc::new(|_, _, _| {}),
             };
             div().size_full().child(render(
                 &PanelModel {
                     name: "Ada",
-                    status: "online",
+                    choice: dilla_client::state::profile::PresenceChoice::Online,
+                    status_msg: "",
+                    status_menu_open: false,
                     in_room: None,
                     muted: false,
                     deafened: false,
@@ -383,6 +387,91 @@ fn the_user_panel_tags_push_to_talk(cx: &mut TestAppContext) {
     let (_, vcx) = cx.add_window_view(|_, _| Panel(None));
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("user-panel-ptt").is_none());
+}
+
+/// UserPanel.tsx `status`: a click on the avatar and name block opens the status menu above it, with every status; choosing
+/// one hands it to the shell and closes the menu.
+#[gpui::test]
+fn the_user_panel_opens_the_status_menu_and_picks_a_status(cx: &mut TestAppContext) {
+    use dilla_client::state::profile::PresenceChoice;
+    use dilla_desktop::screens::user_panel::{PanelHandlers, PanelModel, render};
+    use std::cell::RefCell;
+    #[derive(Default)]
+    struct Seen {
+        open: bool,
+        picked: Vec<PresenceChoice>,
+    }
+    struct Panel(Rc<RefCell<Seen>>);
+    impl Render for Panel {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let (open, pick) = (self.0.clone(), self.0.clone());
+            let entity = cx.entity().downgrade();
+            let entity2 = entity.clone();
+            let handlers = PanelHandlers {
+                on_mute: Rc::new(|_, _| {}),
+                on_deafen: Rc::new(|_, _| {}),
+                on_status_open: Rc::new(move |o, _, cx| {
+                    open.borrow_mut().open = o;
+                    let _ = entity.update(cx, |_, cx| cx.notify());
+                }),
+                on_status_pick: Rc::new(move |c, _, cx| {
+                    pick.borrow_mut().picked.push(c);
+                    let _ = entity2.update(cx, |_, cx| cx.notify());
+                }),
+            };
+            let seen = self.0.borrow();
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .justify_end()
+                .child(render(
+                    &PanelModel {
+                        name: "Ada",
+                        choice: PresenceChoice::Idle,
+                        status_msg: "",
+                        status_menu_open: seen.open,
+                        in_room: None,
+                        muted: false,
+                        deafened: false,
+                        ptt: None,
+                    },
+                    &handlers,
+                ))
+        }
+    }
+    let seen = Rc::new(RefCell::new(Seen::default()));
+    let (_, vcx) = cx.add_window_view({
+        let seen = seen.clone();
+        move |_, _| Panel(seen)
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("menu-item-dnd").is_none());
+    let block = vcx
+        .debug_bounds("user-panel-status")
+        .expect("the status block");
+    vcx.simulate_click(block.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    assert!(seen.borrow().open, "the click opens the menu");
+    for id in [
+        "menu-item-online",
+        "menu-item-idle",
+        "menu-item-dnd",
+        "menu-item-invisible",
+    ] {
+        let item = vcx
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("the {id} item"));
+        assert!(
+            item.bottom() <= block.top(),
+            "the menu opens above the block"
+        );
+    }
+    let dnd = vcx.debug_bounds("menu-item-dnd").unwrap();
+    vcx.simulate_click(dnd.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(seen.borrow().picked, [PresenceChoice::Dnd]);
+    assert!(!seen.borrow().open, "choosing closes the menu");
 }
 
 /// Opens the user settings over `s` in a window of its own, with the routes it asks for.
@@ -1241,6 +1330,11 @@ fn a_live_call_in_the_process_holds_the_next_call_test_until_its_media_ends() {
 }
 
 fn call_world(tag: &'static str) -> CallWorld {
+    call_world_on(tag, false)
+}
+
+/// [`call_world`] on a host whose rooms are `wss://` (`call_world::start_host_wss`) when `wss`.
+fn call_world_on(tag: &'static str, wss: bool) -> CallWorld {
     let media = media_slot();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1248,9 +1342,15 @@ fn call_world(tag: &'static str) -> CallWorld {
         .build()
         .unwrap();
     let (host, alice, bob, voice) = rt.block_on(async {
-        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
-            .await
-            .unwrap();
+        let host = tokio::task::spawn_blocking(move || {
+            if wss {
+                call_world::start_host_wss(tag)
+            } else {
+                call_world::start_host_reachable(tag)
+            }
+        })
+        .await
+        .unwrap();
         let invite = host.invites.last().unwrap().clone();
         let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
         let bob = call_world::sign_up(&host, &invite, "bob", tag).await;
@@ -1374,6 +1474,69 @@ fn window_for(
     let state = client.state().borrow().clone();
     cx.update(|cx| voice::sync(id, state, Some(client), cx));
     w
+}
+
+/// The app's own voice join (the voice row's join, its media session on the system's sound devices) in a `wss://` room,
+/// as every real instance hands out: the media comes up (its ping is read) and nothing says "Could not join voice". The
+/// macOS join of 2026-11-16 failed here: the livekit build had no TLS, and every `ws://` test passed. The media layer's
+/// own words for a failure (`voice: the call's media did not start: ...`) are printed by [`warnings_to_stderr`].
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn the_app_joins_a_wss_room(cx: &mut TestAppContext) {
+    warnings_to_stderr();
+    let w = call_world_on("t-wss-join", true);
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    // No other call: the handover starts the join in its first turn.
+    cx.run_until_parked();
+    let s = w.rt.block_on(until(
+        &w.alice,
+        "alice's media is up in the wss room (its ping is read), or it failed",
+        |s| {
+            s.voice.notice == Some(dilla_client::state::voice::VoiceNotice::MediaFailed)
+                || (s.voice.call.phase == CallPhase::In && s.voice.call.ping_ms.is_some())
+        },
+    ));
+    assert_ne!(
+        s.voice.notice,
+        Some(dilla_client::state::voice::VoiceNotice::MediaFailed),
+        "the call's media did not start in a wss:// room (\"Could not join voice\"); the media layer's warning is above"
+    );
+    assert_eq!(s.voice.call.phase, CallPhase::In);
+    let link = w
+        .alice
+        .voice()
+        .media()
+        .borrow()
+        .clone()
+        .expect("a media link");
+    assert!(
+        link.url.starts_with("wss://"),
+        "the room is wss://, not {}",
+        link.url
+    );
+}
+
+/// Prints this process's `warn` and `error` log records to stderr (the test shows them when it fails): the app's media
+/// layer says why a call's media did not start only in its log.
+fn warnings_to_stderr() {
+    struct Stderr;
+    impl log::Log for Stderr {
+        fn enabled(&self, m: &log::Metadata<'_>) -> bool {
+            m.level() <= log::Level::Warn
+        }
+        fn log(&self, r: &log::Record<'_>) {
+            if self.enabled(r.metadata()) {
+                eprintln!("[{} {}] {}", r.level(), r.target(), r.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    if log::set_logger(&Stderr).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
 }
 
 /// Review I4: closing the window of a call leaves the call at once (no other shell needs to sync): the media link is
@@ -2385,8 +2548,8 @@ fn parity_fixture(name: &str) -> std::path::PathBuf {
 macro_rules! parity {
     ($($test:ident => $name:literal $(; $why:literal)?),* $(,)?) => {$(
         #[test]
-        #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-        $(#[cfg_attr(target_os = "linux", ignore = $why)])?  // off Linux the line above already ignores it
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]
+        $(#[cfg_attr(any(target_os = "linux", target_os = "macos"), ignore = $why)])?  // elsewhere the line above already ignores it
         fn $test() {
             let report = dilla_parity::screen::assert_screen(&parity_fixture($name))
                 .unwrap_or_else(|e| panic!("voice/{} differs from its web reference: {e}", $name));

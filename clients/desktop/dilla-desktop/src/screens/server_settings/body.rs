@@ -227,8 +227,16 @@ enum Dialogue {
 
 /// A link made and not yet copied (shown once).
 struct Made {
+    /// The invite the link opens: a revoke of it takes the card away with the row.
+    id: InviteId,
     url: String,
     note: String,
+}
+
+/// The made link's card after `revoked` is revoked: gone when it showed that link, which no longer opens anything (the
+/// "Active links" row and the card go together; beta.5's web left a dead link with a working Copy), else as it was.
+fn after_revoke(made: Option<Made>, revoked: InviteId) -> Option<Made> {
+    made.filter(|m| m.id != revoked)
 }
 
 pub struct Body {
@@ -1424,6 +1432,7 @@ impl Body {
                 Ok(created) => {
                     this.host = host_of(&created.url);
                     this.made = Some(Made {
+                        id: created.id,
                         url: created.url,
                         note,
                     });
@@ -1447,11 +1456,18 @@ impl Body {
     }
 
     fn copy_invite(&mut self, cx: &mut Context<Self>) {
-        let Some(made) = self.made.take() else {
+        let Some(url) = self.made.as_ref().map(|m| m.url.clone()) else {
+            log::debug!("invite copy: pressed with no link shown");
             return;
         };
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(made.url));
-        self.say(t("serverSettings.invites.copied").to_owned(), cx);
+        // InvitesSection.tsx `copy`: the link goes away only once it is on the clipboard; a refused copy keeps it and
+        // says so (`invite.blocked`).
+        if copy_link(&url, cx) {
+            self.made = None;
+            self.say(t("serverSettings.invites.copied").to_owned(), cx);
+        } else {
+            self.invite_message = Some((t("invite.blocked").to_owned().into(), false));
+        }
         cx.notify();
     }
 
@@ -1465,10 +1481,13 @@ impl Body {
         self.busy_invite = Some(invite);
         self.invite_message = None;
         let reply = client.server_admin().revoke_invite(self.community, invite);
-        self.run(reply, window, cx, |this, result, _, cx| {
+        self.run(reply, window, cx, move |this, result, _, cx| {
             this.busy_invite = None;
             match result {
-                Ok(()) => this.say(t("admin.invites.revoked").to_owned(), cx),
+                Ok(()) => {
+                    this.made = after_revoke(this.made.take(), invite);
+                    this.say(t("admin.invites.revoked").to_owned(), cx);
+                }
                 Err(e) => {
                     this.invite_message = Some((
                         if e.forbidden() {
@@ -1568,9 +1587,32 @@ impl Render for Body {
     }
 }
 
+/// Puts `url` on the clipboard and reads it back: whether the clipboard now holds it (the web's `copied()` promise).
+/// The debug line tells a press that never arrived (no line) from a clipboard that refused the text (`false`).
+fn copy_link(url: &str, cx: &mut gpui::App) -> bool {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.to_owned()));
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .is_some_and(|text| text == url);
+    log::debug!("invite copy: pressed, the clipboard holds the link: {copied}");
+    copied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Settings → Invites → Copy puts the link on the clipboard and says so (Mac report, 2026-11-16).
+    #[gpui::test]
+    fn copy_puts_the_link_on_the_clipboard(cx: &mut gpui::TestAppContext) {
+        let url = "https://chat.example/invite/Zk3x9QmT2vPLw8";
+        assert!(cx.update(|cx| copy_link(url, cx)));
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|i| i.text()).as_deref(),
+            Some(url)
+        );
+    }
 
     fn refusal(status: u16, code: &str) -> ApiError {
         ApiError {
@@ -1580,6 +1622,22 @@ mod tests {
             retry_after_ms: None,
             extra: Vec::new(),
         }
+    }
+
+    #[test]
+    fn revoking_the_made_link_takes_its_card_away() {
+        let made = || {
+            Some(Made {
+                id: InviteId([7; 16]),
+                url: "https://dilla.chat/i/CODE".into(),
+                note: String::new(),
+            })
+        };
+        assert!(after_revoke(made(), InviteId([7; 16])).is_none());
+        let other =
+            after_revoke(made(), InviteId([8; 16])).expect("another link's revoke keeps the card");
+        assert_eq!(other.url, "https://dilla.chat/i/CODE");
+        assert!(after_revoke(None, InviteId([7; 16])).is_none());
     }
 
     /// BotSection.tsx `joinRoleDirty` and `reset`: dirty only once the setting is read and the pick differs from it;

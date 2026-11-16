@@ -78,7 +78,7 @@ pub fn feed_of(
         community,
         channel,
         room: room.name.clone(),
-        bot: catalog.bot_name.clone(),
+        bot: member_name(state, community, bot_user),
         now_ms,
     })
 }
@@ -466,7 +466,7 @@ mod tests {
         }
     }
 
-    /// A community with a voice channel "Lounge" whose call holds this device and, with `bot_in`, the pinned Bot "Glenn".
+    /// A community with a voice channel "Lounge" whose call holds this device and, with `bot_in`, the pinned Bot "Mr. Kim".
     fn in_call(bot_in: bool, phase: dilla_client::calls::CallPhase) -> (AppState, ChannelId) {
         use dilla_client::state::bot::{BotCatalogView, BotStatus, BotStatusState};
         use dilla_client::state::voice::{VoiceCall, VoiceParticipant};
@@ -496,7 +496,6 @@ mod tests {
                 },
                 bot_channels: None,
                 bot_user: Some(bot),
-                bot_name: "Glenn".into(),
                 fingerprint: None,
             },
         );
@@ -522,6 +521,19 @@ mod tests {
                 participants,
             },
         );
+        // The renamed Bot (`PATCH /bot/profile`): its member row names it.
+        s.members.insert(
+            community,
+            vec![dilla_client::state::Member {
+                user_id: bot,
+                username: "bot-7f3a".into(),
+                display: "Mr. Kim".into(),
+                kind: 1,
+                role_ids: Vec::new(),
+                status_msg: String::new(),
+                bio: String::new(),
+            }],
+        );
         s.voice.call.phase = phase;
         s.voice.call.channel = Some(channel);
         s.voice.call.community = Some(community);
@@ -537,7 +549,10 @@ mod tests {
         let feed = feed_of(&Arc::new(s), None, 5).expect("in a call with the Bot");
         assert_eq!(feed.channel, channel);
         assert_eq!(feed.community, CommunityId([7; 16]));
-        assert_eq!((feed.room.as_str(), feed.bot.as_str()), ("Lounge", "Glenn"));
+        assert_eq!(
+            (feed.room.as_str(), feed.bot.as_str()),
+            ("Lounge", "Mr. Kim")
+        );
         assert_eq!(feed.now_ms, 5);
         let (s, _) = in_call(false, CallPhase::In);
         assert!(

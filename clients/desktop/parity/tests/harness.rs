@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dilla_parity::{
-    Driver, Os, ParityFailure, RgbaImage, Tolerance, assert_parity, assert_parity_with, target_dir,
-    tolerance_for,
+    Driver, ElementInfo, GlyphCoverage, Os, ParityFailure, RgbaImage, Tolerance, assert_parity,
+    assert_parity_with, glyph_coverage, target_dir, tolerance_for,
 };
 use image::Rgba;
 
@@ -170,9 +170,39 @@ fn scale_mismatch_fails() {
 
 #[test]
 fn tolerance_file_ships_measured_linux_and_exact_placeholders() {
-    for os in [Os::MacOs, Os::Windows] {
-        assert_eq!(tolerance_for(os).unwrap(), EXACT);
-    }
+    assert_eq!(tolerance_for(Os::Windows).unwrap(), EXACT);
+    // macOS: measured on macos-15 against the Linux references (TOLERANCES.md "macOS"), with per-screen colour limits.
+    let mac = tolerance_for(Os::MacOs).unwrap();
+    assert_eq!(
+        (
+            mac.max_delta,
+            mac.max_pct,
+            mac.chrome_max_delta,
+            mac.chrome_max_pct
+        ),
+        (96, 0.8, 16, 0.4)
+    );
+    assert_eq!(
+        (mac.colour_max_delta, mac.colour_radius, mac.colour_max_pct),
+        (2, 2, 0.3)
+    );
+    let profile = dilla_parity::tolerance_for_screen(Os::MacOs, "user-settings/profile").unwrap();
+    assert_eq!(
+        profile,
+        Tolerance {
+            colour_max_pct: 0.92,
+            ..mac
+        }
+    );
+    assert_eq!(
+        dilla_parity::tolerance_for_screen(Os::Linux, "user-settings/profile").unwrap(),
+        tolerance_for(Os::Linux).unwrap(),
+        "the per-screen limits are macOS only"
+    );
+    assert_eq!(
+        dilla_parity::tolerance_for_screen(Os::MacOs, "shell/channel-view").unwrap(),
+        mac
+    );
     assert_eq!(
         tolerance_for(Os::Linux).unwrap(),
         Tolerance {
@@ -202,8 +232,14 @@ fn click_and_read_element() {
     let root = driver.element("root").expect("the root element exists");
     assert_eq!(root.id, "root");
     // A data root opens the shipping window (Task 8): the start window grown, in place, to the compact authentication
-    // shape, 400x620 (`screens/shell/window.rs`: COMPACT_WIDTH, AUTH_HEIGHT), which lays out at that size.
-    assert_eq!((root.width, root.height), (400.0, 620.0));
+    // width (`screens/shell/window.rs`: COMPACT_WIDTH, 400) and, since the window fits its card as beta.5's did
+    // (`startDesktopWindowLayout`), a height between the shape's floor and the old fixed 620.
+    assert_eq!(root.width, 400.0);
+    assert!(
+        (220.0..=620.0).contains(&root.height),
+        "the authentication window fits its card: {}",
+        root.height
+    );
     assert_eq!((root.x, root.y), (0.0, 0.0));
     assert!(driver.element("no-such-element").is_none());
 
@@ -215,6 +251,134 @@ fn click_and_read_element() {
     );
 
     let shot = driver.screenshot();
-    // The headless platform renders at scale 2.0, so the 400x620 window is 800x1240 device pixels.
-    assert_eq!(shot.dimensions(), (800, 1240));
+    // The headless platform renders at scale 2.0: the shot is the window in device pixels.
+    let root = driver.element("root").expect("the root element exists");
+    assert_eq!(
+        shot.dimensions(),
+        ((root.width * 2.0) as u32, (root.height * 2.0) as u32)
+    );
+}
+
+// ---- macOS CI plan, Tasks 1 and 2: glyphs drawn, and the title bar clear of the traffic lights ---------------------
+
+fn shell_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join(format!("{name}.json"))
+}
+
+/// Launches a shell fixture as `assert_screen` draws it (its steps replayed, the pointer and focus at rest), settled.
+fn launch_shell(name: &str, env: &[(&str, &str)]) -> Driver {
+    let path = shell_fixture(name);
+    let loaded = dilla_parity::fixture::load(&path, Os::current()).unwrap();
+    let mut driver = Driver::launch_fixture(&path, loaded.shot_path.as_deref(), env);
+    driver.wait_idle();
+    for step in &loaded.fixture.steps {
+        dilla_parity::screen::replay(&mut driver, step);
+    }
+    dilla_parity::screen::rest_before_frame(&mut driver, &loaded.fixture);
+    driver.wait_idle();
+    driver
+}
+
+/// The glyph coverage of `shell/channel-view` drawn with `env`.
+fn channel_view_glyphs(env: &[(&str, &str)]) -> GlyphCoverage {
+    let mut driver = launch_shell("shell/channel-view", env);
+    let shot = driver.screenshot();
+    let lines = driver.text_bounds();
+    let coverage = glyph_coverage(&shot, &lines, 2.0);
+    println!("GLYPHS {env:?}: {coverage:?}");
+    coverage
+}
+
+/// The bug of 2026-11-16: a macOS build without gpui-pre-platform's `font-kit` drew every line of text as nothing
+/// (gpui-pre-macos falls back to `NoopTextSystem`). Every line box the app reports must hold ink.
+/// Measured on `shell/channel-view` (GLYPHS line): Linux (lavapipe) 66 lines, 66 inked, ink 15.2 %; macOS (Metal on
+/// macos-15, gpui-proofs run 43833315593) 66 lines, 66 inked, ink 17.2 %. Under `NoopTextSystem` both report 66 lines
+/// and 0 inked. The thresholds (30 lines, 90 % inked) sit far from both.
+#[test]
+#[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
+fn text_draws_glyphs() {
+    let c = channel_view_glyphs(&[]);
+    assert!(
+        c.lines >= 30,
+        "only {} text lines on screen: {c:?}",
+        c.lines
+    );
+    assert!(
+        c.inked_lines * 10 >= c.lines * 9,
+        "{} of {} text lines hold no glyph (a text system that draws nothing?): {c:?}",
+        c.lines - c.inked_lines,
+        c.lines
+    );
+}
+
+/// The glyph test's negative control: the same screen drawn with GPUI's `NoopTextSystem` (what a macOS build without
+/// `font-kit` gets) has no inked line, so `text_draws_glyphs` would fail on it.
+#[test]
+#[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
+fn noop_text_system_draws_no_glyphs() {
+    let c = channel_view_glyphs(&[("DILLA_AUTOMATION_TEXT_SYSTEM", "noop")]);
+    assert_eq!(c.inked_lines, 0, "the Noop text system drew ink: {c:?}");
+    assert!(
+        c.inked_lines * 10 < c.lines * 9 || c.lines < 30,
+        "text_draws_glyphs would pass on the Noop frame: {c:?}"
+    );
+}
+
+fn intersects(a: &ElementInfo, b: &ElementInfo) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+/// The tracked elements a shell fixture's title bar may draw under the traffic lights: the window's root, the bar
+/// itself (the window's drag region) and the compact windows' drag strip.
+const UNDER_THE_LIGHTS: [&str; 3] = ["root", "shell-topbar", "window-drag"];
+
+/// What of `name`'s frame (drawn with `env`) lies in the traffic lights' rect: text lines and tracked elements.
+fn under_the_lights(name: &str, env: &[(&str, &str)]) -> Vec<String> {
+    let mut driver = launch_shell(name, env);
+    let lights = driver.traffic_lights();
+    let mut hits: Vec<String> = driver
+        .text_bounds()
+        .iter()
+        .filter(|t| intersects(t, &lights))
+        .map(|t| format!("text {} {} {}x{}", t.x, t.y, t.width, t.height))
+        .collect();
+    hits.extend(
+        driver
+            .elements()
+            .iter()
+            .filter(|e| !UNDER_THE_LIGHTS.contains(&e.id.as_str()) && intersects(e, &lights))
+            .map(|e| format!("{} {} {} {}x{}", e.id, e.x, e.y, e.width, e.height)),
+    );
+    println!("UNDER THE LIGHTS {name} {env:?} ({lights:?}): {hits:?}");
+    hits
+}
+
+/// The bug of 2026-11-16: the traffic lights sat over the top bar's brand. On macOS the shipping window's bar (a fixture
+/// drawn with the window's controls) keeps every text line and every tracked element but the bar itself out of the
+/// rect the lights are drawn in (`dilla_desktop::MAC_TRAFFIC_LIGHTS`, from the window options' `MAC_WINDOW_BUTTONS`).
+#[test]
+// Compiled on macOS only, not ignored elsewhere: the Linux shard's `cargo test -p dilla-parity -- --ignored` would run it there.
+#[cfg(target_os = "macos")]
+fn macos_header_clears_the_traffic_lights() {
+    for name in ["shell/channel-view", "shell/channel-view-b"] {
+        let hits = under_the_lights(name, &[("DILLA_AUTOMATION_WINDOW_CONTROLS", "1")]);
+        assert!(
+            hits.is_empty(),
+            "{name}: drawn under the macOS traffic lights: {hits:?}"
+        );
+    }
+}
+
+/// The clearance test's negative control, on every OS with a renderer: a bar without the macOS inset (a fixture's web bar,
+/// 14 px in) puts its brand under the lights, and the check sees it.
+#[test]
+#[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
+fn a_bar_without_the_inset_is_under_the_traffic_lights() {
+    let hits = under_the_lights("shell/channel-view", &[]);
+    assert!(
+        hits.iter().any(|h| h.starts_with("topbar-brand ")),
+        "the brand mark of a bar 14 px in must be under the lights: {hits:?}"
+    );
 }

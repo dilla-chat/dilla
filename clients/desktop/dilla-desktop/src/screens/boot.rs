@@ -13,8 +13,9 @@
 //! - `store-lost`: the key that opens the instance's store is gone from the keychain. Reset this browser behind a
 //!   confirmation wipes the data the key opened (Boot.tsx `resetDevice`); `resetting` shows while it runs.
 //!
-//! The words are the web's (`boot.*`): "Reload the page to try again" is what the web says, and parity keeps it; the
-//! action restarts the client.
+//! The words are the web's (`boot.*`) except where they name the browser or a page reload: the desktop's own wording
+//! (packages/web/src/strings/desktopOverrides.ts) says "Reload to try again, or switch to another instance". The action
+//! restarts the client.
 
 use std::rc::Rc;
 
@@ -459,7 +460,7 @@ mod tests {
         };
         assert_eq!(
             fatal.detail().as_deref(),
-            Some("Error E_NETWORK. Reload the page to try again.")
+            Some("Error E_NETWORK. Reload to try again, or switch to another instance.")
         );
         assert_eq!(fatal.action_key(), Some("boot.error.action"));
         for key in [Boot::Loading.status_key(), fatal.status_key()] {

@@ -340,7 +340,7 @@ pub fn open_manager(
             let weak = view.downgrade();
             cx.subscribe(&view, move |_, event: &ManagerEvent, cx| {
                 let ManagerEvent::Open { instance, invite } = event;
-                if let Err(e) = open_instance(
+                if let Err(e) = open_from_manager(
                     cx,
                     &launch,
                     instance.clone(),
@@ -366,16 +366,51 @@ pub fn open_manager(
     Ok(handle)
 }
 
+/// The manager's "Open": opens instance `cfg`'s window ([`open_instance`]) and, once it is open, closes the manager, as
+/// beta.5's `dilla:manager` "connect" did (main.ts:522-526, "One window: the instance replaces the picker"; picker.spec.ts
+/// "Connect closes the picker: exactly one window, the instance"). "Your instances…" in the tray and the app menu opens
+/// a fresh one. A window that did not open keeps the manager, with its error.
+pub fn open_from_manager(
+    cx: &mut App,
+    launch: &Launch,
+    cfg: InstanceConfig,
+    invite: Option<String>,
+    allow_loopback: bool,
+) -> Result<(), OpenError> {
+    open_instance(cx, launch, cfg, invite, allow_loopback)?;
+    if let Some(manager) = Registry::of(cx).manager {
+        manager
+            .update(cx, |_, window, _| window.remove_window())
+            .ok();
+    }
+    Ok(())
+}
+
+/// beta.5 `windowChrome` `trafficLightPosition: { x: 12, y: 10 }`: the manager's macOS traffic lights, in its 32px bar.
+pub const MANAGER_TRAFFIC_LIGHTS: (f32, f32) = (12.0, 10.0);
+
 /// The manager window's options at `bounds`: no title through the options (the window sets it once, as the main
-/// window does), the preview's app id, and a smallest width.
+/// window does), the preview's app id, and a smallest width. Its title bar is its own (beta.5 `titleBarStyle:
+/// 'hidden'`, manager.html's 32px `.titlebar`): on macOS the traffic lights sit in it at [`MANAGER_TRAFFIC_LIGHTS`];
+/// elsewhere the window has no OS frame and draws its own buttons.
 pub fn manager_options(bounds: Bounds<gpui::Pixels>) -> WindowOptions {
+    #[cfg(target_os = "macos")]
+    let lights = Some(gpui::point(
+        px(MANAGER_TRAFFIC_LIGHTS.0),
+        px(MANAGER_TRAFFIC_LIGHTS.1),
+    ));
+    #[cfg(not(target_os = "macos"))]
+    let lights = None;
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(MANAGER_MIN_WIDTH), px(0.0))),
         titlebar: Some(TitlebarOptions {
             title: None,
-            ..Default::default()
+            appears_transparent: true,
+            traffic_light_position: lights,
         }),
+        #[cfg(not(target_os = "macos"))]
+        window_decorations: Some(gpui::WindowDecorations::Client),
         app_id: Some(crate::APP_ID.to_owned()),
         ..Default::default()
     }

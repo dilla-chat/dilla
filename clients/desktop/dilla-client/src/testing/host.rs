@@ -763,7 +763,14 @@ pub async fn wait_for(
             }
         }
         let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "timed out waiting for {what}");
+        if left.is_zero() {
+            // Where the client stood: a wait that never ends tells a connection that never came from a slow one.
+            let s = rx.borrow().clone();
+            panic!(
+                "timed out waiting for {what} ({:?}, phase {:?})",
+                s.connection, s.account.phase
+            );
+        }
         let _ = tokio::time::timeout(left, rx.changed()).await;
     }
 }
