@@ -1734,6 +1734,10 @@ impl Window {
 
         let accessibility_force_disabled = cx.accessibility_force_disabled;
         let a11y_active_flag = Arc::new(AtomicBool::new(false));
+        // DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the sixth change): the last frame's whole tree, which the
+        // activation callback hands a lazily activating adapter (macOS, Windows) instead of the root-only tree.
+        let a11y_latest_tree: Arc<parking_lot::Mutex<Option<accesskit::TreeUpdate>>> =
+            Arc::default();
 
         #[cfg(not(target_family = "wasm"))]
         if !accessibility_force_disabled {
@@ -1755,6 +1759,7 @@ impl Window {
             platform_window.a11y_init(crate::A11yCallbacks {
                 activation: {
                     let active_flag = a11y_active_flag.clone();
+                    let latest_tree = a11y_latest_tree.clone();
                     Box::new(move || {
                         log::info!("Accessibility activated");
                         active_flag.store(true, SeqCst);
@@ -1767,7 +1772,11 @@ impl Window {
                                 )
                             })
                             .log_err();
-                        Some(initial_tree.clone())
+                        // DILLA PATCH (the sixth change): the last frame's whole tree, not upstream's root-only one.
+                        Some(crate::window::a11y::tree_for_activation(
+                            &latest_tree,
+                            &initial_tree,
+                        ))
                     })
                 },
                 action: Box::new(move |request| {
@@ -2431,7 +2440,9 @@ impl Window {
                 a11y_active_flag,
                 accessibility_force_disabled,
                 initial_window_title,
-            ),
+            )
+            // DILLA PATCH (the sixth change).
+            .sharing_latest_tree(a11y_latest_tree),
         })
     }
 
@@ -3129,6 +3140,28 @@ impl Window {
         self.refresh();
     }
 
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the sixth change): builds this window's accessibility tree
+    /// before any activation, as a macOS or Windows window does, and refreshes, so a test on Linux can check what the
+    /// adapter's activation callback hands over ([`Self::a11y_tree_for_activation`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build_a11y_before_activation_for_test(&mut self) {
+        self.a11y.build_before_activation_for_test();
+        self.refresh();
+    }
+
+    /// DILLA PATCH (the sixth change): the tree the platform adapter's activation callback would hand AccessKit now:
+    /// the last frame's whole tree where the window builds before activation, else the root-only tree.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn a11y_tree_for_activation(&self) -> accesskit::TreeUpdate {
+        let root = accesskit::Node::new(accesskit::Role::Window);
+        self.a11y.tree_for_activation_now(&accesskit::TreeUpdate {
+            nodes: vec![(ROOT_NODE_ID, root)],
+            tree: Some(accesskit::Tree::new(ROOT_NODE_ID)),
+            tree_id: accesskit::TreeId::ROOT,
+            focus: ROOT_NODE_ID,
+        })
+    }
+
     /// DILLA PATCH (the fifth change): the accessibility tree the most recent frame built (every node: GPUI sends the
     /// whole tree each frame), or `None` before a frame with accessibility active.
     #[cfg(any(test, feature = "test-support"))]
@@ -3431,7 +3464,11 @@ impl Window {
         let style = self.text_style();
         let scale = self.scale_factor();
         if scale.fract() == 0.0 {
-            let logical = f32::from(style.line_height.to_pixels(style.font_size, self.rem_size()));
+            let logical = f32::from(
+                style
+                    .line_height
+                    .to_pixels(style.font_size, self.rem_size()),
+            );
             px(crate::util::layout_length(logical, scale) / scale)
         } else {
             style.line_height_in_pixels(self.rem_size())
@@ -4045,7 +4082,9 @@ impl Window {
         self.a11y.sync_active_flag();
         let a11y_active_end_of_frame = self.a11y.is_active();
 
-        let should_send_a11y_update = a11y_active_start_of_frame && a11y_active_end_of_frame;
+        // DILLA PATCH (the sixth change): a window that builds before activation sends only once activated.
+        let should_send_a11y_update =
+            a11y_active_start_of_frame && a11y_active_end_of_frame && self.a11y.is_activated();
 
         if a11y_active_start_of_frame {
             // Harvest frame metadata for the debug dump while the live window
@@ -4057,6 +4096,8 @@ impl Window {
             };
             // clear the builder state regardless
             let tree_update = self.a11y.end_frame(frame_info);
+            // DILLA PATCH (the sixth change): kept for the activation callback.
+            self.a11y.keep_latest_tree(&tree_update);
 
             if should_send_a11y_update {
                 log::debug!(
