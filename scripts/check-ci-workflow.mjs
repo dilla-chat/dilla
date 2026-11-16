@@ -1694,7 +1694,13 @@ export const GPUI_MAC_PACKAGE_RUNS = [
   'codesign -dv --verbose=4 "$app"',
   'plutil -lint "$app/Contents/Info.plist"',
   'plutil -extract CFBundleURLTypes xml1 -o - "$app/Contents/Info.plist"', // the dilla: scheme (D12 superseded 2026-11-16)
+  // Layer 3 (plan 2026-11-16-gpui-macos-ci, Task 5): the packaged app driven through System Events, then always stopped.
+  'bash scripts/desktop-gpui-mac-ui.sh "$RUNNER_TEMP/zip-check/Dilla.app" "$RUNNER_TEMP/mac-ui"',
+  'if pgrep -f Dilla.app/Contents/MacOS/dilla-desktop; then pkill -9 -f Dilla.app/Contents/MacOS/dilla-desktop; fi',
 ];
+
+/** The gpui-mac-package steps that must run after a failed check (cleanup and the shots), by a fragment of their text. */
+export const GPUI_MAC_PACKAGE_ALWAYS = ['pkill -9 -f Dilla.app/Contents/MacOS/dilla-desktop', 'name: gpui-mac-ui'];
 
 /** The problems with the gpui-mac-package job of desktop-gpui.yml's text, if any. */
 function gpuiMacPackageProblems(text, file) {
@@ -1709,6 +1715,18 @@ function gpuiMacPackageProblems(text, file) {
   const runs = (Array.isArray(job.steps) ? job.steps : []).filter((s) => !/\bfalse\b/.test(String(s?.if ?? ''))).map((s) => String(s?.run ?? '')).join('\n');
   for (const fragment of GPUI_MAC_PACKAGE_RUNS) {
     if (!runs.includes(fragment)) problems.push(`${file}: gpui-mac-package must run \`${fragment}\``);
+  }
+  // The UI check fails the job (no `if`, no continue-on-error); its cleanup and its shots run after a failure too.
+  const steps = Array.isArray(job.steps) ? job.steps : [];
+  const ui = steps.find((s) => String(s?.run ?? '').includes(GPUI_MAC_PACKAGE_RUNS.find((f) => f.includes('desktop-gpui-mac-ui.sh'))));
+  if (ui && ('if' in ui || 'continue-on-error' in ui)) problems.push(`${file}: gpui-mac-package's macOS UI step must have no \`if\` and no continue-on-error`);
+  // A hung System Events call or helper must not hold one of the org's few macOS slots until the job's timeout.
+  if (ui && !(Number(ui['timeout-minutes']) > 0 && Number(ui['timeout-minutes']) <= 30)) problems.push(`${file}: gpui-mac-package's macOS UI step must have timeout-minutes of 30 or less`);
+  for (const fragment of GPUI_MAC_PACKAGE_ALWAYS) {
+    const step = steps.find((s) => String(s?.run ?? '').includes(fragment) || String(s?.with?.name ?? '') === fragment.replace(/^name: /, ''));
+    if (!step || String(step.if ?? '').replace(/\s/g, '') !== '${{!cancelled()}}' || 'continue-on-error' in step) {
+      problems.push(`${file}: gpui-mac-package's step with \`${fragment}\` must run with \`if: \${{ !cancelled() }}\``);
+    }
   }
   return problems;
 }
