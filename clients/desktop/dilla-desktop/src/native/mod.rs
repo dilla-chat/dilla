@@ -38,6 +38,7 @@ pub mod notifier;
 pub mod permissions;
 #[cfg(windows)]
 mod pipe_windows;
+pub mod popup_menu;
 pub mod quit;
 pub mod single_instance;
 pub mod tray;

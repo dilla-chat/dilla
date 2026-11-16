@@ -90,27 +90,42 @@ pub fn menu_popup_at(mac: bool) -> (f32, f32) {
     (if mac { 80.0 } else { 8.0 }, 32.0)
 }
 
-/// The windows whose title-bar menu is open, by id.
+/// The windows whose drawn title-bar menu is open, by id, with the focus the window had when it opened (the menu's
+/// Edit rows act on it).
 #[derive(Default)]
-struct WindowMenus(std::collections::HashSet<gpui::WindowId>);
+struct WindowMenus(std::collections::HashMap<gpui::WindowId, Option<FocusHandle>>);
 
 impl gpui::Global for WindowMenus {}
 
 /// The title-bar menu of `window` is open.
 pub fn window_menu_open(window: &Window, cx: &App) -> bool {
     cx.try_global::<WindowMenus>()
-        .is_some_and(|m| m.0.contains(&window.window_handle().window_id()))
+        .is_some_and(|m| m.0.contains_key(&window.window_handle().window_id()))
 }
 
-pub(crate) fn set_window_menu(window: &mut Window, open: bool, cx: &mut App) {
+fn set_window_menu(window: &mut Window, open: bool, cx: &mut App) -> Option<FocusHandle> {
     let id = window.window_handle().window_id();
+    let focus = window.focused(cx);
     let set = &mut cx.default_global::<WindowMenus>().0;
-    if open {
-        set.insert(id);
+    let before = if open {
+        set.insert(id, focus);
+        None
     } else {
-        set.remove(&id);
-    }
+        set.remove(&id).flatten()
+    };
     window.refresh();
+    before
+}
+
+/// The title bar's menu button was pressed: the OS's own popup of the application menu where there is one (macOS,
+/// Windows: [`crate::native::popup_menu`]), else the drawn list ([`window_menu`]) opens or closes.
+pub(crate) fn press_window_menu(window: &mut Window, cx: &mut App) {
+    let at = menu_popup_at(cfg!(target_os = "macos"));
+    if crate::native::popup_menu::show(window, at, cx) {
+        return;
+    }
+    let open = window_menu_open(window, cx);
+    set_window_menu(window, !open, cx);
 }
 
 /// The menu's rows: the application menu's (beta.5 popped `Menu.getApplicationMenu()` up, so the button shows what the
@@ -188,12 +203,15 @@ pub fn window_menu(window: &Window, cx: &App) -> Option<gpui::AnyElement> {
             .no_trigger(None)
             .at(gpui::point(Pixels::from(x), Pixels::from(y)))
             .on_open_change(|open, window, cx| {
-                if !open {
-                    set_window_menu(window, false, cx);
+                if !open && let Some(focus) = set_window_menu(window, false, cx) {
+                    window.focus(&focus, cx);
                 }
             })
             .on_select(move |id, window, cx| {
-                set_window_menu(window, false, cx);
+                // The row acts where the focus was when the menu opened (Edit's rows on the focused text field).
+                if let Some(focus) = set_window_menu(window, false, cx) {
+                    window.focus(&focus, cx);
+                }
                 if let Some(action) = id.parse::<usize>().ok().and_then(|i| actions.get(i)) {
                     window.dispatch_action(action.boxed_clone(), cx);
                 }
@@ -204,7 +222,8 @@ pub fn window_menu(window: &Window, cx: &App) -> Option<gpui::AnyElement> {
 
 /// The menu button (`.dw-desktop-titlebar__menu`): 32x28, 8px down, [`menu_button_left`] in, `--fg-2` on clear, the
 /// three-line glyph (14px, 1.5 stroke on a 16 grid). It opens and closes the window's menu.
-fn menu_button(open: bool) -> impl IntoElement {
+/// Its tooltip is the window's instance (DesktopTitlebar.tsx `title={info.instance}`).
+fn menu_button(open: bool, host: gpui::SharedString) -> impl IntoElement {
     // `M2 4h12M2 8h12M2 12h12` in a 16px box drawn at 14px: 10.5px lines, 1.3px thick, at 3.5, 7 and 10.5.
     let scale = css::WINDOW_GLYPH / 16.0;
     let glyph = div()
@@ -236,7 +255,11 @@ fn menu_button(open: bool) -> impl IntoElement {
         .cursor_pointer()
         .focus_visible(|s| s.shadow(focus_ring()))
         .hover(|s| s.bg(color::HOVER))
-        .on_click(move |_: &ClickEvent, window, cx| set_window_menu(window, !open, cx))
+        .when(!host.is_empty(), |b| {
+            b.tooltip(tooltip(host.clone(), &[]))
+                .tooltip_show_delay(SHOW_DELAY)
+        })
+        .on_click(|_: &ClickEvent, window, cx| press_window_menu(window, cx))
         .child(glyph)
 }
 
@@ -273,6 +296,8 @@ pub struct TitlebarModel {
     pub voice: Option<String>,
     /// The title-bar menu is open ([`window_menu_open`]).
     pub menu_open: bool,
+    /// The window's instance, the menu button's tooltip (beta.5 `info.instance`).
+    pub instance: String,
 }
 
 #[derive(Clone)]
@@ -615,7 +640,8 @@ pub fn render(
         .child(end)
         .relative()
         .when(model.controls, |bar| {
-            bar.child(menu_button(model.menu_open)).children(menu)
+            bar.child(menu_button(model.menu_open, model.instance.clone().into()))
+                .children(menu)
         });
     #[cfg(feature = "automation")]
     let bar = bar.child(crate::automation::bounds_probe("shell-topbar"));
@@ -715,6 +741,25 @@ mod tests {
 
     /// The menu lists the menu bar's rows under their menus' names; separators become rules, disabled rows go, and a
     /// row's id is its action's index.
+    /// The drawn menu keeps the focus the window had when it opened, and gives it back on closing, so an Edit row acts
+    /// on the focused text field.
+    #[gpui::test]
+    fn the_drawn_menu_gives_the_focus_back(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let field = cx.focus_handle();
+            window.focus(&field, cx);
+            assert_eq!(set_window_menu(window, true, cx), None);
+            assert!(window_menu_open(window, cx));
+            let back = set_window_menu(window, false, cx);
+            assert!(
+                back.is_some_and(|h| h == field),
+                "the field's focus comes back"
+            );
+            assert!(!window_menu_open(window, cx));
+        });
+    }
+
     #[test]
     fn the_menu_lists_the_menu_bars_rows() {
         use gpui::{Menu, MenuItem};

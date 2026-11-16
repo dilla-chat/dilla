@@ -1740,6 +1740,11 @@ impl Render for ShellView {
                 bell_focus: Some(bell_focus),
                 voice: call_room,
                 menu_open: titlebar::window_menu_open(window, cx),
+                instance: self
+                    .client
+                    .as_ref()
+                    .map(|c| c.instance().server.to_string())
+                    .unwrap_or_default(),
             },
             &titlebar::TitlebarHandlers {
                 // TopBar.tsx's voice chip opens the call.

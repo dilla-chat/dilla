@@ -321,6 +321,8 @@ impl AuthFrame {
         let card = card_edge(div().p(px(CARD_PAD)).bg(color::BG_2), desktop, |c| {
             c.w_full().max_w(px(CARD_MAX))
         })
+        .relative()
+        .children(dilla_desktop_ui::components::onboarding::frame::card_measure(desktop))
         .flex()
         .flex_col()
         .gap(px(CARD_GAP))
