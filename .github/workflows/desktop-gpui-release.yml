@@ -4,8 +4,9 @@ name: desktop gpui release
 #   dilla-<v>-linux-x64.AppImage, .tar.gz, .deb, .rpm, .aur.tar.gz (the AUR recipe, a release asset only: nothing here
 #   or anywhere publishes it to the AUR) and SHA256SUMS over the five, each with a GitHub build-provenance attestation.
 #
-# M1 is keyless. A tag run uses the workflow file at the tagged commit, so this workflow reads no secret and enters no
-# environment; the signed feed, macOS and Windows (M2) come from main's own workflow_run workflow.
+# This workflow is keyless. A tag run uses the workflow file at the tagged commit, so it reads no secret and enters no
+# environment. It leaves the release a DRAFT: main's own workflow_run workflow, desktop-gpui-sign.yml (Milestone 2),
+# adds the macOS and Windows assets, signs the update feed, completes SHA256SUMS and only then publishes it.
 #
 # The jobs, in order, each needing the ones before it:
 #   tag          the tag is the ref the run is on and names the version; its commit is on main, has a green
@@ -18,8 +19,8 @@ name: desktop gpui release
 #   smoke        installs each asset in a clean Ubuntu 24.04, Debian 13, Fedora 41 or Arch container and runs
 #                `dilla-desktop --version`; upgrades beta.5's deb and rpm in place; launches the AppImage under Xvfb
 #                (scripts/desktop-gpui-smoke-linux.sh)
-#   publish      a draft prerelease with the six files, re-downloaded and checked against SHA256SUMS, and only then
-#                published: releases here are immutable once published, so nothing is published half-uploaded
+#   publish      a draft prerelease with the six files, re-downloaded and checked against SHA256SUMS, and left a
+#                draft: releases here are immutable once published, and desktop-gpui-sign.yml publishes it complete
 #
 # workflow_dispatch rebuilds the release of an existing tag that has none yet (say, after a failed run): choose the
 # tag itself as the ref in "Use workflow from" and type the same tag; the tag job refuses a mismatch. A release that
@@ -263,8 +264,8 @@ jobs:
         env:
           SHA: ${{ needs.tag.outputs.sha }}
         run: node scripts/desktop-gpui-release-notes.mjs "$VERSION" "$SHA" > "$RUNNER_TEMP/notes.md"
-      # A draft first: a published release is immutable, so it is published only once every file is attached and
-      # re-downloaded intact.
+      # A draft: a published release is immutable, so desktop-gpui-sign.yml publishes it once the macOS and Windows
+      # files are attached too. This workflow never publishes.
       - name: Create the draft prerelease with every asset
         env:
           GH_TOKEN: ${{ github.token }}
@@ -282,7 +283,3 @@ jobs:
           test "$(ls | wc -l)" -eq 6
           cmp SHA256SUMS "$GITHUB_WORKSPACE/dist/SHA256SUMS"
           sha256sum --check --strict SHA256SUMS
-      - name: Publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$TAG" --draft=false

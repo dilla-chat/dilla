@@ -1,0 +1,465 @@
+# The keyed half of a native desktop release (GPUI release plan, Milestone 2, Task 14a). desktop-gpui-release.yml
+# (a desktop-gpui-v* tag run, keyless) leaves the release a DRAFT with the five Linux assets and SHA256SUMS. When it
+# succeeds, this workflow builds and notarizes the macOS app, builds the Windows installer, signs the update feed over
+# every asset, attaches the new files to the draft, publishes it and deploys the feed to Pages.
+#
+# Why a separate workflow: a tag run uses the workflow file at the tagged commit, which anyone who can push a tag can
+# edit. GitHub always runs main's copy of a workflow_run workflow, so only main's code ever enters the desktop-release
+# environment (deployment policy: main only). The triggering run is an untrusted hint; the gate re-derives the tag, its
+# commit, the green runs, the draft and the Linux assets' attestations from the API (scripts/desktop-gpui-gate.mjs).
+#
+# Secrets (Review Focus 3): each is named in exactly one step's env, in a job that enters `environment: desktop-release`:
+#   build-mac  "Package, sign and notarize ..."  CSC_LINK, CSC_KEY_PASSWORD, APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER
+#   sign       "Sign the feed ..."              DESKTOP_METADATA_KEY_A
+# DESKTOP_METADATA_KEY_A lives in the environment; the Apple and certificate secrets are repository secrets today (as
+# beta.5 left them) and work the same if they move into the environment. Pinned by scripts/check-ci-workflow.mjs
+# (checkDesktopGpuiSignWorkflow).
+#
+# The jobs:
+#   gate       main's first attempt, alone; tag -> commit -> green release run -> on main, Cargo version -> green
+#              desktop-gpui push run -> draft prerelease by github-actions[bot] with exactly the Linux files -> their
+#              digests equal SHA256SUMS and the build-provenance attestation subjects. Hands the verified files on.
+#   build-mac  macos-15, desktop-release: the release binary from the tagged commit (pinned libwebrtc, --locked, no
+#              cache), Dilla.app signed with Developer ID, notarized and stapled, the DMG and the updater's zip
+#   build-win  windows-latest, keyless: the static-CRT release binary and the Inno Setup installer (unsigned, D10)
+#   sign       desktop-release: the signed feed over all eight assets (scripts/desktop-gpui-feed.mjs)
+#   publish    attaches the macOS and Windows files to the draft, completes SHA256SUMS, re-downloads and checks every
+#              file against it and the signed feed, then takes the release out of draft
+#   feed       github-pages: the Pages site keeping beta.5's beta/ files byte for byte plus gpui-alpha/
+#              (scripts/desktop-gpui-pages.mjs), then the live site is checked
+# No AUR job: the recipe is a release asset only (D4).
+#
+# Only the first attempt runs (every job but feed refuses a re-run: a partial re-run would reuse the gate's outputs
+# without re-running it). Recovery and the dry-run tag desktop-gpui-v0.0.0-alpha.0 (D9: everything but the publish
+# step and the feed job) are in clients/desktop/RELEASING.md.
+name: desktop gpui sign
+on:
+  workflow_run:
+    workflows: ['desktop gpui release']
+    types: [completed]
+# No workflow concurrency group: GitHub keeps one pending run per group and silently cancels it when a third arrives.
+# Every run starts, and the gate fails loudly while another run of this workflow is queued or in progress.
+permissions: {}
+jobs:
+  gate:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    # contents: write only because a draft release and its files are visible only to a token that can write; the gate
+    # runs main's code and changes nothing. actions: read for the runs, attestations: read for gh attestation verify.
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    outputs:
+      tag: ${{ steps.gate.outputs.tag }}
+      version: ${{ steps.gate.outputs.version }}
+      sha: ${{ steps.gate.outputs.sha }}
+      release_run: ${{ steps.gate.outputs.release_run }}
+      release_id: ${{ steps.gate.outputs.release_id }}
+      sums_sha256: ${{ steps.gate.outputs.sums_sha256 }}
+      dry_run: ${{ steps.gate.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Gate (re-derives tag, commit, green runs, the draft and its attestations)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HINT_TAG: ${{ github.event.workflow_run.head_branch }}
+          HINT_RUN: ${{ github.event.workflow_run.id }}
+        run: node scripts/desktop-gpui-gate.mjs gate "$RUNNER_TEMP/draft"
+      - name: Hand on the verified Linux files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-gpui-linux-verified
+          path: ${{ runner.temp }}/draft
+          if-no-files-found: error
+          retention-days: 3
+
+  build-mac:
+    needs: [gate]
+    runs-on: macos-15
+    timeout-minutes: 150
+    environment: desktop-release
+    # id-token and attestations: write sign the build-provenance attestations of the two macOS assets.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      dmg_sha256: ${{ steps.digests.outputs.dmg_sha256 }}
+      zip_sha256: ${{ steps.digests.outputs.zip_sha256 }}
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+      SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - name: First attempt only
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: The checkout is the gated commit
+        run: test "$(git rev-parse HEAD)" = "$SHA"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: rustup show active-toolchain
+      # fetch-libwebrtc.sh checks its digest with sha256sum; where macOS lacks one, Perl's shasum takes the same flags.
+      - name: sha256sum on macOS
+        run: |
+          if ! command -v sha256sum >/dev/null; then
+            mkdir -p "$RUNNER_TEMP/bin"
+            printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$RUNNER_TEMP/bin/sha256sum"
+            chmod +x "$RUNNER_TEMP/bin/sha256sum"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Fetch the pinned libwebrtc
+        run: bash scripts/fetch-libwebrtc.sh aarch64-apple-darwin "$RUNNER_TEMP/libwebrtc" >> "$GITHUB_ENV"
+      # A clean build: no cache restored, the lock file as committed, default features only.
+      - name: Build the release binary
+        env:
+          DILLA_BUILD_SHA: ${{ needs.gate.outputs.sha }}
+        run: cargo build --release --locked -p dilla-desktop
+      - name: The binary says the release's version and commit
+        run: |
+          got="$(target/release/dilla-desktop --version)"
+          echo "$got"
+          test "$got" = "Dilla $VERSION (${SHA:0:12})"
+      - name: Package, sign and notarize Dilla.app and the DMG (the only step with the Apple secrets)
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          # Without CSC_LINK the script would sign ad hoc; a release never does. Name what is missing, never a value.
+          missing=""
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          [ -z "$missing" ] || { echo "missing secrets:$missing (the desktop-release environment or the repository)"; exit 1; }
+          export DILLA_WEBRTC_LICENSE="$LK_CUSTOM_WEBRTC/LICENSE.md"
+          bash scripts/desktop-gpui-package-mac.sh "$VERSION" target/release/dilla-desktop "$RUNNER_TEMP/mac-dist"
+      - name: The DMG and the app pass Gatekeeper and run
+        run: |
+          dmg="$RUNNER_TEMP/mac-dist/dilla-$VERSION-mac-arm64.dmg"
+          spctl -a -t open --context context:primary-signature -vv "$dmg"
+          xcrun stapler validate "$dmg"
+          mount="$RUNNER_TEMP/dilla-dmg"
+          mkdir -p "$mount"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+          app="$mount/Dilla.app"
+          spctl -a -t exec -vv "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Authority=Developer ID Application: ' "$RUNNER_TEMP/codesign.txt"
+          grep -q 'Identifier=dev.dilla.desktop' "$RUNNER_TEMP/codesign.txt"
+          got="$("$app/Contents/MacOS/dilla-desktop" --version)"
+          hdiutil detach "$mount"
+          test "$got" = "Dilla $VERSION (${SHA:0:12})"
+      - name: Digests
+        id: digests
+        run: |
+          cd "$RUNNER_TEMP/mac-dist"
+          test "$(ls | wc -l | tr -d ' ')" -eq 2
+          echo "dmg_sha256=$(shasum -a 256 "dilla-$VERSION-mac-arm64.dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "zip_sha256=$(shasum -a 256 "dilla-$VERSION-mac-arm64.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Build-provenance attestations over the macOS assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/mac-dist/dilla-${{ needs.gate.outputs.version }}-mac-arm64.dmg
+            ${{ runner.temp }}/mac-dist/dilla-${{ needs.gate.outputs.version }}-mac-arm64.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-gpui-mac-arm64
+          path: ${{ runner.temp }}/mac-dist
+          if-no-files-found: error
+          retention-days: 3
+
+  build-win:
+    needs: [gate]
+    runs-on: windows-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      setup_sha256: ${{ steps.digests.outputs.setup_sha256 }}
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+      SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - name: First attempt only
+        shell: bash
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: The checkout is the gated commit
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SHA"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: rustup show active-toolchain
+      # LiveKit's prebuilt libwebrtc on Windows links the static MSVC runtime (/MT); the shipped binary is built the same way.
+      - name: Static MSVC runtime
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+      - name: Fetch the pinned libwebrtc
+        shell: bash
+        run: |
+          line=$(bash scripts/fetch-libwebrtc.sh x86_64-pc-windows-msvc "$RUNNER_TEMP/libwebrtc")
+          echo "LK_CUSTOM_WEBRTC=$(cygpath -m "${line#LK_CUSTOM_WEBRTC=}")" >> "$GITHUB_ENV"
+      - name: Build the release binary
+        shell: bash
+        env:
+          DILLA_BUILD_SHA: ${{ needs.gate.outputs.sha }}
+        run: cargo build --release --locked -p dilla-desktop
+      - name: The binary says the release's version and commit
+        shell: bash
+        run: |
+          got="$(target/release/dilla-desktop.exe --version | tr -d '\r')"
+          echo "$got"
+          test "$got" = "Dilla $VERSION (${SHA:0:12})"
+      - name: Build the installer
+        shell: pwsh
+        run: '& scripts/desktop-gpui-package-win.ps1 -Version $env:VERSION -Binary target/release/dilla-desktop.exe -OutDir "$env:RUNNER_TEMP/win-dist"'
+      - name: Digests
+        id: digests
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/win-dist"
+          test "$(ls | wc -l)" -eq 1
+          echo "setup_sha256=$(sha256sum "dilla-$VERSION-win-x64-setup.exe" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Build-provenance attestation over the installer
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/win-dist/dilla-${{ needs.gate.outputs.version }}-win-x64-setup.exe
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-gpui-win-x64
+          path: ${{ runner.temp }}/win-dist
+          if-no-files-found: error
+          retention-days: 3
+
+  sign:
+    needs: [gate, build-mac, build-win]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: desktop-release
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+    steps:
+      - name: First attempt only
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+      # main's code (the default checkout of a workflow_run): the signer never runs the tag's files.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the verified Linux files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-linux-verified
+          path: assets
+          digest-mismatch: error
+      - name: Fetch the macOS assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-mac-arm64
+          path: assets
+          digest-mismatch: error
+      - name: Fetch the Windows installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-win-x64
+          path: assets
+          digest-mismatch: error
+      - name: The assets are the gated and built ones
+        working-directory: assets
+        env:
+          SUMS_SHA256: ${{ needs.gate.outputs.sums_sha256 }}
+          DMG_SHA256: ${{ needs.build-mac.outputs.dmg_sha256 }}
+          ZIP_SHA256: ${{ needs.build-mac.outputs.zip_sha256 }}
+          SETUP_SHA256: ${{ needs.build-win.outputs.setup_sha256 }}
+        run: |
+          test "$(ls | wc -l)" -eq 9
+          printf '%s  SHA256SUMS\n' "$SUMS_SHA256" | sha256sum --check --strict
+          sha256sum --check --strict SHA256SUMS
+          printf '%s  %s\n' "$DMG_SHA256" "dilla-$VERSION-mac-arm64.dmg" "$ZIP_SHA256" "dilla-$VERSION-mac-arm64.zip" \
+            "$SETUP_SHA256" "dilla-$VERSION-win-x64-setup.exe" | sha256sum --check --strict
+      - name: Sign the feed (the only step with DESKTOP_METADATA_KEY_A)
+        env:
+          DESKTOP_METADATA_KEY_A: ${{ secrets.DESKTOP_METADATA_KEY_A }}
+        run: node scripts/desktop-gpui-feed.mjs build assets "$VERSION" "$RUNNER_TEMP/signed"
+      - name: The signed feed verifies and lists these files
+        run: node scripts/desktop-gpui-gate.mjs check-feed "$RUNNER_TEMP/signed/desktop-gpui-alpha.json" "$RUNNER_TEMP/signed/desktop-gpui-alpha.json.sig" "$VERSION" assets
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-gpui-signed-feed
+          path: ${{ runner.temp }}/signed
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [gate, build-mac, build-win, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      VERSION: ${{ needs.gate.outputs.version }}
+    steps:
+      - name: First attempt only
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the verified Linux files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-linux-verified
+          path: assets
+          digest-mismatch: error
+      - name: Fetch the macOS assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-mac-arm64
+          path: assets
+          digest-mismatch: error
+      - name: Fetch the Windows installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-win-x64
+          path: assets
+          digest-mismatch: error
+      - name: Fetch the signed feed
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-signed-feed
+          path: signed
+          digest-mismatch: error
+      - name: The assets are the gated, built and signed ones
+        working-directory: assets
+        env:
+          SUMS_SHA256: ${{ needs.gate.outputs.sums_sha256 }}
+          DMG_SHA256: ${{ needs.build-mac.outputs.dmg_sha256 }}
+          ZIP_SHA256: ${{ needs.build-mac.outputs.zip_sha256 }}
+          SETUP_SHA256: ${{ needs.build-win.outputs.setup_sha256 }}
+        run: |
+          test "$(ls | wc -l)" -eq 9
+          printf '%s  SHA256SUMS\n' "$SUMS_SHA256" | sha256sum --check --strict
+          sha256sum --check --strict SHA256SUMS
+          printf '%s  %s\n' "$DMG_SHA256" "dilla-$VERSION-mac-arm64.dmg" "$ZIP_SHA256" "dilla-$VERSION-mac-arm64.zip" \
+            "$SETUP_SHA256" "dilla-$VERSION-win-x64-setup.exe" | sha256sum --check --strict
+          node ../scripts/desktop-gpui-gate.mjs check-feed ../signed/desktop-gpui-alpha.json ../signed/desktop-gpui-alpha.json.sig "$VERSION" .
+      - name: The draft is still the gated one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.gate.outputs.release_id }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '[.tag_name, .draft, (.assets | length)] | @tsv')" = "$(printf '%s\ttrue\t6' "$TAG")"
+          gh release download "$TAG" --dir "$RUNNER_TEMP/before"
+          cd "$RUNNER_TEMP/before"
+          test "$(ls | wc -l)" -eq 6
+          for f in *; do cmp "$f" "$GITHUB_WORKSPACE/assets/$f"; done
+      # The draft is completed in place: a published release is immutable, so it is published only once every file is
+      # attached and re-downloaded intact.
+      - name: Attach the macOS and Windows assets and the full SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: assets
+        run: |
+          mac="dilla-$VERSION-mac-arm64"
+          win="dilla-$VERSION-win-x64-setup.exe"
+          mkdir -p "$RUNNER_TEMP/sums"
+          { cat SHA256SUMS; sha256sum "$mac.dmg" "$mac.zip" "$win"; } > "$RUNNER_TEMP/sums/SHA256SUMS"
+          sha256sum --check --strict "$RUNNER_TEMP/sums/SHA256SUMS"
+          test "$(wc -l < "$RUNNER_TEMP/sums/SHA256SUMS")" -eq 8
+          gh release upload "$TAG" "$mac.dmg" "$mac.zip" "$win"
+          gh release upload "$TAG" "$RUNNER_TEMP/sums/SHA256SUMS" --clobber
+      - name: The draft's files are the signed ones
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --dir "$RUNNER_TEMP/check"
+          cd "$RUNNER_TEMP/check"
+          test "$(ls | wc -l)" -eq 9
+          cmp SHA256SUMS "$RUNNER_TEMP/sums/SHA256SUMS"
+          sha256sum --check --strict SHA256SUMS
+          node "$GITHUB_WORKSPACE/scripts/desktop-gpui-gate.mjs" check-feed "$GITHUB_WORKSPACE/signed/desktop-gpui-alpha.json" "$GITHUB_WORKSPACE/signed/desktop-gpui-alpha.json.sig" "$VERSION" .
+      # D9: the dry-run tag stops here, its draft complete; delete the draft and the tag afterwards (RELEASING.md).
+      - name: Publish the release
+        if: needs.gate.outputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --draft=false
+
+  feed:
+    needs: [gate, sign, publish]
+    if: needs.gate.outputs.dry_run == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: github-pages
+    # Pages deploys never overlap (beta.5's feed job used the same group).
+    concurrency:
+      group: desktop-release-feed
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch the signed feed
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: desktop-gpui-signed-feed
+          path: ${{ runner.temp }}/signed
+          digest-mismatch: error
+      - name: The signed feed verifies and is this release's
+        run: |
+          node scripts/desktop-gpui-feed.mjs verify "$RUNNER_TEMP/signed/desktop-gpui-alpha.json" "$RUNNER_TEMP/signed/desktop-gpui-alpha.json.sig"
+          test "$(jq -r .version "$RUNNER_TEMP/signed/desktop-gpui-alpha.json")" = "$VERSION"
+      - name: Build the Pages site (beta.5's beta/ files byte for byte, plus gpui-alpha/)
+        run: node scripts/desktop-gpui-pages.mjs build "$RUNNER_TEMP/signed" "$RUNNER_TEMP/site"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+      - name: Deploy the feed to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - name: The live site serves the built files
+        run: node scripts/desktop-gpui-pages.mjs verify "$RUNNER_TEMP/signed" "$RUNNER_TEMP/site"
