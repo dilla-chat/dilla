@@ -366,6 +366,8 @@ pub struct NativeShell {
     quit_guards: Vec<GuardEntry>,
     next_guard: u64,
     quit_prompt: Option<Rc<PromptFn>>,
+    /// Why the app is asked to quit, from a request until the prompt keeps it open (the updater reads it at quit).
+    quit_reason: Option<QuitReason>,
     asking_quit: bool,
     quitting: bool,
     link_handler: Option<Rc<LinkHandler>>,
@@ -513,6 +515,7 @@ impl NativeShell {
         if Self::is_busy_quitting(cx) {
             return;
         }
+        Self::of(cx).quit_reason = Some(reason);
         let request = Self::collect_guards(reason, cx);
         let prompt = cx.try_global::<Self>().and_then(|s| s.quit_prompt.clone());
         match prompt {
@@ -527,10 +530,19 @@ impl NativeShell {
 
     /// The quit prompt's answer: quit now, or stay (the next request asks again).
     pub fn finish_quit(answer: QuitAnswer, cx: &mut App) {
-        Self::of(cx).asking_quit = false;
+        let shell = Self::of(cx);
+        shell.asking_quit = false;
         if answer == QuitAnswer::Quit {
             Self::quit_now(cx);
+        } else {
+            shell.quit_reason = None;
         }
+    }
+
+    /// Why the app is quitting (or asking to): the last request's reason, cleared when the prompt keeps the app open.
+    /// `None` for a quit that did not go through a request.
+    pub fn quit_reason(cx: &App) -> Option<QuitReason> {
+        cx.try_global::<Self>().and_then(|s| s.quit_reason)
     }
 
     /// Quits without asking: from here no link opens and no quit is asked again; every instance is released (its call
@@ -727,6 +739,7 @@ pub fn install(startup: Startup, host: Host, cx: &mut App) {
     badge::install(cx);
     tray::install(cx);
     autostart::install(cx);
+    crate::updater::install(cx);
     menus::install(cx);
     quit::install(cx);
     links::install(cx);

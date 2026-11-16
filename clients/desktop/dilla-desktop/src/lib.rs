@@ -18,6 +18,7 @@ pub mod router;
 pub mod screens;
 pub mod slots;
 pub mod strings;
+pub mod updater;
 pub mod windows;
 
 use dilla_client::prefs::Prefs;
