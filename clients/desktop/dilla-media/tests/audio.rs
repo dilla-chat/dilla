@@ -467,7 +467,15 @@ fn enhanced_lowers_noise_10db_on_device_path() {
 }
 
 /// Pushes `input` frame by frame (faster than real time) and returns every output frame.
+/// Held by the tests that load every core (the playout test's four spinning pushers) and by the ones that need CPU time
+/// to finish ([`run_frames`]'s noise suppression): side by side on a 4-vCPU runner, the pushers starved the suppression
+/// thread past its stall bound and the playout callback past its budget (PR #176, run 43839509719).
+static CPU_HEAVY: Mutex<()> = Mutex::new(());
+
 fn run_frames(mode: NoiseMode, input: &[Vec<i16>]) -> Vec<Vec<i16>> {
+    let _cpu = CPU_HEAVY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let host = Fake::new();
     let mut mic = Mic::open_with(config(&host, Apm::default(), embedded()), None, mode).unwrap();
     let mut rx = mic.take_frames().unwrap();
@@ -598,6 +606,9 @@ fn a_stalled_consumer_never_blocks_the_capture_callback() {
 
 #[test]
 fn the_playout_callback_never_waits_for_a_pusher() {
+    let _cpu = CPU_HEAVY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let host = Fake::new();
     let speaker = Speaker::open_with(Arc::new(host.clone()), Apm::default(), None, None).unwrap();
     let sink = speaker.sink();

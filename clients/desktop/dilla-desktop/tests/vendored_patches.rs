@@ -538,9 +538,13 @@ fn activation_hands_a_lazy_adapter_the_whole_tree(cx: &mut TestAppContext) {
     let (_, vcx) = cx.add_window_view(|_, _| Labelled);
     vcx.update(|window, _| window.refresh());
     vcx.run_until_parked();
-    // A window that waits for activation (Linux, and upstream everywhere) has only the root to hand over.
-    let upstream = vcx.update(|window, _| window.a11y_tree_for_activation());
-    assert_eq!(upstream.nodes.len(), 1, "the root alone: {upstream:?}");
+    // A window that waits for activation (Linux, and upstream everywhere) has only the root to hand over. On macOS and
+    // Windows the patch builds from the first frame by default, so there the tree already holds the button.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let upstream = vcx.update(|window, _| window.a11y_tree_for_activation());
+        assert_eq!(upstream.nodes.len(), 1, "the root alone: {upstream:?}");
+    }
 
     vcx.update(|window, _| window.build_a11y_before_activation_for_test());
     vcx.run_until_parked();

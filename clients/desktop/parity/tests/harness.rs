@@ -202,8 +202,14 @@ fn click_and_read_element() {
     let root = driver.element("root").expect("the root element exists");
     assert_eq!(root.id, "root");
     // A data root opens the shipping window (Task 8): the start window grown, in place, to the compact authentication
-    // shape, 400x620 (`screens/shell/window.rs`: COMPACT_WIDTH, AUTH_HEIGHT), which lays out at that size.
-    assert_eq!((root.width, root.height), (400.0, 620.0));
+    // width (`screens/shell/window.rs`: COMPACT_WIDTH, 400) and, since the window fits its card as beta.5's did
+    // (`startDesktopWindowLayout`), a height between the shape's floor and the old fixed 620.
+    assert_eq!(root.width, 400.0);
+    assert!(
+        (220.0..=620.0).contains(&root.height),
+        "the authentication window fits its card: {}",
+        root.height
+    );
     assert_eq!((root.x, root.y), (0.0, 0.0));
     assert!(driver.element("no-such-element").is_none());
 
@@ -215,6 +221,10 @@ fn click_and_read_element() {
     );
 
     let shot = driver.screenshot();
-    // The headless platform renders at scale 2.0, so the 400x620 window is 800x1240 device pixels.
-    assert_eq!(shot.dimensions(), (800, 1240));
+    // The headless platform renders at scale 2.0: the shot is the window in device pixels.
+    let root = driver.element("root").expect("the root element exists");
+    assert_eq!(
+        shot.dimensions(),
+        ((root.width * 2.0) as u32, (root.height * 2.0) as u32)
+    );
 }
