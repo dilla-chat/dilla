@@ -1948,7 +1948,31 @@ export function checkDesktopGpuiReleaseWorkflow(root) {
   }
   if (!publishRuns.includes('dist/SHA256SUMS')) fail('publish does not attach SHA256SUMS');
   if (/aur\.archlinux\.org|ssh:\/\/aur@/.test(code)) fail('publishes to the AUR; the recipe is a release asset only (D4)');
+  // The release build installs every build package desktop-gpui.yml's does, less the test-only ones: alpha.1's first tag
+  // run failed on libspa-sys because libpipewire-0.3-dev was in CI's list only.
+  let ciPackages = [];
+  try { ciPackages = aptPackages(readFileSync(join(root, '.github', 'workflows', 'desktop-gpui.yml'), 'utf8')); } catch { /* checkDesktopGpuiWorkflow reports it */ }
+  const releasePackages = new Set(aptPackages(text));
+  for (const pkg of ciPackages) {
+    if (!GPUI_TEST_ONLY_PACKAGES.includes(pkg) && !releasePackages.has(pkg)) fail(`build-linux does not install ${pkg}, which desktop-gpui.yml's build installs`);
+  }
   return problems;
+}
+
+/** desktop-gpui.yml installs these for its tests only (the lavapipe Vulkan driver, ffmpeg for the call fixtures). */
+export const GPUI_TEST_ONLY_PACKAGES = ['mesa-vulkan-drivers', 'ffmpeg'];
+
+/** The packages of the first `ci-apt-install.sh` invocation in a workflow's text (the GPUI build dependencies). */
+export function aptPackages(text) {
+  const doc = yaml.load(text);
+  for (const job of Object.values(doc?.jobs ?? {})) {
+    for (const step of job?.steps ?? []) {
+      if (step?.name !== 'Install the GPUI build dependencies' || typeof step.run !== 'string') continue;
+      const after = step.run.split('ci-apt-install.sh')[1];
+      if (after !== undefined) return after.trim().split(/\s+/);
+    }
+  }
+  return [];
 }
 
 /**

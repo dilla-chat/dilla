@@ -48,7 +48,7 @@ test('the recipe is dilla-bin, provides and conflicts dilla, and pins the releas
   const { PKGBUILD, '.SRCINFO': srcinfo } = aurRecipe(V, SHA);
   for (const line of ['pkgname=dilla-bin', 'pkgver=0.2.0alpha1', 'pkgrel=1', "pkgdesc='Dilla desktop client'", "provides=('dilla')", "conflicts=('dilla')", "options=('!strip' '!debug')", `sha256sums=('${SHA}')`,
     "source=('dilla-0.2.0-alpha.1-linux-x64.tar.gz::https://github.com/dilla-chat/dilla/releases/download/desktop-gpui-v0.2.0-alpha.1/dilla-0.2.0-alpha.1-linux-x64.tar.gz')",
-    "depends=('glibc' 'gcc-libs' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'alsa-lib' 'vulkan-icd-loader' 'wayland' 'libx11' 'libdrm' 'mesa' 'xdg-utils' 'hicolor-icon-theme')"]) {
+    "depends=('glibc' 'gcc-libs' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'alsa-lib' 'libpipewire' 'vulkan-icd-loader' 'wayland' 'libx11' 'libdrm' 'mesa' 'xdg-utils' 'hicolor-icon-theme')"]) {
     assert.ok(PKGBUILD.split('\n').includes(line), line);
   }
   assert.match(PKGBUILD, /'gnome-keyring: the Secret Service/);
