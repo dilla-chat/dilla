@@ -86,6 +86,9 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 # Printing on macOS (src/print.rs): AppKit's print operation, run on the main thread. All already in the lock (through
 # GPUI's macOS platform and cpal).
 [target.'cfg(target_os = "macos")'.dependencies]
+# On macOS the text system is behind `font-kit`: without it gpui-pre-macos installs `NoopTextSystem` and draws no glyph
+# at all (only a log warning says so). The dilla-MacBook check of #174 found exactly that: boxes and borders, no text.
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["font-kit"] }
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSData", "NSGeometry", "NSObject", "NSString"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSControl", "NSDockTile", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow"] }

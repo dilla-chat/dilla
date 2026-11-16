@@ -103,7 +103,8 @@ development packages (the list is in `.github/workflows/desktop-gpui.yml`). From
 ```sh
 # Linux
 CC=clang-21 CXX=clang++-21 cargo run -p dilla-desktop
-# macOS: nothing extra
+# macOS: Xcode with its Metal Toolchain (a separate download in recent Xcode versions, needed once)
+xcodebuild -downloadComponent MetalToolchain
 cargo run -p dilla-desktop
 # Windows (PowerShell): libwebrtc uses the static MSVC runtime
 $env:RUSTFLAGS="-C target-feature=+crt-static"; cargo run -p dilla-desktop

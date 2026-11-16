@@ -405,6 +405,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      # Without gpui-pre-macos's `font-kit` the app gets GPUI's NoopTextSystem and draws no text at all, silently
+      # (the dilla-MacBook check of #174). A window can't be shot here, so the feature itself is checked.
+      - name: The macOS text system is compiled in
+        shell: bash
+        run: |
+          cargo tree -p dilla-desktop --locked -e features -i gpui-pre-macos > "$RUNNER_TEMP/macos-features.txt"
+          grep -q 'gpui-pre-macos feature "font-kit"' "$RUNNER_TEMP/macos-features.txt" || { cat "$RUNNER_TEMP/macos-features.txt"; echo "::error::gpui-pre-macos is built without font-kit: no text would be drawn"; exit 1; }
       - name: Build the release binary
         run: cargo build -p dilla-desktop --release --locked
       - name: Package Dilla.app and the DMG (ad hoc)
