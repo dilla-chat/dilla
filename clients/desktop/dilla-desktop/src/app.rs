@@ -1506,6 +1506,9 @@ impl AppView {
         if !self.launch.shipping || !mode.is_compact() {
             return;
         }
+        // A workspace window that signs out takes the compact chrome: on macOS its traffic lights go (beta.5
+        // `setWindowMode`).
+        crate::native::window_buttons::apply(window, mode);
         let shape = window_shape(mode, None, crate::work_area_height(cx));
         window.resize(gpui::size(
             gpui::Pixels::from(shape.width),
@@ -1629,6 +1632,10 @@ impl Render for AppView {
         .then(|| {
             crate::screens::shell::resize::render(f32::from(size.width), f32::from(size.height))
         });
+        // The compact windows (start, sign-in, sign-up, factor) draw beta.5's own chrome on every platform: the drag
+        // strip along the top and the close button (DesktopTitlebar.tsx in the starting/authentication modes).
+        let compact_chrome = (self.launch.shipping && self.screen.mode().is_compact())
+            .then(crate::screens::titlebar::compact_chrome);
         // Push to talk is heard at the root, whatever screen shows, and lets go when the screen is not the shell
         // (review I1: the settings replacing the shell's dock left a held key's microphone open).
         let w = crate::screens::voice::wid(window);
@@ -1671,7 +1678,8 @@ impl Render for AppView {
                         .size_full()
                         .bg(color::BG)
                         .child(body)
-                        .children(strips.into_iter().flatten()),
+                        .children(strips.into_iter().flatten())
+                        .children(compact_chrome),
                 ))
                 // The quit question, when this window carries it (Package 7).
                 .children(crate::native::quit::overlay(window, cx))

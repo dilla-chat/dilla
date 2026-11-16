@@ -91,7 +91,10 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["font-kit"] }
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSData", "NSGeometry", "NSObject", "NSString"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSControl", "NSDockTile", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSImageView", "NSPrintInfo", "NSPrintOperation", "NSResponder", "NSView", "NSWindow"] }
+# The traffic lights per window mode (src/native/window_buttons.rs): the window's NSView from GPUI's AppKit handle.
+# Already in the lock (through gpui-pre-macos).
+raw-window-handle = "0.6"
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 # The deallocator block of the NSData that owns the printed copy (already in the lock through objc2-foundation).
 block2 = "0.6.2"

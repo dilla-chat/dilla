@@ -1059,3 +1059,33 @@ fn closing_the_last_window_keeps_the_app_in_the_tray(cx: &mut TestAppContext) {
     });
     assert!(cx.update(|cx| NativeShell::is_quitting(cx)));
 }
+
+/// beta.5 picker.spec.ts "Connect closes the picker: exactly one window, the instance" (main.ts:522-526): opening an
+/// instance from the manager closes the manager; the instance's window is the one window left.
+#[gpui::test]
+fn connect_closes_the_manager(cx: &mut TestAppContext) {
+    use dilla_desktop::{AppView, Launch, windows};
+    let root = root();
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances
+        .add(url::Url::parse("https://one.example/").unwrap())
+        .unwrap();
+    let launch = Launch::live(Some(root.clone()), Arc::new(MemoryKeychain::new()));
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    cx.update(|cx| windows::open_manager(cx, &launch, false))
+        .expect("the manager opens");
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 1);
+    cx.update(|cx| windows::open_from_manager(cx, &launch, cfg.clone(), None, false))
+        .expect("the instance opens");
+    cx.run_until_parked();
+    let left = cx.windows();
+    assert_eq!(
+        left.len(),
+        1,
+        "one window: the instance replaced the manager"
+    );
+    assert!(left[0].downcast::<AppView>().is_some());
+    cx.update(windows::release_all);
+}

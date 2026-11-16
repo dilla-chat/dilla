@@ -124,7 +124,8 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 
 - It is one native program: no embedded browser, no web worker, no bundled web client. The store, the keys (in the
   operating system's keychain) and the end-to-end encryption run in the same process.
-- One window and one client per instance. Closing a window keeps its client running until you remove the instance or
+- One window and one client per instance. Opening an instance from "Dilla - your instances" closes that window (the
+  instance's window replaces it); "Your instances…" in the tray or the app menu brings it back. Closing a window keeps its client running until you remove the instance or
   quit the app; opening the instance again shows a new window on the running client.
 - One app for all instances: starting Dilla again brings the running app forward, and a `dilla://invite/<host>/<code>`
   link opens that instance's join step (an instance you have not added yet is asked about first).
@@ -177,7 +178,10 @@ the updater and packaging.
   Dilla"), close to tray, the unread count (the tray's tooltip; the dock badge on macOS; the launcher badge on KDE and
   Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
   extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
-  builds only. There is no menu button in the title bar yet; F11 (Control-⌘-F on macOS) toggles full screen.
+  builds only. There is no menu button in the title bar yet; F11 (Control-⌘-F on macOS) toggles full screen. On macOS
+  the Dilla menu also has About Dilla, Settings… (⌘,), Services, Hide Dilla (⌘H), Hide Others (⌥⌘H), Show All and Quit
+  Dilla (⌘Q, which asks first during a call as above); Window has Minimize (⌘M) and Bring All to Front. The sign-in and
+  sign-up windows are moved by their top edge and closed with the × in their top-right corner, on every system.
 - **Deep links:** clicking a `dilla://invite/...` link opens it in Dilla, started if it is not running: the deb, rpm
   and Arch packages register the `dilla:` scheme in the desktop entry, the macOS app in its Info.plist (the link
   reaches a running app as an open-URL event) and the Windows installer per user in the registry (removed on

@@ -340,7 +340,7 @@ pub fn open_manager(
             let weak = view.downgrade();
             cx.subscribe(&view, move |_, event: &ManagerEvent, cx| {
                 let ManagerEvent::Open { instance, invite } = event;
-                if let Err(e) = open_instance(
+                if let Err(e) = open_from_manager(
                     cx,
                     &launch,
                     instance.clone(),
@@ -364,6 +364,26 @@ pub fn open_manager(
     Registry::of(cx).manager = Some(handle);
     NativeShell::window_opened(handle.window_id(), None, cx);
     Ok(handle)
+}
+
+/// The manager's "Open": opens instance `cfg`'s window ([`open_instance`]) and, once it is open, closes the manager, as
+/// beta.5's `dilla:manager` "connect" did (main.ts:522-526, "One window: the instance replaces the picker"; picker.spec.ts
+/// "Connect closes the picker: exactly one window, the instance"). "Your instances…" in the tray and the app menu opens
+/// a fresh one. A window that did not open keeps the manager, with its error.
+pub fn open_from_manager(
+    cx: &mut App,
+    launch: &Launch,
+    cfg: InstanceConfig,
+    invite: Option<String>,
+    allow_loopback: bool,
+) -> Result<(), OpenError> {
+    open_instance(cx, launch, cfg, invite, allow_loopback)?;
+    if let Some(manager) = Registry::of(cx).manager {
+        manager
+            .update(cx, |_, window, _| window.remove_window())
+            .ok();
+    }
+    Ok(())
 }
 
 /// The manager window's options at `bounds`: no title through the options (the window sets it once, as the main

@@ -2233,6 +2233,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "opus-pure",
+ "raw-window-handle",
  "re_mp4",
  "reqwest 0.13.5",
  "rodio",

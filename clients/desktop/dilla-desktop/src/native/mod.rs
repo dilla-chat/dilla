@@ -41,6 +41,7 @@ mod pipe_windows;
 pub mod quit;
 pub mod single_instance;
 pub mod tray;
+pub mod window_buttons;
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
