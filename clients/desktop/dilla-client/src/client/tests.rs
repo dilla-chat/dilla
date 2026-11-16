@@ -189,6 +189,45 @@ async fn disconnect_during_connect_stays_offline() {
     link.disconnect();
 }
 
+/// The connect's `Connecting` is queued before its gateway takes its first step, so the gateway's ready (sent through
+/// the same channel) always lands after it. Queued after the gateway's start, a quick ready could land first and the
+/// late `Connecting` left a connected client showing `Connecting` (the macOS CI's "timed out waiting for b online",
+/// `readies: 1`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connects_connecting_is_queued_before_its_gateway_starts() {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (_core, _api, engine) = offline_parts(tx.clone());
+    let rx = Arc::new(Mutex::new(rx));
+    let (seen_tx, seen) = std::sync::mpsc::channel::<bool>();
+    let seen_tx = Mutex::new(seen_tx);
+    let queue = rx.clone();
+    // The gateway's first step: whether the connect's `Connecting` is already queued.
+    let check: crate::gateway::PreConnect = Arc::new(move || {
+        let mut q = queue.lock().unwrap();
+        let mut down = false;
+        while let Ok(update) = q.try_recv() {
+            down |= matches!(update, Update::Connection(ConnectionEvent::Down));
+        }
+        let _ = seen_tx.lock().unwrap().send(down);
+        Box::pin(async { crate::gateway::PreConnectVerdict::Retry })
+    });
+    let link = Arc::new(Link {
+        pre_connect: Some(check),
+        ..Arc::into_inner(offline_link(engine, tx)).unwrap()
+    });
+    // Each round is a fresh connect racing its gateway's start on another worker.
+    for round in 0..200 {
+        link.connect();
+        let down = seen.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            down,
+            "round {round}: the gateway started before its connect's Connecting was queued"
+        );
+        link.disconnect();
+        while rx.lock().unwrap().try_recv().is_ok() {}
+    }
+}
+
 /// A refusal starts a renewal; before it ends, a gateway reaches ready (the app reconnected on a session the HTTP
 /// layer had already renewed). The renewal's verdict must not tear that working gateway down and connect again.
 #[test]
