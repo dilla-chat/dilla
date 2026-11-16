@@ -2745,6 +2745,17 @@ test('parity tests parked until the shared-component pass need no --ignored run,
   assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-only forwarded R22 reason needs no run line');
   writeFileSync(join(dir, 'parked.rs'), linuxOnly('needs dillad'));
   assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-only forwarded other reason still needs its run line');
+  // The Linux-and-macOS forwarding spelling (macOS CI plan, Task 3) reads the same.
+  const linuxMac = (why) => `macro_rules! p { ($($t:ident $(; $why:literal)?),*) => {$(#[test] #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "refs")] $(#[cfg_attr(any(target_os = "linux", target_os = "macos"), ignore = $why)])? fn $t() {})*}; }\np!(a; "${why}", b);\n`;
+  writeFileSync(join(dir, 'parked.rs'), linuxMac('parity after T6c: chrome 0.3 %'));
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-and-macOS forwarded R22 reason needs no run line');
+  writeFileSync(join(dir, 'parked.rs'), linuxMac('needs dillad'));
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-and-macOS forwarded other reason still needs its run line');
+  // The Linux-and-macOS spelling (macOS CI plan, Task 3) is off Linux too; an ignore off macOS alone is not.
+  writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]\nfn parity_a() {}\n');
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'an ignore off Linux and macOS needs no Linux run line');
+  writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[cfg_attr(not(target_os = "macos"), ignore = "macOS only")]\nfn mac_only() {}\n');
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'an ignore off macOS alone is ignored on Linux and still needs its run line');
   rmSync(root, { recursive: true, force: true });
 });
 

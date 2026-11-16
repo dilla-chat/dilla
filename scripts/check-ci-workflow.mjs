@@ -1592,15 +1592,19 @@ const GPUI_IGNORED_BY_HAND = new Set(['clients/desktop/dilla-client/tests/store.
  * Temporary: the parity sweep removes every such attribute, and this exemption with them.
  */
 const GPUI_PARKED_PARITY = /#\[\s*ignore\s*=\s*"parity after T6c[^"]*"\s*\]/g;
-/** An ignore that applies only off Linux: the plain Linux run already runs those tests, so no `--ignored` line is owed for it. */
-const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*target_os\s*=\s*"linux"\s*\)\s*,\s*ignore\b[^\]]*\]/g;
+/**
+ * An ignore that applies only off Linux: the plain Linux run already runs those tests, so no `--ignored` line is owed for it.
+ * Both spellings: `not(target_os = "linux")`, and `not(any(target_os = "linux", target_os = "macos"))` for the parity tests
+ * macOS also runs (the macOS CI plan, Task 3: the Linux references with macOS-measured tolerances).
+ */
+const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*(?:target_os\s*=\s*"linux"|any\(\s*target_os\s*=\s*"linux"\s*,\s*target_os\s*=\s*"macos"\s*\))\s*\)\s*,\s*ignore\b[^\]]*\]/g;
 
 /** A test file's source with the ignores that need no Linux `--ignored` run removed (see the two patterns above). */
 function liveIgnoreSource(source) {
   let s = source.replace(GPUI_PARKED_PARITY, '').replace(GPUI_OFF_LINUX_IGNORE, '');
-  // A macro that forwards its reason (`#[ignore = $why]`, or `#[cfg_attr(target_os = "linux", ignore = $why)]` beside an
-  // off-Linux ignore) is parked only when every reason literal passed to it is the R22 one.
-  const forwarded = /#\[\s*(?:cfg_attr\(\s*target_os\s*=\s*"linux"\s*,\s*ignore\s*=\s*\$\w+\s*\)|ignore\s*=\s*\$\w+)\s*\]/g;
+  // A macro that forwards its reason (`#[ignore = $why]`, or `#[cfg_attr(target_os = "linux", ignore = $why)]` or its
+  // Linux-and-macOS spelling beside an off-Linux ignore) is parked only when every reason literal passed to it is the R22 one.
+  const forwarded = /#\[\s*(?:cfg_attr\(\s*(?:target_os\s*=\s*"linux"|any\(\s*target_os\s*=\s*"linux"\s*,\s*target_os\s*=\s*"macos"\s*\))\s*,\s*ignore\s*=\s*\$\w+\s*\)|ignore\s*=\s*\$\w+)\s*\]/g;
   if (forwarded.test(s)) {
     const reasons = [...s.matchAll(/;\s*"([^"]*)"/g)].map((m) => m[1]);
     if (reasons.length > 0 && reasons.every((r) => r.startsWith('parity after T6c'))) s = s.replace(forwarded, '');
