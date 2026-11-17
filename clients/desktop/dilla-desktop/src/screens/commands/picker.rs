@@ -418,8 +418,8 @@ mod tests {
     use dilla_client::state::bot::{ArgShape, ArgType, BotCommandSpec, BotStatus};
     use std::collections::BTreeMap;
 
-    fn utc(_: i64) -> chrono::FixedOffset {
-        chrono::FixedOffset::east_opt(0).unwrap()
+    fn utc(_: i64) -> jiff::tz::Offset {
+        jiff::tz::Offset::UTC
     }
 
     fn state(

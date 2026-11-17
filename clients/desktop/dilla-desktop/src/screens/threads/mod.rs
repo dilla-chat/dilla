@@ -305,9 +305,7 @@ pub(crate) fn name_of(
 /// `HH:MM` in the clock's zone.
 pub(crate) fn time_of(ts: u64, clock: Clock) -> String {
     match clock {
-        Clock::Fixed { utc: true, .. } => format::time_in(ts, &|_| {
-            chrono::FixedOffset::east_opt(0).expect("zero is an offset")
-        }),
+        Clock::Fixed { utc: true, .. } => format::time_in(ts, &|_| jiff::tz::Offset::UTC),
         _ => format::time(ts),
     }
 }

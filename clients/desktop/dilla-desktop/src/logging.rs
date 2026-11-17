@@ -140,6 +140,11 @@ pub fn current_log_path() -> Option<PathBuf> {
     log_path(Os::current(), |name| std::env::var(name).ok())
 }
 
+/// A log line's time: `2026-11-17T10:05:00.123+01:00`, local time with milliseconds (cut, not rounded) and the offset.
+pub fn timestamp(now: &jiff::Zoned) -> String {
+    now.strftime("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string()
+}
+
 /// One log line (without the newline).
 pub fn format_line(time: &str, record: &Record<'_>) -> String {
     format!(
@@ -231,8 +236,7 @@ impl Log for Logger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let time = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z");
-        let line = format_line(&time.to_string(), record);
+        let line = format_line(&timestamp(&jiff::Zoned::now()), record);
         let _ = writeln!(std::io::stderr().lock(), "{line}");
         if let Some(file) = &self.file {
             let mut sink = file.lock().unwrap_or_else(|p| p.into_inner());
@@ -276,6 +280,33 @@ pub fn install() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// The log time's exact form, for fixed instants in fixed zones: a winter and a summer offset, a half-hour zone, UTC (which
+    /// reads `+00:00`, not `Z`), milliseconds cut rather than rounded, and the two sides of midnight.
+    #[test]
+    fn timestamps_are_local_iso_with_milliseconds_and_offset() {
+        let at = |s: &str, zone: &str| s.parse::<jiff::Timestamp>().unwrap().in_tz(zone).unwrap();
+        assert_eq!(
+            timestamp(&at("2026-11-17T09:05:00.123456Z", "Europe/Stockholm")),
+            "2026-11-17T10:05:00.123+01:00"
+        );
+        assert_eq!(
+            timestamp(&at("2026-07-01T22:59:59.9999Z", "Europe/Stockholm")),
+            "2026-07-02T00:59:59.999+02:00"
+        );
+        assert_eq!(
+            timestamp(&at("2026-07-01T21:59:59.9999Z", "Europe/Stockholm")),
+            "2026-07-01T23:59:59.999+02:00"
+        );
+        assert_eq!(
+            timestamp(&at("2026-11-17T00:00:00Z", "Asia/Kolkata")),
+            "2026-11-17T05:30:00.000+05:30"
+        );
+        assert_eq!(
+            timestamp(&at("2026-11-17T00:00:00.005Z", "UTC")),
+            "2026-11-17T00:00:00.005+00:00"
+        );
+    }
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs

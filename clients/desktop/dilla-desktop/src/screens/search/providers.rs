@@ -224,17 +224,12 @@ fn settings_item(
 
 /// `messageTime`: a row's local time, with the day in front when it is not today's date.
 pub fn message_time(ts: u64, clock: Clock) -> String {
-    let time = clock.format(ts, |d| {
-        use chrono::Timelike;
-        format!("{:02}:{:02}", d.hour(), d.minute())
-    });
+    let time = clock.format(ts, |d| format!("{:02}:{:02}", d.hour(), d.minute()));
     if clock.day(ts) == clock.day(clock.now()) {
         return time;
     }
-    let day = clock.format(ts, |d| {
-        let offset = *d.offset();
-        crate::format::day_in(ts, &|_| offset, &crate::format::date_locale())
-    });
+    let offset = clock.offset(i64::try_from(ts).unwrap_or(i64::MAX));
+    let day = crate::format::day_in(ts, &|_| offset, &crate::format::date_locale());
     format!("{day} {time}")
 }
 
