@@ -9,9 +9,12 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::api::{Api, CoreHandle, InstanceInfo, with_core};
+use super::api::{Api, ApiError, CoreHandle, InstanceInfo, with_core};
 use super::requests::SocketRequests;
-use super::{ConnectionEvent, Engine, Membership, SyncHooks};
+use super::{
+    COMMIT_RETRY_MAX, ConnectionEvent, Engine, JoinRetry, MEMBERSHIP_WAIT, Membership, SyncError,
+    SyncHooks, UNFROZEN_POLL, epoch_moved, group_info_epoch, join_retry, wait_unfrozen,
+};
 use crate::auth::AuthToken;
 use crate::gateway::frames::{self, Frame, Op, Value};
 use crate::gateway::{GatewayOptions, WsGateway};
@@ -257,4 +260,179 @@ async fn a_removal_retry_keeps_the_trust_annotations() {
         "the annotations are kept"
     );
     engine.stop();
+}
+
+// ---- an opened channel's external join refused 425 E_COMMIT_REQUIRED or 422 E_COMMIT_INVALID ----
+
+fn refused(status: u16, code: &str, retry_after_ms: Option<u64>) -> SyncError {
+    let mut e = ApiError::local(status, code, "");
+    e.retry_after_ms = retry_after_ms;
+    SyncError::Api(e)
+}
+
+/// 422 `E_COMMIT_INVALID` naming the clause that refused the commit (its fourth field).
+fn invalid(rule: &str) -> SyncError {
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(4)
+        .text("E_COMMIT_INVALID")
+        .text("refused")
+        .null()
+        .text(rule);
+    SyncError::Api(ApiError::from_body(422, &e.into_vec()))
+}
+
+/// A freeze waits for a member's commit, at most the instance's hint (its 2 s commit deadline), never longer and never
+/// less than one poll; a stale epoch (422) is retried only once the group is known to have moved; a conflict (409) is
+/// retried at once; everything else, and every refusal once the tries are spent, is the open's answer.
+#[test]
+fn an_open_retries_a_freeze_a_conflict_and_a_moved_epoch_within_its_budget() {
+    let two = Duration::from_millis(2_000);
+    assert_eq!(MEMBERSHIP_WAIT, two);
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(2_000)), 1),
+        JoinRetry::Unfrozen(two)
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(800)), 1),
+        JoinRetry::Unfrozen(Duration::from_millis(800))
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(60_000)), 1),
+        JoinRetry::Unfrozen(two),
+        "capped at the commit deadline"
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", None), 1),
+        JoinRetry::Unfrozen(two)
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(0)), 1),
+        JoinRetry::Unfrozen(UNFROZEN_POLL)
+    );
+    assert_eq!(
+        join_retry(&refused(422, "E_COMMIT_INVALID", None), 1),
+        JoinRetry::IfMoved
+    );
+    for rule in ["epoch", "structural", "external_joiner"] {
+        assert_eq!(join_retry(&invalid(rule), 1), JoinRetry::IfMoved, "{rule}");
+    }
+    // The freeze met inside the commit (a proposal made, or a member online, after the instance's freeze check).
+    assert_eq!(
+        join_retry(&invalid("outstanding_proposals"), 1),
+        JoinRetry::Unfrozen(two)
+    );
+    assert_eq!(
+        join_retry(&invalid("outstanding_proposals"), COMMIT_RETRY_MAX),
+        JoinRetry::Fail
+    );
+    assert_eq!(
+        join_retry(&refused(409, "E_COMMIT_CONFLICT", None), 1),
+        JoinRetry::Now
+    );
+    for other in [
+        refused(422, "E_INVALID_REQUEST", None),
+        refused(425, "E_TOO_EARLY", None),
+        refused(403, "E_FORBIDDEN", None),
+        refused(409, "E_REMOVE_PENDING", None),
+        refused(409, "E_GROUP_CLOSED", None),
+        SyncError::Stopped,
+        SyncError::ChannelGone,
+    ] {
+        assert_eq!(join_retry(&other, 1), JoinRetry::Fail, "{other}");
+    }
+    for spent in [
+        refused(425, "E_COMMIT_REQUIRED", Some(2_000)),
+        refused(422, "E_COMMIT_INVALID", None),
+        refused(409, "E_COMMIT_CONFLICT", None),
+    ] {
+        assert_eq!(
+            join_retry(&spent, COMMIT_RETRY_MAX),
+            JoinRetry::Fail,
+            "{spent}: the tries are spent, the refusal is surfaced"
+        );
+        assert_ne!(join_retry(&spent, COMMIT_RETRY_MAX - 1), JoinRetry::Fail);
+    }
+}
+
+/// A 422 is retried only when the group is known to be past the epoch the refused commit was staged on: an unreadable
+/// epoch, or one that did not move, leaves the refusal as the answer.
+#[test]
+fn a_stale_epoch_is_retried_only_when_the_group_moved() {
+    assert!(epoch_moved(Some(3), Some(4)));
+    assert!(!epoch_moved(Some(3), Some(3)));
+    assert!(!epoch_moved(Some(3), None));
+    assert!(!epoch_moved(None, Some(4)));
+    assert!(!epoch_moved(None, None));
+}
+
+/// `GET /v1/groups/{id}/info` answers `[epoch, group_info, tree_hash, next_seq]`.
+#[test]
+fn the_group_info_epoch_is_its_first_field() {
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(4).uint(7).bytes(b"info").bytes(&[0; 32]).uint(12);
+    assert_eq!(group_info_epoch(&e.into_vec()), Some(7));
+    assert_eq!(group_info_epoch(b"\xff"), None);
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(0);
+    assert_eq!(group_info_epoch(&e.into_vec()), None);
+}
+
+/// The epoch reads of a frozen-group wait: `answers` in turn (then the last one again), counted.
+fn epochs(
+    answers: Vec<Option<u64>>,
+) -> (
+    Arc<AtomicUsize>,
+    impl FnMut() -> std::future::Ready<Option<u64>>,
+) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = reads.clone();
+    let read = move || {
+        let n = counted.fetch_add(1, Ordering::AcqRel);
+        std::future::ready(answers[n.min(answers.len() - 1)])
+    };
+    (reads, read)
+}
+
+/// The freeze ends with a member's commit, usually well before the instance's deadline: the wait reads the epoch every
+/// 100 ms and ends at the first read past the staged one (a failed read does not end it), not after the whole hint.
+#[tokio::test(start_paused = true)]
+async fn a_frozen_wait_ends_when_the_epoch_moves() {
+    let (reads, read) = epochs(vec![Some(5), None, Some(5), Some(6)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), MEMBERSHIP_WAIT, || false).await;
+    assert_eq!(start.elapsed(), UNFROZEN_POLL * 4);
+    assert_eq!(reads.load(Ordering::Acquire), 4);
+}
+
+/// A freeze nobody lifts is bounded by the hint, one read per poll; then the open stages again (and the next refusal,
+/// or the spent budget, answers).
+#[tokio::test(start_paused = true)]
+async fn a_frozen_wait_is_bounded_by_the_hint() {
+    let (reads, read) = epochs(vec![Some(5)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), MEMBERSHIP_WAIT, || false).await;
+    assert_eq!(start.elapsed(), MEMBERSHIP_WAIT);
+    assert_eq!(reads.load(Ordering::Acquire), 20);
+    // A hint that is not a whole number of polls ends exactly at the hint.
+    let (reads, read) = epochs(vec![Some(5)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), Duration::from_millis(250), || false).await;
+    assert_eq!(start.elapsed(), Duration::from_millis(250));
+    assert_eq!(reads.load(Ordering::Acquire), 3);
+}
+
+/// Without a staged epoch there is nothing to compare: the wait is the hint, with no reads. A stopped engine does not
+/// wait.
+#[tokio::test(start_paused = true)]
+async fn a_frozen_wait_without_a_staged_epoch_sleeps_the_hint_and_a_stop_ends_it() {
+    let (reads, read) = epochs(vec![Some(6)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, None, MEMBERSHIP_WAIT, || false).await;
+    assert_eq!(start.elapsed(), MEMBERSHIP_WAIT);
+    assert_eq!(reads.load(Ordering::Acquire), 0);
+    let (reads, read) = epochs(vec![Some(5)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), MEMBERSHIP_WAIT, || true).await;
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert_eq!(reads.load(Ordering::Acquire), 0);
 }

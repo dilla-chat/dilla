@@ -68,6 +68,10 @@ type Gid = [u8; 16];
 pub const COMMIT_RETRY_MAX: u32 = 5;
 pub const COMMIT_JITTER_MS: u64 = 400;
 pub const MEMBERSHIP_WAIT: Duration = Duration::from_millis(2000);
+/// How often an open whose external join was refused 425 `E_COMMIT_REQUIRED` reads the group's epoch while it waits for
+/// a member's commit to end the freeze (the Bot's `musicCallUnfrozenPoll`). The wait itself is bounded by the instance's
+/// `retry_after_ms` (its commit deadline), never past [`MEMBERSHIP_WAIT`].
+pub const UNFROZEN_POLL: Duration = Duration::from_millis(100);
 pub const ECHO_WAIT: Duration = Duration::from_millis(5000);
 pub const REGISTER_RETRY_MAX: u32 = 3;
 pub const CURSOR_DEBOUNCE: Duration = Duration::from_millis(30_000);
@@ -1585,7 +1589,7 @@ impl Engine {
             channel_id: row.target_id,
             policy_version: self.instance.policy_version,
         };
-        match self.clone().external_join(eg, &mut 0).await {
+        match self.clone().external_join(eg, &mut 0, &mut None).await {
             Ok(()) => {
                 // The rejoin ends the resync (controller.ts `onGroupChanged`: a state-2 apply ends `resyncing`; here the
                 // publisher hears it as a member report, as the hooks carry no apply result).
@@ -1641,11 +1645,22 @@ impl Engine {
         }
     }
 
+    /// The group's epoch at the instance (`GET /v1/groups/{id}/info`), or `None` when it cannot be read.
+    async fn group_epoch(&self, g: Gid) -> Option<u64> {
+        let body = self.api.get_group_info(&g).await.ok()?;
+        group_info_epoch(&body)
+    }
+
     /// channel.ts `externalJoin`: GroupInfo and tree, `group_join_external`, `POST resync`, `group_joined`, activate.
+    ///
+    /// `staged` is set to the epoch of the GroupInfo each try stages its commit on, so a caller handed a refusal can
+    /// tell whether the group has moved past the epoch the refused commit was built for ([`Engine::open_channel_flow`]'s
+    /// 425 and 422 retries). A refused commit is never kept: it is discarded here, and a new try stages a fresh one.
     async fn external_join(
         self: Arc<Self>,
         eg: ExpectedGroup,
         joins: &mut u32,
+        staged: &mut Option<u64>,
     ) -> Result<(), SyncError> {
         let g = eg.group_id;
         loop {
@@ -1654,6 +1669,7 @@ impl Engine {
             }
             let info = self.api.get_group_info(&g).await?;
             let tree = self.api.get_group_tree(&g).await?;
+            *staged = group_info_epoch(&info);
             let built = with_core(&self.core, move |c| {
                 c.group_join_external(
                     &eg.group_id,
@@ -1852,7 +1868,7 @@ impl Engine {
                     if matches!(state, Some(0) | Some(1)) {
                         let _ = with_core(&this.core, move |c| c.group_discard(&g)).await;
                     }
-                    this.clone().external_join(eg, &mut joins).await
+                    this.clone().external_join(eg, &mut joins, &mut None).await
                 })
                 .await;
             // Wait for the jobs the join queued (the activation's catch-up) to be in line.
@@ -2039,29 +2055,50 @@ impl Engine {
                     .lanes
                     .run(&key(&g), async move {
                         if this.state_of(g).await == Some(2) {
-                            return (Ok(()), budget);
+                            return (Ok(()), budget, None);
                         }
-                        let r = this.clone().external_join(eg, &mut budget).await;
-                        (r, budget)
+                        let mut staged = None;
+                        let r = this
+                            .clone()
+                            .external_join(eg, &mut budget, &mut staged)
+                            .await;
+                        (r, budget, staged)
                     })
                     .await;
-                joins = joined.1;
-                match joined.0 {
+                let (result, budget, staged) = joined;
+                joins = budget;
+                let e = match result {
                     Ok(()) => return Ok(g),
-                    Err(e)
-                        if e.api().is_some_and(|a| a.is(425, "E_COMMIT_REQUIRED"))
-                            && joins < COMMIT_RETRY_MAX =>
-                    {
-                        tokio::time::sleep(MEMBERSHIP_WAIT).await;
+                    Err(e) => e,
+                };
+                // Every retry goes round the loop again, off the group's lane: Welcomes are read first (the commit that
+                // ended a freeze or moved the epoch may have added this device), and an external join then stages a
+                // fresh commit on the group as it is. The refused one was discarded by `external_join`, never reposted.
+                match join_retry(&e, joins) {
+                    JoinRetry::Fail => return Err(e),
+                    JoinRetry::Now => continue,
+                    JoinRetry::Unfrozen(bound) => {
+                        log::info!(
+                            "sync: open: the channel's group is frozen ({} {}); waiting up to {} ms for a member's \
+                             commit (try {joins} of {COMMIT_RETRY_MAX})",
+                            e.api().map_or(0, |a| a.status),
+                            e.code(),
+                            bound.as_millis()
+                        );
+                        wait_unfrozen(|| self.group_epoch(g), staged, bound, || self.stopped())
+                            .await;
                         continue;
                     }
-                    Err(e)
-                        if e.api().is_some_and(|a| a.is(409, "E_COMMIT_CONFLICT"))
-                            && joins < COMMIT_RETRY_MAX =>
-                    {
+                    JoinRetry::IfMoved => {
+                        if !epoch_moved(staged, self.group_epoch(g).await) {
+                            return Err(e);
+                        }
+                        log::info!(
+                            "sync: open: the external join was refused at a stale epoch (422 E_COMMIT_INVALID); \
+                             staging again (try {joins} of {COMMIT_RETRY_MAX})"
+                        );
                         continue;
                     }
-                    Err(e) => return Err(e),
                 }
             }
             if registrations >= REGISTER_RETRY_MAX {
@@ -2650,6 +2687,96 @@ pub enum Source {
     Frame,
     CatchUp,
     Commit,
+}
+
+/// What [`Engine::open_channel_flow`] does with a refused external join of the channel's group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JoinRetry {
+    /// Give up: the refusal is the open's answer.
+    Fail,
+    /// 409 `E_COMMIT_CONFLICT`: another commit won the epoch; stage again at once.
+    Now,
+    /// 425 `E_COMMIT_REQUIRED`: the group is frozen until a member commits an outstanding instance proposal (protocol
+    /// invariant 5). An external commit cannot carry that proposal (RFC 9420 §12.4.3.2: no proposals by reference), so
+    /// the joiner waits at most this long for the group's epoch to move ([`wait_unfrozen`]), then stages again. 422
+    /// `E_COMMIT_INVALID` under the `outstanding_proposals` clause is the same freeze, met inside the commit rather than
+    /// at its door (the proposal was made, or a member came online, after the instance's freeze check: internal/ds
+    /// `clause1Exempt`), and is waited out the same way.
+    Unfrozen(Duration),
+    /// Any other 422 `E_COMMIT_INVALID`: retried only when the group's epoch has moved past the one the refused commit
+    /// was staged on (a member's commit landed while the instance was taking this one: its `epoch` and `structural`
+    /// clauses). A group that did not move refused the commit for what it is, and that refusal is the answer.
+    IfMoved,
+}
+
+/// The retry policy of an opened channel's external join after `joins` tries, bounded by [`COMMIT_RETRY_MAX`] as the
+/// Bot's `retryMusicCallGroupJoin` and the call join's (calls/join.rs) are.
+fn join_retry(e: &SyncError, joins: u32) -> JoinRetry {
+    let Some(a) = e.api() else {
+        return JoinRetry::Fail;
+    };
+    if joins >= COMMIT_RETRY_MAX {
+        return JoinRetry::Fail;
+    }
+    if a.is(425, "E_COMMIT_REQUIRED") {
+        // The instance's hint is its commit deadline (internal/ds `CommitDeadline`), the most a member may take before
+        // another is elected: never waited past MEMBERSHIP_WAIT, never less than one poll.
+        let hint = a
+            .retry_after_ms
+            .map_or(MEMBERSHIP_WAIT, Duration::from_millis);
+        return JoinRetry::Unfrozen(hint.clamp(UNFROZEN_POLL, MEMBERSHIP_WAIT));
+    }
+    if a.is(409, "E_COMMIT_CONFLICT") {
+        return JoinRetry::Now;
+    }
+    if a.is(422, "E_COMMIT_INVALID") {
+        if a.extra.first().and_then(Value::as_text) == Some("outstanding_proposals") {
+            return JoinRetry::Unfrozen(MEMBERSHIP_WAIT);
+        }
+        return JoinRetry::IfMoved;
+    }
+    JoinRetry::Fail
+}
+
+/// The epoch of a `GET /v1/groups/{id}/info` body (`[epoch, group_info, tree_hash, next_seq]`).
+fn group_info_epoch(body: &[u8]) -> Option<u64> {
+    let v = value::decode(body).ok()?;
+    let a = value::at_least(&v, 1).ok()?;
+    uint(&a[0]).ok()
+}
+
+/// True when the group is known to be past the epoch a refused commit was staged on. Unknown either way is not moved: a
+/// 422 is then the answer, never retried on a guess.
+fn epoch_moved(staged: Option<u64>, now: Option<u64>) -> bool {
+    matches!((staged, now), (Some(s), Some(n)) if n != s)
+}
+
+/// The Bot's `waitMusicCallUnfrozen`: waits out a frozen group for at most `bound`, reading its epoch every
+/// [`UNFROZEN_POLL`], and returns as soon as it has moved past `staged` (a member's commit of the outstanding proposal
+/// landed, so a fresh join stages on a group that takes it). A failed read is not the open's failure: the wait goes on
+/// to its bound and the next try reports. Without a staged epoch it sleeps the bound. Ends early once `stopped`.
+async fn wait_unfrozen<F, Fut>(
+    mut epoch: F,
+    staged: Option<u64>,
+    bound: Duration,
+    stopped: impl Fn() -> bool,
+) where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<u64>>,
+{
+    let Some(staged) = staged else {
+        tokio::time::sleep(bound).await;
+        return;
+    };
+    let mut waited = Duration::ZERO;
+    while waited < bound && !stopped() {
+        let step = UNFROZEN_POLL.min(bound - waited);
+        tokio::time::sleep(step).await;
+        waited += step;
+        if epoch_moved(Some(staged), epoch().await) {
+            return;
+        }
+    }
 }
 
 /// Test-only probes (feature `testing`): what the engine did that no published state shows.
