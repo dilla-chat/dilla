@@ -165,7 +165,7 @@ case "$check" in
     ;;
   launch)
     apt_install xvfb xauth dbus dbus-x11 gnome-keyring mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri \
-      libxkbcommon-x11-0 libxkbcommon0 libxcb1 libasound2t64 libwayland-client0 libx11-6 libx11-xcb1 libdrm2 libgbm1 \
+      libxkbcommon-x11-0 libxkbcommon0 libxcb1 libasound2t64 libpipewire-0.3-0t64 libwayland-client0 libx11-6 libx11-xcb1 libdrm2 libgbm1 \
       fonts-dejavu-core xdg-utils procps x11-utils
     cp "$assets/$base.AppImage" /tmp/dilla.AppImage
     chmod +x /tmp/dilla.AppImage

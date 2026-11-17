@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -2821,6 +2821,22 @@ test('the GPUI release build is clean: no cache, --locked, default features only
   assertReported(gpuiReleaseProblems((t) => t.replace('          node-version-file: .nvmrc\n      # LiveKit', '          node-version-file: .nvmrc\n          cache: npm\n      # LiveKit')), "turns on actions/setup-node's cache");
   assertReported(gpuiReleaseProblems((t) => t.replace('run: cargo build --release --locked -p dilla-desktop', 'run: cargo build --release -p dilla-desktop')), 'cargo build --release --locked -p dilla-desktop');
   assertReported(gpuiReleaseProblems((t) => t.replace('run: cargo build --release --locked -p dilla-desktop', 'run: cargo build --release --locked -p dilla-desktop --features automation')), 'default features only');
+});
+
+test("the GPUI release build installs every build package of desktop-gpui.yml's, less the test-only ones", () => {
+  const ci = readFileSync(join(REPO_ROOT, '.github/workflows/desktop-gpui.yml'), 'utf8');
+  const withCi = (release) => {
+    const dir = mkdtempSync(join(TEST_ROOT, 'dilla-gpui-release-apt-'));
+    mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+    writeFileSync(join(dir, GPUI_RELEASE), release);
+    writeFileSync(join(dir, '.github/workflows/desktop-gpui.yml'), ci);
+    return checkDesktopGpuiReleaseWorkflow(dir);
+  };
+  assert.deepEqual(withCi(REAL_GPUI_RELEASE), []);
+  const dropped = REAL_GPUI_RELEASE.replace(' libpipewire-0.3-dev\n', '\n');
+  assert.notEqual(dropped, REAL_GPUI_RELEASE);
+  assertReported(withCi(dropped), 'does not install libpipewire-0.3-dev');
+  assert.ok(aptPackages(ci).includes('ffmpeg') && !aptPackages(REAL_GPUI_RELEASE).includes('ffmpeg'), 'test-only packages stay out of the release');
 });
 
 test('every pinned step of the GPUI release workflow is enforced', () => {
