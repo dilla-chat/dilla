@@ -22,7 +22,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 
 export const REPOSITORY = 'https://github.com/dilla-chat/dilla';
 export const TAG_PREFIX = 'desktop-gpui-v';
-export const DEPENDS = ['glibc', 'gcc-libs', 'libxcb', 'libxkbcommon', 'libxkbcommon-x11', 'alsa-lib', 'libpipewire', 'vulkan-icd-loader', 'wayland', 'libx11', 'libdrm', 'mesa', 'xdg-utils', 'hicolor-icon-theme'];
+export const DEPENDS = ['glibc', 'gcc-libs', 'libxcb', 'libxkbcommon', 'libxkbcommon-x11', 'alsa-lib', 'libpipewire', 'glib2', 'vulkan-icd-loader', 'wayland', 'libx11', 'libdrm', 'mesa', 'xdg-utils', 'hicolor-icon-theme'];
 export const OPTDEPENDS = [
   'gnome-keyring: the Secret Service Dilla stores its database key in (required unless kwallet or keepassxc provides it)',
   'libpulse: calls through PulseAudio or PipeWire',
