@@ -113,15 +113,15 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: rustup show active-toolchain
-      # fetch-libwebrtc.sh checks its digest with sha256sum; where macOS lacks one, Perl's shasum takes the same flags.
+      # fetch-libwebrtc.sh checks its digest with GNU `sha256sum --check --status`; Perl's shasum takes the same flags.
+      # Always shadow the runner's own: macos-15-arm64 20261104 ships a BSD sha256sum that knows no long options, so
+      # alpha.1's first sign run (44193266502) reported a bogus "SHA-256 mismatch" for libwebrtc.
       - name: sha256sum on macOS
         run: |
-          if ! command -v sha256sum >/dev/null; then
-            mkdir -p "$RUNNER_TEMP/bin"
-            printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$RUNNER_TEMP/bin/sha256sum"
-            chmod +x "$RUNNER_TEMP/bin/sha256sum"
-            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          fi
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$RUNNER_TEMP/bin/sha256sum"
+          chmod +x "$RUNNER_TEMP/bin/sha256sum"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Fetch the pinned libwebrtc
         run: bash scripts/fetch-libwebrtc.sh aarch64-apple-darwin "$RUNNER_TEMP/libwebrtc" >> "$GITHUB_ENV"
       # A clean build: no cache restored, the lock file as committed, default features only.
