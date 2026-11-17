@@ -223,15 +223,8 @@ pub fn grouped_with_above(prev: Option<&TimelineItem>, item: &TimelineItem, cloc
 }
 
 /// The offset of the clock's zone at `secs`, in seconds east of UTC.
-fn zone_of(clock: Clock, secs: i64) -> chrono::FixedOffset {
-    let east = clock
-        .format(u64::try_from(secs).unwrap_or(0), |d| {
-            d.offset().local_minus_utc().to_string()
-        })
-        .parse::<i32>()
-        .unwrap_or(0);
-    chrono::FixedOffset::east_opt(east)
-        .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).expect("utc"))
+fn zone_of(clock: Clock, secs: i64) -> jiff::tz::Offset {
+    clock.offset(secs.max(0))
 }
 
 /// log-model.ts `dayLabel`: today, yesterday, else the date.

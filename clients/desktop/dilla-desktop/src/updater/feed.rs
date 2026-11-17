@@ -9,8 +9,8 @@
 
 use std::sync::OnceLock;
 
-use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
+use jiff::Timestamp;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha512};
@@ -208,7 +208,7 @@ pub struct Asset {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
     pub version: Version,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     pub assets: Vec<Asset>,
 }
 
@@ -249,7 +249,7 @@ pub fn verify(
     feed: &[u8],
     sig: &[u8],
     trust: &Trust,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Release, FeedError> {
     // 1. Sizes.
     if feed.is_empty() || feed.len() > MAX_FEED || sig.is_empty() || sig.len() > MAX_SIG {
@@ -283,7 +283,7 @@ pub fn verify(
     let version = channel_version(&doc.version, &trust.channel).ok_or(FeedError::Version)?;
     let published = utc(&doc.published_at).ok_or(FeedError::Dates)?;
     let expires = utc(&doc.expires_at).ok_or(FeedError::Dates)?;
-    let (p, e, n) = (published.timestamp(), expires.timestamp(), now.timestamp());
+    let (p, e, n) = (secs(published), secs(expires), secs(now));
     if p > n + SKEW_S || e <= n || e <= p || e - p > MAX_VALID_S {
         return Err(FeedError::Dates);
     }
@@ -342,7 +342,7 @@ fn channel_version(s: &str, channel: &str) -> Option<Version> {
 }
 
 /// `YYYY-MM-DDTHH:MM:SS[.fraction]Z` (the shape `desktopdownload` and beta.5 accept).
-fn utc(s: &str) -> Option<DateTime<Utc>> {
+fn utc(s: &str) -> Option<Timestamp> {
     let b = s.as_bytes();
     let shape = b.len() >= 20
         && b.iter().enumerate().take(19).all(|(i, &c)| match i {
@@ -359,9 +359,12 @@ fn utc(s: &str) -> Option<DateTime<Utc>> {
     if !shape {
         return None;
     }
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.with_timezone(&Utc))
+    s.parse::<Timestamp>().ok()
+}
+
+/// Whole unix seconds of an instant, rounded down.
+fn secs(t: Timestamp) -> i64 {
+    t.as_millisecond().div_euclid(1000)
 }
 
 /// The update in `release` for an app at `current` whose platform asset ends in `suffix` (`linux-x64.AppImage`):
@@ -447,7 +450,7 @@ mod tests {
 
     const NOW: &str = "2026-11-16T12:00:00Z";
 
-    fn now() -> DateTime<Utc> {
+    fn now() -> Timestamp {
         utc(NOW).unwrap()
     }
 
@@ -796,5 +799,35 @@ mod tests {
         let mut other = Checked::new(&asset);
         other.push(b"jello").unwrap();
         assert_eq!(other.finish(), Err(DownloadError::Hash));
+    }
+
+    /// The feed's date parser, pinned to what the chrono-based one answered: exact seconds for the accepted shape, `None` for a
+    /// date that does not exist, and the leap second read as the second before it.
+    #[test]
+    fn feed_dates_parse_to_exact_unix_seconds() {
+        let secs = |s: &str| utc(s).map(super::secs);
+        assert_eq!(secs("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(secs("2026-11-16T12:00:00Z"), Some(1_794_830_400));
+        assert_eq!(secs("2026-11-16T12:00:00.999Z"), Some(1_794_830_400));
+        assert_eq!(secs("2026-11-16T12:00:00.123456789Z"), Some(1_794_830_400));
+        assert_eq!(secs("2028-02-29T00:00:00Z"), Some(1_835_395_200));
+        // A leap second is the second it follows.
+        assert_eq!(secs("2026-12-31T23:59:60Z"), secs("2026-12-31T23:59:59Z"));
+        // Whole seconds round down before 1970 too.
+        assert_eq!(secs("1969-12-31T23:59:59.5Z"), Some(-1));
+        // Dates and times that do not exist.
+        for bad in [
+            "2027-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-13-01T00:00:00Z",
+            "2026-00-10T00:00:00Z",
+            "2026-11-16T24:00:00Z",
+            "2026-11-16T12:60:00Z",
+            "2026-11-16T12:00:61Z",
+            "2026-11-16T12:00:00.Z",
+            "2026-11-16T12:00:00z",
+        ] {
+            assert_eq!(utc(bad), None, "{bad}");
+        }
     }
 }

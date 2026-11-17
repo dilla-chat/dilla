@@ -718,7 +718,7 @@ fn now_s() -> i64 {
 }
 
 fn offset_at(t: i64) -> i32 {
-    crate::format::local_zone(t).local_minus_utc()
+    crate::format::local_zone(t).seconds()
 }
 
 /// The zone a reminder's time is read in (the OS zone, as `super::local_zone`).
