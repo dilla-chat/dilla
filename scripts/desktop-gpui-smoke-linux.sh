@@ -29,7 +29,9 @@ BETA5_RPM_SHA256=bef3fa2e385a38b95665a3011b7bc00ad7bae5c1cb1114a39a38f186c063b71
 check=$1
 version=$2
 assets=$(cd "$3" && pwd -P)
-beta5=${4:-}
+# Absolute like $assets: apt-get reads a relative 'beta5/x.deb' as package 'beta5' from release 'x.deb' (alpha.1's
+# first ubuntu-upgrade run failed with "Unable to locate package beta5").
+beta5=${4:+$(cd "$4" && pwd -P)}
 base=dilla-$version-linux-x64
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]] || { echo "not a release version: $version" >&2; exit 1; }
