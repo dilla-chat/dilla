@@ -1862,6 +1862,7 @@ export const GPUI_RELEASE_STEPS = {
     'test "$got" = "Dilla $VERSION (${SHA:0:12})"',
     'bash scripts/check-glibc-max.sh 2.39 target/release/dilla-desktop',
     'bash scripts/check-desktop-release-binary.sh target/release/dilla-desktop',
+    'run: node scripts/desktop-gpui-linux-deps.mjs target/release/dilla-desktop',
     'bash scripts/install-ci-tool.sh appimagetool',
     'bash scripts/install-ci-tool.sh appimage-runtime',
     'bash scripts/install-ci-tool.sh nfpm',

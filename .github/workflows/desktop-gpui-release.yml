@@ -159,6 +159,9 @@ jobs:
         run: |
           bash scripts/check-glibc-max.sh 2.39 target/release/dilla-desktop
           bash scripts/check-desktop-release-binary.sh target/release/dilla-desktop
+      # Every library the binary links has its package in the deb, rpm and AUR depends (alpha.1 shipped libgio without).
+      - name: Every linked library has its package dependency
+        run: node scripts/desktop-gpui-linux-deps.mjs target/release/dilla-desktop
       - name: Install the pinned packaging tools
         run: |
           bash scripts/install-ci-tool.sh appimagetool
