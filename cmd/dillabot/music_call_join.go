@@ -204,6 +204,10 @@ func (*errMusicCallJoinHeld) Is(target error) bool { return target == music.ErrN
 type errMusicCallJoinFrozen struct {
 	err        error
 	retryAfter time.Duration
+	// The frozen call group and the epoch the refused join was staged on: the freeze ends when a member's commit of the
+	// instance Remove moves the group past it.
+	group id.ID
+	epoch uint64
 }
 
 func (e *errMusicCallJoinFrozen) Error() string { return e.err.Error() }
@@ -224,6 +228,34 @@ func waitMusicCallJoin(ctx context.Context, delay time.Duration) error {
 	}
 }
 
+// musicCallUnfrozenPoll is how often a join refused by a frozen call group reads the group's epoch while it waits.
+const musicCallUnfrozenPoll = 100 * time.Millisecond
+
+// waitMusicCallUnfrozen waits out a frozen call group (425 E_COMMIT_REQUIRED) for at most bound, and returns as soon
+// as the group's epoch moves past the one the refused join was staged on: the member's commit of the instance Remove
+// has landed, so the next attempt stages on a group that takes it. The instance's Retry-After is its commit deadline
+// (the most a member may take before it elects another), not when the commit lands, which is usually a few hundred
+// milliseconds after the Remove: sleeping the whole hint added up to 2 s to a /play right after someone left the call
+// (a voice takeover's first device), the cold budget's whole headroom. One group-info read per poll, at most
+// bound/musicCallUnfrozenPoll of them (20 for the 2 s cap), within the Bot's read budget.
+func waitMusicCallUnfrozen(ctx context.Context, calls musicCallJoinReader, frozen *errMusicCallJoinFrozen, bound time.Duration, wait func(context.Context, time.Duration) error) error {
+	if frozen.group.IsZero() {
+		return wait(ctx, bound)
+	}
+	for waited := time.Duration(0); waited < bound; {
+		step := min(musicCallUnfrozenPoll, bound-waited)
+		if err := wait(ctx, step); err != nil {
+			return err
+		}
+		waited += step
+		// A failed read is not the join's failure: the wait goes on to its bound, and the next attempt reports.
+		if info, err := calls.GroupInfo(ctx, frozen.group); err == nil && info.Epoch != frozen.epoch {
+			return nil
+		}
+	}
+	return nil
+}
+
 func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, trust musicJoinTrust, installation, community, channel id.ID, policy uint64, wait func(context.Context, time.Duration) error) error {
 	delays := [...]time.Duration{250 * time.Millisecond, time.Second, 2 * time.Second}
 	conflicts, discarded := 0, false
@@ -242,10 +274,13 @@ func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, cor
 		}
 		delay := delays[conflicts]
 		if isFrozen {
-			// The instance's own hint, bounded by the schedule's longest step.
+			// The instance's own hint, bounded by the schedule's longest step, is the most this retry waits: the freeze
+			// usually ends well before it (see waitMusicCallUnfrozen).
 			delay = max(delay, min(frozen.retryAfter, delays[len(delays)-1]))
-		}
-		if err = wait(ctx, delay); err != nil {
+			if err = waitMusicCallUnfrozen(ctx, calls, frozen, delay, wait); err != nil {
+				return err
+			}
+		} else if err = wait(ctx, delay); err != nil {
 			return err
 		}
 		conflicts++
@@ -450,7 +485,7 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 				if apiErr.RetryAfterMS != nil {
 					retryAfter = time.Duration(min(*apiErr.RetryAfterMS, math.MaxInt64/uint64(time.Millisecond))) * time.Millisecond
 				}
-				return &errMusicCallJoinFrozen{err: musicCallJoinStageError("resync", err), retryAfter: retryAfter}
+				return &errMusicCallJoinFrozen{err: musicCallJoinStageError("resync", err), retryAfter: retryAfter, group: group, epoch: info.Epoch}
 			}
 			return musicCallJoinStageError("resync", err)
 		}
