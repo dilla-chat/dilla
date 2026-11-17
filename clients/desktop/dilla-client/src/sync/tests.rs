@@ -9,9 +9,13 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::api::{Api, CoreHandle, InstanceInfo, with_core};
+use super::api::{Api, ApiError, CoreHandle, InstanceInfo, with_core};
 use super::requests::SocketRequests;
-use super::{ConnectionEvent, Engine, Membership, SyncHooks};
+use super::{
+    COMMIT_RETRY_MAX, ConnectionEvent, CoreError, Engine, ExpectedGroup, JoinPort, JoinRetry,
+    JoinStep, MEMBERSHIP_WAIT, Membership, SyncError, SyncHooks, UNFROZEN_POLL, epoch_moved,
+    group_info_epoch, join_named, join_retry, wait_unfrozen,
+};
 use crate::auth::AuthToken;
 use crate::gateway::frames::{self, Frame, Op, Value};
 use crate::gateway::{GatewayOptions, WsGateway};
@@ -257,4 +261,448 @@ async fn a_removal_retry_keeps_the_trust_annotations() {
         "the annotations are kept"
     );
     engine.stop();
+}
+
+// ---- an opened channel's external join refused 425 E_COMMIT_REQUIRED or 422 E_COMMIT_INVALID ----
+
+fn refused(status: u16, code: &str, retry_after_ms: Option<u64>) -> SyncError {
+    let mut e = ApiError::local(status, code, "");
+    e.retry_after_ms = retry_after_ms;
+    SyncError::Api(e)
+}
+
+/// 422 `E_COMMIT_INVALID` naming the clause that refused the commit (its fourth field).
+fn invalid(rule: &str) -> SyncError {
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(4)
+        .text("E_COMMIT_INVALID")
+        .text("refused")
+        .null()
+        .text(rule);
+    SyncError::Api(ApiError::from_body(422, &e.into_vec()))
+}
+
+/// A freeze waits for a member's commit, at most the instance's hint (its 2 s commit deadline), never longer and never
+/// less than one poll; a stale epoch (422) is retried only once the group is known to have moved; a conflict (409) is
+/// retried at once; everything else, and every refusal once the tries are spent, is the open's answer.
+#[test]
+fn an_open_retries_a_freeze_a_conflict_and_a_moved_epoch_within_its_budget() {
+    let two = Duration::from_millis(2_000);
+    assert_eq!(MEMBERSHIP_WAIT, two);
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(2_000)), 1),
+        JoinRetry::Unfrozen(two)
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(800)), 1),
+        JoinRetry::Unfrozen(Duration::from_millis(800))
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(60_000)), 1),
+        JoinRetry::Unfrozen(two),
+        "capped at the commit deadline"
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", None), 1),
+        JoinRetry::Unfrozen(two)
+    );
+    assert_eq!(
+        join_retry(&refused(425, "E_COMMIT_REQUIRED", Some(0)), 1),
+        JoinRetry::Unfrozen(UNFROZEN_POLL)
+    );
+    // A 422 is retried by its clause, an allowlist: only `epoch` is timing; every other clause judges the commit.
+    assert_eq!(join_retry(&invalid("epoch"), 1), JoinRetry::IfMoved);
+    assert_eq!(
+        join_retry(&invalid("epoch"), COMMIT_RETRY_MAX),
+        JoinRetry::Fail
+    );
+    assert_eq!(
+        join_retry(&refused(422, "E_COMMIT_INVALID", None), 1),
+        JoinRetry::Fail,
+        "no clause named"
+    );
+    for rule in [
+        "external_joiner",
+        "structural",
+        "external_commit_remove_scope",
+        "group_info",
+        "group_info_epoch",
+        "group_info_signature",
+        "add_acl",
+        "",
+    ] {
+        assert_eq!(join_retry(&invalid(rule), 1), JoinRetry::Fail, "{rule:?}");
+    }
+    // The freeze met inside the commit (a proposal made, or a member online, after the instance's freeze check).
+    assert_eq!(
+        join_retry(&invalid("outstanding_proposals"), 1),
+        JoinRetry::Unfrozen(two)
+    );
+    assert_eq!(
+        join_retry(&invalid("outstanding_proposals"), COMMIT_RETRY_MAX),
+        JoinRetry::Fail
+    );
+    assert_eq!(
+        join_retry(&refused(409, "E_COMMIT_CONFLICT", None), 1),
+        JoinRetry::Now
+    );
+    for other in [
+        refused(422, "E_INVALID_REQUEST", None),
+        refused(425, "E_TOO_EARLY", None),
+        refused(403, "E_FORBIDDEN", None),
+        refused(409, "E_REMOVE_PENDING", None),
+        refused(409, "E_GROUP_CLOSED", None),
+        SyncError::Stopped,
+        SyncError::ChannelGone,
+    ] {
+        assert_eq!(join_retry(&other, 1), JoinRetry::Fail, "{other}");
+    }
+    for spent in [
+        refused(425, "E_COMMIT_REQUIRED", Some(2_000)),
+        invalid("epoch"),
+        invalid("outstanding_proposals"),
+        refused(409, "E_COMMIT_CONFLICT", None),
+    ] {
+        assert_eq!(
+            join_retry(&spent, COMMIT_RETRY_MAX),
+            JoinRetry::Fail,
+            "{spent}: the tries are spent, the refusal is surfaced"
+        );
+        assert_ne!(join_retry(&spent, COMMIT_RETRY_MAX - 1), JoinRetry::Fail);
+    }
+}
+
+/// A 422 is retried only when the group is known to be past the epoch the refused commit was staged on: an unreadable
+/// epoch, or one that did not move, leaves the refusal as the answer.
+#[test]
+fn a_stale_epoch_is_retried_only_when_the_group_moved() {
+    assert!(epoch_moved(Some(3), Some(4)));
+    assert!(!epoch_moved(Some(3), Some(3)));
+    assert!(!epoch_moved(Some(3), None));
+    assert!(!epoch_moved(None, Some(4)));
+    assert!(!epoch_moved(None, None));
+}
+
+/// `GET /v1/groups/{id}/info` answers `[epoch, group_info, tree_hash, next_seq]`.
+#[test]
+fn the_group_info_epoch_is_its_first_field() {
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(4).uint(7).bytes(b"info").bytes(&[0; 32]).uint(12);
+    assert_eq!(group_info_epoch(&e.into_vec()), Some(7));
+    assert_eq!(group_info_epoch(b"\xff"), None);
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(0);
+    assert_eq!(group_info_epoch(&e.into_vec()), None);
+}
+
+/// The epoch reads of a frozen-group wait: `answers` in turn (then the last one again), counted.
+fn epochs(
+    answers: Vec<Option<u64>>,
+) -> (
+    Arc<AtomicUsize>,
+    impl FnMut() -> std::future::Ready<Option<u64>>,
+) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = reads.clone();
+    let read = move || {
+        let n = counted.fetch_add(1, Ordering::AcqRel);
+        std::future::ready(answers[n.min(answers.len() - 1)])
+    };
+    (reads, read)
+}
+
+/// The freeze ends with a member's commit, usually well before the instance's deadline: the wait reads the epoch every
+/// 100 ms and ends at the first read past the staged one (a failed read does not end it), not after the whole hint.
+#[tokio::test(start_paused = true)]
+async fn a_frozen_wait_ends_when_the_epoch_moves() {
+    let (reads, read) = epochs(vec![Some(5), None, Some(5), Some(6)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), MEMBERSHIP_WAIT, || false).await;
+    assert_eq!(start.elapsed(), UNFROZEN_POLL * 4);
+    assert_eq!(reads.load(Ordering::Acquire), 4);
+}
+
+/// A freeze nobody lifts is bounded by the hint, one read per poll; then the open stages again (and the next refusal,
+/// or the spent budget, answers).
+#[tokio::test(start_paused = true)]
+async fn a_frozen_wait_is_bounded_by_the_hint() {
+    let (reads, read) = epochs(vec![Some(5)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), MEMBERSHIP_WAIT, || false).await;
+    assert_eq!(start.elapsed(), MEMBERSHIP_WAIT);
+    assert_eq!(reads.load(Ordering::Acquire), 20);
+    // A hint that is not a whole number of polls ends exactly at the hint.
+    let (reads, read) = epochs(vec![Some(5)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), Duration::from_millis(250), || false).await;
+    assert_eq!(start.elapsed(), Duration::from_millis(250));
+    assert_eq!(reads.load(Ordering::Acquire), 3);
+}
+
+/// Without a staged epoch there is nothing to compare: the wait is the hint, with no reads. A stopped engine does not
+/// wait.
+#[tokio::test(start_paused = true)]
+async fn a_frozen_wait_without_a_staged_epoch_sleeps_the_hint_and_a_stop_ends_it() {
+    let (reads, read) = epochs(vec![Some(6)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, None, MEMBERSHIP_WAIT, || false).await;
+    assert_eq!(start.elapsed(), MEMBERSHIP_WAIT);
+    assert_eq!(reads.load(Ordering::Acquire), 0);
+    let (reads, read) = epochs(vec![Some(5)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, Some(5), MEMBERSHIP_WAIT, || true).await;
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert_eq!(reads.load(Ordering::Acquire), 0);
+    // A stop during a wait without a staged epoch ends it at the next poll, not at the hint.
+    let (_, read) = epochs(vec![Some(5)]);
+    let start = tokio::time::Instant::now();
+    wait_unfrozen(read, None, MEMBERSHIP_WAIT, || {
+        start.elapsed() >= Duration::from_millis(250)
+    })
+    .await;
+    assert_eq!(start.elapsed(), Duration::from_millis(300));
+}
+
+// ---- the open's join loop (`join_named`, `external_join_via`) against a scripted port ----
+
+/// A scripted instance, core and lane for one group: what each step answers, and the steps taken, in order.
+struct Script {
+    /// The epoch the n-th GroupInfo read answers.
+    epoch_at: Box<dyn Fn(usize) -> u64 + Send + Sync>,
+    info_reads: AtomicUsize,
+    /// What each `POST resync` answers in turn; past the end, `then`.
+    posts: Mutex<std::collections::VecDeque<Result<(u64, u64), ApiError>>>,
+    then: Box<dyn Fn() -> Result<(u64, u64), ApiError> + Send + Sync>,
+    /// A Welcome for this device waits once a GroupInfo read has shown this epoch (the commit that added it).
+    welcome_at: Option<u64>,
+    welcome_ready: std::sync::atomic::AtomicBool,
+    active: std::sync::atomic::AtomicBool,
+    staged: std::sync::atomic::AtomicBool,
+    steps: Mutex<Vec<String>>,
+}
+
+impl Script {
+    fn new(epoch_at: impl Fn(usize) -> u64 + Send + Sync + 'static) -> Self {
+        Self {
+            epoch_at: Box::new(epoch_at),
+            info_reads: AtomicUsize::new(0),
+            posts: Mutex::new(std::collections::VecDeque::new()),
+            then: Box::new(|| Ok((1, 1))),
+            welcome_at: None,
+            welcome_ready: std::sync::atomic::AtomicBool::new(false),
+            active: std::sync::atomic::AtomicBool::new(false),
+            staged: std::sync::atomic::AtomicBool::new(false),
+            steps: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn step(&self, s: String) {
+        self.steps.lock().unwrap().push(s);
+    }
+
+    fn steps(&self) -> Vec<String> {
+        self.steps.lock().unwrap().clone()
+    }
+
+    fn posts(&self) -> usize {
+        self.steps().iter().filter(|s| *s == "post").count()
+    }
+}
+
+#[async_trait::async_trait]
+impl JoinPort for Script {
+    fn join_stopped(&self) -> bool {
+        false
+    }
+
+    async fn read_group_info(&self, _: [u8; 16]) -> Result<Vec<u8>, ApiError> {
+        let n = self.info_reads.fetch_add(1, Ordering::AcqRel);
+        let epoch = (self.epoch_at)(n);
+        if self.welcome_at.is_some_and(|at| epoch >= at) {
+            self.welcome_ready.store(true, Ordering::Release);
+        }
+        let mut e = dilla_core::cbor::Encoder::new();
+        e.array(4)
+            .uint(epoch)
+            .bytes(b"info")
+            .bytes(&[0; 32])
+            .uint(1);
+        Ok(e.into_vec())
+    }
+
+    async fn read_group_tree(&self, _: [u8; 16]) -> Result<Vec<u8>, ApiError> {
+        Ok(b"tree".to_vec())
+    }
+
+    async fn stage_external(
+        &self,
+        _: ExpectedGroup,
+        info: Vec<u8>,
+        _: Vec<u8>,
+    ) -> Result<Vec<u8>, CoreError> {
+        assert!(
+            !self.staged.swap(true, Ordering::AcqRel),
+            "a staged commit is discarded before the next is staged"
+        );
+        self.step(format!("stage@{}", group_info_epoch(&info).unwrap()));
+        Ok(info)
+    }
+
+    async fn post_external(&self, _: [u8; 16], body: Vec<u8>) -> Result<(u64, u64), ApiError> {
+        assert!(
+            self.staged.load(Ordering::Acquire),
+            "only a staged commit is posted"
+        );
+        self.step("post".into());
+        let _ = body;
+        let next = self.posts.lock().unwrap().pop_front();
+        next.unwrap_or_else(|| (self.then)())
+    }
+
+    async fn discard_staged(&self, _: [u8; 16]) {
+        if self.staged.swap(false, Ordering::AcqRel) {
+            self.step("discard".into());
+        }
+    }
+
+    async fn joined(&self, _: [u8; 16], seq: u64) -> Result<(), SyncError> {
+        assert!(self.staged.swap(false, Ordering::AcqRel));
+        self.step(format!("joined@{seq}"));
+        self.active.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    async fn is_active(&self, _: [u8; 16]) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
+    async fn read_welcomes(&self) {
+        if self.welcome_ready.swap(false, Ordering::AcqRel) {
+            self.step("welcome".into());
+            self.active.store(true, Ordering::Release);
+        }
+    }
+
+    async fn on_lane<T, F>(&self, _: [u8; 16], job: F) -> T
+    where
+        T: Send,
+        F: std::future::Future<Output = T> + Send,
+    {
+        job.await
+    }
+}
+
+/// The open's loop around `join_named` (open_channel_flow's own, without the local-row and registration arms).
+async fn open_named(port: &Script) -> Result<(), SyncError> {
+    let eg = ExpectedGroup {
+        group_id: [9; 16],
+        community_id: Some([8; 16]),
+        channel_id: [7; 16],
+        policy_version: 1,
+    };
+    let mut joins = 0;
+    for _ in 0..32 {
+        match join_named(port, eg, &mut joins).await? {
+            JoinStep::Joined => return Ok(()),
+            JoinStep::Again => continue,
+        }
+    }
+    panic!("the open's join never ended");
+}
+
+fn invalid_api(rule: &str) -> ApiError {
+    let SyncError::Api(e) = invalid(rule) else {
+        unreachable!()
+    };
+    e
+}
+
+/// (a) A join refused 425 while a member's commit adds this device: the open waits for the epoch to move, reads the
+/// Welcome that commit sent, and is in by it. Its refused commit was discarded and never posted again.
+#[tokio::test(start_paused = true)]
+async fn a_frozen_open_joins_by_the_welcome_of_the_commit_that_ends_the_freeze() {
+    // Read 0 stages at epoch 5; the wait's reads see 5, 5, then 6 (the member committed the Add).
+    let mut port = Script::new(|n| if n < 3 { 5 } else { 6 });
+    port.welcome_at = Some(6);
+    port.posts.lock().unwrap().push_back(Err(
+        match refused(425, "E_COMMIT_REQUIRED", Some(2_000)) {
+            SyncError::Api(e) => e,
+            _ => unreachable!(),
+        },
+    ));
+    let start = tokio::time::Instant::now();
+    open_named(&port).await.expect("joined");
+    assert_eq!(port.steps(), ["stage@5", "post", "discard", "welcome"]);
+    assert_eq!(port.posts(), 1, "no second resync");
+    assert_eq!(
+        start.elapsed(),
+        UNFROZEN_POLL * 3,
+        "the wait ends with the epoch, not the hint"
+    );
+}
+
+/// (b) A join refused 422 `epoch` while the group moved stages afresh on the moved group: the refused commit is
+/// discarded before the next is staged, and once the tries are spent the last refusal is the open's answer.
+#[tokio::test(start_paused = true)]
+async fn a_stale_epoch_open_restages_and_surfaces_the_refusal_once_the_budget_is_spent() {
+    // Every read shows a newer epoch: each refusal finds the group moved.
+    let mut port = Script::new(|n| 10 + n as u64);
+    port.then = Box::new(|| Err(invalid_api("epoch")));
+    let e = open_named(&port).await.expect_err("refused");
+    assert_eq!(e.code(), "E_COMMIT_INVALID");
+    let steps = port.steps();
+    assert_eq!(port.posts(), COMMIT_RETRY_MAX as usize);
+    for (n, chunk) in steps.chunks(3).enumerate() {
+        assert!(chunk[0].starts_with("stage@"), "{steps:?}");
+        assert_eq!(&chunk[1..], ["post", "discard"], "try {n}: {steps:?}");
+    }
+    // Each try staged on a newer GroupInfo than the one before it.
+    let staged: Vec<u64> = steps
+        .iter()
+        .filter_map(|s| s.strip_prefix("stage@"))
+        .map(|e| e.parse().unwrap())
+        .collect();
+    assert!(staged.windows(2).all(|w| w[1] > w[0]), "{staged:?}");
+
+    // A re-staged join the instance takes joins.
+    let mut port = Script::new(|n| 10 + n as u64);
+    port.posts
+        .lock()
+        .unwrap()
+        .push_back(Err(invalid_api("epoch")));
+    port.then = Box::new(|| Ok((42, 12)));
+    open_named(&port).await.expect("joined");
+    assert_eq!(
+        port.steps(),
+        [
+            "stage@10",
+            "post",
+            "discard",
+            "stage@12",
+            "post",
+            "joined@42"
+        ]
+    );
+}
+
+/// (c) A join the instance refuses for what it is (422 `external_joiner`: a revoked or unlisted device) posts once and
+/// is the open's answer, however busy the group; so is a 422 `epoch` from a group that did not move.
+#[tokio::test(start_paused = true)]
+async fn a_refused_joiner_posts_once_and_surfaces() {
+    let mut port = Script::new(|n| 10 + n as u64);
+    port.then = Box::new(|| Err(invalid_api("external_joiner")));
+    let e = open_named(&port).await.expect_err("refused");
+    assert_eq!(e.code(), "E_COMMIT_INVALID");
+    assert_eq!(port.steps(), ["stage@10", "post", "discard"]);
+    assert_eq!(
+        port.info_reads.load(Ordering::Acquire),
+        1,
+        "nothing read after"
+    );
+
+    let mut port = Script::new(|_| 10);
+    port.then = Box::new(|| Err(invalid_api("epoch")));
+    let e = open_named(&port).await.expect_err("refused");
+    assert_eq!(e.code(), "E_COMMIT_INVALID");
+    assert_eq!(port.steps(), ["stage@10", "post", "discard"]);
 }

@@ -37,8 +37,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use gpui::{App, Global, SharedString, SystemNotification, Task};
+use jiff::Timestamp;
 use semver::Version;
 use tokio::sync::mpsc;
 
@@ -201,7 +201,7 @@ async fn get_limited(client: &reqwest::Client, url: &str, max: usize) -> Result<
 }
 
 /// Reads and checks the feed at `now`: the update for this platform when the feed offers a newer version.
-pub async fn check(now: DateTime<Utc>) -> Result<Option<Update>, Error> {
+pub async fn check(now: Timestamp) -> Result<Option<Update>, Error> {
     let client = client(false)?;
     let feed = get_limited(&client, FEED_URL, feed::MAX_FEED).await?;
     let sig = get_limited(&client, &format!("{FEED_URL}.sig"), feed::MAX_SIG).await?;
@@ -519,7 +519,7 @@ fn work(installed: Installed, staged: Option<Version>, tx: mpsc::UnboundedSender
         }
     };
     let last = rt.block_on(async {
-        let update = match check(Utc::now()).await {
+        let update = match check(Timestamp::now()).await {
             Err(e) => return Event::Failed(e),
             Ok(None) => return Event::UpToDate,
             Ok(Some(update)) => update,

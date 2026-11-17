@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use dilla_client::state::trust::{TrustSummary, privacy_row};
 use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItemState, UserId};
 use dilla_client::testing::host::{
-    Host, Person, clear_session, community, repo_root, sign_up, start, start_host, wait_for,
+    Host, PASSWORD, Person, clear_session, community, repo_root, sign_up, start, start_host,
+    wait_for,
 };
 use dilla_client::{Client, ClientError};
 use serde_json::{Value, json};
@@ -714,4 +715,68 @@ async fn dm_open_list_send_and_unread() {
         shows(s, dm, "hello back")
     })
     .await;
+}
+
+/// Opening a channel whose group is frozen (protocol invariant 5: an instance Remove is outstanding and a member is
+/// online) is one open, not an error: the external join is refused 425 `E_COMMIT_REQUIRED`, the client waits for the
+/// group's epoch to move (a member's commit of the Remove) and joins then. The freeze is made deterministic with the
+/// web driver, which commits only when driven: the peer enrols a second device into the channel's group and revokes it
+/// (the instance proposes that device's Remove), and drives its commit only after the browser's open has been refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+async fn opening_a_frozen_channel_waits_for_the_members_commit() {
+    let host = host("t13-frozen").await;
+    let me = browser(&host, "browser", "t13-frozen").await;
+    let client = start(&me).await;
+    let peer = Peer::start(&host, 0x1310);
+    let setup = peer
+        .call(
+            "setup",
+            json!({ "community": "frozen", "channel": "general", "password": PASSWORD }),
+        )
+        .await;
+    peer.call("register", json!({})).await;
+    let second = peer.call("enrol", json!({})).await;
+    peer.call("revoke", json!({ "device_id": second["device_id"] }))
+        .await;
+
+    let community = hex16(setup["community_id"].as_str().unwrap());
+    let channel = ChannelId(hex16(setup["channel_id"].as_str().unwrap()));
+    let code = setup["invite_code"].as_str().unwrap().to_owned();
+    let (public, device, token) = (host.public.clone(), me.device_id, me.token.clone());
+    tokio::task::spawn_blocking(move || {
+        use dilla_core::ids::DeviceId;
+        let mut ds =
+            dilla_testkit::HttpDs::with_session(&public, DeviceId::from_bytes(device), token)
+                .unwrap();
+        ds.join_community(&community, &code).unwrap();
+    })
+    .await
+    .unwrap();
+    client.refresh();
+    wait_for(&client, WAIT, "the peer's channel", |s| {
+        s.channel(channel).is_some()
+    })
+    .await;
+
+    // One open, no retry here: it is refused while the Remove is outstanding and must wait for the commit, which the
+    // peer makes 1.5 s in (well inside one 2 s wait, and the open's budget of five tries).
+    let commit = async {
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        let committed = Instant::now();
+        peer.call("sync", json!({ "channel_id": setup["channel_id"] }))
+            .await;
+        committed
+    };
+    let open = async {
+        let opened = client.open_channel(channel).await.unwrap();
+        (opened, Instant::now())
+    };
+    let (committed, (opened, opened_at)) = tokio::join!(commit, open);
+    opened.expect("the open waits out the freeze and joins");
+    assert!(
+        opened_at > committed,
+        "the open joined only after the member's commit: the group was frozen until then"
+    );
+    peer.wait_for_devices(2, setup["channel_id"].as_str()).await;
 }

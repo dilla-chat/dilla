@@ -124,12 +124,9 @@ pub fn draft_changed(window: gpui::WindowId, draft: &str, cx: &mut App) {
 
 /// The zone and locale times are drawn in: UTC under a fixture's frozen clock (the references are shot in UTC), else
 /// the local zone and the OS region.
-fn zone_of(clock: Clock) -> (fn(i64) -> chrono::FixedOffset, String) {
+fn zone_of(clock: Clock) -> (fn(i64) -> jiff::tz::Offset, String) {
     match clock {
-        Clock::Fixed { utc: true, .. } => (
-            |_| chrono::FixedOffset::east_opt(0).expect("utc"),
-            "en-US".to_owned(),
-        ),
+        Clock::Fixed { utc: true, .. } => (|_| jiff::tz::Offset::UTC, "en-US".to_owned()),
         _ => (crate::format::local_zone, crate::format::date_locale()),
     }
 }
@@ -392,7 +389,7 @@ fn local_zone() -> run::Zone {
         .unwrap_or_else(|| "UTC".to_owned());
     run::Zone {
         name,
-        offset_at: std::sync::Arc::new(|t| crate::format::local_zone(t).local_minus_utc()),
+        offset_at: std::sync::Arc::new(|t| crate::format::local_zone(t).seconds()),
     }
 }
 

@@ -32,8 +32,10 @@ url = "2"
 zeroize = "1"
 # Task 19: the Voice section's device, microphone-test and sound threads log what they could not do (already in the lock through dilla-media).
 log = "0.4"
-# Message times in the local zone (already in the lock through gpui-component).
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Message times, log timestamps and the updater feed's dates, in the local zone. Only what is used: `tz-system` finds the OS
+# zone (TZ, /etc/localtime, the Windows registry), `tzdb-zoneinfo` reads the zone rules from /usr/share/zoneinfo on Unix, and
+# `tzdb-bundle-platform` bundles them on Windows, which has no zoneinfo. (GPUI's own chrono use stays: RUSTSEC-2026-0543.)
+jiff = { version = "=0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # The automation build's channel-view fixture (src/fixture.rs), and the updater's feed document (src/updater/feed.rs).
 serde = { version = "1", features = ["derive"] }

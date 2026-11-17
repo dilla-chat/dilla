@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use chrono::{Datelike, FixedOffset, TimeZone};
 use dilla_client::Client;
 use dilla_client::features::notify;
 use dilla_client::prefs::{LayoutPrefs, Prefs};
@@ -74,29 +73,26 @@ impl Clock {
         }
     }
 
-    fn at(self, ts: u64) -> chrono::DateTime<FixedOffset> {
-        let secs = i64::try_from(ts).unwrap_or(i64::MAX);
-        let utc = chrono::Utc
-            .timestamp_opt(secs, 0)
-            .single()
-            .unwrap_or_default();
+    /// The offset this clock's zone has at `secs`: UTC under a fixture's frozen clock, else the local zone's.
+    pub fn offset(self, secs: i64) -> jiff::tz::Offset {
         match self {
-            Self::Fixed { utc: true, .. } => utc.fixed_offset(),
-            _ => utc.with_timezone(&chrono::Local).fixed_offset(),
+            Self::Fixed { utc: true, .. } => jiff::tz::Offset::UTC,
+            _ => crate::format::local_zone(secs),
         }
+    }
+
+    fn at(self, ts: u64) -> jiff::civil::DateTime {
+        let secs = i64::try_from(ts).unwrap_or(i64::MAX);
+        crate::format::wall_clock(secs, self.offset(secs))
     }
 
     /// The day `ts` falls on in this clock's zone, as a day count.
     pub fn day(self, ts: u64) -> i64 {
-        i64::from(self.at(ts).date_naive().num_days_from_ce())
+        crate::format::day_number(self.at(ts).date())
     }
 
     /// `ts` in this clock's zone, formatted by `f`.
-    pub fn format(
-        self,
-        ts: u64,
-        f: impl FnOnce(chrono::DateTime<FixedOffset>) -> String,
-    ) -> String {
+    pub fn format(self, ts: u64, f: impl FnOnce(jiff::civil::DateTime) -> String) -> String {
         f(self.at(ts))
     }
 }

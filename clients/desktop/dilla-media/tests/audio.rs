@@ -643,14 +643,20 @@ fn the_playout_callback_never_waits_for_a_pusher() {
     let speaker = Speaker::open_with(Arc::new(host.clone()), Apm::default(), None, None).unwrap();
     let sink = speaker.sink();
     let stop = Arc::new(AtomicBool::new(false));
-    // Several remote sources push as fast as they can while the callback runs.
-    let pushers: Vec<_> = (0..4)
+    // Several remote sources push as fast as they can while the callback runs. `mix` takes no lock
+    // and allocates nothing, so only the harness could slow it: PR #183's macOS run (3-core runner)
+    // timed a 12.8 ms callback with four spinning pushers that each allocated their key per push.
+    // The pushers build their key once and leave the callback a core of its own, so the test times
+    // the mix, not the scheduler or the allocator.
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    let pushers: Vec<_> = (0..cores.saturating_sub(1).clamp(1, 4))
         .map(|n| {
             let (sink, stop) = (sink.clone(), stop.clone());
             std::thread::spawn(move || {
                 let burst = vec![1000i16; 4800];
+                let key = format!("src{n}");
                 while !stop.load(Ordering::SeqCst) {
-                    sink.push(&format!("src{n}"), &burst);
+                    sink.push(&key, &burst);
                 }
             })
         })
