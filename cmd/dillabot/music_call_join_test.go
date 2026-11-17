@@ -114,6 +114,8 @@ type musicJoinCallsFake struct {
 	// frozen resyncs answer 425 E_COMMIT_REQUIRED (an instance Remove awaiting its commit) before one is accepted.
 	frozen, resyncs int
 	retryAfterMS    *uint64
+	// stuck keeps the group's epoch where it is (no member commits the instance Remove).
+	stuck bool
 }
 
 func (f *musicJoinCallsFake) ChannelCall(context.Context, id.ID) (client.ChannelCallState, error) {
@@ -122,7 +124,9 @@ func (f *musicJoinCallsFake) ChannelCall(context.Context, id.ID) (client.Channel
 }
 func (f *musicJoinCallsFake) GroupInfo(context.Context, id.ID) (client.GroupInfo, error) {
 	f.infos++
-	f.epoch++
+	if !f.stuck || f.epoch == 0 {
+		f.epoch++
+	}
 	return client.GroupInfo{Epoch: f.epoch, TreeHash: []byte{1}, Info: []byte{2}}, nil
 }
 func (f *musicJoinCallsFake) GroupTree(context.Context, id.ID) (client.GroupTree, error) {
@@ -207,15 +211,35 @@ func TestMusicCallJoinConflictRefetchesAndSucceeds(t *testing.T) {
 }
 
 // A resync refused while the group is frozen (425 E_COMMIT_REQUIRED: an instance Remove of a device that just left the
-// call waits for its commit) discards the staged join and joins again, waiting at least the instance's retry hint.
+// call waits for its commit) discards the staged join and joins again as soon as the group's epoch moves (the member's
+// commit landed), not after the instance's whole retry hint.
 func TestMusicCallJoinFrozenResyncRetriesAndSucceeds(t *testing.T) {
-	hint := uint64(600)
+	hint := uint64(2000)
 	calls := &musicJoinCallsFake{channel: id.New(), group: id.New(), frozen: 1, retryAfterMS: &hint}
 	core := &musicJoinCoreFake{}
 	var delays []time.Duration
 	wait := func(_ context.Context, d time.Duration) error { delays = append(delays, d); return nil }
 	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1, wait)
-	if err != nil || core.discards != 1 || core.joins != 2 || core.resolved != 1 || calls.resyncs != 2 || len(delays) != 1 || delays[0] != 600*time.Millisecond {
+	// One info read for each attempt and one poll that sees the next epoch.
+	if err != nil || core.discards != 1 || core.joins != 2 || core.resolved != 1 || calls.resyncs != 2 || calls.infos != 3 || len(delays) != 1 || delays[0] != musicCallUnfrozenPoll {
+		t.Fatalf("err=%v core=%+v resyncs=%d infos=%d delays=%v", err, core, calls.resyncs, calls.infos, delays)
+	}
+}
+
+// A freeze that no commit ends within the instance's hint is waited out to the hint (capped at the schedule's longest
+// step), polling the epoch, before the next attempt.
+func TestMusicCallJoinFrozenWaitsOutTheHintWhileTheEpochHolds(t *testing.T) {
+	hint := uint64(600)
+	calls := &musicJoinCallsFake{channel: id.New(), group: id.New(), frozen: 1, retryAfterMS: &hint, stuck: true}
+	core := &musicJoinCoreFake{}
+	var delays []time.Duration
+	wait := func(_ context.Context, d time.Duration) error { delays = append(delays, d); return nil }
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1, wait)
+	var total time.Duration
+	for _, d := range delays {
+		total += d
+	}
+	if err != nil || core.joins != 2 || calls.resyncs != 2 || total != 600*time.Millisecond || len(delays) != 6 {
 		t.Fatalf("err=%v core=%+v resyncs=%d delays=%v", err, core, calls.resyncs, delays)
 	}
 }
