@@ -12,6 +12,10 @@ ignore = [
   # wayland-backend), so dropping our direct use would not remove it. Follow-up: move
   # dilla-desktop-ui's glyph-coverage check to skrifa; lift this when GPUI moves off ttf-parser.
   { id = "RUSTSEC-2026-0192", reason = "transitively required by GPUI's text stack (fontdb, rustybuzz)" },
+  # chrono is unmaintained (published 2026-11-17, no safe upgrade), but GPUI itself requires it (gpui-pre,
+  # gpui-base, gpui-component), so dropping dilla-desktop's own use would not remove it. Follow-up: move
+  # dilla-desktop's dates and times to jiff or time; lift this when GPUI moves off chrono.
+  { id = "RUSTSEC-2026-0543", reason = "transitively required by GPUI (gpui-pre, gpui-base, gpui-component)" },
 ]
 
 [licenses]
