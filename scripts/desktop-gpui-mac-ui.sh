@@ -791,7 +791,7 @@ check_connected() {
 
 # ---------------------------------------------------------------------------------------------------------------------
 
-note "app $APP, out $OUT, $(sw_vers -productVersion), $(uname -m)"
+note "app $APP, out $OUT, $(sw_vers -productVersion), $(uname -m), $(df -h / | awk 'NR == 2 { print $4 " free on /" }')"
 BIN=$OUT/bin
 mkdir -p "$BIN"
 swiftc -O -o "$BIN/mac-ocr" "$ROOT/scripts/mac-ocr.swift" || { echo '::error::setup: scripts/mac-ocr.swift does not compile'; exit 1; }

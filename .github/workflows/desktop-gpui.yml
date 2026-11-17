@@ -489,6 +489,7 @@ jobs:
       - name: Package Dilla.app and the DMG (ad hoc)
         shell: bash
         run: |
+          df -h /  # after the release build (the DMG step once failed with "No space left": hdiutil's own sizing)
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/dilla-desktop/Cargo.toml | head -n 1)"
           [ -n "$version" ]
           echo "VERSION=$version" >> "$GITHUB_ENV"

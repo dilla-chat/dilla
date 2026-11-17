@@ -145,7 +145,14 @@ mkdir -p "$dmgroot"
 ditto "$app" "$dmgroot/Dilla.app"
 ln -s /Applications "$dmgroot/Applications"
 dmg=$out/$base.dmg
-hdiutil create -volname Dilla -srcfolder "$dmgroot" -ov -format ULFO "$dmg"
+# hdiutil sizes a -srcfolder image by its own estimate, which can fall short of the app: "create failed - No space left
+# on device" and "could not access /Volumes/Dilla/Dilla.app/…" while the runner's disk had 100 GB free (PR #179,
+# 2026-11-17). Sized explicitly: the folder plus a quarter and 32 MB (the compressed ULFO is what ships).
+dmg_kb=$(du -sk "$dmgroot" | cut -f 1)
+dmg_mb=$(( dmg_kb * 5 / 4 / 1024 + 32 ))
+df -h "$work" "$out"
+echo "desktop-gpui-package-mac: DMG folder ${dmg_kb} KB, image ${dmg_mb} MB"
+hdiutil create -volname Dilla -srcfolder "$dmgroot" -size "${dmg_mb}m" -ov -format ULFO "$dmg"
 if [ "$keyed" = 1 ]; then
   codesign --force --timestamp --keychain "$keychain" --sign "$identity" "$dmg"
   notarize "$dmg"
