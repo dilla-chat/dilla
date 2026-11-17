@@ -3,7 +3,8 @@
 //!
 //! - Alt+Up and Alt+Down select the previous and next listed channel (Shell.tsx, from anywhere on a channel route).
 //! - Alt+Left and Alt+Right go back and forward in the route history (the browser's history in the web client).
-//! - Ctrl+, (Cmd+, on macOS) opens the user settings (the settings host, Task 1b).
+//! - Ctrl+, (Cmd+, on macOS, and only Cmd+, there: [`settings_bindings`]) opens the user settings (the settings host,
+//!   Task 1b).
 //! - Ctrl+End jumps the open conversation to its newest message while it is away from it (Conversation.tsx's "jump to
 //!   present"); a text field keeps the chord (it moves the caret), an overlay keeps it. Ctrl on macOS too: the web returns
 //!   on `metaKey`, so Cmd+End does nothing.
@@ -59,14 +60,12 @@ impl RepeatLatch {
 
 /// Registers the shell's bindings.
 pub fn bind(cx: &mut App) {
+    cx.bind_keys(settings_bindings(cfg!(target_os = "macos")));
     cx.bind_keys([
         KeyBinding::new("alt-up", PreviousChannel, Some(CONTEXT)),
         KeyBinding::new("alt-down", NextChannel, Some(CONTEXT)),
         KeyBinding::new("alt-left", HistoryBack, Some(CONTEXT)),
         KeyBinding::new("alt-right", HistoryForward, Some(CONTEXT)),
-        // Integration 3 (the settings host): Ctrl+, (Cmd+, on macOS) opens the user settings.
-        KeyBinding::new("ctrl-,", OpenSettings, Some(CONTEXT)),
-        KeyBinding::new("cmd-,", OpenSettings, Some(CONTEXT)),
         // Task 28: the two rows of Settings -> Keyboard that had no binding.
         KeyBinding::new("ctrl-end", JumpToPresent, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-enter", CallOpenDm, Some(CONTEXT)),
@@ -74,9 +73,50 @@ pub fn bind(cx: &mut App) {
     ]);
 }
 
+/// Integration 3 (the settings host): Cmd+, on macOS, Ctrl+, elsewhere, opens the user settings. One chord per OS: the
+/// macOS app menu's Settings… row shows the action's first binding (GPUI's `find_or_first`, none of which match its
+/// default context), so a Ctrl+, bound there drew "⌃," instead of "⌘," (the macOS UI check of 2026-11-16).
+pub fn settings_bindings(mac: bool) -> Vec<KeyBinding> {
+    vec![KeyBinding::new(
+        if mac { "cmd-," } else { "ctrl-," },
+        OpenSettings,
+        Some(CONTEXT),
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The macOS app menu's Settings… row draws the action's first binding: it must be Cmd+, (not Ctrl+,), and the
+    /// other systems keep Ctrl+,.
+    #[gpui::test]
+    fn settings_is_cmd_comma_on_macos_and_ctrl_comma_elsewhere(cx: &mut gpui::TestAppContext) {
+        let first = |mac: bool| {
+            let bindings = settings_bindings(mac);
+            assert_eq!(bindings.len(), 1, "one chord per OS");
+            bindings[0].keystrokes()[0].inner().clone()
+        };
+        assert_eq!(first(true), gpui::Keystroke::parse("cmd-,").unwrap());
+        assert_eq!(first(false), gpui::Keystroke::parse("ctrl-,").unwrap());
+        // As registered: the first binding the keymap holds for OpenSettings is this OS's chord.
+        cx.update(bind);
+        let want = gpui::Keystroke::parse(if cfg!(target_os = "macos") {
+            "cmd-,"
+        } else {
+            "ctrl-,"
+        })
+        .unwrap();
+        cx.update(|cx| {
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let shown = keymap
+                .bindings_for_action(&OpenSettings)
+                .next()
+                .map(|b| b.keystrokes()[0].inner().clone());
+            assert_eq!(shown, Some(want));
+        });
+    }
     use std::time::{Duration, Instant};
 
     /// Review L m4: Conversation.tsx returns on `metaKey`, so the jump to present is Ctrl+End only; Cmd+End (unclaimed by

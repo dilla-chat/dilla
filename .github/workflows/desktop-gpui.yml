@@ -21,6 +21,9 @@ on:
       - 'scripts/desktop-gpui-package-win.*'
       - 'scripts/fetch-libwebrtc.sh'
       - 'cmd/dilla-testhost/**'
+      - 'cmd/dilla-tlsproxy/**'
+      - 'scripts/desktop-gpui-mac-ui.sh'
+      - 'scripts/mac-*.swift'
       - 'cmd/dillabot/**'
       - 'internal/**'
       - 'go.mod'
@@ -44,6 +47,9 @@ on:
       - 'scripts/desktop-gpui-package-win.*'
       - 'scripts/fetch-libwebrtc.sh'
       - 'cmd/dilla-testhost/**'
+      - 'cmd/dilla-tlsproxy/**'
+      - 'scripts/desktop-gpui-mac-ui.sh'
+      - 'scripts/mac-*.swift'
       - 'cmd/dillabot/**'
       - 'internal/**'
       - 'go.mod'
@@ -483,6 +489,7 @@ jobs:
       - name: Package Dilla.app and the DMG (ad hoc)
         shell: bash
         run: |
+          df -h /  # after the release build (the DMG step once failed with "No space left": hdiutil's own sizing)
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/dilla-desktop/Cargo.toml | head -n 1)"
           [ -n "$version" ]
           echo "VERSION=$version" >> "$GITHUB_ENV"
@@ -518,6 +525,28 @@ jobs:
           unzip -q "$RUNNER_TEMP/mac-dist/dilla-$VERSION-mac-arm64.zip" -d "$RUNNER_TEMP/zip-check"
           codesign --verify --strict "$RUNNER_TEMP/zip-check/Dilla.app"
           "$RUNNER_TEMP/zip-check/Dilla.app/Contents/MacOS/dilla-desktop" --version
+      # Layer 3 (plan 2026-11-16-gpui-macos-ci, Task 5): the zip's app (the updater's bundle, writable; the DMG mount is
+      # read-only and detached) opened and driven through System Events and real clicks: the window's text
+      # (screencapture + Vision OCR), its AX tree, the traffic lights, the log file, the app menu and its shortcuts, ⌘Q,
+      # one process for `open -n` and dilla://, the autostart LaunchAgent and the tray. Every wait has a deadline. The
+      # checks after connect (--connected: two profiles on a local https host) follow in their own change.
+      - name: Drive the packaged app (macOS UI)
+        timeout-minutes: 30  # a hung helper must not hold a macOS slot until the job timeout
+        shell: bash
+        run: bash scripts/desktop-gpui-mac-ui.sh "$RUNNER_TEMP/zip-check/Dilla.app" "$RUNNER_TEMP/mac-ui"
+      - name: Stop the packaged app
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          if pgrep -f Dilla.app/Contents/MacOS/dilla-desktop; then pkill -9 -f Dilla.app/Contents/MacOS/dilla-desktop; fi
+          rm -f "$HOME/Library/LaunchAgents/dev.dilla.desktop.plist"
+      - name: Upload the macOS UI shots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: gpui-mac-ui
+          path: ${{ runner.temp }}/mac-ui
+          if-no-files-found: error
   # The Windows installer (GPUI release plan, Task 13, D10), built and exercised on a clean windows-latest runner, keyless:
   # beta.5's NSIS installer goes on first (pinned by SHA-256), then the new setup takes it over silently; the release
   # binary is the static-CRT build the plan names. Independent of the gpui jobs' results.

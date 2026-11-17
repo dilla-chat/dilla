@@ -2673,6 +2673,21 @@ test('the desktop-gpui macOS package job is pinned: macos-15, no secrets, and ev
   assert.ok(gpuiProblems((text) => text.replace(/\n  gpui-mac-package:[\s\S]*$/, '\n')).some((p) => p.includes('job is missing')));
 });
 
+test('the desktop-gpui macOS UI check (Layer 3) fails the job, and its cleanup and shots run after a failure', () => {
+  const ui = '        run: bash scripts/desktop-gpui-mac-ui.sh "$RUNNER_TEMP/zip-check/Dilla.app" "$RUNNER_TEMP/mac-ui"';
+  assert.ok(gpuiProblems((text) => text.replace(ui, `        continue-on-error: true\n${ui}`)).some((p) => p.includes('macOS UI step must have no')));
+  assert.ok(gpuiProblems((text) => text.replace(ui, `        if: false\n${ui}`)).some((p) => p.includes('desktop-gpui-mac-ui.sh')));
+  assert.ok(gpuiProblems((text) => text.replace(ui, `        # ${ui.trim()}\n        run: true`)).some((p) => p.includes('gpui-mac-package must run `bash scripts/desktop-gpui-mac-ui.sh')));
+  const limit = '        timeout-minutes: 30  # a hung helper must not hold a macOS slot until the job timeout\n';
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(limit)); return text.replace(limit, ''); }).some((p) => p.includes('timeout-minutes of 30 or less')));
+  assert.ok(gpuiProblems((text) => text.replace(limit, '        timeout-minutes: 120\n')).some((p) => p.includes('timeout-minutes of 30 or less')));
+  const stop = '      - name: Stop the packaged app\n        if: ${{ !cancelled() }}';
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(stop)); return text.replace(stop, '      - name: Stop the packaged app'); }).some((p) => p.includes('pkill -9') && p.includes('!cancelled()')));
+  assert.ok(gpuiProblems((text) => text.replace(stop, '      - name: Stop the packaged app\n        if: always()')).some((p) => p.includes('pkill -9')));
+  const upload = '      - name: Upload the macOS UI shots\n        if: ${{ !cancelled() }}';
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(upload)); return text.replace(upload, '      - name: Upload the macOS UI shots'); }).some((p) => p.includes('gpui-mac-ui')));
+});
+
 test('the desktop-gpui workflow is reported when it is missing', () => {
   const root = releaseRoot();
   rmSync(join(root, GPUI));
