@@ -493,7 +493,12 @@ jobs:
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/dilla-desktop/Cargo.toml | head -n 1)"
           [ -n "$version" ]
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          bash scripts/desktop-gpui-package-mac.sh "$version" target/release/dilla-desktop "$RUNNER_TEMP/mac-dist"
+          # The licence-bundle branch the release takes (desktop-gpui-sign.yml sets DILLA_WEBRTC_LICENSE), under macOS's
+          # bash 3.2: alpha.1's first signed build died there on an empty array that only bash 3.2 calls unbound. A
+          # stand-in licence: this ad hoc bundle is never shipped.
+          printf 'stand-in for libwebrtc LICENSE.md (PR build)\n' > "$RUNNER_TEMP/libwebrtc-LICENSE.md"
+          DILLA_WEBRTC_LICENSE="$RUNNER_TEMP/libwebrtc-LICENSE.md" \
+            bash scripts/desktop-gpui-package-mac.sh "$version" target/release/dilla-desktop "$RUNNER_TEMP/mac-dist"
       - name: Open the DMG and run the app
         shell: bash
         run: |
@@ -518,6 +523,9 @@ jobs:
           plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist"
           plutil -extract NSCameraUsageDescription raw "$app/Contents/Info.plist"
           plutil -lint clients/desktop/packaging/macos/entitlements.plist
+          # The full licence bundle (desktop-third-party.mjs), as a release ships it.
+          ls "$app/Contents/Resources/licenses"
+          test -f "$app/Contents/Resources/licenses/libwebrtc-LICENSE.md"
           hdiutil detach "$mount"
       - name: The updater's zip holds the same app
         shell: bash

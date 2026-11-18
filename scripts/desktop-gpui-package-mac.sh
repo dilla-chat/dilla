@@ -57,9 +57,16 @@ base=dilla-$version-mac-arm64
 
 work=$(mktemp -d)
 keychain=
+# macOS's bash 3.2 enters an EXIT trap with $? = 0 after a fatal error such as an unbound variable, so the script
+# would exit 0 having built nothing (alpha.1's sign run 44241908836 went on to Gatekeeper without a DMG). The last
+# line sets `finished`; any other way out fails.
+finished=0
 cleanup() {
+  local status=$?
   if [ -n "$keychain" ]; then security delete-keychain "$keychain" >/dev/null 2>&1 || true; fi
   rm -rf "$work"
+  if [ "$finished" != 1 ] && [ "$status" = 0 ]; then status=1; fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -79,7 +86,7 @@ if [ -n "${DILLA_WEBRTC_LICENSE:-}" ]; then
   metadata_args=()
   [ -z "${DILLA_CARGO_METADATA:-}" ] || metadata_args=(--metadata "$DILLA_CARGO_METADATA")
   node "$root/scripts/desktop-third-party.mjs" "$app/Contents/Resources/licenses" --target aarch64-apple-darwin \
-    --webrtc-license "$DILLA_WEBRTC_LICENSE" "${metadata_args[@]}"
+    --webrtc-license "$DILLA_WEBRTC_LICENSE" ${metadata_args[@]+"${metadata_args[@]}"}
 else
   install -m 0644 "$root/LICENSE" "$root/clients/desktop/dilla-desktop-ui/assets/fonts/OFL-JetBrainsMono.txt" \
     "$root/clients/desktop/dilla-desktop-ui/assets/fonts/OFL-DMSerifDisplay.txt" "$app/Contents/Resources/licenses/"
@@ -104,7 +111,7 @@ if [ "$keyed" = 1 ]; then
   # codesign must be able to search the keychain; the user's own search list stays.
   existing=()
   while IFS= read -r line; do existing+=("$(echo "$line" | tr -d '"' | sed 's/^ *//')"); done < <(security list-keychains -d user)
-  security list-keychains -d user -s "$keychain" "${existing[@]}"
+  security list-keychains -d user -s "$keychain" ${existing[@]+"${existing[@]}"}
   identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application:.*/\1/p' | head -n 1)
   [ -n "$identity" ] || die 'the certificate is not a Developer ID Application identity'
   sign_flags+=(--options runtime --timestamp --keychain "$keychain")
@@ -173,3 +180,4 @@ fi
 
 [ "$(ls "$out" | sort | tr '\n' ' ')" = "$base.dmg $base.zip " ] || die "expected exactly $base.dmg and $base.zip in $out, found: $(ls "$out" | tr '\n' ' ')"
 ls -l "$out"
+finished=1
