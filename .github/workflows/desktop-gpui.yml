@@ -1,6 +1,9 @@
 name: desktop-gpui
+run-name: desktop-gpui [${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr' }}]
 # The native GPUI desktop client (clients/desktop). desktop-ci.yml (check desktop-ok) runs the shared web, UI and core
 # checks; this one builds, lints and tests only the GPUI crates and the parity harness.
+# Three tiers (env.TIER): pr (pull requests and main pushes), nightly (03:00 UTC on main, or a manual run) and release (a manual
+# run the release gate dispatches). The heavy macOS call, parity and VideoToolbox steps and the Linux Bot shard run outside pr.
 on:
   push:
     branches: [main]
@@ -55,12 +58,21 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/desktop-gpui.yml'
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        type: choice
+        options: [nightly, release]
+        default: nightly
 permissions:
   contents: read
 concurrency:
-  group: desktop-gpui-${{ github.ref }}
+  group: desktop-gpui-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr' }}-${{ github.ref }}
   cancel-in-progress: true
 env:
+  TIER: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr' }}
   GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity
   # The test binaries of five crates (libwebrtc, GPUI, wasmtime), each linked whole, with debug info filled the Linux and
   # macOS runners' disks ("No space left on device" in cargo test, errno 28 in ld). A panic still names its location.
@@ -226,7 +238,7 @@ jobs:
       # Report-only while the suite's first macOS timing failures are fixed (Jonas, 2026-11-16): a failure shows in the
       # job but does not fail the leg. Blocking again once it has been green for a week.
       - name: Run the call tests (macOS)
-        if: runner.os == 'macOS' && !cancelled()
+        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()
         continue-on-error: true
         shell: bash
         run: |
@@ -240,15 +252,15 @@ jobs:
       # Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run
       # above builds dilla-desktop's test files without the automation interface, so they hold no test there.
       - name: Run the parity screens (macOS)
-        if: runner.os == 'macOS' && !cancelled()
+        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()
         shell: bash
         run: |
           cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_
           cargo test -p dilla-desktop --features automation --locked --test video_player_shot
       # VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV
-      # (core/vendor/README.md): nightly only, and red until that is fixed.
-      - name: Decode with VideoToolbox (macOS, nightly)
-        if: runner.os == 'macOS' && github.event_name == 'schedule' && !cancelled()
+      # (core/vendor/README.md): nightly and release tiers only, and red until that is fixed.
+      - name: Decode with VideoToolbox (macOS)
+        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()
         shell: bash
         run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order
       # Saved even when a leg fails or is cancelled (actions/cache only saves on success): a cold Windows build
@@ -272,7 +284,8 @@ jobs:
       # Every shard runs to the end, so one red suite does not hide another's result.
       fail-fast: false
       matrix:
-        shard: [client, bot, desktop, media]
+        # The Bot shard is absent from the matrix in the PR tier: no build and no test host, not a skip step by step.
+        shard: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["client","bot","desktop","media"]' || '["client","desktop","media"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

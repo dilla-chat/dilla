@@ -1461,9 +1461,9 @@ export function checkMobileReleaseWorkflow(root) {
  */
 export const GPUI_PINNED_STEPS = {
   // The macOS CI plan, Task 3: the parity screens and the video player through Metal on the gpui job's macOS leg.
-  macParity: ['# The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the', '# Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run', '# above builds dilla-desktop\'s test files without the automation interface, so they hold no test there.', '- name: Run the parity screens (macOS)', '  if: runner.os == \'macOS\' && !cancelled()', '  shell: bash', '  run: |', '    cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_', '    cargo test -p dilla-desktop --features automation --locked --test video_player_shot'].join('\n'),
-  // The macOS CI plan's addendum: the nightly VideoToolbox decode check (known SIGSEGV, red until fixed).
-  macVideoToolbox: ['# VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV', '# (core/vendor/README.md): nightly only, and red until that is fixed.', '- name: Decode with VideoToolbox (macOS, nightly)', '  if: runner.os == \'macOS\' && github.event_name == \'schedule\' && !cancelled()', '  shell: bash', '  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order'].join('\n'),
+  macParity: ['# The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the', '# Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run', '# above builds dilla-desktop\'s test files without the automation interface, so they hold no test there.', '- name: Run the parity screens (macOS)', '  if: runner.os == \'macOS\' && env.TIER != \'pr\' && !cancelled()', '  shell: bash', '  run: |', '    cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_', '    cargo test -p dilla-desktop --features automation --locked --test video_player_shot'].join('\n'),
+  // The macOS CI plan's addendum: the nightly and release VideoToolbox decode check (known SIGSEGV, red until fixed).
+  macVideoToolbox: ['# VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV', '# (core/vendor/README.md): nightly and release tiers only, and red until that is fixed.', '- name: Decode with VideoToolbox (macOS)', '  if: runner.os == \'macOS\' && env.TIER != \'pr\' && !cancelled()', '  shell: bash', '  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order'].join('\n'),
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
   // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
   strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
@@ -1616,7 +1616,7 @@ export const GPUI_PINNED_STEPS = {
   // Task 4: the real-server call tests on macOS, including the two-client join and the app's own voice join.
   macCalls: [
     '- name: Run the call tests (macOS)',
-    "  if: runner.os == 'macOS' && !cancelled()",
+    "  if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()",
     '  continue-on-error: true',
     '  shell: bash',
     '  run: |',
@@ -1731,6 +1731,29 @@ function gpuiMacPackageProblems(text, file) {
   return problems;
 }
 
+/** desktop-gpui.yml's one TIER expression (CI speed plan, Task 2): schedule is nightly, a manual run takes its input, anything else is pr. */
+export const GPUI_TIER_EXPR = "github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr'";
+/** desktop-gpui's nightly tier: 03:00 UTC on main (the other workflows' NIGHTLY_CRON is their own). */
+const GPUI_NIGHTLY_CRON = '0 3 * * *';
+/** The Linux shard matrix: the Bot shard exists only outside the PR tier, so a PR builds nothing for it. */
+const GPUI_SHARDS = `\${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["client","bot","desktop","media"]' || '["client","desktop","media"]') }}`;
+
+/** The problems with desktop-gpui.yml's tiers (pr, nightly, release): triggers, run-name, TIER, concurrency and the Bot shard. */
+function gpuiTierProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; }
+  const problems = [];
+  const on = doc?.on ?? {};
+  if (JSON.stringify(on.schedule) !== JSON.stringify([{ cron: GPUI_NIGHTLY_CRON }])) problems.push(`${file}: must run nightly on schedule cron '${GPUI_NIGHTLY_CRON}' (the nightly tier), and no other schedule`);
+  const tier = on.workflow_dispatch?.inputs?.tier;
+  if (!tier || tier.type !== 'choice' || JSON.stringify(tier.options) !== JSON.stringify(['nightly', 'release']) || tier.default !== 'nightly') problems.push(`${file}: workflow_dispatch must take the input tier, a choice of nightly and release, default nightly`);
+  if (doc?.['run-name'] !== `desktop-gpui [\${{ ${GPUI_TIER_EXPR} }}]`) problems.push(`${file}: run-name must be exactly 'desktop-gpui [<tier>]' (the release gate reads the tier from it)`);
+  if (doc?.env?.TIER !== `\${{ ${GPUI_TIER_EXPR} }}`) problems.push(`${file}: env.TIER must be the one tier expression (${GPUI_TIER_EXPR}), set at workflow level for every job`);
+  if (doc?.concurrency?.group !== `desktop-gpui-\${{ ${GPUI_TIER_EXPR} }}-\${{ github.ref }}` || doc?.concurrency?.['cancel-in-progress'] !== true) problems.push(`${file}: the concurrency group must carry the tier, so a nightly or release run never cancels or is cancelled by a pull-request run`);
+  if (doc?.jobs?.['gpui-linux']?.strategy?.matrix?.shard !== GPUI_SHARDS) problems.push(`${file}: the gpui-linux matrix must list the Bot shard outside the PR tier only (${GPUI_SHARDS}), so the Bot shard does no work in a pull request`);
+  return problems;
+}
+
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
   let text;
@@ -1769,6 +1792,7 @@ export function checkDesktopGpuiWorkflow(root) {
     }
   }
   problems.push(...gpuiMacPackageProblems(text, file));
+  problems.push(...gpuiTierProblems(text, file));
   // The macOS CI plan, Task 6: DILLA_PARITY_MEASURE turns every parity comparison into a printed MEASURE line that always
   // passes (gpui-proofs.yml's manual mac-parity-measure job sets it). A CI gate must never set it.
   if (/DILLA_PARITY_MEASURE/.test(text)) problems.push(`${file}: DILLA_PARITY_MEASURE skips every parity comparison; it belongs to gpui-proofs.yml's measurement job only`);

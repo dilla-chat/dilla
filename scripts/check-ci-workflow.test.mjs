@@ -2633,7 +2633,8 @@ test('the desktop-gpui macOS call tests are pinned: the app voice suite, the mac
   for (const [what, from, to] of [
     ['the dilla-desktop voice line', '          cargo test -p dilla-desktop --test voice --test ring --locked -- --ignored --skip parity_\n', ''],
     ['the two-client voice line', '          cargo test -p dilla-client --test voice --test ring --locked -- --ignored\n', ''],
-    ['the macOS guard', "      - name: Run the call tests (macOS)\n        if: runner.os == 'macOS' && !cancelled()", '      - name: Run the call tests (macOS)\n        if: ${{ !cancelled() }}'],
+    ['the macOS guard', "      - name: Run the call tests (macOS)\n        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()", '      - name: Run the call tests (macOS)\n        if: ${{ !cancelled() }}'],
+    ['the tier guard', "      - name: Run the call tests (macOS)\n        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()", "      - name: Run the call tests (macOS)\n        if: runner.os == 'macOS' && !cancelled()"],
     ['the BlackHole hash', 'BLACKHOLE_SHA256: 57b540f27a3e29c37e310e01bee0fdfab76733087e47f997ef9dccf851400dcf', 'BLACKHOLE_SHA256: 0000'],
   ]) {
     const problems = gpuiProblems((text) => { assert.ok(text.includes(from), what); return text.replace(from, to); });
@@ -2644,13 +2645,55 @@ test('the desktop-gpui macOS call tests are pinned: the app voice suite, the mac
 test('the macOS parity and VideoToolbox steps cannot lose a line, their guard or their nightly gate (macOS CI plan)', () => {
   const edits = [
     ['    cargo test -p dilla-desktop --features automation --locked --test video_player_shot\n', '', 'macParity'],
-    ["  if: runner.os == 'macOS' && !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", "  if: !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", 'macParity'],
-    ["  if: runner.os == 'macOS' && github.event_name == 'schedule' && !cancelled()", "  if: runner.os == 'macOS' && !cancelled()", 'macVideoToolbox'],
+    ["  if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", "  if: !cancelled()\n  shell: bash\n  run: |\n    cargo test -p dilla-desktop --features automation", 'macParity'],
+    ["  if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()\n  shell: bash\n  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox", "  if: runner.os == 'macOS' && !cancelled()\n  shell: bash\n  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox", 'macVideoToolbox'],
   ];
   for (const [from, to, name] of edits) {
     const problems = gpuiProblems((text) => { const f = indent(from); assert.ok(text.includes(f), from); return text.replace(f, indent(to)); });
     assert.ok(problems.some((p) => p.includes(`the ${name} step`)), `${from}: ${problems.join('|')}`);
   }
+});
+
+const TIER_EXPR = "github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr'";
+const FULL_SHARDS = `\${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["client","bot","desktop","media"]' || '["client","desktop","media"]') }}`;
+
+test('desktop-gpui runs the Mac call and parity steps only outside the PR tier', () => {
+  for (const step of ['Run the call tests (macOS)', 'Run the parity screens (macOS)']) {
+    const re = new RegExp(`(- name: ${step.replace(/[()]/g, '\\$&')}\\n\\s+if: )runner\\.os == 'macOS' && env\\.TIER != 'pr' && !cancelled\\(\\)`);
+    const problems = gpuiProblems((text) => { assert.ok(re.test(text), step); return text.replace(re, "$1runner.os == 'macOS' && !cancelled()"); });
+    assert.ok(problems.length > 0, `${step}: a PR-tier run must be reported`);
+  }
+});
+
+test('desktop-gpui runs the Linux Bot shard only outside the PR tier', () => {
+  const problems = gpuiProblems((text) => { assert.ok(text.includes(FULL_SHARDS)); return text.replace(FULL_SHARDS, '[client, bot, desktop, media]'); });
+  assert.ok(problems.some((p) => p.includes('Bot shard')), problems.join('\n'));
+  const inPr = gpuiProblems((text) => text.replace(`'["client","desktop","media"]'`, `'["client","bot","desktop","media"]'`));
+  assert.ok(inPr.some((p) => p.includes('Bot shard')), inPr.join('\n'));
+});
+
+test("desktop-gpui's VideoToolbox step runs in nightly and release", () => {
+  const problems = gpuiProblems((text) => {
+    assert.ok(text.includes('- name: Decode with VideoToolbox (macOS)'));
+    return text.replace("runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()\n        shell: bash\n        run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox", "runner.os == 'macOS' && github.event_name == 'schedule' && !cancelled()\n        shell: bash\n        run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox");
+  });
+  assert.ok(problems.some((p) => p.includes('the macVideoToolbox step')), problems.join('\n'));
+});
+
+test('desktop-gpui names its tier in run-name', () => {
+  const runName = `run-name: desktop-gpui [\${{ ${TIER_EXPR} }}]`;
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(runName)); return text.replace(runName, 'run-name: desktop-gpui'); }).some((p) => p.includes('run-name')));
+  const env = `  TIER: \${{ ${TIER_EXPR} }}`;
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(env)); return text.replace(env, "  TIER: pr"); }).some((p) => p.includes('TIER')));
+  const group = `group: desktop-gpui-\${{ ${TIER_EXPR} }}-\${{ github.ref }}`;
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(group)); return text.replace(group, 'group: desktop-gpui-${{ github.ref }}'); }).some((p) => p.includes('concurrency')));
+});
+
+test('desktop-gpui schedules a nightly at 03:00 UTC', () => {
+  const cron = "  schedule:\n    - cron: '0 3 * * *'\n";
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(cron)); return text.replace(cron, ''); }).some((p) => p.includes('schedule')));
+  const dispatch = '  workflow_dispatch:\n    inputs:\n      tier:\n        type: choice\n        options: [nightly, release]\n        default: nightly\n';
+  assert.ok(gpuiProblems((text) => { assert.ok(text.includes(dispatch)); return text.replace(dispatch, ''); }).some((p) => p.includes('workflow_dispatch')));
 });
 
 test('desktop-gpui.yml never sets DILLA_PARITY_MEASURE (it turns every parity check into a pass)', () => {
