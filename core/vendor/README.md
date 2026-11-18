@@ -184,9 +184,17 @@ player, wholly dilla's: `include/livekit/dilla_video_decoder.h`, `src/dilla_vide
 libwebrtc's own software decoders directly (libvpx VP8/VP9, dav1d AV1, the bundled FFmpeg H.264 on Linux and
 Windows; the macOS prebuilt's FFmpeg has no H.264, so macOS sends H.264 to the system player). VideoToolbox (macOS
 H.264/H.265, through LiveKit's `VideoDecoderFactory`) only with the webrtc-sys feature `dilla-video-toolbox` (`cargo build -p dilla-desktop --features webrtc-sys/dilla-video-toolbox`)
-(`DILLA_VIDEO_TOOLBOX`), off by default: that path crashed the decode test on macOS CI (SIGSEGV) and waits for a
-Mac to fix it on. Teardown releases the decoder before dropping its callback, and a callback during teardown keeps
-nothing. It feeds the decoder access units Rust demuxed from the decrypted file, and converts
+(`DILLA_VIDEO_TOOLBOX`), off by default. Its decode test failed on macOS CI: first a SIGSEGV, and by the 2026-11-16
+run (each format decoded in a child process) exit 101, the same failure a Mac shows. The SIGSEGV does not reproduce on
+macOS 27. The cause, found on a Mac (2026-11-18): VideoToolbox answers each picture on its own thread after `Decode`
+returns, so the pictures of the last units fed were still in flight when the feeding stopped at the end of the file,
+and were never collected (15 or 16 of 20). The fix: for an asynchronous decoder, `decode` waits (at most 100 ms) until
+the callback for the unit just fed has come, picture or none. With every picture in, a second fault showed: libwebrtc's
+VideoToolbox decoder asks for full-range NV12 (`kCVPixelFormatType_420YpCbCr8BiPlanarFullRange`) and tags no colour
+space, so the glue converted its samples as video range (dark pictures darker, light ones lighter); its pictures now
+convert as full range. Teardown releases the decoder before dropping its
+callback, and a callback during teardown keeps nothing. `webrtc_sys::dilla_video_decoder::VIDEO_TOOLBOX` tells
+dilla-desktop's tests which build they run in. It feeds the decoder access units Rust demuxed from the decrypted file, and converts
 each picture to BGRA with libyuv (the colour matrix the bitstream names, BT.601 when it names none), scaled down to
 fit the box Rust gives. No PeerConnection, transformer or network is involved, and nothing in libwebrtc is rebuilt.
 

@@ -6,6 +6,7 @@
 #include "livekit/dilla_video_decoder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <utility>
 
@@ -42,12 +43,27 @@ constexpr size_t kMaxPictures = 8;
 // The largest coded picture taken at all (either side), as libwebrtc's own decoders cap it.
 constexpr int kMaxSide = 8192;
 
-const libyuv::YuvConstants* matrix_of(const webrtc::VideoFrame& frame) {
+// How long `decode` waits for an asynchronous decoder's picture of the unit it was just fed: VideoToolbox answers in a
+// few milliseconds; a unit it never answers (dropped) costs this once, never stalls the units after it.
+constexpr std::chrono::milliseconds kAsyncWait{100};
+
+// Runs `f` when the scope ends, whichever way it ends.
+template <typename F>
+struct OnExit {
+  F f;
+  ~OnExit() { f(); }
+};
+template <typename F>
+OnExit(F) -> OnExit<F>;
+
+// `full_range` says the decoder's samples are full range whatever the frame's colour space says (VideoToolbox: see
+// `Decoded`).
+const libyuv::YuvConstants* matrix_of(const webrtc::VideoFrame& frame, bool full_range) {
   const auto& cs = frame.color_space();
   if (!cs.has_value()) {
-    return &libyuv::kYuvI601Constants;
+    return full_range ? &libyuv::kYuvJPEGConstants : &libyuv::kYuvI601Constants;
   }
-  const bool full = cs->range() == webrtc::ColorSpace::RangeID::kFull;
+  const bool full = full_range || cs->range() == webrtc::ColorSpace::RangeID::kFull;
   switch (cs->matrix()) {
     case webrtc::ColorSpace::MatrixID::kBT709:
       return full ? &libyuv::kYuvF709Constants : &libyuv::kYuvH709Constants;
@@ -64,11 +80,13 @@ const libyuv::YuvConstants* matrix_of(const webrtc::VideoFrame& frame) {
 DillaVideoDecoder::DillaVideoDecoder(const webrtc::Environment& env,
                                      std::unique_ptr<webrtc::VideoDecoder> decoder,
                                      uint32_t out_width,
-                                     uint32_t out_height)
+                                     uint32_t out_height,
+                                     bool asynchronous)
     : env_(env),
       decoder_(std::move(decoder)),
       out_width_(std::max<uint32_t>(out_width, 2)),
-      out_height_(std::max<uint32_t>(out_height, 2)) {
+      out_height_(std::max<uint32_t>(out_height, 2)),
+      asynchronous_(asynchronous) {
   reorders_ = absl::StrContains(decoder_->GetDecoderInfo().implementation_name, "FFmpeg");
   decoder_->RegisterDecodeCompleteCallback(this);
 }
@@ -91,7 +109,31 @@ int32_t DillaVideoDecoder::decode(rust::Slice<const uint8_t> data, uint32_t time
   image.SetEncodedData(webrtc::EncodedImageBuffer::Create(data.data(), data.size()));
   image.SetRtpTimestamp(timestamp);
   image.SetFrameType(key_frame ? webrtc::VideoFrameType::kVideoFrameKey : webrtc::VideoFrameType::kVideoFrameDelta);
-  return decoder_->Decode(image, /*render_time_ms=*/0);
+  if (!asynchronous_) {
+    return decoder_->Decode(image, /*render_time_ms=*/0);
+  }
+  // VideoToolbox answers on its own thread after Decode returns. Without this wait, the pictures of the last units
+  // fed were still in flight when the caller stopped feeding at the end of the file, and were never collected (the
+  // decode test saw 15 or 16 of 20 pictures on macOS 27, and failed the same way on macOS 15 CI).
+  uint64_t unit;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    unit = ++fed_;
+  }
+  const int32_t result = decoder_->Decode(image, /*render_time_ms=*/0);
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (result < 0) {
+    // A refused unit is never answered.
+    if (fed_ == unit) {
+      --fed_;
+    }
+    return result;
+  }
+  if (!decoded_.wait_for(lock, kAsyncWait, [&] { return answered_ >= unit; })) {
+    // Never answered in time (dropped): count it as answered so the units after it do not wait on it too.
+    answered_ = std::max(answered_, unit);
+  }
+  return result;
 }
 
 bool DillaVideoDecoder::reorders() const {
@@ -128,6 +170,14 @@ bool DillaVideoDecoder::take_frame(rust::Slice<uint8_t> bgra) {
 }
 
 int32_t DillaVideoDecoder::Decoded(webrtc::VideoFrame& frame) {
+  // Every callback answers one unit, kept or not (see `decode`); counted as the callback ends, after its picture is in.
+  OnExit answer{[this] {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++answered_;
+    }
+    decoded_.notify_all();
+  }};
   if (closing_.load()) {
     return 0;
   }
@@ -161,9 +211,13 @@ int32_t DillaVideoDecoder::Decoded(webrtc::VideoFrame& frame) {
   picture.height = static_cast<uint32_t>(oh);
   picture.timestamp = frame.rtp_timestamp();
   picture.bgra.resize(static_cast<size_t>(ow) * static_cast<size_t>(oh) * 4);
-  // libyuv's "ARGB" is B, G, R, A in memory: what GPUI draws.
+  // libyuv's "ARGB" is B, G, R, A in memory: what GPUI draws. libwebrtc's VideoToolbox decoder (the only asynchronous
+  // one here) asks VideoToolbox for full-range NV12 (kCVPixelFormatType_420YpCbCr8BiPlanarFullRange), so its samples
+  // are full range though the frame carries no colour space; read as video range, dark pictures came out darker and
+  // light ones lighter.
   if (libyuv::I420ToARGBMatrix(i420->DataY(), i420->StrideY(), i420->DataU(), i420->StrideU(), i420->DataV(),
-                               i420->StrideV(), picture.bgra.data(), ow * 4, matrix_of(frame), ow, oh) != 0) {
+                               i420->StrideV(), picture.bgra.data(), ow * 4, matrix_of(frame, asynchronous_), ow,
+                               oh) != 0) {
     return 0;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -179,8 +233,8 @@ namespace {
 // libwebrtc's own software decoders, made directly: libvpx (VP8, VP9), dav1d (AV1), and the bundled FFmpeg's H.264
 // where the build has it (Linux and Windows; the macOS prebuilt's FFmpeg lacks H.264, so its Configure fails and H.264
 // goes to the system player there). No platform factory: VideoToolbox (macOS) and the NVIDIA/VA-API factories are not
-// used unless the crate feature `dilla-video-toolbox` asks for VideoToolbox (DILLA_VIDEO_TOOLBOX), since the
-// VideoToolbox path crashed the decode test on macOS CI and cannot be iterated on without a Mac.
+// used unless the crate feature `dilla-video-toolbox` asks for VideoToolbox (DILLA_VIDEO_TOOLBOX), off by default:
+// `decode` waits for VideoToolbox's asynchronous pictures (core/vendor/README.md).
 std::unique_ptr<webrtc::VideoDecoder> software_decoder(const webrtc::Environment& env, const std::string& name) {
   if (absl::EqualsIgnoreCase(name, "VP8")) {
     return webrtc::CreateVp8Decoder(env);
@@ -221,9 +275,11 @@ std::unique_ptr<DillaVideoDecoder> new_dilla_video_decoder(rust::Str codec, uint
   }
   webrtc::Environment env = webrtc::CreateEnvironment();
   std::unique_ptr<webrtc::VideoDecoder> decoder;
+  bool asynchronous = false;
 #if defined(DILLA_VIDEO_TOOLBOX)
   if (type == webrtc::kVideoCodecH264 || type == webrtc::kVideoCodecH265) {
     decoder = platform_decoder(env, name);
+    asynchronous = decoder != nullptr;  // VideoToolbox
   }
 #endif
   if (!decoder) {
@@ -241,7 +297,7 @@ std::unique_ptr<DillaVideoDecoder> new_dilla_video_decoder(rust::Str codec, uint
     decoder->Release();
     return nullptr;
   }
-  return std::make_unique<DillaVideoDecoder>(env, std::move(decoder), out_width, out_height);
+  return std::make_unique<DillaVideoDecoder>(env, std::move(decoder), out_width, out_height, asynchronous);
 }
 
 }  // namespace livekit_ffi

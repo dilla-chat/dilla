@@ -8,7 +8,9 @@ const VP8: &[u8] = include_bytes!("../testdata/video-vp8-opus.webm");
 const VP9: &[u8] = include_bytes!("../testdata/video-vp9.webm");
 const AV1_WEBM: &[u8] = include_bytes!("../testdata/video-av1.webm");
 const AV1_MP4: &[u8] = include_bytes!("../testdata/video-av1.mp4");
-const H264: &[u8] = include_bytes!("../testdata/video-h264-aac.mp4");
+// A static, not a const: `inline()` tells this file by its address, and a const has none of its own (each use may get
+// its own copy; macOS 27's toolchain gave two, so H.264 was never filtered out where no decoder plays it).
+static H264: &[u8] = include_bytes!("../testdata/video-h264-aac.mp4");
 const HEVC: &[u8] = include_bytes!("../testdata/video-hevc.mp4");
 const THEORA: &[u8] = include_bytes!("../testdata/video-theora.ogv");
 const ROT90: &[u8] = include_bytes!("../testdata/video-h264-rot90.mp4");
@@ -173,6 +175,11 @@ fn what_cannot_play_inline_is_unsupported() {
 #[test]
 fn macos_hands_h264_and_h265_to_the_system_player() {
     use webrtc_sys::dilla_video_decoder::VideoCodec;
+    if webrtc_sys::dilla_video_decoder::VIDEO_TOOLBOX {
+        // VideoToolbox plays both inline; the decode test checks H.264's pictures.
+        assert!(decodes(VideoCodec::H264) && decodes(VideoCodec::H265), "VideoToolbox decodes H.264 and H.265");
+        return;
+    }
     assert!(
         !decodes(VideoCodec::H264),
         "an H.264 decoder in the default macOS build"
