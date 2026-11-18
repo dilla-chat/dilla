@@ -734,3 +734,25 @@ jobs:
       - name: sccache statistics
         if: always()
         run: sccache --show-stats
+  # A red nightly opens the one tracking issue (a second comments on it), a green one closes it; the release gate refuses while it is open.
+  # It runs only in the nightly tier (the job `if` cannot read `env`, so it repeats TIER's schedule/dispatch test) and after every other job.
+  nightly-report:
+    needs: [gpui, gpui-linux, gpui-mac-package, gpui-win-package]
+    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # issues: write is this job's only grant; contents: read is the workflow's own, which the checkout needs.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: scripts/ci-nightly-issue.mjs
+          sparse-checkout-cone-mode: false
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_RESULTS: ${{ join(needs.*.result, ' ') }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/ci-nightly-issue.mjs --needs $NEEDS_RESULTS -- "$RUN_URL"

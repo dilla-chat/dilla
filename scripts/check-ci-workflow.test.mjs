@@ -2690,6 +2690,21 @@ test('desktop-gpui names its tier in run-name', () => {
   assert.ok(gpuiProblems((text) => { assert.ok(text.includes(group)); return text.replace(group, 'group: desktop-gpui-${{ github.ref }}'); }).some((p) => p.includes('concurrency')));
 });
 
+test('desktop-gpui nightly-report is pinned: nightly tier, always(), needs every job, issues: write only', () => {
+  const gone = gpuiProblems((text) => text.replace('  nightly-report:\n', '  nightly-reportx:\n'));
+  assert.ok(gone.some((p) => p.includes('nightly-report')), gone.join('\n'));
+  const tier = gpuiProblems((text) => text.replace("    if: always() && (github.event_name == 'schedule'", "    if: (github.event_name == 'schedule'"));
+  assert.ok(tier.some((p) => p.includes('nightly-report must run with')), tier.join('\n'));
+  const pr = gpuiProblems((text) => text.replace("inputs.tier == 'nightly'))\n    runs-on", "inputs.tier == 'nightly') || true)\n    runs-on"));
+  assert.ok(pr.some((p) => p.includes('nightly-report must run with')), pr.join('\n'));
+  const needs = gpuiProblems((text) => text.replace('needs: [gpui, gpui-linux, gpui-mac-package, gpui-win-package]', 'needs: [gpui, gpui-linux]'));
+  assert.ok(needs.some((p) => p.includes('must need every other job')), needs.join('\n'));
+  const wide = gpuiProblems((text) => text.replace('      issues: write\n', '      issues: write\n      pull-requests: write\n'));
+  assert.ok(wide.some((p) => p.includes('nothing broader')), wide.join('\n'));
+  const none = gpuiProblems((text) => text.replace('      issues: write\n', ''));
+  assert.ok(none.some((p) => p.includes('nothing broader')), none.join('\n'));
+});
+
 test('desktop-gpui schedules a nightly at 03:00 UTC', () => {
   const cron = "  schedule:\n    - cron: '0 3 * * *'\n";
   assert.ok(gpuiProblems((text) => { assert.ok(text.includes(cron)); return text.replace(cron, ''); }).some((p) => p.includes('schedule')));

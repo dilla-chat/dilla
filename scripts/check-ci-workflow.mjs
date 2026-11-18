@@ -1761,6 +1761,29 @@ function gpuiTierProblems(text, file) {
   return problems;
 }
 
+/**
+ * The nightly-report job (CI speed plan, Task 4): a red nightly opens the tracking issue, a green one closes it. It runs only in the
+ * nightly tier, always (so a failed job reports), after every other job, with issues: write as its one grant (plus the contents: read
+ * the workflow already has, which its checkout needs). The job `if` cannot read `env`, so it repeats the tier's own test.
+ */
+export const GPUI_NIGHTLY_REPORT_IF = "always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))";
+function gpuiNightlyReportProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; }
+  const job = doc?.jobs?.['nightly-report'];
+  if (!job) return [`${file}: the nightly-report job is missing`];
+  const problems = [];
+  if (String(job.if ?? '').trim() !== GPUI_NIGHTLY_REPORT_IF) problems.push(`${file}: nightly-report must run with \`if: ${GPUI_NIGHTLY_REPORT_IF}\` (nightly tier only, and also after a failure)`);
+  const others = Object.keys(doc.jobs).filter((name) => name !== 'nightly-report');
+  const needs = [job.needs].flat().filter(Boolean);
+  const missing = others.filter((name) => !needs.includes(name));
+  if (missing.length || needs.some((name) => !others.includes(name))) problems.push(`${file}: nightly-report must need every other job (missing: ${missing.join(', ') || 'none'})`);
+  const permissions = job.permissions ?? {};
+  if (permissions.issues !== 'write' || Object.entries(permissions).some(([scope, level]) => scope !== 'issues' && !(scope === 'contents' && level === 'read'))) problems.push(`${file}: nightly-report's permissions must be issues: write and nothing broader (contents: read only)`);
+  if (!JSON.stringify(job.steps ?? []).includes('node scripts/ci-nightly-issue.mjs')) problems.push(`${file}: nightly-report must run scripts/ci-nightly-issue.mjs`);
+  return problems;
+}
+
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
   let text;
@@ -1800,6 +1823,7 @@ export function checkDesktopGpuiWorkflow(root) {
   }
   problems.push(...gpuiMacPackageProblems(text, file));
   problems.push(...gpuiTierProblems(text, file));
+  problems.push(...gpuiNightlyReportProblems(text, file));
   // The macOS CI plan, Task 6: DILLA_PARITY_MEASURE turns every parity comparison into a printed MEASURE line that always
   // passes (gpui-proofs.yml's manual mac-parity-measure job sets it). A CI gate must never set it.
   if (/DILLA_PARITY_MEASURE/.test(text)) problems.push(`${file}: DILLA_PARITY_MEASURE skips every parity comparison; it belongs to gpui-proofs.yml's measurement job only`);
