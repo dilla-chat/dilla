@@ -16,6 +16,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "api/environment/environment.h"
@@ -70,11 +71,13 @@ class DillaVideoDecoder : public webrtc::DecodedImageCallback {
   std::atomic<bool> closing_{false};
   std::mutex mutex_;
   std::deque<Picture> pictures_;
-  // Asynchronous decoders only: the units fed and the callbacks answered (each unit answers once, a picture or
-  // none), under `mutex_`; `decoded_` wakes `decode` when a callback comes.
+  // Asynchronous decoders only, under `mutex_`: the timestamp of the unit `decode` is waiting for, and whether the
+  // callback carrying that timestamp has come. Only that unit's own answer ends the wait: a late answer for a unit
+  // whose wait already timed out, or for a refused one, names another timestamp and is ignored. `decoded_` wakes
+  // `decode` when the answer comes.
   std::condition_variable decoded_;
-  uint64_t fed_ = 0;
-  uint64_t answered_ = 0;
+  std::optional<uint32_t> awaited_;
+  bool answered_ = false;
 };
 
 // A decoder for `codec` ("VP8", "VP9", "AV1", "H264", "H265"), its pictures scaled down to fit `out_width` x

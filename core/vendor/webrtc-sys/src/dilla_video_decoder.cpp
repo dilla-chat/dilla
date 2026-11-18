@@ -115,24 +115,20 @@ int32_t DillaVideoDecoder::decode(rust::Slice<const uint8_t> data, uint32_t time
   // VideoToolbox answers on its own thread after Decode returns. Without this wait, the pictures of the last units
   // fed were still in flight when the caller stopped feeding at the end of the file, and were never collected (the
   // decode test saw 15 or 16 of 20 pictures on macOS 27, and failed the same way on macOS 15 CI).
-  uint64_t unit;
+  // The unit is named by its timestamp (the caller feeds each decoder increasing sample indices), and only the callback
+  // carrying that timestamp answers it.
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    unit = ++fed_;
+    awaited_ = timestamp;
+    answered_ = false;
   }
   const int32_t result = decoder_->Decode(image, /*render_time_ms=*/0);
   std::unique_lock<std::mutex> lock(mutex_);
-  if (result < 0) {
-    // A refused unit is never answered.
-    if (fed_ == unit) {
-      --fed_;
-    }
-    return result;
+  if (result >= 0) {
+    // A unit never answered in time (dropped) costs this wait once; its late answer, if any, matches nothing.
+    decoded_.wait_for(lock, kAsyncWait, [&] { return answered_; });
   }
-  if (!decoded_.wait_for(lock, kAsyncWait, [&] { return answered_ >= unit; })) {
-    // Never answered in time (dropped): count it as answered so the units after it do not wait on it too.
-    answered_ = std::max(answered_, unit);
-  }
+  awaited_.reset();
   return result;
 }
 
@@ -170,11 +166,15 @@ bool DillaVideoDecoder::take_frame(rust::Slice<uint8_t> bgra) {
 }
 
 int32_t DillaVideoDecoder::Decoded(webrtc::VideoFrame& frame) {
-  // Every callback answers one unit, kept or not (see `decode`); counted as the callback ends, after its picture is in.
-  OnExit answer{[this] {
+  // The callback answers the unit its timestamp names, kept or not (see `decode`), as it ends: after its picture is in.
+  const uint32_t unit = frame.rtp_timestamp();
+  OnExit answer{[this, unit] {
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      ++answered_;
+      if (!awaited_ || *awaited_ != unit) {
+        return;
+      }
+      answered_ = true;
     }
     decoded_.notify_all();
   }};
