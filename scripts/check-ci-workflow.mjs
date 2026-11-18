@@ -1882,6 +1882,44 @@ export function checkDesktopGpuiWorkflow(root) {
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
   problems.push(...gpuiWinPackageProblems(text, file));
+  problems.push(...gpuiAptInstallProblems(text, root, file));
+  return problems;
+}
+
+/**
+ * The Linux dependency install never stalls (ci-speed Task 7). Run 44253915661: two legs sat 20 and 27 minutes in "Install the
+ * GPUI build dependencies" because the runner's regional mirror served the same 310 MB at 191-260 kB/s; apt never failed, so
+ * nothing retried. Pinned: every such step retries through retry-on.mjs on the mirror patterns (5 attempts, 10 s apart), and
+ * scripts/ci-apt-install.sh bounds both apt calls with `timeout` (reported as "Unable to fetch", a retried pattern) and gives
+ * apt its own fetch retries and connect timeouts.
+ */
+export const GPUI_APT_STEP_RUN = "node scripts/retry-on.mjs --attempts 5 --wait 10 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh";
+export const GPUI_APT_SCRIPT_LINES = [
+  'update_limit="${APT_UPDATE_TIMEOUT:-90}"',
+  'install_limit="${APT_INSTALL_TIMEOUT:-240}"',
+  'apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)',
+  'timeout --kill-after=10 "$limit" "$@" || code=$?',
+  'echo "ci-apt-install: Unable to fetch: apt-get ${label} did not finish within ${limit} s (mirror too slow); a retry resumes from the downloaded files" >&2',
+  'bounded update "$update_limit" sudo apt-get "${apt_opts[@]}" update',
+  'bounded install "$install_limit" sudo apt-get "${apt_opts[@]}" install -y "$@"',
+];
+function gpuiAptInstallProblems(text, root, file) {
+  const problems = [];
+  let doc;
+  try { doc = yaml.load(text); } catch { return problems; }
+  let steps = 0;
+  for (const job of Object.values(doc?.jobs ?? {})) {
+    for (const step of job?.steps ?? []) {
+      if (step?.name !== 'Install the GPUI build dependencies' || typeof step.run !== 'string') continue;
+      steps++;
+      if (!step.run.replace(/\s+/g, ' ').startsWith(GPUI_APT_STEP_RUN)) problems.push(`${file}: "Install the GPUI build dependencies" must start with \`${GPUI_APT_STEP_RUN}\` (a bounded, retried install)`);
+    }
+  }
+  if (steps === 0) problems.push(`${file}: no "Install the GPUI build dependencies" step`);
+  let script;
+  try { script = readFileSync(join(root, 'scripts', 'ci-apt-install.sh'), 'utf8'); } catch { return [...problems, 'scripts/ci-apt-install.sh: missing']; }
+  const lines = script.split('\n').map((l) => l.trim());
+  for (const want of GPUI_APT_SCRIPT_LINES) if (!lines.includes(want)) problems.push(`scripts/ci-apt-install.sh must keep this line (it bounds each apt call so a slow mirror fails and retries): ${want}`);
   return problems;
 }
 

@@ -202,7 +202,7 @@ jobs:
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
         run: >-
-          node scripts/retry-on.mjs --attempts 6 --wait 60
+          node scripts/retry-on.mjs --attempts 5 --wait 10
           --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
           -- bash scripts/ci-apt-install.sh
           clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
@@ -368,7 +368,7 @@ jobs:
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
         run: >-
-          node scripts/retry-on.mjs --attempts 6 --wait 60
+          node scripts/retry-on.mjs --attempts 5 --wait 10
           --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
           -- bash scripts/ci-apt-install.sh
           clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev

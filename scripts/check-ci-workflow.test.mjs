@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, SAME_TREE_IF, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, checkSccache, SCCACHE_ACTION, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, SAME_TREE_IF, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_APT_SCRIPT_LINES, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, checkSccache, SCCACHE_ACTION, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -2302,6 +2302,7 @@ test('the docs job must run the real checks, not only their unit tests', () => {
 const yaml = createRequire(import.meta.url)('js-yaml');
 const RELEASE_FILES = [
   ...readdirSync(join(REPO_ROOT, '.github', 'workflows')).map(name => `.github/workflows/${name}`),
+  'scripts/ci-apt-install.sh',
 ];
 /** A temporary root holding the real files with `changes` (path -> text => text) applied. */
 const releaseRoots = [];
@@ -3169,4 +3170,26 @@ test('the sccache exemptions are narrow: another always() step, another SHA and 
   const sha = SCCACHE_ACTION.split('@')[1];
   assert.ok(problemsOf(REAL_CI.replace(`sccache-action@${sha}`, `sccache-action@${'0'.repeat(40)}`)).some((p) => p.includes('is not a GitHub-owned action')));
   assert.ok(problemsOf(REAL_CI.replace(`mozilla-actions/sccache-action@${sha}`, `mozilla-actions/other@${sha}`)).some((p) => p.includes('is not a GitHub-owned action')));
+});
+
+test('desktop-gpui bounds and retries the Linux dependency install (ci-speed Task 7)', () => {
+  assert.deepEqual(gpuiProblems((text) => text).filter((p) => /bounded, retried|ci-apt-install/.test(p)), []);
+  const slow = gpuiProblems((text) => text.replaceAll('--attempts 5 --wait 10', '--attempts 6 --wait 60'));
+  assert.ok(slow.some((p) => p.includes('a bounded, retried install')), slow.join('\n'));
+  const noPattern = gpuiProblems((text) => text.replaceAll("|Unable to fetch'\n          -- bash scripts/ci-apt-install.sh", "'\n          -- bash scripts/ci-apt-install.sh"));
+  assert.ok(noPattern.some((p) => p.includes('a bounded, retried install')), noPattern.join('\n'));
+  const noTimeout = checkDesktopGpuiWorkflow(releaseRoot({ 'scripts/ci-apt-install.sh': (text) => text.replace('timeout --kill-after=10 "$limit" "$@" || code=$?', '"$@" || code=$?') }));
+  assert.ok(noTimeout.some((p) => p.includes('scripts/ci-apt-install.sh must keep this line')), noTimeout.join('\n'));
+});
+
+test('ci-apt-install.sh ends a crawling apt call at its limit and reports it as a retried failure', () => {
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-apt-bound-'));
+  // A fake sudo whose `apt-get install` crawls: the script must end it at the limit and say "Unable to fetch".
+  writeFileSync(join(dir, 'sudo'), '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = install ] && exec sleep 30; done\nexit 0\n', { mode: 0o755 });
+  const started = Date.now();
+  const r = spawnSync('bash', [join(REPO_ROOT, 'scripts', 'ci-apt-install.sh'), 'somepkg'], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, APT_INSTALL_TIMEOUT: '1' }, encoding: 'utf8' });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Unable to fetch: apt-get install did not finish within 1 s/);
+  assert.ok(Date.now() - started < 15000, 'the slow install was cut off at the limit');
+  assert.match(r.stderr, /Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch/, 'retry-on.mjs retries this output');
 });
