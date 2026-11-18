@@ -17,7 +17,7 @@
 #
 # The jobs:
 #   gate       main's first attempt, alone; tag -> commit -> green release run -> on main, Cargo version -> green
-#              desktop-gpui push run -> draft prerelease by github-actions[bot] with exactly the Linux files -> their
+#              desktop-gpui nightly or release run on the tree -> draft prerelease by github-actions[bot] with exactly the Linux files -> their
 #              digests equal SHA256SUMS and the build-provenance attestation subjects. Hands the verified files on.
 #   build-mac  macos-15, desktop-release: the release binary from the tagged commit (pinned libwebrtc, --locked, no
 #              cache), Dilla.app signed with Developer ID, notarized and stapled, the DMG and the updater's zip
@@ -46,10 +46,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     # contents: write only because a draft release and its files are visible only to a token that can write; the gate
-    # runs main's code and changes nothing. actions: read for the runs, attestations: read for gh attestation verify.
+    # runs main's code and changes nothing. actions: read for the runs, issues: read for the open ci-nightly issue the
+    # green-run gate refuses on, attestations: read for gh attestation verify.
     permissions:
       contents: write
       actions: read
+      issues: read
       attestations: read
     outputs:
       tag: ${{ steps.gate.outputs.tag }}

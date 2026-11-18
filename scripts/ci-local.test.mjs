@@ -278,7 +278,7 @@ test('step mapping: GitHub-only steps become local equivalents, the rest runs as
   // The audio server is a prerequisite, the rest of browser-media runs.
   assert.ok(steps('browser-media').some((m) => m.tool === 'audio'));
   // Uploads keep their paths and the if-no-files-found rule.
-  assert.deepEqual(steps('rust-wasi').at(-1), { kind: 'upload', name: 'dilla-core-wasi', paths: ['target/wasm32-wasip1/release/dilla_core_wasi.wasm'], required: true });
+  assert.deepEqual(steps('rust-wasi').find((m) => m.kind === 'upload'), { kind: 'upload', name: 'dilla-core-wasi', paths: ['target/wasm32-wasip1/release/dilla_core_wasi.wasm'], required: true });
 });
 
 test('the node job runs test:ci-check on a clean tree, and a cleanTree entry that is no step fails the sync check', () => {

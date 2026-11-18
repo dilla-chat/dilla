@@ -11,10 +11,12 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "api/environment/environment.h"
@@ -30,10 +32,14 @@ class DillaVideoDecoder : public webrtc::DecodedImageCallback {
   DillaVideoDecoder(const webrtc::Environment& env,
                     std::unique_ptr<webrtc::VideoDecoder> decoder,
                     uint32_t out_width,
-                    uint32_t out_height);
+                    uint32_t out_height,
+                    bool asynchronous);
   ~DillaVideoDecoder() override;
 
   // Feeds one access unit (Annex B for H.264). Answers libwebrtc's code: 0 is a picture or none yet, < 0 an error.
+  // An asynchronous decoder (VideoToolbox) answers its picture on its own thread after Decode returns; for one, this
+  // waits (at most kAsyncWait) until that picture is in, so the pictures of the last units are not left in flight
+  // when the caller stops feeding (the end of the file: nothing is fed after it to collect them).
   int32_t decode(rust::Slice<const uint8_t> data, uint32_t timestamp, bool key_frame);
   // Whether the decoder hands its pictures out in presentation order under the timestamp of the access unit fed
   // last (FFmpeg reorders internally), rather than under each picture's own access unit (libvpx, dav1d, VideoToolbox).
@@ -60,10 +66,18 @@ class DillaVideoDecoder : public webrtc::DecodedImageCallback {
   const uint32_t out_width_;
   const uint32_t out_height_;
   bool reorders_;
+  const bool asynchronous_;
   // Set as the decoder is torn down: a late callback keeps nothing.
   std::atomic<bool> closing_{false};
   std::mutex mutex_;
   std::deque<Picture> pictures_;
+  // Asynchronous decoders only, under `mutex_`: the timestamp of the unit `decode` is waiting for, and whether the
+  // callback carrying that timestamp has come. Only that unit's own answer ends the wait: a late answer for a unit
+  // whose wait already timed out, or for a refused one, names another timestamp and is ignored. `decoded_` wakes
+  // `decode` when the answer comes.
+  std::condition_variable decoded_;
+  std::optional<uint32_t> awaited_;
+  bool answered_ = false;
 };
 
 // A decoder for `codec` ("VP8", "VP9", "AV1", "H264", "H265"), its pictures scaled down to fit `out_width` x

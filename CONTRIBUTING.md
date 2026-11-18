@@ -120,10 +120,12 @@ evidence exists.
 that concluded `failure`, when at least one job never got a runner and no job really failed. A run with a real failure
 is never re-run.
 
-A release needs a green push run of its own workflow on main for the tagged commit: `desktop` for a release of the
-native desktop client (none is released yet), `server` for `release.yml` (`scripts/server-release-gate.mjs`, which waits up to
-60 minutes for the commit's `server` run while it is still queued or in progress). A `v*` tag on a main
-commit from before this change runs that commit's own `release.yml`, which has no server gate.
+A release needs a green run of its own workflow on the tagged commit's tree. For `release.yml` that is a `server` run that
+is a push to `main`, never a pull request run (`scripts/server-release-gate.mjs`, which waits up to 150
+minutes for the commit's `server` run while it is still queued or in progress). The desktop client's tag workflow needs a
+green nightly- or release-tier `desktop-gpui` run on the tree, dispatches one itself when there is none, and refuses
+while a `ci-nightly` issue is open. The tiers and the recovery for a refused gate are in `docs/dev/testing.md`.
+A `v*` tag on a main commit from before this change runs that commit's own `release.yml`, which has no server gate.
 
 Server release notes are written by hand: `release.yml` uses `docs/deploy/releases/<tag>.md` as the release body when it
 exists (draft it in `docs/deploy/releases/unreleased.md` and rename it when the tag is cut). Checklist for the notes:

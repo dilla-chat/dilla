@@ -39,6 +39,9 @@ pub mod ffi {
 
 pub use ffi::DillaFrameInfo;
 
+/// Whether this build decodes H.264 and H.265 with VideoToolbox (macOS, the crate feature `dilla-video-toolbox`).
+pub const VIDEO_TOOLBOX: bool = cfg!(feature = "dilla-video-toolbox");
+
 // The decoder is used from one thread at a time (it moves to the player's decode thread); the glue guards the
 // pictures an asynchronous decoder hands back from its own thread.
 unsafe impl Send for ffi::DillaVideoDecoder {}

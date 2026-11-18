@@ -1,6 +1,9 @@
 name: desktop-gpui
+run-name: desktop-gpui [${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr' }}]
 # The native GPUI desktop client (clients/desktop). desktop-ci.yml (check desktop-ok) runs the shared web, UI and core
 # checks; this one builds, lints and tests only the GPUI crates and the parity harness.
+# Three tiers (env.TIER): pr (pull requests and main pushes), nightly (03:00 UTC on main, or a manual run) and release (a manual
+# run the release gate dispatches). The heavy macOS call, parity and VideoToolbox steps and the Linux Bot shard run outside pr.
 on:
   push:
     branches: [main]
@@ -55,12 +58,21 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/desktop-gpui.yml'
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        type: choice
+        options: [nightly, release]
+        default: nightly
 permissions:
   contents: read
 concurrency:
-  group: desktop-gpui-${{ github.ref }}
+  group: desktop-gpui-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr' }}-${{ github.ref }}
   cancel-in-progress: true
 env:
+  TIER: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr' }}
   GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity
   # The test binaries of five crates (libwebrtc, GPUI, wasmtime), each linked whole, with debug info filled the Linux and
   # macOS runners' disks ("No space left on device" in cargo test, errno 28 in ld). A panic still names its location.
@@ -68,8 +80,52 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_INCREMENTAL: 0
 jobs:
+  # CI speed plan, Task 6: a push to main whose tree a green pull_request run of this workflow already proved skips its
+  # work. scripts/ci-same-tree.mjs decides, and anything it cannot prove (an API error included) is "run in full"; every
+  # other event outputs skip=false without asking the API. same-tree carries the decision in its name, `same-tree:
+  # skipped` or `same-tree: ran`, and the release gates never count a run with the skipped one. The jobs after it run
+  # unless skip is 'true', also when the check itself failed: a broken check never turns into a skip.
+  check-tree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      skip: ${{ steps.tree.outputs.skip == 'true' && 'true' || 'false' }}
+    steps:
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci-same-tree.mjs
+            scripts/server-release-gate.mjs
+            scripts/ci-nightly-issue.mjs
+          sparse-checkout-cone-mode: false
+      - id: tree
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: node scripts/ci-same-tree.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_FILE: desktop-gpui.yml
+
+  same-tree:
+    name: "same-tree: ${{ needs.check-tree.outputs.skip == 'true' && 'skipped' || 'ran' }}"
+    needs: [check-tree]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      skip: ${{ needs.check-tree.outputs.skip == 'true' && 'true' || 'false' }}
+    steps:
+      - run: echo "skip=$SKIP"
+        env:
+          SKIP: ${{ needs.check-tree.outputs.skip }}
+
   gpui:
     name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120  # Windows rebuilds every dependency with the static CRT (libwebrtc)
     strategy:
@@ -81,6 +137,11 @@ jobs:
           - { os: ubuntu-24.04, platform: linux, arch: x64 }
           - { os: windows-latest, platform: win, arch: x64 }
           - { os: macos-15, platform: mac, arch: arm64 }
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -140,8 +201,10 @@ jobs:
           echo "CXX=clang++-21" >> "$GITHUB_ENV"
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
+        env:
+          DILLA_APT_FETCH_TIMEOUT: '600'
         run: >-
-          node scripts/retry-on.mjs --attempts 6 --wait 60
+          node scripts/retry-on.mjs --attempts 5 --wait 10
           --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
           -- bash scripts/ci-apt-install.sh
           clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
@@ -150,13 +213,11 @@ jobs:
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
           libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg
       - run: rustup show active-toolchain
-      - id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       # Token freshness: the generated Rust tokens match the design tokens they come from.
       - run: node --test scripts/gen-gpui-tokens.test.mjs
@@ -164,6 +225,8 @@ jobs:
       - run: node --test scripts/gen-gpui-strings.test.mjs
       # Behaviour gates: every e2e test title has a row in clients/desktop/BEHAVIOUR-GATES.md (behaviour_gate_table_complete).
       - run: node --test scripts/behaviour-gates.test.mjs
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
       # The WASI core is rebuilt here on purpose, not taken from internal/mlswasi/testdata (git-ignored, absent on a fresh
       # checkout): the client under test and the server it talks to must be the core of this very commit.
@@ -226,7 +289,7 @@ jobs:
       # Report-only while the suite's first macOS timing failures are fixed (Jonas, 2026-11-16): a failure shows in the
       # job but does not fail the leg. Blocking again once it has been green for a week.
       - name: Run the call tests (macOS)
-        if: runner.os == 'macOS' && !cancelled()
+        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()
         continue-on-error: true
         shell: bash
         run: |
@@ -240,39 +303,40 @@ jobs:
       # Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run
       # above builds dilla-desktop's test files without the automation interface, so they hold no test there.
       - name: Run the parity screens (macOS)
-        if: runner.os == 'macOS' && !cancelled()
+        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()
         shell: bash
         run: |
           cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_
           cargo test -p dilla-desktop --features automation --locked --test video_player_shot
-      # VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV
-      # (core/vendor/README.md): nightly only, and red until that is fixed.
-      - name: Decode with VideoToolbox (macOS, nightly)
-        if: runner.os == 'macOS' && github.event_name == 'schedule' && !cancelled()
+      # VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) lost the last pictures of a file and mis-converted
+      # full-range NV12; both are fixed in the glue (cause and fix: core/vendor/README.md). Nightly and release tiers only.
+      - name: Decode with VideoToolbox (macOS)
+        if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()
         shell: bash
         run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order
-      # Saved even when a leg fails or is cancelled (actions/cache only saves on success): a cold Windows build
-      # with the static CRT takes most of an hour, so the next run must start warm.
-      - if: always() && steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
   # dilla's real-server, Bot, parity and call tests (the #[ignore]d ones a plain `cargo test` skips), Linux only, in four
   # parallel shards: one after another they took 50 minutes of a 76-minute job. Each shard builds what its tests need
-  # on the gpui job's cache.
+  # itself, compiling through sccache (the cargo registry is the only cache the shards share with the gpui job).
   gpui-linux:
     name: gpui-linux-x64-${{ matrix.shard }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       # Every shard runs to the end, so one red suite does not hide another's result.
       fail-fast: false
       matrix:
-        shard: [client, bot, desktop, media]
+        # The Bot shard is absent from the matrix in the PR tier: no build and no test host, not a skip step by step.
+        shard: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["client","bot","desktop","media"]' || '["client","desktop","media"]') }}
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -305,8 +369,10 @@ jobs:
           echo "CXX=clang++-21" >> "$GITHUB_ENV"
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
+        env:
+          DILLA_APT_FETCH_TIMEOUT: '600'
         run: >-
-          node scripts/retry-on.mjs --attempts 6 --wait 60
+          node scripts/retry-on.mjs --attempts 5 --wait 10
           --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
           -- bash scripts/ci-apt-install.sh
           clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
@@ -315,14 +381,14 @@ jobs:
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
           libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg
       # Restore only: the gpui job's Linux leg saves this cache.
-      - id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
       # The WASI core is rebuilt here on purpose, not taken from internal/mlswasi/testdata (git-ignored, absent on a fresh
       # checkout): the client under test and the server it talks to must be the core of this very commit.
@@ -444,14 +510,23 @@ jobs:
           cargo test -p dilla-media --test live --test call --test e2e_call --test capture --test app_audio --locked -- --ignored --skip bot_play_from_enter_to_first_audio_frame_meets_g3 --skip bot_next_queued_track_gap_is_under_150_ms --skip bot_repeated_track_starts_within_500_ms_at_p95 --skip a_new_device_uses_play_within_its_first_session
           # The Bot music timing tests (G3) are latency budgets: measured one at a time, not beside a Bot restart or a browser call.
           cargo test -p dilla-media --test call --locked -- --ignored --exact --test-threads=1 bot_play_from_enter_to_first_audio_frame_meets_g3 bot_next_queued_track_gap_is_under_150_ms bot_repeated_track_starts_within_500_ms_at_p95 a_new_device_uses_play_within_its_first_session
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
   # The macOS bundle, unsigned (no secrets in a PR): the release binary goes through scripts/desktop-gpui-package-mac.sh,
   # which signs ad hoc without CSC_LINK, and the DMG is opened and the app inside it run. The signed and notarized build
   # is desktop-gpui-sign.yml's (release plan, Tasks 12 and 14); this proves the bundle's shape on every PR.
   gpui-mac-package:
     name: gpui-mac-package
-    if: ${{ !cancelled() }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: macos-15
     timeout-minutes: 120
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -477,6 +552,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       # Without gpui-pre-macos's `font-kit` the app gets GPUI's NoopTextSystem and draws no text at all, silently
       # (the dilla-MacBook check of #174). A window can't be shot here, so the feature itself is checked.
       - name: The macOS text system is compiled in
@@ -555,15 +632,23 @@ jobs:
           name: gpui-mac-ui
           path: ${{ runner.temp }}/mac-ui
           if-no-files-found: error
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
   # The Windows installer (GPUI release plan, Task 13, D10), built and exercised on a clean windows-latest runner, keyless:
   # beta.5's NSIS installer goes on first (pinned by SHA-256), then the new setup takes it over silently; the release
   # binary is the static-CRT build the plan names. Independent of the gpui jobs' results.
   gpui-win-package:
     name: gpui-win-package
-    if: ${{ !cancelled() }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 120  # a cold release build with the static CRT
     env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
       BETA5_WIN_SHA256: 0cf2c3ad5c94b9cd4aa21956e6d37209dafe06fa525fcd7866240379fadcf1bb
       # electron-builder's uninstall key for appId dev.dilla.desktop (UUID v5; scripts/desktop-gpui-package-win.test.mjs).
       BETA5_UNINSTALL_GUID: f6db60e4-10df-5b69-9206-408d5f2cebe9
@@ -587,13 +672,11 @@ jobs:
         run: |
           line=$(bash scripts/fetch-libwebrtc.sh x86_64-pc-windows-msvc "$RUNNER_TEMP/libwebrtc")
           echo "LK_CUSTOM_WEBRTC=$(cygpath -m "${line#LK_CUSTOM_WEBRTC=}")" >> "$GITHUB_ENV"
-      - id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: desktop-gpui-win-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       # beta.5's Windows installer, from its release, checked against its pinned SHA-256.
       - name: Download beta.5's installer
@@ -625,6 +708,8 @@ jobs:
           $data = Join-Path $env:APPDATA 'Dilla'
           New-Item -ItemType Directory -Force -Path $data | Out-Null
           Set-Content -Path (Join-Path $data 'takeover-sentinel.txt') -Value 'kept'
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Build the release binary (static CRT)
         shell: bash
         run: cargo build -p dilla-desktop --release --locked
@@ -697,12 +782,28 @@ jobs:
           if (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Dilla.lnk')) { throw 'the Start-menu shortcut is left' }
           if (Test-Path 'HKCU:\Software\Classes\dilla') { throw 'the dilla: protocol registration is left' }
           if (-not (Test-Path (Join-Path $env:APPDATA 'Dilla\takeover-sentinel.txt'))) { throw 'the uninstall deleted user data' }
-      # Saved even when a step fails: a cold Windows release build with the static CRT takes most of an hour.
-      - if: always() && steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
+  # A red nightly opens the one tracking issue (a second comments on it), a green one closes it; the release gate refuses while it is open.
+  # It runs only in the nightly tier (the job `if` cannot read `env`, so it repeats TIER's schedule/dispatch test) and after every other job.
+  nightly-report:
+    needs: [check-tree, same-tree, gpui, gpui-linux, gpui-mac-package, gpui-win-package]
+    if: "!cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # issues: write is this job's only grant; contents: read is the workflow's own, which the checkout needs.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: desktop-gpui-win-package-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          sparse-checkout: scripts/ci-nightly-issue.mjs
+          sparse-checkout-cone-mode: false
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_RESULTS: ${{ join(needs.*.result, ' ') }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/ci-nightly-issue.mjs --needs $NEEDS_RESULTS -- "$RUN_URL"

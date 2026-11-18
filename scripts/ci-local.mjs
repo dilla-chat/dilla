@@ -21,7 +21,7 @@ import {
 } from './ci-local-fs.mjs';
 import { randomBytes } from 'node:crypto';
 import {
-  DEFAULT_BASE, E2E_PORT_SPAN, EXTRA_JOBS, LOCAL_JOB_MAP, MAX_BLOCK, UI_PORT_SPAN, blockPorts, classifyStep, e2eBlockEnv, evalIf, listJobs,
+  CI_ONLY_ENV, DEFAULT_BASE, E2E_PORT_SPAN, EXTRA_JOBS, LOCAL_JOB_MAP, MAX_BLOCK, UI_PORT_SPAN, blockPorts, classifyStep, e2eBlockEnv, evalIf, listJobs,
   loadWorkflows, localMirrorProblems, mapService, moveUiPorts, selectJobs, skipReason, substitute,
 } from './ci-local-plan.mjs';
 
@@ -273,7 +273,7 @@ class Runner {
       CI: 'true', GITHUB_WORKSPACE: ROOT, RUNNER_TEMP, RUNNER_OS: 'Linux', RUNNER_ARCH: process.arch === 'arm64' ? 'ARM64' : 'X64', GITHUB_JOB: job.name,
     });
     for (const [k, v] of Object.entries(this.workflowEnv ?? {})) env[k] = substitute(v, ctx);
-    for (const [k, v] of Object.entries(job.env ?? {})) env[k] = substitute(v, ctx);
+    for (const [k, v] of Object.entries(job.env ?? {})) if (!CI_ONLY_ENV.test(k)) env[k] = substitute(v, ctx);
     env.PATH = [...this.extraPath, env.PATH].join(':');
     return env;
   }

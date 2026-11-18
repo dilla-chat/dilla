@@ -78,7 +78,7 @@ jobs:
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "noise_mode=$(node scripts/release-noise-mode.mjs "$tag")" >> "$GITHUB_OUTPUT"
-      - name: The tagged commit has a green server run on main
+      - name: The tagged commit's tree has a green server run
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_SHA: ${{ github.sha }}

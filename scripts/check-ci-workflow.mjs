@@ -713,7 +713,10 @@ function assertWasmJobsUseClang23(text, jobs, problems, file) {
     const lines = body.split('\n');
     const envAt = lines.indexOf('    env:');
     const envLines = envAt === -1 ? [] : lines.slice(envAt, lines.findIndex((l, i) => i > envAt && !/^ {6,}\S/.test(l)));
-    if (lines.filter((l) => /^ {4}env:/.test(l)).length !== 1 || envLines.join('\n') !== WASM_CLANG_ENV_BLOCK) {
+    // The CI workflows' Rust jobs also carry the four sccache variables (SCCACHE_JOB_ENV, held exactly by checkSccache);
+    // what remains must still be exactly the clang 23 pair. A release build carries no sccache line at all.
+    const clangEnv = file === 'release.yml' ? envLines : envLines.filter((l) => !SCCACHE_ENV_LINES.includes(l));
+    if (lines.filter((l) => /^ {4}env:/.test(l)).length !== 1 || clangEnv.join('\n') !== WASM_CLANG_ENV_BLOCK) {
       problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`);
     } else {
       for (let i = envAt + 1; i < envAt + envLines.length; i++) allowedEnvLines.add(`${name}:${i}`);
@@ -855,7 +858,9 @@ function checkActionReference(line, file, number, problems) {
   const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
   if (!match) return;
   const action = match[1];
-  if (!action.startsWith('actions/')) {
+  if (action === SCCACHE_ACTION) {
+    // The one third-party action: the compiler cache of the Rust jobs, pinned to this exact commit (checkSccache keeps it to the CI workflows).
+  } else if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
   } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
     problems.push(`${file}:${number}: ${action} must use a 40-hex commit SHA`);
@@ -899,6 +904,8 @@ function checkCiWorkflow(root, workflow) {
     for (const { re, what } of FORBIDDEN) {
       // Only the final gate and its no-op DAG barrier may run regardless of dependency results.
       if (what === 'if: always()' && [ok, barrier].includes(currentJob) && line === '    if: always()') continue;
+      // The sccache statistics step (CI speed plan, Task 3) reports on a failed build too; it is this exact step and nothing else.
+      if (what === 'if: always()' && line === '        if: always()' && workflowLines[i + 1] === '        run: sccache --show-stats') continue;
       if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -1149,8 +1156,8 @@ const RELEASE_STEPS = {
     '*-*) prerelease=true ;;',
     // Only a commit on main, which the CI workflows have gated, is released (review M6).
     'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
-    // The server release gates on its own workflow: a green server push run on main for exactly the tagged commit.
-    'name: The tagged commit has a green server run on main',
+    // The server release gates on its own workflow: a green server run on the tagged commit's tree (CI speed, Task 5).
+    "name: The tagged commit's tree has a green server run",
     'TAG_SHA: ${{ github.sha }}',
     'run: node scripts/server-release-gate.mjs "$TAG_SHA"',
     // v0.1.0-web3.1: the version go-release stamps into dillad is the validated tag without its leading v.
@@ -1461,9 +1468,9 @@ export function checkMobileReleaseWorkflow(root) {
  */
 export const GPUI_PINNED_STEPS = {
   // The macOS CI plan, Task 3: the parity screens and the video player through Metal on the gpui job's macOS leg.
-  macParity: ['# The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the', '# Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run', '# above builds dilla-desktop\'s test files without the automation interface, so they hold no test there.', '- name: Run the parity screens (macOS)', '  if: runner.os == \'macOS\' && !cancelled()', '  shell: bash', '  run: |', '    cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_', '    cargo test -p dilla-desktop --features automation --locked --test video_player_shot'].join('\n'),
-  // The macOS CI plan's addendum: the nightly VideoToolbox decode check (known SIGSEGV, red until fixed).
-  macVideoToolbox: ['# VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV', '# (core/vendor/README.md): nightly only, and red until that is fixed.', '- name: Decode with VideoToolbox (macOS, nightly)', '  if: runner.os == \'macOS\' && github.event_name == \'schedule\' && !cancelled()', '  shell: bash', '  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order'].join('\n'),
+  macParity: ['# The macOS CI plan, Task 3 (decision D-A): every parity screen and the video player through Metal, against the', '# Linux web references under the [macos] tolerances measured on macos-15 (parity/TOLERANCES.md). The plain run', '# above builds dilla-desktop\'s test files without the automation interface, so they hold no test there.', '- name: Run the parity screens (macOS)', '  if: runner.os == \'macOS\' && env.TIER != \'pr\' && !cancelled()', '  shell: bash', '  run: |', '    cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_', '    cargo test -p dilla-desktop --features automation --locked --test video_player_shot'].join('\n'),
+  // The macOS CI plan's addendum: the nightly and release VideoToolbox decode check (its decode bugs are fixed, core/vendor/README.md).
+  macVideoToolbox: ['# VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) lost the last pictures of a file and mis-converted', '# full-range NV12; both are fixed in the glue (cause and fix: core/vendor/README.md). Nightly and release tiers only.', '- name: Decode with VideoToolbox (macOS)', '  if: runner.os == \'macOS\' && env.TIER != \'pr\' && !cancelled()', '  shell: bash', '  run: cargo test -p dilla-desktop --features webrtc-sys/dilla-video-toolbox --locked --lib -- --exact screens::attachments::video::tests::every_inline_format_decodes_its_frames_in_presentation_order'].join('\n'),
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
   // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
   strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
@@ -1616,7 +1623,7 @@ export const GPUI_PINNED_STEPS = {
   // Task 4: the real-server call tests on macOS, including the two-client join and the app's own voice join.
   macCalls: [
     '- name: Run the call tests (macOS)',
-    "  if: runner.os == 'macOS' && !cancelled()",
+    "  if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()",
     '  continue-on-error: true',
     '  shell: bash',
     '  run: |',
@@ -1731,6 +1738,103 @@ function gpuiMacPackageProblems(text, file) {
   return problems;
 }
 
+/** desktop-gpui.yml's one TIER expression (CI speed plan, Task 2): schedule is nightly, a manual run takes its input, anything else is pr. */
+export const GPUI_TIER_EXPR = "github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr'";
+/** desktop-gpui's nightly tier: 03:00 UTC on main (the other workflows' NIGHTLY_CRON is their own). */
+const GPUI_NIGHTLY_CRON = '0 3 * * *';
+/** The Linux shard matrix: the Bot shard exists only outside the PR tier, so a PR builds nothing for it. */
+const GPUI_SHARDS = `\${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["client","bot","desktop","media"]' || '["client","desktop","media"]') }}`;
+
+/** The problems with desktop-gpui.yml's tiers (pr, nightly, release): triggers, run-name, TIER, concurrency and the Bot shard. */
+function gpuiTierProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; }
+  const problems = [];
+  const on = doc?.on ?? {};
+  if (JSON.stringify(on.schedule) !== JSON.stringify([{ cron: GPUI_NIGHTLY_CRON }])) problems.push(`${file}: must run nightly on schedule cron '${GPUI_NIGHTLY_CRON}' (the nightly tier), and no other schedule`);
+  const tier = on.workflow_dispatch?.inputs?.tier;
+  if (!tier || tier.type !== 'choice' || JSON.stringify(tier.options) !== JSON.stringify(['nightly', 'release']) || tier.default !== 'nightly') problems.push(`${file}: workflow_dispatch must take the input tier, a choice of nightly and release, default nightly`);
+  if (doc?.['run-name'] !== `desktop-gpui [\${{ ${GPUI_TIER_EXPR} }}]`) problems.push(`${file}: run-name must be exactly 'desktop-gpui [<tier>]' (the release gate reads the tier from it)`);
+  if (doc?.env?.TIER !== `\${{ ${GPUI_TIER_EXPR} }}`) problems.push(`${file}: env.TIER must be the one tier expression (${GPUI_TIER_EXPR}), set at workflow level for every job`);
+  if (doc?.concurrency?.group !== `desktop-gpui-\${{ ${GPUI_TIER_EXPR} }}-\${{ github.ref }}` || doc?.concurrency?.['cancel-in-progress'] !== true) problems.push(`${file}: the concurrency group must carry the tier, so a nightly or release run never cancels or is cancelled by a pull-request run`);
+  if (doc?.jobs?.['gpui-linux']?.strategy?.matrix?.shard !== GPUI_SHARDS) problems.push(`${file}: the gpui-linux matrix must list the Bot shard outside the PR tier only (${GPUI_SHARDS}), so the Bot shard does no work in a pull request`);
+  return problems;
+}
+
+/**
+ * The nightly-report job (CI speed plan, Task 4): a red nightly opens the tracking issue, a green one closes it. It runs only in the
+ * nightly tier on main (a branch dispatch must not open or close the issue), !cancelled() (so a failed job reports, a cancelled run does not), after every other job, with issues: write as its one grant (plus the contents: read
+ * the workflow already has, which its checkout needs). The job `if` cannot read `env`, so it repeats the tier's own test.
+ */
+export const GPUI_NIGHTLY_REPORT_IF = "!cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))";
+function gpuiNightlyReportProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; }
+  const job = doc?.jobs?.['nightly-report'];
+  if (!job) return [`${file}: the nightly-report job is missing`];
+  const problems = [];
+  if (String(job.if ?? '').trim() !== GPUI_NIGHTLY_REPORT_IF) problems.push(`${file}: nightly-report must run with \`if: ${GPUI_NIGHTLY_REPORT_IF}\` (nightly tier only, and also after a failure)`);
+  const others = Object.keys(doc.jobs).filter((name) => name !== 'nightly-report');
+  const needs = [job.needs].flat().filter(Boolean);
+  const missing = others.filter((name) => !needs.includes(name));
+  if (missing.length || needs.some((name) => !others.includes(name))) problems.push(`${file}: nightly-report must need every other job (missing: ${missing.join(', ') || 'none'})`);
+  const permissions = job.permissions ?? {};
+  if (permissions.issues !== 'write' || Object.entries(permissions).some(([scope, level]) => scope !== 'issues' && !(scope === 'contents' && level === 'read'))) problems.push(`${file}: nightly-report's permissions must be issues: write and nothing broader (contents: read only)`);
+  if (!JSON.stringify(job.steps ?? []).includes('node scripts/ci-nightly-issue.mjs')) problems.push(`${file}: nightly-report must run scripts/ci-nightly-issue.mjs`);
+  return problems;
+}
+
+/**
+ * The main-push skip (CI speed plan, Task 6), in desktop-gpui.yml only: server.yml keeps its full run on every main push
+ * (Jonas, 2026-11-18), and its release gate takes only main-push or dispatch runs. `check-tree` runs scripts/ci-same-tree.mjs on a
+ * push to main only (any other event leaves its output false without calling the API), with actions: read and contents: read and
+ * nothing more. `same-tree` carries the decision in its name (`same-tree: skipped` or `same-tree: ran`, which the release gates
+ * read) and its output. The roots need only same-tree and run with SAME_TREE_IF: unless the run was cancelled or same-tree said
+ * skip, so a failed or skipped check runs everything. Every other job depends on same-tree, directly or through a root;
+ * nightly-report lists both, so a failed check makes the nightly red.
+ */
+export const SAME_TREE_JOBS = ['check-tree', 'same-tree'];
+export const SAME_TREE_IF = "${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}";
+export const SAME_TREE_ROOTS = { 'desktop-gpui.yml': ['gpui', 'gpui-linux', 'gpui-mac-package', 'gpui-win-package'] };
+const ON_MAIN_PUSH = "github.event_name == 'push' && github.ref == 'refs/heads/main'";
+const sameTreeCheckJob = (file) => ({
+  'runs-on': 'ubuntu-latest',
+  'timeout-minutes': 5,
+  permissions: { actions: 'read', contents: 'read' },
+  outputs: { skip: "${{ steps.tree.outputs.skip == 'true' && 'true' || 'false' }}" },
+  steps: [
+    { if: ON_MAIN_PUSH, uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', with: { 'persist-credentials': false, 'sparse-checkout': 'scripts/ci-same-tree.mjs\nscripts/server-release-gate.mjs\nscripts/ci-nightly-issue.mjs\n', 'sparse-checkout-cone-mode': false } },
+    { id: 'tree', if: ON_MAIN_PUSH, run: 'node scripts/ci-same-tree.mjs', env: { GH_TOKEN: '${{ github.token }}', WORKFLOW_FILE: file } },
+  ],
+});
+export const SAME_TREE_JOB = {
+  name: "same-tree: ${{ needs.check-tree.outputs.skip == 'true' && 'skipped' || 'ran' }}",
+  needs: ['check-tree'],
+  'runs-on': 'ubuntu-latest',
+  'timeout-minutes': 2,
+  outputs: { skip: "${{ needs.check-tree.outputs.skip == 'true' && 'true' || 'false' }}" },
+  steps: [{ run: 'echo "skip=$SKIP"', env: { SKIP: '${{ needs.check-tree.outputs.skip }}' } }],
+};
+function sameTreeProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; } // the caller's other checks report an unparsable file
+  const jobs = doc?.jobs ?? {};
+  const problems = [];
+  if (!drSame(jobs['check-tree'], sameTreeCheckJob(file))) problems.push(`${file}: check-tree must be exactly the same-tree check: scripts/ci-same-tree.mjs with WORKFLOW_FILE: ${file} on a push to main only, actions: read and contents: read`);
+  if (!drSame(jobs['same-tree'], SAME_TREE_JOB)) problems.push(`${file}: same-tree must be named "same-tree: skipped" or "same-tree: ran" by check-tree's output, need only check-tree and pass its skip on`);
+  const needsOf = (name) => [jobs[name]?.needs ?? []].flat();
+  for (const root of SAME_TREE_ROOTS[file]) {
+    if (!drSame(needsOf(root), ['same-tree']) || jobs[root]?.if !== SAME_TREE_IF) problems.push(`${file}: job "${root}" must need only same-tree and run with \`if: ${SAME_TREE_IF}\` (a failed check runs it; only skip=true skips it)`);
+  }
+  // Every job waits for same-tree, so none does work on a push that skips.
+  const reaches = (name, seen = new Set()) => name === 'same-tree' || (!seen.has(name) && (seen.add(name), needsOf(name).some((n) => reaches(n, seen))));
+  for (const name of Object.keys(jobs)) {
+    if (['ci-watchdog', 'check-tree', 'same-tree'].includes(name)) continue;
+    if (!reaches(name)) problems.push(`${file}: job "${name}" must depend on same-tree, directly or through ${SAME_TREE_ROOTS[file].join(' or ')}`);
+  }
+  return problems;
+}
+
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
   let text;
@@ -1769,12 +1873,68 @@ export function checkDesktopGpuiWorkflow(root) {
     }
   }
   problems.push(...gpuiMacPackageProblems(text, file));
+  problems.push(...gpuiTierProblems(text, file));
+  problems.push(...gpuiNightlyReportProblems(text, file));
+  problems.push(...sameTreeProblems(text, file));
   // The macOS CI plan, Task 6: DILLA_PARITY_MEASURE turns every parity comparison into a printed MEASURE line that always
   // passes (gpui-proofs.yml's manual mac-parity-measure job sets it). A CI gate must never set it.
   if (/DILLA_PARITY_MEASURE/.test(text)) problems.push(`${file}: DILLA_PARITY_MEASURE skips every parity comparison; it belongs to gpui-proofs.yml's measurement job only`);
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
   problems.push(...gpuiWinPackageProblems(text, file));
+  problems.push(...gpuiAptInstallProblems(text, root, file));
+  return problems;
+}
+
+/**
+ * The Linux dependency install never stalls (ci-speed Task 7). Run 44253915661: two legs sat 20 and 27 minutes in "Install the
+ * GPUI build dependencies" because the runner's regional mirror served the same 310 MB at 191-260 kB/s; apt never failed, so
+ * nothing retried. Pinned: every such step retries through retry-on.mjs on the mirror patterns (5 attempts, 10 s apart), and
+ * scripts/ci-apt-install.sh, when DILLA_APT_FETCH_TIMEOUT is set (600 s, desktop-gpui.yml only), bounds only `apt-get update`
+ * and `install --download-only` with `timeout` (reported as "Unable to fetch", a retried pattern), repairs an interrupted
+ * dpkg first, and runs the real install unbounded so dpkg is never killed. Without the variable it is the plain unbounded
+ * update + install the release workflows always ran (they must not set it).
+ */
+export const GPUI_APT_STEP_RUN = "node scripts/retry-on.mjs --attempts 5 --wait 10 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh";
+export const GPUI_APT_FETCH_TIMEOUT = '600';
+export const GPUI_APT_SCRIPT_LINES = [
+  'if [ -z "${DILLA_APT_FETCH_TIMEOUT:-}" ]; then',
+  'sudo apt-get update',
+  'sudo apt-get install -y "$@"',
+  'fetch_limit="${DILLA_APT_FETCH_TIMEOUT}"',
+  'update_limit=90',
+  'apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)',
+  'timeout --kill-after=10 "$limit" "$@" || code=$?',
+  'echo "ci-apt-install: Unable to fetch: apt-get ${label} did not finish within ${limit} s (mirror too slow); a retry resumes from the downloaded files" >&2',
+  'sudo dpkg --configure -a',
+  'bounded update "$update_limit" sudo apt-get "${apt_opts[@]}" update',
+  'bounded download "$fetch_limit" sudo apt-get "${apt_opts[@]}" install -y --download-only "$@"',
+  // The real install runs from the cache with no timeout: dpkg is never killed.
+  'sudo apt-get "${apt_opts[@]}" install -y "$@"',
+];
+function gpuiAptInstallProblems(text, root, file) {
+  const problems = [];
+  let doc;
+  try { doc = yaml.load(text); } catch { return problems; }
+  let steps = 0;
+  for (const job of Object.values(doc?.jobs ?? {})) {
+    for (const step of job?.steps ?? []) {
+      if (step?.name !== 'Install the GPUI build dependencies' || typeof step.run !== 'string') continue;
+      steps++;
+      if (step.env?.DILLA_APT_FETCH_TIMEOUT !== GPUI_APT_FETCH_TIMEOUT) problems.push(`${file}: "Install the GPUI build dependencies" must set env DILLA_APT_FETCH_TIMEOUT: '${GPUI_APT_FETCH_TIMEOUT}' (the opt-in bound on the apt download only)`);
+      if (!step.run.replace(/\s+/g, ' ').startsWith(GPUI_APT_STEP_RUN)) problems.push(`${file}: "Install the GPUI build dependencies" must start with \`${GPUI_APT_STEP_RUN}\` (a bounded, retried install)`);
+    }
+  }
+  if (steps === 0) problems.push(`${file}: no "Install the GPUI build dependencies" step`);
+  for (const other of ['desktop-gpui-release.yml', 'gpui-proofs.yml']) {
+    let otherText = '';
+    try { otherText = readFileSync(join(root, '.github', 'workflows', other), 'utf8'); } catch { /* absent in a fixture */ }
+    if (otherText.includes('DILLA_APT_FETCH_TIMEOUT')) problems.push(`${other}: must not set DILLA_APT_FETCH_TIMEOUT (release installs stay the plain unbounded apt commands)`);
+  }
+  let script;
+  try { script = readFileSync(join(root, 'scripts', 'ci-apt-install.sh'), 'utf8'); } catch { return [...problems, 'scripts/ci-apt-install.sh: missing']; }
+  const lines = script.split('\n').map((l) => l.trim());
+  for (const want of GPUI_APT_SCRIPT_LINES) if (!lines.includes(want)) problems.push(`scripts/ci-apt-install.sh must keep this line (it bounds each apt call so a slow mirror fails and retries): ${want}`);
   return problems;
 }
 
@@ -1811,8 +1971,9 @@ function gpuiWinPackageProblems(text, file) {
   if (!job) return fail('job is missing');
   const problems = [];
   if (job['runs-on'] !== 'windows-latest') problems.push(...fail('runs on windows-latest'));
-  if (job.if !== '${{ !cancelled() }}') problems.push(...fail('runs independently of the other jobs (if: ${{ !cancelled() }})'));
-  if (Object.hasOwn(job, 'environment') || Object.hasOwn(job, 'needs') || Object.hasOwn(job, 'permissions')) problems.push(...fail('is keyless: no environment, needs or permissions'));
+  // Independent of the other build jobs: it needs only same-tree, and runs unless that skipped the run (sameTreeProblems).
+  if (job.if !== SAME_TREE_IF) problems.push(...fail(`runs independently of the other jobs (if: ${SAME_TREE_IF})`));
+  if (Object.hasOwn(job, 'environment') || !drSame(job.needs, ['same-tree']) || Object.hasOwn(job, 'permissions')) problems.push(...fail('is keyless: no environment or permissions, and needs only same-tree'));
   if (/\bsecrets\b/.test(JSON.stringify(job))) problems.push(...fail('reads no secret'));
   if (job.env?.BETA5_WIN_SHA256 !== GPUI_WIN_PACKAGE_SHA256) problems.push(...fail(`pins beta.5's win-x64 installer to SHA-256 ${GPUI_WIN_PACKAGE_SHA256}`));
   if (job.env?.BETA5_UNINSTALL_GUID !== GPUI_WIN_PACKAGE_GUID) problems.push(...fail(`names beta.5's uninstall GUID ${GPUI_WIN_PACKAGE_GUID}`));
@@ -1835,7 +1996,7 @@ function gpuiWinPackageProblems(text, file) {
 
 /**
  * desktop-gpui-release.yml (GPUI release plan, Milestone 1): a desktop-gpui-v* tag run, so the tag's own workflow file.
- * Pinned: the tag gate (tag shape, ref, main ancestry, green desktop-gpui push run, Cargo version, no release yet), a
+ * Pinned: the tag gate (tag shape, ref, main ancestry, a green nightly or release desktop-gpui run on its tree, Cargo version, no release yet), a
  * clean build (no cache action or setup cache, `--locked`, default features only, pinned libwebrtc), the glibc and
  * release-binary guards, the pinned packaging tools, attestations over exactly the five assets, the smoke job before
  * publishing, and a draft release it never publishes (desktop-gpui-sign.yml completes and publishes it). No secret and
@@ -1882,7 +2043,8 @@ export const GPUI_RELEASE_STEPS = {
   ],
 };
 const GPUI_RELEASE_PERMISSIONS = {
-  tag: { contents: 'read', actions: 'read' },
+  // actions: write dispatches the release-tier desktop-gpui run; issues: read sees the open ci-nightly issue (Task 5).
+  tag: { contents: 'read', actions: 'write', issues: 'read' },
   'build-linux': { contents: 'read', 'id-token': 'write', attestations: 'write' },
   publish: { contents: 'write' },
 };
@@ -1939,6 +2101,9 @@ export function checkDesktopGpuiReleaseWorkflow(root) {
       if (!steps.includes(pin.replace(/^run: /, '')) || (pin.startsWith('run: ') && !(job?.steps ?? []).some((s) => s?.run === pin.slice(5)))) fail(`job "${name}" lost its pinned step: ${pin}`);
     }
   }
+  // The gate step dispatches its release-tier run on the validated tag (CI speed, Task 5).
+  const gateStep = (jobs.tag?.steps ?? []).find((s) => s?.run === 'node scripts/server-release-gate.mjs --workflow=desktop-gpui "$TAG_SHA"');
+  if (gateStep && gateStep.env?.RELEASE_TAG !== '${{ steps.tag.outputs.tag }}') fail('the gate step must pass RELEASE_TAG: ${{ steps.tag.outputs.tag }} (the tag it dispatches the release-tier run on)');
   // The build: one cargo build, of dilla-desktop alone with its default features, --locked.
   const builds = (jobs['build-linux']?.steps ?? []).filter((s) => typeof s?.run === 'string' && /\bcargo (build|install|rustc)\b/.test(s.run));
   if (builds.length !== 1 || builds[0].run !== 'cargo build --release --locked -p dilla-desktop') fail('build-linux runs exactly one `cargo build --release --locked -p dilla-desktop` (default features only)');
@@ -2014,7 +2179,7 @@ export const GPUI_SIGN_SECRET_STEPS = {
   sign: { 'Sign the feed (the only step with DESKTOP_METADATA_KEY_A)': ['DESKTOP_METADATA_KEY_A'] },
 };
 const GPUI_SIGN_PERMISSIONS = {
-  gate: { contents: 'write', actions: 'read', attestations: 'read' },
+  gate: { contents: 'write', actions: 'read', issues: 'read', attestations: 'read' },
   'build-mac': { contents: 'read', 'id-token': 'write', attestations: 'write' },
   'build-win': { contents: 'read', 'id-token': 'write', attestations: 'write' },
   sign: { contents: 'read' },
@@ -2235,9 +2400,67 @@ export function checkLocalMirror(root) {
   })));
 }
 
+/**
+ * CI speed plan, Task 3: sccache on every Rust job of the four CI workflows, and no `target/` cache anywhere. A cold
+ * macOS `cargo build` took 13 minutes and a Windows `target/` cache save 10; a compiler cache keyed per crate and flags
+ * restores what a whole-directory cache never could. The release builds start clean (checkDesktopGpuiReleaseWorkflow,
+ * checkDesktopGpuiSignWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow): none of them may mention sccache.
+ */
+export const SCCACHE_ACTION = 'mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba'; // v0.0.11
+/** The job-level env of every Rust job. IGNORE_SERVER_IO_ERROR lets a fork PR or a cold cache (sccache cannot reach the
+ *  GitHub cache) compile uncached instead of failing the build. */
+export const SCCACHE_JOB_ENV = {
+  SCCACHE_GHA_ENABLED: 'true',
+  RUSTC_WRAPPER: 'sccache',
+  SCCACHE_IGNORE_SERVER_IO_ERROR: '1',
+  CARGO_INCREMENTAL: '0',
+};
+/** SCCACHE_JOB_ENV as the job-level env lines of a workflow file. */
+const SCCACHE_ENV_LINES = Object.entries(SCCACHE_JOB_ENV).map(([k, v]) => `      ${k}: ${/^\d+$|^true$/.test(v) ? `'${v}'` : v}`);
+const SCCACHE_CI_FILES = ['desktop-gpui.yml', 'server.yml', 'desktop-ci.yml', 'mobile.yml'];
+const SCCACHE_CLEAN_FILES = ['desktop-gpui-release.yml', 'desktop-gpui-sign.yml', 'release.yml', 'mobile-release.yml'];
+/** Jobs that run cargo without compiling the workspace: `cargo deny` downloads a prebuilt binary and reads manifests. */
+const SCCACHE_EXEMPT_JOBS = new Set(['server.yml:deny']);
+/** A step that compiles: cargo or wasm-pack on a command line (the install-ci-tool.sh downloads are prebuilt binaries). */
+const compilesRust = (step) => String(step?.run ?? '').split('\n').some((l) => !/install-ci-tool\.sh/.test(l) && /(?:^|[\s;&|(])(?:cargo|wasm-pack)\s/.test(l.replace(/#.*/, '')));
+
+export function checkSccache(root) {
+  const problems = [];
+  for (const file of SCCACHE_CI_FILES) {
+    let doc;
+    try { doc = yaml.load(readFileSync(join(root, '.github', 'workflows', file), 'utf8')); } catch { problems.push(`${file}: missing or invalid YAML`); continue; }
+    for (const [name, job] of Object.entries(doc?.jobs ?? {})) {
+      const steps = Array.isArray(job?.steps) ? job.steps : [];
+      // No job caches target/: it is what sccache replaces, and a 10-minute save for a cache that goes stale per commit.
+      for (const step of steps) {
+        if (typeof step?.uses === 'string' && /^actions\/cache(?:\/[^@\s]+)?@/.test(step.uses) && String(step.with?.path ?? '').split('\n').some((p) => /^(?:\*\*\/)?target\/?(?:\*\*)?$/.test(p.trim()))) {
+          problems.push(`${file}: job "${name}" caches target/; sccache replaces it (keep only ~/.cargo/registry and ~/.cargo/git)`);
+        }
+      }
+      const first = steps.findIndex(compilesRust);
+      if (first < 0 || SCCACHE_EXEMPT_JOBS.has(`${file}:${name}`)) continue;
+      for (const [k, v] of Object.entries(SCCACHE_JOB_ENV)) {
+        if (String(job.env?.[k]) !== v) problems.push(`${file}: Rust job "${name}" must set env ${k}: '${v}'${k === 'SCCACHE_IGNORE_SERVER_IO_ERROR' ? ' (a fork PR or a cold cache must compile uncached, not fail)' : ''}`);
+      }
+      const at = steps.findIndex((step) => step?.uses === SCCACHE_ACTION);
+      if (at < 0 || at > first) problems.push(`${file}: Rust job "${name}" must run ${SCCACHE_ACTION} before its first cargo or wasm-pack command`);
+      const last = steps.at(-1);
+      if (last?.if !== 'always()' || last?.run !== 'sccache --show-stats' || Object.keys(last).some((k) => !['name', 'if', 'run'].includes(k))) {
+        problems.push(`${file}: Rust job "${name}" must end with a step \`if: always()\` running \`sccache --show-stats\``);
+      }
+    }
+  }
+  for (const file of SCCACHE_CLEAN_FILES) {
+    let text;
+    try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); } catch { continue; /* its own check reports it missing */ }
+    if (/sccache|RUSTC_WRAPPER/i.test(text)) problems.push(`${file}: a release build starts clean; no sccache and no RUSTC_WRAPPER`);
+  }
+  return problems;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkDesktopGpuiReleaseWorkflow(root), ...checkDesktopGpuiSignWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkDesktopGpuiReleaseWorkflow(root), ...checkDesktopGpuiSignWorkflow(root), ...checkSccache(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

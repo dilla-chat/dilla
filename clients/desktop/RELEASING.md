@@ -13,9 +13,11 @@ build-provenance attestation. The AUR recipe is a release asset only; nobody pub
 
 1. Set `version` in `clients/desktop/dilla-desktop/Cargo.toml` to the release's version (`0.2.0-alpha.N`), with its
    `Cargo.lock` line, in the pull request that ships it.
-2. Merge the pull request and wait for the `desktop-gpui` workflow's **push** run on the merge commit to go green. The
-   tag job refuses a commit without one (`scripts/server-release-gate.mjs --workflow=desktop-gpui`). That workflow is
-   path-filtered: a commit that touched nothing it watches has no run, so tag a commit that has one.
+2. Merge the pull request. You do not wait for a second CI run on the merge commit. The tag job needs a green
+   `desktop-gpui [nightly]` or `[release]` run on the tagged commit's tree and no open `ci-nightly` issue; a `[pr]` run
+   never counts. When there is no such run it dispatches a `[release]` run on the tag and waits up to 150 minutes for
+   it (`scripts/server-release-gate.mjs --workflow=desktop-gpui`). The tiers, and what to do when the gate refuses,
+   are in `docs/dev/testing.md`.
 3. Push the tag, once:
 
    ```sh
@@ -108,7 +110,8 @@ publishes.
 2. `desktop-gpui-sign.yml` starts on that run's success:
    - `gate` (`scripts/desktop-gpui-gate.mjs`): first attempt only and no other sign run active; re-derives the tag's
      commit from the API, checks the triggering run is `desktop-gpui-release.yml` for that tag and commit and green,
-     the commit is on `main`, the Cargo version is the tag's, the commit has a green `desktop-gpui` push run, and the
+     the commit is on `main`, the Cargo version is the tag's, the tree has a green `desktop-gpui` `[nightly]` or `[release]` run and no `ci-nightly` issue is open (this gate never
+     dispatches a run; `docs/dev/testing.md`), and the
      draft holds exactly the Linux files, uploaded by `github-actions[bot]`. It downloads them, checks them against
      the API digests and `SHA256SUMS`, and runs `gh attestation verify` on each (signed by `desktop-gpui-release.yml`
      at that tag and commit, in that run, on a hosted runner, with exactly the five assets as subjects).

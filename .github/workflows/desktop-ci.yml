@@ -189,6 +189,10 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses the dev box's LLVM 23.1 line:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
@@ -213,7 +217,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -222,6 +225,8 @@ jobs:
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: wasm-bindgen-cli must equal the Cargo.lock crate version
         run: |
           want=$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name=="wasm-bindgen") | .version')
@@ -239,11 +244,19 @@ jobs:
       - run: npm run typecheck -w @dilla/core-wasm
       - run: npm run test:wasm -w @dilla/media
       - run: npm run check:schema -w @dilla/media
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   rust-native:
     needs: [changes]
     if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-24.04  # same image as the consumers: newer ubuntu-latest builds need GLIBC_2.43
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup show active-toolchain
@@ -252,8 +265,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       # The lint and test steps need the core area; the job itself runs for any code, because go-harness and the
       # browser suites download the testkit binary built below.
       - if: needs.changes.outputs.core != 'false'
@@ -282,11 +296,19 @@ jobs:
           name: dilla-testkit
           path: target/release/dilla-testkit
           if-no-files-found: error
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   rust-wasi:
     needs: [changes]
     if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup show active-toolchain
@@ -295,14 +317,18 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-wasi
           path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
           if-no-files-found: error
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   browser-spike:
     name: encrypted-store-integration
@@ -313,6 +339,10 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses the dev box's LLVM 23.1 line:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
@@ -337,7 +367,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -346,6 +375,8 @@ jobs:
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir spike/pkg
       - run: npm ci
       # The shared encrypted-store harness runs only the Chromium engine.
@@ -372,6 +403,9 @@ jobs:
       # Only the matrix script: it already runs the chromium project, so adding `test:e2e` here would
       # execute the 10-hand-over test twice per run and rewrite opfs-leader-metrics.json for nothing.
       - run: npm run test:e2e:matrix -w @dilla/e2e
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   browser-media:
     name: media-protocol-integration
@@ -383,6 +417,10 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
@@ -411,7 +449,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -433,6 +470,8 @@ jobs:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       - run: go build -o target/dilla-mediabot ./cmd/dilla-mediabot
       - run: npm ci
@@ -475,6 +514,9 @@ jobs:
           name: browser-media-results
           path: e2e/test-results
           if-no-files-found: error
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   web-build:
     needs: [changes]
@@ -487,6 +529,10 @@ jobs:
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
     env:
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+      CARGO_INCREMENTAL: '0'
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
     steps:
@@ -511,7 +557,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -526,6 +571,8 @@ jobs:
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
+      - name: sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
       - run: npm ci
@@ -549,6 +596,9 @@ jobs:
           name: dilla-core-harness
           path: packages/client-core/harness-dist/
           if-no-files-found: error
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   core-integration:
     needs: [changes, rust-native, rust-wasi, web-build]
