@@ -62,7 +62,7 @@ const decide = (gh, over = {}) => coveredByPr({ sha: PUSH, workflowFile: 'deskto
 
 test('aTreeAGreenPrRunCoveredIsSkipped', async () => {
   assert.equal(await decide(fakeGithub()), true);
-  // The server workflow too, by its own file.
+  // The lookup is by workflow file: another gated file is matched by its own runs (server.yml itself has no skip).
   const server = fakeGithub({ runs: [prRun({ name: 'server', path: '.github/workflows/server.yml' })] });
   assert.equal(await decide(server, { workflowFile: 'server.yml' }), true);
 });

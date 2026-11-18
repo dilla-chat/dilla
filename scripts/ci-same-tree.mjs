@@ -4,8 +4,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { GATED_WORKFLOWS, hasSkippedJob, isGreen, isOwnRun, request } from './server-release-gate.mjs';
 
 /**
- * A main push that a green pull-request run already proved (CI speed plan, Task 6). desktop-gpui.yml's and server.yml's
- * `check-tree` job runs this on a push to main only; every other event decides "run in full" without asking the API.
+ * A main push that a green pull-request run already proved (CI speed plan, Task 6). desktop-gpui.yml's `check-tree` job
+ * runs this on a push to main only; every other event decides "run in full" without asking the API. server.yml has no
+ * such skip: its main push runs every area (Jonas, 2026-11-18).
  *
  * coveredByPr is true only when a pull_request run of exactly `workflowFile`, in this repository (not a fork's):
  *   - completed with conclusion success, and has no job named `same-tree: skipped`;

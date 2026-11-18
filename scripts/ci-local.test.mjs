@@ -186,7 +186,7 @@ test('a matrix job becomes one job per leg, and an arm64 leg is skipped with its
 test('the needs graph: a job brings what it needs, in dependency order, and a cycle or unknown need throws', () => {
   const order = dependencyClosure(JOBS, ['core-integration']);
   assert.deepEqual(order.slice(-1), ['core-integration']);
-  assert.deepEqual(new Set(order), new Set(['check-tree', 'same-tree', 'changes', 'rust-native', 'rust-wasi', 'web-build', 'core-integration']));
+  assert.deepEqual(new Set(order), new Set(['changes', 'rust-native', 'rust-wasi', 'web-build', 'core-integration']));
   for (const id of order) for (const need of job(id).needs) assert.ok(order.indexOf(need) < order.indexOf(id), `${need} before ${id}`);
   const fake = [{ id: 'a', name: 'a', needs: ['b'] }, { id: 'b', name: 'b', needs: ['a'] }];
   assert.throws(() => dependencyClosure(fake, ['a']), /cycle/);
@@ -214,7 +214,7 @@ test('a full run covers every job of both workflows and the extra jobs', () => {
 test('--changed runs what the ci-areas gates would: a docs-only diff runs only changes, docs and the aggregates', () => {
   const outputs = changedOutputs('base', ['docs/user/x.md', 'README.md']);
   assert.equal(outputs.code, false);
-  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-watchdog', 'check-tree', 'same-tree', 'server-work-complete', 'server-ok', 'desktop-work-complete', 'desktop-ok', 'mobile-work-complete', 'mobile-ok']);
+  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-watchdog', 'server-work-complete', 'server-ok', 'desktop-work-complete', 'desktop-ok', 'mobile-work-complete', 'mobile-ok']);
 });
 
 test('--changed: a Go file runs the Go jobs and the release build, not the desktop suites, the Rust lint or ui', () => {

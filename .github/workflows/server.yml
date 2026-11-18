@@ -30,48 +30,6 @@ jobs:
           # This workflow's roots and DAG barrier: the watcher is done once they and every other job completed.
           CI_COMPLETION_JOBS: changes docs server-work-complete
 
-  # CI speed plan, Task 6: a push to main whose tree a green pull_request run of this workflow already proved skips its
-  # work. scripts/ci-same-tree.mjs decides, and anything it cannot prove (an API error included) is "run in full"; every
-  # other event outputs skip=false without asking the API. same-tree carries the decision in its name, `same-tree:
-  # skipped` or `same-tree: ran`, and the release gates never count a run with the skipped one. The jobs after it run
-  # unless skip is 'true', also when the check itself failed: a broken check never turns into a skip.
-  check-tree:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      skip: ${{ steps.tree.outputs.skip == 'true' && 'true' || 'false' }}
-    steps:
-      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            scripts/ci-same-tree.mjs
-            scripts/server-release-gate.mjs
-            scripts/ci-nightly-issue.mjs
-          sparse-checkout-cone-mode: false
-      - id: tree
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: node scripts/ci-same-tree.mjs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WORKFLOW_FILE: server.yml
-
-  same-tree:
-    name: "same-tree: ${{ needs.check-tree.outputs.skip == 'true' && 'skipped' || 'ran' }}"
-    needs: [check-tree]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      skip: ${{ needs.check-tree.outputs.skip == 'true' && 'true' || 'false' }}
-    steps:
-      - run: echo "skip=$SKIP"
-        env:
-          SKIP: ${{ needs.check-tree.outputs.skip }}
-
   # Decides which parts of the tree the change touches (scripts/ci-areas.mjs holds the path table and its tests) and
   # writes one output per area: go, core, web, e2e, text (the profile-text tables), mobile, and code for anything but docs. This
   # workflow and its sibling (desktop-ci.yml) both run on every pull request and push to main, so both
@@ -80,8 +38,6 @@ jobs:
   # required check). A push to main, and any diff that cannot be computed, turn every area on. Every other job carries
   # `needs: changes` and an `if:` on the outputs it depends on (JOB_GATES.server in scripts/ci-areas.mjs).
   changes:
-    needs: [same-tree]
-    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     outputs:
       go: ${{ steps.areas.outputs.go }}
@@ -104,8 +60,6 @@ jobs:
   # The cheap docs gates, their unit tests and the real checks against the real files: they run for every change,
   # docs-only included.
   docs:
-    needs: [same-tree]
-    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -738,7 +692,7 @@ jobs:
   # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
   # children. This does no build work and never depends on the watcher or final aggregator.
   server-work-complete:
-    needs: [check-tree, same-tree, changes, docs, server-scripts, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [changes, docs, server-scripts, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -747,7 +701,7 @@ jobs:
 
   # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
   server-ok:
-    needs: [check-tree, same-tree, ci-watchdog, server-work-complete, changes, docs, server-scripts, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    needs: [ci-watchdog, server-work-complete, changes, docs, server-scripts, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
     if: always()
     runs-on: ubuntu-latest
     steps:

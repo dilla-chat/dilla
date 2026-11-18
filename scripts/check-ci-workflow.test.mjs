@@ -84,7 +84,7 @@ test('CI rejects an unsafe, delayed or unbounded whole-run watcher', () => {
 
 test('CI rejects a completion barrier that misses jobs or waits for the watcher', () => {
   for (const changed of [
-    REAL_CI.replace(/(  server-work-complete:\n    needs: \[check-tree, same-tree, )changes, /, '$1'),
+    REAL_CI.replace(/(  server-work-complete:\n    needs: \[)changes, /, '$1'),
     REAL_CI.replace(/(  server-work-complete:\n    needs: \[)/, '$1ci-watchdog, '),
     REAL_CI.replace(/(  server-work-complete:\n    needs: \[[^\]]*\]\n)    if: always\(\)\n/, '$1'),
     REAL_CI.replace(/(  desktop-work-complete:\n    needs: \[)changes, /, '$1'),
@@ -662,10 +662,7 @@ function withChanges(text) {
       else if (needs.length) body.splice(1, 0, `    needs: [${needs.join(', ')}]`);
       out.push(...body);
     }
-    // server.yml's watcher block (up to its changes job) carries the real check-tree and same-tree jobs (CI speed plan, Task 6).
-    const sameTree = workflow === 'server' ? ['check-tree', 'same-tree'] : [];
-    const jobs = ['ci-watchdog', ...sameTree, 'changes', ...(workflow === 'server' ? ['docs'] : []), ...[...blocks.keys()].filter((name) => own.includes(name))];
-    const root = (job) => (workflow === 'server' ? job.replace(/^( {2}[a-z]+:\n)/, `$1    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`) : job);
+    const jobs = ['ci-watchdog', 'changes', ...(workflow === 'server' ? ['docs'] : []), ...[...blocks.keys()].filter((name) => own.includes(name))];
     const barrier = `  ${workflow}-work-complete:
     needs: [${jobs.filter(name => name !== 'ci-watchdog').join(', ')}]
     if: always()
@@ -676,7 +673,7 @@ function withChanges(text) {
 `;
     const named = header.replace('name: ci-fixture', `name: ${WORKFLOWS[workflow].name}`);
     const triggered = workflow === 'desktop' ? named.replace('  pull_request:\n', `  pull_request:\n  schedule:\n    - cron: '${NIGHTLY_CRON}'\n`) : named;
-    return `${triggered}${watcher}${root(CHANGES_JOB)}${workflow === 'server' ? root(DOCS_JOB) : ''}${out.join('\n')}\n${barrier}${OK_JOB(workflow, [...jobs, `${workflow}-work-complete`])}`;
+    return `${triggered}${watcher}${CHANGES_JOB}${workflow === 'server' ? DOCS_JOB : ''}${out.join('\n')}\n${barrier}${OK_JOB(workflow, [...jobs, `${workflow}-work-complete`])}`;
   };
   return build('server') + SPLIT.slice(1) + build('desktop');
 }
@@ -2726,16 +2723,11 @@ test('the main-push skip is pinned in desktop-gpui.yml: the check, the named job
   at('gpui-win-package is keyless', gpuiProblems((text) => text.replace(`    name: gpui-win-package\n    needs: [same-tree]\n`, `    name: gpui-win-package\n    needs: [same-tree, gpui]\n`)));
 });
 
-test('the main-push skip is pinned in server.yml: changes and docs wait for same-tree and the aggregates list both', () => {
-  const at = (needle, problems) => assert.ok(problems.some((p) => p.includes(needle)), `${needle}: ${problems.join('\n')}`);
-  const server = (change) => checkServerWorkflow(fixture(change(REAL_CI)));
-  assert.deepEqual(server((t) => t), []);
-  at('check-tree must be exactly', server((t) => t.replace('          WORKFLOW_FILE: server.yml\n', '          WORKFLOW_FILE: desktop-gpui.yml\n')));
-  at('job "docs" must need only same-tree', server((t) => t.replace(`  docs:\n    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`, '  docs:\n')));
-  at('job "changes" must need only same-tree', server((t) => t.replace(`  changes:\n    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`, `  changes:\n    needs: [same-tree]\n    if: needs.same-tree.outputs.skip != 'true'\n`)));
-  at('must list "check-tree"', server((t) => t.replace(/(  server-ok:\n    needs: \[)check-tree, /, '$1')));
-  at('completion barrier', server((t) => t.replace(/(  server-work-complete:\n    needs: \[)check-tree, same-tree, /, '$1')));
-  at('does not belong', server((t) => t.replace('  same-tree:\n', '  same-tree-x:\n')));
+test('server.yml has no main-push skip: every push to main runs every area (Jonas, 2026-11-18)', () => {
+  assert.doesNotMatch(REAL_SERVER, /same-tree|check-tree|ci-same-tree/);
+  const skip = "  check-tree:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node scripts/ci-same-tree.mjs\n\n";
+  const problems = checkServerWorkflow(fixture(REAL_CI.replace('  changes:\n', `${skip}  changes:\n`)));
+  assert.ok(problems.some((p) => p.includes('job "check-tree" does not belong')), problems.join('\n'));
 });
 
 test('desktop-gpui schedules a nightly at 03:00 UTC', () => {

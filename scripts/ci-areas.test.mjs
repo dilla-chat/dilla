@@ -8,7 +8,7 @@ process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, PATH_RULES, jobRuns, reachableOutputs, SAME_TREE_JOBS, trackedFiles, WORKFLOWS } from './ci-areas.mjs';
+import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, PATH_RULES, jobRuns, reachableOutputs, trackedFiles, WORKFLOWS } from './ci-areas.mjs';
 import { parseYaml } from './ci-local-yaml.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-areas.mjs', import.meta.url));
@@ -221,7 +221,7 @@ test('the reachable output sets come from the tracked files, so a new rule is co
 
 test('JOB_GATES names exactly the jobs of each workflow except its infrastructure', () => {
   for (const wf of WFS) {
-    const jobs = Object.keys(readWorkflow(wf).jobs).filter((job) => !WORKFLOWS[wf].always.includes(job) && !(WORKFLOWS[wf].sameTree && SAME_TREE_JOBS.includes(job)));
+    const jobs = Object.keys(readWorkflow(wf).jobs).filter((job) => !WORKFLOWS[wf].always.includes(job));
     assert.deepEqual(jobs.sort(), Object.keys(JOB_GATES[wf]).sort(), wf);
   }
 });
@@ -240,8 +240,7 @@ test("a docs-only PR runs every workflow's changes job and reports its ok job", 
       assert.ok(job in jobs, `${wf}: ${job}`);
       assert.doesNotMatch(String(jobs[job].if ?? ''), /needs\.changes/, `${wf}: ${job} carries an area gate`);
     }
-    // A main push its PR run already proved skips (CI speed plan, Task 6): there changes waits for same-tree, and nothing else.
-    assert.deepEqual(jobs.changes.needs, WORKFLOWS[wf].sameTree ? ['same-tree'] : undefined, wf);
+    assert.equal(jobs.changes.needs, undefined, wf);
     // The ok job runs after skipped jobs too, and its verdict covers every other job of its workflow.
     const ok = jobs[WORKFLOWS[wf].ok];
     assert.equal(ok.if, 'always()', wf);

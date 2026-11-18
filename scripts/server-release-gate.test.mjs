@@ -75,15 +75,39 @@ const iso = (ms) => new Date(ms).toISOString();
 
 // ---------------------------------------------------------------- the server gate
 
-test('theServerGateAcceptsAnyGreenRunOnTheTree', async () => {
-  // A push run on main for the exact commit, a pull_request run on another commit with the same tree, a schedule run.
-  for (const run0 of [serverRun(), serverRun({ head_sha: TWIN, event: 'pull_request', head_branch: 'feature' }), serverRun({ event: 'schedule' }), serverRun({ event: 'workflow_dispatch', head_sha: TWIN })]) {
+test('theServerGateAcceptsOnlyFullMainOrDispatchRuns', async () => {
+  // A push run on main (this commit, or another with the same tree) and a dispatch run are accepted.
+  for (const run0 of [serverRun(), serverRun({ head_sha: TWIN }), serverRun({ event: 'workflow_dispatch', head_sha: TWIN })]) {
     const gh = fakeGithub({ runs: [run0] });
     const { options } = clocked(gh);
     const found = await run(envFor({}), SHA, options);
     assert.equal(found.id, 77, JSON.stringify(run0));
     assert.ok(gh.seen.every((s) => !s.startsWith('POST')), 'the server gate never dispatches');
   }
+  // A green pull_request run on the tree, a push on another branch and a schedule run are not.
+  for (const run0 of [serverRun({ head_sha: TWIN, event: 'pull_request', head_branch: 'feature' }), serverRun({ event: 'pull_request', head_branch: 'feature' }), serverRun({ head_branch: 'feature' }), serverRun({ event: 'schedule' })]) {
+    const { options } = clocked(fakeGithub({ runs: [run0] }));
+    await assert.rejects(() => run(envFor({}), SHA, options), /There is no green server run/, JSON.stringify(run0));
+  }
+  // Beside a green PR run, the main push is the one taken, even when the PR run is newer.
+  const gh = fakeGithub({ runs: [serverRun({ id: 90, run_number: 9, event: 'pull_request', head_branch: 'feature' }), serverRun()] });
+  assert.equal((await run(envFor({}), SHA, clocked(gh).options)).id, 77);
+});
+
+test('aGreenPrRunAloneIsNeverAcceptedTheGateWaitsForTheMainPush', async () => {
+  // Only a green PR run on the tree: refused at once, never accepted.
+  const lone = clocked(fakeGithub({ runs: [serverRun({ id: 90, event: 'pull_request', head_branch: 'feature' })] }));
+  await assert.rejects(() => run(envFor({}), SHA, lone.options), /There is no green server run/);
+  assert.deepEqual(lone.clock.sleeps, []);
+  // A green PR run beside the main push still in progress: it waits for the push, and takes it once green.
+  const pending = serverRun({ status: 'in_progress', conclusion: null });
+  const gh = fakeGithub({ runs: [serverRun({ id: 90, run_number: 9, event: 'pull_request', head_branch: 'feature' }), pending] });
+  const { options, clock } = clocked(gh, { onSleep: () => Object.assign(pending, { status: 'completed', conclusion: 'success' }) });
+  assert.equal((await run(envFor({}), SHA, options)).id, 77);
+  assert.deepEqual(clock.sleeps, [30000]);
+  // A red PR run never refuses either: the main push decides.
+  const red = clocked(fakeGithub({ runs: [serverRun({ id: 91, run_number: 9, event: 'pull_request', head_branch: 'feature', conclusion: 'failure' }), serverRun()] }));
+  assert.equal((await run(envFor({}), SHA, red.options)).id, 77);
 });
 
 test('the server gate names the newest green run on the tree by run_number', async () => {

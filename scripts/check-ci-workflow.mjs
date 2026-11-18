@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AREAS, gateExpression, JOB_GATES, jobRuns, reachableOutputs, SAME_TREE_JOBS, WORKFLOWS } from './ci-areas.mjs';
+import { AREAS, gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
 import { localMirrorProblems } from './ci-local-plan.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 import { createRequire } from 'node:module';
@@ -21,9 +21,6 @@ export const REQUIRED_JOBS = {
     'docs',
     'ci-watchdog',
     'server-work-complete',
-    // The main-push skip (CI speed plan, Task 6): the check and the job whose name carries its decision (sameTreeProblems).
-    'check-tree',
-    'same-tree',
     // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
     'server-ok',
     // The installers release.yml publishes and the Bot operation drift guard, with their tests.
@@ -1000,10 +997,8 @@ function checkCiWorkflow(root, workflow) {
       }
       continue;
     }
-    // The main-push skip's own jobs; sameTreeProblems pins them and the roots' (changes, docs) needs and if.
-    if (SAME_TREE_JOBS.includes(name)) continue;
     if (always.includes(name)) {
-      if (name === 'docs' && needList.includes('changes')) problems.push(`${file}: job "${name}" must run for every change: no needs: changes`);
+      if (name === 'docs' && (needList.includes('changes') || /^ {4}if:/m.test(body))) problems.push(`${file}: job "${name}" must run for every change: no needs: changes, no job-level if:`);
       continue;
     }
     if (!(name in gates)) {
@@ -1034,7 +1029,6 @@ function checkCiWorkflow(root, workflow) {
 
   // The Go shard sets and the Postgres filter are the server workflow's, so only it reports on them.
   if (workflow === 'server') {
-    problems.push(...sameTreeProblems(text, file));
     assertGoShards(jobs, problems, GO_SHARD_SETS, file);
     assertPostgresAPITestsMatchRun(root, problems);
   }
@@ -1791,16 +1785,17 @@ function gpuiNightlyReportProblems(text, file) {
 }
 
 /**
- * The main-push skip (CI speed plan, Task 6), in server.yml and desktop-gpui.yml. `check-tree` runs scripts/ci-same-tree.mjs on a
+ * The main-push skip (CI speed plan, Task 6), in desktop-gpui.yml only: server.yml keeps its full run on every main push
+ * (Jonas, 2026-11-18), and its release gate takes only main-push or dispatch runs. `check-tree` runs scripts/ci-same-tree.mjs on a
  * push to main only (any other event leaves its output false without calling the API), with actions: read and contents: read and
  * nothing more. `same-tree` carries the decision in its name (`same-tree: skipped` or `same-tree: ran`, which the release gates
  * read) and its output. The roots need only same-tree and run with SAME_TREE_IF: unless the run was cancelled or same-tree said
- * skip, so a failed or skipped check runs everything. Every other job but the watchdog depends on same-tree, directly or through a
- * root; the aggregates (server-work-complete, server-ok, nightly-report) list both, so a failed check is red.
+ * skip, so a failed or skipped check runs everything. Every other job depends on same-tree, directly or through a root;
+ * nightly-report lists both, so a failed check makes the nightly red.
  */
-export { SAME_TREE_JOBS };
+export const SAME_TREE_JOBS = ['check-tree', 'same-tree'];
 export const SAME_TREE_IF = "${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}";
-export const SAME_TREE_ROOTS = { 'server.yml': ['changes', 'docs'], 'desktop-gpui.yml': ['gpui', 'gpui-linux', 'gpui-mac-package', 'gpui-win-package'] };
+export const SAME_TREE_ROOTS = { 'desktop-gpui.yml': ['gpui', 'gpui-linux', 'gpui-mac-package', 'gpui-win-package'] };
 const ON_MAIN_PUSH = "github.event_name == 'push' && github.ref == 'refs/heads/main'";
 const sameTreeCheckJob = (file) => ({
   'runs-on': 'ubuntu-latest',
@@ -1831,7 +1826,7 @@ function sameTreeProblems(text, file) {
   for (const root of SAME_TREE_ROOTS[file]) {
     if (!drSame(needsOf(root), ['same-tree']) || jobs[root]?.if !== SAME_TREE_IF) problems.push(`${file}: job "${root}" must need only same-tree and run with \`if: ${SAME_TREE_IF}\` (a failed check runs it; only skip=true skips it)`);
   }
-  // Every job but the watchdog waits for same-tree, so none does work on a push that skips.
+  // Every job waits for same-tree, so none does work on a push that skips.
   const reaches = (name, seen = new Set()) => name === 'same-tree' || (!seen.has(name) && (seen.add(name), needsOf(name).some((n) => reaches(n, seen))));
   for (const name of Object.keys(jobs)) {
     if (['ci-watchdog', 'check-tree', 'same-tree'].includes(name)) continue;

@@ -94,17 +94,10 @@ export const FORCES = {
  * every area on. The release gates read the workflow `name`.
  */
 export const WORKFLOWS = {
-  server: { file: 'server.yml', name: 'server', ok: 'server-ok', nightly: false, sameTree: true, always: ['ci-watchdog', 'changes', 'docs', 'server-work-complete', 'server-ok'] },
+  server: { file: 'server.yml', name: 'server', ok: 'server-ok', nightly: false, always: ['ci-watchdog', 'changes', 'docs', 'server-work-complete', 'server-ok'] },
   desktop: { file: 'desktop-ci.yml', name: 'desktop', ok: 'desktop-ok', nightly: true, always: ['ci-watchdog', 'changes', 'desktop-work-complete', 'desktop-ok'] },
   mobile: { file: 'mobile.yml', name: 'mobile', ok: 'mobile-ok', nightly: true, always: ['ci-watchdog', 'changes', 'mobile-work-complete', 'mobile-ok'] },
 };
-
-/**
- * The main-push skip's jobs (CI speed plan, Task 6) in the workflows marked `sameTree`: infrastructure in no area, which
- * changes and docs need. They are not in `always`, whose names are the watchdog's CI_COMPLETION_JOBS: the watchdog matches
- * job names, and same-tree's name carries its decision (`same-tree: skipped` or `same-tree: ran`).
- */
-export const SAME_TREE_JOBS = ['check-tree', 'same-tree'];
 
 /**
  * The outputs each job of each workflow is gated on (OR). A job missing here is one of the workflow's `always` jobs.
