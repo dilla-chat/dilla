@@ -80,9 +80,11 @@ test('an API failure is an error', async () => {
   await assert.rejects(report({ conclusion: 'failure', runUrl: RUN, token: 't', repo: 'o/r', fetchImpl: async () => json({}, 403) }), /403/);
 });
 
-test('conclusionOf: any failure or cancelled is failure, success and skipped are success', () => {
+test('conclusionOf: any failure or cancelled is failure, a skipped job beside a success is fine, nothing but skipped is not green', () => {
   assert.equal(conclusionOf(['success', 'skipped', 'success']), 'success');
   assert.equal(conclusionOf(['success', 'failure']), 'failure');
   assert.equal(conclusionOf(['cancelled', 'success']), 'failure');
-  assert.equal(conclusionOf(['skipped']), 'success');
+  assert.equal(conclusionOf(['skipped']), 'failure');
+  assert.equal(conclusionOf(['skipped', 'skipped']), 'failure');
+  assert.equal(conclusionOf([]), 'failure');
 });

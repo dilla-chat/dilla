@@ -12,8 +12,11 @@ export const ISSUE_TITLE = 'nightly desktop-gpui red';
 export const ISSUE_LABEL = 'ci-nightly';
 const API_ORIGIN = 'https://api.github.com';
 
-/** The workflow's conclusion from its jobs' `needs.*.result` values: any failure or cancellation is a failure. */
-export const conclusionOf = (results) => (results.some((r) => r === 'failure' || r === 'cancelled') ? 'failure' : 'success');
+/**
+ * The workflow's conclusion from its jobs' `needs.*.result` values: any failure or cancellation is a failure, and so is a
+ * run where nothing succeeded (all skipped, or no jobs): a nightly that proved nothing is not green.
+ */
+export const conclusionOf = (results) => (results.some((r) => r === 'failure' || r === 'cancelled') || !results.includes('success') ? 'failure' : 'success');
 
 /** One GitHub API call. Redirects are refused and the token is never logged. A 4xx/5xx is an error unless its status is in `tolerate`. */
 async function call({ token, fetchImpl, method = 'GET', path, body, tolerate = [] }) {
