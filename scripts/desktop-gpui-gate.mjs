@@ -10,7 +10,8 @@
 //   2. the hint is a desktop-gpui-v<X.Y.Z>-alpha.<N> tag; the API resolves it to its commit;
 //   3. the triggering run is desktop-gpui-release.yml of this repository, for exactly that tag and commit, and green;
 //   4. the commit is an ancestor of origin/main, and dilla-desktop's Cargo version there is the tag's;
-//   5. the commit has a green desktop-gpui push run on main (scripts/server-release-gate.mjs --workflow=desktop-gpui);
+//   5. the commit's tree has a green nightly or release desktop-gpui run and no ci-nightly issue is open
+//      (scripts/server-release-gate.mjs --workflow=desktop-gpui; without RELEASE_TAG it never dispatches);
 //   6. the tag's release is a draft prerelease made by github-actions[bot], holding exactly the five Linux assets and
 //      SHA256SUMS, each uploaded by github-actions[bot];
 //   7. the downloaded files' SHA-256 equal the API's asset digests and SHA256SUMS, and each Linux asset verifies under
@@ -155,7 +156,7 @@ export async function runGate({ env, api, git, gh, downloadDir, greenRun = green
   const cargo = cargoVersion(git(['show', `${sha}:clients/desktop/dilla-desktop/Cargo.toml`]));
   if (cargo !== version) throw new Error(`dilla-desktop is ${cargo} at ${sha}, the tag says ${version}`);
 
-  // 5. A green desktop-gpui push run on main for exactly this commit.
+  // 5. A green nightly or release desktop-gpui run on this commit's tree, and no open ci-nightly issue.
   await greenRun({ GH_TOKEN: env.GH_TOKEN, GITHUB_REPOSITORY: repo }, sha, { workflow: 'desktop-gpui', log, ...greenRunOptions });
 
   // 6. The draft release.

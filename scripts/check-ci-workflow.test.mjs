@@ -2113,7 +2113,7 @@ test('a tag job that releases a commit off main is reported', () => {
 });
 
 test('a tag job without the server release gate step is reported', () => {
-  assertReported(releaseProblems((t) => t.replace(/ {6}- name: The tagged commit has a green server run on main\n(?: {8,}.*\n)+/, '')), 'green server run');
+  assertReported(releaseProblems((t) => t.replace(/ {6}- name: The tagged commit's tree has a green server run\n(?: {8,}.*\n)+/, '')), 'green server run');
   assertReported(releaseProblems((t) => t.replace('node scripts/server-release-gate.mjs "$TAG_SHA"', 'node scripts/server-release-gate.mjs "${{ github.sha }}"')), 'server-release-gate');
 });
 
@@ -2943,6 +2943,11 @@ test('the GPUI release tag gate, permissions and triggers are enforced', () => {
   assertReported(gpuiReleaseProblems((t) => t.replace('on:\n  push:\n', 'on:\n  pull_request:\n  push:\n')), 'runs only on a tag push');
   assertReported(gpuiReleaseProblems((t) => t.replace('    permissions:\n      contents: write\n', '    permissions:\n      contents: write\n      actions: write\n')), 'job "publish" permissions');
   assertReported(gpuiReleaseProblems((t) => t.replace('      id-token: write\n', '')), 'job "build-linux" permissions');
+  // CI speed, Task 5: the tag job dispatches the release-tier desktop-gpui run and reads the ci-nightly issue, no more.
+  assertReported(gpuiReleaseProblems((t) => t.replace('      contents: read\n      actions: write\n      issues: read\n', '      contents: read\n      actions: read\n      issues: read\n')), 'job "tag" permissions');
+  assertReported(gpuiReleaseProblems((t) => t.replace('      contents: read\n      actions: write\n      issues: read\n', '      contents: read\n      actions: write\n')), 'job "tag" permissions');
+  assertReported(gpuiReleaseProblems((t) => t.replace('      contents: read\n      actions: write\n      issues: read\n', '      contents: read\n      actions: write\n      issues: write\n')), 'job "tag" permissions');
+  assertReported(gpuiReleaseProblems((t) => t.replace('          RELEASE_TAG: ${{ steps.tag.outputs.tag }}\n', '')), 'RELEASE_TAG');
   assertReported(gpuiReleaseProblems((t) => t.replace('          INPUT_TAG: ${{ inputs.tag }}\n', '').replace('tag="${INPUT_TAG:-$GITHUB_REF_NAME}"', 'tag="${{ inputs.tag }}"')), 'workflow_dispatch input is expanded outside an env');
   assertReported(gpuiReleaseProblems((t) => t.replace('uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8', 'uses: actions/attest-build-provenance@v4')), 'must use a 40-hex commit SHA');
   assertReported(gpuiReleaseProblems((t) => t.replace('          persist-credentials: false\n      - name: The checkout is the tagged commit', '          persist-credentials: false\n          ref: main\n      - name: The checkout is the tagged commit')), 'checks out ref main');
@@ -2991,6 +2996,9 @@ test('the GPUI sign workflow runs main\'s file on the release workflow\'s comple
   assertReported(gpuiSignProblems((t) => t.replace('permissions: {}\n', 'permissions:\n  contents: read\n')), 'workflow permissions must be exactly {}');
   assertReported(gpuiSignProblems((t) => t.replace('permissions: {}\n', 'permissions: {}\nconcurrency: sign\n')), 'workflow concurrency group');
   assertReported(gpuiSignProblems((t) => t.replace("    if: github.event.workflow_run.conclusion == 'success'\n", '')), 'job "gate" must carry exactly if:');
+  // CI speed, Task 5: the gate reads the open ci-nightly issue (issues: read) and never dispatches (no actions: write).
+  assertReported(gpuiSignProblems((t) => t.replace('      actions: read\n      issues: read\n', '      actions: read\n')), 'job "gate" permissions must be exactly');
+  assertReported(gpuiSignProblems((t) => t.replace('      actions: read\n      issues: read\n', '      actions: write\n      issues: read\n')), 'job "gate" permissions must be exactly');
   assertReported(gpuiSignProblems((t) => t.replace('HINT_TAG: ${{ github.event.workflow_run.head_branch }}', 'HINT_TAG: ${{ github.event.workflow_run.head_sha }}')), "trusts the triggering run's");
 });
 

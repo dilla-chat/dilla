@@ -1156,8 +1156,8 @@ const RELEASE_STEPS = {
     '*-*) prerelease=true ;;',
     // Only a commit on main, which the CI workflows have gated, is released (review M6).
     'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
-    // The server release gates on its own workflow: a green server push run on main for exactly the tagged commit.
-    'name: The tagged commit has a green server run on main',
+    // The server release gates on its own workflow: a green server run on the tagged commit's tree (CI speed, Task 5).
+    "name: The tagged commit's tree has a green server run",
     'TAG_SHA: ${{ github.sha }}',
     'run: node scripts/server-release-gate.mjs "$TAG_SHA"',
     // v0.1.0-web3.1: the version go-release stamps into dillad is the validated tag without its leading v.
@@ -1890,7 +1890,7 @@ function gpuiWinPackageProblems(text, file) {
 
 /**
  * desktop-gpui-release.yml (GPUI release plan, Milestone 1): a desktop-gpui-v* tag run, so the tag's own workflow file.
- * Pinned: the tag gate (tag shape, ref, main ancestry, green desktop-gpui push run, Cargo version, no release yet), a
+ * Pinned: the tag gate (tag shape, ref, main ancestry, a green nightly or release desktop-gpui run on its tree, Cargo version, no release yet), a
  * clean build (no cache action or setup cache, `--locked`, default features only, pinned libwebrtc), the glibc and
  * release-binary guards, the pinned packaging tools, attestations over exactly the five assets, the smoke job before
  * publishing, and a draft release it never publishes (desktop-gpui-sign.yml completes and publishes it). No secret and
@@ -1937,7 +1937,8 @@ export const GPUI_RELEASE_STEPS = {
   ],
 };
 const GPUI_RELEASE_PERMISSIONS = {
-  tag: { contents: 'read', actions: 'read' },
+  // actions: write dispatches the release-tier desktop-gpui run; issues: read sees the open ci-nightly issue (Task 5).
+  tag: { contents: 'read', actions: 'write', issues: 'read' },
   'build-linux': { contents: 'read', 'id-token': 'write', attestations: 'write' },
   publish: { contents: 'write' },
 };
@@ -1994,6 +1995,9 @@ export function checkDesktopGpuiReleaseWorkflow(root) {
       if (!steps.includes(pin.replace(/^run: /, '')) || (pin.startsWith('run: ') && !(job?.steps ?? []).some((s) => s?.run === pin.slice(5)))) fail(`job "${name}" lost its pinned step: ${pin}`);
     }
   }
+  // The gate step dispatches its release-tier run on the validated tag (CI speed, Task 5).
+  const gateStep = (jobs.tag?.steps ?? []).find((s) => s?.run === 'node scripts/server-release-gate.mjs --workflow=desktop-gpui "$TAG_SHA"');
+  if (gateStep && gateStep.env?.RELEASE_TAG !== '${{ steps.tag.outputs.tag }}') fail('the gate step must pass RELEASE_TAG: ${{ steps.tag.outputs.tag }} (the tag it dispatches the release-tier run on)');
   // The build: one cargo build, of dilla-desktop alone with its default features, --locked.
   const builds = (jobs['build-linux']?.steps ?? []).filter((s) => typeof s?.run === 'string' && /\bcargo (build|install|rustc)\b/.test(s.run));
   if (builds.length !== 1 || builds[0].run !== 'cargo build --release --locked -p dilla-desktop') fail('build-linux runs exactly one `cargo build --release --locked -p dilla-desktop` (default features only)');
@@ -2069,7 +2073,7 @@ export const GPUI_SIGN_SECRET_STEPS = {
   sign: { 'Sign the feed (the only step with DESKTOP_METADATA_KEY_A)': ['DESKTOP_METADATA_KEY_A'] },
 };
 const GPUI_SIGN_PERMISSIONS = {
-  gate: { contents: 'write', actions: 'read', attestations: 'read' },
+  gate: { contents: 'write', actions: 'read', issues: 'read', attestations: 'read' },
   'build-mac': { contents: 'read', 'id-token': 'write', attestations: 'write' },
   'build-win': { contents: 'read', 'id-token': 'write', attestations: 'write' },
   sign: { contents: 'read' },

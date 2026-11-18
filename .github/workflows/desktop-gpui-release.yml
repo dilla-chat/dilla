@@ -44,10 +44,13 @@ env:
 jobs:
   tag:
     runs-on: ubuntu-24.04
-    # actions: read lists the desktop-gpui workflow's runs for the gate step; a job-level block replaces the workflow's.
+    # The gate step lists the desktop-gpui workflow's runs and dispatches a release-tier run when its tree has no green
+    # nightly or release run (actions: write), and reads the open ci-nightly issue (issues: read). A job-level block
+    # replaces the workflow's, so contents repeats.
     permissions:
       contents: read
-      actions: read
+      actions: write
+      issues: read
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.tag.outputs.version }}
@@ -70,10 +73,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-      - name: The tagged commit has a green desktop-gpui push run on main
+      - name: The tagged commit's tree has a green nightly or release desktop-gpui run
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: node scripts/server-release-gate.mjs --workflow=desktop-gpui "$TAG_SHA"
       - name: dilla-desktop's Cargo version is the tag's
         env:
