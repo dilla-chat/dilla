@@ -66,15 +66,16 @@ pub fn start_host() -> Host {
     start_host_with(&[])
 }
 
-/// One dilla-testhost start: the child and its stdout once it printed its invite, or its stderr if it exited first.
+/// One dilla-testhost start: the host and its stdout once it printed its invite, or its stderr if it exited first.
+/// The child goes into a [`Host`] at once, so every path (early exit, deadline, panic) kills and waits for it.
 /// stderr is drained on a thread for the host's whole life so a chatty host never blocks on a full pipe.
 fn spawn_host(
     root: &Path,
     core: &Path,
     control: &str,
     flags: &[&str],
-) -> Result<(Child, BufReader<std::process::ChildStdout>), String> {
-    let mut child = Command::new(testhost_binary(root))
+) -> Result<(Host, BufReader<std::process::ChildStdout>), String> {
+    let child = Command::new(testhost_binary(root))
         .args(["-listen", &format!("127.0.0.1:{}", free_port())])
         .args(["-control", control])
         .arg("-core")
@@ -87,27 +88,31 @@ fn spawn_host(
         .stderr(Stdio::piped())
         .spawn()
         .expect("dilla-testhost starts");
+    let mut host = Host {
+        child,
+        control: format!("http://{control}"),
+    };
     let (err_tx, err_rx) = channel::<String>();
-    let mut err = BufReader::new(child.stderr.take().unwrap());
+    let mut err = BufReader::new(host.child.stderr.take().unwrap());
     std::thread::spawn(move || {
         let mut all = String::new();
         let _ = err.read_to_string(&mut all);
         let _ = err_tx.send(all);
     });
-    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut out = BufReader::new(host.child.stdout.take().unwrap());
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut line = String::new();
     loop {
         line.clear();
         assert!(Instant::now() < deadline, "dilla-testhost did not start");
         if out.read_line(&mut line).unwrap() == 0 {
-            let _ = child.wait();
+            drop(host);
             return Err(err_rx
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap_or_default());
         }
         if line.contains("DILLA_TESTKIT_INVITE=") {
-            return Ok((child, out));
+            return Ok((host, out));
         }
     }
 }
@@ -121,10 +126,10 @@ pub fn start_host_with(flags: &[&str]) -> Host {
     // it first. The host then exits with "address already in use": start it again on fresh ports. Any other exit
     // fails with the host's own stderr.
     let mut attempt = 1;
-    let (child, mut out, control) = loop {
+    let (host, mut out) = loop {
         let control = format!("127.0.0.1:{}", free_port());
         match spawn_host(&root, &core, &control, flags) {
-            Ok((child, out)) => break (child, out, control),
+            Ok(started) => break started,
             Err(stderr) if attempt < 3 && stderr.contains("address already in use") => attempt += 1,
             Err(stderr) => panic!("dilla-testhost exited (attempt {attempt}):\n{stderr}"),
         }
@@ -133,10 +138,7 @@ pub fn start_host_with(flags: &[&str]) -> Host {
         let mut sink = Vec::new();
         let _ = out.read_to_end(&mut sink);
     });
-    Host {
-        child,
-        control: format!("http://{control}"),
-    }
+    host
 }
 
 /// `POST /debug/sfu/token` (e2e/media/support/lk.ts `debugToken`).
