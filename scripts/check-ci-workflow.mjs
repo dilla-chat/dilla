@@ -1763,10 +1763,10 @@ function gpuiTierProblems(text, file) {
 
 /**
  * The nightly-report job (CI speed plan, Task 4): a red nightly opens the tracking issue, a green one closes it. It runs only in the
- * nightly tier, always (so a failed job reports), after every other job, with issues: write as its one grant (plus the contents: read
+ * nightly tier on main (a branch dispatch must not open or close the issue), !cancelled() (so a failed job reports, a cancelled run does not), after every other job, with issues: write as its one grant (plus the contents: read
  * the workflow already has, which its checkout needs). The job `if` cannot read `env`, so it repeats the tier's own test.
  */
-export const GPUI_NIGHTLY_REPORT_IF = "always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))";
+export const GPUI_NIGHTLY_REPORT_IF = "!cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))";
 function gpuiNightlyReportProblems(text, file) {
   let doc;
   try { doc = yaml.load(text); } catch { return []; }

@@ -790,7 +790,7 @@ jobs:
   # It runs only in the nightly tier (the job `if` cannot read `env`, so it repeats TIER's schedule/dispatch test) and after every other job.
   nightly-report:
     needs: [check-tree, same-tree, gpui, gpui-linux, gpui-mac-package, gpui-win-package]
-    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))
+    if: "!cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # issues: write is this job's only grant; contents: read is the workflow's own, which the checkout needs.

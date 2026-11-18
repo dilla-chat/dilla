@@ -53,7 +53,7 @@ The Linux dependency step in desktop-gpui CI bounds its apt fetch (`DILLA_APT_FE
 ## A red nightly
 
 A red nightly is loud and blocks releases until it is green again. The `nightly-report` job
-(`scripts/ci-nightly-issue.mjs`) runs after every other job of a nightly run:
+(`scripts/ci-nightly-issue.mjs`) runs after every other job of a nightly run on `main` (not a branch dispatch, and not a cancelled run):
 
 - if the run was red, it opens the issue `nightly desktop-gpui red` (label `ci-nightly`) or, when that issue is
   already open, comments on it. Both link the run;

@@ -2691,12 +2691,18 @@ test('desktop-gpui names its tier in run-name', () => {
   assert.ok(gpuiProblems((text) => { assert.ok(text.includes(group)); return text.replace(group, 'group: desktop-gpui-${{ github.ref }}'); }).some((p) => p.includes('concurrency')));
 });
 
-test('desktop-gpui nightly-report is pinned: nightly tier, always(), needs every job, issues: write only', () => {
+test('desktop-gpui nightly-report is pinned: main nightly tier, !cancelled(), needs every job, issues: write only', () => {
   const gone = gpuiProblems((text) => text.replace('  nightly-report:\n', '  nightly-reportx:\n'));
   assert.ok(gone.some((p) => p.includes('nightly-report')), gone.join('\n'));
-  const tier = gpuiProblems((text) => text.replace("    if: always() && (github.event_name == 'schedule'", "    if: (github.event_name == 'schedule'"));
+  const tier = gpuiProblems((text) => text.replace("    if: \"!cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule'", "    if: \"!cancelled() && (github.event_name == 'schedule'"));
   assert.ok(tier.some((p) => p.includes('nightly-report must run with')), tier.join('\n'));
-  const pr = gpuiProblems((text) => text.replace("inputs.tier == 'nightly'))\n    runs-on", "inputs.tier == 'nightly') || true)\n    runs-on"));
+  // A branch dispatch must not open or close the issue: the main ref is required.
+  const noRef = gpuiProblems((text) => text.replace("github.ref == 'refs/heads/main' && (github.event_name == 'schedule'", "(github.event_name == 'schedule'"));
+  assert.ok(noRef.some((p) => p.includes('nightly-report must run with')), noRef.join('\n'));
+  // A cancelled nightly (manual cancel, superseded by cancel-in-progress) must not open it: always() is refused.
+  const always = gpuiProblems((text) => text.replace("    if: \"!cancelled() && github.ref", "    if: \"always() && github.ref"));
+  assert.ok(always.some((p) => p.includes('nightly-report must run with')), always.join('\n'));
+  const pr = gpuiProblems((text) => text.replace("inputs.tier == 'nightly'))\"\n    runs-on", "inputs.tier == 'nightly') || true)\"\n    runs-on"));
   assert.ok(pr.some((p) => p.includes('nightly-report must run with')), pr.join('\n'));
   const needs = gpuiProblems((text) => text.replace('needs: [check-tree, same-tree, gpui, gpui-linux, gpui-mac-package, gpui-win-package]', 'needs: [check-tree, same-tree, gpui, gpui-linux]'));
   assert.ok(needs.some((p) => p.includes('must need every other job')), needs.join('\n'));
