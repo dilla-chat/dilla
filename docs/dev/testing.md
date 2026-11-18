@@ -11,7 +11,7 @@ in `docs/superpowers/specs/2026-11-18-ci-speed-design.md`; where that differs fr
 
 | Tier | When it runs | What it runs |
 |---|---|---|
-| `pr` | every pull request that touches the workflow's paths; a push to `main` that no green PR run already proved (see below) | all Linux legs except the Bot ignored tests; Windows build, unit tests and clippy; macOS build, `cargo test`, clippy and `gpui-mac-package` |
+| `pr` | every pull request that touches the workflow's path filters (`clients/desktop/**`, `core/**`, the Cargo files and the other paths listed under `on:`); a push to `main` that touches them and that no green PR run already proved (see below) | all Linux legs except the Bot ignored tests; Windows build, unit tests, clippy and `gpui-win-package`; macOS build, `cargo test`, clippy and `gpui-mac-package` |
 | `nightly` | `schedule` at 03:00 UTC (`0 3 * * *`) on `main`, or `workflow_dispatch` with `tier=nightly` | the `pr` tier plus the macOS call tests, the macOS parity screens, the Linux Bot ignored tests (the Bot shard) and the macOS VideoToolbox decode |
 | `release` | `workflow_dispatch` with `tier=release`, started by the release gate on a tag | the same set as `nightly`, on the tagged commit |
 
@@ -31,8 +31,8 @@ Server (`server.yml`), `desktop-ci.yml` and `mobile.yml` have no tiers. `server.
 
 ### A main push that repeats a PR run
 
-A push to `main` runs the `pr` tier again unless a green PR run already proved the same tree. The first job
-(`check-tree`, `scripts/ci-same-tree.mjs`) skips the run, and that run's first job is named `same-tree: skipped`, only when:
+A push to `main` runs the `pr` tier again unless a green PR run already proved the same tree. `check-tree` (`scripts/ci-same-tree.mjs`) decides, and the job `same-tree` that follows it is named `same-tree: skipped` (or
+`same-tree: ran`); the other jobs skip themselves only when it is the skipped one, which happens only when:
 
 - a `pull_request` run of this workflow into `main`, from this repository, concluded success;
 - that run's head contained `main`'s previous commit (so the PR was up to date); and
@@ -78,7 +78,7 @@ counts for a tag when its head commit's tree equals the tagged commit's tree.
 4. It waits at most 150 minutes in total, and checks the issue again before it passes.
 
 `desktop-gpui-sign.yml` re-checks the same rule through `scripts/desktop-gpui-gate.mjs` but has no `RELEASE_TAG`, so it
-never dispatches: with no qualifying run it refuses.
+never dispatches: it waits (up to the same 150 minutes) for a qualifying run that is queued or in progress, and with none it refuses.
 
 A release therefore costs one full Mac run on the tagged tree. When the tag's tree was already proved by a nightly (a
 tag cut right after a green nightly, with no change in between), it costs nothing extra.
@@ -97,7 +97,7 @@ A green run of one workflow never satisfies the other workflow's gate.
 | Refusal | What to do |
 |---|---|
 | an open `ci-nightly` issue | fix the nightly, or run `desktop-gpui` with `tier=nightly` by hand on `main` and let it go green; the issue closes |
-| the dispatched `[release]` run failed or was cancelled | fix the cause, then re-run the release workflow for the same tag (`workflow_dispatch`, the tag as ref): it dispatches a new run |
-| the sign workflow's gate found no qualifying run | re-run the release workflow for the tag (it dispatches one), or run `desktop-gpui` with `tier=release` on the tag, and re-run the sign gate once it is green |
+| the dispatched `[release]` run failed or was cancelled, so the release workflow's `tag` job refused | fix the cause, then run `desktop-gpui-release.yml` again by hand (`workflow_dispatch`, "Use workflow from" the tag itself, and the `tag` input set to the same tag; the input is required). It dispatches a new `[release]` run |
+| the sign workflow's gate found no qualifying run (a release run made a draft, but the tree has no green nightly or release run, or the nightly turned red meanwhile) | the sign gate refuses a re-run (attempt 1 only) and the release workflow refuses a tag that already has a release, so neither can be repeated as is. Green the tree first (fix the nightly, or run `desktop-gpui` with `tier=release` on the tag), then delete the draft (`gh release delete <tag> --yes`, keeping the tag) and run `desktop-gpui-release.yml` by hand as in the row above; its success starts a fresh sign run (`clients/desktop/RELEASING.md`, "When the sign run fails") |
 | a server tag on a superseded `main` commit whose `server` run was cancelled | re-run that commit's `server` run; the tree then has a green `main` push run |
 | no run on the tree for a server tag | the tag is not on a `main` commit that ran `server.yml`; dispatch `server.yml` on the tag, or tag a `main` commit |
