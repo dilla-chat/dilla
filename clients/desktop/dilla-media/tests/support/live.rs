@@ -66,25 +66,34 @@ pub fn start_host() -> Host {
     start_host_with(&[])
 }
 
-/// [`start_host`] with more flags for dilla-testhost (`-sfu-av1`: the SFU offers AV1 too).
-pub fn start_host_with(flags: &[&str]) -> Host {
-    let root = repo_root();
-    let core = wasi_core(&root);
-    assert!(core.exists(), "{} is missing", core.display());
-    let control = format!("127.0.0.1:{}", free_port());
-    let mut child = Command::new(testhost_binary(&root))
+/// One dilla-testhost start: the child and its stdout once it printed its invite, or its stderr if it exited first.
+/// stderr is drained on a thread for the host's whole life so a chatty host never blocks on a full pipe.
+fn spawn_host(
+    root: &Path,
+    core: &Path,
+    control: &str,
+    flags: &[&str],
+) -> Result<(Child, BufReader<std::process::ChildStdout>), String> {
+    let mut child = Command::new(testhost_binary(root))
         .args(["-listen", &format!("127.0.0.1:{}", free_port())])
-        .args(["-control", &control])
+        .args(["-control", control])
         .arg("-core")
-        .arg(&core)
+        .arg(core)
         .args(["-log-level", "warn", "-sfu"])
         .args(flags)
         .args(["-sfu-port", &free_port().to_string()])
         .args(["-sfu-udp-port", &free_port().to_string()])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("dilla-testhost starts");
+    let (err_tx, err_rx) = channel::<String>();
+    let mut err = BufReader::new(child.stderr.take().unwrap());
+    std::thread::spawn(move || {
+        let mut all = String::new();
+        let _ = err.read_to_string(&mut all);
+        let _ = err_tx.send(all);
+    });
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut line = String::new();
@@ -92,12 +101,34 @@ pub fn start_host_with(flags: &[&str]) -> Host {
         line.clear();
         assert!(Instant::now() < deadline, "dilla-testhost did not start");
         if out.read_line(&mut line).unwrap() == 0 {
-            panic!("dilla-testhost exited");
+            let _ = child.wait();
+            return Err(err_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_default());
         }
         if line.contains("DILLA_TESTKIT_INVITE=") {
-            break;
+            return Ok((child, out));
         }
     }
+}
+
+/// [`start_host`] with more flags for dilla-testhost (`-sfu-av1`: the SFU offers AV1 too).
+pub fn start_host_with(flags: &[&str]) -> Host {
+    let root = repo_root();
+    let core = wasi_core(&root);
+    assert!(core.exists(), "{} is missing", core.display());
+    // free_port() hands back a port it has already released, so a parallel test (each host takes four) can bind
+    // it first. The host then exits with "address already in use": start it again on fresh ports. Any other exit
+    // fails with the host's own stderr.
+    let mut attempt = 1;
+    let (child, mut out, control) = loop {
+        let control = format!("127.0.0.1:{}", free_port());
+        match spawn_host(&root, &core, &control, flags) {
+            Ok((child, out)) => break (child, out, control),
+            Err(stderr) if attempt < 3 && stderr.contains("address already in use") => attempt += 1,
+            Err(stderr) => panic!("dilla-testhost exited (attempt {attempt}):\n{stderr}"),
+        }
+    };
     std::thread::spawn(move || {
         let mut sink = Vec::new();
         let _ = out.read_to_end(&mut sink);
