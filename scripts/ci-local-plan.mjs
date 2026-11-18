@@ -150,6 +150,9 @@ export const EXTRA_JOBS = {
   },
 };
 
+/** Job env that exists only for CI's compiler cache: locally there is no sccache server, so it must not reach cargo. */
+export const CI_ONLY_ENV = /^(?:RUSTC_WRAPPER|CARGO_INCREMENTAL|SCCACHE_[A-Z_]+)$/;
+
 /** What each `uses:` action becomes locally. */
 export const ACTION_MAP = {
   'actions/checkout': { kind: 'noop', reason: 'the working tree is the checkout' },
@@ -158,6 +161,7 @@ export const ACTION_MAP = {
   'actions/cache': { kind: 'noop', reason: 'cache: local build directories persist between runs' },
   'actions/cache/restore': { kind: 'noop', reason: 'cache: local build directories persist between runs' },
   'actions/cache/save': { kind: 'noop', reason: 'cache: local build directories persist between runs' },
+  'mozilla-actions/sccache-action': { kind: 'noop', reason: 'sccache: CI-only compiler cache, cargo builds locally' },
   'actions/upload-artifact': { kind: 'upload' },
   'actions/download-artifact': { kind: 'download' },
 };
@@ -315,6 +319,7 @@ export function classifyStep(step, job = {}) {
     return { kind: 'prereq', tool: 'llvm', version, reason: 'apt.llvm.org packages: the local LLVM of the same line stands in' };
   }
   if (APT_RUNS.some((re) => re.test(script))) return { kind: 'noop', reason: 'apt cache: no apt here' };
+  if (script === 'sccache --show-stats') return { kind: 'noop', reason: 'sccache: CI-only compiler cache' };
   // The runner's AppArmor strips capabilities from unprivileged user namespaces; a local host either allows them,
   // and the Bot keeper's tests run, or they skip with that reason (internal/botsupervisor/keeper_linux_test.go).
   if (script === 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0') return { kind: 'noop', reason: 'runner AppArmor userns restriction: the keeper tests probe and skip locally' };

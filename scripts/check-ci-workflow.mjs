@@ -713,7 +713,10 @@ function assertWasmJobsUseClang23(text, jobs, problems, file) {
     const lines = body.split('\n');
     const envAt = lines.indexOf('    env:');
     const envLines = envAt === -1 ? [] : lines.slice(envAt, lines.findIndex((l, i) => i > envAt && !/^ {6,}\S/.test(l)));
-    if (lines.filter((l) => /^ {4}env:/.test(l)).length !== 1 || envLines.join('\n') !== WASM_CLANG_ENV_BLOCK) {
+    // The CI workflows' Rust jobs also carry the four sccache variables (SCCACHE_JOB_ENV, held exactly by checkSccache);
+    // what remains must still be exactly the clang 23 pair. A release build carries no sccache line at all.
+    const clangEnv = file === 'release.yml' ? envLines : envLines.filter((l) => !SCCACHE_ENV_LINES.includes(l));
+    if (lines.filter((l) => /^ {4}env:/.test(l)).length !== 1 || clangEnv.join('\n') !== WASM_CLANG_ENV_BLOCK) {
       problems.push(`${file}: job "${name}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`);
     } else {
       for (let i = envAt + 1; i < envAt + envLines.length; i++) allowedEnvLines.add(`${name}:${i}`);
@@ -855,7 +858,9 @@ function checkActionReference(line, file, number, problems) {
   const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
   if (!match) return;
   const action = match[1];
-  if (!action.startsWith('actions/')) {
+  if (action === SCCACHE_ACTION) {
+    // The one third-party action: the compiler cache of the Rust jobs, pinned to this exact commit (checkSccache keeps it to the CI workflows).
+  } else if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
   } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
     problems.push(`${file}:${number}: ${action} must use a 40-hex commit SHA`);
@@ -899,6 +904,8 @@ function checkCiWorkflow(root, workflow) {
     for (const { re, what } of FORBIDDEN) {
       // Only the final gate and its no-op DAG barrier may run regardless of dependency results.
       if (what === 'if: always()' && [ok, barrier].includes(currentJob) && line === '    if: always()') continue;
+      // The sccache statistics step (CI speed plan, Task 3) reports on a failed build too; it is this exact step and nothing else.
+      if (what === 'if: always()' && line === '        if: always()' && workflowLines[i + 1] === '        run: sccache --show-stats') continue;
       if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
@@ -2259,9 +2266,67 @@ export function checkLocalMirror(root) {
   })));
 }
 
+/**
+ * CI speed plan, Task 3: sccache on every Rust job of the four CI workflows, and no `target/` cache anywhere. A cold
+ * macOS `cargo build` took 13 minutes and a Windows `target/` cache save 10; a compiler cache keyed per crate and flags
+ * restores what a whole-directory cache never could. The release builds start clean (checkDesktopGpuiReleaseWorkflow,
+ * checkDesktopGpuiSignWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow): none of them may mention sccache.
+ */
+export const SCCACHE_ACTION = 'mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba'; // v0.0.11
+/** The job-level env of every Rust job. IGNORE_SERVER_IO_ERROR lets a fork PR or a cold cache (sccache cannot reach the
+ *  GitHub cache) compile uncached instead of failing the build. */
+export const SCCACHE_JOB_ENV = {
+  SCCACHE_GHA_ENABLED: 'true',
+  RUSTC_WRAPPER: 'sccache',
+  SCCACHE_IGNORE_SERVER_IO_ERROR: '1',
+  CARGO_INCREMENTAL: '0',
+};
+/** SCCACHE_JOB_ENV as the job-level env lines of a workflow file. */
+const SCCACHE_ENV_LINES = Object.entries(SCCACHE_JOB_ENV).map(([k, v]) => `      ${k}: ${/^\d+$|^true$/.test(v) ? `'${v}'` : v}`);
+const SCCACHE_CI_FILES = ['desktop-gpui.yml', 'server.yml', 'desktop-ci.yml', 'mobile.yml'];
+const SCCACHE_CLEAN_FILES = ['desktop-gpui-release.yml', 'desktop-gpui-sign.yml', 'release.yml', 'mobile-release.yml'];
+/** Jobs that run cargo without compiling the workspace: `cargo deny` downloads a prebuilt binary and reads manifests. */
+const SCCACHE_EXEMPT_JOBS = new Set(['server.yml:deny']);
+/** A step that compiles: cargo or wasm-pack on a command line (the install-ci-tool.sh downloads are prebuilt binaries). */
+const compilesRust = (step) => String(step?.run ?? '').split('\n').some((l) => !/install-ci-tool\.sh/.test(l) && /(?:^|[\s;&|(])(?:cargo|wasm-pack)\s/.test(l.replace(/#.*/, '')));
+
+export function checkSccache(root) {
+  const problems = [];
+  for (const file of SCCACHE_CI_FILES) {
+    let doc;
+    try { doc = yaml.load(readFileSync(join(root, '.github', 'workflows', file), 'utf8')); } catch { problems.push(`${file}: missing or invalid YAML`); continue; }
+    for (const [name, job] of Object.entries(doc?.jobs ?? {})) {
+      const steps = Array.isArray(job?.steps) ? job.steps : [];
+      // No job caches target/: it is what sccache replaces, and a 10-minute save for a cache that goes stale per commit.
+      for (const step of steps) {
+        if (typeof step?.uses === 'string' && /^actions\/cache(?:\/[^@\s]+)?@/.test(step.uses) && String(step.with?.path ?? '').split('\n').some((p) => /^(?:\*\*\/)?target\/?(?:\*\*)?$/.test(p.trim()))) {
+          problems.push(`${file}: job "${name}" caches target/; sccache replaces it (keep only ~/.cargo/registry and ~/.cargo/git)`);
+        }
+      }
+      const first = steps.findIndex(compilesRust);
+      if (first < 0 || SCCACHE_EXEMPT_JOBS.has(`${file}:${name}`)) continue;
+      for (const [k, v] of Object.entries(SCCACHE_JOB_ENV)) {
+        if (String(job.env?.[k]) !== v) problems.push(`${file}: Rust job "${name}" must set env ${k}: '${v}'${k === 'SCCACHE_IGNORE_SERVER_IO_ERROR' ? ' (a fork PR or a cold cache must compile uncached, not fail)' : ''}`);
+      }
+      const at = steps.findIndex((step) => step?.uses === SCCACHE_ACTION);
+      if (at < 0 || at > first) problems.push(`${file}: Rust job "${name}" must run ${SCCACHE_ACTION} before its first cargo or wasm-pack command`);
+      const last = steps.at(-1);
+      if (last?.if !== 'always()' || last?.run !== 'sccache --show-stats' || Object.keys(last).some((k) => !['name', 'if', 'run'].includes(k))) {
+        problems.push(`${file}: Rust job "${name}" must end with a step \`if: always()\` running \`sccache --show-stats\``);
+      }
+    }
+  }
+  for (const file of SCCACHE_CLEAN_FILES) {
+    let text;
+    try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); } catch { continue; /* its own check reports it missing */ }
+    if (/sccache|RUSTC_WRAPPER/i.test(text)) problems.push(`${file}: a release build starts clean; no sccache and no RUSTC_WRAPPER`);
+  }
+  return problems;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkDesktopGpuiReleaseWorkflow(root), ...checkDesktopGpuiSignWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkDesktopGpuiReleaseWorkflow(root), ...checkDesktopGpuiSignWorkflow(root), ...checkSccache(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

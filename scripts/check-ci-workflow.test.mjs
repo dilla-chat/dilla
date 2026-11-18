@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, checkSccache, SCCACHE_ACTION, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -138,7 +138,8 @@ test('compiled helper recovery tests receive the same-commit helper and cannot s
 test('workflow steps execute only commit-pinned GitHub actions', () => {
   for (const workflow of [REAL_CI, REAL_RELEASE]) {
     for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
-      assert.match(match[1], /^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/);
+      // The one other author is the Rust jobs' compiler cache, by commit (CI speed plan, Task 3); release.yml has none.
+      assert.match(match[1], /^(?:actions\/[\w-]+(?:\/[\w-]+)?|mozilla-actions\/sccache-action)@[0-9a-f]{40}$/);
     }
   }
 });
@@ -2710,7 +2711,7 @@ test('the desktop-gpui macOS package job is pinned: macos-15, no secrets, and ev
     const problems = gpuiProblems((text) => { assert.ok(text.includes(fragment), fragment); return text.replace(fragment, 'true'); });
     assert.ok(problems.some((p) => p.includes('gpui-mac-package must run')), `${fragment}: ${problems.join('|')}`);
   }
-  assert.ok(gpuiProblems((text) => text.replace('runs-on: macos-15\n    timeout-minutes: 120\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n        with:\n          persist-credentials: false\n      - name: Free disk space (macOS)\n        run: |\n          df -h /\n          keep=', 'runs-on: macos-14\n    timeout-minutes: 120\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n        with:\n          persist-credentials: false\n      - name: Free disk space (macOS)\n        run: |\n          df -h /\n          keep=')).some((p) => p.includes('must run on macos-15')));
+  assert.ok(gpuiProblems((text) => text.replace('runs-on: macos-15\n    timeout-minutes: 120\n    env:\n', 'runs-on: macos-14\n    timeout-minutes: 120\n    env:\n')).some((p) => p.includes('must run on macos-15')));
   assert.ok(gpuiProblems((text) => text.replace('    name: gpui-mac-package\n    if: ${{ !cancelled() }}', '    name: gpui-mac-package')).some((p) => p.includes('!cancelled()')));
   assert.ok(gpuiProblems((text) => text.replace('        run: cargo build -p dilla-desktop --release --locked', '        env:\n          CSC_LINK: ${{ secrets.CSC_LINK }}\n        run: cargo build -p dilla-desktop --release --locked')).some((p) => p.includes('no secrets')));
   assert.ok(gpuiProblems((text) => text.replace(/\n  gpui-mac-package:[\s\S]*$/, '\n')).some((p) => p.includes('job is missing')));
@@ -3039,7 +3040,7 @@ test('the gpui-win-package job pins beta.5\'s installer, the uninstall GUID, the
     ['crt', 'echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"\n      # The release\'s', 'echo nothing\n      # The release\'s', 'pinned step'],
     ['build', 'cargo build -p dilla-desktop --release --locked', 'cargo build -p dilla-desktop --release', 'pinned step'],
     ['runner', 'runs-on: windows-latest\n    timeout-minutes: 120  # a cold release', 'runs-on: ubuntu-24.04\n    timeout-minutes: 120  # a cold release', 'windows-latest'],
-    ['secret', "    env:\n      BETA5_WIN_SHA256", "    env:\n      X: ${{ secrets.X }}\n      BETA5_WIN_SHA256", 'no secret'],
+    ['secret', "      CARGO_INCREMENTAL: '0'\n      BETA5_WIN_SHA256", "      CARGO_INCREMENTAL: '0'\n      X: ${{ secrets.X }}\n      BETA5_WIN_SHA256", 'no secret'],
     ['order', "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/LOG=", "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/LOGX=", 'in that order'],
   ]) {
     // Mutate inside the gpui-win-package job only: other jobs (gpui-mac-package) share some of these lines.
@@ -3051,4 +3052,73 @@ test('the gpui-win-package job pins beta.5\'s installer, the uninstall GUID, the
     assert.ok(problems.some((p) => p.includes('gpui-win-package') && p.includes(expect)), `${what}: ${problems.join('|')}`);
   }
   assert.ok(gpuiProblems((text) => text.replace('  gpui-win-package:\n', '  gpui-win-package-x:\n')).some((p) => p.includes('job is missing')));
+});
+
+// CI speed plan, Task 3: sccache on every Rust CI job, no target/ cache, and no sccache in a release build.
+const SCCACHE_FILES = ['desktop-gpui.yml', 'server.yml', 'desktop-ci.yml', 'mobile.yml'];
+const RELEASE_BUILD_FILES = ['desktop-gpui-release.yml', 'desktop-gpui-sign.yml', 'release.yml', 'mobile-release.yml'];
+/** The real workflows copied under a fresh root, `edits` ({ file: text => text }) applied. */
+function sccacheRoot(edits = {}) {
+  const root = mkdtempSync(join(TEST_ROOT, 'sccache-'));
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
+  for (const file of readdirSync(join(REPO_ROOT, '.github', 'workflows'))) {
+    const text = readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8');
+    writeFileSync(join(root, '.github', 'workflows', file), edits[file] ? edits[file](text) : text);
+  }
+  return root;
+}
+const sccacheProblems = (edits) => checkSccache(sccacheRoot(edits));
+const mustChange = (text, from, to) => { const out = text.replace(from, to); assert.notEqual(out, text, `no "${from}" to edit`); return out; };
+
+test('every Rust CI job uses sccache, and no release build does', () => {
+  assert.deepEqual(checkSccache(REPO_ROOT), []);
+  // The pin is the action, by full commit SHA, in each of the four CI workflows.
+  for (const file of SCCACHE_FILES) assert.match(readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8'), /uses: mozilla-actions\/sccache-action@[0-9a-f]{40} # v\d+\.\d+\.\d+\n/, file);
+  for (const file of RELEASE_BUILD_FILES) assert.doesNotMatch(readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8'), /sccache|RUSTC_WRAPPER/, file);
+  // Removing the action from a job, or adding sccache to a release build, is reported.
+  const action = /\n      - name: sccache\n        uses: mozilla-actions\/sccache-action@[^\n]+\n/;
+  assert.ok(sccacheProblems({ 'server.yml': (t) => mustChange(t, action, '\n') }).some((p) => p.includes('server.yml') && p.includes('must run mozilla-actions/sccache-action')));
+  assert.ok(sccacheProblems({ 'desktop-gpui.yml': (t) => mustChange(t, action, '\n') }).some((p) => p.includes('desktop-gpui.yml') && p.includes('must run mozilla-actions/sccache-action')));
+  assert.ok(sccacheProblems({ 'mobile.yml': (t) => mustChange(t, 'run: sccache --show-stats', 'run: true') }).some((p) => p.includes('must end with a step `if: always()`')));
+  for (const file of RELEASE_BUILD_FILES) {
+    const problems = sccacheProblems({ [file]: (t) => `${t}\n# RUSTC_WRAPPER: sccache\n` });
+    assert.ok(problems.some((p) => p.startsWith(`${file}: a release build starts clean`)), `${file}: ${problems.join('|')}`);
+  }
+});
+
+test('no CI job caches target/', () => {
+  for (const file of SCCACHE_FILES) assert.doesNotMatch(readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8'), /^ +(?:target|\*\*\/target)\/?$/m, file);
+  const registry = '            ~/.cargo/git\n';
+  for (const file of SCCACHE_FILES) {
+    const problems = sccacheProblems({ [file]: (t) => mustChange(t, registry, `${registry}            target\n`) });
+    assert.ok(problems.some((p) => p.startsWith(`${file}: job `) && p.includes('caches target/')), `${file}: ${problems.join('|')}`);
+  }
+  // The registry and git caches stay.
+  for (const file of SCCACHE_FILES) assert.match(readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8'), /~\/\.cargo\/registry\n\s+~\/\.cargo\/git\n/, file);
+  // The Windows "saved even when a leg fails" target/ save is gone.
+  assert.doesNotMatch(readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop-gpui.yml'), 'utf8'), /always\(\) && steps\.cache\.outputs\.cache-hit/);
+});
+
+test('sccache falls back on cache I/O errors', () => {
+  for (const file of SCCACHE_FILES) {
+    const text = readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8');
+    assert.match(text, /SCCACHE_IGNORE_SERVER_IO_ERROR: '1'/, file);
+    const problems = sccacheProblems({ [file]: (t) => t.replaceAll("SCCACHE_IGNORE_SERVER_IO_ERROR: '1'", 'SCCACHE_X: y') });
+    assert.ok(problems.some((p) => p.startsWith(`${file}: Rust job`) && p.includes('SCCACHE_IGNORE_SERVER_IO_ERROR')), `${file}: ${problems.join('|')}`);
+  }
+});
+
+test('the sccache exemptions are narrow: another always() step, another SHA and another action are still reported', () => {
+  const stats = '      - name: sccache statistics\n        if: always()\n        run: sccache --show-stats\n';
+  const real = (file) => readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8');
+  const problemsOf = (text) => checkServerWorkflow(fixture(text));
+  // The statistics step passes the always() ban only as exactly that step; any other run under always() is an escape hatch.
+  assert.ok(real('server.yml').includes(stats));
+  assert.ok(!problemsOf(REAL_CI).some((p) => p.includes('if: always()')));
+  assert.ok(problemsOf(REAL_CI.replace(stats, stats.replace('sccache --show-stats', 'sccache --show-stats && true'))).some((p) => p.includes('forbidden "if: always()"')));
+  assert.ok(problemsOf(REAL_CI.replace(stats, '      - name: x\n        if: always()\n        run: echo done\n')).some((p) => p.includes('forbidden "if: always()"')));
+  // The action is accepted at its one commit only.
+  const sha = SCCACHE_ACTION.split('@')[1];
+  assert.ok(problemsOf(REAL_CI.replace(`sccache-action@${sha}`, `sccache-action@${'0'.repeat(40)}`)).some((p) => p.includes('is not a GitHub-owned action')));
+  assert.ok(problemsOf(REAL_CI.replace(`mozilla-actions/sccache-action@${sha}`, `mozilla-actions/other@${sha}`)).some((p) => p.includes('is not a GitHub-owned action')));
 });
