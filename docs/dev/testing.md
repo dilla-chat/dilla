@@ -31,8 +31,9 @@ Server (`server.yml`), `desktop-ci.yml` and `mobile.yml` have no tiers. `server.
 
 ### A main push that repeats a PR run
 
-A push to `main` runs the `pr` tier again unless a green PR run already proved the same tree. `check-tree` (`scripts/ci-same-tree.mjs`) decides, and the job `same-tree` that follows it is named `same-tree: skipped` (or
-`same-tree: ran`); the other jobs skip themselves only when it is the skipped one, which happens only when:
+A push to `main` runs the `pr` tier again unless a green PR run already proved the same tree. `check-tree`
+(`scripts/ci-same-tree.mjs`) decides, and the job `same-tree` that follows it is named `same-tree: skipped` (or
+`same-tree: ran`). The other jobs skip themselves only when it is the skipped one, which happens only when:
 
 - a `pull_request` run of this workflow into `main`, from this repository, concluded success;
 - that run's head contained `main`'s previous commit (so the PR was up to date); and
@@ -78,7 +79,10 @@ counts for a tag when its head commit's tree equals the tagged commit's tree.
 4. It waits at most 150 minutes in total, and checks the issue again before it passes.
 
 `desktop-gpui-sign.yml` re-checks the same rule through `scripts/desktop-gpui-gate.mjs` but has no `RELEASE_TAG`, so it
-never dispatches: it waits (up to the same 150 minutes) for a qualifying run that is queued or in progress, and with none it refuses.
+never dispatches. It waits for a qualifying run that is queued or in progress only until its own job's 75-minute
+timeout (`timeout-minutes` on the `gate` job); the script's 150-minute bound applies to the release workflow's gate,
+whose `tag` job has no shorter timeout. With no qualifying run it refuses. In practice the sign run starts only after
+the release run succeeded, so the release-tier run it needs is normally already green.
 
 A release therefore costs one full Mac run on the tagged tree. When the tag's tree was already proved by a nightly (a
 tag cut right after a green nightly, with no change in between), it costs nothing extra.
