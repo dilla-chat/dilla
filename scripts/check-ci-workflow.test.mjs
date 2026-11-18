@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, SAME_TREE_IF, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_APT_SCRIPT_LINES, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, checkSccache, SCCACHE_ACTION, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, SAME_TREE_IF, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_APT_SCRIPT_LINES, GPUI_APT_STEP_RUN, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, checkSccache, SCCACHE_ACTION, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -3180,16 +3180,56 @@ test('desktop-gpui bounds and retries the Linux dependency install (ci-speed Tas
   assert.ok(noPattern.some((p) => p.includes('a bounded, retried install')), noPattern.join('\n'));
   const noTimeout = checkDesktopGpuiWorkflow(releaseRoot({ 'scripts/ci-apt-install.sh': (text) => text.replace('timeout --kill-after=10 "$limit" "$@" || code=$?', '"$@" || code=$?') }));
   assert.ok(noTimeout.some((p) => p.includes('scripts/ci-apt-install.sh must keep this line')), noTimeout.join('\n'));
+  // The bound is opt-in and download-only: no env, or a bounded real install, is reported.
+  const noEnv = gpuiProblems((text) => text.replaceAll("          DILLA_APT_FETCH_TIMEOUT: '600'\n", '').replaceAll('        env:\n        run: >-', '        run: >-'));
+  assert.ok(noEnv.some((p) => p.includes('must set env DILLA_APT_FETCH_TIMEOUT')), noEnv.join('\n'));
+  const boundedInstall = checkDesktopGpuiWorkflow(releaseRoot({ 'scripts/ci-apt-install.sh': (text) => text.replace('\nsudo apt-get "${apt_opts[@]}" install -y "$@"\n', '\nbounded install 240 sudo apt-get "${apt_opts[@]}" install -y "$@"\n') }));
+  assert.ok(boundedInstall.some((p) => p.includes('scripts/ci-apt-install.sh must keep this line')), boundedInstall.join('\n'));
+  const releaseSets = checkDesktopGpuiWorkflow(releaseRoot({ '.github/workflows/desktop-gpui-release.yml': (text) => `${text}\n# DILLA_APT_FETCH_TIMEOUT\n` }));
+  assert.ok(releaseSets.some((p) => p.includes('must not set DILLA_APT_FETCH_TIMEOUT')), releaseSets.join('\n'));
+  assert.doesNotMatch(REAL_GPUI_RELEASE, /DILLA_APT_FETCH_TIMEOUT/);
+  assert.doesNotMatch(readFileSync(join(REPO_ROOT, '.github', 'workflows', 'gpui-proofs.yml'), 'utf8'), /DILLA_APT_FETCH_TIMEOUT/);
 });
 
-test('ci-apt-install.sh ends a crawling apt call at its limit and reports it as a retried failure', () => {
+/**
+ * Runs scripts/ci-apt-install.sh with a fake `sudo` (logs each apt/dpkg call; the first `--download-only` call crawls) and a
+ * logging `timeout` wrapper, optionally through retry-on.mjs with the workflow's own retry pattern.
+ */
+function runAptScript({ fetchTimeout, viaRetry }) {
   const dir = mkdtempSync(join(TEST_ROOT, 'dilla-apt-bound-'));
-  // A fake sudo whose `apt-get install` crawls: the script must end it at the limit and say "Unable to fetch".
-  writeFileSync(join(dir, 'sudo'), '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = install ] && exec sleep 30; done\nexit 0\n', { mode: 0o755 });
+  const log = join(dir, 'calls.log');
+  const state = join(dir, 'crawled');
+  writeFileSync(join(dir, 'sudo'), `#!/usr/bin/env bash\necho "sudo $*" >> "${log}"\ncase "$*" in\n  *--download-only*) if [ ! -e "${state}" ]; then touch "${state}"; exec sleep 30; fi ;;\nesac\nexit 0\n`, { mode: 0o755 });
+  writeFileSync(join(dir, 'timeout'), `#!/usr/bin/env bash\necho "timeout $*" >> "${log}"\nexec /usr/bin/timeout "$@"\n`, { mode: 0o755 });
+  const script = join(REPO_ROOT, 'scripts', 'ci-apt-install.sh');
+  const pattern = /--pattern '([^']+)'/.exec(GPUI_APT_STEP_RUN)[1];
+  const argv = viaRetry ? [join(REPO_ROOT, 'scripts', 'retry-on.mjs'), '--attempts', '2', '--wait', '0', '--pattern', pattern, '--', 'bash', script, 'somepkg'] : null;
+  const env = { ...process.env, PATH: `${dir}:${process.env.PATH}` };
+  delete env.DILLA_APT_FETCH_TIMEOUT;
+  if (fetchTimeout) env.DILLA_APT_FETCH_TIMEOUT = fetchTimeout;
   const started = Date.now();
-  const r = spawnSync('bash', [join(REPO_ROOT, 'scripts', 'ci-apt-install.sh'), 'somepkg'], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, APT_INSTALL_TIMEOUT: '1' }, encoding: 'utf8' });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /Unable to fetch: apt-get install did not finish within 1 s/);
-  assert.ok(Date.now() - started < 15000, 'the slow install was cut off at the limit');
-  assert.match(r.stderr, /Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch/, 'retry-on.mjs retries this output');
+  const r = viaRetry ? spawnSync(process.execPath, argv, { env, encoding: 'utf8' }) : spawnSync('bash', [script, 'somepkg'], { env, encoding: 'utf8' });
+  const calls = readFileSync(log, 'utf8').trim().split('\n');
+  return { r, calls, ms: Date.now() - started };
+}
+
+test('ci-apt-install.sh bounds only the fetch: a crawling download times out, retry-on retries it, the install is never under timeout', () => {
+  const { r, calls, ms } = runAptScript({ fetchTimeout: '1', viaRetry: true });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr + r.stdout, /Unable to fetch: apt-get download did not finish within 1 s/);
+  assert.match(r.stderr + r.stdout, /retry-on: attempt 1 of 2 failed/);
+  assert.ok(ms < 20000, 'the crawl was cut off at the limit');
+  const downloads = calls.filter((c) => c.startsWith('sudo') && c.includes('--download-only'));
+  assert.equal(downloads.length, 2, calls.join('\n'));
+  // Only update and download run under timeout; the real install (no --download-only) never does, and runs once, last.
+  const timed = calls.filter((c) => c.startsWith('timeout '));
+  assert.ok(timed.every((c) => /\bupdate$|--download-only/.test(c)), timed.join('\n'));
+  assert.equal(calls.filter((c) => c.startsWith('sudo') && / install -y somepkg$/.test(c)).length, 1, calls.join('\n'));
+  assert.match(calls.at(-1), /^sudo .* install -y somepkg$/);
+});
+
+test('ci-apt-install.sh without DILLA_APT_FETCH_TIMEOUT runs the plain unbounded update and install (release installs)', () => {
+  const { r, calls } = runAptScript({ fetchTimeout: undefined, viaRetry: false });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(calls, ['sudo apt-get update', 'sudo apt-get install -y somepkg']);
 });

@@ -201,6 +201,8 @@ jobs:
           echo "CXX=clang++-21" >> "$GITHUB_ENV"
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
+        env:
+          DILLA_APT_FETCH_TIMEOUT: '600'
         run: >-
           node scripts/retry-on.mjs --attempts 5 --wait 10
           --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
@@ -367,6 +369,8 @@ jobs:
           echo "CXX=clang++-21" >> "$GITHUB_ENV"
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
+        env:
+          DILLA_APT_FETCH_TIMEOUT: '600'
         run: >-
           node scripts/retry-on.mjs --attempts 5 --wait 10
           --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'

@@ -1890,18 +1890,27 @@ export function checkDesktopGpuiWorkflow(root) {
  * The Linux dependency install never stalls (ci-speed Task 7). Run 44253915661: two legs sat 20 and 27 minutes in "Install the
  * GPUI build dependencies" because the runner's regional mirror served the same 310 MB at 191-260 kB/s; apt never failed, so
  * nothing retried. Pinned: every such step retries through retry-on.mjs on the mirror patterns (5 attempts, 10 s apart), and
- * scripts/ci-apt-install.sh bounds both apt calls with `timeout` (reported as "Unable to fetch", a retried pattern) and gives
- * apt its own fetch retries and connect timeouts.
+ * scripts/ci-apt-install.sh, when DILLA_APT_FETCH_TIMEOUT is set (600 s, desktop-gpui.yml only), bounds only `apt-get update`
+ * and `install --download-only` with `timeout` (reported as "Unable to fetch", a retried pattern), repairs an interrupted
+ * dpkg first, and runs the real install unbounded so dpkg is never killed. Without the variable it is the plain unbounded
+ * update + install the release workflows always ran (they must not set it).
  */
 export const GPUI_APT_STEP_RUN = "node scripts/retry-on.mjs --attempts 5 --wait 10 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh";
+export const GPUI_APT_FETCH_TIMEOUT = '600';
 export const GPUI_APT_SCRIPT_LINES = [
-  'update_limit="${APT_UPDATE_TIMEOUT:-90}"',
-  'install_limit="${APT_INSTALL_TIMEOUT:-240}"',
+  'if [ -z "${DILLA_APT_FETCH_TIMEOUT:-}" ]; then',
+  'sudo apt-get update',
+  'sudo apt-get install -y "$@"',
+  'fetch_limit="${DILLA_APT_FETCH_TIMEOUT}"',
+  'update_limit=90',
   'apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)',
   'timeout --kill-after=10 "$limit" "$@" || code=$?',
   'echo "ci-apt-install: Unable to fetch: apt-get ${label} did not finish within ${limit} s (mirror too slow); a retry resumes from the downloaded files" >&2',
+  'sudo dpkg --configure -a',
   'bounded update "$update_limit" sudo apt-get "${apt_opts[@]}" update',
-  'bounded install "$install_limit" sudo apt-get "${apt_opts[@]}" install -y "$@"',
+  'bounded download "$fetch_limit" sudo apt-get "${apt_opts[@]}" install -y --download-only "$@"',
+  // The real install runs from the cache with no timeout: dpkg is never killed.
+  'sudo apt-get "${apt_opts[@]}" install -y "$@"',
 ];
 function gpuiAptInstallProblems(text, root, file) {
   const problems = [];
@@ -1912,10 +1921,16 @@ function gpuiAptInstallProblems(text, root, file) {
     for (const step of job?.steps ?? []) {
       if (step?.name !== 'Install the GPUI build dependencies' || typeof step.run !== 'string') continue;
       steps++;
+      if (step.env?.DILLA_APT_FETCH_TIMEOUT !== GPUI_APT_FETCH_TIMEOUT) problems.push(`${file}: "Install the GPUI build dependencies" must set env DILLA_APT_FETCH_TIMEOUT: '${GPUI_APT_FETCH_TIMEOUT}' (the opt-in bound on the apt download only)`);
       if (!step.run.replace(/\s+/g, ' ').startsWith(GPUI_APT_STEP_RUN)) problems.push(`${file}: "Install the GPUI build dependencies" must start with \`${GPUI_APT_STEP_RUN}\` (a bounded, retried install)`);
     }
   }
   if (steps === 0) problems.push(`${file}: no "Install the GPUI build dependencies" step`);
+  for (const other of ['desktop-gpui-release.yml', 'gpui-proofs.yml']) {
+    let otherText = '';
+    try { otherText = readFileSync(join(root, '.github', 'workflows', other), 'utf8'); } catch { /* absent in a fixture */ }
+    if (otherText.includes('DILLA_APT_FETCH_TIMEOUT')) problems.push(`${other}: must not set DILLA_APT_FETCH_TIMEOUT (release installs stay the plain unbounded apt commands)`);
+  }
   let script;
   try { script = readFileSync(join(root, 'scripts', 'ci-apt-install.sh'), 'utf8'); } catch { return [...problems, 'scripts/ci-apt-install.sh: missing']; }
   const lines = script.split('\n').map((l) => l.trim());
