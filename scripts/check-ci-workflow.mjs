@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AREAS, gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
+import { AREAS, gateExpression, JOB_GATES, jobRuns, reachableOutputs, SAME_TREE_JOBS, WORKFLOWS } from './ci-areas.mjs';
 import { localMirrorProblems } from './ci-local-plan.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 import { createRequire } from 'node:module';
@@ -21,6 +21,9 @@ export const REQUIRED_JOBS = {
     'docs',
     'ci-watchdog',
     'server-work-complete',
+    // The main-push skip (CI speed plan, Task 6): the check and the job whose name carries its decision (sameTreeProblems).
+    'check-tree',
+    'same-tree',
     // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
     'server-ok',
     // The installers release.yml publishes and the Bot operation drift guard, with their tests.
@@ -997,8 +1000,10 @@ function checkCiWorkflow(root, workflow) {
       }
       continue;
     }
+    // The main-push skip's own jobs; sameTreeProblems pins them and the roots' (changes, docs) needs and if.
+    if (SAME_TREE_JOBS.includes(name)) continue;
     if (always.includes(name)) {
-      if (name === 'docs' && (needList.includes('changes') || /^ {4}if:/m.test(body))) problems.push(`${file}: job "${name}" must run for every change: no needs: changes, no job-level if:`);
+      if (name === 'docs' && needList.includes('changes')) problems.push(`${file}: job "${name}" must run for every change: no needs: changes`);
       continue;
     }
     if (!(name in gates)) {
@@ -1029,6 +1034,7 @@ function checkCiWorkflow(root, workflow) {
 
   // The Go shard sets and the Postgres filter are the server workflow's, so only it reports on them.
   if (workflow === 'server') {
+    problems.push(...sameTreeProblems(text, file));
     assertGoShards(jobs, problems, GO_SHARD_SETS, file);
     assertPostgresAPITestsMatchRun(root, problems);
   }
@@ -1784,6 +1790,56 @@ function gpuiNightlyReportProblems(text, file) {
   return problems;
 }
 
+/**
+ * The main-push skip (CI speed plan, Task 6), in server.yml and desktop-gpui.yml. `check-tree` runs scripts/ci-same-tree.mjs on a
+ * push to main only (any other event leaves its output false without calling the API), with actions: read and contents: read and
+ * nothing more. `same-tree` carries the decision in its name (`same-tree: skipped` or `same-tree: ran`, which the release gates
+ * read) and its output. The roots need only same-tree and run with SAME_TREE_IF: unless the run was cancelled or same-tree said
+ * skip, so a failed or skipped check runs everything. Every other job but the watchdog depends on same-tree, directly or through a
+ * root; the aggregates (server-work-complete, server-ok, nightly-report) list both, so a failed check is red.
+ */
+export { SAME_TREE_JOBS };
+export const SAME_TREE_IF = "${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}";
+export const SAME_TREE_ROOTS = { 'server.yml': ['changes', 'docs'], 'desktop-gpui.yml': ['gpui', 'gpui-linux', 'gpui-mac-package', 'gpui-win-package'] };
+const ON_MAIN_PUSH = "github.event_name == 'push' && github.ref == 'refs/heads/main'";
+const sameTreeCheckJob = (file) => ({
+  'runs-on': 'ubuntu-latest',
+  'timeout-minutes': 5,
+  permissions: { actions: 'read', contents: 'read' },
+  outputs: { skip: "${{ steps.tree.outputs.skip == 'true' && 'true' || 'false' }}" },
+  steps: [
+    { if: ON_MAIN_PUSH, uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', with: { 'persist-credentials': false, 'sparse-checkout': 'scripts/ci-same-tree.mjs\nscripts/server-release-gate.mjs\nscripts/ci-nightly-issue.mjs\n', 'sparse-checkout-cone-mode': false } },
+    { id: 'tree', if: ON_MAIN_PUSH, run: 'node scripts/ci-same-tree.mjs', env: { GH_TOKEN: '${{ github.token }}', WORKFLOW_FILE: file } },
+  ],
+});
+export const SAME_TREE_JOB = {
+  name: "same-tree: ${{ needs.check-tree.outputs.skip == 'true' && 'skipped' || 'ran' }}",
+  needs: ['check-tree'],
+  'runs-on': 'ubuntu-latest',
+  'timeout-minutes': 2,
+  outputs: { skip: "${{ needs.check-tree.outputs.skip == 'true' && 'true' || 'false' }}" },
+  steps: [{ run: 'echo "skip=$SKIP"', env: { SKIP: '${{ needs.check-tree.outputs.skip }}' } }],
+};
+function sameTreeProblems(text, file) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; } // the caller's other checks report an unparsable file
+  const jobs = doc?.jobs ?? {};
+  const problems = [];
+  if (!drSame(jobs['check-tree'], sameTreeCheckJob(file))) problems.push(`${file}: check-tree must be exactly the same-tree check: scripts/ci-same-tree.mjs with WORKFLOW_FILE: ${file} on a push to main only, actions: read and contents: read`);
+  if (!drSame(jobs['same-tree'], SAME_TREE_JOB)) problems.push(`${file}: same-tree must be named "same-tree: skipped" or "same-tree: ran" by check-tree's output, need only check-tree and pass its skip on`);
+  const needsOf = (name) => [jobs[name]?.needs ?? []].flat();
+  for (const root of SAME_TREE_ROOTS[file]) {
+    if (!drSame(needsOf(root), ['same-tree']) || jobs[root]?.if !== SAME_TREE_IF) problems.push(`${file}: job "${root}" must need only same-tree and run with \`if: ${SAME_TREE_IF}\` (a failed check runs it; only skip=true skips it)`);
+  }
+  // Every job but the watchdog waits for same-tree, so none does work on a push that skips.
+  const reaches = (name, seen = new Set()) => name === 'same-tree' || (!seen.has(name) && (seen.add(name), needsOf(name).some((n) => reaches(n, seen))));
+  for (const name of Object.keys(jobs)) {
+    if (['ci-watchdog', 'check-tree', 'same-tree'].includes(name)) continue;
+    if (!reaches(name)) problems.push(`${file}: job "${name}" must depend on same-tree, directly or through ${SAME_TREE_ROOTS[file].join(' or ')}`);
+  }
+  return problems;
+}
+
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
   let text;
@@ -1824,6 +1880,7 @@ export function checkDesktopGpuiWorkflow(root) {
   problems.push(...gpuiMacPackageProblems(text, file));
   problems.push(...gpuiTierProblems(text, file));
   problems.push(...gpuiNightlyReportProblems(text, file));
+  problems.push(...sameTreeProblems(text, file));
   // The macOS CI plan, Task 6: DILLA_PARITY_MEASURE turns every parity comparison into a printed MEASURE line that always
   // passes (gpui-proofs.yml's manual mac-parity-measure job sets it). A CI gate must never set it.
   if (/DILLA_PARITY_MEASURE/.test(text)) problems.push(`${file}: DILLA_PARITY_MEASURE skips every parity comparison; it belongs to gpui-proofs.yml's measurement job only`);
@@ -1866,8 +1923,9 @@ function gpuiWinPackageProblems(text, file) {
   if (!job) return fail('job is missing');
   const problems = [];
   if (job['runs-on'] !== 'windows-latest') problems.push(...fail('runs on windows-latest'));
-  if (job.if !== '${{ !cancelled() }}') problems.push(...fail('runs independently of the other jobs (if: ${{ !cancelled() }})'));
-  if (Object.hasOwn(job, 'environment') || Object.hasOwn(job, 'needs') || Object.hasOwn(job, 'permissions')) problems.push(...fail('is keyless: no environment, needs or permissions'));
+  // Independent of the other build jobs: it needs only same-tree, and runs unless that skipped the run (sameTreeProblems).
+  if (job.if !== SAME_TREE_IF) problems.push(...fail(`runs independently of the other jobs (if: ${SAME_TREE_IF})`));
+  if (Object.hasOwn(job, 'environment') || !drSame(job.needs, ['same-tree']) || Object.hasOwn(job, 'permissions')) problems.push(...fail('is keyless: no environment or permissions, and needs only same-tree'));
   if (/\bsecrets\b/.test(JSON.stringify(job))) problems.push(...fail('reads no secret'));
   if (job.env?.BETA5_WIN_SHA256 !== GPUI_WIN_PACKAGE_SHA256) problems.push(...fail(`pins beta.5's win-x64 installer to SHA-256 ${GPUI_WIN_PACKAGE_SHA256}`));
   if (job.env?.BETA5_UNINSTALL_GUID !== GPUI_WIN_PACKAGE_GUID) problems.push(...fail(`names beta.5's uninstall GUID ${GPUI_WIN_PACKAGE_GUID}`));

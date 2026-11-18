@@ -47,7 +47,7 @@ const CLOCK_SKEW_MS = 60 * 1000;
 const MAX_JOB_PAGES = 20;
 
 /** One GitHub API request. A GET is retried on a 5xx or a network error; a 4xx is not, nor a POST. Redirects are refused and the token is never logged. */
-async function request({ token, fetchImpl, sleep, log, path, method = 'GET', body }) {
+export async function request({ token, fetchImpl, sleep, log, path, method = 'GET', body }) {
   const attempts = method === 'GET' ? RETRY_DELAYS.length + 1 : 1;
   for (let attempt = 1; ; attempt++) {
     const last = attempt >= attempts;
@@ -75,7 +75,7 @@ async function request({ token, fetchImpl, sleep, log, path, method = 'GET', bod
 }
 
 /** A run of the gated workflow in this repository (not a fork's), whatever its event, branch, commit or status. */
-const isOwnRun = (r, repository, { name, file }) => r && r.name === name && r.path === `.github/workflows/${file}`
+export const isOwnRun = (r, repository, { name, file }) => r && r.name === name && r.path === `.github/workflows/${file}`
   && r.repository?.full_name === repository && r.head_repository?.full_name === repository
   && typeof r.head_sha === 'string' && COMMIT.test(r.head_sha)
   && Number.isSafeInteger(r.id) && r.id > 0 && Number.isSafeInteger(r.run_number);
@@ -83,10 +83,24 @@ const isOwnRun = (r, repository, { name, file }) => r && r.name === name && r.pa
 /** A desktop-gpui run of the nightly or release tier: its title is exactly the tier's and its event can produce it. */
 const isTierRun = (r) => Object.hasOwn(ACCEPTED_TITLES, r.display_title ?? '') && ACCEPTED_TITLES[r.display_title].includes(r.event);
 
-const isGreen = (r) => r.status === 'completed' && r.conclusion === 'success';
+export const isGreen = (r) => r.status === 'completed' && r.conclusion === 'success';
 const newestFirst = (a, b) => b.run_number - a.run_number || b.id - a.id;
 const duration = (ms) => (ms % 60000 === 0 ? `${ms / 60000} min` : `${ms / 1000} s`);
 const runsOf = (result) => (Array.isArray(result?.workflow_runs) ? result.workflow_runs : []);
+
+/** Whether any job of run `r` (every attempt, every page) is named SKIPPED_JOB; `api(path)` is a bound `request`. Throws when the list is incomplete. */
+export async function hasSkippedJob(api, repository, r) {
+  const names = [];
+  for (let page = 1; ; page++) {
+    const result = await api(`/repos/${repository}/actions/runs/${r.id}/jobs?filter=all&per_page=100&page=${page}`);
+    const jobs = Array.isArray(result?.jobs) ? result.jobs : null;
+    if (!jobs || !Number.isSafeInteger(result.total_count)) throw new Error(`GitHub returned a malformed job list for run ${r.id}`);
+    names.push(...jobs.map((j) => j?.name));
+    if (names.length >= result.total_count) break;
+    if (!jobs.length || page >= MAX_JOB_PAGES) throw new Error(`cannot list every job of run ${r.id}`);
+  }
+  return names.includes(SKIPPED_JOB);
+}
 
 export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(ms), log = (line) => console.log(line), now = () => Date.now(), pollMs = POLL_MS, boundMs = BOUND_MS, workflow = 'server' } = {}) {
   if (!Object.hasOwn(GATED_WORKFLOWS, workflow)) throw new Error(`Unknown gated workflow: ${workflow}`);
@@ -115,18 +129,7 @@ export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(m
     if (!skipped.has(key)) skipped.set(key, await listsSkippedJob(r));
     return skipped.get(key);
   };
-  const listsSkippedJob = async (r) => {
-    const names = [];
-    for (let page = 1; ; page++) {
-      const result = await api(`/repos/${repository}/actions/runs/${r.id}/jobs?filter=all&per_page=100&page=${page}`);
-      const jobs = Array.isArray(result?.jobs) ? result.jobs : null;
-      if (!jobs || !Number.isSafeInteger(result.total_count)) throw new Error(`GitHub returned a malformed job list for run ${r.id}`);
-      names.push(...jobs.map((j) => j?.name));
-      if (names.length >= result.total_count) break;
-      if (!jobs.length || page >= MAX_JOB_PAGES) throw new Error(`cannot list every job of run ${r.id}`);
-    }
-    return names.includes(SKIPPED_JOB);
-  };
+  const listsSkippedJob = (r) => hasSkippedJob(api, repository, r);
   /** The newest green run among `runs` without the skipped job, or null. */
   const firstCounting = async (runs) => {
     for (const r of runs.filter(isGreen).sort(newestFirst)) {

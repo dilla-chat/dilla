@@ -39,6 +39,9 @@ export const JOB_MAP = {
   server: {
     changes: SHARED_JOBS.changes,
     'ci-watchdog': SHARED_JOBS['ci-watchdog'],
+    // CI speed plan, Task 6: the main-push skip. Locally there is no main push to skip, so both pass at once and the run goes ahead in full.
+    'check-tree': { kind: 'aggregate', weight: 0 },
+    'same-tree': { kind: 'aggregate', weight: 0 },
     'server-work-complete': { kind: 'aggregate', weight: 0 },
     docs: { weight: 1 },
     'server-scripts': { weight: 1 },
@@ -247,6 +250,9 @@ const IF_ATOMS = [
   [/^failure\(\)$/, (m, ctx) => ctx.failed === true],
   [/^success\(\)$/, (m, ctx) => ctx.failed !== true],
   [/^always\(\)$/, () => true],
+  // The run was not cancelled, and the same-tree check (CI speed plan, Task 6) did not skip it: locally neither happens.
+  [/^!cancelled\(\)$/, () => true],
+  [/^needs\.same-tree\.outputs\.skip != 'true'$/, () => true],
   // An upload's evidence guard. There is no runner workspace to hash here; the upload step itself reports a missing path.
   [/^hashFiles\('[^']+'(?:, '[^']+')*\) != ''$/, () => true],
   [/^steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+) != 'true'$/, (m, ctx) => ctx.steps?.[m[1]]?.[m[2]] !== 'true'],

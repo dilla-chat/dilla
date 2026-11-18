@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, checkSccache, SCCACHE_ACTION, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiSignWorkflow, GPUI_SIGN_STEPS, SAME_TREE_IF, checkDesktopGpuiReleaseWorkflow, GPUI_RELEASE_STEPS, aptPackages, GPUI_MAC_PACKAGE_RUNS, checkDesktopGpuiWorkflow, checkSccache, SCCACHE_ACTION, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkPlaywrightImage, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, REQUIRED_JOBS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -84,7 +84,7 @@ test('CI rejects an unsafe, delayed or unbounded whole-run watcher', () => {
 
 test('CI rejects a completion barrier that misses jobs or waits for the watcher', () => {
   for (const changed of [
-    REAL_CI.replace(/(  server-work-complete:\n    needs: \[)changes, /, '$1'),
+    REAL_CI.replace(/(  server-work-complete:\n    needs: \[check-tree, same-tree, )changes, /, '$1'),
     REAL_CI.replace(/(  server-work-complete:\n    needs: \[)/, '$1ci-watchdog, '),
     REAL_CI.replace(/(  server-work-complete:\n    needs: \[[^\]]*\]\n)    if: always\(\)\n/, '$1'),
     REAL_CI.replace(/(  desktop-work-complete:\n    needs: \[)changes, /, '$1'),
@@ -662,7 +662,10 @@ function withChanges(text) {
       else if (needs.length) body.splice(1, 0, `    needs: [${needs.join(', ')}]`);
       out.push(...body);
     }
-    const jobs = ['ci-watchdog', 'changes', ...(workflow === 'server' ? ['docs'] : []), ...[...blocks.keys()].filter((name) => own.includes(name))];
+    // server.yml's watcher block (up to its changes job) carries the real check-tree and same-tree jobs (CI speed plan, Task 6).
+    const sameTree = workflow === 'server' ? ['check-tree', 'same-tree'] : [];
+    const jobs = ['ci-watchdog', ...sameTree, 'changes', ...(workflow === 'server' ? ['docs'] : []), ...[...blocks.keys()].filter((name) => own.includes(name))];
+    const root = (job) => (workflow === 'server' ? job.replace(/^( {2}[a-z]+:\n)/, `$1    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`) : job);
     const barrier = `  ${workflow}-work-complete:
     needs: [${jobs.filter(name => name !== 'ci-watchdog').join(', ')}]
     if: always()
@@ -673,7 +676,7 @@ function withChanges(text) {
 `;
     const named = header.replace('name: ci-fixture', `name: ${WORKFLOWS[workflow].name}`);
     const triggered = workflow === 'desktop' ? named.replace('  pull_request:\n', `  pull_request:\n  schedule:\n    - cron: '${NIGHTLY_CRON}'\n`) : named;
-    return `${triggered}${watcher}${CHANGES_JOB}${workflow === 'server' ? DOCS_JOB : ''}${out.join('\n')}\n${barrier}${OK_JOB(workflow, [...jobs, `${workflow}-work-complete`])}`;
+    return `${triggered}${watcher}${root(CHANGES_JOB)}${workflow === 'server' ? root(DOCS_JOB) : ''}${out.join('\n')}\n${barrier}${OK_JOB(workflow, [...jobs, `${workflow}-work-complete`])}`;
   };
   return build('server') + SPLIT.slice(1) + build('desktop');
 }
@@ -2697,12 +2700,42 @@ test('desktop-gpui nightly-report is pinned: nightly tier, always(), needs every
   assert.ok(tier.some((p) => p.includes('nightly-report must run with')), tier.join('\n'));
   const pr = gpuiProblems((text) => text.replace("inputs.tier == 'nightly'))\n    runs-on", "inputs.tier == 'nightly') || true)\n    runs-on"));
   assert.ok(pr.some((p) => p.includes('nightly-report must run with')), pr.join('\n'));
-  const needs = gpuiProblems((text) => text.replace('needs: [gpui, gpui-linux, gpui-mac-package, gpui-win-package]', 'needs: [gpui, gpui-linux]'));
+  const needs = gpuiProblems((text) => text.replace('needs: [check-tree, same-tree, gpui, gpui-linux, gpui-mac-package, gpui-win-package]', 'needs: [check-tree, same-tree, gpui, gpui-linux]'));
   assert.ok(needs.some((p) => p.includes('must need every other job')), needs.join('\n'));
   const wide = gpuiProblems((text) => text.replace('      issues: write\n', '      issues: write\n      pull-requests: write\n'));
   assert.ok(wide.some((p) => p.includes('nothing broader')), wide.join('\n'));
   const none = gpuiProblems((text) => text.replace('      issues: write\n', ''));
   assert.ok(none.some((p) => p.includes('nothing broader')), none.join('\n'));
+});
+
+test('the main-push skip is pinned in desktop-gpui.yml: the check, the named job, the roots and every job behind them', () => {
+  const at = (needle, problems) => assert.ok(problems.some((p) => p.includes(needle)), `${needle}: ${problems.join('\n')}`);
+  assert.deepEqual(gpuiProblems((text) => text).filter((p) => /same-tree|check-tree/.test(p)), []);
+  // The check: a push to main only, read-only, this workflow's file.
+  at('check-tree must be exactly', gpuiProblems((text) => text.replace('          WORKFLOW_FILE: desktop-gpui.yml\n', '          WORKFLOW_FILE: server.yml\n')));
+  at('check-tree must be exactly', gpuiProblems((text) => text.replace("      actions: read\n      contents: read\n    outputs:", "      actions: write\n      contents: read\n    outputs:")));
+  at('check-tree must be exactly', gpuiProblems((text) => text.replace("      - id: tree\n        if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n", '      - id: tree\n')));
+  // The job name the release gates read, and its output.
+  at('same-tree must be named', gpuiProblems((text) => text.replace("&& 'skipped' || 'ran' }}\"", "&& 'skip' || 'ran' }}\"")));
+  at('same-tree must be named', gpuiProblems((text) => text.replace("    outputs:\n      skip: ${{ needs.check-tree.outputs.skip == 'true' && 'true' || 'false' }}\n", "    outputs:\n      skip: 'true'\n")));
+  // A root that skips on a failed check (no !cancelled()), or that waits for nothing.
+  at('job "gpui" must need only same-tree', gpuiProblems((text) => text.replace(`    name: gpui-\${{ matrix.platform }}-\${{ matrix.arch }}\n    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`, `    name: gpui-\${{ matrix.platform }}-\${{ matrix.arch }}\n    needs: [same-tree]\n    if: needs.same-tree.outputs.skip != 'true'\n`)));
+  const loose = gpuiProblems((text) => text.replace(`    name: gpui-linux-x64-\${{ matrix.shard }}\n    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`, `    name: gpui-linux-x64-\${{ matrix.shard }}\n`));
+  at('job "gpui-linux" must need only same-tree', loose);
+  at('job "gpui-linux" must depend on same-tree', loose);
+  at('gpui-win-package is keyless', gpuiProblems((text) => text.replace(`    name: gpui-win-package\n    needs: [same-tree]\n`, `    name: gpui-win-package\n    needs: [same-tree, gpui]\n`)));
+});
+
+test('the main-push skip is pinned in server.yml: changes and docs wait for same-tree and the aggregates list both', () => {
+  const at = (needle, problems) => assert.ok(problems.some((p) => p.includes(needle)), `${needle}: ${problems.join('\n')}`);
+  const server = (change) => checkServerWorkflow(fixture(change(REAL_CI)));
+  assert.deepEqual(server((t) => t), []);
+  at('check-tree must be exactly', server((t) => t.replace('          WORKFLOW_FILE: server.yml\n', '          WORKFLOW_FILE: desktop-gpui.yml\n')));
+  at('job "docs" must need only same-tree', server((t) => t.replace(`  docs:\n    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`, '  docs:\n')));
+  at('job "changes" must need only same-tree', server((t) => t.replace(`  changes:\n    needs: [same-tree]\n    if: ${SAME_TREE_IF}\n`, `  changes:\n    needs: [same-tree]\n    if: needs.same-tree.outputs.skip != 'true'\n`)));
+  at('must list "check-tree"', server((t) => t.replace(/(  server-ok:\n    needs: \[)check-tree, /, '$1')));
+  at('completion barrier', server((t) => t.replace(/(  server-work-complete:\n    needs: \[)check-tree, same-tree, /, '$1')));
+  at('does not belong', server((t) => t.replace('  same-tree:\n', '  same-tree-x:\n')));
 });
 
 test('desktop-gpui schedules a nightly at 03:00 UTC', () => {
@@ -2727,7 +2760,7 @@ test('the desktop-gpui macOS package job is pinned: macos-15, no secrets, and ev
     assert.ok(problems.some((p) => p.includes('gpui-mac-package must run')), `${fragment}: ${problems.join('|')}`);
   }
   assert.ok(gpuiProblems((text) => text.replace('runs-on: macos-15\n    timeout-minutes: 120\n    env:\n', 'runs-on: macos-14\n    timeout-minutes: 120\n    env:\n')).some((p) => p.includes('must run on macos-15')));
-  assert.ok(gpuiProblems((text) => text.replace('    name: gpui-mac-package\n    if: ${{ !cancelled() }}', '    name: gpui-mac-package')).some((p) => p.includes('!cancelled()')));
+  assert.ok(gpuiProblems((text) => text.replace(`    name: gpui-mac-package\n    needs: [same-tree]\n    if: ${SAME_TREE_IF}`, '    name: gpui-mac-package\n    needs: [same-tree]')).some((p) => p.includes('!cancelled()')));
   assert.ok(gpuiProblems((text) => text.replace('        run: cargo build -p dilla-desktop --release --locked', '        env:\n          CSC_LINK: ${{ secrets.CSC_LINK }}\n        run: cargo build -p dilla-desktop --release --locked')).some((p) => p.includes('no secrets')));
   assert.ok(gpuiProblems((text) => text.replace(/\n  gpui-mac-package:[\s\S]*$/, '\n')).some((p) => p.includes('job is missing')));
 });

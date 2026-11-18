@@ -80,8 +80,52 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_INCREMENTAL: 0
 jobs:
+  # CI speed plan, Task 6: a push to main whose tree a green pull_request run of this workflow already proved skips its
+  # work. scripts/ci-same-tree.mjs decides, and anything it cannot prove (an API error included) is "run in full"; every
+  # other event outputs skip=false without asking the API. same-tree carries the decision in its name, `same-tree:
+  # skipped` or `same-tree: ran`, and the release gates never count a run with the skipped one. The jobs after it run
+  # unless skip is 'true', also when the check itself failed: a broken check never turns into a skip.
+  check-tree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      skip: ${{ steps.tree.outputs.skip == 'true' && 'true' || 'false' }}
+    steps:
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci-same-tree.mjs
+            scripts/server-release-gate.mjs
+            scripts/ci-nightly-issue.mjs
+          sparse-checkout-cone-mode: false
+      - id: tree
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: node scripts/ci-same-tree.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_FILE: desktop-gpui.yml
+
+  same-tree:
+    name: "same-tree: ${{ needs.check-tree.outputs.skip == 'true' && 'skipped' || 'ran' }}"
+    needs: [check-tree]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      skip: ${{ needs.check-tree.outputs.skip == 'true' && 'true' || 'false' }}
+    steps:
+      - run: echo "skip=$SKIP"
+        env:
+          SKIP: ${{ needs.check-tree.outputs.skip }}
+
   gpui:
     name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120  # Windows rebuilds every dependency with the static CRT (libwebrtc)
     strategy:
@@ -276,6 +320,8 @@ jobs:
   # on the gpui job's cache.
   gpui-linux:
     name: gpui-linux-x64-${{ matrix.shard }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -469,7 +515,8 @@ jobs:
   # is desktop-gpui-sign.yml's (release plan, Tasks 12 and 14); this proves the bundle's shape on every PR.
   gpui-mac-package:
     name: gpui-mac-package
-    if: ${{ !cancelled() }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: macos-15
     timeout-minutes: 120
     env:
@@ -590,7 +637,8 @@ jobs:
   # binary is the static-CRT build the plan names. Independent of the gpui jobs' results.
   gpui-win-package:
     name: gpui-win-package
-    if: ${{ !cancelled() }}
+    needs: [same-tree]
+    if: ${{ !cancelled() && needs.same-tree.outputs.skip != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 120  # a cold release build with the static CRT
     env:
@@ -737,7 +785,7 @@ jobs:
   # A red nightly opens the one tracking issue (a second comments on it), a green one closes it; the release gate refuses while it is open.
   # It runs only in the nightly tier (the job `if` cannot read `env`, so it repeats TIER's schedule/dispatch test) and after every other job.
   nightly-report:
-    needs: [gpui, gpui-linux, gpui-mac-package, gpui-win-package]
+    needs: [check-tree, same-tree, gpui, gpui-linux, gpui-mac-package, gpui-win-package]
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'nightly'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
