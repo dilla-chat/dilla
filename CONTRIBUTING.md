@@ -121,7 +121,7 @@ that concluded `failure`, when at least one job never got a runner and no job re
 is never re-run.
 
 A release needs a green run of its own workflow on the tagged commit's tree. For `release.yml` that is a `server` run that
-is a push to `main` (or a dispatch), never a pull request run (`scripts/server-release-gate.mjs`, which waits up to 150
+is a push to `main`, never a pull request run (`scripts/server-release-gate.mjs`, which waits up to 150
 minutes for the commit's `server` run while it is still queued or in progress). The desktop client's tag workflow needs a
 green nightly- or release-tier `desktop-gpui` run on the tree, dispatches one itself when there is none, and refuses
 while a `ci-nightly` issue is open. The tiers and the recovery for a refused gate are in `docs/dev/testing.md`.

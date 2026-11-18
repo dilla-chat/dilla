@@ -8,7 +8,7 @@ import { ISSUE_TITLE, ISSUE_LABEL } from './ci-nightly-issue.mjs';
  * counts for a tag when its head commit's tree (`GET /repos/{r}/git/commits/{sha}` → `.tree.sha`) equals the tag
  * commit's tree, and never when one of its jobs is named `same-tree: skipped` (a desktop-gpui main push that a PR run covered).
  *
- * release.yml (`server`): a green `server.yml` run on the tag's tree from a push to main or a workflow_dispatch, never a
+ * release.yml (`server`): a green `server.yml` run on the tag's tree from a push to main, never a
  * pull_request run (Jonas, 2026-11-18: a PR run may skip areas; the main push runs every one). Runs of other events are
  * ignored: they neither count, nor are waited for, nor refuse. While there is none but such a run
  * is queued or in progress, it polls every 30 s for up to 150 min. It refuses at once when the tree has no run at all,
@@ -82,7 +82,7 @@ export const isOwnRun = (r, repository, { name, file }) => r && r.name === name 
   && typeof r.head_sha === 'string' && COMMIT.test(r.head_sha)
   && Number.isSafeInteger(r.id) && r.id > 0 && Number.isSafeInteger(r.run_number);
 
-/** A server run the server gate may take: a push to main (every area on) or a manual dispatch; never a pull_request run. */
+/** A server run the server gate may take: a push to main (every area on); never a pull_request run. The workflow_dispatch branch is dormant: server.yml has no dispatch trigger. */
 export const isFullServerRun = (r) => (r.event === 'push' && r.head_branch === 'main') || r.event === 'workflow_dispatch';
 
 /** A desktop-gpui run of the nightly or release tier: its title is exactly the tier's and its event can produce it. */
@@ -205,6 +205,8 @@ export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(m
   }
 
   if (!tag) throw refuse(' and no RELEASE_TAG to dispatch a release-tier run on');
+  // The nightly may have gone red while the gate waited: do not spend a ~2 h Mac run on a tree that is refused anyway.
+  await issueCheck();
   const dispatchedListing = `/repos/${repository}/actions/workflows/${gated.file}/runs?event=workflow_dispatch&head_sha=${sha}&per_page=100`;
   const before = new Set(runsOf(await api(dispatchedListing)).map((r) => r?.id));
   const dispatchedAt = now();

@@ -81,7 +81,7 @@ counts for a tag when its head commit's tree equals the tagged commit's tree.
 `desktop-gpui-sign.yml` re-checks the same rule through `scripts/desktop-gpui-gate.mjs` but has no `RELEASE_TAG`, so it
 never dispatches. It waits for a qualifying run that is queued or in progress only until its own job's 75-minute
 timeout (`timeout-minutes` on the `gate` job); the script's 150-minute bound applies to the release workflow's gate,
-whose `tag` job has no shorter timeout. With no qualifying run it refuses. In practice the sign run starts only after
+whose `tag` job has no shorter timeout. The bound is the same 150 minutes in both gates; the sign gate's 75-minute job timeout cuts it short. With no qualifying run it refuses. In practice the sign run starts only after
 the release run succeeded, so the release-tier run it needs is normally already green.
 
 A release therefore costs one full Mac run on the tagged tree. When the tag's tree was already proved by a nightly (a
@@ -89,7 +89,7 @@ tag cut right after a green nightly, with no change in between), it costs nothin
 
 ### Server (`v*`)
 
-`release.yml` needs a green `server.yml` run on the tag's tree that is a push to `main` or a `workflow_dispatch`. A
+`release.yml` needs a green `server.yml` run on the tag's tree that is a push to `main`. A
 `pull_request` run never counts, even on the same tree: a PR run may skip areas, the `main` push runs every one. While
 only such a run is queued or in progress, the gate polls every 30 seconds, up to 150 minutes. It refuses at once when the
 tree has no run at all or its run concluded anything but success.
@@ -101,7 +101,8 @@ A green run of one workflow never satisfies the other workflow's gate.
 | Refusal | What to do |
 |---|---|
 | an open `ci-nightly` issue | fix the nightly, or run `desktop-gpui` with `tier=nightly` by hand on `main` and let it go green; the issue closes |
-| the dispatched `[release]` run failed or was cancelled, so the release workflow's `tag` job refused | fix the cause, then run `desktop-gpui-release.yml` again by hand (`workflow_dispatch`, "Use workflow from" the tag itself, and the `tag` input set to the same tag; the input is required). It dispatches a new `[release]` run |
+| the dispatched `[release]` run failed or was cancelled, so the release workflow's `tag` job refused | a re-run only helps for a flake: run `desktop-gpui-release.yml` again by hand (`workflow_dispatch`, "Use workflow from" the tag itself, and the `tag` input set to the same tag; the input is required), which dispatches a new `[release]` run. A real fix is a new commit, so it needs a new tag |
+| the 150-minute bound expired | re-run `desktop-gpui-release.yml` on the tag; it finds the in-progress or green `[release]` run |
 | the sign workflow's gate found no qualifying run (a release run made a draft, but the tree has no green nightly or release run, or the nightly turned red meanwhile) | the sign gate refuses a re-run (attempt 1 only) and the release workflow refuses a tag that already has a release, so neither can be repeated as is. Green the tree first (fix the nightly, or run `desktop-gpui` with `tier=release` on the tag), then delete the draft (`gh release delete <tag> --yes`, keeping the tag) and run `desktop-gpui-release.yml` by hand as in the row above; its success starts a fresh sign run (`clients/desktop/RELEASING.md`, "When the sign run fails") |
 | a server tag on a superseded `main` commit whose `server` run was cancelled | re-run that commit's `server` run; the tree then has a green `main` push run |
-| no run on the tree for a server tag | the tag is not on a `main` commit that ran `server.yml`; dispatch `server.yml` on the tag, or tag a `main` commit |
+| no run on the tree for a server tag | the tag is not on a `main` commit that ran `server.yml`; tag a `main` commit whose push run is green, or re-run that commit's `server` run (`server.yml` has no dispatch trigger) |

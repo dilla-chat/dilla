@@ -365,6 +365,16 @@ test('anOpenNightlyIssueBlocksTheGate', async () => {
   await assert.rejects(run(desktopEnv({}), SHA, desktop(clocked(broken).options)), /403/);
 });
 
+test('aNightlyThatTurnsRedWhileWaitingIsNotFollowedByADispatch', async () => {
+  // A nightly run in progress when the gate starts fails while the gate waits and opens the issue: with no green run
+  // left the gate would dispatch a ~2 h release run, so it checks the issue once more right before dispatching.
+  const issue = { number: 3, title: ISSUE_TITLE, labels: [{ name: ISSUE_LABEL }] };
+  const gh = fakeGithub({ runs: [inProgress(gpuiRun())] });
+  const { options } = clocked(gh, { onSleep: () => { Object.assign(gh.runs[0], { status: 'completed', conclusion: 'failure' }); gh.issues = [issue]; } });
+  await assert.rejects(run(desktopEnv({}), SHA, desktop(options)), /issue #3 "nightly desktop-gpui red" \(label ci-nightly\) is open/);
+  assert.deepEqual(gh.dispatches, []);
+});
+
 test('theGateDispatchesAReleaseRunAndWaitsForIt', async () => {
   // An older release dispatch run on the same commit (red, from an hour ago) first shows up in the listing only after
   // the dispatch, while the new run has not appeared yet: its creation time rules it out.
