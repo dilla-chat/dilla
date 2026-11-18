@@ -308,8 +308,8 @@ jobs:
         run: |
           cargo test -p dilla-desktop --features automation --locked --no-fail-fast parity_
           cargo test -p dilla-desktop --features automation --locked --test video_player_shot
-      # VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) crashed the decode test on macOS CI with SIGSEGV
-      # (core/vendor/README.md): nightly and release tiers only, and red until that is fixed.
+      # VideoToolbox (webrtc-sys `dilla-video-toolbox`, off by default) lost the last pictures of a file and mis-converted
+      # full-range NV12; both are fixed in the glue (cause and fix: core/vendor/README.md). Nightly and release tiers only.
       - name: Decode with VideoToolbox (macOS)
         if: runner.os == 'macOS' && env.TIER != 'pr' && !cancelled()
         shell: bash
@@ -319,7 +319,7 @@ jobs:
         run: sccache --show-stats
   # dilla's real-server, Bot, parity and call tests (the #[ignore]d ones a plain `cargo test` skips), Linux only, in four
   # parallel shards: one after another they took 50 minutes of a 76-minute job. Each shard builds what its tests need
-  # on the gpui job's cache.
+  # itself, compiling through sccache (the cargo registry is the only cache the shards share with the gpui job).
   gpui-linux:
     name: gpui-linux-x64-${{ matrix.shard }}
     needs: [same-tree]
@@ -381,8 +381,7 @@ jobs:
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
           libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg
       # Restore only: the gpui job's Linux leg saves this cache.
-      - id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry

@@ -75,8 +75,8 @@ jobs:
 
   # The wasm core (packages/core-wasm/pkg), the one input of the mobile client build that is not in the tree. Only
   # that: desktop-ci.yml's web-build runs the typechecks, the web build and its dist guards, the harness and the
-  # webdist Go test for the same sources, so this workflow does not repeat them. It restores web-build's Rust cache
-  # (same key), so a warm run compiles nothing new and adds no cache of its own.
+  # webdist Go test for the same sources, so this workflow does not repeat them. It shares web-build's cargo registry
+  # cache (same key) and compiles through sccache, so a warm run recompiles little.
   mobile-core-wasm:
     needs: [changes]
     if: needs.changes.outputs.mobile != 'false'
