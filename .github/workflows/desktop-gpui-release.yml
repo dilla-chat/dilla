@@ -9,9 +9,10 @@ name: desktop gpui release
 # adds the macOS and Windows assets, signs the update feed, completes SHA256SUMS and only then publishes it.
 #
 # The jobs, in order, each needing the ones before it:
-#   tag          the tag is the ref the run is on and names the version; its commit is on main, has a green
-#                desktop-gpui push run on main (scripts/server-release-gate.mjs --workflow=desktop-gpui), and
-#                dilla-desktop's Cargo version equals the tag's; no release exists for it yet
+#   tag          the tag is the ref the run is on and names the version; its commit is on main, its tree has a green
+#                desktop-gpui [nightly] or [release] run (or the gate dispatches a [release] run and waits for it) and
+#                no open ci-nightly issue exists (scripts/server-release-gate.mjs --workflow=desktop-gpui; docs/dev/testing.md),
+#                and dilla-desktop's Cargo version equals the tag's; no release exists for it yet
 #   build-linux  a clean release build on ubuntu-24.04 (glibc 2.39 floor): no cache, --locked, default features only,
 #                clang 21, libwebrtc pinned by SHA-256 (scripts/fetch-libwebrtc.sh); the release-binary guards; the
 #                five assets (scripts/desktop-gpui-package-linux.sh with the pinned appimagetool, runtime and nfpm);

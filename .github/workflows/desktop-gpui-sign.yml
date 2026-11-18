@@ -17,7 +17,7 @@
 #
 # The jobs:
 #   gate       main's first attempt, alone; tag -> commit -> green release run -> on main, Cargo version -> green
-#              desktop-gpui push run -> draft prerelease by github-actions[bot] with exactly the Linux files -> their
+#              desktop-gpui nightly or release run on the tree -> draft prerelease by github-actions[bot] with exactly the Linux files -> their
 #              digests equal SHA256SUMS and the build-provenance attestation subjects. Hands the verified files on.
 #   build-mac  macos-15, desktop-release: the release binary from the tagged commit (pinned libwebrtc, --locked, no
 #              cache), Dilla.app signed with Developer ID, notarized and stapled, the DMG and the updater's zip
