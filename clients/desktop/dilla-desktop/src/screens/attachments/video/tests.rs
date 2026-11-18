@@ -177,7 +177,10 @@ fn macos_hands_h264_and_h265_to_the_system_player() {
     use webrtc_sys::dilla_video_decoder::VideoCodec;
     if webrtc_sys::dilla_video_decoder::VIDEO_TOOLBOX {
         // VideoToolbox plays both inline; the decode test checks H.264's pictures.
-        assert!(decodes(VideoCodec::H264) && decodes(VideoCodec::H265), "VideoToolbox decodes H.264 and H.265");
+        assert!(
+            decodes(VideoCodec::H264) && decodes(VideoCodec::H265),
+            "VideoToolbox decodes H.264 and H.265"
+        );
         return;
     }
     assert!(
