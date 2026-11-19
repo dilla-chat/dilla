@@ -871,3 +871,132 @@ fn a_join_without_an_output_device_gets_past_the_speaker() {
         Ok(_) => panic!("there is no room at that port"),
     }
 }
+
+// ---- A call that ends releases its PeerConnections ----
+//
+// Every sender and receiver of a PeerConnection holds one frame transformer, so the process's live transformer count
+// (`dilla_media::ffi::live_transformers`) is how many of them are still alive. Alice is a desktop `Call` in this
+// process (the hook is process-wide: one call per process); Bob is a `call-peer` process sending a tone, so Alice holds
+// a sender (her microphone) and a receiver (his) through dilla-testhost's in-process SFU.
+
+mod support {
+    pub mod live;
+}
+
+use std::time::Duration;
+
+use dilla_media::ffi::live_transformers;
+
+/// Seats Alice (this process, a PCM microphone of silence) and Bob (a `call-peer`) in one call, and waits until Alice
+/// hears Bob's verified device: her PeerConnections then hold her sender's and Bob's receiver's transformers.
+fn seat_alice_with_bob(
+    rt: &tokio::runtime::Runtime,
+) -> (dilla_media::Call, support::live::Peer, support::live::Host) {
+    let host = support::live::start_host();
+    let (_group, alice, bob, _) = call_raw_bob();
+    let (a_dev, b_dev) = (hex(&alice.device), hex(&bob.device));
+    let room = hex(&CALL);
+    let (url, a_token) = support::live::token(&host.control, &room, &a_dev);
+    let (_, b_token) = support::live::token(&host.control, &room, &b_dev);
+    let mut bob_peer = support::live::Peer::start(&url, &b_token, 440);
+    bob_peer.epoch(&support::live::bob_epoch(&bob));
+
+    let feed = EpochFeed::new();
+    feed.publish(alice_epoch(&alice));
+    let call = rt.block_on(async {
+        let (tx, frames) = tokio::sync::mpsc::channel::<Vec<i16>>(50);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                tick.tick().await;
+                if tx.send(vec![0; FRAME_SAMPLES]).await.is_err() {
+                    break;
+                }
+            }
+        });
+        dilla_media::Call::join_with(
+            dilla_media::LiveKitToken {
+                url,
+                token: zeroize::Zeroizing::new(a_token),
+                ice_servers: Vec::new(),
+            },
+            feed as std::sync::Arc<dyn EpochKeys>,
+            dilla_media::CallOptions {
+                mic: dilla_media::Mic::Pcm {
+                    frames,
+                    noise: NoiseMode::Off,
+                },
+                playout: false,
+                key_timeout: Duration::from_secs(30),
+                ..dilla_media::CallOptions::default()
+            },
+        )
+        .await
+        .expect("Alice joins")
+    });
+    bob_peer.next("connected", Duration::from_secs(30));
+    let mut levels = call.remote_audio_levels();
+    rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            levels.wait_for(|l| l.contains_key(&b_dev)),
+        )
+        .await
+        .expect("Alice hears Bob within 30 s")
+        .expect("the call is live");
+    });
+    (call, bob_peer, host)
+}
+
+/// Polls every 50 ms, for at most 5 s, until no frame transformer is alive in this process; the count left otherwise.
+fn every_transformer_released() -> Result<(), usize> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live = live_transformers();
+        if live == 0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(live);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn call_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn leaving_a_call_releases_every_frame_transformer() {
+    let _s = serial();
+    let rt = call_runtime();
+    let (call, _bob, _host) = seat_alice_with_bob(&rt);
+    assert!(live_transformers() > 0, "the call holds its transformers");
+    rt.block_on(call.leave());
+    if let Err(live) = every_transformer_released() {
+        panic!("{live} frame transformers still alive 5 s after the leave");
+    }
+}
+
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn a_dropped_call_releases_every_frame_transformer() {
+    let _s = serial();
+    let rt = call_runtime();
+    let (call, _bob, _host) = seat_alice_with_bob(&rt);
+    assert!(live_transformers() > 0, "the call holds its transformers");
+    {
+        // Dropped inside the runtime, as the desktop drops a call it never left.
+        let _on = rt.enter();
+        drop(call);
+    }
+    if let Err(live) = every_transformer_released() {
+        panic!("{live} frame transformers still alive 5 s after the drop");
+    }
+}

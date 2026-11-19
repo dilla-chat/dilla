@@ -123,6 +123,12 @@ pub fn request_key_frame(handle: u64) {
     ffi::dilla_request_key_frame(handle);
 }
 
+/// How many frame transformers are alive now (one per sender and receiver whose transformer
+/// libwebrtc still holds). A snapshot, for tests and diagnostics only.
+pub fn live_transformers() -> usize {
+    ffi::dilla_live_transformer_count()
+}
+
 /// The handle of the live receiver transformer attached for exactly this track object (compared by
 /// identity, not by id); `None` when there is none.
 pub fn receiver_handle(track: &SharedPtr<MediaStreamTrack>) -> Option<u64> {
@@ -251,6 +257,6 @@ pub mod ffi {
         fn dilla_sender_handle(track: &MediaStreamTrack) -> u64;
         fn dilla_drain_all();
         fn dilla_request_key_frame(handle: u64);
-
+        fn dilla_live_transformer_count() -> usize;
     }
 }

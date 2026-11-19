@@ -96,6 +96,11 @@ uint64_t dilla_sender_handle(const MediaStreamTrack& track);
 /// Retries every transformer's held frames now (expiring those past a limit).
 void dilla_drain_all();
 
+/// How many transformers are alive now: the registry's entries whose core still locks, counted
+/// under the registry mutex. A snapshot for tests and diagnostics (a call that ended must have
+/// released every transformer its PeerConnections held).
+size_t dilla_live_transformer_count();
+
 /// Asks the publisher of a receiving video transformer's track for a key frame (an RTCP PLI through
 /// the SFU). Blocks on libwebrtc's worker thread: never call it from inside a transform.
 void dilla_request_key_frame(uint64_t handle);

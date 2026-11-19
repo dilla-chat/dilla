@@ -630,7 +630,12 @@ async fn feed(
 }
 
 pub struct Call {
-    room: Room,
+    /// The room until it is closed: `leave` takes and closes it, or `Drop` hands it to `runtime` to close. livekit's
+    /// `Room` has no `Drop` of its own, so a room that is never closed keeps its engine, its PeerConnection and every
+    /// transceiver's frame transformer for the life of the process.
+    room: Option<Room>,
+    /// The runtime the call joined on, where a dropped call's room is closed.
+    runtime: tokio::runtime::Handle,
     router: Arc<Router>,
     media: Arc<CallMedia>,
     local: Option<LocalAudioTrack>,
@@ -862,7 +867,8 @@ impl Call {
         ))];
 
         let mut call = Call {
-            room,
+            room: Some(room),
+            runtime: tokio::runtime::Handle::current(),
             router,
             media,
             local: None,
@@ -946,7 +952,7 @@ impl Call {
         if self.muted.load(Ordering::SeqCst) {
             track.mute();
         }
-        self.room
+        self.room()
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(track.clone()),
@@ -1141,7 +1147,7 @@ impl Call {
     /// while no round trip is measured or the stats cannot be read. It never goes to the server.
     /// One read of the link ([`LinkRead`]): the ping and the RTP byte counters, `None` when the stats could not be read.
     pub async fn link(&self) -> Option<LinkRead> {
-        let stats = self.room.get_stats().await.ok()?;
+        let stats = self.room().get_stats().await.ok()?;
         Some(LinkRead::of(
             &stats.publisher_stats,
             &stats.subscriber_stats,
@@ -1149,7 +1155,7 @@ impl Call {
     }
 
     pub async fn rtt_ms(&self) -> Option<u32> {
-        let stats = self.room.get_stats().await.ok()?;
+        let stats = self.room().get_stats().await.ok()?;
         rtt_ms_of(&stats.publisher_stats).or_else(|| rtt_ms_of(&stats.subscriber_stats))
     }
 
@@ -1157,7 +1163,7 @@ impl Call {
     /// the bytes it sent (the publisher's statistics). The check that a server offering AV1 still gets VP8.
     pub async fn sent_video(&self) -> Vec<(String, u64)> {
         use livekit::webrtc::stats::RtcStats;
-        let Ok(stats) = self.room.get_stats().await else {
+        let Ok(stats) = self.room().get_stats().await else {
             return Vec::new();
         };
         let report = &stats.publisher_stats;
@@ -1235,7 +1241,7 @@ impl Call {
         };
         share.feeder.abort();
         if let Err(e) = self
-            .room
+            .room()
             .local_participant()
             .unpublish_track(&share.sid)
             .await
@@ -1272,7 +1278,7 @@ impl Call {
         let track_id = track.rtc_track().id();
         self.media.expect_local(&track_id, slot);
         let publication = self
-            .room
+            .room()
             .local_participant()
             .publish_track(
                 LocalTrack::Video(track.clone()),
@@ -1305,7 +1311,7 @@ impl Call {
             ))),
         };
         if let Err(e) = bound_sender {
-            let _ = self.room.local_participant().unpublish_track(&sid).await;
+            let _ = self.room().local_participant().unpublish_track(&sid).await;
             return Err(e);
         }
         let fps = {
@@ -1328,7 +1334,7 @@ impl Call {
             fps,
             sent.clone(),
             EndOfShare {
-                participant: self.room.local_participant(),
+                participant: self.room().local_participant(),
                 shares: self.shares.clone(),
                 sid: sid.clone(),
                 ended: self.shares_ended.clone(),
@@ -1367,7 +1373,7 @@ impl Call {
                     .take(),
             );
             if let Err(e) = self
-                .room
+                .room()
                 .local_participant()
                 .unpublish_track(&share.sid)
                 .await
@@ -1403,7 +1409,7 @@ impl Call {
         let track_id = track.rtc_track().id();
         self.media.expect_local(&track_id, Slot::ScreenAudio);
         let publication = self
-            .room
+            .room()
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(track.clone()),
@@ -1429,7 +1435,7 @@ impl Call {
             )),
         };
         if let Err(e) = bound {
-            let _ = self.room.local_participant().unpublish_track(&sid).await;
+            let _ = self.room().local_participant().unpublish_track(&sid).await;
             return Err(e);
         }
         let (tx, rx) = mpsc::channel::<Vec<f32>>(50);
@@ -1444,7 +1450,7 @@ impl Call {
         let capture = match capture {
             Ok(c) => c,
             Err(e) => {
-                let _ = self.room.local_participant().unpublish_track(&sid).await;
+                let _ = self.room().local_participant().unpublish_track(&sid).await;
                 return Err(MediaError::Audio(e.to_string()));
             }
         };
@@ -1453,7 +1459,7 @@ impl Call {
             rx,
             rtc,
             (
-                self.room.local_participant(),
+                self.room().local_participant(),
                 sid.clone(),
                 self.app_audio.clone(),
                 self.app_audio_ended.clone(),
@@ -1478,7 +1484,7 @@ impl Call {
             a.feeder.abort();
             let sid = a.sid.clone();
             drop(a);
-            if let Err(e) = self.room.local_participant().unpublish_track(&sid).await {
+            if let Err(e) = self.room().local_participant().unpublish_track(&sid).await {
                 log::warn!("dilla-media: unpublish the application sound: {e}");
             }
         }
@@ -1530,9 +1536,20 @@ impl Call {
         }
     }
 
+    /// The open room. Only `leave` and `Drop` take it, and both consume the call.
+    fn room(&self) -> &Room {
+        self.room
+            .as_ref()
+            .expect("the room is open while the call is")
+    }
+
     /// This device's identity in the room.
     pub fn identity(&self) -> String {
-        self.room.local_participant().identity().as_str().to_owned()
+        self.room()
+            .local_participant()
+            .identity()
+            .as_str()
+            .to_owned()
     }
 
     /// Leaves the room and ends the call's media: its keys are dropped and every later frame of
@@ -1543,7 +1560,9 @@ impl Call {
         for t in self.tasks.drain(..) {
             t.abort();
         }
-        if let Err(e) = self.room.close().await {
+        if let Some(room) = self.room.take()
+            && let Err(e) = room.close().await
+        {
             log::warn!("dilla-media: room close: {e}");
         }
         self.router.end(&self.media);
@@ -1554,11 +1573,19 @@ impl Call {
 
 impl Drop for Call {
     fn drop(&mut self) {
-        // A call dropped without `leave` still ends its media at once; the room closes with it.
+        // A call dropped without `leave` still ends its media at once, and its room is closed on the call's runtime
+        // (drop cannot wait for it): the close leaves the room and releases the PeerConnection.
         self.stop_shares();
         self.router.end(&self.media);
         for t in self.tasks.drain(..) {
             t.abort();
+        }
+        if let Some(room) = self.room.take() {
+            self.runtime.spawn(async move {
+                if let Err(e) = room.close().await {
+                    log::warn!("dilla-media: room close: {e}");
+                }
+            });
         }
     }
 }

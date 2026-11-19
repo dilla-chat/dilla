@@ -273,6 +273,14 @@ void dilla_drain_all() {
   }
 }
 
+size_t dilla_live_transformer_count() {
+  auto& reg = registry();
+  webrtc::MutexLock lock(&reg.mutex);
+  return static_cast<size_t>(
+      std::count_if(reg.cores.begin(), reg.cores.end(),
+                    [](const auto& entry) { return !entry.second.expired(); }));
+}
+
 void dilla_request_key_frame(uint64_t handle) {
   auto core = core_of(handle);
   if (!core || core->send || !core->key_source) {
