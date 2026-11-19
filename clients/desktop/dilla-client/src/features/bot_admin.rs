@@ -19,6 +19,7 @@ use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
 use crate::client::{Client, ClientError, Inner};
+use crate::features::server_admin::{decode_welcome, encode_welcome};
 use crate::gateway::frames::Value;
 use crate::http::fill_path;
 use crate::http::routes::{self as r, lookup};
@@ -29,6 +30,7 @@ use crate::state::bot_admin::{
     PROVIDER_STALE_S, PROVIDER_STATUS, ProviderStatusState, decode_bot_status, decode_bot_webhooks,
     decode_installation, decode_moderation_page, decode_music_provider_status, sealed_operation,
 };
+use crate::state::server_admin::WelcomeSettings;
 use crate::state::{ChannelId, CommunityId, hex};
 use crate::sync::api::ApiError;
 use crate::sync::value::{self as v, bin16};
@@ -1271,6 +1273,152 @@ pub fn provider_is_stale(observed_at: u64, now_s: u64) -> bool {
     now_s.saturating_sub(observed_at) > PROVIDER_STALE_S
 }
 
+// ---- welcome settings (operations 1 and 2) ----
+
+/// The Bot feature number the welcome settings live under (the first argument of operations 1 and 2).
+pub const WELCOME_FEATURE: u64 = 5;
+
+/// What the Bot answered a welcome read or save (WelcomeSettingsPanel.tsx).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WelcomeAnswer {
+    /// The settings and the revision a save must quote (`None`: never configured).
+    Read {
+        config: Option<WelcomeSettings>,
+        revision: u64,
+    },
+    /// The save took; the revision is the new one.
+    Saved { revision: u64 },
+    /// The settings changed since they were read (status 4).
+    Conflict,
+    /// Any other refusal, or an answer that is not a valid read or save answer.
+    Failed,
+    /// No answer in time: the Bot may have acted. [`retry_welcome`] with this id settles it.
+    Uncertain { request_id: [u8; 16] },
+}
+
+/// `validRevision` and the answer rules of the panel: valid only with status 0 and a revision up to `i64::MAX`; status 4 is
+/// a conflict and any other non-zero status a failure. A read's data is the document, a save's data must be the empty one.
+fn welcome_answer(op: u64, r: BotResult) -> WelcomeAnswer {
+    match r.status {
+        0 => {}
+        4 => return WelcomeAnswer::Conflict,
+        _ => return WelcomeAnswer::Failed,
+    }
+    let Some(revision) = r.revision.filter(|n| *n <= i64::MAX as u64) else {
+        return WelcomeAnswer::Failed;
+    };
+    match (op, decode_welcome(&r.data)) {
+        (1, Ok(config)) => WelcomeAnswer::Read { config, revision },
+        (2, Ok(None)) => WelcomeAnswer::Saved { revision },
+        _ => WelcomeAnswer::Failed,
+    }
+}
+
+/// A `Refused` stays an error; an unanswered request is an answer the page can retry.
+fn welcome_outcome(op: u64, r: Result<BotResult, OpError>) -> Result<WelcomeAnswer, OpError> {
+    match r {
+        Ok(result) => Ok(welcome_answer(op, result)),
+        Err(OpError::Uncertain { request_id }) => Ok(WelcomeAnswer::Uncertain { request_id }),
+        Err(e) => Err(e),
+    }
+}
+
+/// Reads the welcome settings (operation 1, no revision).
+pub async fn read_welcome(ops: &BotOperations) -> Result<WelcomeAnswer, OpError> {
+    let r = ops
+        .request(BotRequest {
+            operation: 1,
+            args: vec![BotArg::Uint(WELCOME_FEATURE)],
+            ..BotRequest::default()
+        })
+        .await;
+    welcome_outcome(1, r)
+}
+
+/// Saves the welcome settings (operation 2) over the revision the read answered.
+pub async fn save_welcome(
+    ops: &BotOperations,
+    value: &WelcomeSettings,
+    revision: u64,
+) -> Result<WelcomeAnswer, OpError> {
+    let doc = encode_welcome(value).map_err(|_| OpError::Invalid)?;
+    let r = ops
+        .request(BotRequest {
+            operation: 2,
+            args: vec![BotArg::Uint(WELCOME_FEATURE), BotArg::Bytes(doc)],
+            revision: Some(revision),
+            ..BotRequest::default()
+        })
+        .await;
+    welcome_outcome(2, r)
+}
+
+/// Sends an unanswered read (`operation` 1) or save (2) again with its request id. A request this page never sent is
+/// `Failed`.
+pub async fn retry_welcome(
+    ops: &BotOperations,
+    request_id: [u8; 16],
+    operation: u64,
+) -> Result<WelcomeAnswer, OpError> {
+    match ops.read(request_id, operation).await {
+        Ok(Some(r)) => Ok(welcome_answer(operation, r)),
+        Ok(None) => Ok(WelcomeAnswer::Failed),
+        Err(OpError::Uncertain { request_id }) => Ok(WelcomeAnswer::Uncertain { request_id }),
+        Err(e) => Err(e),
+    }
+}
+
+/// What [`BotAdmin::welcome`] does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WelcomeOp {
+    Read,
+    Save {
+        value: WelcomeSettings,
+        revision: u64,
+    },
+    Retry {
+        request_id: [u8; 16],
+        operation: u64,
+    },
+}
+
+impl BotAdmin {
+    /// One welcome settings call. A read or a save that took lands the settings in `server_admin.welcome[community]`.
+    pub fn welcome(
+        &self,
+        community: CommunityId,
+        op: WelcomeOp,
+    ) -> oneshot::Receiver<Result<WelcomeAnswer, ClientError>> {
+        let (this, inner) = (self.clone(), self.inner.clone());
+        self.spawn(async move {
+            let ops = this.operations(community);
+            let (answer, saved) = match op {
+                WelcomeOp::Read => (read_welcome(&ops).await, None),
+                WelcomeOp::Save { value, revision } => (
+                    save_welcome(&ops, &value, revision).await,
+                    Some(Some(value)),
+                ),
+                WelcomeOp::Retry {
+                    request_id,
+                    operation,
+                } => (retry_welcome(&ops, request_id, operation).await, None),
+            };
+            let answer = answer.map_err(op_err)?;
+            let landed = match (&answer, saved) {
+                (WelcomeAnswer::Read { config, .. }, _) => Some(config.clone()),
+                (WelcomeAnswer::Saved { .. }, Some(value)) => Some(value),
+                _ => None,
+            };
+            if let Some(config) = landed {
+                inner.publish(move |s| {
+                    s.server_admin.welcome.insert(community, config);
+                });
+            }
+            Ok(answer)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1381,6 +1529,116 @@ mod tests {
                 [BotArg::Uint(4), BotArg::Uint(5), BotArg::Bytes(doc)]
             );
         });
+    }
+
+    fn welcome_cfg() -> WelcomeSettings {
+        WelcomeSettings {
+            channel: ChannelId([0x33; 16]),
+            template: "Welcome {member} to {server}!".to_owned(),
+            server_name: "gpui".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_welcome_read_decodes_the_document_and_its_revision() {
+        let cfg = welcome_cfg();
+        let doc = encode_welcome(&cfg).unwrap();
+        let t = fake(move |_| ok(Some(7), doc.clone()));
+        let ops = BotOperations::new(COMMUNITY, t.clone());
+        assert_eq!(
+            run(read_welcome(&ops)).unwrap(),
+            WelcomeAnswer::Read {
+                config: Some(cfg),
+                revision: 7
+            }
+        );
+        let sent = t.sent.lock().unwrap();
+        assert_eq!(
+            (sent[0].operation, &sent[0].args[..]),
+            (101, &[BotArg::Uint(5)][..])
+        );
+        drop(sent);
+        let t = fake(|_| ok(Some(7), vec![0x80]));
+        let ops = BotOperations::new(COMMUNITY, t);
+        assert_eq!(
+            run(read_welcome(&ops)).unwrap(),
+            WelcomeAnswer::Read {
+                config: None,
+                revision: 7
+            }
+        );
+    }
+
+    #[test]
+    fn a_welcome_answer_without_a_revision_failed() {
+        let t = fake(|_| ok(None, vec![0x80]));
+        let ops = BotOperations::new(COMMUNITY, t);
+        assert_eq!(run(read_welcome(&ops)).unwrap(), WelcomeAnswer::Failed);
+    }
+
+    #[test]
+    fn a_welcome_save_that_returns_data_failed() {
+        let cfg = welcome_cfg();
+        let doc = encode_welcome(&cfg).unwrap();
+        let t = fake(move |_| ok(Some(8), doc.clone()));
+        let ops = BotOperations::new(COMMUNITY, t.clone());
+        assert_eq!(
+            run(save_welcome(&ops, &cfg, 7)).unwrap(),
+            WelcomeAnswer::Failed
+        );
+        assert_eq!(t.sent.lock().unwrap()[0].args[0], BotArg::Uint(7));
+        let t = fake(|_| ok(Some(8), vec![0x80]));
+        let ops = BotOperations::new(COMMUNITY, t);
+        assert_eq!(
+            run(save_welcome(&ops, &cfg, 7)).unwrap(),
+            WelcomeAnswer::Saved { revision: 8 }
+        );
+    }
+
+    #[test]
+    fn a_welcome_conflict_is_status_4() {
+        let cfg = welcome_cfg();
+        for (code, want) in [
+            ("E_CONFLICT", WelcomeAnswer::Conflict),
+            ("E_BUSY", WelcomeAnswer::Failed),
+        ] {
+            let t = fake(move |_| {
+                Ok(SealedAnswer {
+                    status: 409,
+                    body: code.as_bytes().to_vec(),
+                })
+            });
+            let ops = BotOperations::new(COMMUNITY, t);
+            assert_eq!(run(save_welcome(&ops, &cfg, 7)).unwrap(), want);
+        }
+    }
+
+    #[test]
+    fn an_unanswered_welcome_save_is_retried_with_its_request_id() {
+        let cfg = welcome_cfg();
+        let calls = Arc::new(StdMutex::new(0u32));
+        let seen = calls.clone();
+        let t = fake(move |_| {
+            let mut n = seen.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                Err(SendError::Timeout)
+            } else {
+                ok(Some(9), vec![0x80])
+            }
+        });
+        let ops = BotOperations::new(COMMUNITY, t.clone());
+        let WelcomeAnswer::Uncertain { request_id } = run(save_welcome(&ops, &cfg, 8)).unwrap()
+        else {
+            panic!("the first save is uncertain");
+        };
+        assert_eq!(
+            run(retry_welcome(&ops, request_id, 2)).unwrap(),
+            WelcomeAnswer::Saved { revision: 9 }
+        );
+        let sent = t.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|c| c.request_id == request_id));
     }
 
     #[test]
