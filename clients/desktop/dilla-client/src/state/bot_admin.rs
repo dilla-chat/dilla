@@ -638,10 +638,6 @@ pub fn music_marker(body: &str) -> Option<MusicMarker> {
     const OPEN: &str = "[dilla-music:v1:";
     let inner = body.strip_suffix(']')?;
     let start = inner.rfind(OPEN)?;
-    // The marker is the body's last line: only an optional newline may precede it.
-    if start > 0 && inner.as_bytes()[start - 1] != b'\n' {
-        return None;
-    }
     let groups: Vec<&str> = inner[start + OPEN.len()..].split(':').collect();
     let [channel, requester, item] = groups[..] else {
         return None;

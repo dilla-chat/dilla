@@ -587,4 +587,7 @@ fn the_music_marker_is_the_final_line_only() {
     let short = "ab".repeat(15) + "a";
     assert!(music_marker(&format!("[dilla-music:v1:{id}:{id}:{short}]")).is_none());
     assert!(music_marker(&format!("[dilla-music:v1:{id}:{id}:{id}]")).is_some());
+    // MARKER has no start anchor, so text glued to the marker still matches.
+    let glued = music_marker(&format!("junk[dilla-music:v1:{id}:{id}:{id}]")).unwrap();
+    assert_eq!(glued.item, id);
 }
