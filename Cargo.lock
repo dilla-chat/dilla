@@ -2326,6 +2326,8 @@ dependencies = [
  "tls_codec",
  "tokio",
  "webrtc-sys",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
  "zeroize",
 ]
 

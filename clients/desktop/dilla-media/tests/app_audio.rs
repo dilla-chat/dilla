@@ -8,6 +8,9 @@
 //!
 //! The live test needs dilla-testhost, the WASI core and a PipeWire session with `pw-play` and `pactl`
 //! (`cargo test -p dilla-media --test app_audio -- --ignored`); without PipeWire it says so and passes.
+//!
+//! - Windows only (WASAPI process loopback): `captures_a_tone_from_a_child_process`, ignored, for a manual run on a
+//!   Windows machine with an audio endpoint.
 
 #[allow(dead_code, unused_imports, clippy::all)]
 #[path = "../../../../core/dilla-core/tests/client_support/mod.rs"]
@@ -255,4 +258,109 @@ fn no_source_slot_sends_nothing() {
     testing::release(unbound);
     testing::release(bound);
     router.end(&media);
+}
+
+/// The strongest frequency of `mono` (48 kHz) between 100 and 2000 Hz, in 5 Hz steps (Goertzel).
+#[cfg(target_os = "windows")]
+fn peak_hz(mono: &[f32]) -> f64 {
+    let power = |hz: f64| {
+        let k = 2.0 * (std::f64::consts::TAU * hz / 48_000.0).cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &x in mono {
+            let s0 = f64::from(x) + k * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        s1 * s1 + s2 * s2 - k * s1 * s2
+    };
+    (20..=400)
+        .map(|step| f64::from(step) * 5.0)
+        .map(|hz| (hz, power(hz)))
+        .fold(
+            (0.0, f64::MIN),
+            |best, (hz, p)| if p > best.1 { (hz, p) } else { best },
+        )
+        .0
+}
+
+/// GPUI gaps Task 4 (WASAPI process loopback): a PowerShell outside this process's tree (another one starts it and
+/// exits, as `sh … &` does on Linux) plays a 440 Hz tone; it is listed, this test process (Dilla's stand-in) is not, and
+/// capturing it yields 48 kHz stereo frames whose peak is within 20 Hz of 440. Unverified until run on a Windows machine
+/// (build 19041+) with an audio endpoint:
+/// `cargo test -p dilla-media --test app_audio captures_a_tone_from_a_child_process -- --ignored`.
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "needs Windows (build 19041+) with an audio endpoint; PowerShell plays the tone"]
+fn captures_a_tone_from_a_child_process() {
+    use std::sync::{Arc, Mutex};
+
+    struct Kill(u32);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &self.0.to_string(), "/F"])
+                .status();
+        }
+    }
+
+    let wav = scratch("440.wav");
+    sine_wav(&wav, 440.0, 30);
+    let path = wav.display().to_string();
+    assert!(
+        !path.contains('\''),
+        "the temp path is quoted for PowerShell: {path}"
+    );
+    let script = format!(
+        "(Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-Command',\
+         '(New-Object Media.SoundPlayer ''{path}'').PlaySync()').Id"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .expect("powershell");
+    let pid: u32 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("the player's pid");
+    let _player = Kill(pid);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let source = loop {
+        let list = dilla_media::app_audio::sources().expect("process loopback on this build");
+        assert!(
+            list.iter().all(|s| s.pid != std::process::id()),
+            "never Dilla itself"
+        );
+        if let Some(s) = list.into_iter().find(|s| s.pid == pid) {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the player never appeared");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+
+    let mono = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let sink = mono.clone();
+    let capture = dilla_media::app_audio::start(
+        &source,
+        Box::new(move |frame: Vec<f32>| {
+            assert_eq!(frame.len(), dilla_media::app_audio::FRAME_SAMPLES);
+            sink.lock()
+                .unwrap()
+                .extend(frame.as_chunks::<2>().0.iter().map(|[l, r]| (l + r) / 2.0));
+        }),
+        Box::new(|| {}),
+    )
+    .expect("capture");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while mono.lock().unwrap().len() < 96_000 {
+        assert!(Instant::now() < deadline, "two seconds of sound never came");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(capture);
+    let samples = mono.lock().unwrap();
+    // The second second: playback has surely started.
+    let peak = peak_hz(&samples[48_000..96_000]);
+    assert!((peak - 440.0).abs() <= 20.0, "peak at {peak} Hz");
+    drop(samples);
+    let _ = std::fs::remove_dir_all(wav.parent().unwrap());
 }
