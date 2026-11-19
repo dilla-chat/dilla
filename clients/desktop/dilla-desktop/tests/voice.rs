@@ -1240,13 +1240,27 @@ struct MediaSlot {
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
-/// Takes the process's media slot ([`MEDIA_SLOT`]) once no call media is live in this process.
+/// Takes the process's media slot ([`MEDIA_SLOT`]) once no call media is live in this process: the router is free and
+/// no PeerConnection is left either (an earlier test's room may still be closing on its session's `dilla-call-end`
+/// thread after the router was freed).
 fn media_slot() -> MediaSlot {
     let guard = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
     assert!(
         media_free_within(MEDIA_FREE_WAIT),
         "an earlier test's call media is still live in this process after {MEDIA_FREE_WAIT:?}"
     );
+    let deadline = std::time::Instant::now() + MEDIA_FREE_WAIT;
+    loop {
+        let live = dilla_media::ffi::live_transformers();
+        if live == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{live} frame transformers of an earlier test's call are still alive after {MEDIA_FREE_WAIT:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     MediaSlot { _guard: guard }
 }
 

@@ -390,21 +390,38 @@ impl Drop for MediaSession {
     /// call's task: the `Call` was dropped on a runtime that was shutting down, so its room was never closed and its
     /// PeerConnection (with its sockets, threads and frame transformers) lived until the process exited. The commands
     /// channel closes once this returns, which ends [`run`] (a call in progress leaves first: `Call::leave` closes its
-    /// room); the runtime is dropped after that, on a thread of its own so the window never waits on the network.
+    /// room); the runtime is dropped after that, on a thread of its own so the window never waits on the network. The
+    /// wait is bounded ([`end_wait`]); past it the runtime is shut down with whatever is still running.
     fn drop(&mut self) {
         let Some((runtime, task)) = self.running.take() else {
             return;
         };
+        let wait = end_wait();
         let ended = std::thread::Builder::new()
             .name("dilla-call-end".into())
             .spawn(move || {
-                let _ = runtime.block_on(task);
+                if runtime
+                    .block_on(async { tokio::time::timeout(wait, task).await })
+                    .is_err()
+                {
+                    log::warn!(
+                        "voice: the call did not end within {wait:?}: its runtime is shut down"
+                    );
+                }
+                runtime.shutdown_timeout(super::QUIT_WAIT);
             });
         if let Err(e) = ended {
             // The runtime came back with the error and is dropped here: the call's room is not closed.
             log::warn!("voice: the call's end could not run on a thread of its own: {e}");
         }
     }
+}
+
+/// How long a dropped session's call may take to end. A join in flight waits for its first key at most the call's
+/// `key_timeout` (the desktop joins with `CallOptions::default()`'s) and then leaves; the leave gets [`super::QUIT_WAIT`],
+/// what quitting the app gives a call's leave.
+fn end_wait() -> std::time::Duration {
+    CallOptions::default().key_timeout + super::QUIT_WAIT
 }
 
 struct Ctx {
@@ -443,6 +460,10 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
             in_call(&ctx, &link, &mut links, &mut commands).await;
             // A move replaces the link while the old call runs (its loop saw the change and left): the new call's link
             // is already here, so it is joined now, not after some later change.
+            // A dropped session (its commands channel closed) joins nothing more, a move's next call included.
+            if commands.is_closed() {
+                return;
+            }
             if links
                 .borrow()
                 .as_ref()
@@ -451,10 +472,11 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
                 continue;
             }
         }
+        // Biased, the session's end first: a dropped session whose link changed at the same moment joins nothing.
         tokio::select! {
-            r = links.changed() => if r.is_err() { return },
-            // The session was dropped (its commands channel closed): there is nothing more to join.
+            biased;
             None = commands.recv() => return,
+            r = links.changed() => if r.is_err() { return },
         }
     }
 }
