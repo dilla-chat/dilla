@@ -11,6 +11,10 @@
 //!
 //! - Windows only (WASAPI process loopback): `captures_a_tone_from_a_child_process`, ignored, for a manual run on a
 //!   Windows machine with an audio endpoint.
+//! - macOS only (CoreAudio process taps, 14.2+): `captures_a_tone_from_afplay` and
+//!   `ended_fires_once_when_the_app_exits` capture a real `afplay`; they run only with `DILLA_MAC_CAPTURE=1`
+//!   (`DILLA_MAC_CAPTURE=1 cargo test -p dilla-media --test app_audio`), since the first process tap asks for the
+//!   "system audio recording" permission (TCC AudioCapture), granted once by hand; without it they say so and pass.
 
 #[allow(dead_code, unused_imports, clippy::all)]
 #[path = "../../../../core/dilla-core/tests/client_support/mod.rs"]
@@ -261,7 +265,7 @@ fn no_source_slot_sends_nothing() {
 }
 
 /// The strongest frequency of `mono` (48 kHz) between 100 and 2000 Hz, in 5 Hz steps (Goertzel).
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn peak_hz(mono: &[f32]) -> f64 {
     let power = |hz: f64| {
         let k = 2.0 * (std::f64::consts::TAU * hz / 48_000.0).cos();
@@ -442,4 +446,189 @@ fn start_on_a_live_process_returns_cleanly() {
     if let Err(e) = answer {
         eprintln!("no capture here (a clean error): {e}");
     }
+}
+
+/// Whether the macOS hardware tests run here (`DILLA_MAC_CAPTURE=1`): the first process tap needs the "system audio
+/// recording" permission, which is granted by hand once.
+#[cfg(target_os = "macos")]
+fn mac_capture() -> bool {
+    let on = std::env::var("DILLA_MAC_CAPTURE").as_deref() == Ok("1");
+    if !on {
+        eprintln!("DILLA_MAC_CAPTURE is not 1: macOS application audio is not measured");
+    }
+    on
+}
+
+/// An `afplay` outside this process's tree (a shell starts it in the background and exits, so launchd adopts and
+/// reaps it): this test process stands in for Dilla, whose whole tree is never captured. Quiet (`-v 0.1`): it still
+/// plays on the Mac's output.
+#[cfg(target_os = "macos")]
+struct Afplay(u32);
+
+#[cfg(target_os = "macos")]
+impl Afplay {
+    fn start(file: &Path) -> Afplay {
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg("afplay -v 0.1 \"$1\" >/dev/null 2>&1 & echo $!")
+            .arg("sh")
+            .arg(file)
+            .stderr(Stdio::null())
+            .output()
+            .expect("sh");
+        Afplay(
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .expect("a pid"),
+        )
+    }
+
+    /// The player as a source, once CoreAudio lists it as playing (and never this process).
+    fn source(&self) -> dilla_media::app_audio::AppSource {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let list = dilla_media::app_audio::sources().expect("process taps on this macOS");
+            assert!(
+                list.iter().all(|s| s.pid != std::process::id()),
+                "never Dilla itself: {list:?}"
+            );
+            if let Some(s) = list.into_iter().find(|s| s.pid == self.0) {
+                return s;
+            }
+            assert!(Instant::now() < deadline, "afplay never appeared");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Afplay {
+    fn drop(&mut self) {
+        let _ = Command::new("kill")
+            .arg(self.0.to_string())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// GPUI gaps Task 5 (CoreAudio process taps): `afplay` plays a 440 Hz tone outside this process's tree; it is listed
+/// by pid, this test process (Dilla's stand-in) is not, and capturing it yields 960-sample frames (48 kHz stereo) whose
+/// peak is within 20 Hz of 440. Dropping the capture never calls `ended`.
+#[cfg(target_os = "macos")]
+#[test]
+fn captures_a_tone_from_afplay() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    if !mac_capture() {
+        return;
+    }
+    let wav = scratch("mac-440.wav");
+    sine_wav(&wav, 440.0, 30);
+    let player = Afplay::start(&wav);
+    let source = player.source();
+
+    // Collected on the capture thread, asserted here (a panic there would only end that thread).
+    let mono = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let lengths = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let ended = Arc::new(AtomicUsize::new(0));
+    let (sink, sizes, ends) = (mono.clone(), lengths.clone(), ended.clone());
+    let capture = dilla_media::app_audio::start(
+        &source,
+        Box::new(move |frame: Vec<f32>| {
+            sizes.lock().unwrap().push(frame.len());
+            sink.lock()
+                .unwrap()
+                .extend(frame.as_chunks::<2>().0.iter().map(|[l, r]| (l + r) / 2.0));
+        }),
+        Box::new(move || {
+            ends.fetch_add(1, Ordering::SeqCst);
+        }),
+    )
+    .expect("capture");
+    assert_eq!(capture.label(), source.label);
+    // Three seconds: the last two are measured.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while mono.lock().unwrap().len() < 144_000 {
+        assert!(
+            Instant::now() < deadline,
+            "three seconds of sound never came ({} samples)",
+            mono.lock().unwrap().len()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(capture);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(ended.load(Ordering::SeqCst), 0, "a drop never calls ended");
+    assert!(
+        lengths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|&n| n == dilla_media::app_audio::FRAME_SAMPLES),
+        "every frame is 960 samples"
+    );
+    let samples = mono.lock().unwrap();
+    let window = &samples[48_000..144_000];
+    let rms = (window.iter().map(|x| x * x).sum::<f32>() / window.len() as f32).sqrt();
+    assert!(
+        rms > 1e-4,
+        "the capture is silent (rms {rms}): is the system audio recording permission granted?"
+    );
+    let peak = peak_hz(window);
+    eprintln!("captured afplay: peak {peak} Hz, rms {rms}");
+    assert!(
+        (peak - 440.0).abs() <= 20.0,
+        "peak at {peak} Hz (rms {rms})"
+    );
+    drop(samples);
+    drop(player);
+    let _ = std::fs::remove_file(&wav);
+}
+
+/// GPUI gaps Task 5, Review Focus 3: an application that exits mid-share ends the capture once, and the capture's
+/// drop afterwards neither calls `ended` again nor hangs.
+#[cfg(target_os = "macos")]
+#[test]
+fn ended_fires_once_when_the_app_exits() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if !mac_capture() {
+        return;
+    }
+    let wav = scratch("mac-440-short.wav");
+    sine_wav(&wav, 440.0, 3);
+    let player = Afplay::start(&wav);
+    let source = player.source();
+    let ended = Arc::new(AtomicUsize::new(0));
+    let ends = ended.clone();
+    let capture = dilla_media::app_audio::start(
+        &source,
+        Box::new(|_| {}),
+        Box::new(move || {
+            ends.fetch_add(1, Ordering::SeqCst);
+        }),
+    )
+    .expect("capture");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while ended.load(Ordering::SeqCst) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "ended never came after afplay exited"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let dropped = Instant::now();
+    drop(capture);
+    assert!(
+        dropped.elapsed() < Duration::from_secs(1),
+        "the drop does not block"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(ended.load(Ordering::SeqCst), 1, "ended exactly once");
+    drop(player);
+    let _ = std::fs::remove_file(&wav);
 }

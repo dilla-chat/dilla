@@ -9,7 +9,9 @@
 //!   linked port by port to the chosen process's `Stream/Output/Audio` nodes (and to any it opens later).
 //! - Windows (`windows.rs`, build 19041 and later): WASAPI process loopback for the chosen process and its child
 //!   processes; [`AppAudioError::Unsupported`] on older builds.
-//! - macOS (14.2+, CoreAudio process taps): not built yet; [`sources`] answers [`AppAudioError::Unsupported`] there.
+//! - macOS (`macos.rs`, 14.2 and later): a CoreAudio process tap on the chosen process (and its playing descendants)
+//!   in a private aggregate device, converted to 48 kHz when the device runs at another rate;
+//!   [`AppAudioError::Unsupported`] on older versions.
 //!
 //! The platform-independent half (frame cutting, the sample check, the own-tree exclusion, the list's bounds) is
 //! `frames.rs`, shared by every platform.
@@ -20,6 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod frames;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -47,7 +51,7 @@ pub struct AppSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AppAudioError {
-    /// This system has no application capture (macOS for now, Windows before build 19041).
+    /// This system has no application capture (macOS before 14.2, Windows before build 19041).
     #[error("application audio is not available on this system")]
     Unsupported,
     /// The audio server refused or could not be reached.
@@ -71,7 +75,11 @@ pub fn sources() -> Result<Vec<AppSource>, AppAudioError> {
     {
         windows::sources(std::process::id()).map(cap_sources)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::sources(std::process::id()).map(cap_sources)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(AppAudioError::Unsupported)
     }
@@ -93,7 +101,11 @@ pub fn start(
     {
         windows::start(source, std::process::id(), frames, ended)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::start(source, std::process::id(), frames, ended)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = (source, frames, ended);
         Err(AppAudioError::Unsupported)
@@ -107,7 +119,10 @@ pub struct AppCapture {
 }
 
 impl AppCapture {
-    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "windows", target_os = "macos")),
+        allow(dead_code)
+    )]
     pub(crate) fn new(stop: Arc<AtomicBool>, label: String) -> Self {
         Self { stop, label }
     }

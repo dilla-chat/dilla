@@ -87,3 +87,16 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_Variant",
 ] }
 windows-core = "=0.62.2"
+
+# Application audio on macOS (GPUI gaps Task 5, 14.2 and later): CoreAudio process taps. The objc2 0.6 / 0.3.2 family
+# already in the lock (gpui's, cpal's, dilla-desktop's); only what app_audio/macos.rs calls is enabled. libc: the
+# process table (proc_pidinfo, proc_name) and dlsym for the two tap functions macOS 13 lacks.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.189"
+objc2 = "0.6.5"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary"] }
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-core-audio-types", "objc2-foundation"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSUUID", "NSValue"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication"] }

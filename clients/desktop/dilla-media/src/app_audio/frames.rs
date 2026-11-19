@@ -1,4 +1,4 @@
-//! The platform-independent half of application audio, shared by every capture (Linux, Windows, and macOS next): frame
+//! The platform-independent half of application audio, shared by every capture (Linux, Windows, macOS): frame
 //! cutting with carry-over, the finite check and clamp on every sample, Dilla's own process tree left out of a list,
 //! and the source list's bounds. Pure: compiled and tested on every OS.
 
@@ -51,13 +51,13 @@ impl PcmFrames {
 /// [`PcmFrames`] for a capture that hands over f32 samples (WASAPI, CoreAudio): interleaved stereo samples of any count
 /// become exact [`FRAME_SAMPLES`]-sample frames, each sample checked finite and clamped; the rest waits for the next
 /// buffer (never more than one frame's worth).
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 #[derive(Default)]
 pub(crate) struct SampleFrames {
     carry: Vec<f32>,
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 impl SampleFrames {
     pub(crate) fn push(
         &mut self,
@@ -101,7 +101,7 @@ pub fn in_tree(pid: u32, root: u32, parent_of: impl Fn(u32) -> Option<u32>) -> b
 
 /// `sources` without Dilla's own process tree (`root`), given every process's parent (`parents`: pid to parent pid, a
 /// snapshot of the system's process table).
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 pub(crate) fn exclude_tree(
     sources: Vec<AppSource>,
     parents: &HashMap<u32, u32>,
