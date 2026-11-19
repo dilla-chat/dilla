@@ -2156,6 +2156,8 @@ dependencies = [
  "rusqlite",
  "rustls",
  "rustls-native-certs",
+ "secret-service",
+ "security-framework",
  "serde",
  "serde_json",
  "sha1 0.11.0",

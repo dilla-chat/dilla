@@ -10,11 +10,13 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
-use dilla_client::Client;
 use dilla_client::instances::{InstanceError, InstanceGuard, Instances};
-use dilla_client::seams::{InstanceConfig, InstanceId};
+use dilla_client::keychain::QuietKeychain;
+use dilla_client::seams::{InstanceConfig, InstanceId, Keychain};
 use dilla_client::store::StoreError;
+use dilla_client::{Client, ClientError};
 use gpui::{
     App, AppContext as _, Bounds, Global, TitlebarOptions, WindowBounds, WindowHandle, WindowId,
     WindowOptions, px, size,
@@ -185,17 +187,189 @@ pub fn wipe_may_delete(cx: &App, id: InstanceId, generation: u64) -> bool {
     running_client(cx, id).is_none() && !is_starting(cx, id) && starts == generation
 }
 
-/// Hands the registry the client a window started for `id`, so closing the window does not stop it. Its rings are
-/// observed from here on, window or not (GPUI gaps Task 3: `screens::ring::effects::watch_instance`).
+/// Hands the registry the client a window (or a hidden start, [`start_headless`]) started for `id`, so closing the
+/// window does not stop it. Its rings are observed, and its messages notify, from here on, window or not (GPUI gaps
+/// Task 3: `screens::ring::effects::watch_instance`; Task 3b: `native::notifier::start_engine`).
 pub fn keep_client(cx: &mut App, id: InstanceId, client: Rc<Client>) {
     let Some(live) = Registry::of(cx).live.get_mut(&id.0) else {
         return;
     };
     let key = Rc::as_ptr(&client) as usize;
     let state = client.state();
-    live.client = Some(client);
+    live.client = Some(client.clone());
     live.starting = None;
     crate::screens::ring::effects::watch_instance(id, key, state, cx);
+    crate::native::notifier::start_engine(id, &client, cx);
+}
+
+/// A hidden start (`--hidden`, the autostart at login) opens no window: this connects every listed instance instead
+/// ([`start_headless`] with what `main.rs` handed the shell), so rings and messages notify from the tray, as beta.5's
+/// hidden window did.
+pub fn start_headless_clients(cx: &mut App) {
+    if let Some(host) = NativeShell::host(cx) {
+        start_headless(cx, &host.launch);
+    }
+}
+
+/// Starts the client of every instance listed under `launch`'s data root, with no window, as a window's start does
+/// (one client per instance: a window opened meanwhile waits for it, one opened later shows it). The database key is
+/// read without asking the person ([`QuietKeychain`]): an instance whose key the keychain would have to ask for (a
+/// locked keyring, no Secret Service) is skipped with a log line and starts when its window opens, as before. An
+/// instance the start could not reach (the network may come up after the login) is tried again, every
+/// [`HEADLESS_RETRY`] doubling to [`HEADLESS_RETRY_MAX`], until it starts or a window takes it over.
+pub fn start_headless(cx: &mut App, launch: &Launch) {
+    let Some(root) = launch.root.clone() else {
+        return;
+    };
+    let listed = Instances::load(&root)
+        .map(|list| list.list().to_vec())
+        .unwrap_or_default();
+    for cfg in listed {
+        let launch = launch.clone();
+        cx.spawn(async move |cx| {
+            let mut wait = HEADLESS_RETRY;
+            loop {
+                let Some((rx, token)) = cx.update(|cx| begin_headless(cx, &launch, &cfg)) else {
+                    return;
+                };
+                let result = rx
+                    .await
+                    .unwrap_or_else(|_| Err(ClientError::Runtime("the start thread ended".into())));
+                if !cx.update(|cx| end_headless(cx, &cfg, result, token)) {
+                    return;
+                }
+                cx.background_executor().timer(wait).await;
+                wait = (wait * 2).min(HEADLESS_RETRY_MAX);
+            }
+        })
+        .detach();
+    }
+}
+
+/// The outcome of a `Client::start` on its thread.
+type StartResult = tokio::sync::oneshot::Receiver<Result<Client, ClientError>>;
+
+/// The first wait before a hidden start tries an unreachable instance again, and the longest.
+pub const HEADLESS_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+pub const HEADLESS_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Holds instance `cfg` and starts its client on a thread of its own, with the keychain that never asks. `None` when
+/// there is nothing to start: the app quits, a window (or a client) has the instance, a wipe of it waits, it left the
+/// list, or another process holds it. Answers the start's outcome and its token (see [`Live::starting`]).
+fn begin_headless(
+    cx: &mut App,
+    launch: &Launch,
+    cfg: &InstanceConfig,
+) -> Option<(StartResult, Rc<()>)> {
+    let id = cfg.id;
+    if NativeShell::is_quitting(cx)
+        || Registry::of(cx).live.contains_key(&id.0)
+        || wipe_pending(cx, id)
+    {
+        return None;
+    }
+    let root = launch.root.as_deref()?;
+    let guard = match Instances::load(root) {
+        // Still listed as it was (a retry comes after a while).
+        Ok(list)
+            if list
+                .get(id)
+                .is_some_and(|now| now.server == cfg.server && now.data_dir == cfg.data_dir) =>
+        {
+            list.hold(id)
+        }
+        Ok(_) => return None,
+        Err(e) => Err(InstanceError::from(e)),
+    };
+    let guard = match guard {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::info!(
+                "dilla-desktop: instance {} not started in the background: {e}",
+                id.0
+            );
+            return None;
+        }
+    };
+    Registry::of(cx).live.insert(
+        id.0,
+        Live {
+            guard,
+            window: None,
+            client: None,
+            starting: None,
+        },
+    );
+    let Starting::Go(Some(token)) = mark_starting(cx, id) else {
+        Registry::of(cx).live.remove(&id.0);
+        return None;
+    };
+    note_start(cx, id);
+    crate::screens::attachments::ui::instance_opened(&cfg.data_dir, cx);
+    let keychain: Arc<dyn Keychain> = Arc::new(QuietKeychain::new(launch.keychain.clone()));
+    let start = cfg.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("dilla-client-start".into())
+        .spawn(move || {
+            let _ = tx.send(Client::start(start, keychain));
+        })
+        .expect("a thread starts");
+    Some((rx, token))
+}
+
+/// A hidden start of `cfg` ended: its client goes to the registry ([`keep_client`]), or the instance lets go of its
+/// hold. Answers whether to try again (the instance could not be reached, and nothing else has it now).
+fn end_headless(
+    cx: &mut App,
+    cfg: &InstanceConfig,
+    result: Result<Client, ClientError>,
+    token: Rc<()>,
+) -> bool {
+    let id = cfg.id;
+    let again = match result {
+        Ok(client) => {
+            let client = Rc::new(client);
+            if Registry::of(cx).live.contains_key(&id.0) {
+                keep_client(cx, id, client.clone());
+                // What a window's start does with its client besides: the Diagnostics node, and the DM area, which
+                // the ring gate needs to know a DM's members (the shell starts it, `ShellView::new`).
+                if let Some(host) = cfg.server.host_str() {
+                    client.diagnostics().set_instance_name(host);
+                }
+                client.dms().start();
+                log::info!(
+                    "dilla-desktop: instance {} connected in the background",
+                    id.0
+                );
+            } else {
+                // Released meanwhile (a removal): the client stops here, before the hold goes with the token.
+                client.halt();
+                drop(client);
+            }
+            false
+        }
+        Err(e) => {
+            log::info!(
+                "dilla-desktop: instance {} not started in the background: {e}",
+                id.0
+            );
+            finish_starting(cx, id);
+            // Nothing of the instance is open: its hold goes. A window opened meanwhile keeps it, and starts its own
+            // client now that this start ended (`ShellApp::start_client` waits for it).
+            let registry = Registry::of(cx);
+            if registry
+                .live
+                .get(&id.0)
+                .is_some_and(|l| l.window.is_none() && l.client.is_none())
+            {
+                registry.live.remove(&id.0);
+            }
+            matches!(e, ClientError::Network(_)) && !registry.live.contains_key(&id.0)
+        }
+    };
+    drop(token);
+    again
 }
 
 /// Lets go of the client the registry keeps for `id` (Task 26's Forget closes its store): the window and the hold stay.

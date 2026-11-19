@@ -250,11 +250,11 @@ fn open_instances(cx: &App) -> Vec<(InstanceId, String)> {
 
 fn instances_rows(cx: &App) -> Vec<TrayItem> {
     let mut rows = vec![TrayItem::action(YOUR_INSTANCES, show_manager)];
-    rows.extend(
-        open_instances(cx)
-            .into_iter()
-            .map(|(id, label)| TrayItem::action(label, move |cx| show_instance(id, cx))),
-    );
+    rows.extend(open_instances(cx).into_iter().map(|(id, label)| {
+        TrayItem::action(label, move |cx| {
+            show_instance(id, cx);
+        })
+    }));
     rows.push(TrayItem::Separator);
     rows
 }
@@ -343,11 +343,24 @@ impl Backend for Recorder {
     }
 }
 
+/// Feature `test-hooks`: opens an instance's window in place of `windows::open_instance` (a test has no host to open
+/// one with). Answers whether it opened one.
+#[cfg(feature = "test-hooks")]
+#[derive(Clone)]
+pub struct OpenInstanceHook(pub std::rc::Rc<OpenInstance>);
+
+/// What [`OpenInstanceHook`] runs.
+#[cfg(feature = "test-hooks")]
+pub type OpenInstance = dyn Fn(InstanceId, &mut App) -> bool;
+
+#[cfg(feature = "test-hooks")]
+impl gpui::Global for OpenInstanceHook {}
+
 /// Brings instance `id`'s window forward, or opens it when it has none (closed to the tray). Nothing while the app
-/// quits.
-pub fn show_instance(id: InstanceId, cx: &mut App) {
+/// quits. Answers whether the instance now has a window (brought forward or opened).
+pub fn show_instance(id: InstanceId, cx: &mut App) -> bool {
     if NativeShell::is_quitting(cx) || NativeShell::is_asking_quit(cx) {
-        return;
+        return false;
     }
     let window = NativeShell::open_windows(cx)
         .into_iter()
@@ -360,10 +373,14 @@ pub fn show_instance(id: InstanceId, cx: &mut App) {
             .is_ok()
     {
         cx.activate(true);
-        return;
+        return true;
+    }
+    #[cfg(feature = "test-hooks")]
+    if let Some(hook) = cx.try_global::<OpenInstanceHook>().cloned() {
+        return (hook.0)(id, cx);
     }
     let Some(host) = NativeShell::host(cx) else {
-        return;
+        return false;
     };
     let Some(cfg) = host
         .launch
@@ -372,11 +389,14 @@ pub fn show_instance(id: InstanceId, cx: &mut App) {
         .and_then(|root| dilla_client::instances::Instances::load(root).ok())
         .and_then(|list| list.get(id).cloned())
     else {
-        return;
+        return false;
     };
-    if let Err(e) = crate::windows::open_instance(cx, &host.launch, cfg, None, host.allow_loopback)
-    {
-        log::warn!("dilla-desktop: instance {} did not open: {e}", id.0);
+    match crate::windows::open_instance(cx, &host.launch, cfg, None, host.allow_loopback) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("dilla-desktop: instance {} did not open: {e}", id.0);
+            false
+        }
     }
 }
 

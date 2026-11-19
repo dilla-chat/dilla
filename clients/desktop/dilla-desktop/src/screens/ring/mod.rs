@@ -282,7 +282,8 @@ pub fn act_on(window: WindowId, key: &SharedString, answer_it: bool, cx: &mut Ap
 /// Answer or Decline from an instance's ring notification (the OS, the tray): it acts only while the ring `key` is still
 /// current in `instance` (its client's state now; with no client, what its observer saw last). With a window, the
 /// window acts ([`act_on`]). With none (closed to the tray), Answer opens the instance's window, which answers on its
-/// first frame showing the ring, and Decline goes through the client. Answers whether it acted.
+/// first frame showing the ring (a window that does not open leaves no answer waiting), and Decline goes through the
+/// client. Answers whether it acted.
 pub fn act_on_instance(
     instance: InstanceId,
     key: &SharedString,
@@ -309,9 +310,13 @@ pub fn act_on_instance(
         return true;
     }
     if answer_it {
+        // Recorded before the window opens: it may draw, and answer, while it opens.
         effects::await_window(instance, key.clone(), cx);
-        crate::native::tray::show_instance(instance, cx);
-        return true;
+        if crate::native::tray::show_instance(instance, cx) {
+            return true;
+        }
+        effects::drop_answer(instance, cx);
+        return false;
     }
     let Some(client) = client else {
         return false;

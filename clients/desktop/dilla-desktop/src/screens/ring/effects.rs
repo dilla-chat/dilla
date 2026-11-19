@@ -16,8 +16,8 @@
 //!   frame that shows the ring answers it.
 //!
 //! The banner's frame ([`sync`]) keeps what needs a window: it reports the window's focus (a focus change decides the
-//! notifications again) and keeps the client's message notifications and its unread badge running
-//! (`native::notifier::attach`, `native::badge::attach`).
+//! notifications again), tells the client's message notifications what the window shows (`native::notifier::attach`;
+//! the engine itself starts with the client) and keeps its unread badge running (`native::badge::attach`).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -228,8 +228,19 @@ pub fn watch_instance(
                 break;
             }
         }
-        // The client is gone: so are its rings.
-        cx.update(|cx| forget_instance(instance, cx));
+        // The client is gone: so are its rings, and this observer's entry (review of Task 3, minor 1: a later client
+        // allocated at the same address has the same key, and a stale entry would keep it from being observed).
+        cx.update(|cx| {
+            let watches = &mut cx.default_global::<Effects>().watches;
+            if let Some(at) = watches
+                .iter()
+                .position(|w| w.client == client && w.instance == instance)
+            {
+                // This very task: it finishes on its own.
+                watches.remove(at)._task.detach();
+            }
+            forget_instance(instance, cx);
+        });
     });
     cx.default_global::<Effects>().watches.push(Watch {
         client,
@@ -264,6 +275,13 @@ fn forget_instance(instance: InstanceId, cx: &mut App) {
     effects.pending.retain(|(i, _)| *i != instance);
 }
 
+/// The client (its `Rc::as_ptr`) whose state `instance`'s ring observer follows, if one does.
+pub fn watched(instance: InstanceId, cx: &App) -> Option<usize> {
+    cx.try_global::<Effects>()
+        .and_then(|e| e.watches.iter().find(|w| w.instance == instance))
+        .map(|w| w.client)
+}
+
 /// Whether a ring sound plays now (some instance rings audibly).
 pub fn sound_on(cx: &mut App) -> bool {
     cx.try_global::<Effects>()
@@ -283,6 +301,16 @@ pub fn await_window(instance: InstanceId, key: SharedString, cx: &mut App) {
     let pending = &mut cx.default_global::<Effects>().pending;
     pending.retain(|(i, _)| *i != instance);
     pending.push((instance, key));
+}
+
+/// The answer waiting for `instance`'s window goes: the window did not open (review of Task 3, minor 2), so no window
+/// opened later for another reason answers a call by itself.
+pub fn drop_answer(instance: InstanceId, cx: &mut App) {
+    if cx.has_global::<Effects>() {
+        cx.global_mut::<Effects>()
+            .pending
+            .retain(|(i, _)| *i != instance);
+    }
 }
 
 /// Whether an answer waits for `instance`'s window.

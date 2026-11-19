@@ -2,9 +2,11 @@
 //! `dismiss-notification`), on GPUI's own notification support (`App::show_system_notification`: XDG notifications
 //! through `notify-rust` on Linux, `UNUserNotificationCenter` on macOS, toasts on Windows).
 //!
-//! - **Messages and mentions.** [`attach`] starts the client's notify engine (`Notify::start`) with an [`OsNotifier`]
-//!   the first time a window draws the client's workspace; the engine keeps running while the client does (a closed
-//!   window keeps its client in the background) and stops when the client is released ([`release`]). The engine
+//! - **Messages and mentions.** [`start_engine`] starts the client's notify engine (`Notify::start`) with an
+//!   [`OsNotifier`] when the registry takes the client (`windows::keep_client`), window or not (a hidden start at login
+//!   notifies from the tray); [`attach`], on each frame of a window that draws the workspace, tells it the window's
+//!   focus and channel. The engine keeps running while the client does (a closed window keeps its client in the
+//!   background) and stops when the client is released ([`release`]). The engine
 //!   decides as before ([`dilla_client::features::notify::should_notify`]: the device switch, the permission, mutes,
 //!   the channel on screen), so what reaches the OS is what the in-app notifier recorded.
 //! - **Rings.** `screens::ring::effects` raises a ring's notification while no window of its instance is focused,
@@ -327,9 +329,9 @@ fn sender(cx: &mut App) -> mpsc::UnboundedSender<Command> {
 // The engines
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// Every frame of a window that shows a client's workspace (`screens::ring::effects::sync`): starts the client's notify
-/// engine once, and tells it whether the window is focused and which channel it shows. A window the shell does not
-/// know (a fixture's) starts nothing.
+/// Every frame of a window that shows a client's workspace (`screens::ring::effects::sync`): tells the client's notify
+/// engine whether the window is focused and which channel it shows (starting the engine if the client has none yet,
+/// [`start_engine`]). A window the shell does not know (a fixture's) starts nothing.
 pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
     let Some(client) = &ctx.client else { return };
     let id = window.window_handle().window_id();
@@ -343,7 +345,31 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
         e.env.set(visible, ctx.channel, presence);
         return;
     }
-    // A new client of this instance (a sign-in again): the old engine goes.
+    start_with(instance, client, (visible, ctx.channel, presence), cx);
+}
+
+/// Starts `client`'s notify engine for `instance`, once per client: with the client, window or not
+/// (`windows::keep_client`; GPUI gaps Task 3b: a hidden start notifies from the tray). It starts as no window sees it:
+/// not focused, no channel on screen, the account's presence choice as the client holds it; a window's frames
+/// ([`attach`]) tell it more. A new client of the instance (a sign-in again) replaces the old engine.
+pub fn start_engine(instance: InstanceId, client: &Rc<Client>, cx: &mut App) {
+    let key = Rc::as_ptr(client) as usize;
+    if notices(cx).engines.iter().any(|e| e.client == key) {
+        return;
+    }
+    let presence = presence_of(client.state().borrow().profile.presence_choice);
+    start_with(instance, client, (false, None, presence), cx);
+}
+
+/// Starts the engine of `client`, whose window sees `env` (focused, the channel on screen, the presence choice) from the
+/// first decision on.
+fn start_with(
+    instance: InstanceId,
+    client: &Rc<Client>,
+    (visible, on_screen, presence): (bool, Option<ChannelId>, Presence),
+    cx: &mut App,
+) {
+    let key = Rc::as_ptr(client) as usize;
     notices(cx).engines.retain(|e| {
         let keep = e.instance != instance;
         if !keep {
@@ -361,7 +387,7 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
     else {
         return;
     };
-    env.set(visible, ctx.channel, presence);
+    env.set(visible, on_screen, presence);
     let task = client.notify().start(
         client,
         Arc::new(notifier),
@@ -614,7 +640,7 @@ fn open(live: &Live, cx: &mut App) {
     };
     let Some(window) = window else {
         if let Owner::Instance(id) = live.owner {
-            super::tray::show_instance(id, cx);
+            let _ = super::tray::show_instance(id, cx);
         }
         return;
     };

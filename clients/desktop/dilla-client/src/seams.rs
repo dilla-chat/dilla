@@ -26,6 +26,13 @@ pub trait Keychain: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError>;
     fn set(&self, account: &str, secret: &[u8]) -> Result<(), KeychainError>;
     fn delete(&self, account: &str) -> Result<(), KeychainError>;
+
+    /// [`Keychain::get`] that never asks the person: no unlock dialog, no access prompt. A secret the store holds but
+    /// would have to ask for (a locked keyring) is [`KeychainError::Unavailable`]. What a start with no window (an
+    /// autostart at login) may use. A store that cannot tell whether it would ask answers `Unavailable` (the default).
+    fn get_quietly(&self, _account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+        Err(KeychainError::Unavailable)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

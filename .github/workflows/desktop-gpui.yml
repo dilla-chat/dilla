@@ -505,7 +505,7 @@ jobs:
         run: |
           export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"
           cargo test -p dilla-parity --locked -- --ignored
-          cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test share --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_
+          cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test hidden_start --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test share --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_
           cargo test -p dilla-desktop --test integration --locked -- --ignored
           cargo test -p dilla-desktop --test slice --locked -- --ignored
       # tests/call includes the Bot music timing tests (G3): they start the Bot built above with its SFU and the ffmpeg fixtures.

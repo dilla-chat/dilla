@@ -16,7 +16,7 @@ use dilla_client::state::ring::{
     AfkNotice, AfkSnapshot, Away, BlockWhen, CallBlock, IncomingRing, RING, RingState,
 };
 use dilla_client::state::{AppState, ChannelId, CommunityId, UserId};
-use dilla_desktop::native::notifier;
+use dilla_desktop::native::{notifier, tray};
 use dilla_desktop::screens::ring::{
     RingEnv, afk_explainer, afk_moved, afk_title, block_notice, dm_call_start, effects, join_held,
     provide, ring_banner, ring_key, ring_text,
@@ -950,11 +950,12 @@ fn closing_the_ringing_window_raises_the_ring_notification(cx: &mut TestAppConte
     assert_eq!(vcx.update(|_, cx| notifier::live_tags(cx)).len(), 1);
 }
 
-/// Answer on the notification of a ring that rang with no window: the instance's window opens (the tray's
-/// `show_instance`; here the test opens it as that would) and, once it draws, it opens the ring's DM and joins its call
-/// (`Voice::join_dm` needs a client: a fixture's shell has none, so the DM is what shows here).
+/// Answer on the notification of a ring that rang with no window: the tray's `show_instance` opens the instance's window
+/// (here through the test's opener: a test has no host), and once it draws, the answer it waited for opens the ring's
+/// DM. Joining the call is `answer`'s next step, through `Voice::join_dm`, which needs a client: a fixture's shell has
+/// none, so the DM is what this checks.
 #[gpui::test]
-fn answering_from_the_notification_opens_the_window_and_joins(cx: &mut TestAppContext) {
+fn answering_from_the_notification_opens_the_window_on_the_rings_dm(cx: &mut TestAppContext) {
     os_installed(cx);
     let tx = instance(cx, 1);
     let mut ringing = server();
@@ -963,36 +964,98 @@ fn answering_from_the_notification_opens_the_window_and_joins(cx: &mut TestAppCo
     cx.run_until_parked();
     let live = cx.update(|cx| notifier::live_tags(cx));
     assert_eq!(live.len(), 1, "the ring raised its notification");
-    cx.update(|cx| notifier::respond(answer(live[0].clone()), cx));
-    cx.run_until_parked();
-    assert!(cx.update(|cx| notifier::live_tags(cx)).is_empty());
-    assert!(
-        cx.update(|cx| effects::answer_pending(InstanceId(1), cx)),
-        "the answer waits for the instance's window"
-    );
     // The instance's window opens on the client's state (where it was last: its start route).
-    let (shell, vcx) = cx.add_window_view(move |window, cx| {
-        let id = window.window_handle().window_id();
-        dilla_desktop::native::NativeShell::window_opened(id, Some(InstanceId(1)), cx);
-        dilla_desktop::screens::shell::ShellView::new(
-            Arc::new(ringing),
-            None,
-            None,
-            dilla_desktop::screens::shell::Clock::Fixed { now: 0, utc: true },
-            window,
-            cx,
-        )
+    use gpui::AppContext as _;
+    let opened: Rc<RefCell<Option<gpui::WindowHandle<dilla_desktop::screens::shell::ShellView>>>> =
+        Rc::default();
+    let into = opened.clone();
+    cx.update(|cx| {
+        cx.set_global(tray::OpenInstanceHook(Rc::new(move |id, cx| {
+            let state = Arc::new(ringing.clone());
+            let handle = cx
+                .open_window(gpui::WindowOptions::default(), move |window, cx| {
+                    let wid = window.window_handle().window_id();
+                    dilla_desktop::native::NativeShell::window_opened(wid, Some(id), cx);
+                    cx.new(|cx| {
+                        dilla_desktop::screens::shell::ShellView::new(
+                            state,
+                            None,
+                            None,
+                            dilla_desktop::screens::shell::Clock::Fixed { now: 0, utc: true },
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .expect("the window opens");
+            *into.borrow_mut() = Some(handle);
+            true
+        })));
     });
+    // The window may draw (and answer) while it opens, inside the response: the answer waits from before it opens.
+    cx.update(|cx| notifier::respond(answer(live[0].clone()), cx));
+    assert!(cx.update(|cx| notifier::live_tags(cx)).is_empty());
+    let handle = opened.borrow().expect("show_instance opened the window");
+    let vcx = &mut VisualTestContext::from_window(handle.into(), cx);
     vcx.run_until_parked();
     vcx.update(|window, _| window.refresh());
     vcx.run_until_parked();
     assert_eq!(
-        shell.read_with(vcx, |s, _| s.route().clone()),
+        handle
+            .read_with(vcx, |s, _| s.route().clone())
+            .expect("the window is open"),
         dilla_desktop::router::Route::Dm(DM),
         "the window answered: it shows the ring's DM"
     );
     assert!(vcx.update(|window, _| window.is_window_active()));
     assert!(!vcx.update(|_, cx| effects::answer_pending(InstanceId(1), cx)));
+}
+
+/// Review of Task 3, minor 2: Answer with no window, and the window does not open (here: no host to open it, as while
+/// the app quits or when the instance left the list). The answer does not wait on: a window opened later for another
+/// reason never answers a call by itself.
+#[gpui::test]
+fn a_failed_window_open_clears_the_pending_answer(cx: &mut TestAppContext) {
+    os_installed(cx);
+    let tx = instance(cx, 1);
+    tx.send_replace(with_rings(vec![ring(DM, "Bob", false)]));
+    cx.run_until_parked();
+    let live = cx.update(|cx| notifier::live_tags(cx));
+    assert_eq!(live.len(), 1, "the ring raised its notification");
+    assert!(cx.windows().is_empty());
+    cx.update(|cx| notifier::respond(answer(live[0].clone()), cx));
+    cx.run_until_parked();
+    assert!(cx.windows().is_empty(), "no window opened");
+    assert!(
+        !cx.update(|cx| effects::answer_pending(InstanceId(1), cx)),
+        "no answer waits for a window that never opened"
+    );
+    assert!(
+        !cx.update(|cx| tray::show_instance(InstanceId(1), cx)),
+        "show_instance says it opened nothing"
+    );
+}
+
+/// Review of Task 3, minor 1: a client whose state sender drops (it stopped without `unwatch_client`) leaves no observer
+/// entry behind. A later client at the same address (`Rc::as_ptr` is reused) is observed: its ring sounds.
+#[gpui::test]
+fn a_dropped_state_sender_removes_its_watch(cx: &mut TestAppContext) {
+    os_installed(cx);
+    let tx = instance(cx, 1);
+    tx.send_replace(with_rings(vec![ring(DM, "Bob", false)]));
+    cx.run_until_parked();
+    assert!(cx.update(effects::sound_on));
+    drop(tx);
+    cx.run_until_parked();
+    assert!(!cx.update(effects::sound_on), "the gone client's ring went");
+    // The same key again: a new client allocated where the old one was.
+    let again = instance(cx, 1);
+    again.send_replace(with_rings(vec![ring(DM2, "Ada", false)]));
+    cx.run_until_parked();
+    assert!(
+        cx.update(effects::sound_on),
+        "the new client at the old address is observed"
+    );
 }
 
 /// beta.5 `current()`: Answer from the notification acts only on the ring that is still current. A ring that ended
