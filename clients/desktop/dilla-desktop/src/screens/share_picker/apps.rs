@@ -41,7 +41,7 @@ pub fn set_lister(lister: AppLister, cx: &mut App) {
     cx.default_global::<AppChoosers>().lister = Some(lister);
 }
 
-/// Whether this system has application audio (Linux), or a test list stands in.
+/// Whether this system has application audio ([`available_now`]), or a test list stands in.
 pub fn available(cx: &App) -> bool {
     available_now()
         || cx
@@ -49,9 +49,10 @@ pub fn available(cx: &App) -> bool {
             .is_some_and(|c| c.lister.is_some())
 }
 
-/// Whether this build has application audio (Linux; macOS and Windows not yet).
+/// Whether this system has application audio: Linux, macOS 14.2 and later, Windows 10 2004 (build 19041) and later
+/// (`dilla_media::app_audio::supported`, a version check read once: no permission is asked, nothing is listed).
 pub fn available_now() -> bool {
-    cfg!(target_os = "linux")
+    dilla_media::app_audio::supported()
 }
 
 pub fn is_open(window: WindowId, cx: &App) -> bool {

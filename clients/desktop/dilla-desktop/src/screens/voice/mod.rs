@@ -3738,7 +3738,7 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
 
 /// SharePicker.tsx's sound row on the desktop (`.d-share-picker__audio`: the 12px label over its 10.5px `--fg-3`
 /// note, the switch at the right): one application's sound with the share. On, it opens the application chooser; off,
-/// the share goes on without sound. Only where application audio exists (Linux).
+/// the share goes on without sound. Only where application audio exists (Linux, macOS 14.2+, Windows 10 2004+).
 fn sound_row(ui: &VoiceUi) -> Option<AnyElement> {
     if !crate::screens::share_picker::apps::available_now() {
         return None;

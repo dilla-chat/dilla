@@ -53,13 +53,11 @@ use windows::core::{HRESULT, IUnknown, Interface, PCWSTR, PWSTR, implement, w};
 use super::{
     AppAudioError, AppCapture, AppSource, CHANNELS, MAX_CHUNK_BYTES, RATE,
     frames::{SampleFrames, ancestors, exclude_tree_and_ancestors},
-    in_tree,
+    in_tree, windows_build_supported,
 };
 
 /// mmreg.h `WAVE_FORMAT_IEEE_FLOAT` (kept here rather than enabling the whole `Win32_Media_Multimedia` module).
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
-/// Process loopback's first build (Windows 10 2004).
-const MIN_BUILD: u32 = 19_041;
 /// At most this many sessions are looked at (beta.5 lists at most 256 applications).
 const MAX_SESSIONS: i32 = 1024;
 /// The client's buffer: 20 ms, in 100 ns units (Microsoft's ApplicationLoopback sample).
@@ -69,17 +67,15 @@ fn server(e: impl std::fmt::Display) -> AppAudioError {
     AppAudioError::Server(e.to_string())
 }
 
-/// Below build 19041 there is no process loopback.
-fn supported() -> Result<(), AppAudioError> {
+/// Below build 19041 there is no process loopback ([`windows_build_supported`]). Reads the version only.
+pub(super) fn supported() -> Result<(), AppAudioError> {
     let mut info = OSVERSIONINFOW {
         dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
         ..Default::default()
     };
     // SAFETY: `info` is a valid OSVERSIONINFOW with its size set, as RtlGetVersion requires.
     let status = unsafe { RtlGetVersion(&mut info) };
-    let new_enough =
-        info.dwMajorVersion > 10 || (info.dwMajorVersion == 10 && info.dwBuildNumber >= MIN_BUILD);
-    if status.0 >= 0 && new_enough {
+    if status.0 >= 0 && windows_build_supported(info.dwMajorVersion, info.dwBuildNumber) {
         Ok(())
     } else {
         Err(AppAudioError::Unsupported)

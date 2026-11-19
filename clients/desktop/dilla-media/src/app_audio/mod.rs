@@ -16,8 +16,8 @@
 //! The platform-independent half (frame cutting, the sample check, the own-tree exclusion, the list's bounds) is
 //! `frames.rs`, shared by every platform.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 mod frames;
 #[cfg(target_os = "linux")]
@@ -39,6 +39,8 @@ pub const MAX_SOURCES: usize = 256;
 pub const MAX_LABEL: usize = 512;
 /// beta.5's chunk bound: a larger chunk is refused.
 pub const MAX_CHUNK_BYTES: usize = 1024 * 1024;
+/// Process loopback's first build (Windows 10 2004).
+pub const MIN_WINDOWS_BUILD: u32 = 19_041;
 
 /// One application that is playing: its first playback stream's serial and its process id (beta.5's `serial:pid`), and
 /// the name it gives itself.
@@ -63,6 +65,38 @@ pub enum AppAudioError {
     /// A malformed frame or chunk: the capture ends (beta.5 stops on an invalid sample).
     #[error("invalid audio: {0}")]
     Invalid(&'static str),
+}
+
+/// Whether this system can capture an application's sound at all: Linux (PipeWire), Windows build 19041 and later,
+/// macOS 14.2 and later; nowhere else. The same version check [`sources`] and [`start`] answer
+/// [`AppAudioError::Unsupported`] with, read once and kept: it asks no permission, lists nothing and starts no capture,
+/// so the UI may call it on every frame.
+pub fn supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        {
+            true
+        }
+        #[cfg(target_os = "windows")]
+        {
+            windows::supported().is_ok()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            macos::supported().is_ok()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        {
+            false
+        }
+    })
+}
+
+/// Whether Windows `major`.`build` has process loopback (Windows 10 build [`MIN_WINDOWS_BUILD`], and any later major).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn windows_build_supported(major: u32, build: u32) -> bool {
+    major > 10 || (major == 10 && build >= MIN_WINDOWS_BUILD)
 }
 
 /// The applications that are playing now, Dilla's own process tree left out (`excluded`: this process).
@@ -203,6 +237,25 @@ mod tests {
         assert_eq!(out[2].label.chars().count(), MAX_LABEL);
         let many: Vec<AppSource> = (1..400).map(|i| s(i, i as u32, "a")).collect();
         assert_eq!(cap_sources(many).len(), MAX_SOURCES);
+    }
+
+    /// Process loopback came with Windows 10 2004 (build 19041); Windows 11 (still major 10, build 22000+) has it.
+    #[test]
+    fn windows_has_application_audio_from_build_19041() {
+        assert!(!windows_build_supported(6, 9600), "8.1");
+        assert!(!windows_build_supported(10, 18363), "10 1909");
+        assert!(!windows_build_supported(10, 19040));
+        assert!(windows_build_supported(10, 19041), "10 2004");
+        assert!(windows_build_supported(10, 22631), "11 23H2");
+        assert!(windows_build_supported(11, 0));
+    }
+
+    /// Linux always has it (PipeWire); the check reads nothing that could ask or start, and answers the same twice.
+    #[test]
+    fn the_support_check_is_stable() {
+        assert_eq!(supported(), supported());
+        #[cfg(target_os = "linux")]
+        assert!(supported());
     }
 
     /// beta.5 `excluded`: Dilla's whole process tree is left out, and only it.
