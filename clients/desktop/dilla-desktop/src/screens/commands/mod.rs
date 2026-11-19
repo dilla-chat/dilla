@@ -519,21 +519,6 @@ pub(super) fn dismiss_fixture_row(window: gpui::WindowId, row: u64, cx: &mut App
         .retain(|(_, r)| r.id != row);
 }
 
-/// A fixture window's row `row` ends with `status` and `text` (a moderation built-in's Cancel keeps its row).
-pub(super) fn finish_fixture_row(
-    window: gpui::WindowId,
-    row: u64,
-    status: ResultStatus,
-    text: String,
-    cx: &mut App,
-) {
-    let rows = &mut crate::per_window::get_mut::<FixtureRows>(window, cx).0;
-    if let Some((_, r)) = rows.iter_mut().find(|(_, r)| r.id == row) {
-        r.status = status;
-        r.text = text;
-    }
-}
-
 /// The private results of the open conversation, oldest first, each with its height in a log `width` wide: the log
 /// draws them after its last message. A fixture window draws its own built-in rows ([`FixtureRows`]).
 pub fn private_results(
@@ -775,10 +760,10 @@ mod tests {
         });
     }
 
-    /// Ruling R6 (CommandHost.tsx:294): a moderation built-in's Cancel keeps its row, "cancelled"; abandoning the
-    /// question (a click outside, leaving the conversation) still takes the row away.
+    /// CommandHost.tsx:233, :291: `/warn` is not CommandHost's `moderation` (only `/kick` and `/ban` are), so both a
+    /// Cancel and an abandon (a click outside, leaving the conversation) take its pending row away.
     #[gpui::test]
-    fn a_cancelled_moderation_builtin_keeps_its_row(cx: &mut gpui::TestAppContext) {
+    fn a_cancelled_or_abandoned_warn_leaves_no_row(cx: &mut gpui::TestAppContext) {
         use dilla_client::features::bot::{Ask, Builtin};
         use dilla_client::state::{CommunityId, UserId};
         let w = cx
@@ -796,13 +781,7 @@ mod tests {
             })
         };
         cx.update(|cx| {
-            for (choice, left) in [
-                (
-                    Some(false),
-                    vec![(ResultStatus::Cancelled, "Cancelled.".to_owned())],
-                ),
-                (None, Vec::new()),
-            ] {
+            for choice in [Some(false), None] {
                 crate::per_window::get_mut::<FixtureRows>(w, cx).0.clear();
                 let row = add_fixture_row(w, conversation, Clock::Local, copy::pending("warn"), cx);
                 confirm::ask_builtin(
@@ -824,9 +803,10 @@ mod tests {
                     },
                     cx,
                 );
+                assert_eq!(rows(cx).len(), 1, "the row is pending while asked");
                 confirm::answer_builtin(w, choice, cx);
                 assert!(!confirm::is_open(w, cx));
-                assert_eq!(rows(cx), left, "{choice:?}");
+                assert!(rows(cx).is_empty(), "{choice:?}");
             }
         });
     }

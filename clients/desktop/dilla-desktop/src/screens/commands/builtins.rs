@@ -300,10 +300,13 @@ fn untimeout(
     let client = Rc::downgrade(client);
     cx.spawn(async move |cx| {
         let held = job.await;
+        // Released meanwhile: nothing is asked, and the row still ends (as a stopped client's does in `settle`).
+        let Some(client) = client.upgrade() else {
+            return finish(failed(&bot::mutation_error_of(&ClientError::Network(
+                "stopped".into(),
+            ))));
+        };
         let ask = |cx: &mut App| {
-            let Some(client) = client.upgrade() else {
-                return;
-            };
             super::confirm::ask_builtin(
                 window,
                 super::confirm::AskingBuiltin {

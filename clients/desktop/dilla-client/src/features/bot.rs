@@ -442,25 +442,24 @@ impl Builtin {
         }
     }
 
-    /// Whether cancelling its question removes its pending row (CommandHost.tsx:294: `cancel && !moderation`). A command
-    /// that wants its cancelled row kept (moderation) answers `false` in its own arm; the match has no wildcard so a new
+    /// Whether cancelling its question removes its pending row (CommandHost.tsx:291, :322: `cancel && !moderation`). A
+    /// command that wants its cancelled row kept answers `false` in its own arm; the match has no wildcard so a new
     /// command must decide.
     pub fn dismissed_on_cancel(&self) -> bool {
         match self {
-            // CommandHost's `moderation` is `/kick` and `/ban` only: a cancelled `/delete`, even of another person's
-            // message, leaves no row.
+            // CommandHost's `moderation` is `/kick` and `/ban` only (:233): a cancelled `/delete`, even of another
+            // person's message, and a cancelled `/timeout`, `/untimeout`, `/warn` or `/unban` leave no row.
             Self::Reply { .. }
             | Self::Edit { .. }
             | Self::DeleteOwn { .. }
             | Self::RemoveOther { .. }
             | Self::Pin { .. }
-            | Self::Topic { .. } => true,
-            // Ruling R6: the moderation built-ins keep their cancelled row, as `/kick` and `/ban` do.
-            Self::Timeout { .. }
+            | Self::Topic { .. }
+            | Self::Timeout { .. }
             | Self::Untimeout { .. }
             | Self::UntimeoutConfirmed { .. }
             | Self::Warn { .. }
-            | Self::Unban { .. } => false,
+            | Self::Unban { .. } => true,
         }
     }
 }
@@ -2543,7 +2542,7 @@ mod tests {
             plan(&s, Some(c), &format!("/unban user:{}", me.hex())),
             refused("That member is not currently banned.")
         );
-        // A moderation command keeps its cancelled row (CommandHost.tsx:294, ruling R6).
+        // Not CommandHost's `moderation` (only `/kick` and `/ban`, CommandHost.tsx:233): a Cancel dismisses the row (:291).
         for run in [
             Builtin::Timeout {
                 community: c,
@@ -2573,7 +2572,7 @@ mod tests {
                 name: String::new(),
             },
         ] {
-            assert!(!run.dismissed_on_cancel(), "{run:?}");
+            assert!(run.dismissed_on_cancel(), "{run:?}");
         }
     }
 
