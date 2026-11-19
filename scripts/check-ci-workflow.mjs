@@ -1634,10 +1634,17 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-media --test live --test e2e_call --test capture --locked -- --ignored',
     '    cargo test -p dilla-desktop --test voice --test ring --locked -- --ignored --skip parity_',
   ].join('\n'),
+  // The vendored GPUI's Linux notification test (close and replace by tag, the desktop-entry hint and icon) claims
+  // org.freedesktop.Notifications, so it runs on a private session bus; without DILLA_PRIVATE_BUS=1 it skips itself.
+  linuxNotifications: [
+    '- name: Linux notifications close and replace by tag (private session bus)',
+    "  if: runner.os == 'Linux' && !cancelled()",
+    '  run: dbus-run-session -- env DILLA_PRIVATE_BUS=1 cargo test -p gpui-pre-linux --locked system_notifications',
+  ].join('\n'),
 };
 
 /** The job(s) each GPUI_PINNED_STEPS entry must be in; an entry not named here belongs to the gpui-linux job. */
-const GPUI_PIN_JOBS = { macParity: ['gpui'], macVideoToolbox: ['gpui'], tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'] };
+const GPUI_PIN_JOBS = { macParity: ['gpui'], macVideoToolbox: ['gpui'], tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'], linuxNotifications: ['gpui'] };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
