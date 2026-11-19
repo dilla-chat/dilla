@@ -15,7 +15,6 @@ use dilla_client::features::factors::{
     BackupCodes, FactorError, Factors, InstanceDoc, StepUpToken, TotpKey, is_six_digits,
     passkey_name_fits,
 };
-use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -24,8 +23,10 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use zeroize::Zeroizing;
 
+use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::banner::BannerTone;
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
+use dilla_desktop_ui::components::check_list::check_box;
 use dilla_desktop_ui::components::choice_cards::{ChoiceCardOption, ChoiceCards};
 use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::factor::{CodeList, code_list_columns, copy_text};
@@ -33,7 +34,6 @@ use dilla_desktop_ui::components::qr_code::QrCode;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
-use dilla_desktop_ui::{Icon, IconName};
 
 use super::code::{CodeEvent, CodeField};
 use super::frame::{Action, AuthFrame, error_line, link, nav_row, para};
@@ -46,8 +46,6 @@ const KEY_GAP: f32 = 16.0;
 /// The card's content width (400 − 2 × 28), for the code list's columns.
 const CARD_CONTENT: f32 = 344.0;
 /// The acknowledgement's box (a native 14px check box in a 24px target) and its gap to the label.
-const CHECK: f32 = 14.0;
-const CHECK_TARGET: f32 = 24.0;
 const CHECK_GAP: f32 = 8.0;
 
 /// Which factor the choice offers.
@@ -1085,42 +1083,17 @@ impl Render for FactorSetupView {
 
 /// The codes step's acknowledgement: a check box and its label, one target.
 fn check_row(id: &'static str, label: &'static str, checked: bool) -> gpui::Stateful<gpui::Div> {
-    let edge = if checked {
-        color::ACCENT
-    } else {
-        color::CONTROL_EDGE_KEY
-    };
     div()
         .id(id)
         .flex()
         .items_center()
         .gap(px(CHECK_GAP))
         .cursor_pointer()
-        .child(
-            div()
-                .size(px(CHECK_TARGET))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .size(px(CHECK))
-                        .rounded(dilla_desktop_ui::tokens::radius::TAG)
-                        .border_1()
-                        .border_color(edge)
-                        .when(checked, |d| d.bg(color::ACCENT))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(checked, |d| {
-                            d.child(
-                                Icon::new(IconName::Check)
-                                    .size(px(CHECK - 4.0))
-                                    .color(color::ACCENT_INK),
-                            )
-                        }),
-                ),
-        )
+        .child(check_box(
+            (gpui::ElementId::from(id), "box"),
+            checked,
+            false,
+        ))
         .child(line(label, text::SM, line_height(text::SM, 1.5), color::FG))
 }
 
