@@ -190,7 +190,8 @@ fn lock_rtt(rtt: &Mutex<RttReport>) -> std::sync::MutexGuard<'_, RttReport> {
 
 /// The running session (see the module docs). Dropping it leaves the call's media.
 pub struct MediaSession {
-    _runtime: tokio::runtime::Runtime,
+    /// The session's runtime and its loop ([`run`]); `Drop` hands both to a thread that lets the loop leave the call.
+    running: Option<(tokio::runtime::Runtime, tokio::task::JoinHandle<()>)>,
     commands: mpsc::UnboundedSender<Command>,
     videos: Arc<Mutex<RemoteVideos>>,
     /// Bumped on every new remote video frame: the view repaints when it moved.
@@ -337,9 +338,9 @@ impl MediaSession {
             sources,
             host,
         };
-        runtime.spawn(run(ctx, rx));
+        let task = runtime.spawn(run(ctx, rx));
         Ok(MediaSession {
-            _runtime: runtime,
+            running: Some((runtime, task)),
             commands,
             videos,
             video_seq,
@@ -381,6 +382,28 @@ impl MediaSession {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+}
+
+impl Drop for MediaSession {
+    /// Leaves the call the way a leave does, not by tearing its runtime down under it. Dropping the runtime cancelled the
+    /// call's task: the `Call` was dropped on a runtime that was shutting down, so its room was never closed and its
+    /// PeerConnection (with its sockets, threads and frame transformers) lived until the process exited. The commands
+    /// channel closes once this returns, which ends [`run`] (a call in progress leaves first: `Call::leave` closes its
+    /// room); the runtime is dropped after that, on a thread of its own so the window never waits on the network.
+    fn drop(&mut self) {
+        let Some((runtime, task)) = self.running.take() else {
+            return;
+        };
+        let ended = std::thread::Builder::new()
+            .name("dilla-call-end".into())
+            .spawn(move || {
+                let _ = runtime.block_on(task);
+            });
+        if let Err(e) = ended {
+            // The runtime came back with the error and is dropped here: the call's room is not closed.
+            log::warn!("voice: the call's end could not run on a thread of its own: {e}");
+        }
     }
 }
 
@@ -428,8 +451,10 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
                 continue;
             }
         }
-        if links.changed().await.is_err() {
-            return;
+        tokio::select! {
+            r = links.changed() => if r.is_err() { return },
+            // The session was dropped (its commands channel closed): there is nothing more to join.
+            None = commands.recv() => return,
         }
     }
 }
@@ -669,13 +694,15 @@ async fn in_call(
                 let _ = ctx.voice.set_share(share).await;
                 ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
             }
-            Some(cmd) = commands.recv() => match cmd {
-                Command::Share(kind, false, _) => stop_share(ctx, &call, &mut opens, kind).await,
-                Command::Share(kind, true, options) => opens.start(ctx, &opened_tx, kind, None, options),
-                Command::ShareSource(source, options) => {
+            // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
+            cmd = commands.recv() => match cmd {
+                None => break,
+                Some(Command::Share(kind, false, _)) => stop_share(ctx, &call, &mut opens, kind).await,
+                Some(Command::Share(kind, true, options)) => opens.start(ctx, &opened_tx, kind, None, options),
+                Some(Command::ShareSource(source, options)) => {
                     opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
                 }
-                Command::AppAudio(source) => {
+                Some(Command::AppAudio(source)) => {
                     if source.is_some() && !ctx.states.borrow().voice.share.screen {
                         pending_app = source;
                     } else {
@@ -683,7 +710,7 @@ async fn in_call(
                         app_audio(ctx, &call, source).await;
                     }
                 }
-                Command::Quality(options) => {
+                Some(Command::Quality(options)) => {
                     if ctx.states.borrow().voice.share.screen
                         && let Err(e) = call.configure_video(ShareKind::Screen, options).await
                     {

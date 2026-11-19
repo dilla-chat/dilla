@@ -1580,6 +1580,57 @@ fn closing_the_window_leaves_its_call(cx: &mut TestAppContext) {
     assert!(cx.update(|cx: &mut App| voice::ui_of(wa, cx).is_none()));
 }
 
+/// A call left from the dock releases its media in this process: its room is closed, so its PeerConnection and every
+/// transceiver's frame transformer go with it (`dilla_media::ffi::live_transformers`). Before livekit 0.11 a closed
+/// room's remote participants kept the engine and its PeerConnection alive for the life of the process.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn leaving_from_the_dock_releases_the_call_media(cx: &mut TestAppContext) {
+    let w = call_world("t-dock-leave");
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    // No other call: the handover starts the join in its first turn.
+    cx.run_until_parked();
+    let s = w.rt.block_on(until(
+        &w.alice,
+        "alice's media is up (its ping is read)",
+        |s| s.voice.call.phase == CallPhase::In && s.voice.call.ping_ms.is_some(),
+    ));
+    assert!(
+        dilla_media::ffi::live_transformers() > 0,
+        "the call's PeerConnection holds its transformers"
+    );
+    let vcx = &mut VisualTestContext::from_window(a.into(), cx);
+    vcx.update(|window, cx| {
+        voice::sync(wa, s, Some(&w.alice), cx);
+        window.refresh();
+    });
+    vcx.run_until_parked();
+    let leave = vcx
+        .debug_bounds("voice-leave")
+        .expect("the dock's leave")
+        .center();
+    vcx.simulate_click(leave, gpui::Modifiers::none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        vcx.run_until_parked();
+        let live = dilla_media::ffi::live_transformers();
+        if live == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{live} frame transformers still alive 5 s after the dock's leave"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    w.rt.block_on(until(&w.alice, "alice's call is left", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    }));
+}
+
 /// Review N3: one call per device. Alice's window is in the call; a join in bob's window (another instance's) leaves
 /// alice's call first, through alice's own client.
 #[gpui::test]
