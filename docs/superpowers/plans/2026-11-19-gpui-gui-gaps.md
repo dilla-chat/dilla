@@ -88,6 +88,16 @@ Visual:
 - **D18** The attachment image crop gets fixed (sub-texel UVs). Colour emoji screens get measured per-screen Linux tolerances, as macOS has (Task 7).
 - **D19** Server settings → Self roles follows the prototype's controls (CheckList, Select), not the web's unstyled browser `<fieldset>`, and gets a GPUI-only reference (Task 18).
 
+Share sound:
+- **D21** Share sound follows the shared window (Jonas 2026-11-19), as Discord does:
+  - Sharing a window brings that window's application's sound by itself. The sound section shows it ("Sound from
+    {app}") and the person can switch it off or choose another application.
+  - A whole screen brings none (today's manual choice).
+  - Wayland and macOS (the system's dialog chooses), an owner that can't be found and an owner that isn't playing all
+    fall back to today's manual choice with nothing preselected.
+  - The person's own choice is never replaced.
+  - Dilla's own process tree is never captured (Task 44).
+
 Controller reconciliation (from merging the drafts; tell Jonas):
 - **D20** The role-panel editor's per-role choice is the shared 22px checkbox from D15 (the web's checkbox), not a `Toggle`. D2 chose `Toggle` before D15 made a parity checkbox available, and D15 says "everywhere".
 
@@ -103,8 +113,8 @@ Controller reconciliation (from merging the drafts; tell Jonas):
 
 ## Execution order
 
-Draft ids map to task numbers as follows. Composer is C, shell S, Bot B, threads/search/polls X, visual V, and the voice
-teardown Z.
+Draft ids map to task numbers as follows. Composer is C, shell S, Bot B, threads/search/polls X, visual V, the voice
+teardown Z, and the share sound Q.
 
 | Task | Id | Size | Task | Id | Size | Task | Id | Size |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -121,7 +131,7 @@ teardown Z.
 | 11 | C5 | M | 26 | C7 | M | 41 | X6 | M |
 | 12 | S1 | L | 27 | X3 | M | 42 | V15 | L |
 | 13 | S2 | M | 28 | C8 | L | 43 | — (docs) | S |
-| 14 | S3 | M | 29 | C9 | M | | | |
+| 14 | S3 | M | 29 | C9 | M | 44 | Q1 | M |
 | 15 | S4 | M | 30 | C10 | L | | | |
 
 Hard dependencies:
@@ -132,7 +142,7 @@ Hard dependencies:
 - Polls: X3 → X4 → X6 (27 → 39 → 41). X6 also needs V13's poll seeding (40 → 41).
 - V13 (40) needs X3, X4, C7 (its fixtures) and B5's Bot world extension (38). V15 (42) needs C2 and C6.
 - Every `native/` reference needs Task 1. Tasks 18 and 29 need Task 2.
-- Z1 (3) is independent.
+- Z1 (3) is independent. Q1 (44) needs nothing from this plan. It lands before Task 24, which also edits `voice/mod.rs`.
 
 Parallel work: lanes run in separate copies of the worktree and land on the branch in order.
 - Within a lane, tasks run in sequence.
@@ -149,7 +159,7 @@ Parallel work: lanes run in separate copies of the worktree and land on the bran
 - 6 (V10, notify fixtures and `D/fixture/notify.rs`)
 - 7 (V11, the attachments crop, parity `diff.rs`/`tolerance.toml`)
 
-**Wave 1. Three lanes in parallel.**
+**Wave 1. Four lanes in parallel.**
 - Lane A, commands: 8 → 9 → 10 → 11. Files: C `features/bot.rs`, `features/moderation.rs`, D `screens/commands/*`,
   D `screens/composer.rs`, `D/../tests/bot.rs`.
 - Lane B, shell: 12 → 13 → 14 → 15 → 16 → 17. Files: C `client.rs`, `state/*`, `features/server_admin.rs`, `features/signup.rs`,
@@ -158,6 +168,14 @@ Parallel work: lanes run in separate copies of the worktree and land on the bran
 - Lane C, visual: 18 → 19 → 20 → 21 → 22 → 23. Files: D `members/self_roles.rs`, `user_settings/*`, `messages/editor.rs`,
   `messages/markdown.rs`, `sign_in.rs`, `rail.rs`, `dms/*`, `automation.rs`; U `segmented.rs`, `threads/reply_line.rs`,
   `onboarding/*`, `voice/*`; their test files and fixtures.
+- Lane D, share sound: 44.
+  - Files: dilla-media `sources/desktop.rs`, `app_audio/{mod,frames,linux,windows}.rs`, `Cargo.toml` (and dilla-media's
+    entry in `Cargo.lock`); D `screens/voice/mod.rs`, `screens/share_picker/apps.rs`; `D/../tests/share.rs`;
+    `docs/user/desktop.md`.
+  - No other wave-1 lane holds these. Lane C's `voice/*` is U `components/voice`, and Task 23 touches only
+    `tests/voice.rs` and `automation.rs`.
+  - `voice/mod.rs` is edited again later by Task 24 (wave 2), Task 36 and Task 37 (wave 3). Each of those rebases on
+    this lane. Task 37's `session.rs` and dilla-media `room.rs` are not touched here.
 
 **Wave 2. The commands spine, with a visual lane beside it.**
 - Spine (in sequence): 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31. Task 24 touches `shell.rs`, `voice/mod.rs`, `members/mod.rs`,
@@ -175,7 +193,7 @@ Parallel work: lanes run in separate copies of the worktree and land on the bran
   `toasts.rs`. It must land before Task 40, because both edit `D/../tests/bot.rs`.
 - A fix that V15 finds in a file the spine holds waits as a commit after the spine task that holds that file.
 
-**Close.** Task 43 (docs, release-notes inputs) runs after everything above has merged into the branch.
+**Close.** Task 43 (docs, release-notes inputs) runs after everything above, including Task 44, has merged into the branch.
 
 ---
 
@@ -1957,7 +1975,7 @@ fixed in the same task with a unit test. Size L for the count, not the depth.
 
 **Size:** S
 
-Jonas's rule: the user docs are part of every iteration. This task runs after Tasks 1–42 are on the branch.
+Jonas's rule: the user docs are part of every iteration. This task runs after Tasks 1–42 and 44 are on the branch.
 
 **Files:**
 - Modify: `docs/user/desktop.md`. Update "A tour" (:25), the feature sections and "Platform notes" (:215).
@@ -1980,6 +1998,8 @@ Jonas's rule: the user docs are part of every iteration. This task runs after Ta
   - the music card and the stage bar
   - Welcome settings
   - the 22px checkboxes and the resizable bio
+  - a shared window bringing its application's sound (D21). Task 44 already rewrote "Screen capture and camera";
+    check that it still reads right next to the other items.
 
   The desktop-only items (D6, D8) are listed as such. Remove every "Known gaps" entry this wave closed. Keep the entries that
   are still open, including the items under "Tracked for later" below that a user would notice: compact density only inside
@@ -2008,6 +2028,283 @@ Jonas's rule: the user docs are part of every iteration. This task runs after Ta
   "Release notes (alpha.2)". Do not add a file. Write one bullet per user-visible area from Step 1, the two desktop-only
   deviations (D6, D8), the fixed teardown (Task 3: calls release their media when they end), and "Still open" from the list
   below. The controller uses them for the `desktop-gpui-v0.2.0-alpha.2` release (clients/desktop/RELEASING.md).
+
+
+### Task 44: A shared window brings its application's sound [Q1]
+
+**Size:** M
+
+Jonas's decision (D21, 2026-11-19): screen-share sound works like Discord. Sharing a window brings that window's
+application's sound by itself, and the person can switch it off or choose another application in the share menu's
+existing sound section. Sharing a whole screen chooses no application (today's manual choice stays). Nothing is chosen
+for the person when:
+- the system's own dialog picks the source (Linux on Wayland, macOS: `desktop::portal()` is true there, so the picker
+  never runs, `share_source` is never called and Dilla never learns the window);
+- the window's owner can't be read;
+- neither the owner nor one of its descendants is playing.
+
+Dilla's own process tree is never captured (the existing exclusion in `sources()` and `start()` stays the boundary).
+
+Today:
+- The share menu (D/screens/voice/mod.rs:3600-3740) holds the sound row (`sound_row`, :3742-3795). It shows
+  `callStage.share.audioApp` with the note `callStage.share.audioAppOf {app}` or `callStage.share.audioAppNote`, and a
+  switch that opens the application chooser (D/screens/share_picker/apps.rs).
+- The person's choice lives in `VoiceUi::share_app` (:220). It is set by `set_share_app` (:1322-1336), kept for the next
+  share, and sent with the share by `share_source` (:1339-1358).
+- The menu comes before the picker: Go → `toggle_share` (:1275-1297) → `share_picker::open` → the person picks a tile →
+  `share_picker::share` (share_picker/mod.rs:177-196) → `voice::share_source`.
+- The menu's split half reopens it during a share ("titleSharing", Apply). That is where an automatically chosen
+  application shows and can be changed.
+
+So the window's application is found when the share of a window starts (the picker's final choice). Changing the
+selection inside the picker is not a trigger: only the shared tile counts, and the sound row is not on screen in the
+picker.
+
+What the window list knows per platform (dilla-media/src/sources/desktop.rs:31-37, `list` :75-92):
+- `DesktopSource { kind, id, title }`. `id` is the capturer's own id: an X11 client window (libwebrtc's X11 window
+  list returns the window carrying `WM_STATE`) or an HWND.
+- macOS ids are never listed, because `portal()` is true there (:47-56).
+
+**Files:**
+- Modify `clients/desktop/dilla-media/src/sources/desktop.rs`:
+  - Add `pub fn window_owner_pid(source: &DesktopSource) -> Option<u32>`, after `list`.
+  - Add the private per-platform helpers `x11_client_pid(window: u32) -> Option<u32>` (Linux) and
+    `hwnd_pid(hwnd: u64) -> Option<u32>` (Windows).
+  - Add their tests.
+- Modify `clients/desktop/dilla-media/Cargo.toml`:
+  - Linux: `x11rb = { version = "=0.13.2", features = ["res"] }`. It is already in the lock through gpui.
+  - Windows: add `"Win32_UI_WindowsAndMessaging"` to the `windows` features (:76-88).
+  - `Cargo.lock` changes only by dilla-media's dependency list.
+- Modify `clients/desktop/dilla-media/src/app_audio/frames.rs`:
+  - Add `pub fn app_of_window(...)` and its private `depth_below`, after `exclude_tree_and_ancestors` (:140-150).
+  - Add the inline tests.
+- Modify `clients/desktop/dilla-media/src/app_audio/mod.rs`:
+  - Re-export `app_of_window` (:30).
+  - Add `pub fn sound_of_window(...)` after `sources` (:103-120).
+- Modify `clients/desktop/dilla-media/src/app_audio/linux.rs`: make `parent` (:28-32) `pub(super)`.
+- Modify `clients/desktop/dilla-media/src/app_audio/windows.rs`: add `pub(super) fn parents() -> HashMap<u32, u32>`
+  from `processes()` (:123), the same map that `list` (:283) builds.
+- Modify `D/screens/voice/mod.rs`:
+  - Replace `share_app` (:220) with `pub share_sound: ShareSound` and a private `share_seq: u64`.
+  - Add `ShareSound`.
+  - Change `set_share_app`, `share_source`, `toggle_share`'s portal branch, `sync` (:665) and `sound_row` (:3746-3750).
+- Modify `D/screens/share_picker/apps.rs`: add the `WindowSound` seam to `AppChoosers` (:31-35).
+- Modify `D/../tests/share.rs`:
+  - Add the picker tests.
+  - Change the three `share_app` reads in `the_sound_section_chooses_an_application_for_the_share`
+    (:516, :526, :530) to `share_sound.app()`.
+- Modify `docs/user/desktop.md`: the "Screen capture and camera" item (:246-251).
+
+**Interfaces:**
+
+```rust
+// dilla-media/src/sources/desktop.rs
+/// The process that owns a shared window, for its sound (Task 44). `None` for a screen, under the portal (Linux on
+/// Wayland, macOS: the system's dialog chooses and Dilla never holds a window id), and when the system does not say.
+/// Blocking (an X11 round trip): call it off the UI thread.
+pub fn window_owner_pid(source: &DesktopSource) -> Option<u32>;
+```
+
+- **Linux X11:**
+  - Use `x11rb::rust_connection::RustConnection::connect(None)`, then XRes `query_client_ids` with
+    `ClientIdSpec { client: window, mask: ClientIdMask::LOCAL_CLIENT_PID }`.
+  - The pid is the first value of the first id.
+  - This is the X server's own record of the client's socket peer, so a window cannot claim another process's pid.
+  - `_NET_WM_PID` is client-written and is deliberately not read.
+  - No XRes 1.2, a remote client or any error → `None`.
+- **Wayland:** `portal()` → `None` before any connection.
+- **Windows:**
+  - If `IsWindow(HWND(id as *mut _))`, call `GetWindowThreadProcessId(hwnd, Some(&mut pid))`.
+  - A thread id of 0 or a pid of 0 → `None`.
+  - Store (UWP) windows belong to `ApplicationFrameHost.exe`, which never plays, so they fall back to no application.
+    This is documented and not worked around this wave.
+- **macOS:** `None`. It is unreachable today, because `portal()` is true.
+- **Other systems:** `None`.
+
+```rust
+// dilla-media/src/app_audio/frames.rs
+/// The playing application a window owned by `owner` brings (Task 44, D21). `own` is Dilla's pid and `sources` is the
+/// list [`super::sources`] gave, in its order. The match is:
+/// - `owner` itself, or else
+/// - the closest descendant of `owner` that plays (a browser's audio service, an Electron renderer), the earlier
+///   in `sources` on a tie (Linux: the lower serial, the first playing stream).
+/// Never matched:
+/// - a parent or a sibling of the owner (a launcher's, a terminal's or Steam's own sound must not ride along);
+/// - anything when `owner` is 0 or 1, Dilla, in Dilla's tree, or one of Dilla's ancestors (the terminal or launcher
+///   that started Dilla: its descendants include Dilla's siblings);
+/// - a source in Dilla's tree (the lists already leave it out; checked again).
+/// Walks at most 128 parents per pid and 64 of Dilla's ancestors, stopping at 0, 1, a missing parent or a repeat.
+pub fn app_of_window(
+    owner: u32,
+    own: u32,
+    sources: &[AppSource],
+    parent_of: impl Fn(u32) -> Option<u32>,
+) -> Option<AppSource>;
+
+/// How many parents up from `pid` `owner` is (0: `pid` is `owner`); `None` when `owner` is neither.
+fn depth_below(pid: u32, owner: u32, parent_of: &impl Fn(u32) -> Option<u32>) -> Option<usize>;
+
+// dilla-media/src/app_audio/mod.rs
+/// The application whose sound a shared window plays: `window_owner_pid`, then [`sources`], then [`app_of_window`]
+/// with this platform's parents:
+/// - Linux: `linux::parent`, `/proc`.
+/// - Windows: one `windows::parents()` snapshot.
+/// - macOS: `macos::parent`.
+/// `None` on any failure. Blocking: off the UI thread.
+pub fn sound_of_window(source: &crate::sources::desktop::DesktopSource) -> Option<AppSource>;
+```
+
+```rust
+// D/screens/voice/mod.rs
+/// What the screen share's sound is, and who chose it (Task 44, D21).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ShareSound {
+    /// Nothing chosen: a shared window brings its application's sound.
+    #[default]
+    Unset,
+    /// The person's choice in the sound section: an application, or switched off (`None`). A window never replaces it.
+    Person(Option<AppSource>),
+    /// The shared window's application. It goes when that share ends or another share starts.
+    Window(AppSource),
+}
+
+impl ShareSound {
+    pub fn app(&self) -> Option<&AppSource>;
+    /// A share starts: `Window(_)` → `Unset`; everything else is kept.
+    pub fn on_share(self) -> ShareSound;
+    /// The window's application was looked up for the current share: `Unset` + `Some(a)` → `Window(a)`; everything
+    /// else is kept (`None`: no owner, or it is not playing).
+    pub fn found(self, app: Option<AppSource>) -> ShareSound;
+    /// The share ended: `Window(_)` and `Person(None)` → `Unset`. `Person(Some(_))` is kept (today's remembered choice,
+    /// "kept for the next share").
+    pub fn ended(self) -> ShareSound;
+}
+
+// D/screens/share_picker/apps.rs
+/// Finds the application a shared window plays (the real `dilla_media::app_audio::sound_of_window`; the tests' fake).
+pub type WindowSound = std::sync::Arc<dyn Fn(&DesktopSource) -> Option<AppSource> + Send + Sync>;
+pub fn set_window_sound(f: WindowSound, cx: &mut App);
+/// The tests' fake when one is set, else the real one; `None` where application audio does not exist
+/// (`!available_now()` and no fake).
+pub fn window_sound(cx: &App) -> Option<WindowSound>;
+```
+
+Behaviour rules (voice/mod.rs):
+- **`set_share_app(window, source, cx)`:** sets `Person(source)`; the session send is unchanged. The chooser's Cancel
+  does not call it, so it changes nothing. Switching off sends `Person(None)`: off stays off for that share.
+- **`share_source(window, source, options, cx)`:**
+  1. Keep the phase-`In` guard.
+  2. Increment `share_seq` and keep that value as `seq`. Then set `share_sound = share_sound.on_share()`.
+  3. Send `share_source`, and `app_audio(app)` for a `Person(Some(app))` (as today).
+  4. When `source.kind == SourceKind::Window`, `share_sound == Unset` and `apps::window_sound(cx)` is `Some(f)`,
+     run `f(&source)` on the background executor.
+  5. Back on the UI thread, apply it only if `share_seq == seq`, the call is still `In` and `share_sound` is still
+     `Unset`. Then set `share_sound = found(app)`, send `s.app_audio(Some(app))` when there is a session and an app, and
+     refresh the window. The session already holds a pending application until the share's first frame
+     (session.rs:678-701), so it does not matter whether the lookup or the capture lands first.
+  6. The `ShareSound` update does not need a session (tests have none). Only the sends do.
+- **`toggle_share` portal branch (Wayland, macOS):** `share_seq += 1` and `share_sound = on_share()`. Nothing is looked
+  up.
+- **`sync`:** where the new `state` replaces `ui.state`, if `share.screen` was true and is now false, set
+  `share_sound = ended()` and `share_seq += 1` (a late lookup is dropped).
+- **`sound_row`:**
+  - `on = share_sound.app().is_some()`, and the note is `callStage.share.audioAppOf {app}` for either source of the
+    choice.
+  - No new copy: an automatic choice reads exactly like a manual one ("Sound from {app}"), as Discord's does.
+  - The switch and the chooser work unchanged, and a chosen application becomes `Person(Some)`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - frames.rs inline tests. Use a synthetic tree `parent_of` over a `HashMap`:
+    - 1 → 50 (session) → 100 (Dilla) → 110 (Dilla's helper);
+    - 50 → 200 (browser, the window's owner) → 220 (audio service), and 200 → 230 (renderer) → 231;
+    - 50 → 300 (music player); 300 → 300 (a self-parent, for the cycle).
+
+    Tests:
+    - `#[test] fn a_window_brings_its_owner_s_sound_or_its_closest_playing_descendant_s`:
+      - sources `[300 s5, 220 s9]`, owner 200 → 220
+      - `[220 s9, 200 s12]` → 200 (the owner wins over a lower serial)
+      - `[231 s3, 220 s9]` → 220 (depth 1 beats depth 2)
+      - `[230 s7, 220 s9]` → 230 (same depth: the earlier in the list)
+      - `[300 s5]` → `None`
+    - `#[test] fn a_window_of_dilla_its_tree_or_its_ancestors_brings_no_sound`:
+      - owner 100, 110 or 50, with sources `[220 s9, 300 s5]` → `None`
+      - owner 0 or 1 → `None`
+      - a source in Dilla's tree (110) is never returned, even for owner 110's parent chain
+    - `#[test] fn a_sibling_or_a_parent_of_the_owner_is_never_matched`:
+      - owner 220, sources `[200 s1, 230 s2]` → `None`
+      - owner 300, with its self-parent, terminates with `None`
+  - desktop.rs inline tests:
+    - `#[test] fn a_screen_has_no_window_owner`: `window_owner_pid` of a `SourceKind::Screen` source is `None`.
+    - Linux: `#[test] #[ignore = "needs an X11 display: DISPLAY set (Xorg or Xwayland with X-Resource)"]
+      fn an_x11_window_s_owner_is_the_process_that_made_it`. Create a window with x11rb, then
+      `x11_client_pid(win) == Some(std::process::id())`.
+    - Windows: `#[cfg(target_os = "windows")] #[test] fn a_window_that_is_gone_has_no_owner`: `hwnd_pid(1) == None`.
+  - voice/mod.rs inline `#[test] fn the_share_sound_follows_the_window_unless_the_person_chose`:
+    - `Unset.on_share().found(Some(a)) == Window(a)`
+    - `Person(Some(m)).on_share().found(Some(a)) == Person(Some(m))`
+    - `Person(None).on_share().found(Some(a)) == Person(None)` (off stays off)
+    - `Window(a).on_share() == Unset`
+    - `Unset.found(None) == Unset`
+    - `ended`: `Window(a)` → `Unset`; `Person(None)` → `Unset`; `Person(Some(m))` → `Person(Some(m))`
+  - `D/../tests/share.rs`, `#[gpui::test]` (not ignored).
+    - Setup: `install`, `Recorder::install` (one screen `id 1`, one window `id 7` "Notes") and
+      `apps::set_window_sound`, whose fake gives `music` (`AppSource { serial: 40, pid: 4000, label: "Music" }`) for
+      id 7 and `None` otherwise.
+    - The window is synced with an `AppState` whose `voice.call.phase` is `CallPhase::In` and no client, so there is
+      no session: nothing is published and only the window's `share_sound` is checked.
+    - The picker opens with `share_picker::open` on the focused window, and the shares go through
+      `share_picker::share(id, &key, cx)`, then `run_until_parked`.
+
+    Tests:
+    - `sharing_a_window_brings_its_application_sound`: `share_sound == Window(music)`.
+    - `sharing_a_screen_brings_no_application_sound`: `Unset`. The fake is never asked; count its calls.
+    - `the_person_s_choice_wins_over_the_window_s`:
+      - `set_share_app(id, Some(other))`, then share window 7 → `Person(Some(other))`.
+      - End that share (sync `share.screen` true, then false): still `Person(Some(other))`.
+      - `set_share_app(id, None)`, then share window 7 → `Person(None)`.
+    - `a_window_without_a_playing_owner_shares_no_sound`: the fake answers `None` for 7 → `Unset`. This is the
+      Wayland, no-owner and not-playing fallback. Wayland itself never reaches `share_source`, as the test's comment
+      says.
+    - `a_late_window_sound_is_dropped`:
+      - Call `share_source` for window 7 and then for screen 1 before parking. The first lookup lands late: `Unset`.
+      - Then share 7, and sync a state with `share.screen` true and then false: `Unset` (the share ended).
+- [ ] **Step 2: Run, expect failure.**
+  - `$ENV cargo test -p dilla-media --lib app_audio:: sources::desktop::`
+  - `$ENV cargo test -p dilla-desktop --lib voice::`
+  - `$ENV cargo test -p dilla-desktop --test share`
+- [ ] **Step 3: Implement** the Interfaces above in this order: dilla-media (`depth_below`, `app_of_window`,
+      `window_owner_pid`, `sound_of_window`), then `apps::WindowSound`, then `ShareSound` and the voice/mod.rs rules.
+  - `sound_of_window` returns `None` before listing when `window_owner_pid` is `None`, so a screen or the portal costs
+    no audio-server round trip.
+  - The lookup never runs on the UI thread.
+  - A failed lookup logs at `debug` with no pid or label. A process name is not E2EE content, but it is the person's
+    desktop.
+- [ ] **Step 4: Run, expect pass.**
+  - The same commands, plus `$ENV cargo test -p dilla-desktop --test share -- --ignored` (live share tests, Linux).
+  - On an X11 or Xwayland session, run
+    `$ENV cargo test -p dilla-media --lib an_x11_window_s_owner -- --ignored`.
+  - `cargo clippy --all-targets --locked -- -D warnings` and `cargo fmt --check` for dilla-media and dilla-desktop.
+  - What can't be tested here:
+    - The Windows arm (`hwnd_pid`, `windows::parents`) and the macOS arm only compile in CI's desktop-gpui Windows and
+      macOS jobs. Nothing on the Mac build server reaches them (portal), and it runs the tests headless.
+    - A real browser window bringing its sound is a by-eye check on Linux X11 and on Windows before the alpha.2
+      release. Record it in the PR #190 description under "Release notes (alpha.2)".
+- [ ] **Step 5: Parity.**
+  - No new visible state: the auto-chosen row draws exactly like a manual choice ("Sound from {app}", switch on).
+  - No fixture or reference: the share menu has none today, and `native/share-picker` is tracked for later.
+  - No BEHAVIOUR-GATES row: no e2e title covers a window share's sound. Row `a shared tab's sound is heard by the other
+    browser` is a browser tab and stays n/a.
+- [ ] **Step 6: Docs.** In `docs/user/desktop.md` "Screen capture and camera" (:246-251), after "A share can carry the
+      sound of one application (the share menu's sound section) …", add:
+
+      > Sharing a window brings that window's application's sound by itself, and the sound section then reads
+      > "Sound from {app}". You can switch it off there or choose another application. Sharing a whole screen brings
+      > no application's sound unless you choose one. Nothing is chosen for you on Wayland and macOS (the system's
+      > dialog picks the window), when the window's application isn't playing, or for Windows Store apps. Dilla's own
+      > sound is never shared.
+
+      Task 43 checks the wording.
+- [ ] **Step 7: Commit.** `desktop: a shared window brings its application's sound (D21)`
 
 ---
 
