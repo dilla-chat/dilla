@@ -42,7 +42,7 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 Download the files from the newest
 [`desktop-gpui-v…` release](https://github.com/dilla-chat/dilla/releases?q=desktop-gpui&expanded=true) (the release
-notes carry the same table). `<v>` is the release's version, for example `0.2.0-alpha.1`.
+notes carry the same table). `<v>` is the release's version, for example `0.2.0-alpha.2`.
 
 | System | File | Install |
 |---|---|---|
