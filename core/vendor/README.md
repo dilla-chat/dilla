@@ -273,12 +273,14 @@ A second change (2026-11-19), marked `DILLA PATCH`: system notifications close a
 before `wait_for_action` consumes the handle). A same-tag `show` passes the old id as `replaces_id`, and `dismiss(tag)` sends
 `org.freedesktop.Notifications.CloseNotification(id)` on the session bus, off the UI thread, so a ring that ends or a
 conversation that is read leaves no stale notification in the shade. notify-rust has no close-by-id, so `Cargo.toml` adds
-`zbus` 6.2.1 (the version notify-rust 4.19 already uses) as a direct dependency. Tests: `live_ids_*`, `dismiss_while_pending_closes_on_arrival`,
-`show_while_pending_replaces_not_stacks` and `closed_ignores_a_newer_id` in that file, and `dismiss_sends_close_notification_and_show_replaces`, which mocks the
-notification server on a session bus and runs only with `DILLA_PRIVATE_BUS=1` (under `dbus-run-session`; the desktop
-workflow runs it that way on Linux). Not pinned in `vendored_patches.rs`: that file needs a window and this has none.
-Shows of one tag are serialised (a second waits for the first's id, then replaces it), and a `dismiss` while a `Notify` is
-in flight closes the notification when its id arrives.
+`zbus` 6.2.1 (the version notify-rust 4.19 already uses) as a direct dependency. Not pinned in `vendored_patches.rs`: that file needs a window and this has none.
+Shows of one tag are serialised (a second waits for the first's id, then replaces it; after 5 s without an answer it goes
+out without a replace). Every show and dismiss takes a ticket on the calling thread: a show superseded before it ran is
+dropped, so a withdrawn ring does not come back, and only the newest show's thread reports a click (the server keeps one
+id for all of them and notify-rust wakes every thread waiting on it). A `dismiss` while a `Notify` is in flight closes the
+notification when its id arrives. The `LiveIds` unit tests and `dismiss_sends_close_notification_and_show_replaces` cover
+these (the last mocks the notification server and runs only with `DILLA_PRIVATE_BUS=1`, under `dbus-run-session`; the desktop
+workflow runs it that way on Linux).
 
 Keep this patch until gpui closes and replaces system notifications itself.
 

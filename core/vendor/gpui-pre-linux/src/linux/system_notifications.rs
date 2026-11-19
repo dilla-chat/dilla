@@ -4,7 +4,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
@@ -16,6 +18,9 @@ use gpui::{
 /// rather than a specific action button.
 const DEFAULT_ACTION: &str = "default";
 
+/// How long a show waits for an earlier show of its tag whose `Notify` has not answered.
+const NOTIFY_WAIT: Duration = Duration::from_secs(5);
+
 /// What `LiveIds` knows of one tag.
 #[derive(Default)]
 struct Slot {
@@ -25,6 +30,17 @@ struct Slot {
     pending: bool,
     /// `dismiss` arrived while it was in flight.
     dismissed: bool,
+    /// The ticket of the newest show or dismiss of the tag; anything older is superseded.
+    current: u64,
+}
+
+/// What `LiveIds::begin` tells a show thread to do.
+#[derive(Debug, PartialEq, Eq)]
+enum Begin {
+    /// A newer show or a dismiss of the tag came after this show: it must not appear.
+    Skip,
+    /// Show it, replacing the notification with this id if there is one.
+    Show(Option<u32>),
 }
 
 /// What `LiveIds::finish` tells the show thread to do with the id that came back.
@@ -37,85 +53,135 @@ enum Arrival {
 
 /// The notification server's id for each live notification, by tag. A same-tag `show` passes the old id as
 /// `replaces_id` and `dismiss` closes by it (XDG `CloseNotification`). Shows of one tag are serialised: a second waits
-/// for the first's id and then replaces it, so a tag never stacks two notifications. A `dismiss` that arrives while a
-/// `Notify` is in flight is honoured when the id comes back.
+/// for the first's id and then replaces it, so a tag never stacks two notifications. Every show and dismiss takes a
+/// ticket on the calling thread; a show whose ticket was superseded before it ran is dropped (so a dismissed ring does
+/// not come back), and only the newest show's thread reports a click (the server keeps one id for all of them).
 // DILLA PATCH: close and replace by tag (core/vendor/README.md, "gpui-pre-linux").
-#[derive(Clone, Default)]
-struct LiveIds(Arc<(Mutex<HashMap<SharedString, Slot>>, Condvar)>);
+#[derive(Clone)]
+struct LiveIds {
+    shared: Arc<(Mutex<HashMap<SharedString, Slot>>, Condvar)>,
+    tickets: Arc<AtomicU64>,
+    wait: Duration,
+}
+
+impl Default for LiveIds {
+    fn default() -> Self {
+        Self::with_wait(NOTIFY_WAIT)
+    }
+}
 
 impl LiveIds {
-    /// Starts a show of `tag`, waiting for any show of it already in flight. Returns the id to replace.
-    fn begin(&self, tag: &SharedString) -> Option<u32> {
-        let (slots, changed) = &*self.0;
-        let mut slots = slots.lock().unwrap();
+    fn with_wait(wait: Duration) -> Self {
+        Self {
+            shared: Arc::default(),
+            tickets: Arc::default(),
+            wait,
+        }
+    }
+
+    fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<SharedString, Slot>> {
+        self.shared.0.lock().unwrap()
+    }
+
+    fn next_ticket(&self) -> u64 {
+        self.tickets.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Takes the ticket of a new show of `tag`, which supersedes every earlier show and dismiss of it.
+    fn ticket(&self, tag: &SharedString) -> u64 {
+        let mut slots = self.slots();
+        let ticket = self.next_ticket();
+        slots.entry(tag.clone()).or_default().current = ticket;
+        ticket
+    }
+
+    /// Whether `ticket` is still the newest of `tag`.
+    fn is_current(&self, tag: &str, ticket: u64) -> bool {
+        self.slots()
+            .get(tag)
+            .is_some_and(|slot| slot.current == ticket)
+    }
+
+    /// Starts the show `ticket` of `tag`, waiting for any show of it already in flight (at most the wait limit: a
+    /// `Notify` that never answers must not wedge the tag, so after that the show goes out without a replace).
+    fn begin(&self, tag: &SharedString, ticket: u64) -> Begin {
+        let changed = &self.shared.1;
+        let mut slots = self.slots();
+        let deadline = Instant::now() + self.wait;
+        let mut gave_up = false;
         while slots.get(tag).is_some_and(|slot| slot.pending) {
-            slots = changed.wait(slots).unwrap();
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                log::warn!(
+                    "system notification {tag:?}: an earlier show never answered; showing without replacing"
+                );
+                gave_up = true;
+                break;
+            };
+            slots = changed.wait_timeout(slots, left).unwrap().0;
         }
         let slot = slots.entry(tag.clone()).or_default();
+        if slot.current != ticket {
+            return Begin::Skip;
+        }
         slot.pending = true;
         slot.dismissed = false;
-        slot.id
+        Begin::Show(if gave_up { None } else { slot.id })
     }
 
     /// The `Notify` that `begin` announced answered with `id`.
     fn finish(&self, tag: &str, id: u32) -> Arrival {
-        let (slots, changed) = &*self.0;
-        let mut slots = slots.lock().unwrap();
-        let arrival = match slots.get_mut(tag) {
-            Some(slot) if slot.dismissed => {
-                slots.remove(tag);
-                Arrival::CloseNow
-            }
-            Some(slot) => {
-                slot.pending = false;
+        let mut slots = self.slots();
+        let mut arrival = Arrival::Keep;
+        if let Some(slot) = slots.get_mut(tag) {
+            slot.pending = false;
+            if slot.dismissed {
+                slot.dismissed = false;
+                slot.id = None;
+                arrival = Arrival::CloseNow;
+            } else {
                 slot.id = Some(id);
-                Arrival::Keep
             }
-            None => Arrival::Keep,
-        };
-        changed.notify_all();
+        }
+        self.shared.1.notify_all();
         arrival
     }
 
     /// The `Notify` that `begin` announced failed.
     fn abort(&self, tag: &str) {
-        let (slots, changed) = &*self.0;
-        let mut slots = slots.lock().unwrap();
-        if let Some(slot) = slots.get_mut(tag) {
+        if let Some(slot) = self.slots().get_mut(tag) {
             slot.pending = false;
-            if slot.id.is_none() {
-                slots.remove(tag);
-            }
         }
-        changed.notify_all();
+        self.shared.1.notify_all();
     }
 
-    /// Forgets `tag`. Returns the id to close now; a `Notify` still in flight is marked to close on arrival instead.
+    /// Withdraws `tag`: supersedes its queued shows. Returns the id to close now; a `Notify` still in flight is marked
+    /// to close on arrival instead.
     fn dismiss(&self, tag: &str) -> Option<u32> {
-        let mut slots = self.0.0.lock().unwrap();
+        let mut slots = self.slots();
+        let ticket = self.next_ticket();
         let slot = slots.get_mut(tag)?;
+        slot.current = ticket;
         if slot.pending {
             slot.dismissed = true;
             None
         } else {
-            slots.remove(tag).and_then(|slot| slot.id)
+            slot.id.take()
         }
     }
 
     /// The notification `id` is gone; forgets it unless the tag already moved on to a newer id.
     fn closed(&self, tag: &str, id: u32) {
-        let mut slots = self.0.0.lock().unwrap();
-        if slots
-            .get(tag)
-            .is_some_and(|slot| slot.id == Some(id) && !slot.pending)
+        if let Some(slot) = self.slots().get_mut(tag)
+            && slot.id == Some(id)
+            && !slot.pending
         {
-            slots.remove(tag);
+            slot.id = None;
         }
     }
 
     #[cfg(test)]
     fn id(&self, tag: &str) -> Option<u32> {
-        self.0.0.lock().unwrap().get(tag).and_then(|slot| slot.id)
+        self.slots().get(tag).and_then(|slot| slot.id)
     }
 }
 
@@ -178,14 +244,20 @@ impl SystemNotificationState {
         let sender = self.response_sender.clone();
         let tag = notification.tag.clone();
         let live = self.live.clone();
+        // Taken here, on the calling thread, so the order of shows and dismisses is the caller's.
+        let ticket = live.ticket(&tag);
         // `show` connects to the session bus and `wait_for_action` blocks
         // until the notification closes, so both run off the UI thread.
         let spawn_result = std::thread::Builder::new()
             .name("system-notification".to_string())
             .spawn(move || {
                 // A live notification with this tag is replaced in place.
-                if let Some(old_id) = live.begin(&tag) {
-                    built.id(old_id);
+                match live.begin(&tag, ticket) {
+                    Begin::Skip => return,
+                    Begin::Show(Some(old_id)) => {
+                        built.id(old_id);
+                    }
+                    Begin::Show(None) => {}
                 }
                 match built.show() {
                     Ok(handle) => {
@@ -197,33 +269,40 @@ impl SystemNotificationState {
                             }
                             return;
                         }
-                        handle.wait_for_action(|action| {
-                    let action_id = match action {
-                        // Sent by `notify-rust` when the notification closes
-                        // without being activated.
-                        "__closed" => {
-                            live.closed(&tag, id);
-                            return;
-                        }
-                        transport_id => {
-                            let Some(action_id) = response_action_id(transport_id, &action_ids)
-                            else {
-                                log::warn!(
-                                    "system notification returned unknown action {transport_id:?}"
-                                );
-                                return;
+                        let on_action = |action: &str| {
+                            let action_id = match action {
+                                // Sent by `notify-rust` when the notification closes
+                                // without being activated.
+                                "__closed" => {
+                                    live.closed(&tag, id);
+                                    return;
+                                }
+                                transport_id => {
+                                    let Some(action_id) =
+                                        response_action_id(transport_id, &action_ids)
+                                    else {
+                                        log::warn!(
+                                            "system notification returned unknown action {transport_id:?}"
+                                        );
+                                        return;
+                                    };
+                                    action_id
+                                }
                             };
-                            action_id
-                        }
-                    };
-                    live.closed(&tag, id);
-                    sender
-                        .unbounded_send(SystemNotificationResponse {
-                            tag: tag.clone(),
-                            action_id,
-                        })
-                        .ok();
-                        })
+                            // The server keeps one id for every same-tag show, and notify-rust wakes each thread
+                            // waiting on it: only the newest show's thread (with the newest actions) answers.
+                            if !live.is_current(&tag, ticket) {
+                                return;
+                            }
+                            live.closed(&tag, id);
+                            sender
+                                .unbounded_send(SystemNotificationResponse {
+                                    tag: tag.clone(),
+                                    action_id,
+                                })
+                                .ok();
+                        };
+                        handle.wait_for_action(on_action)
                     }
                     Err(error) => {
                         live.abort(&tag);
@@ -299,12 +378,21 @@ mod tests {
         "t".into()
     }
 
+    /// Takes a ticket and begins it, expecting the show to go ahead; returns the id to replace.
+    fn begin(ids: &LiveIds) -> Option<u32> {
+        let ticket = ids.ticket(&tag());
+        match ids.begin(&tag(), ticket) {
+            Begin::Show(replaces) => replaces,
+            Begin::Skip => panic!("show was skipped"),
+        }
+    }
+
     #[test]
     fn live_ids_replace_returns_the_old_id() {
         let ids = LiveIds::default();
-        assert_eq!(ids.begin(&tag()), None);
+        assert_eq!(begin(&ids), None);
         assert_eq!(ids.finish("t", 1), Arrival::Keep);
-        assert_eq!(ids.begin(&tag()), Some(1));
+        assert_eq!(begin(&ids), Some(1));
         assert_eq!(ids.finish("t", 2), Arrival::Keep);
         assert_eq!(ids.id("t"), Some(2));
     }
@@ -312,7 +400,7 @@ mod tests {
     #[test]
     fn dismiss_takes_the_id_and_removes_it() {
         let ids = LiveIds::default();
-        ids.begin(&tag());
+        begin(&ids);
         ids.finish("t", 7);
         assert_eq!(ids.dismiss("t"), Some(7));
         assert_eq!(ids.dismiss("t"), None);
@@ -321,7 +409,7 @@ mod tests {
     #[test]
     fn closed_ignores_a_newer_id() {
         let ids = LiveIds::default();
-        ids.begin(&tag());
+        begin(&ids);
         ids.finish("t", 2);
         ids.closed("t", 1);
         assert_eq!(ids.id("t"), Some(2));
@@ -332,35 +420,68 @@ mod tests {
     #[test]
     fn dismiss_while_pending_closes_on_arrival() {
         let ids = LiveIds::default();
-        ids.begin(&tag());
+        begin(&ids);
         assert_eq!(ids.dismiss("t"), None);
         assert_eq!(ids.finish("t", 9), Arrival::CloseNow);
         assert_eq!(ids.id("t"), None);
         // The tag is free again: the next show starts fresh.
-        assert_eq!(ids.begin(&tag()), None);
+        assert_eq!(begin(&ids), None);
     }
 
     #[test]
     fn show_while_pending_replaces_not_stacks() {
         let ids = LiveIds::default();
-        ids.begin(&tag());
+        begin(&ids);
+        // The second show is the newest, so it is the one that runs, once the first's id is known.
+        let ticket = ids.ticket(&tag());
         let second = std::thread::spawn({
             let ids = ids.clone();
-            move || ids.begin(&tag())
+            move || ids.begin(&tag(), ticket)
         });
-        // The second show waits for the first's id.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(100));
         assert!(!second.is_finished());
         ids.finish("t", 5);
-        assert_eq!(second.join().unwrap(), Some(5));
+        assert_eq!(second.join().unwrap(), Begin::Show(Some(5)));
+    }
+
+    #[test]
+    fn a_queued_show_after_a_dismiss_is_dropped() {
+        let ids = LiveIds::default();
+        begin(&ids);
+        let queued = ids.ticket(&tag());
+        assert_eq!(ids.dismiss("t"), None);
+        assert_eq!(ids.finish("t", 3), Arrival::CloseNow);
+        assert_eq!(ids.begin(&tag(), queued), Begin::Skip);
+        // A show after the dismiss is fine.
+        assert_eq!(begin(&ids), None);
+    }
+
+    #[test]
+    fn only_the_newest_show_answers_a_click() {
+        let ids = LiveIds::default();
+        let first = ids.ticket(&tag());
+        assert!(ids.is_current("t", first));
+        let second = ids.ticket(&tag());
+        assert!(!ids.is_current("t", first));
+        assert!(ids.is_current("t", second));
+    }
+
+    #[test]
+    fn a_notify_that_never_answers_does_not_wedge_the_tag() {
+        let ids = LiveIds::with_wait(Duration::from_millis(50));
+        begin(&ids); // never finished
+        let ticket = ids.ticket(&tag());
+        let started = Instant::now();
+        assert_eq!(ids.begin(&tag(), ticket), Begin::Show(None));
+        assert!(started.elapsed() >= Duration::from_millis(50));
     }
 
     #[test]
     fn a_failed_notify_frees_the_tag() {
         let ids = LiveIds::default();
-        ids.begin(&tag());
+        begin(&ids);
         ids.abort("t");
-        assert_eq!(ids.begin(&tag()), None);
+        assert_eq!(begin(&ids), None);
     }
 
     /// Needs the session bus to be a private one: it claims `org.freedesktop.Notifications`, which on a desktop session
@@ -431,7 +552,7 @@ mod tests {
         })
         .unwrap();
 
-        let state = SystemNotificationState::new();
+        let mut state = SystemNotificationState::new();
         let note = || SystemNotification {
             tag: "t".into(),
             title: "title".into(),
@@ -475,6 +596,33 @@ mod tests {
         state.dismiss("t");
         assert!(matches!(rx.recv_timeout(wait).unwrap(), Seen::Close(41)));
         assert_eq!(state.live.id("t"), None);
+
+        // Two shows of the tag share the server's id 41; one click on it is one response, not one per show.
+        delay.store(0, std::sync::atomic::Ordering::SeqCst);
+        let mut responses = state.response_receiver.take().unwrap();
+        for _ in 0..2 {
+            state.show(Some("dilla"), note());
+            assert!(matches!(
+                rx.recv_timeout(wait).unwrap(),
+                Seen::Notify { .. }
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        futures::executor::block_on(_bus.emit_signal(
+            None::<&str>,
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "ActionInvoked",
+            &(41u32, "default"),
+        ))
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let mut count = 0;
+        while let Ok(response) = responses.try_recv() {
+            assert_eq!(response.tag, SharedString::from("t"));
+            count += 1;
+        }
+        assert_eq!(count, 1, "one click, one response");
     }
 
     #[test]
