@@ -7,11 +7,14 @@
 //!
 //! Capture: a private `CATapDescription` mixing the chosen process (and those of its descendants that play, never one
 //! in Dilla's tree) down to stereo, unmuted, so the user still hears it; `AudioHardwareCreateProcessTap`; a private
-//! aggregate device that holds the tap (clocked by the default output device when there is one), and an IOProc on it.
-//! The IOProc only copies the tap's samples out; a thread of its own converts them to 48 kHz stereo f32 with an
-//! `AudioConverter` when the device runs at another rate, cuts them into 10 ms frames and hands them over. The capture
-//! ends when the process exits or the capture fails (`ended`, once), or within 100 ms of the handle's drop; either way
-//! the IOProc is stopped and destroyed, then the aggregate device, then the tap.
+//! aggregate device that holds the tap and nothing else (no sub-device, so no device's input, such as a headset's
+//! microphone, is ever in its input; the tap's buffer is also located once at open and checked on every cycle), and
+//! an IOProc on it. The IOProc only copies the tap's samples into a preallocated ring (no allocation, lock or system
+//! call on the audio thread; an overflow is dropped and counted); a thread of its own drains the ring every 20 ms,
+//! converts to 48 kHz stereo f32 with an `AudioConverter` when the device runs at another rate, cuts 10 ms frames and
+//! hands them over. The capture ends when the process exits or the capture fails (`ended`, once, after the teardown),
+//! or within 100 ms of the handle's drop; either way the IOProc is stopped and destroyed, then the aggregate device,
+//! then the tap, and last the `frames` callback is dropped.
 //!
 //! The first tap asks the user for the "system audio recording" permission (TCC AudioCapture,
 //! `NSAudioCaptureUsageDescription` in the bundle's Info.plist); until it is granted the tap delivers silence.
@@ -23,7 +26,7 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -38,20 +41,22 @@ use objc2_core_audio::{
     AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart,
     AudioDeviceStop, AudioHardwareCreateAggregateDevice, AudioHardwareDestroyAggregateDevice,
     AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
-    AudioObjectPropertyAddress, AudioObjectPropertySelector, CATapDescription, CATapMuteBehavior,
-    kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceIsStackedKey,
-    kAudioAggregateDeviceMainSubDeviceKey, kAudioAggregateDeviceNameKey,
-    kAudioAggregateDeviceSubDeviceListKey, kAudioAggregateDeviceTapAutoStartKey,
-    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey, kAudioDevicePropertyDeviceUID,
-    kAudioDevicePropertyNominalSampleRate, kAudioHardwarePropertyDefaultSystemOutputDevice,
+    AudioObjectPropertyAddress, AudioObjectPropertyScope, AudioObjectPropertySelector,
+    CATapDescription, CATapMuteBehavior, kAudioAggregateDeviceIsPrivateKey,
+    kAudioAggregateDeviceIsStackedKey, kAudioAggregateDeviceNameKey,
+    kAudioAggregateDevicePropertyActiveSubDeviceList, kAudioAggregateDeviceTapAutoStartKey,
+    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
+    kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyStreams,
     kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyElementMain,
-    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, kAudioSubDeviceUIDKey,
-    kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey, kAudioTapPropertyFormat,
+    kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput, kAudioObjectSystemObject,
+    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
+    kAudioStreamPropertyVirtualFormat, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey,
+    kAudioTapPropertyFormat,
 };
 use objc2_core_audio_types::{
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioStreamPacketDescription,
-    AudioTimeStamp, kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM,
+    AudioTimeStamp, kAudioFormatFlagIsFloat, kAudioFormatFlagIsNonInterleaved,
+    kAudioFormatFlagIsPacked, kAudioFormatLinearPCM,
 };
 use objc2_core_foundation::CFDictionary;
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
@@ -64,10 +69,10 @@ use super::{
 
 /// At most this many process objects are looked at (beta.5 lists at most 256 applications).
 const MAX_OBJECTS: usize = 4096;
-/// Buffers waiting between the IOProc and the capture thread (each one IO cycle, typically 10 ms): beyond this the
-/// IOProc drops a buffer rather than block the audio thread.
-const QUEUE: usize = 64;
-/// How long the capture thread waits for a buffer before it looks at `stop` again (the drop ends it within 100 ms).
+/// The ring between the IOProc and the capture thread holds this many tenths of a second (at the device's rate): the
+/// capture thread drains it every [`POLL`], and what does not fit is dropped and counted, never waited for.
+const RING_SECONDS_X10: usize = 5;
+/// How often the capture thread drains the ring and looks at `stop` (the drop ends its loop within this).
 const POLL: Duration = Duration::from_millis(20);
 /// How often the captured process is checked for having exited.
 const ALIVE_EVERY: Duration = Duration::from_millis(100);
@@ -118,10 +123,13 @@ fn tap_api() -> Result<TapApi, AppAudioError> {
     }
 }
 
-fn address(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+fn address(
+    selector: AudioObjectPropertySelector,
+    scope: AudioObjectPropertyScope,
+) -> AudioObjectPropertyAddress {
     AudioObjectPropertyAddress {
         mSelector: selector,
-        mScope: kAudioObjectPropertyScopeGlobal,
+        mScope: scope,
         mElement: kAudioObjectPropertyElementMain,
     }
 }
@@ -132,9 +140,19 @@ fn get<T: Copy>(
     selector: AudioObjectPropertySelector,
     zero: T,
 ) -> Result<T, i32> {
+    get_in(object, selector, kAudioObjectPropertyScopeGlobal, zero)
+}
+
+/// [`get`] in `scope`.
+fn get_in<T: Copy>(
+    object: AudioObjectID,
+    selector: AudioObjectPropertySelector,
+    scope: AudioObjectPropertyScope,
+    zero: T,
+) -> Result<T, i32> {
     let mut value = zero;
     let mut size = std::mem::size_of::<T>() as u32;
-    let address = address(selector);
+    let address = address(selector, scope);
     // SAFETY: `value` is `size` bytes; the HAL writes at most that many and sets `size` to what it wrote.
     let status = unsafe {
         AudioObjectGetPropertyData(
@@ -155,15 +173,18 @@ fn get<T: Copy>(
     }
 }
 
-/// The system object's process objects (every process that has a CoreAudio client).
-fn process_objects() -> Result<Vec<AudioObjectID>, AppAudioError> {
-    let address = address(kAudioHardwarePropertyProcessObjectList);
-    let system = kAudioObjectSystemObject as AudioObjectID;
+/// An array-of-object-ids property of `object` in `scope` (at most [`MAX_OBJECTS`]).
+fn ids(
+    object: AudioObjectID,
+    selector: AudioObjectPropertySelector,
+    scope: AudioObjectPropertyScope,
+) -> Result<Vec<AudioObjectID>, i32> {
+    let address = address(selector, scope);
     let mut size = 0u32;
-    // SAFETY: the system object and a valid address; `size` is written.
+    // SAFETY: a valid address; `size` is written.
     let status = unsafe {
         AudioObjectGetPropertyDataSize(
-            system,
+            object,
             NonNull::from(&address),
             0,
             std::ptr::null(),
@@ -171,7 +192,7 @@ fn process_objects() -> Result<Vec<AudioObjectID>, AppAudioError> {
         )
     };
     if status != 0 {
-        return Err(server("the process list", status));
+        return Err(status);
     }
     let count = (size as usize / std::mem::size_of::<AudioObjectID>()).min(MAX_OBJECTS);
     if count == 0 {
@@ -182,7 +203,7 @@ fn process_objects() -> Result<Vec<AudioObjectID>, AppAudioError> {
     // SAFETY: `out` is `size` bytes; the HAL writes at most that many and sets `size` to what it wrote.
     let status = unsafe {
         AudioObjectGetPropertyData(
-            system,
+            object,
             NonNull::from(&address),
             0,
             std::ptr::null(),
@@ -191,10 +212,20 @@ fn process_objects() -> Result<Vec<AudioObjectID>, AppAudioError> {
         )
     };
     if status != 0 {
-        return Err(server("the process list", status));
+        return Err(status);
     }
     out.truncate(size as usize / std::mem::size_of::<AudioObjectID>());
     Ok(out)
+}
+
+/// The system object's process objects (every process that has a CoreAudio client).
+fn process_objects() -> Result<Vec<AudioObjectID>, AppAudioError> {
+    ids(
+        kAudioObjectSystemObject as AudioObjectID,
+        kAudioHardwarePropertyProcessObjectList,
+        kAudioObjectPropertyScopeGlobal,
+    )
+    .map_err(|s| server("the process list", s))
 }
 
 /// A process object's pid (0 when it has none).
@@ -333,83 +364,65 @@ fn dict(entries: &[(&CStr, &AnyObject)]) -> Retained<NSDictionary<NSString, AnyO
     NSDictionary::from_slices(&keys, &values)
 }
 
-/// The default output device's UID (the aggregate's clock), if there is one.
-fn output_uid() -> Option<Retained<NSString>> {
-    let device = get::<AudioObjectID>(
-        kAudioObjectSystemObject as AudioObjectID,
-        kAudioHardwarePropertyDefaultSystemOutputDevice,
-        0,
-    )
-    .ok()
-    .filter(|&d| d != 0)?;
-    let uid =
-        get::<*mut NSString>(device, kAudioDevicePropertyDeviceUID, std::ptr::null_mut()).ok()?;
-    // SAFETY: the property is a CFStringRef the caller owns (+1), toll-free bridged to NSString.
-    unsafe { Retained::from_raw(uid) }
-}
-
-/// The IOProc's side: where the tap's samples go.
+/// The IOProc's side: the tap's place in the input list and the ring its samples go to. Only the IOProc touches it
+/// (the HAL never runs one IOProc twice at once) until the IOProc is destroyed.
 struct Io {
-    tx: mpsc::SyncSender<Vec<f32>>,
+    /// The tap's buffer index in the IOProc's input list ([`Layout::first`]).
+    first: usize,
+    /// The tap's channels.
+    channels: u32,
+    ring: rtrb::Producer<f32>,
+    /// Samples the ring had no room for (read and logged by the capture thread).
+    dropped: Arc<AtomicU64>,
 }
 
-/// The tap's input buffers as interleaved stereo (a mono buffer is doubled; channels past the second are dropped).
-fn stereo(buffers: &[AudioBuffer]) -> Vec<f32> {
-    // SAFETY (each slice): the HAL's buffers hold `mDataByteSize` bytes of native f32 for the IO cycle.
-    let view = |b: &AudioBuffer| -> &[f32] {
-        if b.mData.is_null() {
-            &[]
-        } else {
-            unsafe {
-                std::slice::from_raw_parts(b.mData.cast::<f32>(), b.mDataByteSize as usize / 4)
-            }
-        }
-    };
-    match buffers {
-        [] => Vec::new(),
-        [one] => {
-            let (data, ch) = (view(one), one.mNumberChannels.max(1) as usize);
-            data.chunks_exact(ch)
-                .flat_map(|f| [f[0], *f.get(1).unwrap_or(&f[0])])
-                .collect()
-        }
-        [left, right, ..] => {
-            let (l, r) = (view(left), view(right));
-            l.iter().zip(r).flat_map(|(&l, &r)| [l, r]).collect()
-        }
-    }
+/// The tap's buffer in the IOProc's input list: the one at `first` (after every sub-device's input buffer), and only
+/// while it still has the tap's `channels`; never a sub-device's (a headset's microphone).
+fn tap_buffer(buffers: &[AudioBuffer], first: usize, channels: u32) -> Option<&AudioBuffer> {
+    buffers
+        .get(first)
+        .filter(|b| b.mNumberChannels == channels && !b.mData.is_null())
 }
 
-/// The IOProc: copies the tap's input out (never blocks); the output, if the clock device has one, stays silent.
+/// An interleaved buffer of `channels` channels as interleaved stereo (a mono one doubled, channels past the second
+/// left out). Lazy: nothing is allocated.
+fn stereo(data: &[f32], channels: usize) -> impl Iterator<Item = f32> + '_ {
+    data.chunks_exact(channels.max(1))
+        .flat_map(|f| [f[0], *f.get(1).unwrap_or(&f[0])])
+}
+
+/// The IOProc: copies the tap's buffer into the ring. Real-time safe: no allocation, lock or system call; what does not
+/// fit is dropped and counted.
 unsafe extern "C-unwind" fn io_proc(
     _device: AudioObjectID,
     _now: NonNull<AudioTimeStamp>,
     input: NonNull<AudioBufferList>,
     _input_time: NonNull<AudioTimeStamp>,
-    output: NonNull<AudioBufferList>,
+    _output: NonNull<AudioBufferList>,
     _output_time: NonNull<AudioTimeStamp>,
     client: *mut c_void,
 ) -> i32 {
-    // SAFETY: `client` is the `Io` this module boxed, alive until the IOProc is destroyed; the buffer lists are the
-    // HAL's for this cycle, `mNumberBuffers` long.
+    // SAFETY: `client` is the `Io` this module boxed, alive until the IOProc is destroyed and used by no one else; the
+    // input list is the HAL's for this cycle, `mNumberBuffers` long, each buffer `mDataByteSize` bytes of native f32.
     unsafe {
-        let io = &*client.cast::<Io>();
+        let io = &mut *client.cast::<Io>();
         let list = input.as_ref();
         let buffers =
             std::slice::from_raw_parts(list.mBuffers.as_ptr(), list.mNumberBuffers as usize);
-        let samples = stereo(buffers);
-        if !samples.is_empty() {
-            let _ = io.tx.try_send(samples);
+        let Some(tap) = tap_buffer(buffers, io.first, io.channels) else {
+            return 0;
+        };
+        let data =
+            std::slice::from_raw_parts(tap.mData.cast::<f32>(), tap.mDataByteSize as usize / 4);
+        let channels = io.channels.max(1) as usize;
+        let wanted = data.len() / channels * CHANNELS as usize;
+        let room = io.ring.slots() / CHANNELS as usize * CHANNELS as usize;
+        let n = wanted.min(room);
+        if let Ok(chunk) = io.ring.write_chunk_uninit(n) {
+            chunk.fill_from_iter(stereo(data, channels));
         }
-        let out = output.as_ptr();
-        let outs = std::slice::from_raw_parts_mut(
-            (&raw mut (*out).mBuffers).cast::<AudioBuffer>(),
-            (*out).mNumberBuffers as usize,
-        );
-        for b in outs {
-            if !b.mData.is_null() {
-                std::ptr::write_bytes(b.mData.cast::<u8>(), 0, b.mDataByteSize as usize);
-            }
+        if n < wanted {
+            io.dropped.fetch_add((wanted - n) as u64, Ordering::Relaxed);
         }
     }
     0
@@ -450,28 +463,128 @@ impl Drop for Tap {
     }
 }
 
-/// The tap's format: linear PCM f32 is all an IOProc gets, anything else is refused.
-fn check_format(tap: AudioObjectID) -> Result<(), AppAudioError> {
-    // SAFETY: a zeroed plain C struct.
-    let zero: AudioStreamBasicDescription = unsafe { std::mem::zeroed() };
-    let f = get(tap, kAudioTapPropertyFormat, zero).map_err(|s| server("the tap's format", s))?;
-    if f.mFormatID == kAudioFormatLinearPCM
+fn zeroed_format() -> AudioStreamBasicDescription {
+    // SAFETY: a plain C struct of numbers, valid all zero.
+    unsafe { std::mem::zeroed() }
+}
+
+/// Interleaved linear PCM f32, the only format the IOProc reads.
+fn is_interleaved_f32(f: &AudioStreamBasicDescription) -> bool {
+    f.mFormatID == kAudioFormatLinearPCM
         && f.mFormatFlags & kAudioFormatFlagIsFloat != 0
+        && f.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
         && f.mBitsPerChannel == 32
         && f.mChannelsPerFrame >= 1
-    {
-        Ok(())
+}
+
+/// The tap's format: interleaved f32 PCM, anything else is refused.
+fn tap_format(tap: AudioObjectID) -> Result<AudioStreamBasicDescription, AppAudioError> {
+    let f = get(tap, kAudioTapPropertyFormat, zeroed_format())
+        .map_err(|s| server("the tap's format", s))?;
+    if is_interleaved_f32(&f) {
+        Ok(f)
     } else {
         Err(AppAudioError::Server(format!(
-            "the tap's format is not f32 PCM ({:#x}, {:#x}, {} bits)",
+            "the tap's format is not interleaved f32 PCM ({:#x}, {:#x}, {} bits)",
             f.mFormatID, f.mFormatFlags, f.mBitsPerChannel
         )))
     }
 }
 
-/// Taps `pid` (and its playing descendants) and starts an aggregate device on it; its samples go to `tx`. Returns the
-/// running tap and the device's sample rate.
-fn open(pid: u32, root: u32, tx: mpsc::SyncSender<Vec<f32>>) -> Result<(Tap, f64), AppAudioError> {
+/// Where the tap is in the aggregate's IOProc input list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Layout {
+    /// The tap's buffer index: every sub-device's input buffers come first (one per interleaved stream, one per
+    /// channel of a non-interleaved one).
+    first: usize,
+    /// The tap's channels.
+    channels: u32,
+}
+
+/// The input buffers a device's input streams fill in an IOProc's list.
+fn input_buffers(device: AudioObjectID) -> usize {
+    ids(
+        device,
+        kAudioDevicePropertyStreams,
+        kAudioObjectPropertyScopeInput,
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|s| {
+        let f = get(s, kAudioStreamPropertyVirtualFormat, zeroed_format())
+            .unwrap_or_else(|_| zeroed_format());
+        if f.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0 {
+            f.mChannelsPerFrame.max(1) as usize
+        } else {
+            1
+        }
+    })
+    .sum()
+}
+
+/// Finds the tap in the aggregate's input, computed once at open. The aggregate is built with no sub-device, so its
+/// only input stream should be the tap's; if the HAL ever gives it sub-devices anyway, their input buffers are counted
+/// and skipped, and the aggregate must have exactly one input stream more than they do, the last one in the tap's
+/// format. Anything else is refused rather than risk reading a microphone.
+fn tap_layout(
+    aggregate: AudioObjectID,
+    tap: &AudioStreamBasicDescription,
+) -> Result<Layout, AppAudioError> {
+    let subs = ids(
+        aggregate,
+        kAudioAggregateDevicePropertyActiveSubDeviceList,
+        kAudioObjectPropertyScopeGlobal,
+    )
+    .map_err(|s| server("the aggregate's sub-devices", s))?;
+    let sub_streams: usize = subs
+        .iter()
+        .map(|&d| {
+            ids(
+                d,
+                kAudioDevicePropertyStreams,
+                kAudioObjectPropertyScopeInput,
+            )
+            .unwrap_or_default()
+            .len()
+        })
+        .sum();
+    let first = subs.iter().map(|&d| input_buffers(d)).sum();
+    let streams = ids(
+        aggregate,
+        kAudioDevicePropertyStreams,
+        kAudioObjectPropertyScopeInput,
+    )
+    .map_err(|s| server("the aggregate's input streams", s))?;
+    let last = streams.last().copied().unwrap_or(0);
+    let format = get(last, kAudioStreamPropertyVirtualFormat, zeroed_format())
+        .map_err(|s| server("the tap stream's format", s))?;
+    if streams.len() != sub_streams + 1
+        || !is_interleaved_f32(&format)
+        || format.mChannelsPerFrame != tap.mChannelsPerFrame
+    {
+        return Err(AppAudioError::Server(format!(
+            "the aggregate's input is not the tap alone ({} sub-device(s), {} input stream(s), {} channel(s))",
+            subs.len(),
+            streams.len(),
+            format.mChannelsPerFrame
+        )));
+    }
+    Ok(Layout {
+        first,
+        channels: tap.mChannelsPerFrame,
+    })
+}
+
+/// A running capture: the tap and its device, the ring's reading end, the device's rate and the overflow count.
+struct Opened {
+    tap: Tap,
+    ring: rtrb::Consumer<f32>,
+    rate: f64,
+    dropped: Arc<AtomicU64>,
+}
+
+/// Taps `pid` (and its playing descendants) and starts an aggregate device that holds only the tap.
+fn open(pid: u32, root: u32) -> Result<Opened, AppAudioError> {
     let api = tap_api()?;
     let objects = tapped_objects(pid, root)?;
     let mut tap = Tap {
@@ -507,8 +620,10 @@ fn open(pid: u32, root: u32, tx: mpsc::SyncSender<Vec<f32>>) -> Result<(Tap, f64
         // SAFETY: a plain getter on a live description.
         Ok(unsafe { description.UUID() }.UUIDString().to_string())
     })?;
-    check_format(tap.tap)?;
+    let format = tap_format(tap.tap)?;
 
+    // No sub-device: the tap alone is the aggregate's input and clock, so no device's input (a headset's microphone)
+    // can ever be in the IOProc's list, and nothing is played out.
     autoreleasepool(|_| -> Result<(), AppAudioError> {
         let tap_uid = NSString::from_str(&uuid);
         let sub_tap = dict(&[
@@ -519,23 +634,14 @@ fn open(pid: u32, root: u32, tx: mpsc::SyncSender<Vec<f32>>) -> Result<(Tap, f64
         let uid = NSString::from_str(&format!("dev.dilla.desktop.app-audio.{uuid}"));
         let name = NSString::from_str("Dilla application audio");
         let (yes, no) = (NSNumber::new_bool(true), NSNumber::new_bool(false));
-        let mut entries: Vec<(&CStr, &AnyObject)> = vec![
+        let description = dict(&[
             (kAudioAggregateDeviceUIDKey, &uid),
             (kAudioAggregateDeviceNameKey, &name),
             (kAudioAggregateDeviceIsPrivateKey, &yes),
             (kAudioAggregateDeviceIsStackedKey, &no),
             (kAudioAggregateDeviceTapAutoStartKey, &yes),
             (kAudioAggregateDeviceTapListKey, &taps),
-        ];
-        let output = output_uid();
-        let subs = output
-            .as_ref()
-            .map(|out| NSArray::from_retained_slice(&[dict(&[(kAudioSubDeviceUIDKey, &**out)])]));
-        if let (Some(out), Some(subs)) = (&output, &subs) {
-            entries.push((kAudioAggregateDeviceMainSubDeviceKey, out));
-            entries.push((kAudioAggregateDeviceSubDeviceListKey, subs));
-        }
-        let description = dict(&entries);
+        ]);
         // SAFETY: NSDictionary is toll-free bridged to CFDictionary; it outlives the call.
         let description = unsafe { &*Retained::as_ptr(&description).cast::<CFDictionary>() };
         // SAFETY: a valid description and an out pointer.
@@ -549,6 +655,7 @@ fn open(pid: u32, root: u32, tx: mpsc::SyncSender<Vec<f32>>) -> Result<(Tap, f64
         Ok(())
     })?;
 
+    let layout = tap_layout(tap.aggregate, &format)?;
     let rate = get::<f64>(tap.aggregate, kAudioDevicePropertyNominalSampleRate, 0.0)
         .map_err(|s| server("the device's rate", s))?;
     if !(8_000.0..=384_000.0).contains(&rate) {
@@ -556,7 +663,15 @@ fn open(pid: u32, root: u32, tx: mpsc::SyncSender<Vec<f32>>) -> Result<(Tap, f64
             "the device runs at {rate} Hz"
         )));
     }
-    tap.io = Box::into_raw(Box::new(Io { tx }));
+    let (producer, ring) =
+        rtrb::RingBuffer::new(RING_SECONDS_X10 * rate as usize / 10 * CHANNELS as usize);
+    let dropped = Arc::new(AtomicU64::new(0));
+    tap.io = Box::into_raw(Box::new(Io {
+        first: layout.first,
+        channels: layout.channels,
+        ring: producer,
+        dropped: dropped.clone(),
+    }));
     // SAFETY: a live device, the IOProc above and its state (freed only after the IOProc is destroyed).
     let status = unsafe {
         AudioDeviceCreateIOProcID(
@@ -576,7 +691,12 @@ fn open(pid: u32, root: u32, tx: mpsc::SyncSender<Vec<f32>>) -> Result<(Tap, f64
         return Err(server("starting the device", status));
     }
     tap.started = true;
-    Ok((tap, rate))
+    Ok(Opened {
+        tap,
+        ring,
+        rate,
+        dropped,
+    })
 }
 
 /// Interleaved stereo f32 at `from` Hz to 48 kHz (`AudioConverter`), keeping its state between buffers.
@@ -692,7 +812,7 @@ impl Resampler {
             if status != 0 {
                 return Err(server("the sample-rate converter", status));
             }
-            if out.len() > MAX_CHUNK_BYTES {
+            if out.len() * 4 > MAX_CHUNK_BYTES {
                 return Err(AppAudioError::Invalid("chunk"));
             }
         }
@@ -706,12 +826,13 @@ impl Drop for Resampler {
     }
 }
 
-/// Until `stop`, the process's exit, or an error: the tap's buffers, at 48 kHz, cut into frames.
+/// Until `stop`, the process's exit, or an error: every [`POLL`], what the ring holds, at 48 kHz, cut into frames.
 fn pump(
     pid: u32,
-    rx: &mpsc::Receiver<Vec<f32>>,
+    ring: &mut rtrb::Consumer<f32>,
     rate: f64,
-    mut frames: Box<dyn FnMut(Vec<f32>) + Send>,
+    dropped: &AtomicU64,
+    frames: &mut dyn FnMut(Vec<f32>),
     stop: &AtomicBool,
 ) -> Result<(), AppAudioError> {
     let mut resampler = if rate == f64::from(RATE) {
@@ -725,20 +846,27 @@ fn pump(
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
-        match rx.recv_timeout(POLL) {
-            Ok(samples) => {
-                let samples = match resampler.as_mut() {
-                    Some(r) => r.push(&samples)?,
-                    None => samples,
-                };
-                for part in samples.chunks(MAX_CHUNK_BYTES / 4) {
-                    cut.push(part, &mut *frames)?;
-                }
+        std::thread::sleep(POLL);
+        let n = ring.slots() / CHANNELS as usize * CHANNELS as usize;
+        if let Ok(chunk) = ring.read_chunk(n) {
+            let (a, b) = chunk.as_slices();
+            let mut samples = Vec::with_capacity(n);
+            samples.extend_from_slice(a);
+            samples.extend_from_slice(b);
+            chunk.commit_all();
+            let samples = match resampler.as_mut() {
+                Some(r) => r.push(&samples)?,
+                None => samples,
+            };
+            for part in samples.chunks(MAX_CHUNK_BYTES / 4) {
+                cut.push(part, &mut *frames)?;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(AppAudioError::Server("the tap went away".to_owned()));
-            }
+        }
+        let lost = dropped.swap(0, Ordering::Relaxed);
+        if lost > 0 {
+            log::warn!(
+                "application audio: {lost} samples dropped (the capture thread fell behind)"
+            );
         }
         if checked.elapsed() >= ALIVE_EVERY {
             checked = Instant::now();
@@ -752,7 +880,7 @@ fn pump(
 pub(super) fn start(
     source: &AppSource,
     root: u32,
-    frames: Box<dyn FnMut(Vec<f32>) + Send>,
+    mut frames: Box<dyn FnMut(Vec<f32>) + Send>,
     ended: Box<dyn FnOnce() + Send>,
 ) -> Result<AppCapture, AppAudioError> {
     supported()?;
@@ -766,8 +894,12 @@ pub(super) fn start(
     std::thread::Builder::new()
         .name("dilla-app-audio".to_owned())
         .spawn(move || {
-            let (tx, rx) = mpsc::sync_channel(QUEUE);
-            let (tap, rate) = match open(pid, root, tx) {
+            let Opened {
+                tap,
+                mut ring,
+                rate,
+                dropped,
+            } = match open(pid, root) {
                 Ok(opened) => opened,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -775,10 +907,12 @@ pub(super) fn start(
                 }
             };
             let _ = ready_tx.send(Ok(()));
-            if let Err(e) = pump(pid, &rx, rate, frames, &stop_c) {
+            if let Err(e) = pump(pid, &mut ring, rate, &dropped, &mut *frames, &stop_c) {
                 log::warn!("application audio ended: {e}");
             }
             drop(tap);
+            // `frames` goes last, after CoreAudio is torn down: its drop marks the capture thread's end.
+            drop(frames);
             // The process exited or the capture failed: once, unless the handle was dropped.
             if !stop_c.load(Ordering::Acquire) {
                 ended();
@@ -864,37 +998,56 @@ mod tests {
         assert!((0.45..=0.55).contains(&max), "level kept: {max}");
     }
 
+    fn buffer(samples: &mut [f32], channels: u32) -> AudioBuffer {
+        AudioBuffer {
+            mNumberChannels: channels,
+            mDataByteSize: (samples.len() * 4) as u32,
+            mData: samples.as_mut_ptr().cast(),
+        }
+    }
+
+    /// Critical 1 of the review: an aggregate lists its sub-devices' input streams before the tap's. With a headset's
+    /// mono and stereo microphones ahead of the tap, only the tap's buffer is read, never a microphone; a list that no
+    /// longer has the tap where it was at open (or not with the tap's channels) yields nothing.
     #[test]
-    fn tap_buffers_become_interleaved_stereo() {
-        let mut inter = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6];
-        let one = AudioBuffer {
-            mNumberChannels: 3,
-            mDataByteSize: 24,
-            mData: inter.as_mut_ptr().cast(),
-        };
-        assert_eq!(stereo(&[one]), vec![0.1, 0.2, 0.4, 0.5]);
-        let mut mono = [0.7f32, 0.8];
-        let m = AudioBuffer {
-            mNumberChannels: 1,
-            mDataByteSize: 8,
-            mData: mono.as_mut_ptr().cast(),
-        };
-        assert_eq!(stereo(&[m]), vec![0.7, 0.7, 0.8, 0.8]);
-        let (mut l, mut r) = ([1.0f32, 2.0], [3.0f32, 4.0]);
-        let planar = [
-            AudioBuffer {
-                mNumberChannels: 1,
-                mDataByteSize: 8,
-                mData: l.as_mut_ptr().cast(),
-            },
-            AudioBuffer {
-                mNumberChannels: 1,
-                mDataByteSize: 8,
-                mData: r.as_mut_ptr().cast(),
-            },
+    fn only_the_taps_buffer_is_read() {
+        let (mut mono_mic, mut stereo_mic, mut tap) =
+            ([9.0f32; 4], [8.0f32; 8], [0.1f32, 0.2, 0.3, 0.4]);
+        let list = [
+            buffer(&mut mono_mic, 1),
+            buffer(&mut stereo_mic, 2),
+            buffer(&mut tap, 2),
         ];
-        assert_eq!(stereo(&planar), vec![1.0, 3.0, 2.0, 4.0]);
-        assert!(stereo(&[]).is_empty());
+        let picked = tap_buffer(&list, 2, 2).expect("the tap's buffer");
+        assert_eq!(picked.mData, list[2].mData, "the tap, not a microphone");
+        assert_eq!(picked.mNumberChannels, 2);
+        assert!(tap_buffer(&list[..2], 2, 2).is_none(), "the tap is gone");
+        assert!(
+            tap_buffer(&list, 0, 2).is_none(),
+            "a mono microphone is not the tap"
+        );
+        let only_tap = [buffer(&mut tap, 2)];
+        assert_eq!(
+            tap_buffer(&only_tap, 0, 2).map(|b| b.mData),
+            Some(only_tap[0].mData)
+        );
+    }
+
+    #[test]
+    fn the_taps_samples_become_interleaved_stereo() {
+        let three = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6];
+        assert_eq!(
+            stereo(&three, 3).collect::<Vec<_>>(),
+            vec![0.1, 0.2, 0.4, 0.5]
+        );
+        let mono = [0.7f32, 0.8];
+        assert_eq!(
+            stereo(&mono, 1).collect::<Vec<_>>(),
+            vec![0.7, 0.7, 0.8, 0.8]
+        );
+        let two = [1.0f32, 3.0, 2.0, 4.0];
+        assert_eq!(stereo(&two, 2).collect::<Vec<_>>(), two);
+        assert_eq!(stereo(&[], 2).count(), 0);
     }
 
     /// The kernel's process table: this process runs, its parent is its parent, and a pid that never was is gone.

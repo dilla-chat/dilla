@@ -100,3 +100,5 @@ objc2-core-audio-types = { version = "0.3.2", default-features = false, features
 objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSUUID", "NSValue"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
+# The IOProc's real-time-safe ring to the capture thread (already in the lock).
+rtrb = "0.3.6"

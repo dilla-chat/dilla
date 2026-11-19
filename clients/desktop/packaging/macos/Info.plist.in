@@ -7,10 +7,9 @@
      CFBundleURLTypes registers the dilla:// scheme (beta.5's electron-builder protocols; D12 superseded 2026-11-16):
      a click arrives as application:openURLs: (gpui's on_open_urls, native/links.rs), never as argv.
      The usage strings are clients/desktop/dilla-desktop/src/native/permissions.rs MACOS_USAGE, which are beta.5's
-     electron-builder extendInfo word for word, except NSAudioCaptureUsageDescription (GPUI gaps Task 5: the "system
-     audio recording" prompt of a CoreAudio process tap, for application sound in a share). Nothing here is for
-     notifications (UNUserNotificationCenter needs no key), the tray (NSStatusItem) or the autostart LaunchAgent (a file
-     in ~/Library). The app sends no Apple Events, so there is no NSAppleEventsUsageDescription. -->
+     electron-builder extendInfo word for word. Nothing here is for notifications (UNUserNotificationCenter needs no
+     key), the tray (NSStatusItem) or the autostart LaunchAgent (a file in ~/Library). The app sends no Apple Events,
+     so there is no NSAppleEventsUsageDescription. -->
 <plist version="1.0">
   <dict>
     <key>CFBundleDevelopmentRegion</key>

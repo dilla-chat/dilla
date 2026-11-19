@@ -534,9 +534,20 @@ fn captures_a_tone_from_afplay() {
     let lengths = Arc::new(Mutex::new(Vec::<usize>::new()));
     let ended = Arc::new(AtomicUsize::new(0));
     let (sink, sizes, ends) = (mono.clone(), lengths.clone(), ended.clone());
+    // The capture thread drops `frames` last, after CoreAudio's teardown: this guard, owned by the closure, records
+    // when the thread is done.
+    struct Finished(Arc<Mutex<Option<Instant>>>);
+    impl Drop for Finished {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() = Some(Instant::now());
+        }
+    }
+    let finished = Arc::new(Mutex::new(None::<Instant>));
+    let guard = Finished(finished.clone());
     let capture = dilla_media::app_audio::start(
         &source,
         Box::new(move |frame: Vec<f32>| {
+            let _ = &guard;
             sizes.lock().unwrap().push(frame.len());
             sink.lock()
                 .unwrap()
@@ -558,7 +569,24 @@ fn captures_a_tone_from_afplay() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    let dropped = Instant::now();
     drop(capture);
+    let teardown = loop {
+        if let Some(at) = *finished.lock().unwrap() {
+            break at.duration_since(dropped);
+        }
+        assert!(
+            dropped.elapsed() < Duration::from_secs(5),
+            "the capture thread never ended"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    eprintln!(
+        "capture thread ended {teardown:?} after the drop (loop exit and CoreAudio teardown)"
+    );
+    if teardown > Duration::from_millis(100) {
+        eprintln!("WARNING: the capture thread took {teardown:?} (> 100 ms) to end after the drop");
+    }
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(ended.load(Ordering::SeqCst), 0, "a drop never calls ended");
     assert!(

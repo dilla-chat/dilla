@@ -2327,6 +2327,7 @@ dependencies = [
  "openmls_rust_crypto",
  "openmls_traits",
  "pipewire",
+ "rtrb",
  "rusqlite",
  "rustls",
  "serde",
