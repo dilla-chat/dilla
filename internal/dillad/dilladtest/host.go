@@ -88,6 +88,12 @@ type HostOptions struct {
 	// SFUUDPPort are its signalling and media ports; 0 means 7880 and 7882.
 	SFU                 bool
 	SFUPort, SFUUDPPort int
+	// SFUAnyPorts ignores SFUPort and SFUUDPPort: the host asks the kernel for a free TCP and a free
+	// UDP port itself and, should another process take one before LiveKit binds it, starts the SFU
+	// again on fresh ones (startSFU). A caller that probes a port and passes it on races every other
+	// test on the box for it in between (CI run 44520186466: "bind: address already in use"); only
+	// the process that binds can retry. SFU().URL() names the ports it got.
+	SFUAnyPorts bool
 	// SFUNoInternalIP is SP-27's negative leg: Firefox cannot pair its non-loopback
 	// local candidate with the loopback-only SFU candidate. Zero keeps the test default.
 	SFUNoInternalIP bool
@@ -443,7 +449,6 @@ func (h *Host) startSFU(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cfg := h.o.sfuConfig(port, udp, h.cfg.LiveKit.APIKey, secret)
 	// The webhook receiver, as dillad's livekit.webhook_listen (cmd/dillad/front.go): bound before the
 	// SFU starts, so LiveKit renders its URL; each verified event goes to the instance current then
 	// (a Restore replaces it).
@@ -451,9 +456,26 @@ func (h *Host) startSFU(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dilladtest: listen for the SFU's webhooks: %w", err)
 	}
-	cfg.WebhookURL = "http://" + ln.Addr().String() + sfu.WebhookPath
-	s, err := sfu.Start(ctx, cfg)
-	if err != nil {
+	var cfg sfu.Config
+	var s *sfu.Server
+	for attempt := 1; ; attempt++ {
+		if h.o.SFUAnyPorts {
+			if port, udp, err = sfuPorts(ctx); err != nil {
+				_ = ln.Close()
+				return fmt.Errorf("dilladtest: pick the SFU's ports: %w", err)
+			}
+		}
+		cfg = h.o.sfuConfig(port, udp, h.cfg.LiveKit.APIKey, secret)
+		cfg.WebhookURL = "http://" + ln.Addr().String() + sfu.WebhookPath
+		s, err = sfu.Start(ctx, cfg)
+		if err == nil {
+			break
+		}
+		// A port picked here is free only until LiveKit binds it: another process can take it in
+		// between. Fresh ports, then, a bounded number of times; a fixed port is the caller's to fix.
+		if h.o.SFUAnyPorts && attempt < sfuPortAttempts && addrInUse(err) {
+			continue
+		}
 		_ = ln.Close()
 		return fmt.Errorf("dilladtest: start the SFU on 127.0.0.1:%d (udp %d): %w", port, udp, err)
 	}

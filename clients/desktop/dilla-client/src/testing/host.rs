@@ -67,21 +67,14 @@ pub fn start_host(tag: &str, listen: &str, web_root: Option<&Path>) -> Host {
     launch(tag, listen, web_root, false)
 }
 
-/// [`start_host`] with the host's in-process LiveKit (`-sfu`, its signalling and ICE ports free ones), listening on a
-/// free port of its own: a browser the host serves reaches LiveKit at `ws://<listen>` through the host's `/rtc` gate
-/// (dilla-testhost's `-web-root` rule), so the port must be a real one. The parity world's fixtures whose viewer joins a
-/// call in the browser.
+/// [`start_host`] with the host's in-process LiveKit (`-sfu -sfu-any-port`: the host picks its signalling and ICE
+/// ports), listening on a port of the host's own pick: a browser the host serves reaches LiveKit at `ws://<listen>`
+/// through the host's `/rtc` gate (dilla-testhost's `-web-root` rule), and the host binds its listener before it names
+/// it there, so `127.0.0.1:0` is a real port by then (printed as `public …`). Never a port probed here and released: a
+/// parallel test can take it before the host binds it (CI run 44520186466). The parity world's fixtures whose viewer
+/// joins a call in the browser.
 pub fn start_host_with_sfu(tag: &str, web_root: Option<&Path>) -> Host {
-    let listen = format!("127.0.0.1:{}", free_port());
-    launch_with(tag, &listen, web_root, false, Sfu::Parity)
-}
-
-/// A TCP port nothing listens on now (the kernel's pick, released at once).
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .expect("a free port")
+    launch_with(tag, "127.0.0.1:0", web_root, false, Sfu::Parity)
 }
 
 /// [`start_host`] with dilla's real Bot supervised beside the instance (`-bot`, see [`bot`]): the Bot is started and
@@ -98,8 +91,7 @@ pub fn start_bot_host(tag: &str, listen: &str) -> Host {
 /// rule), and the music fixtures ([`music::write_fixtures`]) copied into the Bot's state directory before it starts, where
 /// a `dilla_testhost` Bot plays them through the same ffmpeg as a real track. Blocking.
 pub fn start_music_host(tag: &str) -> Host {
-    let listen = format!("127.0.0.1:{}", music::free_port());
-    let host = launch_with(tag, &listen, None, true, Sfu::Music);
+    let host = launch_with(tag, "127.0.0.1:0", None, true, Sfu::Music);
     let fixtures = music::write_fixtures(&repo_root().join("target/dilla-bot-music-fixtures"));
     host.copy_music_fixtures(&fixtures);
     host.start_bot();
@@ -109,8 +101,7 @@ pub fn start_music_host(tag: &str) -> Host {
 /// [`start_host`] with dilla-testhost's in-process LiveKit SFU on the host's own listener (as [`start_music_host`]
 /// starts it), without the Bot: calls start and their media can connect. Blocking.
 pub fn start_sfu_host(tag: &str) -> Host {
-    let listen = format!("127.0.0.1:{}", music::free_port());
-    launch_with(tag, &listen, None, false, Sfu::Music)
+    launch_with(tag, "127.0.0.1:0", None, false, Sfu::Music)
 }
 
 /// The host's in-process LiveKit SFU, if any.
@@ -118,7 +109,7 @@ pub fn start_sfu_host(tag: &str) -> Host {
 enum Sfu {
     /// None.
     Off,
-    /// On free ports, for the parity world's call fixtures ([`start_host_with_sfu`]: the host serves the web client).
+    /// On ports the host picks, for the parity world's call fixtures ([`start_host_with_sfu`]: the host serves the web client).
     Parity,
     /// The music host's and [`start_sfu_host`]'s ([`music::sfu_args`]: its own one-page web root and a 90 s departure
     /// timeout).
@@ -185,9 +176,7 @@ fn launch_with(tag: &str, listen: &str, web_root: Option<&Path>, with_bot: bool,
     match sfu {
         Sfu::Off => {}
         Sfu::Parity => {
-            cmd.arg("-sfu")
-                .args(["-sfu-port", &free_port().to_string()])
-                .args(["-sfu-udp-port", &free_port().to_string()]);
+            cmd.args(["-sfu", "-sfu-any-port"]);
         }
         Sfu::Music => music::sfu_args(&mut cmd, &data),
     }

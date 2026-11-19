@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"net"
 	"net/http"
+	"runtime"
 	"slices"
 	"sync"
+	"syscall"
 
 	"github.com/livekit/protocol/livekit"
 
@@ -18,6 +22,44 @@ const (
 	DefaultSFUPort    = 7880
 	DefaultSFUUDPPort = 7882
 )
+
+// sfuPortAttempts bounds HostOptions.SFUAnyPorts' retries: a port lost to another process in the
+// moment between the kernel's pick and LiveKit's bind is rare, so losing five in a row means
+// something else is wrong, and the last error says what.
+const sfuPortAttempts = 5
+
+// sfuPorts picks the ports of a HostOptions.SFUAnyPorts SFU; a variable so a test can hand out a
+// port it holds first.
+var sfuPorts = freeSFUPorts
+
+// freeSFUPorts asks the kernel for a free TCP port (LiveKit's signalling) and a free UDP port (its
+// ICE mux) on loopback, each probed in its own protocol, and releases both for LiveKit to bind.
+func freeSFUPorts(ctx context.Context) (tcp, udp int, err error) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, 0, err
+	}
+	tcp = ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	pc, err := lc.ListenPacket(ctx, "udp", "127.0.0.1:0")
+	if err != nil {
+		return 0, 0, err
+	}
+	udp = pc.LocalAddr().(*net.UDPAddr).Port
+	_ = pc.Close()
+	return tcp, udp, nil
+}
+
+// addrInUse reports a bind that failed because the address is taken: EADDRINUSE, or on Windows
+// WSAEADDRINUSE (10048), which Go's syscall.Errno does not match to EADDRINUSE.
+func addrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	var errno syscall.Errno
+	return runtime.GOOS == "windows" && errors.As(err, &errno) && errno == 10048
+}
 
 // testSFUConfig is the in-process LiveKit a browser can reach on a one-interface box and on a CI
 // runner: node_ip 127.0.0.1 with the loopback candidate on, **and** advertise_internal_ip, which

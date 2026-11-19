@@ -17,7 +17,7 @@
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
@@ -52,14 +52,6 @@ pub fn unhex16(s: &str) -> [u8; 16] {
         *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).expect("hex");
     }
     out
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// The build this test binary belongs to: `target/<profile>`.
@@ -195,11 +187,10 @@ fn start_host_with(tag: &str, reachable: bool, wss: bool) -> Host {
     ));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
-    let listen = if reachable {
-        format!("127.0.0.1:{}", free_port())
-    } else {
-        "127.0.0.1:0".to_owned()
-    };
+    // Every port is the host's own pick, never one probed here and released: a parallel test could take it before the
+    // host binds it (CI run 44520186466, "bind: address already in use"). The host binds its listeners before it names
+    // one as the LiveKit URL, and prints them (`public …`); `-sfu-any-port` picks the SFU's and retries a lost one.
+    let listen = "127.0.0.1:0";
     let mut cmd = Command::new(bin);
     if reachable {
         // A one-page client tree its manifest describes (dillad verifies the tree it serves).
@@ -217,17 +208,16 @@ fn start_host_with(tag: &str, reachable: bool, wss: bool) -> Host {
         let (cert, key) = (data.join("rtc-tls.pem"), data.join("rtc-tls.key"));
         std::fs::write(&cert, fixture_pem("server.der", "CERTIFICATE")).unwrap();
         std::fs::write(&key, fixture_pem("server.key.der", "PRIVATE KEY")).unwrap();
-        cmd.args(["-rtc-tls-listen", &format!("127.0.0.1:{}", free_port())])
+        cmd.args(["-rtc-tls-listen", "127.0.0.1:0"])
             .arg("-rtc-tls-cert")
             .arg(&cert)
             .arg("-rtc-tls-key")
             .arg(&key);
     }
     let mut child = cmd
-        .args(["-listen", &listen, "-control", "127.0.0.1:0"])
+        .args(["-listen", listen, "-control", "127.0.0.1:0"])
         .args(["-log-level", "warn", "-production-acl", "-sfu"])
-        .args(["-sfu-port", &free_port().to_string()])
-        .args(["-sfu-udp-port", &free_port().to_string()])
+        .arg("-sfu-any-port")
         .arg("-core")
         .arg(&wasm)
         .arg("-data-dir")
