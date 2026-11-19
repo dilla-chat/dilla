@@ -65,8 +65,9 @@ fn main() {
     if is_desktop {
         rust_files.push("src/desktop_capturer.rs");
     }
-    // DILLA PATCH: the desktop client's camera (libwebrtc's VideoCaptureModule: V4L2, DirectShow).
-    let dilla_camera = target_os == "linux" || target_os == "windows";
+    // DILLA PATCH: the desktop client's camera (libwebrtc's VideoCaptureModule: V4L2, DirectShow;
+    // AVFoundation on macOS, src/dilla_camera_mac.mm).
+    let dilla_camera = is_desktop;
     if dilla_camera {
         rust_files.push("src/dilla_camera.rs");
     }
@@ -74,6 +75,10 @@ fn main() {
     let dilla_test_frames = env::var("CARGO_FEATURE_DILLA_TEST_FRAMES").is_ok();
     if dilla_test_frames {
         rust_files.push("src/dilla_transform_testing.rs");
+        // DILLA PATCH: the macOS camera's authorisation gate with a forced status.
+        if target_os == "macos" {
+            rust_files.push("src/dilla_camera_testing.rs");
+        }
     }
 
     let mut builder = cxx_build::bridges(rust_files);
@@ -142,7 +147,7 @@ fn main() {
         webrtc_sys_build::download_webrtc().unwrap();
     }
 
-    builder.includes(&[
+    let includes = [
         path::PathBuf::from("./include"),
         webrtc_include.clone(),
         webrtc_include.join("third_party/abseil-cpp/"),
@@ -151,7 +156,8 @@ fn main() {
         // For mac & ios
         webrtc_include.join("sdk/objc"),
         webrtc_include.join("sdk/objc/base"),
-    ]);
+    ];
+    builder.includes(&includes);
     builder.define("WEBRTC_APM_DEBUG_DUMP", "0");
 
     println!("cargo:rustc-link-search=native={}", webrtc_lib.to_str().unwrap());
@@ -160,6 +166,9 @@ fn main() {
         let value = value.as_deref();
         builder.define(key.as_str(), value);
     }
+
+    // DILLA PATCH: the macOS camera's own library (built in the "macos" arm below).
+    let mut dilla_camera_mac: Option<cc::Build> = None;
 
     // Link webrtc library
     println!("cargo:rustc-link-lib=static=webrtc");
@@ -371,11 +380,36 @@ fn main() {
             configure_darwin_sysroot(&mut builder);
 
             builder
-                .file("src/objc_video_factory.mm")
-                .file("src/objc_video_frame_buffer.mm")
                 .flag("-stdlib=libc++")
                 .flag("-std=c++20")
                 .flag("-Wno-nullability-completeness");
+
+            // DILLA PATCH: the camera through AVFoundation (core/vendor/README.md). It is ARC code and
+            // the upstream .mm files are manual retain/release, so it is its own library: the same
+            // includes, defines and flags as the bridge, plus -fobjc-arc. It needs AVFoundation,
+            // CoreMedia and CoreVideo, which the list above links already.
+            // An empty bridge list: only cxx's include dirs (rust/cxx.h, the generated
+            // dilla_camera.rs.h), no generated sources.
+            let mut camera = cxx_build::bridges(Vec::<&str>::new());
+            camera.includes(&includes).define("WEBRTC_APM_DEBUG_DUMP", "0");
+            for (key, value) in webrtc_sys_build::webrtc_defines() {
+                camera.define(key.as_str(), value.as_deref());
+            }
+            if dilla_test_frames {
+                camera.define("DILLA_TEST_FRAMES", None);
+            }
+            configure_darwin_sysroot(&mut camera);
+            camera
+                .file("src/dilla_camera_mac.mm")
+                .flag("-stdlib=libc++")
+                .flag("-std=c++20")
+                .flag("-Wno-nullability-completeness")
+                .flag("-fobjc-arc");
+            dilla_camera_mac = Some(camera);
+
+            builder
+                .file("src/objc_video_factory.mm")
+                .file("src/objc_video_frame_buffer.mm");
         }
         "ios" => {
             println!("cargo:rustc-link-lib=framework=Foundation");
@@ -428,6 +462,10 @@ fn main() {
     // TODO(theomonnom) Only add this define when building tests
     builder.define("LIVEKIT_TEST", None);
     builder.warnings(false).compile("webrtcsys-cxx");
+    if let Some(mut camera) = dilla_camera_mac {
+        camera.define("LIVEKIT_TEST", None);
+        camera.warnings(false).compile("webrtcsys-camera");
+    }
 
     for entry in glob::glob("./src/**/*.cpp").unwrap() {
         println!("cargo:rerun-if-changed={}", entry.unwrap().display());

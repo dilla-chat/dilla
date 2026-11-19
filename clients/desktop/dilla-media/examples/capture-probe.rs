@@ -85,7 +85,7 @@ fn main() {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn camera() -> Result<Box<dyn CaptureSource>, dilla_media::sources::OpenError> {
     use dilla_media::sources::camera;
     println!("{:?}", camera::devices());
@@ -93,7 +93,7 @@ fn camera() -> Result<Box<dyn CaptureSource>, dilla_media::sources::OpenError> {
         .map(|c| Box::new(c) as Box<dyn CaptureSource>)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn camera() -> Result<Box<dyn CaptureSource>, dilla_media::sources::OpenError> {
     Err(dilla_media::sources::OpenError::Unavailable(
         "no camera source on this system yet".to_owned(),

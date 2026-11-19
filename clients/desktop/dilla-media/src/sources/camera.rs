@@ -1,6 +1,11 @@
-//! The camera through libwebrtc's video capture module (the vendored webrtc-sys's `dilla_camera` bridge: V4L2 on Linux,
-//! DirectShow on Windows). beta.5's camera was `getUserMedia({ video: true })`: the default camera at Chromium's default
-//! 640 x 480, 30 fps, which is what [`open`] asks the camera for (it answers with its nearest mode).
+//! The camera through the vendored webrtc-sys's `dilla_camera` bridge: libwebrtc's video capture module (V4L2 on Linux,
+//! DirectShow on Windows) and, since the prebuilt libwebrtc has no macOS capture module, AVFoundation on macOS
+//! (`dilla_camera_mac.mm`: an `AVCaptureSession` in NV12 converted to I420; the built-in camera listed first). beta.5's
+//! camera was `getUserMedia({ video: true })`: the default camera at Chromium's default 640 x 480, 30 fps, which is what
+//! [`open`] asks the camera for (it answers with its nearest mode).
+//!
+//! On macOS a camera the person denied (or a policy restricts) opens nothing at once ([`OpenError::Unavailable`]); one
+//! not asked about yet asks the system once (its prompt is the person's) and waits for the answer.
 
 use std::time::Duration;
 
@@ -20,7 +25,7 @@ pub const STALL: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CameraDevice {
     pub name: String,
-    /// What opens it (a V4L2 device's bus info, a DirectShow moniker); never shown.
+    /// What opens it (a V4L2 device's bus info, a DirectShow moniker, an AVCaptureDevice unique id); never shown.
     pub id: String,
 }
 
@@ -166,5 +171,38 @@ mod tests {
             stride_v: 3,
         };
         assert!(pack(&short).is_none(), "a short plane is no frame");
+    }
+
+    /// Review focus 4: a camera the person denied (or a policy restricts) is the "camera unavailable" error at once,
+    /// never a wait for frames that cannot come. The bridge's authorisation gate runs with a forced status
+    /// (`dilla_camera_testing`), so this needs neither a camera nor the machine's real TCC state.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn denied_camera_is_an_error_not_a_hang() {
+        use std::time::Instant;
+        use webrtc_sys::dilla_camera_testing::{self as testing, Authorization};
+
+        for (status, grants, requests) in [
+            (Authorization::Denied, true, 0),
+            (Authorization::Restricted, true, 0),
+            // Not asked yet: the bridge asks once; refused, it is the same error.
+            (Authorization::NotDetermined, false, 1),
+        ] {
+            let forced = testing::force(status, grants);
+            let started = Instant::now();
+            let opened = open(Some("any camera"), Duration::from_secs(5), &|| false);
+            assert!(
+                matches!(opened, Err(OpenError::Unavailable(_))),
+                "{status:?}: {:?}",
+                opened.err()
+            );
+            assert!(
+                started.elapsed() < Duration::from_millis(500),
+                "{status:?} took {:?}",
+                started.elapsed()
+            );
+            assert_eq!(forced.refusals(), 1, "{status:?}: the gate refused it");
+            assert_eq!(forced.requests(), requests, "{status:?}");
+        }
     }
 }

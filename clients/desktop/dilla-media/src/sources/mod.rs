@@ -3,8 +3,8 @@
 //! - [`desktop`]: screens and windows through libwebrtc's own desktop capturer, the engine Electron's `desktopCapturer`
 //!   ran on (beta.5): X11 (screens through RandR, windows through XComposite), the XDG ScreenCast portal and PipeWire on
 //!   Wayland (the portal draws its own chooser), ScreenCaptureKit on macOS and Windows Graphics Capture on Windows;
-//! - [`camera`]: the camera through libwebrtc's video capture module (V4L2 on Linux, DirectShow on Windows; the vendored
-//!   webrtc-sys's `dilla_camera` bridge). macOS has no camera source yet.
+//! - [`camera`]: the camera through the vendored webrtc-sys's `dilla_camera` bridge: libwebrtc's video capture module
+//!   (V4L2 on Linux, DirectShow on Windows) and AVFoundation on macOS.
 //!
 //! Each source runs on its own thread and keeps only its newest frame ([`Latest`]); the share's feeder pulls it at the
 //! share's frame rate. Dropping a source stops its capture (the thread ends within one frame interval), so a share that
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::capture_source::{Frame, Pull};
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod camera;
 pub mod desktop;
 #[cfg(target_os = "linux")]
@@ -74,8 +74,8 @@ impl Latest {
         self.lock().ended
     }
 
-    /// When the newest frame arrived (the camera's stall check; macOS has no camera source yet).
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    /// When the newest frame arrived (the camera's stall check).
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     pub(crate) fn last(&self) -> Option<Instant> {
         self.lock().last
     }

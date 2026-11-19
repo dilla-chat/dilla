@@ -1,4 +1,6 @@
-// DILLA PATCH: the camera source of the desktop client (core/vendor/README.md).
+// DILLA PATCH: the camera source of the desktop client (core/vendor/README.md). The frame hand-off
+// is shared; the VideoCaptureModule backend below is Linux and Windows only (macOS:
+// src/dilla_camera_mac.mm).
 
 #include "livekit/dilla_camera.h"
 
@@ -6,9 +8,30 @@
 #include <vector>
 
 #include "api/video/i420_buffer.h"
+#if !defined(__APPLE__)
 #include "modules/video_capture/video_capture_factory.h"
+#endif
 
 namespace livekit_ffi {
+
+void dilla_camera_deliver(DillaCameraSink& sink, const webrtc::I420BufferInterface& i420) {
+  const int w = i420.width();
+  const int h = i420.height();
+  const int ch = (h + 1) / 2;
+  sink.on_frame(
+      static_cast<uint32_t>(w), static_cast<uint32_t>(h),
+      rust::Slice<const uint8_t>(i420.DataY(),
+                                 static_cast<size_t>(i420.StrideY()) * h),
+      static_cast<uint32_t>(i420.StrideY()),
+      rust::Slice<const uint8_t>(i420.DataU(),
+                                 static_cast<size_t>(i420.StrideU()) * ch),
+      static_cast<uint32_t>(i420.StrideU()),
+      rust::Slice<const uint8_t>(i420.DataV(),
+                                 static_cast<size_t>(i420.StrideV()) * ch),
+      static_cast<uint32_t>(i420.StrideV()));
+}
+
+#if !defined(__APPLE__)
 
 DillaCamera::DillaCamera(
     webrtc::scoped_refptr<webrtc::VideoCaptureModule> module,
@@ -30,21 +53,8 @@ void DillaCamera::OnFrame(const webrtc::VideoFrame& frame) {
   if (!i420) {
     return;
   }
-  const int w = i420->width();
-  const int h = i420->height();
-  const int ch = (h + 1) / 2;
   std::lock_guard<std::mutex> guard(lock_);
-  sink_->on_frame(
-      static_cast<uint32_t>(w), static_cast<uint32_t>(h),
-      rust::Slice<const uint8_t>(i420->DataY(),
-                                 static_cast<size_t>(i420->StrideY()) * h),
-      static_cast<uint32_t>(i420->StrideY()),
-      rust::Slice<const uint8_t>(i420->DataU(),
-                                 static_cast<size_t>(i420->StrideU()) * ch),
-      static_cast<uint32_t>(i420->StrideU()),
-      rust::Slice<const uint8_t>(i420->DataV(),
-                                 static_cast<size_t>(i420->StrideV()) * ch),
-      static_cast<uint32_t>(i420->StrideV()));
+  dilla_camera_deliver(*sink_, *i420);
 }
 
 int32_t DillaCamera::start(uint32_t width, uint32_t height, uint32_t fps) const {
@@ -97,5 +107,7 @@ std::unique_ptr<DillaCamera> dilla_camera_open(rust::Str unique_id,
   }
   return std::make_unique<DillaCamera>(std::move(module), std::move(sink));
 }
+
+#endif  // !defined(__APPLE__)
 
 }  // namespace livekit_ffi

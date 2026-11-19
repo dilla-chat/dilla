@@ -126,14 +126,27 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   which the prebuilt library does not define); `build.rs` compiles them and defines
   `DILLA_TEST_FRAMES` only then.
 - `build.rs`, `src/lib.rs`: build and export the new bridge.
-- The desktop client's camera (GPUI parity plan Package 1, 2026-11-15), Linux and Windows only:
-  `include/livekit/dilla_camera.h`, `src/dilla_camera.{cpp,rs}` (`webrtc_sys::dilla_camera`:
-  `dilla_camera_devices`, `dilla_camera_open(id, sink)`, `DillaCamera::start(w, h, fps)`). It wraps
-  libwebrtc's own `VideoCaptureModule` of the prebuilt library (V4L2 on Linux, DirectShow on
-  Windows), converts each frame to I420 there and hands the planes to a Rust sink; the destructor
-  stops the capture and deregisters the sink before it returns. macOS's prebuilt has no
-  `VideoCaptureModule` implementation, so the bridge is not built there. Covered by
-  `clients/desktop/dilla-media/src/sources/camera.rs` (its packing test) and the manual
+- The desktop client's camera (GPUI parity plan Package 1, 2026-11-15; macOS GPUI gaps Task 6,
+  2026-11-19): `include/livekit/dilla_camera.h`, `src/dilla_camera.{cpp,rs}`
+  (`webrtc_sys::dilla_camera`: `dilla_camera_devices`, `dilla_camera_open(id, sink)`,
+  `DillaCamera::start(w, h, fps)`). On Linux and Windows it wraps libwebrtc's own
+  `VideoCaptureModule` of the prebuilt library (V4L2, DirectShow), converts each frame to I420 there
+  and hands the planes to a Rust sink (`dilla_camera_deliver`, shared); the destructor stops the
+  capture and deregisters the sink before it returns. macOS's prebuilt has no `VideoCaptureModule`
+  implementation, so there the same bridge is `src/dilla_camera_mac.mm`, AVFoundation directly:
+  the cameras of an `AVCaptureDeviceDiscoverySession` (built-in first, then external and Continuity),
+  an `AVCaptureSession` + `AVCaptureVideoDataOutput` in NV12 at the device format nearest the ask,
+  each frame converted with libyuv `NV12ToI420` into a `webrtc::I420Buffer` and handed to the same
+  sink; the destructor stops the session, detaches the delegate and drains its capture queue before
+  it returns. Camera authorisation: `Denied`/`Restricted` opens nothing (null, at once);
+  `NotDetermined` asks the system once per process and waits up to 60 s for the answer. `build.rs`
+  compiles the `.mm` as its own library (`webrtcsys-camera`) with `-fobjc-arc` (the upstream `.mm`
+  files are manual retain/release) and links AVFoundation, CoreMedia, CoreVideo. Test support, only
+  with `dilla-test-frames` on macOS: `include/livekit/dilla_camera_testing.h`,
+  `src/dilla_camera_testing.rs` (`webrtc_sys::dilla_camera_testing::force`: the authorisation gate
+  with a forced status instead of TCC's). Covered by `clients/desktop/dilla-media/src/sources/camera.rs`
+  (its packing test; on macOS the denied/restricted/refused gate) and, on a Mac with Camera access,
+  `DILLA_MAC_CAPTURE=1 cargo test -p dilla-media --test capture mac_camera`, plus the manual
   `capture-probe camera`.
 - `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
   `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall

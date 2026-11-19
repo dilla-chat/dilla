@@ -224,3 +224,50 @@ fn an_unbound_screen_source_sends_nothing() {
     testing::release(tx);
     router.end(&media);
 }
+
+/// GPUI gaps Task 6: the macOS camera through AVFoundation (webrtc-sys `dilla_camera_mac.mm`). It opens a real camera,
+/// so it runs only where a person granted the shell Camera access once: `DILLA_MAC_CAPTURE=1 cargo test -p dilla-media
+/// --test capture mac_camera`. The built-in camera when there is one (a Continuity Camera iPhone is listed too), else
+/// the first; at least 10 I420 frames of the asked 640 x 480 within 5 s.
+#[cfg(target_os = "macos")]
+#[test]
+fn mac_camera_delivers_frames() {
+    use dilla_media::capture_source::{CaptureSource, PixelFormat, Pull};
+    use dilla_media::sources::camera;
+
+    if std::env::var("DILLA_MAC_CAPTURE").as_deref() != Ok("1") {
+        eprintln!("skipped: set DILLA_MAC_CAPTURE=1 on a Mac whose shell has Camera access");
+        return;
+    }
+    let devices = camera::devices();
+    assert!(!devices.is_empty(), "no camera listed");
+    let device = devices
+        .iter()
+        .find(|d| d.name.contains("MacBook") || d.name.contains("FaceTime"))
+        .unwrap_or(&devices[0]);
+    eprintln!("cameras: {devices:?}; opening {:?}", device.name);
+
+    let started = Instant::now();
+    let mut cam = camera::open(Some(&device.id), Duration::from_secs(5), &|| false)
+        .unwrap_or_else(|e| panic!("{:?} did not open: {e}", device.name));
+    assert_eq!(cam.size(), (camera::WIDTH, camera::HEIGHT));
+    let mut frames = 0;
+    while frames < 10 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{frames} frames in 5 s"
+        );
+        match cam.pull() {
+            Pull::Frame(f) => {
+                assert_eq!(f.format, PixelFormat::I420);
+                assert_eq!((f.width, f.height), (camera::WIDTH, camera::HEIGHT));
+                assert!(f.is_whole());
+                frames += 1;
+            }
+            Pull::Idle => std::thread::sleep(Duration::from_millis(5)),
+            Pull::Ended => panic!("the camera ended after {frames} frames"),
+        }
+    }
+    eprintln!("{frames} frames in {:?}", started.elapsed());
+    drop(cam);
+}
