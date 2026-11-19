@@ -277,6 +277,15 @@ pub fn image_format(b: &[u8]) -> Option<ImageFormat> {
     }
 }
 
+/// A picture's pixel size from its header alone (no decode); `None` when the header does not say.
+pub(crate) fn dimensions(image: &Image) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(image.bytes()))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
 /// A picture GPUI may decode: one of the four inline types whose headers say all its frames fit `DECODE_BUDGET` (a
 /// decompression bomb is never handed over; the card keeps its still or its neutral box).
 pub(crate) fn picture(bytes: &[u8]) -> Option<Arc<Image>> {

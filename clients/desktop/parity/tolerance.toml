@@ -7,7 +7,7 @@
 #                                      colour gate, only pixels outside the text mask: a pixel is right when its colour is
 #                                      within colour_max_delta of some reference pixel within colour_radius device pixels;
 #                                      fails if more than colour_max_pct percent of the unmasked pixels are not.
-# Linux numbers are measured (experiments/gpui-pixel-proof, Task 3; see TOLERANCES.md).
+# Linux numbers are measured, with per-screen limits in [linux_screens."<fixture>"] (experiments/gpui-pixel-proof, Task 3; see TOLERANCES.md).
 # macOS numbers are measured on macos-15 against the Linux web references (decision D-A of the macOS CI plan; gpui-proofs
 # mac-parity-measure, see TOLERANCES.md "macOS"), with per-screen limits in [macos_screens."<fixture>"] where a screen's
 # honest score is over the shared one. Windows stays an exact placeholder until CI measures it (PENDING-CI).
@@ -56,3 +56,21 @@ colour_max_pct = 0.74
 colour_max_pct = 0.77
 [macos_screens."voice/person-menu"]
 colour_max_pct = 0.66
+
+# Per-screen Linux limits: twice the screen's honest Linux score (TOLERANCES.md "Linux per-screen"). The picture screens
+# scale a thumbnail bilinearly where Skia filters bicubically; the emoji screens draw the colour bitmap face scaled
+# otherwise than Skia does (the advances, so every chip and cell edge, are the web's; only the raster differs).
+[linux_screens."attachments/cards"]
+colour_max_pct = 0.8
+[linux_screens."attachments/cards-b"]
+chrome_max_pct = 0.84
+colour_max_pct = 2.16
+[linux_screens."reactions/many-wrapping"]
+chrome_max_pct = 0.48
+colour_max_pct = 0.54
+[linux_screens."reactions/many-wrapping-b"]
+chrome_max_pct = 0.47
+colour_max_pct = 0.51
+[linux_screens."reactions/emoji-grid"]
+chrome_max_pct = 0.57
+colour_max_pct = 0.88

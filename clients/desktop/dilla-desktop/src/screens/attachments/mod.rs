@@ -301,6 +301,7 @@ pub fn attachment_cards(
                     .child(image_tile(
                         id,
                         w,
+                        shown.as_ref().and_then(|i| ui::dimensions(i)),
                         shown,
                         badge,
                         open.map(|o| (tf("shell.attachment.open", &[("name", &name)]).into(), o)),

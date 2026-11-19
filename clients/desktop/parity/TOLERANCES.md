@@ -79,6 +79,32 @@ and the drag strip intersect `dilla_desktop::MAC_TRAFFIC_LIGHTS` (12, 16, 54 x 1
 All four values are exact placeholders (0 / 0.0): PENDING-CI. GPUI's headless mode has no renderer on Windows, so
 Windows parity is measured with a real window later.
 
+## Linux per-screen
+
+Five screens carry their own Linux limits in `[linux_screens."<fixture>"]` (Jonas 2026-11-19: "fix crop, tolerate emoji"),
+each 2x its honest score, the way the macOS ones are. Scores are the `DILLA_PARITY_MEASURE` lines of the Linux run.
+
+| screen | gate | before the crop fix | after | limit | reason |
+|---|---|---|---|---|---|
+| `attachments/cards` | chrome (shared 0.2) | 0.7293 | 0.0903 | shared | GPUI cropped the cover image in whole texels (`Window::paint_image`'s sub-tile rounds its offset and size); the tile now draws the whole picture into a clipped box offset by the cover offset (`card::cover_box`) |
+| `attachments/cards` | colour (shared 0.3) | 0.6533 | 0.3988 | 0.8 | raster resampling: GPUI scales the thumbnail bilinearly, Skia bicubically; the remaining row is the picture's blended top and bottom edge row (sub-pixel start) |
+| `attachments/cards-b` | chrome | 1.4499 | 0.4162 | 0.84 | as cards, over nine tiles |
+| `attachments/cards-b` | colour | 2.6966 | 1.0786 | 2.16 | as cards, over nine tiles |
+| `reactions/many-wrapping` | chrome / colour | 0.2392 / 0.2719 | unchanged | 0.48 / 0.54 | colour emoji bitmap scaled to 15 px otherwise than Skia's (raster) |
+| `reactions/many-wrapping-b` | chrome / colour | 0.2331 / 0.2545 | unchanged | 0.47 / 0.51 | as many-wrapping |
+| `reactions/emoji-grid` | chrome / colour | 0.2812 / 0.4397 | unchanged | 0.57 / 0.88 | the picker grid's colour emoji, as many-wrapping |
+
+All of it is raster resampling, invisible to the eye at the screen's size: the trip crops (reference, GPUI, difference > 24)
+show the same pictures, the same rounded 8 px corners and the same chip and cell positions.
+
+**The emoji advance is the web's.** Chromium's `layout.json` (shot with `shoot.mjs --out`) gives every reaction chip a width of
+42.67 px (a pitch of 46.67 with the 4 px gap) and its count at x 422.36, 469.03, 515.70, 562.38, ...; GPUI's `text-bounds` put
+the same counts at x 422, 469, 516, 562, 609, 655, 702, 749, 795, 842, 889, 935 (whole pixels), the same pitch to rounding.
+The 12 picker emoji sit in fixed 38.5 px cells (the web's emoji span is 23.72 px wide at 19 px, every one alike), and both
+frames put every glyph in the same cell. So the advances match and the residue is the bitmap face's raster alone.
+
+macOS does not use these entries; the five tests stay `#[ignore]`d there until its own limits are measured.
+
 ## How screens supply the mask
 
 The automation interface reports text element bounds (`ElementInfo`); a screen test converts them to device pixels (logical x scale) and builds `TextMask::from_rects`. `TextMask::from_bright_pixels_fixture_only` must not be used by screen tests.

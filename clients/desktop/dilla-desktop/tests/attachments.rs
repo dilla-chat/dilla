@@ -66,10 +66,10 @@ fn fixtures_parse_and_b_varies_a() {
 }
 
 macro_rules! parity {
-    ($($test:ident => $name:literal $(, $why:literal)?);* $(;)?) => {$(
+    ($($test:ident => $name:literal $(, macos $why:literal)?);* $(;)?) => {$(
         #[test]
         #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]
-        $(#[cfg_attr(any(target_os = "linux", target_os = "macos"), ignore = $why)])?  // elsewhere the line above already ignores it
+        $(#[cfg_attr(target_os = "macos", ignore = $why)])?  // elsewhere the line above already ignores it
         fn $test() {
             if let Err(e) = assert_screen(&fixture($name)) {
                 panic!("{e}");
@@ -79,8 +79,8 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_attachments_cards => "cards", "parity after T6c: chrome 0.7293 % (the tiles' band edges: GPUI crops a cover image in whole texels (Window::paint_image's sub-tile rounds its offset and size), so the 320x240 thumbnail in its 278x208 box is scaled a little otherwise than Chromium's, and it samples the upscale bilinearly where Skia filters bicubically; a renderer change across the platform crates)";
-    parity_attachments_cards_b => "cards-b", "parity after T6c: chrome 1.4499 % (as cards, over nine tiles, each cropped sideways)";
+    parity_attachments_cards => "cards", macos "no macOS limit measured yet for the cards screens (Linux: attachments/cards in tolerance.toml [linux_screens])";
+    parity_attachments_cards_b => "cards-b", macos "no macOS limit measured yet for the cards screens (Linux: attachments/cards-b in tolerance.toml [linux_screens])";
     parity_attachments_lightbox => "lightbox";
     parity_attachments_lightbox_b => "lightbox-b";
     parity_attachments_media_player => "media-player";

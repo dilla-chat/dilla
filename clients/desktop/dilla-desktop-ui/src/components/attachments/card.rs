@@ -39,6 +39,14 @@ pub fn tile_height(w: f32) -> f32 {
     w * 3.0 / 4.0
 }
 
+/// Where `object-fit: cover` puts a picture of `iw` x `ih` in a `cw` x `ch` box: the picture's left, top, width and
+/// height relative to the box, centred, scaled until it covers the box on both sides.
+pub fn cover_box(cw: f32, ch: f32, iw: f32, ih: f32) -> (f32, f32, f32, f32) {
+    let scale = (cw / iw).max(ch / ih);
+    let (w, h) = (iw * scale, ih * scale);
+    ((cw - w) / 2.0, (ch - h) / 2.0, w, h)
+}
+
 /// AttachmentCard.tsx `fileMeta`: "48 KB · PNG", the extension upper-cased; a name without one shows the size alone.
 pub fn file_meta(name: &str, size: &str) -> String {
     match name.rfind('.') {
@@ -54,6 +62,8 @@ pub fn file_meta(name: &str, size: &str) -> String {
 pub fn image_tile(
     id: impl Into<SharedString>,
     width: f32,
+    // The thumbnail's pixel size (width, height), when known: the cover crop is then exact (see `cover_box`).
+    thumb_size: Option<(u32, u32)>,
     thumb: Option<Arc<Image>>,
     badge: Option<SharedString>,
     // What it opens, named for a screen reader (`shell.attachment.open`), and the open itself.
@@ -61,11 +71,36 @@ pub fn image_tile(
 ) -> AnyElement {
     let h = tile_height(width);
     let inner: AnyElement = match thumb {
-        Some(image) => img(image)
-            .size_full()
-            .object_fit(ObjectFit::Cover)
-            .rounded(radius::LG)
-            .into_any_element(),
+        Some(image) => match thumb_size {
+            // `object-fit: cover` by hand: GPUI's own Cover crops the picture in whole texels (`Window::paint_image`
+            // rounds a sub-tile's offset and size), a little off Chromium's. The whole picture is scaled into the
+            // cover box instead and the tile clips what overflows, so the crop lands on sub-texel UVs.
+            Some((iw, ih)) => {
+                let (x, y, cover_w, cover_h) =
+                    cover_box(width - 2.0, h - 2.0, iw as f32, ih as f32); // inside the 1px border
+                div()
+                    .relative()
+                    .size_full()
+                    .overflow_hidden()
+                    .rounded(radius::LG)
+                    .child(
+                        img(image)
+                            .absolute()
+                            .left(px(x))
+                            .top(px(y))
+                            .w(px(cover_w))
+                            .h(px(cover_h))
+                            .object_fit(ObjectFit::Fill)
+                            .rounded(radius::LG),
+                    )
+                    .into_any_element()
+            }
+            None => img(image)
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .rounded(radius::LG)
+                .into_any_element(),
+        },
         None => div()
             .size_full()
             .rounded(radius::LG)

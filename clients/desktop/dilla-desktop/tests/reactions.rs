@@ -56,21 +56,30 @@ fn parity_reactions_bar_b() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2392 % (the colour emoji glyphs: the bitmap face scaled to 15px samples otherwise than Skia's, and a chip's width follows the emoji's advance, so some chips' edges sit a device px apart; re-measured in the wave 2 fix round; which advance each side gives the emoji is not measured yet, so the root is still open)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2331 % (as many-wrapping: the emoji glyphs and the chip edges they move)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2812 % (the picker grid's colour emoji glyphs, as many-wrapping)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }
