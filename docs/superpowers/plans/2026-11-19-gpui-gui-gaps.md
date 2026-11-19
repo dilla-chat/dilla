@@ -93,10 +93,18 @@ Share sound:
   - Sharing a window brings that window's application's sound by itself. The sound section shows it ("Sound from
     {app}") and the person can switch it off or choose another application.
   - A whole screen brings none (today's manual choice).
-  - Wayland and macOS (the system's dialog chooses), an owner that can't be found and an owner that isn't playing all
-    fall back to today's manual choice with nothing preselected.
+  - Wayland (the system's dialog chooses), an owner that can't be found and an owner that isn't playing all fall back
+    to today's manual choice with nothing preselected. macOS falls back the same way until Task 45 (D22) gives it
+    Dilla's own picker.
   - The person's own choice is never replaced.
   - Dilla's own process tree is never captured (Task 44).
+- **D22** macOS uses Dilla's own share picker, like Discord (Jonas 2026-11-19):
+  - ScreenCaptureKit's system picker (`SCContentSharingPicker`) is replaced by the same picker grid and thumbnails that
+    Linux X11 and Windows draw, so Dilla always knows the shared window and D21's automatic sound works on macOS 14.2+.
+  - Sources come from `SCShareableContent`, are captured through an `SCStream` with an `SCContentFilter`, and carry the
+    window's owner pid. Listing needs Screen Recording; without it the picker's empty state says how to allow it.
+  - macOS 13 (the app's floor) gets the same picker, with thumbnails from one captured frame instead of
+    `SCScreenshotManager` (Task 45).
 
 Controller reconciliation (from merging the drafts; tell Jonas):
 - **D20** The role-panel editor's per-role choice is the shared 22px checkbox from D15 (the web's checkbox), not a `Toggle`. D2 chose `Toggle` before D15 made a parity checkbox available, and D15 says "everywhere".
@@ -132,7 +140,7 @@ teardown Z, and the share sound Q.
 | 12 | S1 | L | 27 | X3 | M | 42 | V15 | L |
 | 13 | S2 | M | 28 | C8 | L | 43 | — (docs) | S |
 | 14 | S3 | M | 29 | C9 | M | 44 | Q1 | M |
-| 15 | S4 | M | 30 | C10 | L | | | |
+| 15 | S4 | M | 30 | C10 | L | 45 | Q2 | L |
 
 Hard dependencies:
 - Composer: C1 → C2–C9 → C10 → X5 (8 → 9–11, 24–29 → 30 → 31). C6 needs C3, because its "every built-in has a handler" test
@@ -143,6 +151,8 @@ Hard dependencies:
 - V13 (40) needs X3, X4, C7 (its fixtures) and B5's Bot world extension (38). V15 (42) needs C2 and C6.
 - Every `native/` reference needs Task 1. Tasks 18 and 29 need Task 2.
 - Z1 (3) is independent. Q1 (44) needs nothing from this plan. It lands before Task 24, which also edits `voice/mod.rs`.
+- Q2 (45) needs Q1 (44): it fills `window_owner_pid`'s macOS arm and moves macOS off the portal branch that Task 44
+  writes. It builds on Task 3's `webrtc-sys` and `dilla-media` changes (wave 0).
 
 Parallel work: lanes run in separate copies of the worktree and land on the branch in order.
 - Within a lane, tasks run in sequence.
@@ -168,7 +178,7 @@ Parallel work: lanes run in separate copies of the worktree and land on the bran
 - Lane C, visual: 18 → 19 → 20 → 21 → 22 → 23. Files: D `members/self_roles.rs`, `user_settings/*`, `messages/editor.rs`,
   `messages/markdown.rs`, `sign_in.rs`, `rail.rs`, `dms/*`, `automation.rs`; U `segmented.rs`, `threads/reply_line.rs`,
   `onboarding/*`, `voice/*`; their test files and fixtures.
-- Lane D, share sound: 44.
+- Lane D, share sound: 44 → 45.
   - Files: dilla-media `sources/desktop.rs`, `app_audio/{mod,frames,linux,windows}.rs`, `Cargo.toml` (and dilla-media's
     entry in `Cargo.lock`); D `screens/voice/mod.rs`, `screens/share_picker/apps.rs`; `D/../tests/share.rs`;
     `docs/user/desktop.md`.
@@ -176,6 +186,14 @@ Parallel work: lanes run in separate copies of the worktree and land on the bran
     `tests/voice.rs` and `automation.rs`.
   - `voice/mod.rs` is edited again later by Task 24 (wave 2), Task 36 and Task 37 (wave 3). Each of those rebases on
     this lane. Task 37's `session.rs` and dilla-media `room.rs` are not touched here.
+  - Task 45 adds: dilla-media `sources/{mod,desktop,mac_list,desktop_mac}.rs`, `tests/capture.rs`,
+    `tests/support/mac_window.swift`; `core/vendor/webrtc-sys/{build.rs,src/lib.rs,src/dilla_screen.rs,
+    src/dilla_screen_mac.mm,include/livekit/dilla_screen.h}`, `core/vendor/README.md`; D `screens/share_picker/{mod,view}.rs`
+    and a comment in `screens/voice/mod.rs`; `D/../tests/share.rs`; `clients/desktop/MANUAL.md`; `docs/user/desktop.md`;
+    one key in `packages/web/src/strings/en.ts` and the generated `D/strings.rs`.
+  - The strings are Lane B's in wave 1. Task 45's key is its own last commit, made after Lane B has landed: rebase,
+    add the key, regenerate `strings.rs` with `node scripts/gen-gpui-strings.mjs` (never merge `strings.rs` by hand).
+  - `webrtc-sys` and dilla-media `sources/*` were Task 3's in wave 0, so Task 45 starts from the branch after wave 0.
 
 **Wave 2. The commands spine, with a visual lane beside it.**
 - Spine (in sequence): 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31. Task 24 touches `shell.rs`, `voice/mod.rs`, `members/mod.rs`,
@@ -193,7 +211,8 @@ Parallel work: lanes run in separate copies of the worktree and land on the bran
   `toasts.rs`. It must land before Task 40, because both edit `D/../tests/bot.rs`.
 - A fix that V15 finds in a file the spine holds waits as a commit after the spine task that holds that file.
 
-**Close.** Task 43 (docs, release-notes inputs) runs after everything above, including Task 44, has merged into the branch.
+**Close.** Task 43 (docs, release-notes inputs) runs after everything above, including Tasks 44 and 45, has merged into
+the branch.
 
 ---
 
@@ -1975,7 +1994,7 @@ fixed in the same task with a unit test. Size L for the count, not the depth.
 
 **Size:** S
 
-Jonas's rule: the user docs are part of every iteration. This task runs after Tasks 1–42 and 44 are on the branch.
+Jonas's rule: the user docs are part of every iteration. This task runs after Tasks 1–42, 44 and 45 are on the branch.
 
 **Files:**
 - Modify: `docs/user/desktop.md`. Update "A tour" (:25), the feature sections and "Platform notes" (:215).
@@ -1998,8 +2017,10 @@ Jonas's rule: the user docs are part of every iteration. This task runs after Ta
   - the music card and the stage bar
   - Welcome settings
   - the 22px checkboxes and the resizable bio
-  - a shared window bringing its application's sound (D21). Task 44 already rewrote "Screen capture and camera";
-    check that it still reads right next to the other items.
+  - a shared window bringing its application's sound (D21), and Dilla's own share picker on macOS with its first-time
+    Screen Recording permission (D22). Tasks 44 and 45 already rewrote "Screen capture and camera"; check that it
+    still reads right next to the other items, and that no other paragraph (the tour, "Platform notes", the beta.5
+    upgrade note at :105) still says the system's dialog chooses on macOS.
 
   The desktop-only items (D6, D8) are listed as such. Remove every "Known gaps" entry this wave closed. Keep the entries that
   are still open, including the items under "Tracked for later" below that a user would notice: compact density only inside
@@ -2038,8 +2059,8 @@ Jonas's decision (D21, 2026-11-19): screen-share sound works like Discord. Shari
 application's sound by itself, and the person can switch it off or choose another application in the share menu's
 existing sound section. Sharing a whole screen chooses no application (today's manual choice stays). Nothing is chosen
 for the person when:
-- the system's own dialog picks the source (Linux on Wayland, macOS: `desktop::portal()` is true there, so the picker
-  never runs, `share_source` is never called and Dilla never learns the window);
+- the system's own dialog picks the source (Linux on Wayland, and macOS until Task 45: `desktop::portal()` is true
+  there, so the picker never runs, `share_source` is never called and Dilla never learns the window);
 - the window's owner can't be read;
 - neither the owner nor one of its descendants is playing.
 
@@ -2063,7 +2084,7 @@ picker.
 What the window list knows per platform (dilla-media/src/sources/desktop.rs:31-37, `list` :75-92):
 - `DesktopSource { kind, id, title }`. `id` is the capturer's own id: an X11 client window (libwebrtc's X11 window
   list returns the window carrying `WM_STATE`) or an HWND.
-- macOS ids are never listed, because `portal()` is true there (:47-56).
+- macOS ids are never listed, because `portal()` is true there (:47-56). Task 45 (D22) lists them, with their owner.
 
 **Files:**
 - Modify `clients/desktop/dilla-media/src/sources/desktop.rs`:
@@ -2100,7 +2121,8 @@ What the window list knows per platform (dilla-media/src/sources/desktop.rs:31-3
 ```rust
 // dilla-media/src/sources/desktop.rs
 /// The process that owns a shared window, for its sound (Task 44). `None` for a screen, under the portal (Linux on
-/// Wayland, macOS: the system's dialog chooses and Dilla never holds a window id), and when the system does not say.
+/// Wayland; macOS until Task 45: the system's dialog chooses and Dilla never holds a window id), and when the system
+/// does not say.
 /// Blocking (an X11 round trip): call it off the UI thread.
 pub fn window_owner_pid(source: &DesktopSource) -> Option<u32>;
 ```
@@ -2118,7 +2140,8 @@ pub fn window_owner_pid(source: &DesktopSource) -> Option<u32>;
   - A thread id of 0 or a pid of 0 → `None`.
   - Store (UWP) windows belong to `ApplicationFrameHost.exe`, which never plays, so they fall back to no application.
     This is documented and not worked around this wave.
-- **macOS:** `None`. It is unreachable today, because `portal()` is true.
+- **macOS:** `None` until Task 45. It is unreachable today, because `portal()` is true. Task 45 makes it the owner pid
+  the window list carried (`DesktopSource::owner`).
 - **Other systems:** `None`.
 
 ```rust
@@ -2203,8 +2226,8 @@ Behaviour rules (voice/mod.rs):
      refresh the window. The session already holds a pending application until the share's first frame
      (session.rs:678-701), so it does not matter whether the lookup or the capture lands first.
   6. The `ShareSound` update does not need a session (tests have none). Only the sends do.
-- **`toggle_share` portal branch (Wayland, macOS):** `share_seq += 1` and `share_sound = on_share()`. Nothing is looked
-  up.
+- **`toggle_share` portal branch (Wayland, and macOS until Task 45):** `share_seq += 1` and
+  `share_sound = on_share()`. Nothing is looked up.
 - **`sync`:** where the new `state` replaces `ui.state`, if `share.screen` was true and is now false, set
   `share_sound = ended()` and `share_seq += 1` (a late lookup is dropped).
 - **`sound_row`:**
@@ -2286,7 +2309,7 @@ Behaviour rules (voice/mod.rs):
   - `cargo clippy --all-targets --locked -- -D warnings` and `cargo fmt --check` for dilla-media and dilla-desktop.
   - What can't be tested here:
     - The Windows arm (`hwnd_pid`, `windows::parents`) and the macOS arm only compile in CI's desktop-gpui Windows and
-      macOS jobs. Nothing on the Mac build server reaches them (portal), and it runs the tests headless.
+      macOS jobs. Nothing on the Mac build server reaches them (portal until Task 45), and it runs the tests headless.
     - A real browser window bringing its sound is a by-eye check on Linux X11 and on Windows before the alpha.2
       release. Record it in the PR #190 description under "Release notes (alpha.2)".
 - [ ] **Step 5: Parity.**
@@ -2303,8 +2326,397 @@ Behaviour rules (voice/mod.rs):
       > dialog picks the window), when the window's application isn't playing, or for Windows Store apps. Dilla's own
       > sound is never shared.
 
+      Task 45 then drops "and macOS" from this paragraph.
+
       Task 43 checks the wording.
 - [ ] **Step 7: Commit.** `desktop: a shared window brings its application's sound (D21)`
+
+
+### Task 45: Dilla's own share picker on macOS [Q2]
+
+**Size:** L
+
+Jonas's decision (D22, 2026-11-19): on macOS, Dilla's own picker replaces Apple's system share picker, as Discord does.
+Dilla then always knows which window is shared, and Task 44's automatic application sound works on macOS too
+(application audio needs macOS 14.2+).
+
+Today:
+- `desktop::portal()` (dilla-media/src/sources/desktop.rs:47-56) is true on every Mac. So:
+  - `share_picker::portal(cx)` is true, and `toggle_share` (D/screens/voice/mod.rs:1292) skips the picker;
+  - `real_source` (D/screens/voice/session.rs:253-268) calls `desktop::open(None, …, PORTAL_WAIT)`;
+  - `options(None)` is `DesktopCaptureSourceType::Generic`. libwebrtc's ScreenCaptureKit generic capturer then shows
+    `SCContentSharingPicker`. That picker is macOS 14+ only (MANUAL.md:11-15).
+- The comment at desktop.rs:44-46 gives the reason: libwebrtc's ScreenCaptureKit capturer lists nothing with the
+  system picker off (`DesktopCapturerOptions::set_sck_system_picker`, core/vendor/libwebrtc/src/desktop_capturer.rs:67-76).
+  The prebuilt's `ScreenCapturerSck` captures displays only. Its window capturer is the CGWindowList one, which can't
+  take an `SCContentFilter`. So nothing in libwebrtc can be reused for a chosen window, and this task brings its own
+  capturer.
+- The only macOS capture without the picker today is call-peer's `share display`
+  (dilla-media/examples/call-peer.rs:397-480: picker off, the first display), which the macOS CI's
+  `a_real_display_share_reaches_a_viewer` uses (dilla-media/tests/capture.rs:94-138). It stays as it is.
+- On Linux X11 and Windows the picker works like this:
+  - `share_picker::enumerate` (D/screens/share_picker/mod.rs:46-57) calls `desktop::list(Screen)` and then
+    `desktop::list(Window)`, takes `MAX_SOURCES`, and gets a 320 x 180 thumbnail for each (`desktop::thumbnail`: one
+    frame through `open`, :94-104).
+  - The refresh loop runs this every 2 s on a background thread.
+  - `view.rs` draws U `SharePicker` with the tiles, and its empty state is `callStage.share.pickerEmpty`.
+  - Windows filtering is libwebrtc's: on Windows, `set_enumerate_current_process_windows(false)` plus its
+    invisible/tool-window rules (webrtc-sys src/desktop_capturer.cpp:38-41); on X11, the windows carrying `WM_STATE`.
+- The bridge pattern to copy is webrtc-sys `src/dilla_camera_mac.mm`: an ARC Objective-C++ file compiled as its own
+  library (`webrtcsys-camera`, build.rs:384-408, 465-468), with the cxx bridge in `src/dilla_camera.rs` (a Rust sink
+  box called on the capture queue) and its entry in core/vendor/README.md (:129-150). `ScreenCaptureKit` is already
+  linked (build.rs:378).
+
+Choices pinned here:
+- **The bridge lives in webrtc-sys, in the camera's ARC library,** as `src/dilla_screen_mac.mm`, a second file of the
+  same `cc::Build`. Rejected alternative: dilla-media through `objc2-screen-capture-kit`. That would add
+  `objc2-screen-capture-kit`, `objc2-core-media` and `block2` completion handlers to the lock, while ARC, blocks and
+  `dispatch_semaphore` are native in ObjC++ and the camera already proves the build, the linking and the CI.
+- **Capture is an own `SCStream`.** It takes a window filter (`initWithDesktopIndependentWindow:`) or a display filter
+  (`initWithDisplay:excludingWindows:@[]`: like X11 and Windows, a screen share shows everything, Dilla included). It
+  replaces libwebrtc on macOS for the picker's sources, so screens and windows go through one path.
+- **macOS 13 gets Dilla's picker too, with thumbnails from one captured frame** (the `desktop::thumbnail` path that
+  X11 and Windows use).
+  - `SCShareableContent` and `SCStream` are macOS 12.3+, and only `SCScreenshotManager` is 14.0+.
+  - Keeping the system picker on 13 would not work: `SCContentSharingPicker` is 14.0+, so macOS 13 has no picker to
+    keep (MANUAL.md: "ScreenCaptureKit's picker (macOS 14+)").
+  - A list without thumbnails would be a new visual state that no platform draws.
+  - The cost on 13 is the X11 and Windows cost: one short capture per tile per refresh. The refresh loop runs one
+    enumeration at a time, so a slow one only delays the next.
+  - On 14+, `SCScreenshotManager` takes every thumbnail of one refresh concurrently (one `dispatch_group`).
+- **The window list carries the owner pid,** in a new field `DesktopSource::owner: Option<u32>` (macOS:
+  `SCWindow.owningApplication.processID`, the WindowServer's record, which a window cannot forge). Linux and Windows
+  keep `None` there and look the owner up in `window_owner_pid` (Task 44), because their capturer ids don't carry it.
+- **Screen Recording (TCC).**
+  - The first picker open in a process calls `CGRequestScreenCaptureAccess()`. The open is a press on the focused
+    window, so the system's prompt follows the person's action.
+  - Every listing first checks `CGPreflightScreenCaptureAccess()`. Without the permission it never touches
+    `SCShareableContent` (which would prompt) and answers "denied".
+  - Denied: the picker draws its existing empty state with one new desktop-only line in place of
+    `callStage.share.pickerEmpty`. No button, so there is no new visual state.
+  - macOS grants the permission to a running app only after a relaunch, so the line says so.
+  - Tests never request: only the app's picker passes `request = true`.
+
+**Files:**
+- Create `core/vendor/webrtc-sys/include/livekit/dilla_screen.h`, `core/vendor/webrtc-sys/src/dilla_screen.rs` (the
+  cxx bridge) and `core/vendor/webrtc-sys/src/dilla_screen_mac.mm` (ARC).
+- Modify `core/vendor/webrtc-sys/build.rs`:
+  - push `src/dilla_screen.rs` into `rust_files` on macOS only;
+  - add `src/dilla_screen_mac.mm` to the `camera` build (:403), so it shares `-fobjc-arc`, the defines and the
+    sysroot;
+  - link `framework=ScreenCaptureKit` (already at :378) and `CoreGraphics` (already linked).
+  - The deployment target stays 13.0. Every 14.0+ symbol is guarded with `@available(macOS 14.0, *)`, so the class is
+    weak-imported, and `-Werror=unguarded-availability-new` goes on that file.
+- Modify `core/vendor/webrtc-sys/src/lib.rs`: export `dilla_screen` under `#[cfg(target_os = "macos")]`.
+- Modify `core/vendor/README.md`: a "Dilla's own macOS share picker (GPUI gaps Task 45, D22)" bullet after the
+  camera's (:129-150), saying what the bridge does, its TCC gate and its tests.
+- Create `clients/desktop/dilla-media/src/sources/mac_list.rs`. It holds the pure filtering and mapping, compiled and
+  tested on every OS.
+- Create `clients/desktop/dilla-media/src/sources/desktop_mac.rs` (`#[cfg(target_os = "macos")]`): the bridge calls,
+  `snapshot` and `open` for macOS.
+- Modify `clients/desktop/dilla-media/src/sources/mod.rs`: declare both; update the module doc (:4-7).
+- Modify `clients/desktop/dilla-media/src/sources/desktop.rs`:
+  - `portal_in` loses its `cfg!(target_os = "macos")` arm;
+  - the `DesktopSource::owner` field;
+  - `snapshot`, `Snapshot`;
+  - the macOS dispatch in `list`, `open` and `window_owner_pid`;
+  - `options`' `None` arm becomes Linux-only;
+  - rename and extend the test at :295-321.
+- Modify `D/screens/share_picker/mod.rs`:
+  - `Lister` returns a `Listing`;
+  - `enumerate` uses `desktop::snapshot`;
+  - `Picker` gets a `denied` flag;
+  - `open` asks for access once per process on macOS.
+- Modify `D/screens/share_picker/view.rs`: the empty label when denied.
+- Modify `D/screens/voice/mod.rs`: only the comments that name macOS as a portal platform (`toggle_share` :1270-1274,
+  and Task 44's portal-branch rule).
+- Modify `D/../tests/share.rs`:
+  - the `DesktopSource` literals (:75, :83, and Task 44's window 7) get `owner: None`;
+  - the `set_lister` fakes return `Vec<Found>` `.into()`;
+  - the new tests.
+- Modify `clients/desktop/dilla-media/tests/capture.rs`: the ignored macOS tests.
+- Create `clients/desktop/dilla-media/tests/support/mac_window.swift`: a helper app with one titled window.
+- Modify `packages/web/src/strings/en.ts`, then run `node scripts/gen-gpui-strings.mjs` (regenerates `D/strings.rs`).
+- Modify `clients/desktop/MANUAL.md` (:11-17) and `docs/user/desktop.md` (:246-251 and Task 44's paragraph).
+
+**Interfaces:**
+
+```rust
+// core/vendor/webrtc-sys/src/dilla_screen.rs (macOS only)
+#[cxx::bridge(namespace = "livekit_ffi")]
+pub mod ffi {
+    /// One display or on-screen window as ScreenCaptureKit lists it, unfiltered (dilla-media filters).
+    #[derive(Clone, Debug)]
+    struct DillaScreenRecord {
+        is_window: bool,
+        /// `SCDisplay.displayID` (a CGDirectDisplayID) or `SCWindow.windowID` (a CGWindowID).
+        id: u64,
+        /// `SCWindow.owningApplication.processID`; 0 for a display or a window without an application.
+        owner_pid: i32,
+        bundle_id: String,  // owningApplication.bundleIdentifier, "" when none
+        app_name: String,   // owningApplication.applicationName
+        /// The window's title, or the display's `NSScreen.localizedName` (matched by `CGDirectDisplayID`), "" when none.
+        title: String,
+        layer: i64,         // SCWindow.windowLayer; 0 for a display
+        width: f64,         // frame, in points
+        height: f64,
+        main: bool,         // the display is CGMainDisplayID()
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum DillaScreenAccess { Granted, Denied, Failed }
+
+    struct DillaScreenList {
+        access: DillaScreenAccess,
+        records: Vec<DillaScreenRecord>,
+    }
+
+    /// One thumbnail, BGRA, tightly packed (`stride == width * 4`).
+    struct DillaScreenThumbnail { is_window: bool, id: u64, width: u32, height: u32, bgra: Vec<u8> }
+
+    unsafe extern "C++" {
+        include!("livekit/dilla_screen.h");
+        type DillaScreenCapture;
+
+        /// `CGPreflightScreenCaptureAccess()`; with `request`, the first false in this process also calls
+        /// `CGRequestScreenCaptureAccess()` (the system prompt; it answers false at once).
+        fn dilla_screen_access(request: bool) -> bool;
+        /// Denied without touching ScreenCaptureKit when `dilla_screen_access(false)` is false. Otherwise
+        /// `getShareableContentExcludingDesktopWindows:YES onScreenWindowsOnly:YES`, waited ≤ 5 s (Failed past that or on
+        /// an error). Blocking: never on the main thread.
+        fn dilla_screen_list() -> DillaScreenList;
+        /// macOS 14+: one `SCScreenshotManager` capture per listed id (re-resolved from a fresh shareable content),
+        /// all at once, waited ≤ 3 s together, each scaled to fit `max_w` x `max_h` with no cursor. An id that is
+        /// gone, a late answer or macOS 13: absent from the result. Blocking.
+        fn dilla_screen_thumbnails(displays: &[u64], windows: &[u64], max_w: u32, max_h: u32) -> Vec<DillaScreenThumbnail>;
+        /// Re-resolves `id` from a fresh shareable content. For a window, `expect_pid` must still be its owner (a
+        /// reused CGWindowID is refused). Then it starts an `SCStream`: 32BGRA, the source's pixel size (frame times
+        /// the backing scale of its screen), `minimumFrameInterval` 1/`fps`, `showsCursor` = `cursor`, `queueDepth` 3,
+        /// no audio, output on a serial queue of its own. Null when the source is gone, access is missing, or the
+        /// start fails within 5 s.
+        fn dilla_screen_open(is_window: bool, id: u64, expect_pid: i32, fps: u32, cursor: bool,
+                             sink: Box<DillaScreenSink>) -> UniquePtr<DillaScreenCapture>;
+        /// `updateConfiguration:` with the new frame interval.
+        fn set_fps(self: &DillaScreenCapture, fps: u32);
+        fn width(self: &DillaScreenCapture) -> u32;
+        fn height(self: &DillaScreenCapture) -> u32;
+    }
+
+    extern "Rust" {
+        type DillaScreenSink;
+        /// A complete frame (`SCStreamFrameInfoStatus` Complete only), the pixel buffer locked read-only for the call.
+        fn on_frame(self: &mut DillaScreenSink, width: u32, height: u32, stride: u32, bgra: &[u8]);
+        /// `stream:didStopWithError:` (the window closed, the display went away, access withdrawn). Called once.
+        fn on_end(self: &mut DillaScreenSink);
+    }
+}
+// The destructor: `stopCaptureWithCompletionHandler:` waited ≤ 2 s, `removeStreamOutput:`, then a `dispatch_sync` of an
+// empty block on the output queue, so no `on_frame` runs after it returns (the camera's teardown order).
+```
+
+```rust
+// dilla-media/src/sources/desktop.rs
+pub struct DesktopSource {
+    pub kind: SourceKind,
+    pub id: u64,
+    pub title: String,
+    /// The window's owning process as the system's window list gave it (macOS, Task 45); `None` for a screen and on
+    /// Linux and Windows, where `window_owner_pid` asks the system instead. Never shown, never leaves the process.
+    pub owner: Option<u32>,
+}
+
+/// What the picker shows: every screen, then every window, at most `max`, each with a thumbnail fitting
+/// `max_w` x `max_h` (`None`: it gave none), and whether the system refused the listing (macOS without Screen
+/// Recording: then `sources` is empty).
+pub struct Snapshot { pub sources: Vec<(DesktopSource, Option<Frame>)>, pub denied: bool }
+/// Linux and Windows: today's `enumerate` body moved here unchanged (list, take, `thumbnail`); never denied.
+/// macOS: `desktop_mac::snapshot`. Empty under the portal. Blocking.
+pub fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot;
+
+/// macOS: `dilla_screen_access(true)` once per process (the picker's open), else true. Never blocks long.
+pub fn request_access() -> bool;
+```
+
+- `window_owner_pid` (Task 44), macOS arm: `source.owner` for a `SourceKind::Window` whose owner is above 1, else
+  `None`. There is no system call: the pid was read with the list, and the share is checked against that list.
+- `list(kind)` on macOS: `desktop_mac::list(kind)` (records only, no thumbnails).
+- `open(Some(s), …)` on macOS: `desktop_mac::open`. It is the same `DesktopCapture` (`Latest`, `stop`, `fps`,
+  `size`, `surface`), with a thread named `dilla-screen` that:
+  - holds the `DillaScreenCapture`;
+  - calls `set_fps` when the atomic changes;
+  - drops the capture when `stop` is set or the source ended.
+  The sink copies each frame into `Latest` as `PixelFormat::Bgra` (rows at `stride`), and `on_end` → `latest.end()`.
+  `open(None, …)` on macOS is `OpenError::Unavailable` (there is no portal).
+- `thumbnail` stays the one-frame path: on macOS it goes through `desktop_mac::open`, and it is what macOS 13 uses.
+
+```rust
+// dilla-media/src/sources/mac_list.rs (every OS; pure)
+#[derive(Clone, Debug, PartialEq)]
+pub struct MacRecord { pub window: bool, pub id: u64, pub owner_pid: i32, pub bundle_id: String, pub app_name: String,
+                       pub title: String, pub layer: i64, pub width: f64, pub height: f64, pub main: bool }
+/// The smallest window side, in points, that the picker offers (smaller ones are helpers, badges and
+/// popovers).
+pub const MIN_SIDE: f64 = 50.0;
+/// System UI that is on screen at layer 0 on some macOS versions, never a share target.
+pub const SYSTEM_BUNDLES: &[&str] = &["com.apple.dock", "com.apple.controlcenter", "com.apple.WindowManager",
+    "com.apple.notificationcenterui", "com.apple.systemuiserver", "com.apple.Spotlight", "com.apple.screencaptureui"];
+/// Whether a window record is offered. It is not offered when it is:
+/// - Dilla's own (`owner_pid == own`, as on Windows; X11's list doesn't need the check);
+/// - without an owning application (`owner_pid <= 0`);
+/// - on a layer other than 0 (menu bar, status items, overlays);
+/// - narrower or lower than [`MIN_SIDE`];
+/// - in [`SYSTEM_BUNDLES`];
+/// - without both a title and an application name.
+/// Displays are always offered.
+pub fn shareable(r: &MacRecord, own: u32) -> bool;
+/// Screens first (the main display first, then the list's order), then windows in the list's order (front to back
+/// as ScreenCaptureKit gives them). A window is named by its title, or its application's name when the title is
+/// empty, and gets `owner: Some(pid)`. A screen is named by its display name (an empty name stays empty, as an
+/// untitled X11 screen does).
+pub fn to_sources(records: &[MacRecord], own: u32) -> Vec<DesktopSource>;
+```
+
+```rust
+// D/screens/share_picker/mod.rs
+/// One enumeration: the tiles and whether the system refused (macOS without Screen Recording).
+#[derive(Clone, Default)]
+pub struct Listing { pub found: Vec<Found>, pub denied: bool }
+impl From<Vec<Found>> for Listing { /* denied: false */ }
+pub type Lister = Arc<dyn Fn() -> Listing + Send + Sync>;
+pub fn enumerate() -> Listing;          // desktop::snapshot(MAX_SOURCES, THUMB_W, THUMB_H)
+pub struct Picker { /* … */ pub denied: bool }   // from the latest listing
+```
+
+- `open` calls `desktop::request_access()` on the background executor (never on the UI thread) before the first
+  refresh, only when no test lister is set.
+- `view.rs`: when `picker.denied`, `labels.empty` is `t("callStage.share.pickerPermission")`, else
+  `callStage.share.pickerEmpty`.
+- `share` is unchanged: the chosen key must be in the latest listing, and the source carries the `owner` that the
+  listing read.
+
+The new string, in `packages/web/src/strings/en.ts` under
+`// Native desktop only (Jonas 2026-11-19): the macOS share picker without Screen Recording (GPUI gaps Task 45, D22).`:
+- `'callStage.share.pickerPermission': 'Dilla needs Screen Recording to show your screens and windows. Allow it in System Settings → Privacy & Security → Screen Recording, then quit and reopen Dilla.'`
+
+- [ ] **Step 1: Write the failing tests.**
+  - `mac_list.rs` inline tests (run on Linux too). Use synthetic records, with own pid 100:
+    - `#[test] fn dilla_tiny_system_and_off_layer_windows_are_not_offered`: each of these is dropped:
+      - owner 100;
+      - owner 0;
+      - layer 25;
+      - 40 x 300;
+      - `com.apple.controlcenter`;
+      - empty title and empty app name.
+      A 50 x 50 "Notes" window of pid 200 is kept.
+    - `#[test] fn screens_come_first_with_the_main_display_leading`: records `[window 7, display 2, display 1 (main)]`
+      → `[screen 1, screen 2, window 7]`. The screens have `owner: None`, and window 7 has `owner: Some(200)`.
+    - `#[test] fn an_untitled_window_is_named_by_its_application`: title "" and app "Music" → title "Music".
+  - `desktop.rs` inline tests:
+    - rename `the_system_chooses_on_wayland_and_macos_only` to `the_system_chooses_on_wayland_only`. Every arm now
+      expects `linux` only (on macOS `portal_in` is false for every env);
+    - `#[test] fn a_window_s_listed_owner_is_its_owner_on_macos`: `window_owner_pid` of a Window with `owner: Some(4242)` is
+      `Some(4242)` on macOS (`#[cfg(target_os = "macos")]`). Linux/Windows ignore `owner` (they ask the system),
+      so the test is macOS-only.
+    - `a_screen_has_no_window_owner` (Task 44) builds a screen with `owner: Some(4242)` and still expects `None`.
+  - `D/../tests/share.rs`, `#[gpui::test]`:
+    - `a_denied_listing_shows_how_to_allow_screen_recording`: a lister answering
+      `Listing { found: vec![], denied: true }` → after the first refresh `picker.denied` and no tiles. The overlay
+      renders (no panic). A lister answering `vec![].into()` → `!denied`.
+    - `the_listed_owner_reaches_the_window_sound`: a window tile with `owner: Some(4000)`, and the Task 44 fake
+      `set_window_sound` records the `DesktopSource` it was asked about. After `share_picker::share`, that source's
+      `owner == Some(4000)`, so the pid travels from the listing to the lookup unchanged.
+  - `dilla-media/tests/capture.rs`, macOS only. Each test is
+    `#[ignore = "needs Screen Recording for the terminal that runs it (macOS; iTerm2 on dilla-MacBook, the macos-15 runner's shell): lists and captures the real screen"]`:
+    - `mac_picker_lists_a_display_with_its_thumbnail`:
+      - `desktop::snapshot(64, 320, 180)` is not denied, holds at least one `SourceKind::Screen` with a non-zero id,
+        and none of its windows has `owner == Some(std::process::id())`;
+      - on macOS 14+ the screen's thumbnail is `Some` and fits 320 x 180.
+    - `mac_picker_window_owner_is_the_helper_app`:
+      - Compile `tests/support/mac_window.swift` with `swiftc -O` into the test's temp dir. The helper is an
+        `NSApplication` with one 400 x 300 titled window, `dilla-share-probe-<nonce>`, that stays open until it is
+        killed. Spawn it.
+      - Poll `desktop::list(SourceKind::Window)` for up to 10 s for that title.
+      - Assert `source.owner == Some(child.id())` and `window_owner_pid(&source) == Some(child.id())`.
+      - `desktop::open(Some(&source), 10, START_WAIT, &|| false)` gives a frame larger than 0 x 0.
+      - Killing the helper ends the capture within 5 s (`Pull::Ended`).
+      - The child is killed on every path (a guard's `Drop`).
+    - None of these calls requests access. Without Screen Recording they fail with "denied" and never prompt.
+- [ ] **Step 2: Run, expect failure.**
+  - `$ENV cargo test -p dilla-media --lib sources::` (Linux: the `mac_list` tests and the renamed portal test)
+  - `$ENV cargo test -p dilla-desktop --test share`
+- [ ] **Step 3: Implement**, in this order:
+  1. `mac_list.rs`.
+  2. `DesktopSource::owner` (fix the literals). Then `Snapshot`, `snapshot` (Linux/Windows: move `enumerate`'s body)
+     and `request_access`.
+  3. The webrtc-sys bridge, its `build.rs`/`lib.rs` entries and the README bullet.
+  4. `desktop_mac.rs`, then the macOS dispatch and `portal_in`.
+  5. `Listing`, `Picker.denied`, `view.rs` and the string (its own commit after Lane B, see Execution order).
+  - The listing and the thumbnails never run on the UI thread (the refresh loop's background executor, as today).
+  - Logs say what failed (access, timeout, a missing id). They never include a title, an application name or a pid:
+    those describe the person's desktop.
+  - On `Failed` (a timeout or an SCK error with access granted), the listing is empty and not denied, so the
+    existing "Nothing to share here" shows.
+- [ ] **Step 4: Run, expect pass.**
+  - The same commands. On macOS: `$ENV cargo test -p dilla-media --lib sources::` and `--test capture` (the
+    ignored ones stay ignored).
+  - On dilla-MacBook from iTerm2, which holds Screen Recording (Jonas granted it earlier). It is headless, so no
+    prompt can appear there: `cargo test -p dilla-media --test capture mac_picker -- --ignored`. The nightly
+    "Run the call tests (macOS)" step already runs `--test capture -- --ignored` with the runner shell's Screen
+    Recording, so CI picks these up there too (report-only, like that step).
+  - CI compile: the `gpui-mac-arm64` leg (desktop-gpui.yml `gpui`, matrix `macos-15`) builds the bridge and runs the
+    non-ignored tests. Linux and Windows build `mac_list` and its tests.
+  - `cargo clippy --all-targets --locked -- -D warnings` and `cargo fmt --check` for dilla-media, dilla-desktop and
+    webrtc-sys. Also `node scripts/gen-gpui-strings.mjs --check`.
+  - What can't be tested here:
+    - The first-run TCC prompt and the relaunch. This is a by-eye check on a Mac before alpha.2: reset with
+      `tccutil reset ScreenCapture <bundle id>`, then open the picker, see the prompt and the permission line, allow,
+      relaunch, and see the tiles.
+    - A real browser window's sound arriving on macOS 14.2+ (D21's by-eye check, now on macOS too).
+    - Record both in the PR #190 description under "Release notes (alpha.2)".
+- [ ] **Step 5: Parity.**
+  - No new visual state. macOS draws the same `SharePicker` grid and 320 x 180 tiles as Linux X11 and Windows (the
+    web's SharePicker desktop layout). The denied state is the existing empty state with other text.
+  - No web or `native/` reference is needed, because it is identical, and `native/share-picker` stays tracked for later.
+  - No BEHAVIOUR-GATES row (no e2e title covers the native picker's source list).
+- [ ] **Step 6: Docs.**
+  - `docs/user/desktop.md` "Screen capture and camera" (:246-251): "Share opens a picker with thumbnails; on
+    Wayland and macOS the system's own dialog chooses" becomes:
+
+    > Share opens Dilla's picker with a thumbnail of every screen and window (on Wayland the system's own dialog
+    > chooses). On macOS the first share asks for Screen Recording permission (System Settings → Privacy & Security →
+    > Screen Recording); after you allow it, quit and reopen Dilla. macOS 15 and newer may ask again from time to
+    > time whether Dilla may keep recording the screen.
+
+    In Task 44's paragraph, "on Wayland and macOS (the system's dialog picks the window)" becomes "on Wayland (the
+    system's dialog picks the window)". The beta.5 upgrade note (:105, "macOS may ask for screen recording again")
+    stays.
+  - `clients/desktop/MANUAL.md` (:11-17):
+    - The column becomes "macOS 13+ (ScreenCaptureKit)".
+    - `capture-probe screens` and `windows`: "the first run asks for Screen Recording; thumbnails on 14+, one frame
+      on 13".
+    - `portal`: n/a.
+    - Add one row: "In a call: Share opens Dilla's picker; without Screen Recording it shows the permission line, and
+      after allowing and relaunching it lists the tiles".
+  - Task 43 checks the wording against the rest of the page.
+- [ ] **Step 7: Commit.**
+  - `desktop: Dilla's own share picker on macOS, through ScreenCaptureKit (D22)`.
+  - The string is a separate commit: `desktop: the macOS share picker's Screen Recording line (D22)`.
+
+Risks:
+- **The periodic system confirmation.** macOS 15+ periodically asks the person to confirm an app that captures
+  through `SCShareableContent` without the system picker (Discord gets the same). This is the accepted cost of D22.
+  The docs line names it.
+- **Granting needs a relaunch.** Until the person quits and reopens Dilla, the picker keeps showing the permission
+  line. The line says so.
+- **A dev build loses its grant.** TCC binds the grant to the code signature, so an unsigned dev build loses it on
+  every rebuild unless the terminal holds it. That is why the hardware tests run from iTerm2.
+- **Some windows are not listed.** `onScreenWindowsOnly` leaves out minimised windows and windows on other Spaces.
+  This matches the X11 behaviour where a minimised window has no thumbnail, but here the tile is absent instead. Note
+  it in Task 43's "Still open" if Jonas wants them listed.
+- **A resized window is scaled, not resized.** The stream keeps the size it was opened with, so a window resized
+  during a share is scaled into it. `updateConfiguration:` on a size change is tracked for later if it shows.
+- **The 13 fallback is slower.** On macOS 13 the thumbnails cost one `SCStream` start per tile (up to 1 s each, as
+  on X11 and Windows). A Mac with many windows paints its first tiles late.
 
 ---
 
