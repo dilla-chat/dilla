@@ -298,6 +298,15 @@ workflow runs it that way on Linux).
 
 Keep this patch until gpui closes and replaces system notifications itself.
 
+A third change (2026-11-19, final review), marked `DILLA PATCH`: notifications name the app's desktop entry and icon.
+`set_app_identity` in `src/linux/platform.rs` dropped its identifier, and notify-rust adds no `desktop-entry` hint or icon
+by itself, so Plasma and GNOME showed a generic icon (worst on a hidden start, with no window to match by pid). The platform
+now keeps the identifier (`app_id`, `chat.dilla.Dilla` from `window_app_id()`), and `show` in
+`src/linux/system_notifications.rs` sends it as the `desktop-entry` hint and as the icon name. Test: the mock in
+`dismiss_sends_close_notification_and_show_replaces` asserts both.
+
+Keep this patch until gpui sends the app's desktop entry with its notifications.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs

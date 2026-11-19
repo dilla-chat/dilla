@@ -98,6 +98,8 @@ pub(crate) struct LinuxCommon {
     pub(crate) signal: LoopSignal,
     pub(crate) menus: Vec<OwnedMenu>,
     app_name: Option<String>,
+    // DILLA PATCH: the app's id (its desktop entry's name), for notifications' `desktop-entry` hint and icon.
+    app_id: Option<String>,
     system_notifications: crate::linux::system_notifications::SystemNotificationState,
     #[cfg_attr(
         not(all(target_os = "linux", any(feature = "wayland", feature = "x11"))),
@@ -148,6 +150,7 @@ impl LinuxCommon {
             signal,
             menus: Vec::new(),
             app_name: None,
+            app_id: None,
             system_notifications: crate::linux::system_notifications::SystemNotificationState::new(
             ),
             power_sender,
@@ -993,15 +996,21 @@ impl Platform for LinuxPlatform {
         });
     }
 
-    fn set_app_identity(&self, _identifier: &str, name: &str) {
-        self.with_common(|common| common.app_name = Some(name.to_string()));
+    fn set_app_identity(&self, identifier: &str, name: &str) {
+        self.with_common(|common| {
+            common.app_name = Some(name.to_string());
+            // DILLA PATCH: keep the identifier for notifications' `desktop-entry` hint and icon.
+            common.app_id = Some(identifier.to_string());
+        });
     }
 
     fn show_system_notification(&self, notification: gpui::SystemNotification) {
         self.with_common(|common| {
-            common
-                .system_notifications
-                .show(common.app_name.as_deref(), notification)
+            common.system_notifications.show(
+                common.app_name.as_deref(),
+                common.app_id.as_deref(),
+                notification,
+            )
         });
     }
 

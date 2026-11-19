@@ -224,10 +224,22 @@ impl SystemNotificationState {
         }
     }
 
-    pub(crate) fn show(&self, app_name: Option<&str>, notification: SystemNotification) {
+    pub(crate) fn show(
+        &self,
+        app_name: Option<&str>,
+        app_id: Option<&str>,
+        notification: SystemNotification,
+    ) {
         let mut builder = notify_rust::Notification::new();
         if let Some(app_name) = app_name {
             builder.appname(app_name);
+        }
+        // DILLA PATCH: name the app's desktop entry and its icon, so the shell shows the app's icon even when no
+        // window exists to match by pid (a hidden start). notify-rust adds neither by itself.
+        if let Some(app_id) = app_id {
+            builder
+                .hint(notify_rust::Hint::DesktopEntry(app_id.into()))
+                .icon(app_id);
         }
         builder
             .summary(&notification.title)
@@ -496,7 +508,11 @@ mod tests {
         use std::time::Duration;
 
         enum Seen {
-            Notify { replaces_id: u32 },
+            Notify {
+                replaces_id: u32,
+                app_icon: String,
+                desktop_entry: Option<String>,
+            },
             Close(u32),
         }
         struct Mock(
@@ -510,17 +526,24 @@ mod tests {
                 &self,
                 _app_name: String,
                 replaces_id: u32,
-                _app_icon: String,
+                app_icon: String,
                 _summary: String,
                 _body: String,
                 _actions: Vec<String>,
-                _hints: HashMap<String, zbus::OwnedVariant>,
+                hints: HashMap<String, zbus::OwnedVariant>,
                 _expire_timeout: i32,
             ) -> u32 {
+                let desktop_entry = hints
+                    .get("desktop-entry")
+                    .and_then(|value| <&str>::try_from(&**value).ok().map(str::to_owned));
                 self.0
                     .lock()
                     .unwrap()
-                    .send(Seen::Notify { replaces_id })
+                    .send(Seen::Notify {
+                        replaces_id,
+                        app_icon,
+                        desktop_entry,
+                    })
                     .ok();
                 std::thread::sleep(Duration::from_millis(
                     self.1.load(std::sync::atomic::Ordering::SeqCst),
@@ -561,11 +584,20 @@ mod tests {
         };
         let wait = Duration::from_secs(10);
 
-        state.show(Some("dilla"), note());
-        assert!(matches!(
-            rx.recv_timeout(wait).unwrap(),
-            Seen::Notify { replaces_id: 0 }
-        ));
+        state.show(Some("dilla"), Some("chat.dilla.Dilla"), note());
+        // The app's id names its desktop entry, so the shell finds Dilla's icon even with no window to match by pid.
+        match rx.recv_timeout(wait).unwrap() {
+            Seen::Notify {
+                replaces_id,
+                app_icon,
+                desktop_entry,
+            } => {
+                assert_eq!(replaces_id, 0);
+                assert_eq!(desktop_entry.as_deref(), Some("chat.dilla.Dilla"));
+                assert_eq!(app_icon, "chat.dilla.Dilla");
+            }
+            Seen::Close(_) => panic!("expected a Notify"),
+        }
         // `show` records the id after the call returns, on its own thread.
         let deadline = std::time::Instant::now() + wait;
         while state.live.id("t").is_none() {
@@ -573,10 +605,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        state.show(Some("dilla"), note());
+        state.show(Some("dilla"), Some("chat.dilla.Dilla"), note());
         assert!(matches!(
             rx.recv_timeout(wait).unwrap(),
-            Seen::Notify { replaces_id: 41 }
+            Seen::Notify {
+                replaces_id: 41,
+                ..
+            }
         ));
 
         // The replacing show records its (same) id on its own thread after the mock answered.
@@ -588,10 +623,10 @@ mod tests {
         // A dismiss while the Notify is in flight (the server is slow to answer) closes on arrival, and a second
         // show of the tag meanwhile waits for the first id instead of stacking.
         delay.store(400, std::sync::atomic::Ordering::SeqCst);
-        state.show(Some("dilla"), note());
+        state.show(Some("dilla"), Some("chat.dilla.Dilla"), note());
         assert!(matches!(
             rx.recv_timeout(wait).unwrap(),
-            Seen::Notify { replaces_id: 0 }
+            Seen::Notify { replaces_id: 0, .. }
         ));
         state.dismiss("t");
         assert!(matches!(rx.recv_timeout(wait).unwrap(), Seen::Close(41)));
@@ -601,7 +636,7 @@ mod tests {
         delay.store(0, std::sync::atomic::Ordering::SeqCst);
         let mut responses = state.response_receiver.take().unwrap();
         for _ in 0..2 {
-            state.show(Some("dilla"), note());
+            state.show(Some("dilla"), Some("chat.dilla.Dilla"), note());
             assert!(matches!(
                 rx.recv_timeout(wait).unwrap(),
                 Seen::Notify { .. }
