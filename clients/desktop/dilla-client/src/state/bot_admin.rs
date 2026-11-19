@@ -26,6 +26,8 @@ pub struct BotAdminState {
     pub provider: HashMap<CommunityId, ProviderStatusState>,
     /// One player per voice channel the Bot plays in.
     pub music: HashMap<ChannelId, MusicState>,
+    /// Voice channels whose player a music card on screen follows without this device being in their call.
+    pub music_watched: BTreeSet<ChannelId>,
 }
 
 // ---- the catalog's view of the Bot (Task 20's `botCatalog:<community>`) ----
@@ -620,6 +622,47 @@ pub enum Repeat {
     Off,
     One,
     All,
+}
+
+/// What the Bot's music message carries in its final line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MusicMarker {
+    pub voice_channel: ChannelId,
+    pub requester: UserId,
+    pub item: String,
+}
+
+/// Port of `MARKER` (music.tsx): an optional `\n`, then `[dilla-music:v1:<32 hex>:<32 hex>:<32 hex>]` at the very end of
+/// the body, lower-case hex only. `item` is the third group as text.
+pub fn music_marker(body: &str) -> Option<MusicMarker> {
+    const OPEN: &str = "[dilla-music:v1:";
+    let inner = body.strip_suffix(']')?;
+    let start = inner.rfind(OPEN)?;
+    // The marker is the body's last line: only an optional newline may precede it.
+    if start > 0 && inner.as_bytes()[start - 1] != b'\n' {
+        return None;
+    }
+    let groups: Vec<&str> = inner[start + OPEN.len()..].split(':').collect();
+    let [channel, requester, item] = groups[..] else {
+        return None;
+    };
+    let hex32 =
+        |g: &str| g.len() == 32 && g.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !(hex32(channel) && hex32(requester) && hex32(item)) {
+        return None;
+    }
+    let bytes = |g: &str| -> [u8; 16] {
+        let mut out = [0u8; 16];
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = u8::from_str_radix(&g[i * 2..i * 2 + 2], 16).unwrap_or(0);
+        }
+        out
+    };
+    Some(MusicMarker {
+        voice_channel: ChannelId(bytes(channel)),
+        requester: UserId(bytes(requester)),
+        item: item.to_owned(),
+    })
 }
 
 /// The Bot's clock stamp on a snapshot (Ruling AI): its elapsed ms since the position was the playhead, as of the

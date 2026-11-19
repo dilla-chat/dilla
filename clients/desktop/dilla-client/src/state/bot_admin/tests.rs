@@ -571,3 +571,20 @@ fn an_installation_row_is_scoped_to_its_community() {
     ]);
     assert!(decode_installation(&bad_volume, &community()).is_err());
 }
+
+/// W screens/voice/music.tsx `MARKER`: the marker is the body's final line, three 32-digit lower-case hex groups.
+#[test]
+fn the_music_marker_is_the_final_line_only() {
+    let id = "ab".repeat(16);
+    let body = format!("Now playing\n[dilla-music:v1:{id}:{id}:{id}]");
+    let marker = music_marker(&body).unwrap();
+    assert_eq!(marker.item, id);
+    assert_eq!(marker.voice_channel, ChannelId([0xab; 16]));
+    assert_eq!(marker.requester, UserId([0xab; 16]));
+    let upper = "AB".repeat(16);
+    assert!(music_marker(&format!("x\n[dilla-music:v1:{upper}:{upper}:{upper}]")).is_none());
+    assert!(music_marker(&format!("{body}\nx")).is_none());
+    let short = "ab".repeat(15) + "a";
+    assert!(music_marker(&format!("[dilla-music:v1:{id}:{id}:{short}]")).is_none());
+    assert!(music_marker(&format!("[dilla-music:v1:{id}:{id}:{id}]")).is_some());
+}

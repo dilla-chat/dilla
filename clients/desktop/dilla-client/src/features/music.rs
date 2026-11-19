@@ -164,6 +164,15 @@ impl Music {
         }
     }
 
+    /// The voice channels whose player a card on screen follows; published only when the set changed.
+    pub fn set_watched(&self, channels: BTreeSet<ChannelId>) {
+        if self.inner.snapshot().bot_admin.music_watched == channels {
+            return;
+        }
+        self.inner
+            .publish(move |s| s.bot_admin.music_watched = channels);
+    }
+
     fn publish(&self, channel: ChannelId, state: MusicState) {
         self.inner.publish(move |s| {
             s.bot_admin.music.insert(channel, state);

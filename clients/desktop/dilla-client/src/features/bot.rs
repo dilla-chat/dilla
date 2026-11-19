@@ -811,17 +811,19 @@ fn on_state_changed(
 }
 
 /// The voice channel whose player op 63 asks to read again: a call scope (kind 2, its id the voice channel) of the call
-/// this device is in, where the dock shows the player (music.tsx reads only a shown player).
+/// this device is in, where the dock shows the player, or of a channel whose music card is on screen
+/// (`bot_admin.music_watched`; music.tsx reads only a shown player).
 fn music_hint(
     state: &AppState,
     frame: &frames::BotStateChangedFrame,
 ) -> Option<crate::state::ChannelId> {
+    if frame.scope_kind != 2 {
+        return None;
+    }
+    let channel = crate::state::ChannelId(frame.scope_id);
     let call = &state.voice.call;
-    let channel = call.channel?;
-    (frame.scope_kind == 2
-        && call.phase == crate::calls::CallPhase::In
-        && channel.0 == frame.scope_id)
-        .then_some(channel)
+    let in_call = call.phase == crate::calls::CallPhase::In && call.channel == Some(channel);
+    (in_call || state.bot_admin.music_watched.contains(&channel)).then_some(channel)
 }
 
 impl AreaFrames for Bot {
@@ -959,6 +961,11 @@ mod tests {
         assert_eq!(music_hint(&s, &hint(2, lounge.0)), Some(lounge));
         assert_eq!(music_hint(&s, &hint(2, [9; 16])), None, "another call");
         assert_eq!(music_hint(&s, &hint(1, lounge.0)), None, "a channel scope");
+        // A watched channel follows its hint without a call.
+        let mut s = AppState::default();
+        s.bot_admin.music_watched.insert(lounge);
+        assert_eq!(music_hint(&s, &hint(2, lounge.0)), Some(lounge));
+        assert_eq!(music_hint(&s, &hint(1, lounge.0)), None);
     }
 
     fn state_with_catalog() -> (AppState, CommunityId) {
