@@ -152,6 +152,39 @@ ending in `.desktop` are invalid by Flathub/AppStream rules for the same reason.
 - [ ] **Step 4:** `cargo test -p dilla-desktop --test ring --test notify`; PASS.
 - [ ] **Step 5: Commit** `GPUI rings: sound and notify with no window open`.
 
+### Task 3b: Connect on a hidden start (added 2026-11-19, Jonas: "Yes, connect on hidden start")
+
+A `--hidden` start (autostart at login) returns before any window opens (`dilla-desktop/src/main.rs:~102`); clients
+start only in a window's `ShellApp::start_client` (`app.rs:~773`, `Client::start` ~:829) and `windows::keep_client` is
+reached only after that, so a tray-only start connects to nothing: no rings, no message notifications. beta.5's hidden
+window kept its renderer running, so it connected. Parity: a hidden start connects every listed instance.
+
+**Files:**
+- Modify: `clients/desktop/dilla-desktop/src/main.rs` (hidden start), `src/app.rs` (factor the client start out of the
+  window so it can run headless), `src/windows.rs` (`keep_client` for headless clients; a window opened later adopts
+  the running client instead of starting a second), `src/native/notifier.rs` (message notifications start with the
+  client, not on the first window frame), `src/screens/ring/effects.rs`, `src/screens/ring/mod.rs`, `src/native/tray.rs`
+- Test: `tests/ring.rs`, `tests/notify.rs`, a new `tests/hidden_start.rs` if no existing file fits
+
+**Interfaces:**
+- Produces: `pub fn start_headless_clients(cx: &mut App)` — for every listed instance whose database key the keychain
+  answers without a prompt, starts its client and calls `keep_client`; an instance whose key is unavailable (locked
+  keychain, Secret Service absent) is skipped with a log line and starts when its window opens, as today.
+  `tray::show_instance` returns `bool` (whether it opened or focused a window).
+
+- [ ] **Step 1: Failing tests:** `a_hidden_start_connects_and_rings` (hidden start, an instance with a stored key →
+  its client runs, an injected ring sounds and notifies with no window); `a_hidden_start_raises_message_notifications`;
+  `opening_the_window_after_a_hidden_start_reuses_the_client` (exactly one client per instance);
+  `a_locked_key_skips_the_instance_without_a_prompt`; `a_failed_window_open_clears_the_pending_answer`
+  (review Minor 2: `show_instance` → false clears `await_window`); `a_dropped_state_sender_removes_its_watch`
+  (review Minor 1).
+- [ ] **Step 2:** `cargo test -p dilla-desktop --test ring --test notify --test hidden_start`; FAIL.
+- [ ] **Step 3: Implement.** No visible UI change; no keychain prompt at login (use the keychain's non-interactive
+  lookup; if the platform API cannot say "would prompt", skip headless start on that platform and say so).
+  Rename `answering_from_the_notification_opens_the_window_and_joins` to what it checks (review Minor 3).
+- [ ] **Step 4:** Step 2 PASS; `cargo test -p dilla-desktop --lib`; fmt; clippy.
+- [ ] **Step 5: Commit** `GPUI: a hidden start connects, so rings and messages notify from the tray`.
+
 ### Task 4: Windows application sound (WASAPI process loopback)
 
 **Files:**
