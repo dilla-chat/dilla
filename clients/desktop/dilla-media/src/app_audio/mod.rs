@@ -23,7 +23,7 @@ mod linux;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use frames::{PcmFrames, SampleFrames, cap_label, cap_sources, checked, exclude_tree, in_tree};
+pub use frames::{PcmFrames, cap_sources, in_tree};
 
 /// 48 kHz, stereo.
 pub const RATE: u32 = 48_000;

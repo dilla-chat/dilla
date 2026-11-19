@@ -51,8 +51,9 @@ use windows::Win32::System::Variant::VT_BLOB;
 use windows::core::{HRESULT, IUnknown, Interface, PCWSTR, PWSTR, implement, w};
 
 use super::{
-    AppAudioError, AppCapture, AppSource, CHANNELS, MAX_CHUNK_BYTES, RATE, SampleFrames,
-    exclude_tree, in_tree,
+    AppAudioError, AppCapture, AppSource, CHANNELS, MAX_CHUNK_BYTES, RATE,
+    frames::{SampleFrames, exclude_tree},
+    in_tree,
 };
 
 /// mmreg.h `WAVE_FORMAT_IEEE_FLOAT` (kept here rather than enabling the whole `Win32_Media_Multimedia` module).
@@ -341,9 +342,13 @@ fn activate(pid: u32) -> Result<IAudioClient, AppAudioError> {
             },
         },
     };
-    let mut prop = PROPVARIANT::default();
-    // SAFETY: writing the VT_BLOB arm of a zeroed PROPVARIANT; the blob borrows `params`, which outlives the
-    // activation (it is awaited below). PROPVARIANT has no Drop here, so the borrowed blob is never freed.
+    // Never dropped: the bindings' `Drop for PROPVARIANT` calls PropVariantClear, which would CoTaskMemFree a VT_BLOB's
+    // data, and this blob borrows `params` on the stack. A zeroed PROPVARIANT owns nothing, so not dropping it leaks
+    // nothing.
+    let mut prop = std::mem::ManuallyDrop::new(PROPVARIANT::default());
+    // SAFETY: writing the VT_BLOB arm of a zeroed PROPVARIANT. The blob borrows `params`, which lives until this
+    // function returns, after ActivateAudioInterfaceAsync (which reads the parameters during the call) has returned;
+    // `prop` is in ManuallyDrop, so PropVariantClear never runs on the borrowed pointer.
     unsafe {
         let inner = &mut *prop.Anonymous.Anonymous;
         inner.vt = VT_BLOB;
@@ -359,7 +364,7 @@ fn activate(pid: u32) -> Result<IAudioClient, AppAudioError> {
         ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(std::ptr::from_ref(&prop)),
+            Some(std::ptr::from_ref::<PROPVARIANT>(&prop)),
             &handler,
         )
     }

@@ -338,12 +338,14 @@ fn captures_a_tone_from_a_child_process() {
         std::thread::sleep(Duration::from_millis(200));
     };
 
+    // Collected on the capture thread, asserted here (a panic there would only end that thread).
     let mono = Arc::new(Mutex::new(Vec::<f32>::new()));
-    let sink = mono.clone();
+    let lengths = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let (sink, sizes) = (mono.clone(), lengths.clone());
     let capture = dilla_media::app_audio::start(
         &source,
         Box::new(move |frame: Vec<f32>| {
-            assert_eq!(frame.len(), dilla_media::app_audio::FRAME_SAMPLES);
+            sizes.lock().unwrap().push(frame.len());
             sink.lock()
                 .unwrap()
                 .extend(frame.as_chunks::<2>().0.iter().map(|[l, r]| (l + r) / 2.0));
@@ -357,10 +359,87 @@ fn captures_a_tone_from_a_child_process() {
         std::thread::sleep(Duration::from_millis(50));
     }
     drop(capture);
+    assert!(
+        lengths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|&n| n == dilla_media::app_audio::FRAME_SAMPLES),
+        "every frame is 960 samples"
+    );
     let samples = mono.lock().unwrap();
     // The second second: playback has surely started.
     let peak = peak_hz(&samples[48_000..96_000]);
     assert!((peak - 440.0).abs() <= 20.0, "peak at {peak} Hz");
     drop(samples);
     let _ = std::fs::remove_dir_all(wav.parent().unwrap());
+}
+
+/// Runs `f` on a thread of its own and waits at most `secs` for its answer.
+#[cfg(target_os = "windows")]
+fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(Duration::from_secs(secs))
+        .expect("answered in time")
+}
+
+/// GPUI gaps Task 4, in CI (no audio device needed): listing the sessions answers, a list or a clean error, never a
+/// crash or a hang, and never names this process.
+#[cfg(target_os = "windows")]
+#[test]
+fn sources_lists_without_crashing() {
+    match within(10, dilla_media::app_audio::sources) {
+        Ok(list) => assert!(
+            list.iter().all(|s| s.pid != std::process::id()),
+            "never Dilla itself: {list:?}"
+        ),
+        Err(e) => eprintln!("no application audio here: {e}"),
+    }
+}
+
+/// GPUI gaps Task 4, in CI: starting a capture of a live (silent) process runs the whole process-loopback activation
+/// (the PROPVARIANT's VT_BLOB parameters, the completion handler, the client's initialisation) and answers within 10 s,
+/// a capture or a clean error; dropping the capture is clean too. The sleeper is started by a PowerShell that exits, so
+/// it is outside this process's tree (a child would be refused as Dilla's own, `Gone`, before any activation).
+#[cfg(target_os = "windows")]
+#[test]
+fn start_on_a_live_process_returns_cleanly() {
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-Command','Start-Sleep 30').Id",
+        ])
+        .output()
+        .expect("powershell");
+    let pid: u32 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("the sleeper's pid");
+    struct Kill(u32);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &self.0.to_string(), "/F"])
+                .status();
+        }
+    }
+    let _kill = Kill(pid);
+    let source = dilla_media::app_audio::AppSource {
+        serial: 1,
+        pid,
+        label: "sleeper".to_owned(),
+    };
+    let answer = within(10, move || {
+        dilla_media::app_audio::start(&source, Box::new(|_| {}), Box::new(|| {})).map(|capture| {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(capture);
+        })
+    });
+    if let Err(e) = answer {
+        eprintln!("no capture here (a clean error): {e}");
+    }
 }

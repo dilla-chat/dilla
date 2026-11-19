@@ -273,14 +273,21 @@ pub(super) fn start(
     std::thread::Builder::new()
         .name("dilla-app-audio".to_owned())
         .spawn(move || {
-            let result = run(&source_c, root, frames, stop_c.clone(), &ready_tx);
-            let stopped = stop_c.load(Ordering::Acquire);
-            match result {
-                Err(e) => {
+            let mut started = false;
+            let result = run(
+                &source_c,
+                root,
+                frames,
+                stop_c.clone(),
+                &ready_tx,
+                &mut started,
+            );
+            match after_run(result, started, stop_c.load(Ordering::Acquire)) {
+                AfterRun::Refused(e) => {
                     let _ = ready_tx.send(Err(e));
                 }
-                Ok(()) if !stopped => ended(),
-                Ok(()) => {}
+                AfterRun::Ended => ended(),
+                AfterRun::Stopped => {}
             }
         })
         .map_err(server)?;
@@ -296,6 +303,32 @@ pub(super) fn start(
     }
 }
 
+/// What the capture thread does once [`run`] returns.
+#[derive(Debug, PartialEq)]
+enum AfterRun {
+    /// It never started: `start` gets the error.
+    Refused(AppAudioError),
+    /// It started and then ended on its own (the stream went away, an invalid sample, a stream or link error):
+    /// `ended`, once.
+    Ended,
+    /// The handle was dropped: nothing more.
+    Stopped,
+}
+
+/// Before the capture started, an error goes to `start`; after, any end that was not asked for (`stopped`) is
+/// `ended`, an error included (the `ready` channel is no longer read then).
+fn after_run(result: Result<(), AppAudioError>, started: bool, stopped: bool) -> AfterRun {
+    match result {
+        Err(e) if !started => AfterRun::Refused(e),
+        _ if stopped => AfterRun::Stopped,
+        Err(e) => {
+            log::warn!("application audio ended: {e}");
+            AfterRun::Ended
+        }
+        Ok(()) => AfterRun::Ended,
+    }
+}
+
 /// The capture thread: until `stop`, the chosen stream going away, or an error.
 fn run(
     source: &AppSource,
@@ -303,6 +336,7 @@ fn run(
     mut frames: Box<dyn FnMut(Vec<f32>) + Send>,
     stop: Arc<AtomicBool>,
     ready: &std::sync::mpsc::Sender<Result<(), AppAudioError>>,
+    started: &mut bool,
 ) -> Result<(), AppAudioError> {
     init()?;
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(server)?;
@@ -487,6 +521,7 @@ fn run(
         return Err(AppAudioError::Gone);
     }
     let _ = ready.send(Ok(()));
+    *started = true;
 
     // Every 100 ms: stop when asked.
     let l = mainloop.clone();
@@ -555,6 +590,21 @@ mod tests {
             ]
         );
         assert!(g.wanted_links(4000, 98).is_empty(), "no inputs, no links");
+    }
+
+    /// After the capture started, an invalid sample (or a stream or link error) ends it with `ended`, as the stream going
+    /// away does; before, the error goes to `start`; after a drop, nothing.
+    #[test]
+    fn an_error_after_start_calls_ended() {
+        let bad = || Err(AppAudioError::Invalid("sample"));
+        assert_eq!(after_run(bad(), true, false), AfterRun::Ended);
+        assert_eq!(after_run(Ok(()), true, false), AfterRun::Ended);
+        assert_eq!(
+            after_run(bad(), false, false),
+            AfterRun::Refused(AppAudioError::Invalid("sample"))
+        );
+        assert_eq!(after_run(bad(), true, true), AfterRun::Stopped);
+        assert_eq!(after_run(Ok(()), true, true), AfterRun::Stopped);
     }
 
     /// One source per process, named by its first stream; Dilla's own process (this test's) left out.

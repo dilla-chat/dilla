@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use super::{AppAudioError, AppSource, FRAME_SAMPLES, MAX_CHUNK_BYTES, MAX_LABEL, MAX_SOURCES};
 
 /// One sample, checked finite and clamped to [-1, 1] (beta.5 stops the capture on an invalid sample).
-pub fn checked(v: f32) -> Result<f32, AppAudioError> {
+pub(crate) fn checked(v: f32) -> Result<f32, AppAudioError> {
     if v.is_finite() {
         Ok(v.clamp(-1.0, 1.0))
     } else {
@@ -51,13 +51,15 @@ impl PcmFrames {
 /// [`PcmFrames`] for a capture that hands over f32 samples (WASAPI, CoreAudio): interleaved stereo samples of any count
 /// become exact [`FRAME_SAMPLES`]-sample frames, each sample checked finite and clamped; the rest waits for the next
 /// buffer (never more than one frame's worth).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Default)]
-pub struct SampleFrames {
+pub(crate) struct SampleFrames {
     carry: Vec<f32>,
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 impl SampleFrames {
-    pub fn push(
+    pub(crate) fn push(
         &mut self,
         samples: &[f32],
         mut emit: impl FnMut(Vec<f32>),
@@ -99,7 +101,8 @@ pub fn in_tree(pid: u32, root: u32, parent_of: impl Fn(u32) -> Option<u32>) -> b
 
 /// `sources` without Dilla's own process tree (`root`), given every process's parent (`parents`: pid to parent pid, a
 /// snapshot of the system's process table).
-pub fn exclude_tree(
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn exclude_tree(
     sources: Vec<AppSource>,
     parents: &HashMap<u32, u32>,
     root: u32,
@@ -111,7 +114,7 @@ pub fn exclude_tree(
 }
 
 /// A source's label: at most [`MAX_LABEL`] characters, and a name for a source that gives none.
-pub fn cap_label(label: &str, pid: u32) -> String {
+pub(crate) fn cap_label(label: &str, pid: u32) -> String {
     if label.trim().is_empty() {
         format!("Application {pid}")
     } else {
