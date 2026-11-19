@@ -265,7 +265,7 @@ mod os {
         assert!(shown[0].actions.is_empty(), "a message has no buttons");
         assert_eq!(
             cx.app_identity().map(|(id, _)| id),
-            Some(dilla_desktop::APP_ID.into())
+            Some(dilla_desktop::window_app_id().into())
         );
     }
 

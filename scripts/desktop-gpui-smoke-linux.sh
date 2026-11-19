@@ -51,6 +51,14 @@ scheme_registered() {  # <desktop file>
   grep -qx 'MimeType=x-scheme-handler/dilla;' "$1" || fail "$1 does not register x-scheme-handler/dilla"
   grep -qx 'Exec=dilla-desktop %U' "$1" || fail "$1 does not pass the link to the app (Exec=dilla-desktop %U)"
 }
+# An alpha.1 install left dev.dilla.desktop.desktop and its icons behind (KDE could not find that entry); the new package
+# owns chat.dilla.Dilla.* and must not leave the old names on disk.
+old_app_id_gone() {
+  local f
+  for f in /usr/share/applications/dev.dilla.desktop.desktop /usr/share/metainfo/dev.dilla.desktop.metainfo.xml /usr/share/icons/hicolor/*/apps/dev.dilla.desktop*; do
+    test ! -e "$f" || fail "$f is still installed"
+  done
+}
 apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q
@@ -83,6 +91,7 @@ case "$check" in
     [ "$(command -v dilla-desktop)" = /usr/bin/dilla-desktop ] || fail "dilla-desktop is not /usr/bin/dilla-desktop"
     test -f /usr/share/applications/chat.dilla.Dilla.desktop
     scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
+    old_app_id_gone
     test -f /usr/share/icons/hicolor/512x512/apps/chat.dilla.Dilla.png
     test -f /opt/Dilla/licenses/THIRD-PARTY.md
     if [ "$check" = ubuntu-deb ]; then
@@ -101,6 +110,7 @@ case "$check" in
     [ "$(rpm -q --qf '%{VERSION}-%{RELEASE}' dilla)" = "$core-0.alpha.$alpha.1" ] || fail "rpm reports $(rpm -q dilla)"
     says_version dilla-desktop
     scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
+    old_app_id_gone
     rpm -V dilla || fail "rpm -V found changed files"
     dnf remove -y -q dilla
     [ ! -e /opt/Dilla ] && [ ! -e /usr/bin/dilla-desktop ] || fail "removing the package left files behind"
@@ -130,6 +140,7 @@ case "$check" in
     [ "$(vercmp "${core}alpha$alpha-1" 0.1.0beta5-1)" = 1 ] || fail "vercmp orders the release below beta.5"
     says_version dilla-desktop
     scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
+    old_app_id_gone
     ;;
   ubuntu-upgrade)
     pinned "$beta5" "$BETA5_DEB" "$BETA5_DEB_SHA256"

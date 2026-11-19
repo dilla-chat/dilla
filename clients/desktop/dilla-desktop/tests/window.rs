@@ -24,5 +24,8 @@ fn window_title_is_set_once_through_set_window_title() {
     let options = dilla_desktop::main_window_options(bounds);
     let title = options.titlebar.as_ref().and_then(|t| t.title.clone());
     assert_eq!(title, None, "the title comes only from set_window_title");
-    assert_eq!(options.app_id.as_deref(), Some(dilla_desktop::APP_ID));
+    assert_eq!(
+        options.app_id.as_deref(),
+        Some(dilla_desktop::window_app_id())
+    );
 }

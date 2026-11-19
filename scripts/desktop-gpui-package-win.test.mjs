@@ -36,8 +36,8 @@ test("the shortcut's AppUserModelID is the app's APP_ID", () => {
   assert.equal(appId, 'dev.dilla.desktop');
   assert.ok(iss.includes(`#define AppId "${appId}"`));
   assert.match(iss, /AppUserModelID: "\{#AppId\}"/);
-  // notifier::install passes crate::APP_ID to the platform as the Windows AppUserModelID.
-  assert.match(read('clients/desktop/dilla-desktop/src/native/notifier.rs'), /set_app_identity\(crate::APP_ID, crate::PRODUCT_NAME\)/);
+  // notifier::install passes window_app_id() (APP_ID off Linux) to the platform as the Windows AppUserModelID.
+  assert.match(read('clients/desktop/dilla-desktop/src/native/notifier.rs'), /set_app_identity\(crate::window_app_id\(\), crate::PRODUCT_NAME\)/);
 });
 
 test('dilla.iss is per user, silent-capable, takes over beta.5 and registers the dilla: protocol', () => {
