@@ -394,14 +394,16 @@ pub fn on_send(
                 thread: None,
             };
             let run = builtins::prepared(run, &ctx.state, channel, encode);
-            let row = client.as_ref().map_or(0, |c| {
-                c.bot().add_result(
+            let text = copy::pending(run.id());
+            let row = match client {
+                Some(c) => c.bot().add_result(
                     conversation,
                     ResultStatus::Pending,
-                    copy::pending(run.id()),
+                    text,
                     ResultProvider::Builtin,
-                )
-            });
+                ),
+                None => add_fixture_row(window, conversation, ctx.clock, text, cx),
+            };
             match confirm {
                 Some(ask) => confirm::ask_builtin(
                     window,
@@ -474,13 +476,56 @@ fn texts(clock: Clock) -> run::Texts {
     })
 }
 
+/// A fixture window's built-in rows. A fixture has no client to keep private results, yet the screen it stands for
+/// shows the command's pending row under the log (CommandHost.tsx:236), so the window keeps it here.
+#[derive(Default)]
+struct FixtureRows(Vec<(Conversation, PrivateResult)>);
+
+/// Adds a fixture window's pending row for a built-in (`text` its pending copy); answers its id.
+fn add_fixture_row(
+    window: gpui::WindowId,
+    conversation: Conversation,
+    clock: Clock,
+    text: String,
+    cx: &mut App,
+) -> u64 {
+    let at = match clock {
+        Clock::Fixed { now, .. } => now * 1000,
+        Clock::Local => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+    };
+    let rows = &mut crate::per_window::get_mut::<FixtureRows>(window, cx).0;
+    let id = rows.iter().map(|(_, r)| r.id).max().unwrap_or(0) + 1;
+    rows.push((
+        conversation,
+        PrivateResult {
+            id,
+            at,
+            status: ResultStatus::Pending,
+            text,
+            provider: ResultProvider::Builtin,
+            hold: false,
+            settled_at: None,
+        },
+    ));
+    id
+}
+
+/// A fixture window's row `row` goes (its question was cancelled or abandoned).
+pub(super) fn dismiss_fixture_row(window: gpui::WindowId, row: u64, cx: &mut App) {
+    crate::per_window::get_mut::<FixtureRows>(window, cx)
+        .0
+        .retain(|(_, r)| r.id != row);
+}
+
 /// The private results of the open conversation, oldest first, each with its height in a log `width` wide: the log
-/// draws them after its last message.
+/// draws them after its last message. A fixture window draws its own built-in rows ([`FixtureRows`]).
 pub fn private_results(
     ctx: &SlotCx,
     width: f32,
-    _window: &mut Window,
-    _cx: &mut App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Vec<(AnyElement, f32)> {
     let Some(channel) = ctx.channel else {
         return Vec::new();
@@ -490,10 +535,24 @@ pub fn private_results(
         thread: None,
     };
     let (zone, _) = zone_of(ctx.clock);
+    let fixture_rows: Vec<PrivateResult> = if ctx.client.is_none() {
+        crate::per_window::get::<FixtureRows>(window.window_handle().window_id(), cx)
+            .map(|rows| {
+                rows.0
+                    .iter()
+                    .filter(|(c, _)| *c == conversation)
+                    .map(|(_, r)| r.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     ctx.state
         .bot
         .results(&conversation)
         .iter()
+        .chain(&fixture_rows)
         .map(|row| {
             let height = BotResult::height(&row.text, width);
             (
@@ -663,20 +722,40 @@ mod tests {
             .update(|w, _| w.window_handle().window_id());
         let encode = |t: &str| t.to_owned();
         let id = msg.hex();
+        // A fixture window's own pending rows (it has no client to keep them).
+        let rows = |cx: &App| {
+            crate::per_window::get::<FixtureRows>(w, cx).map_or(Vec::new(), |r| {
+                r.0.iter()
+                    .map(|(_, r)| (r.status, r.text.clone()))
+                    .collect()
+            })
+        };
         cx.update(|cx| {
-            for (draft, asks) in [
-                (format!("/delete message:{id}"), true),
-                (format!("/pin message:{id}"), false),
+            for (draft, asks, pending) in [
+                (format!("/delete message:{id}"), true, Some("delete")),
+                (format!("/pin message:{id}"), false, Some("pin")),
                 (
                     format!("/edit message:{} text:x", ChannelId([9; 16]).hex()),
                     false,
+                    None,
                 ),
             ] {
                 draft_changed(w, &draft, cx);
                 assert_eq!(on_send(&ctx, &draft, &encode, w, cx), SendDecision::Handled);
                 assert_eq!(confirm::is_open(w, cx), asks, "{draft}");
                 assert_eq!(picker_state(w, cx).draft, "", "the draft is cleared");
-                confirm::answer_builtin(w, None, cx);
+                assert_eq!(
+                    rows(cx).last().cloned(),
+                    pending.map(|id| (ResultStatus::Pending, copy::pending(id))),
+                    "{draft}"
+                );
+                if asks {
+                    // Abandoned: the question and its row go.
+                    confirm::answer_builtin(w, None, cx);
+                    assert!(rows(cx).is_empty());
+                } else {
+                    crate::per_window::get_mut::<FixtureRows>(w, cx).0.clear();
+                }
             }
         });
     }

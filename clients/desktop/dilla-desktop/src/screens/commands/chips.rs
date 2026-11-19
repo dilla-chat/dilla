@@ -27,7 +27,7 @@ use dilla_client::features::server_admin::hex_id;
 use dilla_client::features::utilities::time::{ReminderTime, ReminderZone, parse_reminder_time};
 use dilla_client::state::dms::DM_KIND_PAIR;
 use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItemState, UserId};
-use gpui::{AnyElement, App, IntoElement, ParentElement, Styled, Window, div};
+use gpui::{AnyElement, App, InteractiveElement, IntoElement, ParentElement, Styled, Window, div};
 
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::commands::chips::{
@@ -1234,6 +1234,27 @@ fn window_id(window: &Window) -> gpui::WindowId {
     window.window_handle().window_id()
 }
 
+/// A chip field was pressed (CommandField's `onFocus`): it becomes the active field, and the composer, whose keys the
+/// chips take, holds the focus.
+pub fn focus_field(wid: gpui::WindowId, i: usize, window: &mut Window, cx: &mut App) {
+    let state = super::picker_state_mut(wid, cx);
+    if let Some(c) = state.chips.as_mut()
+        && c.active != i
+        && i < c.fields.max(1)
+    {
+        c.active = i;
+        c.sug = 0;
+    }
+    if let Some(focus) = state
+        .composer
+        .as_ref()
+        .and_then(gpui::WeakFocusHandle::upgrade)
+    {
+        focus.focus(window, cx);
+    }
+    window.refresh();
+}
+
 /// The chips in place of the composer's field (`None` while no command is picked).
 pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
@@ -1332,9 +1353,17 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
         .optional(field.optional)
         .active(i == active)
         .invalid(invalid);
+        // CommandField's `onFocus`: a press makes the field the active one and keeps the typing in the composer (whose
+        // keys the chips take). Left to the shell, the press would take the focus and the keys would open its search.
+        let field = div()
+            .child(el)
+            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                focus_field(wid, i, window, cx);
+            });
         row = row.field(crate::tracked_box(
             FIELD_IDS.get(i).copied().unwrap_or("command-field"),
-            div().child(el),
+            field,
         ));
     }
     Some(
@@ -1355,6 +1384,33 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 10 fix round (CommandField's `onFocus`): a press on a chip field makes it the active field and gives the
+    /// composer the focus, so what is typed next reaches that field, not the shell.
+    #[gpui::test]
+    fn a_pressed_chip_field_is_active_and_the_composer_keeps_the_keys(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let vcx = cx.add_empty_window();
+        vcx.update(|window, cx| {
+            let wid = window.window_handle().window_id();
+            let composer = cx.focus_handle();
+            super::super::set_composer(wid, &composer, cx);
+            super::super::picker_state_mut(wid, cx).chips = Some(Chips {
+                command: "delete".into(),
+                values: vec![String::new(), String::new()],
+                fields: 2,
+                sug: 3,
+                ..Chips::default()
+            });
+            focus_field(wid, 1, window, cx);
+            let chips = super::super::picker_state(wid, cx).chips.unwrap();
+            assert_eq!((chips.active, chips.sug), (1, 0));
+            assert!(composer.is_focused(window), "the composer holds the focus");
+            focus_field(wid, 0, window, cx);
+            assert_eq!(super::super::picker_state(wid, cx).chips.unwrap().active, 0);
+        });
+    }
 
     /// Final review I6: the bans read is asked once per client and server; another client (another account on the same
     /// server, or a sign-in after a sign-out) asks for itself; a failed read and a release let it ask again.

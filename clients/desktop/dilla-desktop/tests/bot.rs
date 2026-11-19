@@ -81,7 +81,10 @@ fn parity_commands_reminders_b() {
 /// `/delete` of Ada's own message asks first (builtin.ts:142, CommandHost.tsx's `ConfirmDialog`): "Delete this message?"
 /// over the channel, its row working under the log.
 #[test]
-#[ignore = "parity after the chips fix (Task 10 report): a click on a chip field (`command-field-0`) drops the composer's focus, so the fixture's message pick cannot be replayed; and a fixture adds no pending row"]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_commands_confirm_delete() {
     dilla_parity::screen::assert_screen(&fixture("commands/confirm-delete.json")).unwrap();
 }
@@ -313,6 +316,39 @@ fn picking_a_command_turns_the_field_into_its_chips() {
     assert!(app.element("command-chips").is_none());
     assert!(app.element("command-picker").is_none());
     app.wait_for("composer", Duration::from_secs(5));
+}
+
+/// Task 10 fix round (CommandField's `onFocus`): a press on a chip field makes it the active one and the typing goes on
+/// in it; the shell never takes the keys (its search stays shut). Before, the press left the composer and typing opened
+/// the quick switcher.
+#[test]
+fn a_pressed_chip_field_takes_the_typing() {
+    let mut app = Driver::launch_fixture(&fixture("shell/channel-view.json"), None, &[]);
+    app.wait_for("composer", Duration::from_secs(20));
+    app.type_text("composer", "/");
+    app.wait_for("command-picker", Duration::from_secs(5));
+    app.type_focused("code");
+    app.wait_idle();
+    app.press("tab");
+    app.wait_for("command-chips", Duration::from_secs(5));
+    let text = app.wait_for("command-field-1", Duration::from_secs(5));
+    let language = app.element("command-field-0").expect("the language field");
+    app.click("command-field-1");
+    app.type_focused("let rope = 2 + 2;");
+    app.wait_idle();
+    assert!(
+        app.element("command-field-1").unwrap().width > text.width,
+        "the pressed field took the text"
+    );
+    assert_eq!(
+        app.element("command-field-0").unwrap().width,
+        language.width
+    );
+    app.click("command-field-0");
+    app.type_focused("typescript");
+    app.wait_idle();
+    assert!(app.element("command-field-0").unwrap().width > language.width);
+    assert!(app.element("command-chips").is_some(), "still the chips");
 }
 
 // ---- behaviour: the shipping window against a real dillad and its real Bot (Task 28) ----

@@ -313,11 +313,18 @@ pub enum Plan {
     Incomplete,
 }
 
-/// The question a built-in asks before it runs: the dialog's title and body (`ConfirmDialog`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The question a built-in asks before it runs: the dialog's title and body (`ConfirmDialog`). Its `Debug` leaves the
+/// body out: it may carry a moderation reason ("…Reason: {reason}").
+#[derive(Clone, PartialEq, Eq)]
 pub struct Ask {
     pub title: String,
     pub body: String,
+}
+
+impl std::fmt::Debug for Ask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Ask({:?}, {} bytes)", self.title, self.body.len())
+    }
 }
 
 /// A built-in command that acts on another area, with what it needs from the draft. The commands move here from the
@@ -1704,6 +1711,19 @@ mod tests {
                 true
             )
         );
+        // builtin.ts:368: without the removal's evidence request id nothing is sent again; the evidence is reported.
+        let no_request = RemovalOutcome {
+            evidence_request_id: None,
+            ..outcome(Removal::Accepted, P, Evidence::Unknown)
+        };
+        assert_eq!(
+            removal_step(&no_request, false, false),
+            done(
+                ResultStatus::Failed,
+                format!("Message removed; moderation evidence is unknown. Recovery proof: {hex}."),
+                true
+            )
+        );
         match removal_step(
             &outcome(Removal::Accepted, P, Evidence::Rejected),
             true,
@@ -1765,9 +1785,29 @@ mod tests {
             to: MessageId([1; 16]),
             text: "secret body".into(),
         };
-        for shown in [format!("{remove:?}"), format!("{reply:?}")] {
+        // The question of a removal names its reason in its body; a plan prints neither.
+        let plan = Plan::Builtin {
+            run: remove.clone(),
+            confirm: Some(Ask {
+                title: "Delete this message?".into(),
+                body: "Remove this message from everyone? Reason: secret reason".into(),
+            }),
+        };
+        for shown in [
+            format!("{remove:?}"),
+            format!("{reply:?}"),
+            format!("{plan:?}"),
+            format!(
+                "{:#?}",
+                RunOutcome::Builtin {
+                    run: remove,
+                    confirm: None
+                }
+            ),
+        ] {
             assert!(!shown.contains("secret"), "{}", shown.len());
         }
+        assert!(format!("{plan:?}").contains("Delete this message?"));
     }
 
     /// builtin.ts `eligibleAssignableRole` (:384-393): a role is assignable when this account manages roles and ranks

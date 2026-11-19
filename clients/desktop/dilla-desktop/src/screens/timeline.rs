@@ -1087,6 +1087,10 @@ pub fn render(
         .unwrap_or_default();
     let body_width = width - CONTENT_X - ROW_RIGHT;
     let editing_key = ui.read(cx).editing.as_ref().map(|e| e.key.clone());
+    // Task 20's private results: the rows only this device shows, after the conversation's last message. They are rows
+    // of the log too (MessageLog.tsx `d-message-log__rows`), so with one shown the last message is no longer the log's
+    // last child and keeps its attachments slot.
+    let privates = crate::screens::commands::private_results(ctx, width, window, cx);
     let mut shown = Vec::with_capacity(items.len());
     for (n, item) in items.iter().enumerate() {
         let prev = n.checked_sub(1).map(|p| items[p]);
@@ -1142,7 +1146,7 @@ pub fn render(
             marks: grouped && marks_head(state, channel.community_id, item),
             divider: starts_day(prev, item, clock).then(|| day_label(item.ts, clock)),
             // Only an empty attachments slot is hidden in the last row; one with cards keeps its gap and margin.
-            last: n + 1 == items.len() && item.attachments.is_empty(),
+            last: n + 1 == items.len() && item.attachments.is_empty() && privates.is_empty(),
             body: laid,
             extras: Some(extras),
             extras_height,
@@ -1158,8 +1162,6 @@ pub fn render(
     let (title, body_lines) = welcome_lines(&channel.name, dm, width);
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
     let (_, rows_end) = row_tops(0.0, &shapes);
-    // Task 20's private results: the rows only this device shows, after the conversation's last message.
-    let privates = crate::screens::commands::private_results(ctx, width, window, cx);
     let privates_height: f32 = privates.iter().map(|(_, h)| *h).sum();
     let content = LOG_TOP
         + welcome_height(title.len(), body_lines.len())

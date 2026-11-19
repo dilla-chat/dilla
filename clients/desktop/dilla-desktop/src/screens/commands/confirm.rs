@@ -89,10 +89,11 @@ pub fn answer_builtin(window: gpui::WindowId, choice: Option<bool>, cx: &mut App
             window,
             cx,
         );
-    } else if let Some(client) = &asking.client
-        && (choice.is_none() || asking.run.dismissed_on_cancel())
-    {
-        client.bot().dismiss(asking.conversation, asking.row);
+    } else if choice.is_none() || asking.run.dismissed_on_cancel() {
+        match &asking.client {
+            Some(client) => client.bot().dismiss(asking.conversation, asking.row),
+            None => super::dismiss_fixture_row(window, asking.row, cx),
+        }
     }
 }
 

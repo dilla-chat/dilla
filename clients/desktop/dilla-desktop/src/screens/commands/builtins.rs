@@ -125,7 +125,7 @@ pub fn run(
             seq,
             reason,
             excerpt,
-        } => remove_other(&client, channel, msg, seq, reason, excerpt, finish),
+        } => remove_other(&client, channel, (msg, seq), reason, excerpt, finish, cx),
         Builtin::Pin { msg, on } => {
             let done = client.messages().pin(channel, msg, on);
             let text = if on {
@@ -206,11 +206,11 @@ fn sent_answer(sent: Result<MessageId, ClientError>) -> (ResultStatus, String) {
 fn remove_other(
     client: &Rc<Client>,
     channel: ChannelId,
-    msg: MessageId,
-    seq: u64,
+    (msg, seq): (MessageId, u64),
     reason: String,
     excerpt: String,
     finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    cx: &mut App,
 ) {
     let (reason, excerpt) = (Zeroizing::new(reason), Zeroizing::new(excerpt));
     let state = client.state().borrow().clone();
@@ -224,10 +224,18 @@ fn remove_other(
             "That message cannot be removed in this conversation.",
         ));
     };
-    drop(client.moderation().run(move |mo| async move {
-        finish(removal(&mo, community, channel, msg, seq, &reason, &excerpt).await);
-        Ok(())
-    }));
+    let job = client.moderation().run(move |mo| async move {
+        Ok(removal(&mo, community, channel, msg, seq, &reason, &excerpt).await)
+    });
+    // A client that stopped refuses the job (E_STOPPED): the row still ends, as one whose outcome is unknown.
+    cx.background_executor()
+        .spawn(async move {
+            finish(
+                job.await
+                    .unwrap_or_else(|e| failed(&bot::removal_error(&e))),
+            );
+        })
+        .detach();
 }
 
 /// The removal's sequence: one `remove_message`, then each [`RemovalStep`] at most once.
