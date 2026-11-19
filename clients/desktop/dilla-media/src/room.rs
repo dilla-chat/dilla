@@ -1555,6 +1555,11 @@ impl Call {
     /// Ends the call's media now, without waiting for its room: the shares stop (their sources are
     /// let go), the keys are dropped and the process's media router is free for the next call. The
     /// room is still to be left ([`leave`](Call::leave), which does this first, or the drop).
+    ///
+    /// The router is free before this call's room has closed, so another call can join while it
+    /// closes. That is safe: this call's media is closed, so a frame of its PeerConnection that
+    /// still arrives is dropped. A receive frame that reaches the new call's transformers before the
+    /// old ones detach is counted as a failure in the new call's stats.
     pub fn end_media(&self) {
         self.stop_shares();
         self.router.end(&self.media);

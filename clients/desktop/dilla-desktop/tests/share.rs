@@ -20,31 +20,9 @@ use gpui::{App, Context, IntoElement, Render, TestAppContext, Window, div};
 #[path = "../../dilla-client/tests/support/call_world.rs"]
 mod call_world;
 
-/// One process, one call's media (see tests/voice.rs `MEDIA_SLOT`): the tests here take turns.
-static MEDIA_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Waits (bounded) until no call media is left in this process, as tests/voice.rs `media_slot` does: the media router
-/// is free and no PeerConnection's frame transformer is alive. An earlier test's window (and its media session) can
-/// outlive that test's world: its call would hold the router, and this test's join would fail as busy.
-fn media_free() {
-    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let probe = dilla_media::transform::CallMedia::new();
-        let free = router.begin(probe.clone()).is_ok();
-        if free {
-            router.end(&probe);
-            if dilla_media::ffi::live_transformers() == 0 {
-                return;
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "an earlier test's call media is still live in this process after 30 s"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
+#[path = "support/media.rs"]
+mod media_slot;
+use media_slot::{MediaSlot, media_slot};
 
 const CALL_WAIT: Duration = Duration::from_secs(45);
 
@@ -152,12 +130,11 @@ struct World {
     alice: Rc<dilla_client::Client>,
     bob: Rc<dilla_client::Client>,
     voice: ChannelId,
-    _slot: std::sync::MutexGuard<'static, ()>,
+    _slot: MediaSlot,
 }
 
 fn world(tag: &'static str) -> World {
-    let slot = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
-    media_free();
+    let slot = media_slot();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

@@ -1223,69 +1223,9 @@ struct CallWorld {
 
 const CALL_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// The process's one media slot. `dilla_media`'s frame hook routes one live call per process (N2): a second window's
-/// media in the same process fails with `E_CALL_BUSY`, and the desktop then leaves that call (its media did not
-/// start). The real-instance tests here run on parallel threads of one test binary, so a test whose media lost the
-/// slot to another test's left its own call; alone in it, the leave ended the call and closed its group, and bob's join
-/// built on that group was refused (`E_COMMIT_INVALID`: the delivery service refuses a commit to a closed group). Each
-/// real-instance test holds the slot for its whole run, and first waits for an earlier test's media to be gone (a
-/// window's media session can outlive its test's world).
-static MEDIA_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// How long a test waits for an earlier test's call media to end.
-const MEDIA_FREE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// A held [`MEDIA_SLOT`].
-struct MediaSlot {
-    _guard: std::sync::MutexGuard<'static, ()>,
-}
-
-/// Takes the process's media slot ([`MEDIA_SLOT`]) once no call media is live in this process: the router is free and
-/// no PeerConnection is left either (an earlier test's room may still be closing on its session's `dilla-call-end`
-/// thread after the router was freed).
-fn media_slot() -> MediaSlot {
-    let guard = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
-    assert!(
-        media_free_within(MEDIA_FREE_WAIT),
-        "an earlier test's call media is still live in this process after {MEDIA_FREE_WAIT:?}"
-    );
-    let deadline = std::time::Instant::now() + MEDIA_FREE_WAIT;
-    loop {
-        let live = dilla_media::ffi::live_transformers();
-        if live == 0 {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{live} frame transformers of an earlier test's call are still alive after {MEDIA_FREE_WAIT:?}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    MediaSlot { _guard: guard }
-}
-
-/// True once no call is current in this process's media router, polled until `wait` has passed. The probe is the
-/// router's own claim, released at once: only a holder of [`MEDIA_SLOT`] probes, and every test of this binary that
-/// starts call media holds it.
-fn media_free_within(wait: std::time::Duration) -> bool {
-    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        let probe = dilla_media::transform::CallMedia::new();
-        match router.begin(probe.clone()) {
-            Ok(()) => {
-                router.end(&probe);
-                return true;
-            }
-            Err(dilla_media::MediaError::Busy) => {}
-            Err(e) => panic!("the media router refused the probe: {e}"),
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
+#[path = "support/media.rs"]
+mod media_slot;
+use media_slot::{MediaSlot, media_free_within, media_slot};
 
 /// A call's media made current in the process's router for a test, ended when it drops (review M M6: an assert that
 /// fails while it is live would otherwise leave it current for every later test of the binary).

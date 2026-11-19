@@ -196,8 +196,8 @@ pub struct MediaSession {
     commands: Option<mpsc::UnboundedSender<Command>>,
     /// Dropped with the session: [`in_call`]'s loop is cancelled at once (`Ctx::closed`).
     closing: Option<watch::Sender<()>>,
-    /// A message each time a call's media has ended ([`in_call`]); disconnected once [`run`] has returned.
-    media_ended: std::sync::mpsc::Receiver<()>,
+    /// Whether a call's media is live in the session: what the drop waits on.
+    live: Arc<MediaLive>,
     videos: Arc<Mutex<RemoteVideos>>,
     /// Bumped on every new remote video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
@@ -330,7 +330,7 @@ impl MediaSession {
             .enable_all()
             .build()?;
         let (commands, rx) = mpsc::unbounded_channel();
-        let (media_ended_tx, media_ended) = std::sync::mpsc::channel();
+        let live = Arc::new(MediaLive::default());
         let (closing, closed) = watch::channel(());
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
@@ -344,7 +344,7 @@ impl MediaSession {
             screen_sound: screen_sound.clone(),
             sources,
             host,
-            media_ended: media_ended_tx,
+            live: live.clone(),
             closed,
         };
         let task = runtime.spawn(run(ctx, rx));
@@ -352,7 +352,7 @@ impl MediaSession {
             running: Some((runtime, task)),
             commands: Some(commands),
             closing: Some(closing),
-            media_ended,
+            live,
             videos,
             video_seq,
             screen_sound,
@@ -405,27 +405,24 @@ impl MediaSession {
 impl Drop for MediaSession {
     /// Leaves the call the way a leave does, not by tearing its runtime down under it. Dropping the runtime cancelled the
     /// call's task: the `Call` was dropped on a runtime that was shutting down, so its room was never closed and its
-    /// PeerConnection (with its sockets, threads and frame transformers) lived until the process exited. The commands
-    /// channel closes once this returns, which ends [`run`] (a call in progress leaves first: `Call::leave` closes its
-    /// room); the runtime is dropped after that, on a thread of its own so the window never waits on the network. The
-    /// wait is bounded ([`end_wait`]); past it the runtime is shut down with whatever is still running.
+    /// PeerConnection (with its sockets, threads and frame transformers) lived until the process exited. Here the
+    /// session's end is signalled first (`closing` and the commands channel close), which cancels a join in flight or
+    /// the call's loop and ends [`run`] (a call in progress leaves first: `Call::leave` closes its room); the runtime is
+    /// dropped after that, on a thread of its own so the window never waits on the network. That wait is bounded
+    /// ([`end_wait`]); past it the runtime is shut down with whatever is still running.
     ///
     /// The call's media itself ends before this returns, as it did when the runtime was dropped here: the shares stop
     /// (their sources are let go) and the media router is free for the next call at once; only the room's close runs
-    /// on after. The window waits for that [`super::QUIT_WAIT`] at most (a join still in flight ends its media only
-    /// once it has joined).
+    /// on after. The window waits for that only while a call's media is live ([`MediaLive`]), and
+    /// [`super::QUIT_WAIT`] at most; a call that already ended (a leave, its room closing) is not waited for.
     fn drop(&mut self) {
         let Some((runtime, task)) = self.running.take() else {
             return;
         };
-        // An earlier call's end is no answer to this one.
-        while self.media_ended.try_recv().is_ok() {}
-        // Closing these ends the session's loop (see `run` and `in_call`): a call's loop is cancelled at once.
+        // Closing these ends the session's loop (see `run` and `in_call`): a join or a call's loop is cancelled at once.
         self.closing.take();
         self.commands.take();
-        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
-            self.media_ended.recv_timeout(super::QUIT_WAIT)
-        {
+        if !self.live.wait_ended(super::QUIT_WAIT) {
             log::warn!(
                 "voice: the call's media did not end within {:?} of its window",
                 super::QUIT_WAIT
@@ -468,10 +465,51 @@ struct Ctx {
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
     sources: SourceFactory,
     host: Arc<dyn AudioHost>,
-    /// Told each time a call's media has ended ([`MediaSession`]'s drop waits for it).
-    media_ended: std::sync::mpsc::Sender<()>,
+    /// Set while a call's media is live ([`in_call`]); [`MediaSession`]'s drop waits for it to clear.
+    live: Arc<MediaLive>,
     /// Changes (closes) when the session is dropped.
     closed: watch::Receiver<()>,
+}
+
+/// Whether a call's media is live in the session: from a successful join until the call's media ended (or the call's
+/// task went). A dropped session waits for it to clear, and only while it is set: a call that already ended (and is
+/// only closing its room) holds nothing up.
+#[derive(Default)]
+struct MediaLive {
+    live: Mutex<bool>,
+    cleared: std::sync::Condvar,
+}
+
+/// A live call's media; clears [`MediaLive`] when dropped, however the call's task ends.
+struct LiveGuard(Arc<MediaLive>);
+
+impl MediaLive {
+    fn begin(self: &Arc<Self>) -> LiveGuard {
+        *self.live.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        LiveGuard(self.clone())
+    }
+
+    /// Waits until no call's media is live, at most `bound`; true when none is.
+    fn wait_ended(&self, bound: std::time::Duration) -> bool {
+        let live = self.live.lock().unwrap_or_else(|p| p.into_inner());
+        let (live, _) = self
+            .cleared
+            .wait_timeout_while(live, bound, |live| *live)
+            .unwrap_or_else(|p| p.into_inner());
+        !*live
+    }
+}
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        *self.0.live.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        self.0.cleared.notify_all();
+    }
+}
+
+/// Resolves once the session is dropped (`Ctx::closed`'s sender is gone).
+async fn session_closed(mut closed: watch::Receiver<()>) {
+    while closed.changed().await.is_ok() {}
 }
 
 impl Ctx {
@@ -628,7 +666,16 @@ async fn in_call(
     // The join runs while the person may already have moved on (Move to, another join, a leave): a join whose link is
     // no longer the current one is dropped at once (its guard ends its media), and it never fails or leaves the call
     // that replaced it.
+    // From the join until `end_media` below (or a return before it) the call's media is live: a dropped session waits
+    // for it to end. A dropped session cancels the join outright, as it cancels the call's loop: the join's guard ends
+    // its media (the router is free) before this guard, declared first, goes.
+    let live = ctx.live.begin();
     let joined = tokio::select! {
+        biased;
+        () = session_closed(ctx.closed.clone()) => {
+            feeder.abort();
+            return;
+        }
         r = Call::join_on(token_of(link), feed.clone(), options, ctx.host.clone()) => r,
         () = superseded(links.clone(), link.call_id) => {
             feeder.abort();
@@ -648,6 +695,11 @@ async fn in_call(
                 ..ctx.options()
             };
             let joined = tokio::select! {
+                biased;
+                () = session_closed(ctx.closed.clone()) => {
+                    feeder.abort();
+                    return;
+                }
                 r = Call::join_on(token_of(link), feed, listen, ctx.host.clone()) => r,
                 () = superseded(links.clone(), link.call_id) => {
                     feeder.abort();
@@ -690,7 +742,6 @@ async fn in_call(
     // The loop is cancelled outright when the session is dropped: whatever an arm was awaiting (a share being
     // published, an answer from the client) is let go, as a dropped runtime let it go, and the call's media ends at
     // once below.
-    let mut session_end = ctx.closed.clone();
     let session = async {
         loop {
             let s = states.borrow_and_update().clone();
@@ -833,7 +884,7 @@ async fn in_call(
     };
     tokio::select! {
         biased;
-        () = async { while session_end.changed().await.is_ok() {} } => {}
+        () = session_closed(ctx.closed.clone()) => {}
         () = session => {}
     }
     // Shares still opening let their sources go now, not after the room's close.
@@ -846,7 +897,7 @@ async fn in_call(
     drop(ping);
     // The media ends at once (shares, keys, the router), then the room is left.
     call.end_media();
-    let _ = ctx.media_ended.send(());
+    drop(live);
     call.leave().await;
 }
 
@@ -1084,6 +1135,37 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 
 #[cfg(test)]
 mod tests {
+    /// Share fix review I1: a dropped session waits only while a call's media is live. A call whose media already
+    /// ended (and which is only closing its room) holds the drop up not at all; a live one holds it up until its media
+    /// ends, however its task ends, and no longer than the bound.
+    #[test]
+    fn a_dropped_session_waits_only_while_a_call_s_media_is_live() {
+        use std::time::{Duration, Instant};
+        let live = std::sync::Arc::new(super::MediaLive::default());
+        // No call, or one that ended: at once, whatever the bound.
+        let at = Instant::now();
+        assert!(live.wait_ended(Duration::from_secs(3)));
+        drop(live.begin());
+        assert!(live.wait_ended(Duration::from_secs(3)));
+        assert!(
+            at.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            at.elapsed()
+        );
+        // A live call: the bound passes without its end.
+        let guard = live.begin();
+        assert!(!live.wait_ended(Duration::from_millis(50)));
+        // Its media ends on another thread: the wait ends with it, well before the bound.
+        let at = Instant::now();
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            drop(guard);
+        });
+        assert!(live.wait_ended(Duration::from_secs(3)));
+        assert!(at.elapsed() < Duration::from_secs(1), "{:?}", at.elapsed());
+        ender.join().unwrap();
+    }
+
     use super::*;
 
     fn epoch(n: u64, key: u8) -> dilla_client::calls::MediaEpoch {
