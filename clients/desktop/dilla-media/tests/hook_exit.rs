@@ -5,15 +5,18 @@
 //! nodes, a SIGSEGV after every test had passed (dilla-desktop `--test voice`, about 1 run in 3 under
 //! load).
 //!
-//! Each run is a child process (this binary again, `DILLA_HOOK_EXIT_CHILD`) that installs the hook,
-//! leaves a PeerConnection with many transceivers alive and returns. On Linux its executable's
-//! `.fini_array` holds the process in `_dl_fini`, after every C++ static destructor has run, for
-//! several timer ticks: the window in which the voice tests crashed, held open on purpose. The parent
-//! requires every child to exit cleanly.
+//! Each run is a child process (this binary again, `DILLA_HOOK_EXIT_CHILD` naming the test it runs)
+//! that installs the hook, leaves a PeerConnection with many transceivers alive and returns. On Linux
+//! its executable's `.fini_array` holds the process in `_dl_fini`, after every C++ static destructor
+//! has run, for several timer ticks: the window in which the voice tests crashed, held open on
+//! purpose. The parent requires every child to exit cleanly.
 //!
-//! One test in its own binary: the hook is process-wide and installs once.
+//! A timer thread that cannot start (Linux: a soft `RLIMIT_NPROC` of 0 around the install) leaves the
+//! hook installed and working, and the process still exits cleanly.
+//!
+//! The hook is process-wide and installs once: every test does its work in its own child.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dilla_media::ffi::{FrameInfo, FrameTransform, Verdict};
@@ -56,8 +59,18 @@ impl FrameTransform for Nothing {
     fn pass_refused(&self, _handle: u64, _send: bool) {}
 }
 
-fn child() {
-    assert!(webrtc_sys::dilla_transform::install(Box::new(Nothing)));
+/// Whether a thread named `dilla-hold-tick` runs in this process (Linux: `/proc/self/task/*/comm`).
+#[cfg(target_os = "linux")]
+fn hold_timer_running() -> bool {
+    std::fs::read_dir("/proc/self/task").unwrap().any(|task| {
+        std::fs::read_to_string(task.unwrap().path().join("comm"))
+            .is_ok_and(|comm| comm.trim() == "dilla-hold-tick")
+    })
+}
+
+/// A call's PeerConnection, alive at exit as one is when the app quits mid-call: its transformers
+/// stay registered while the process tears down.
+fn leave_a_call_alive() {
     let factory = PeerConnectionFactory::default();
     let pc = factory
         .create_peer_connection(RtcConfiguration::default())
@@ -73,33 +86,82 @@ fn child() {
         )
         .unwrap();
     }
-    // Alive at exit, as a call's PeerConnection is when the app quits mid-call: its transformers
-    // stay registered while the process tears down.
     std::mem::forget(pc);
     std::mem::forget(factory);
     ARMED.store(true, Ordering::SeqCst);
 }
 
-#[test]
-fn the_process_exits_cleanly_with_the_hold_timer_running_and_a_call_alive() {
-    if std::env::var_os(CHILD).is_some() {
-        child();
-        return;
-    }
+/// Runs `test` of this binary in a child `RUNS` times; every child must exit cleanly. The children's
+/// output stays out of this test's; a failing child's stderr is in the failure.
+fn every_child_exits_cleanly(test: &str) {
     let exe = std::env::current_exe().unwrap();
     for run in 0..RUNS {
-        let status = Command::new(&exe)
-            .args([
-                "--exact",
-                "the_process_exits_cleanly_with_the_hold_timer_running_and_a_call_alive",
-                "--test-threads=1",
-            ])
-            .env(CHILD, "1")
-            .status()
+        let out = Command::new(&exe)
+            .args(["--exact", test, "--test-threads=1", "--nocapture"])
+            .env(CHILD, test)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
             .unwrap();
         assert!(
-            status.success(),
-            "run {run}: the child exited with {status}"
+            out.status.success(),
+            "run {run}: the child exited with {}; its stderr:\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+fn in_child(test: &str) -> bool {
+    std::env::var_os(CHILD).is_some_and(|t| t == test)
+}
+
+#[test]
+fn the_process_exits_cleanly_with_the_hold_timer_running_and_a_call_alive() {
+    const TEST: &str = "the_process_exits_cleanly_with_the_hold_timer_running_and_a_call_alive";
+    if !in_child(TEST) {
+        return every_child_exits_cleanly(TEST);
+    }
+    assert!(webrtc_sys::dilla_transform::install(Box::new(Nothing)));
+    #[cfg(target_os = "linux")]
+    assert!(hold_timer_running(), "the hold timer started");
+    leave_a_call_alive();
+}
+
+/// Linux only: the thread limit is how the timer is kept from starting.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hold_timer_that_cannot_start_leaves_the_hook_installed_and_the_exit_clean() {
+    const TEST: &str =
+        "a_hold_timer_that_cannot_start_leaves_the_hook_installed_and_the_exit_clean";
+    if !in_child(TEST) {
+        return every_child_exits_cleanly(TEST);
+    }
+    #[allow(unsafe_code)]
+    let set_soft_limit = |soft: libc::rlim_t| {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit/setrlimit on a valid, initialized rlimit of this stack frame.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NPROC, &mut limit), 0);
+            let before = limit.rlim_cur;
+            limit.rlim_cur = soft;
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NPROC, &limit), 0);
+            before
+        }
+    };
+    let before = set_soft_limit(0);
+    // With CAP_SYS_RESOURCE (root) the limit is not enforced and the check below says nothing.
+    let enforced = std::thread::Builder::new().spawn(|| {}).is_err();
+    let installed = webrtc_sys::dilla_transform::install(Box::new(Nothing));
+    set_soft_limit(before);
+    assert!(installed, "the hook is installed without its timer");
+    assert!(webrtc_sys::dilla_transform::installed());
+    if enforced {
+        assert!(!hold_timer_running(), "no timer thread could start");
+    }
+    leave_a_call_alive();
 }

@@ -29,8 +29,8 @@
  * drop. Held frames are one strict FIFO per transformer (protocol/05 "Rotation": 2 000 ms, 256
  * frames, 8 MiB); while anything is held, later frames queue behind it. The FIFO is retried on every
  * new frame, whenever dilla_drain_all runs (Rust calls it after every key install) and on the hook's
- * own timer thread (dilla-hold-tick, every tick_ms of dilla_install_hook; stopped and joined when
- * exit() runs the static destructors); a frame past a limit is dropped, oldest first, never released
+ * own timer thread (dilla-hold-tick, dilla_hold_timer_run; stopped and joined when exit() runs the
+ * static destructors); a frame past a limit is dropped, oldest first, never released
  * unauthenticated.
  */
 
@@ -59,9 +59,12 @@ struct DillaHook;
 class DillaHookHolder;
 class DillaTransformCore;
 
-/// Installs the process-wide hook and starts its hold timer (every tick_ms: dilla_drain_all and the
-/// hook's key-frame requests). False (and the hook is dropped) when one is already installed.
-bool dilla_install_hook(rust::Box<DillaHook> hook, uint64_t tick_ms);
+/// Installs the process-wide hook. False (and the hook is dropped) when one is already installed.
+bool dilla_install_hook(rust::Box<DillaHook> hook);
+
+/// The hold timer's loop (every tick_ms: dilla_drain_all and the hook's key-frame requests), run on
+/// the thread Rust starts once after installing the hook; it returns when exit() stops the timer.
+void dilla_hold_timer_run(uint64_t tick_ms);
 
 /// True once a hook is installed: dilla then owns every encoded-frame transform.
 bool dilla_owns_transforms();

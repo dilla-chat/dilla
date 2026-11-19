@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -19,7 +18,6 @@
 #include "modules/rtp_rtcp/source/rtp_video_header.h"
 #include "rtc_base/event.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/platform_thread.h"
 #include "rtc_base/time_utils.h"
 #include "webrtc-sys/src/dilla_transform.rs.h"
 
@@ -98,39 +96,44 @@ std::shared_ptr<DillaTransformCore> core_of(uint64_t handle) {
 }
 
 // The hold timer (dilla-hold-tick): every tick it retries every transformer's held frames (expiring
-// those past a limit) and sends the key-frame requests the hook asks for. Its owner is g_hold_timer;
-// exit() destroys that, which stops and joins the thread, so the timer never outlives the process's
-// static teardown.
+// those past a limit) and sends the key-frame requests the hook asks for. Rust starts its thread
+// (dilla_transform::install, after the hook is in place and outside every lock here, so a thread
+// that cannot start is logged and the hook works without it: a held frame still drains on its
+// track's next frame and on every drain). The thread runs dilla_hold_timer_run; g_hold_timer owns
+// it, and exit() destroying g_hold_timer stops the loop and joins the thread (through Rust, which
+// holds its handle), so the timer never outlives the process's static teardown.
 class HoldTimer {
  public:
-  HoldTimer(std::shared_ptr<DillaHookHolder> hook, webrtc::TimeDelta tick) {
-    thread_ = webrtc::PlatformThread::SpawnJoinable(
-        [this, hook = std::move(hook), tick] {
-          while (!stop_.Wait(tick)) {
-            dilla_drain_all();
-            for (uint64_t handle : dilla_key_frame_requests(*hook->hook)) {
-              dilla_request_key_frame(handle);
-            }
-          }
-        },
-        "dilla-hold-tick");
-  }
+  HoldTimer() = default;
 
   ~HoldTimer() {
     stop_.Set();
-    thread_.Finalize();
+    // Joins the thread if one was started (a no-op otherwise).
+    dilla_hold_timer_join();
   }
 
   HoldTimer(const HoldTimer&) = delete;
   HoldTimer& operator=(const HoldTimer&) = delete;
 
+  void Run(webrtc::TimeDelta tick) {
+    auto hook = current_hook();
+    if (!hook) {
+      return;
+    }
+    while (!stop_.Wait(tick)) {
+      dilla_drain_all();
+      for (uint64_t handle : dilla_key_frame_requests(*hook->hook)) {
+        dilla_request_key_frame(handle);
+      }
+    }
+  }
+
  private:
-  webrtc::Event stop_;
-  webrtc::PlatformThread thread_;
+  // Manual reset: once set, every later Wait returns at once.
+  webrtc::Event stop_{true, false};
 };
 
-// Started once, by dilla_install_hook (under hook_state().mutex).
-std::optional<HoldTimer> g_hold_timer;
+HoldTimer g_hold_timer;
 
 bool is_opus(const std::string& mime) {
   std::string lower(mime);
@@ -165,15 +168,18 @@ webrtc::scoped_refptr<DillaFrameTransformer> make_transformer(
 
 }  // namespace
 
-bool dilla_install_hook(rust::Box<DillaHook> hook, uint64_t tick_ms) {
+bool dilla_install_hook(rust::Box<DillaHook> hook) {
   auto& state = hook_state();
   webrtc::MutexLock lock(&state.mutex);
   if (state.hook) {
     return false;
   }
   state.hook = std::make_shared<DillaHookHolder>(std::move(hook));
-  g_hold_timer.emplace(state.hook, webrtc::TimeDelta::Millis(tick_ms));
   return true;
+}
+
+void dilla_hold_timer_run(uint64_t tick_ms) {
+  g_hold_timer.Run(webrtc::TimeDelta::Millis(tick_ms));
 }
 
 bool dilla_owns_transforms() {

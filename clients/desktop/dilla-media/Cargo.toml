@@ -102,3 +102,8 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
 # The IOProc's real-time-safe ring to the capture thread (already in the lock).
 rtrb = "0.3.6"
+
+# tests/hook_exit.rs: a soft RLIMIT_NPROC of 0 around the hook install, so its timer thread cannot start (already in
+# the lock).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2.189"
