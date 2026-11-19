@@ -7,13 +7,16 @@
 //!
 //! Every height is the web CSS's (MessageLog.css, MessageRow.css) in Chromium's layout units, so the log's content has
 //! the web's height and, at its end, the web's (whole-pixel) scroll offset. The log is not virtualised: every row of the
-//! open timeline (at most the client's 100-row page) is laid out.
+//! open timeline (the client's page: 100 rows, and 100 more for each "load earlier") is laid out.
+//!
+//! While the history has more, a ghost "load earlier" button sits centred above the first row in the welcome's place; the
+//! welcome shows only at the history's true start. Rows put in front keep the reader's place (MessageLog.tsx:103-114).
 //!
 //! Each row is a box of its own at its CSS position: it takes the hover fill and bar (`--bg-3`, 2px `--accent`), the
 //! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
 use dilla_client::state::{
-    AppState, Channel, ChannelId, CommunityId, Member, TimelineItem, TimelineItemState,
+    AppState, Channel, ChannelId, CommunityId, Member, Timeline, TimelineItem, TimelineItemState,
 };
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
@@ -21,6 +24,7 @@ use gpui::{
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
+use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
 use dilla_desktop_ui::text::{
@@ -76,6 +80,10 @@ const WELCOME_TILE: f32 = 42.0;
 const WELCOME_TITLE_GAP: f32 = 10.0;
 const DIVIDER_PAD: f32 = 4.0;
 const DIVIDER_GAP: f32 = 10.0;
+/// MessageLog.css `.d-message-log__earlier`: the 32px button (Button.css `.d-btn`) and its `margin-bottom:
+/// var(--group-gap)` at the regular density.
+const EARLIER_HEIGHT: f32 = 32.0;
+const EARLIER_GAP: f32 = 14.0;
 
 fn body_line() -> f32 {
     body::body_line()
@@ -92,6 +100,46 @@ fn divider_height() -> f32 {
 
 /// The scroll handler of the log: whether the wheel moved up.
 pub type OnWheel = std::rc::Rc<dyn Fn(bool, &mut gpui::App)>;
+
+/// The "load earlier" button's press (Shell.tsx `loadEarlier`).
+pub type OnEarlier = std::rc::Rc<dyn Fn(&mut gpui::App)>;
+
+/// What the log shows above its first row (Conversation.tsx:394-399).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogHead {
+    /// The timeline is not read yet.
+    Loading,
+    /// The history has more: the "load earlier" button.
+    Earlier,
+    /// The history's true start: the welcome.
+    Welcome,
+}
+
+/// Conversation.tsx:396-399: the button while `hasEarlier`, the welcome only once the history is complete.
+pub fn log_head(t: Option<&Timeline>) -> LogHead {
+    match t {
+        None => LogHead::Loading,
+        Some(t) if t.has_earlier => LogHead::Earlier,
+        Some(_) => LogHead::Welcome,
+    }
+}
+
+/// MessageLog.tsx:103-114: the scroll offset that keeps the reader's place. A log that is not pinned and whose first row
+/// changed had rows put in front, and moves by the whole growth of its height (a row arriving at the bottom in the same
+/// frame included, as the web's does); a pinned log is set by the pin, and a first draw has nothing to keep.
+pub fn anchored_offset(
+    prev_first: Option<&str>,
+    first: Option<&str>,
+    prev_height: f32,
+    height: f32,
+    offset: f32,
+    pinned: bool,
+) -> f32 {
+    if pinned || prev_first.is_none() || prev_first == first {
+        return offset;
+    }
+    (offset + height - prev_height).max(0.0)
+}
 
 /// What the log draws for one item.
 struct Shown<'a> {
@@ -1045,7 +1093,7 @@ fn inset_ring() -> Vec<gpui::BoxShadow> {
 }
 
 /// The log of `channel`, `width` wide, kept at its end through `scroll` while `pinned`. Each row's
-/// [`slots::message_extras`] sits under its body.
+/// [`slots::message_extras`] sits under its body. `on_earlier` is the "load earlier" button's press.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     state: &AppState,
@@ -1055,6 +1103,7 @@ pub fn render(
     scroll: &ScrollHandle,
     pinned: bool,
     on_wheel: OnWheel,
+    on_earlier: OnEarlier,
     ctx: &SlotCx,
     window: &mut Window,
     cx: &mut App,
@@ -1160,14 +1209,16 @@ pub fn render(
     // A DM's log: its channel record is the DM's (Shell.tsx: the at-sign and the DM's name).
     let dm = state.dms.get(channel.id).is_some();
     let (title, body_lines) = welcome_lines(&channel.name, dm, width);
+    // Conversation.tsx:396-399: the "load earlier" button in the welcome's place while the history has more.
+    let head = log_head(state.timelines.get(&channel.id));
+    let head_height = match head {
+        LogHead::Earlier => EARLIER_HEIGHT + EARLIER_GAP,
+        LogHead::Welcome | LogHead::Loading => welcome_height(title.len(), body_lines.len()),
+    };
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
     let (_, rows_end) = row_tops(0.0, &shapes);
     let privates_height: f32 = privates.iter().map(|(_, h)| *h).sum();
-    let content = LOG_TOP
-        + welcome_height(title.len(), body_lines.len())
-        + LOG_BOTTOM
-        + rows_end
-        + privates_height;
+    let content = LOG_TOP + head_height + LOG_BOTTOM + rows_end + privates_height;
     // Chromium's scroll range is whole pixels: the content's height rounds, and at the end that rounding sits below the
     // last row. A log shorter than its viewport keeps to the viewport's bottom (`margin-top: auto`).
     let viewport = f32::from(scroll.bounds().size.height);
@@ -1180,15 +1231,36 @@ pub fn render(
     let inner = if lift > 0.0 { viewport } else { height };
     let mut placer = Placer { out: Vec::new() };
     let mut y = lift + LOG_TOP;
-    let glyph = if dm { IconName::AtSign } else { IconName::Hash };
-    y += placer.welcome(
-        y,
-        glyph,
-        (title, body_lines),
-        welcome_text(&channel.name, dm),
-        width,
-    );
+    if head == LogHead::Earlier {
+        // The button keeps to the log's top (`align-self: center`); the rows below it take the free room
+        // (`.d-message-log__rows { margin-top: auto }`).
+        placer.block(
+            0.0,
+            LOG_TOP,
+            div().w(px(width)).flex().justify_center().child(
+                Button::new("log-earlier", t("shell.log.earlier"))
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| on_earlier(cx)),
+            ),
+        );
+        y += head_height;
+    } else {
+        let glyph = if dm { IconName::AtSign } else { IconName::Hash };
+        y += placer.welcome(
+            y,
+            glyph,
+            (title, body_lines),
+            welcome_text(&channel.name, dm),
+            width,
+        );
+    }
     let (tops, rows_bottom) = row_tops(y, &shapes);
+    // What the log was last drawn with, to keep the reader's place when earlier rows come in front.
+    let first_key = items.first().map(|i| i.key.clone());
+    let (prev_first, prev_height) = {
+        let u = ui.read(cx);
+        (u.prev_first.clone(), u.prev_height)
+    };
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
     // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.
     // Task 28 item 11 (Conversation.tsx): a message this log has not loaded is not jumped to; the conversation says so.
@@ -1260,7 +1332,27 @@ pub fn render(
         scroll.set_offset(gpui::point(len(0.), px(-(height - viewport).max(0.0))));
     } else if pinned {
         scroll.scroll_to_bottom();
+    } else {
+        // Earlier rows put in front (MessageLog.tsx:103-114): the offset moves by the added height, so the rows in view
+        // stay put.
+        let now = -f32::from(scroll.offset().y);
+        let to = anchored_offset(
+            prev_first.as_deref(),
+            first_key.as_deref(),
+            prev_height,
+            inner,
+            now,
+            pinned,
+        );
+        if to != now {
+            let max = (inner - viewport).max(0.0);
+            scroll.set_offset(gpui::point(len(0.), px(-to.min(max))));
+        }
     }
+    ui.update(cx, |u, _| {
+        u.prev_first = first_key;
+        u.prev_height = inner;
+    });
     let row_cx = RowCx {
         state,
         members,
@@ -1332,13 +1424,19 @@ pub fn render(
     } else {
         format!("#{}", channel.name)
     };
-    div()
-        .id("message-log")
-        .a11y(
-            Role::Log,
-            t("shell.log.label").replace("#{channel}", &target),
-        )
-        .key_context("MessageLog")
+    // Conversation.tsx:397: the log is busy while its timeline or a "load earlier" is being read.
+    let busy = head == LogHead::Loading || ui.read(cx).loading_earlier == Some(channel.id);
+    let log = div().id("message-log").a11y(
+        Role::Log,
+        t("shell.log.label").replace("#{channel}", &target),
+    );
+    let log = if busy {
+        log.node_props(|n| n.set_busy())
+    } else {
+        log
+    };
+    let to_top = (scroll.clone(), on_wheel.clone());
+    log.key_context("MessageLog")
         .track_focus(&focus)
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
             // A focusable control inside (a reaction chip, a button) took the focus on this press already (GPUI marks
@@ -1386,10 +1484,17 @@ pub fn render(
             let pager = scroll.clone();
             move |_: &PageDown, _, _| page(&pager, 1.0)
         })
+        // Ctrl+Home scrolls the log to its top, as the browser scrolls the web's focused log, where "load earlier" sits;
+        // the log leaves the end.
+        .on_action(move |_: &LogTop, _, cx| {
+            let (scroll, leave_end) = &to_top;
+            scroll.set_offset(gpui::point(len(0.), len(0.)));
+            leave_end(true, cx);
+        })
         .child(div().relative().w_full().h(px(inner)).children(placer.out))
 }
 
-gpui::actions!(message_log, [PageUp, PageDown, FocusComposer]);
+gpui::actions!(message_log, [PageUp, PageDown, LogTop, FocusComposer]);
 
 /// PageUp and PageDown scroll the log by a viewport less a few lines.
 fn page(scroll: &ScrollHandle, direction: f32) {
@@ -1740,5 +1845,50 @@ mod tests {
         let (a, _) = row_tops(0.0, &[one, one]);
         let (b, _) = row_tops(0.0, &[tall, one]);
         assert!((b[1] - a[1] - 70.0).abs() < 1e-4);
+    }
+
+    /// Conversation.tsx:396-399: "load earlier" while the history has more, the welcome only at its true start, and
+    /// neither before the timeline is read.
+    #[test]
+    fn the_welcome_waits_for_the_start_of_the_history() {
+        let timeline = |has_earlier| dilla_client::state::Timeline {
+            channel_id: ChannelId([1; 16]),
+            group: Default::default(),
+            items: Vec::new(),
+            has_earlier,
+        };
+        assert_eq!(log_head(None), LogHead::Loading);
+        assert_eq!(log_head(Some(&timeline(true))), LogHead::Earlier);
+        assert_eq!(log_head(Some(&timeline(false))), LogHead::Welcome);
+    }
+
+    /// MessageLog.tsx:103-114: rows put in front move the offset by the added height, so the rows in view stay put.
+    #[test]
+    fn earlier_rows_put_in_front_keep_the_reader_in_place() {
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k0"), 1000.0, 1600.0, 40.0, false),
+            640.0
+        );
+        // The same first row: nothing was put in front.
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k5"), 1000.0, 1600.0, 40.0, false),
+            40.0
+        );
+        // Pinned: the pin path sets the offset.
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k0"), 1000.0, 1600.0, 40.0, true),
+            40.0
+        );
+        // The first draw has nothing to keep.
+        assert_eq!(
+            anchored_offset(None, Some("k0"), 0.0, 1600.0, 0.0, false),
+            0.0
+        );
+        // A message arriving at the bottom in the same frame as the earlier page: the whole growth is added, as the web
+        // adds it.
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k0"), 1000.0, 1640.0, 40.0, false),
+            680.0
+        );
     }
 }

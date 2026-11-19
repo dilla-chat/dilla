@@ -39,6 +39,51 @@ fn warn(what: &str, result: Result<(), dilla_client::prefs::PrefsError>) {
     }
 }
 
+/// Shell.tsx `loadEarlier` (1029-1042): the log of `channel` is busy while the client reads its longer page; a failure is
+/// the command error toast in `window` (the web's `report`). A shell without a client (fixtures) only redraws.
+fn load_earlier(
+    client: Option<Rc<Client>>,
+    channel: ChannelId,
+    ui: gpui::Entity<crate::screens::messages::ui::MessageUi>,
+    window: gpui::WindowId,
+) -> timeline::OnEarlier {
+    Rc::new(move |cx| {
+        let Some(client) = &client else {
+            return;
+        };
+        ui.update(cx, |u, cx| {
+            u.loading_earlier = Some(channel);
+            cx.notify();
+        });
+        let answer = client.load_earlier(channel);
+        let ui = ui.clone();
+        cx.spawn(async move |cx| {
+            let failed = match answer.await {
+                Ok(Ok(())) => None,
+                Ok(Err(dilla_client::ClientError::Sync(code))) => Some(code),
+                Ok(Err(_)) => Some("E_NETWORK".to_owned()),
+                Err(_) => Some("E_STOPPED".to_owned()),
+            };
+            cx.update(|cx| {
+                ui.update(cx, |u, cx| {
+                    if u.loading_earlier == Some(channel) {
+                        u.loading_earlier = None;
+                    }
+                    cx.notify();
+                });
+                if let Some(code) = failed {
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        Some(window),
+                        tf("shell.banner.commandError", &[("code", &code)]),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    })
+}
+
 /// A button's handler: it gets the window and the app.
 pub type Action = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 /// A server tile's handler.
@@ -1450,6 +1495,12 @@ impl Render for ShellView {
                         cx.notify();
                     });
                 });
+                let on_earlier = load_earlier(
+                    self.client.clone(),
+                    c.id,
+                    crate::screens::messages::ui::ui(window, cx),
+                    window.window_handle().window_id(),
+                );
                 timeline::render(
                     &state,
                     c,
@@ -1458,6 +1509,7 @@ impl Render for ShellView {
                     &self.log,
                     self.pinned,
                     on_wheel,
+                    on_earlier,
                     &ctx,
                     window,
                     cx,
@@ -1625,6 +1677,9 @@ impl Render for ShellView {
                         wrapped
                     });
                     let log = div().flex_1().min_h_0().relative().child(log).children(bar);
+                    // The log's viewport, for a fixture's press on the log (`messages/log-earlier`).
+                    #[cfg(feature = "automation")]
+                    let log = log.child(crate::automation::bounds_probe("message-log"));
                     div()
                         .flex_1()
                         .min_h_0()

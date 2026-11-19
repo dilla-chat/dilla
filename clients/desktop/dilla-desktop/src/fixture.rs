@@ -284,13 +284,19 @@ pub fn build_state(
             .filter(|c| c.kind == ChannelKind::Text)
         {
             let path = format!("{}/{}", server.id, c.id);
+            // The client's first page (messages.ts `buildTimeline`): the newest `TIMELINE_PAGE` rows, with more before
+            // them once the read filled the page.
+            let mut items = items_of(world, &path, viewer, shift, ids);
+            let page = dilla_client::state::TIMELINE_PAGE as usize;
+            let has_earlier = items.len() >= page;
+            items.drain(..items.len().saturating_sub(page));
             timelines.insert(
                 ids.channel(&path),
                 Timeline {
                     channel_id: ids.channel(&path),
                     group: ChannelGroupState::Active,
-                    items: items_of(world, &path, viewer, shift, ids),
-                    has_earlier: false,
+                    items,
+                    has_earlier,
                 },
             );
         }

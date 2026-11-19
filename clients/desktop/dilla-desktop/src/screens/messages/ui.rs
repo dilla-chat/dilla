@@ -196,6 +196,12 @@ pub struct MessageUi {
     /// The conversation's notice and the channel it is about (Conversation.tsx `notice`): a jump to a message the log
     /// has not loaded says so.
     notice: Option<(ChannelId, &'static str)>,
+    /// The log's first row and its scrolled height when it was last drawn (MessageLog.tsx `prevFirst`, `prevHeight`):
+    /// a new first row is earlier rows put in front, and the offset moves by the added height.
+    pub prev_first: Option<String>,
+    pub prev_height: f32,
+    /// The channel whose "load earlier" is being read (Shell.tsx `loadingEarlier`): its log is busy meanwhile.
+    pub loading_earlier: Option<ChannelId>,
 }
 
 /// The window's message state, created on first use. Notifying it redraws the view that drew the timeline.

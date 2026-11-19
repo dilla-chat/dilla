@@ -289,6 +289,7 @@ fn offline_publisher() -> (
         own_user: [1; 16],
         own_device: [2; 16],
         focus: None,
+        limits: HashMap::new(),
         not_member: HashSet::new(),
         resyncing: HashSet::new(),
         listed: None,

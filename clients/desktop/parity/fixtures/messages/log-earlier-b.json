@@ -1,0 +1,775 @@
+{
+  "name": "messages/log-earlier-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "mira",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794478730,
+        "body": "raid tonight at 20:00? bring the good shields (1)"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794478760,
+        "body": "in. last time the bridge troll took everything we had (2)"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794478790,
+        "body": "the map from saturday is in #loot (3)"
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794478820,
+        "body": "see you at the bridge (4)"
+      },
+      {
+        "key": "m5",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794478850,
+        "body": "ok, 20:00 works (5)"
+      },
+      {
+        "key": "m6",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794478880,
+        "body": "raid tonight at 20:00? bring the good shields (6)"
+      },
+      {
+        "key": "m7",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794478910,
+        "body": "in. last time the bridge troll took everything we had (7)"
+      },
+      {
+        "key": "m8",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794478940,
+        "body": "the map from saturday is in #loot (8)"
+      },
+      {
+        "key": "m9",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794478970,
+        "body": "see you at the bridge (9)"
+      },
+      {
+        "key": "m10",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479000,
+        "body": "ok, 20:00 works (10)"
+      },
+      {
+        "key": "m11",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479030,
+        "body": "raid tonight at 20:00? bring the good shields (11)"
+      },
+      {
+        "key": "m12",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479060,
+        "body": "in. last time the bridge troll took everything we had (12)"
+      },
+      {
+        "key": "m13",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479090,
+        "body": "the map from saturday is in #loot (13)"
+      },
+      {
+        "key": "m14",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479120,
+        "body": "see you at the bridge (14)"
+      },
+      {
+        "key": "m15",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479150,
+        "body": "ok, 20:00 works (15)"
+      },
+      {
+        "key": "m16",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479180,
+        "body": "raid tonight at 20:00? bring the good shields (16)"
+      },
+      {
+        "key": "m17",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479210,
+        "body": "in. last time the bridge troll took everything we had (17)"
+      },
+      {
+        "key": "m18",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479240,
+        "body": "the map from saturday is in #loot (18)"
+      },
+      {
+        "key": "m19",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479270,
+        "body": "see you at the bridge (19)"
+      },
+      {
+        "key": "m20",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479300,
+        "body": "ok, 20:00 works (20)"
+      },
+      {
+        "key": "m21",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479330,
+        "body": "raid tonight at 20:00? bring the good shields (21)"
+      },
+      {
+        "key": "m22",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479360,
+        "body": "in. last time the bridge troll took everything we had (22)"
+      },
+      {
+        "key": "m23",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479390,
+        "body": "the map from saturday is in #loot (23)"
+      },
+      {
+        "key": "m24",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479420,
+        "body": "see you at the bridge (24)"
+      },
+      {
+        "key": "m25",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479450,
+        "body": "ok, 20:00 works (25)"
+      },
+      {
+        "key": "m26",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479480,
+        "body": "raid tonight at 20:00? bring the good shields (26)"
+      },
+      {
+        "key": "m27",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479510,
+        "body": "in. last time the bridge troll took everything we had (27)"
+      },
+      {
+        "key": "m28",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479540,
+        "body": "the map from saturday is in #loot (28)"
+      },
+      {
+        "key": "m29",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479570,
+        "body": "see you at the bridge (29)"
+      },
+      {
+        "key": "m30",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479600,
+        "body": "ok, 20:00 works (30)"
+      },
+      {
+        "key": "m31",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479630,
+        "body": "raid tonight at 20:00? bring the good shields (31)"
+      },
+      {
+        "key": "m32",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479660,
+        "body": "in. last time the bridge troll took everything we had (32)"
+      },
+      {
+        "key": "m33",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479690,
+        "body": "the map from saturday is in #loot (33)"
+      },
+      {
+        "key": "m34",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479720,
+        "body": "see you at the bridge (34)"
+      },
+      {
+        "key": "m35",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479750,
+        "body": "ok, 20:00 works (35)"
+      },
+      {
+        "key": "m36",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479780,
+        "body": "raid tonight at 20:00? bring the good shields (36)"
+      },
+      {
+        "key": "m37",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479810,
+        "body": "in. last time the bridge troll took everything we had (37)"
+      },
+      {
+        "key": "m38",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479840,
+        "body": "the map from saturday is in #loot (38)"
+      },
+      {
+        "key": "m39",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479870,
+        "body": "see you at the bridge (39)"
+      },
+      {
+        "key": "m40",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479900,
+        "body": "ok, 20:00 works (40)"
+      },
+      {
+        "key": "m41",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479930,
+        "body": "raid tonight at 20:00? bring the good shields (41)"
+      },
+      {
+        "key": "m42",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794479960,
+        "body": "in. last time the bridge troll took everything we had (42)"
+      },
+      {
+        "key": "m43",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794479990,
+        "body": "the map from saturday is in #loot (43)"
+      },
+      {
+        "key": "m44",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480020,
+        "body": "see you at the bridge (44)"
+      },
+      {
+        "key": "m45",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480050,
+        "body": "ok, 20:00 works (45)"
+      },
+      {
+        "key": "m46",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480080,
+        "body": "raid tonight at 20:00? bring the good shields (46)"
+      },
+      {
+        "key": "m47",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480110,
+        "body": "in. last time the bridge troll took everything we had (47)"
+      },
+      {
+        "key": "m48",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480140,
+        "body": "the map from saturday is in #loot (48)"
+      },
+      {
+        "key": "m49",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480170,
+        "body": "see you at the bridge (49)"
+      },
+      {
+        "key": "m50",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480200,
+        "body": "ok, 20:00 works (50)"
+      },
+      {
+        "key": "m51",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480230,
+        "body": "raid tonight at 20:00? bring the good shields (51)"
+      },
+      {
+        "key": "m52",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480260,
+        "body": "in. last time the bridge troll took everything we had (52)"
+      },
+      {
+        "key": "m53",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480290,
+        "body": "the map from saturday is in #loot (53)"
+      },
+      {
+        "key": "m54",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480320,
+        "body": "see you at the bridge (54)"
+      },
+      {
+        "key": "m55",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480350,
+        "body": "ok, 20:00 works (55)"
+      },
+      {
+        "key": "m56",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480380,
+        "body": "raid tonight at 20:00? bring the good shields (56)"
+      },
+      {
+        "key": "m57",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480410,
+        "body": "in. last time the bridge troll took everything we had (57)"
+      },
+      {
+        "key": "m58",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480440,
+        "body": "the map from saturday is in #loot (58)"
+      },
+      {
+        "key": "m59",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480470,
+        "body": "see you at the bridge (59)"
+      },
+      {
+        "key": "m60",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480500,
+        "body": "ok, 20:00 works (60)"
+      },
+      {
+        "key": "m61",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480530,
+        "body": "raid tonight at 20:00? bring the good shields (61)"
+      },
+      {
+        "key": "m62",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480560,
+        "body": "in. last time the bridge troll took everything we had (62)"
+      },
+      {
+        "key": "m63",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480590,
+        "body": "the map from saturday is in #loot (63)"
+      },
+      {
+        "key": "m64",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480620,
+        "body": "see you at the bridge (64)"
+      },
+      {
+        "key": "m65",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480650,
+        "body": "ok, 20:00 works (65)"
+      },
+      {
+        "key": "m66",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480680,
+        "body": "raid tonight at 20:00? bring the good shields (66)"
+      },
+      {
+        "key": "m67",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480710,
+        "body": "in. last time the bridge troll took everything we had (67)"
+      },
+      {
+        "key": "m68",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480740,
+        "body": "the map from saturday is in #loot (68)"
+      },
+      {
+        "key": "m69",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480770,
+        "body": "see you at the bridge (69)"
+      },
+      {
+        "key": "m70",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480800,
+        "body": "ok, 20:00 works (70)"
+      },
+      {
+        "key": "m71",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480830,
+        "body": "raid tonight at 20:00? bring the good shields (71)"
+      },
+      {
+        "key": "m72",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480860,
+        "body": "in. last time the bridge troll took everything we had (72)"
+      },
+      {
+        "key": "m73",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480890,
+        "body": "the map from saturday is in #loot (73)"
+      },
+      {
+        "key": "m74",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480920,
+        "body": "see you at the bridge (74)"
+      },
+      {
+        "key": "m75",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794480950,
+        "body": "ok, 20:00 works (75)"
+      },
+      {
+        "key": "m76",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794480980,
+        "body": "raid tonight at 20:00? bring the good shields (76)"
+      },
+      {
+        "key": "m77",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481010,
+        "body": "in. last time the bridge troll took everything we had (77)"
+      },
+      {
+        "key": "m78",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481040,
+        "body": "the map from saturday is in #loot (78)"
+      },
+      {
+        "key": "m79",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481070,
+        "body": "see you at the bridge (79)"
+      },
+      {
+        "key": "m80",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481100,
+        "body": "ok, 20:00 works (80)"
+      },
+      {
+        "key": "m81",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481130,
+        "body": "raid tonight at 20:00? bring the good shields (81)"
+      },
+      {
+        "key": "m82",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481160,
+        "body": "in. last time the bridge troll took everything we had (82)"
+      },
+      {
+        "key": "m83",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481190,
+        "body": "the map from saturday is in #loot (83)"
+      },
+      {
+        "key": "m84",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481220,
+        "body": "see you at the bridge (84)"
+      },
+      {
+        "key": "m85",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481250,
+        "body": "ok, 20:00 works (85)"
+      },
+      {
+        "key": "m86",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481280,
+        "body": "raid tonight at 20:00? bring the good shields (86)"
+      },
+      {
+        "key": "m87",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481310,
+        "body": "in. last time the bridge troll took everything we had (87)"
+      },
+      {
+        "key": "m88",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481340,
+        "body": "the map from saturday is in #loot (88)"
+      },
+      {
+        "key": "m89",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481370,
+        "body": "see you at the bridge (89)"
+      },
+      {
+        "key": "m90",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481400,
+        "body": "ok, 20:00 works (90)"
+      },
+      {
+        "key": "m91",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481430,
+        "body": "raid tonight at 20:00? bring the good shields (91)"
+      },
+      {
+        "key": "m92",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481460,
+        "body": "in. last time the bridge troll took everything we had (92)"
+      },
+      {
+        "key": "m93",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481490,
+        "body": "the map from saturday is in #loot (93)"
+      },
+      {
+        "key": "m94",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481520,
+        "body": "see you at the bridge (94)"
+      },
+      {
+        "key": "m95",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481550,
+        "body": "ok, 20:00 works (95)"
+      },
+      {
+        "key": "m96",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481580,
+        "body": "raid tonight at 20:00? bring the good shields (96)"
+      },
+      {
+        "key": "m97",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481610,
+        "body": "in. last time the bridge troll took everything we had (97)"
+      },
+      {
+        "key": "m98",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481640,
+        "body": "the map from saturday is in #loot (98)"
+      },
+      {
+        "key": "m99",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481670,
+        "body": "see you at the bridge (99)"
+      },
+      {
+        "key": "m100",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481700,
+        "body": "ok, 20:00 works (100)"
+      },
+      {
+        "key": "m101",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "raid tonight at 20:00? bring the good shields (101)"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "css=.d-message-log",
+      "gpui": "message-log"
+    },
+    {
+      "do": "key",
+      "chord": "ctrl-home"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

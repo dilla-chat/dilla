@@ -261,16 +261,19 @@ async fn main() {
             continue;
         }
         *n += 1;
-        let want = *n;
+        // A timeline holds the client's one page (`TIMELINE_PAGE` rows): past it, the count stays at the page and the
+        // newest row is this message.
+        let want = (*n).min(dilla_client::state::TIMELINE_PAGE as usize);
+        let newest = posted[&m.key];
         // Every client holds the message before the next one goes out, so the order is the fixture's.
         for (_, c) in &clients {
             world::wait_for(c, Duration::from_secs(20), "the message", |s| {
                 s.timelines.get(&channel).is_some_and(|t| {
-                    t.items
-                        .iter()
-                        .filter(|i| i.state == TimelineItemState::Ok && i.seq.is_some())
-                        .count()
-                        >= want
+                    let ok = |i: &&dilla_client::state::TimelineItem| {
+                        i.state == TimelineItemState::Ok && i.seq.is_some()
+                    };
+                    t.items.iter().filter(ok).count() >= want
+                        && t.items.iter().filter(ok).any(|i| i.msg_id == Some(newest))
                 })
             })
             .await;

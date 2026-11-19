@@ -104,6 +104,9 @@ enum Update {
     Loaded(u64, Box<Loaded>),
     Focus(Option<ChannelId>),
     MarkRead(ChannelId, oneshot::Sender<Result<(), ClientError>>),
+    /// "Load earlier" ([`Client::load_earlier`]): the channel's page grows by [`TIMELINE_PAGE`]; answered once the
+    /// longer timeline is published.
+    LoadEarlier(ChannelId, oneshot::Sender<Result<(), ClientError>>),
     /// An area's change to its own slice ([`Inner::publish`]).
     Apply(Box<dyn FnOnce(&mut AppState) + Send>),
     /// The account's second factor was set up ([`Client::factor_completed`]).
@@ -530,6 +533,7 @@ impl Client {
             own_user: user_id,
             own_device: device_id,
             focus: None,
+            limits: HashMap::new(),
             not_member: HashSet::new(),
             resyncing: HashSet::new(),
             listed: None,
@@ -655,6 +659,23 @@ impl Client {
             .inner
             .updates
             .send(Update::MarkRead(channel, tx))
+            .is_err()
+        {
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(Err(ClientError::Stopped));
+            return rx;
+        }
+        rx
+    }
+
+    /// controller.ts `loadEarlier`: `channel`'s timeline reads [`TIMELINE_PAGE`] more rows, until the conversation is
+    /// opened again. Answers once the longer timeline is published.
+    pub fn load_earlier(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .inner
+            .updates
+            .send(Update::LoadEarlier(channel, tx))
             .is_err()
         {
             let (tx, rx) = oneshot::channel();
@@ -1269,6 +1290,9 @@ struct Publisher {
     own_user: [u8; 16],
     own_device: [u8; 16],
     focus: Option<ChannelId>,
+    /// How many rows each channel's timeline reads, where "load earlier" grew it past [`TIMELINE_PAGE`] (controller.ts
+    /// `OpenChannel.limit`); a channel not listed reads one page. Opening another channel lets go of the grown pages.
+    limits: HashMap<ChannelId, u32>,
     not_member: HashSet<GroupId>,
     resyncing: HashSet<GroupId>,
     /// The communities the last structure load listed (`None` before the first): one listed again after a load left
@@ -1437,6 +1461,10 @@ impl Publisher {
             let mut structure = false;
             let mut panicked = false;
             let mut reread_all = false;
+            // Channels whose page changed (a "load earlier", a grown page let go): their timelines are read again.
+            let mut reread: Vec<ChannelId> = Vec::new();
+            // The "load earlier" presses answered once the longer timelines are published.
+            let mut earlier: Vec<oneshot::Sender<Result<(), ClientError>>> = Vec::new();
             for update in batch {
                 match update {
                     Update::Group(g) => {
@@ -1475,6 +1503,15 @@ impl Publisher {
                         }
                     }
                     Update::Focus(channel) => {
+                        // controller.ts:4395: opening a conversation starts it at one page again. A page grown in
+                        // another is let go, and that timeline is read again at one page.
+                        if channel != self.focus {
+                            let grown: Vec<ChannelId> = self.limits.keys().copied().collect();
+                            for c in grown.into_iter().filter(|c| Some(*c) != channel) {
+                                self.limits.remove(&c);
+                                reread.push(c);
+                            }
+                        }
                         self.focus = channel;
                         if let Some(c) = channel {
                             let _ = self.mark_read(c).await;
@@ -1484,6 +1521,12 @@ impl Publisher {
                     Update::MarkRead(channel, done) => {
                         let _ = done.send(self.mark_read(channel).await);
                         groups.insert([0; 16]);
+                    }
+                    Update::LoadEarlier(channel, done) => {
+                        let limit = self.limits.entry(channel).or_insert(TIMELINE_PAGE);
+                        *limit = limit.saturating_add(TIMELINE_PAGE);
+                        reread.push(channel);
+                        earlier.push(done);
                     }
                     Update::Apply(f) => f(&mut self.state),
                     Update::FactorCompleted => self.check_factor(),
@@ -1520,8 +1563,11 @@ impl Publisher {
                 // Every action still queued answers Stopped (none is dropped unanswered); later ones find the channel
                 // closed and answer Stopped themselves.
                 rx.close();
+                for done in earlier {
+                    let _ = done.send(Err(ClientError::Stopped));
+                }
                 while let Ok(update) = rx.try_recv() {
-                    if let Update::MarkRead(_, done) = update {
+                    if let Update::MarkRead(_, done) | Update::LoadEarlier(_, done) = update {
                         let _ = done.send(Err(ClientError::Stopped));
                     }
                 }
@@ -1540,10 +1586,22 @@ impl Publisher {
                     .collect();
                 groups.extend(all);
             }
+            if !reread.is_empty() {
+                let rows = self.engine.groups().await;
+                groups.extend(
+                    reread
+                        .iter()
+                        .filter_map(|c| channel_group(*c, &rows))
+                        .map(|g| g.group_id),
+                );
+            }
             if !groups.is_empty() {
                 self.refresh_groups(&groups).await;
             }
             self.publish();
+            for done in earlier {
+                let _ = done.send(Ok(()));
+            }
         }
     }
 
@@ -1962,8 +2020,9 @@ impl Publisher {
         group: &GroupRow,
     ) -> Option<crate::state::Timeline> {
         let g = group.group_id;
+        let limit = self.limits.get(&channel).copied().unwrap_or(TIMELINE_PAGE);
         let (rows, outbox) = try_core(&self.core, move |c| {
-            (c.timeline(&g, 0, TIMELINE_PAGE), c.outbox(&g))
+            (c.timeline(&g, 0, limit), c.outbox(&g))
         })
         .await
         .ok()?;
@@ -1979,7 +2038,7 @@ impl Publisher {
             &outbox,
             self.own_user,
             self.own_device,
-            TIMELINE_PAGE,
+            limit,
         ))
     }
 

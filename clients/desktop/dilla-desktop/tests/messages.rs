@@ -186,6 +186,8 @@ mod driven {
         parity_messages_moderate_remove_b => "moderate-remove-b";
         parity_messages_slow_mode => "slow-mode";
         parity_messages_slow_mode_b => "slow-mode-b";
+        parity_messages_log_earlier => "log-earlier";
+        parity_messages_log_earlier_b => "log-earlier-b";
     }
 
     fn launch(name: &str) -> Driver {
