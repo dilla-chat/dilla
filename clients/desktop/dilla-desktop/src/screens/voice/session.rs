@@ -192,7 +192,12 @@ fn lock_rtt(rtt: &Mutex<RttReport>) -> std::sync::MutexGuard<'_, RttReport> {
 pub struct MediaSession {
     /// The session's runtime and its loop ([`run`]); `Drop` hands both to a thread that lets the loop leave the call.
     running: Option<(tokio::runtime::Runtime, tokio::task::JoinHandle<()>)>,
-    commands: mpsc::UnboundedSender<Command>,
+    /// `None` once the session is dropping: the closed channel is what tells [`run`] the session is gone.
+    commands: Option<mpsc::UnboundedSender<Command>>,
+    /// Dropped with the session: [`in_call`]'s loop is cancelled at once (`Ctx::closed`).
+    closing: Option<watch::Sender<()>>,
+    /// A message each time a call's media has ended ([`in_call`]); disconnected once [`run`] has returned.
+    media_ended: std::sync::mpsc::Receiver<()>,
     videos: Arc<Mutex<RemoteVideos>>,
     /// Bumped on every new remote video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
@@ -325,6 +330,8 @@ impl MediaSession {
             .enable_all()
             .build()?;
         let (commands, rx) = mpsc::unbounded_channel();
+        let (media_ended_tx, media_ended) = std::sync::mpsc::channel();
+        let (closing, closed) = watch::channel(());
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
         let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
@@ -337,35 +344,45 @@ impl MediaSession {
             screen_sound: screen_sound.clone(),
             sources,
             host,
+            media_ended: media_ended_tx,
+            closed,
         };
         let task = runtime.spawn(run(ctx, rx));
         Ok(MediaSession {
             running: Some((runtime, task)),
-            commands,
+            commands: Some(commands),
+            closing: Some(closing),
+            media_ended,
             videos,
             video_seq,
             screen_sound,
         })
     }
 
+    fn send(&self, command: Command) {
+        if let Some(commands) = &self.commands {
+            let _ = commands.send(command);
+        }
+    }
+
     /// Starts or stops a share.
     pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions) {
-        let _ = self.commands.send(Command::Share(kind, on, options));
+        self.send(Command::Share(kind, on, options));
     }
 
     /// Starts a screen share of the source the person chose in the picker.
     pub fn share_source(&self, source: DesktopSource, options: ShareOptions) {
-        let _ = self.commands.send(Command::ShareSource(source, options));
+        self.send(Command::ShareSource(source, options));
     }
 
     /// Shares the sound of `source` with the running screen share (`None` stops it). Nothing while no screen is shared.
     pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>) {
-        let _ = self.commands.send(Command::AppAudio(source));
+        self.send(Command::AppAudio(source));
     }
 
     /// Applies a new stream quality to the running screen share.
     pub fn quality(&self, options: ShareOptions) {
-        let _ = self.commands.send(Command::Quality(options));
+        self.send(Command::Quality(options));
     }
 
     /// The devices (hex) whose screen share carries sound: a remote screen without it shows the "no sound" mark.
@@ -392,10 +409,28 @@ impl Drop for MediaSession {
     /// channel closes once this returns, which ends [`run`] (a call in progress leaves first: `Call::leave` closes its
     /// room); the runtime is dropped after that, on a thread of its own so the window never waits on the network. The
     /// wait is bounded ([`end_wait`]); past it the runtime is shut down with whatever is still running.
+    ///
+    /// The call's media itself ends before this returns, as it did when the runtime was dropped here: the shares stop
+    /// (their sources are let go) and the media router is free for the next call at once; only the room's close runs
+    /// on after. The window waits for that [`super::QUIT_WAIT`] at most (a join still in flight ends its media only
+    /// once it has joined).
     fn drop(&mut self) {
         let Some((runtime, task)) = self.running.take() else {
             return;
         };
+        // An earlier call's end is no answer to this one.
+        while self.media_ended.try_recv().is_ok() {}
+        // Closing these ends the session's loop (see `run` and `in_call`): a call's loop is cancelled at once.
+        self.closing.take();
+        self.commands.take();
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+            self.media_ended.recv_timeout(super::QUIT_WAIT)
+        {
+            log::warn!(
+                "voice: the call's media did not end within {:?} of its window",
+                super::QUIT_WAIT
+            );
+        }
         let wait = end_wait();
         let ended = std::thread::Builder::new()
             .name("dilla-call-end".into())
@@ -433,6 +468,10 @@ struct Ctx {
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
     sources: SourceFactory,
     host: Arc<dyn AudioHost>,
+    /// Told each time a call's media has ended ([`MediaSession`]'s drop waits for it).
+    media_ended: std::sync::mpsc::Sender<()>,
+    /// Changes (closes) when the session is dropped.
+    closed: watch::Receiver<()>,
 }
 
 impl Ctx {
@@ -648,149 +687,166 @@ async fn in_call(
     let mut pending_app: Option<dilla_media::app_audio::AppSource> = None;
     let (opened_tx, mut opened) = mpsc::unbounded_channel::<Opened>();
     let mut gained = std::collections::BTreeMap::new();
-    loop {
-        let s = states.borrow_and_update().clone();
-        // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
-        let want = mic_want(&ctx.prefs, &s);
-        if applied != Some(want) {
-            call.set_muted(want.0);
-            call.set_deafened(want.1);
-            applied = Some(want);
-        }
-        // The per-person volumes (the stage's person menu writes them, which wakes this loop as a mode switch does).
-        let now = gains(&ctx.values(), &s);
-        if now != gained {
-            for ((device, stream), gain) in &now {
-                if gained.get(&(device.clone(), *stream)) != Some(gain) {
-                    call.set_gain(device, *stream, *gain);
-                }
+    // The loop is cancelled outright when the session is dropped: whatever an arm was awaiting (a share being
+    // published, an answer from the client) is let go, as a dropped runtime let it go, and the call's media ends at
+    // once below.
+    let mut session_end = ctx.closed.clone();
+    let session = async {
+        loop {
+            let s = states.borrow_and_update().clone();
+            // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
+            let want = mic_want(&ctx.prefs, &s);
+            if applied != Some(want) {
+                call.set_muted(want.0);
+                call.set_deafened(want.1);
+                applied = Some(want);
             }
-            gained = now;
-        }
-        tokio::select! {
-            r = links.changed() => {
-                if r.is_err() || links.borrow().as_ref().is_none_or(|l| l.call_id != link.call_id) {
-                    break;
-                }
-            }
-            r = states.changed() => if r.is_err() { break },
-            // session.ts `onRoomEnd` → `leave('lost')`: the room ended on its own (a newer device took voice over,
-            // the room closed, the connection gave up). The call ends, saying why, and the takeover notice shows.
-            r = room_end.changed() => {
-                let end = *room_end.borrow_and_update();
-                if r.is_err() || end.is_some() {
-                    let code = end.map_or("E_DISCONNECTED", dilla_media::RoomEnd::code);
-                    log::warn!("voice: the call's room ended on its own ({code})");
-                    drop(ctx.voice.lost(link.call_id, code));
-                    break;
-                }
-            }
-            r = levels.changed() => {
-                if r.is_ok() {
-                    let now = speaking.update(&levels.borrow_and_update(), Instant::now());
-                    let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
-                    set.retain(|d| Some(*d) != own);
-                    ctx.voice.set_speaking(set);
-                }
-            }
-            r = videos.changed() => {
-                if r.is_ok() {
-                    let next = videos.borrow_and_update().clone();
-                    *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
-                    *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
-                    ctx.video_seq.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            Some(e) = async { match events.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
-                ctx.voice.set_notice(Some(notice_of(e)));
-            }
-            Some(kind) = async { match ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
-                let mut share = ctx.states.borrow().voice.share;
-                set_kind(&mut share, kind, false);
-                let _ = ctx.voice.set_share(share).await;
-            }
-            Some(()) = async { match app_ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
-                // The application went away: the share goes on without sound, and says so.
-                let mut share = ctx.states.borrow().voice.share;
-                share.screen_audio = false;
-                let _ = ctx.voice.set_share(share).await;
-                ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
-            }
-            // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
-            cmd = commands.recv() => match cmd {
-                None => break,
-                Some(Command::Share(kind, false, _)) => stop_share(ctx, &call, &mut opens, kind).await,
-                Some(Command::Share(kind, true, options)) => opens.start(ctx, &opened_tx, kind, None, options),
-                Some(Command::ShareSource(source, options)) => {
-                    opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
-                }
-                Some(Command::AppAudio(source)) => {
-                    if source.is_some() && !ctx.states.borrow().voice.share.screen {
-                        pending_app = source;
-                    } else {
-                        pending_app = None;
-                        app_audio(ctx, &call, source).await;
+            // The per-person volumes (the stage's person menu writes them, which wakes this loop as a mode switch does).
+            let now = gains(&ctx.values(), &s);
+            if now != gained {
+                for ((device, stream), gain) in &now {
+                    if gained.get(&(device.clone(), *stream)) != Some(gain) {
+                        call.set_gain(device, *stream, *gain);
                     }
                 }
-                Some(Command::Quality(options)) => {
-                    if ctx.states.borrow().voice.share.screen
-                        && let Err(e) = call.configure_video(ShareKind::Screen, options).await
-                    {
-                        log::warn!("voice: the new stream quality did not apply: {e}");
-                    }
-                }
-            },
-            Some(done) = opened.recv() => {
-                if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
-                    publish_share(ctx, &call, done.kind, result, done.options).await;
-                    if done.kind == ShareKind::Screen
-                        && ctx.states.borrow().voice.share.screen
-                        && let Some(source) = pending_app.take()
-                    {
-                        app_audio(ctx, &call, Some(source)).await;
-                    }
-                }
+                gained = now;
             }
-            // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
-            // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
-            _ = link_read.tick() => ping.start(call.link()),
-            read = ping.answer() => {
-                let ms = read.as_ref().and_then(|r| r.rtt_ms);
-                ctx.voice.set_ping(link.call_id, ms);
-                // A read that failed is no data: the next one spans the gap from the last that answered.
-                if let Some(read) = read {
-                    let now = Instant::now();
-                    if let Some((at, before)) = &last_link {
-                        let ms = now.duration_since(*at).as_secs_f64() * 1000.0;
-                        ctx.voice.set_rate(link.call_id, read.rate_since(before, ms));
+            tokio::select! {
+                r = links.changed() => {
+                    if r.is_err() || links.borrow().as_ref().is_none_or(|l| l.call_id != link.call_id) {
+                        break;
                     }
-                    last_link = Some((now, read));
                 }
-                // session.ts `publishRtt`: the others see this device's ping through the instance.
-                let send = ms.and_then(|ms| lock_rtt(&rtt).want(ms));
-                if let Some(send) = send {
-                    let (answer, rtt) = (ctx.voice.report_rtt(Some(send)), rtt.clone());
-                    tokio::spawn(async move {
-                        let stored = matches!(answer.await, Ok(Ok(true)));
-                        lock_rtt(&rtt).answered(send, stored);
+                r = states.changed() => if r.is_err() { break },
+                // session.ts `onRoomEnd` → `leave('lost')`: the room ended on its own (a newer device took voice over,
+                // the room closed, the connection gave up). The call ends, saying why, and the takeover notice shows.
+                r = room_end.changed() => {
+                    let end = *room_end.borrow_and_update();
+                    if r.is_err() || end.is_some() {
+                        let code = end.map_or("E_DISCONNECTED", dilla_media::RoomEnd::code);
+                        log::warn!("voice: the call's room ended on its own ({code})");
+                        drop(ctx.voice.lost(link.call_id, code));
+                        break;
+                    }
+                }
+                r = levels.changed() => {
+                    if r.is_ok() {
+                        let now = speaking.update(&levels.borrow_and_update(), Instant::now());
+                        let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
+                        set.retain(|d| Some(*d) != own);
+                        ctx.voice.set_speaking(set);
+                    }
+                }
+                r = videos.changed() => {
+                    if r.is_ok() {
+                        let next = videos.borrow_and_update().clone();
+                        *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
+                        *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
+                        ctx.video_seq.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Some(e) = async { match events.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    ctx.voice.set_notice(Some(notice_of(e)));
+                }
+                Some(kind) = async { match ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    let mut share = ctx.states.borrow().voice.share;
+                    set_kind(&mut share, kind, false);
+                    let _ = ctx.voice.set_share(share).await;
+                }
+                Some(()) = async { match app_ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    // The application went away: the share goes on without sound, and says so.
+                    let mut share = ctx.states.borrow().voice.share;
+                    share.screen_audio = false;
+                    let _ = ctx.voice.set_share(share).await;
+                    ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+                }
+                // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
+                cmd = commands.recv() => match cmd {
+                    None => break,
+                    Some(Command::Share(kind, false, _)) => stop_share(ctx, &call, &mut opens, kind).await,
+                    Some(Command::Share(kind, true, options)) => opens.start(ctx, &opened_tx, kind, None, options),
+                    Some(Command::ShareSource(source, options)) => {
+                        opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
+                    }
+                    Some(Command::AppAudio(source)) => {
+                        if source.is_some() && !ctx.states.borrow().voice.share.screen {
+                            pending_app = source;
+                        } else {
+                            pending_app = None;
+                            app_audio(ctx, &call, source).await;
+                        }
+                    }
+                    Some(Command::Quality(options)) => {
+                        if ctx.states.borrow().voice.share.screen
+                            && let Err(e) = call.configure_video(ShareKind::Screen, options).await
+                        {
+                            log::warn!("voice: the new stream quality did not apply: {e}");
+                        }
+                    }
+                },
+                Some(done) = opened.recv() => {
+                    if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
+                        publish_share(ctx, &call, done.kind, result, done.options).await;
+                        if done.kind == ShareKind::Screen
+                            && ctx.states.borrow().voice.share.screen
+                            && let Some(source) = pending_app.take()
+                        {
+                            app_audio(ctx, &call, Some(source)).await;
+                        }
+                    }
+                }
+                // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
+                // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
+                _ = link_read.tick() => ping.start(call.link()),
+                read = ping.answer() => {
+                    let ms = read.as_ref().and_then(|r| r.rtt_ms);
+                    ctx.voice.set_ping(link.call_id, ms);
+                    // A read that failed is no data: the next one spans the gap from the last that answered.
+                    if let Some(read) = read {
+                        let now = Instant::now();
+                        if let Some((at, before)) = &last_link {
+                            let ms = now.duration_since(*at).as_secs_f64() * 1000.0;
+                            ctx.voice.set_rate(link.call_id, read.rate_since(before, ms));
+                        }
+                        last_link = Some((now, read));
+                    }
+                    // session.ts `publishRtt`: the others see this device's ping through the instance.
+                    let send = ms.and_then(|ms| lock_rtt(&rtt).want(ms));
+                    if let Some(send) = send {
+                        let (answer, rtt) = (ctx.voice.report_rtt(Some(send)), rtt.clone());
+                        tokio::spawn(async move {
+                            let stored = matches!(answer.await, Ok(Ok(true)));
+                            lock_rtt(&rtt).answered(send, stored);
+                        });
+                    }
+                }
+                _ = stats.tick() => {
+                    let st = call.stats();
+                    ctx.voice.send_stats(CallStatsReport {
+                        frames_encrypted: st.encrypted.values().sum(),
+                        decrypt_failures: st.failed.values().sum(),
+                        ..CallStatsReport::default()
                     });
                 }
             }
-            _ = stats.tick() => {
-                let st = call.stats();
-                ctx.voice.send_stats(CallStatsReport {
-                    frames_encrypted: st.encrypted.values().sum(),
-                    decrypt_failures: st.failed.values().sum(),
-                    ..CallStatsReport::default()
-                });
-            }
         }
+    };
+    tokio::select! {
+        biased;
+        () = async { while session_end.changed().await.is_ok() {} } => {}
+        () = session => {}
     }
+    // Shares still opening let their sources go now, not after the room's close.
+    drop(opened);
+    drop(opens);
     ctx.videos.lock().unwrap_or_else(|p| p.into_inner()).clear();
     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
     ctx.voice.set_speaking(BTreeSet::new());
     feeder.abort();
     drop(ping);
+    // The media ends at once (shares, keys, the router), then the room is left.
+    call.end_media();
+    let _ = ctx.media_ended.send(());
     call.leave().await;
 }
 

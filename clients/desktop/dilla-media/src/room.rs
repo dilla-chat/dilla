@@ -1552,6 +1552,14 @@ impl Call {
             .to_owned()
     }
 
+    /// Ends the call's media now, without waiting for its room: the shares stop (their sources are
+    /// let go), the keys are dropped and the process's media router is free for the next call. The
+    /// room is still to be left ([`leave`](Call::leave), which does this first, or the drop).
+    pub fn end_media(&self) {
+        self.stop_shares();
+        self.router.end(&self.media);
+    }
+
     /// Leaves the room and ends the call's media: its keys are dropped and every later frame of
     /// this process is dropped until the next call.
     pub async fn leave(mut self) {

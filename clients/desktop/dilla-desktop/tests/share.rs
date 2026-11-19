@@ -23,6 +23,29 @@ mod call_world;
 /// One process, one call's media (see tests/voice.rs `MEDIA_SLOT`): the tests here take turns.
 static MEDIA_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Waits (bounded) until no call media is left in this process, as tests/voice.rs `media_slot` does: the media router
+/// is free and no PeerConnection's frame transformer is alive. An earlier test's window (and its media session) can
+/// outlive that test's world: its call would hold the router, and this test's join would fail as busy.
+fn media_free() {
+    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let probe = dilla_media::transform::CallMedia::new();
+        let free = router.begin(probe.clone()).is_ok();
+        if free {
+            router.end(&probe);
+            if dilla_media::ffi::live_transformers() == 0 {
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "an earlier test's call media is still live in this process after 30 s"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 const CALL_WAIT: Duration = Duration::from_secs(45);
 
 /// Counts the share sources opened, and those alive (not yet dropped).
@@ -134,6 +157,7 @@ struct World {
 
 fn world(tag: &'static str) -> World {
     let slot = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
+    media_free();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -290,12 +314,16 @@ fn closing_the_owner_window_stops_its_capture(cx: &mut TestAppContext) {
     assert_eq!(rec.opened(), 1);
     a.update(cx, |_, window, _| window.remove_window()).unwrap();
     cx.run_until_parked();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while rec.alive() != 0 {
-        cx.run_until_parked();
-        assert!(Instant::now() < deadline, "the capture outlived its window");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // At once, as the window goes: its media session's drop ends the call's media before it returns (only the room's
+    // close runs on after), so the source is let go and the process's media router is free for the next call.
+    assert_eq!(rec.alive(), 0, "the capture outlived its window");
+    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
+    let probe = dilla_media::transform::CallMedia::new();
+    assert!(
+        router.begin(probe.clone()).is_ok(),
+        "the closed window's call media still holds the router"
+    );
+    router.end(&probe);
     w.rt.block_on(until(&w.alice, "the closed window's call is left", |s| {
         s.voice.call.phase == CallPhase::Idle
     }));
