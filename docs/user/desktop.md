@@ -80,7 +80,9 @@ beta.
 and the launcher. The deb, rpm and Arch packages remove the old `dev.dilla.desktop.desktop` entry on upgrade, so a launcher you
 pinned to it must be pinned again. An AppImage or tar.gz installs no desktop entry unless you integrated it yourself
 (for example with AppImageLauncher, or by hand). An entry you made for it under the old name must be recreated with
-`Icon=chat.dilla.Dilla` and `StartupWMClass=chat.dilla.Dilla`. `dilla://` links keep working. macOS and Windows are unchanged.
+`Icon=chat.dilla.Dilla` and `StartupWMClass=chat.dilla.Dilla`. With the deb, rpm and Arch packages, `dilla://` links keep
+working. An entry you made by hand for an AppImage or tar.gz also needs `MimeType=x-scheme-handler/dilla;` (and `%U` on
+its `Exec=` line) for them to open Dilla. macOS and Windows are unchanged.
 
 ### Install on macOS and Windows
 
