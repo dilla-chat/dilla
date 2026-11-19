@@ -113,6 +113,42 @@ pub(crate) fn exclude_tree(
         .collect()
 }
 
+/// Dilla's ancestors (`root`'s parent, its parent, and so on), given every process's parent (`parents`). Windows'
+/// process loopback captures the chosen process's whole tree (`PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`), so
+/// choosing an ancestor (explorer.exe, a terminal, a launcher) would capture Dilla's own call audio: these are left out
+/// too. The walk stops at pid 0, a missing parent, a pid already seen (a cycle, or a reused pid) or after
+/// [`MAX_ANCESTORS`] steps. A reused pid can only add a process to the set, never let Dilla's tree in.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn ancestors(root: u32, parents: &HashMap<u32, u32>) -> HashSet<u32> {
+    let mut up = HashSet::new();
+    let mut pid = root;
+    for _ in 0..MAX_ANCESTORS {
+        match parents.get(&pid) {
+            Some(&parent) if parent != 0 && parent != root && up.insert(parent) => pid = parent,
+            _ => break,
+        }
+    }
+    up
+}
+
+/// How far [`ancestors`] walks up.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const MAX_ANCESTORS: usize = 64;
+
+/// `sources` without Dilla's own process tree and without its ancestors ([`ancestors`]): what Windows lists.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn exclude_tree_and_ancestors(
+    sources: Vec<AppSource>,
+    parents: &HashMap<u32, u32>,
+    root: u32,
+) -> Vec<AppSource> {
+    let up = ancestors(root, parents);
+    exclude_tree(sources, parents, root)
+        .into_iter()
+        .filter(|s| !up.contains(&s.pid))
+        .collect()
+}
+
 /// A source's label: at most [`MAX_LABEL`] characters, and a name for a source that gives none.
 pub(crate) fn cap_label(label: &str, pid: u32) -> String {
     if label.trim().is_empty() {
@@ -268,6 +304,41 @@ mod tests {
             .map(|s| s.pid)
             .collect();
         assert_eq!(kept, vec![400, 500, 5]);
+    }
+
+    /// Windows captures a chosen process's whole tree, so an ancestor of Dilla (explorer 40 started a terminal 50, which
+    /// started Dilla 100) is left out with Dilla's own tree; a sibling application (400, also explorer's) stays.
+    #[test]
+    fn an_ancestor_of_dilla_is_excluded() {
+        let parents: HashMap<u32, u32> =
+            [(100, 50), (50, 40), (40, 4), (4, 0), (200, 100), (400, 40)]
+                .into_iter()
+                .collect();
+        assert_eq!(ancestors(100, &parents), HashSet::from([50, 40, 4]));
+        let sessions = vec![
+            source(1, 40, "Explorer"),
+            source(2, 50, "Terminal"),
+            source(3, 400, "Music"),
+            source(4, 200, "Dilla helper"),
+            source(5, 100, "Dilla"),
+        ];
+        let kept: Vec<u32> = exclude_tree_and_ancestors(sessions, &parents, 100)
+            .iter()
+            .map(|s| s.pid)
+            .collect();
+        assert_eq!(kept, vec![400]);
+    }
+
+    /// A parent cycle (a reused pid) ends the walk at the first repeat, and a long chain stops after 64 steps.
+    #[test]
+    fn the_ancestor_walk_ends_on_a_cycle_and_is_bounded() {
+        let cycle: HashMap<u32, u32> = [(100, 7), (7, 8), (8, 7)].into_iter().collect();
+        assert_eq!(ancestors(100, &cycle), HashSet::from([7, 8]));
+        let back_to_root: HashMap<u32, u32> = [(100, 7), (7, 100)].into_iter().collect();
+        assert_eq!(ancestors(100, &back_to_root), HashSet::from([7]));
+        let chain: HashMap<u32, u32> = (2..1000).map(|pid| (pid, pid + 1)).collect();
+        assert_eq!(ancestors(2, &chain).len(), MAX_ANCESTORS);
+        assert!(ancestors(100, &HashMap::new()).is_empty());
     }
 
     #[test]

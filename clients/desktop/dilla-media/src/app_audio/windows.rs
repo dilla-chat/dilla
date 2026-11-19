@@ -52,7 +52,7 @@ use windows::core::{HRESULT, IUnknown, Interface, PCWSTR, PWSTR, implement, w};
 
 use super::{
     AppAudioError, AppCapture, AppSource, CHANNELS, MAX_CHUNK_BYTES, RATE,
-    frames::{SampleFrames, exclude_tree},
+    frames::{SampleFrames, ancestors, exclude_tree_and_ancestors},
     in_tree,
 };
 
@@ -296,7 +296,8 @@ fn list(root: u32) -> Result<Vec<AppSource>, AppAudioError> {
             label: String::new(),
         })
         .collect();
-    Ok(exclude_tree(sources, &parents, root)
+    // Loopback captures a chosen process's whole tree, so Dilla's ancestors are left out with its own tree.
+    Ok(exclude_tree_and_ancestors(sources, &parents, root)
         .into_iter()
         .map(|mut s| {
             s.label = label(s.pid, &table);
@@ -516,7 +517,11 @@ pub(super) fn start(
 ) -> Result<AppCapture, AppAudioError> {
     supported()?;
     let table = processes();
-    if in_tree(source.pid, root, |pid| table.get(&pid).map(|p| p.parent)) {
+    let parents: HashMap<u32, u32> = table.iter().map(|(&pid, p)| (pid, p.parent)).collect();
+    // Dilla's tree, or an ancestor whose tree (what loopback captures) holds Dilla: refused like a process that is gone.
+    if in_tree(source.pid, root, |pid| parents.get(&pid).copied())
+        || ancestors(root, &parents).contains(&source.pid)
+    {
         return Err(AppAudioError::Gone);
     }
     let stop = Arc::new(AtomicBool::new(false));
