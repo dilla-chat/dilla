@@ -2737,8 +2737,8 @@ test('server.yml has no main-push skip: every push to main runs every area (Jona
   assert.ok(problems.some((p) => p.includes('job "check-tree" does not belong')), problems.join('\n'));
 });
 
-test('desktop-gpui schedules a nightly at 03:00 UTC', () => {
-  const cron = "  schedule:\n    - cron: '0 3 * * *'\n";
+test('desktop-gpui schedules a nightly at 03:17 UTC (off the hour, which GitHub drops)', () => {
+  const cron = "  schedule:\n    - cron: '17 3 * * *'\n";
   assert.ok(gpuiProblems((text) => { assert.ok(text.includes(cron)); return text.replace(cron, ''); }).some((p) => p.includes('schedule')));
   const dispatch = '  workflow_dispatch:\n    inputs:\n      tier:\n        type: choice\n        options: [nightly, release]\n        default: nightly\n';
   assert.ok(gpuiProblems((text) => { assert.ok(text.includes(dispatch)); return text.replace(dispatch, ''); }).some((p) => p.includes('workflow_dispatch')));

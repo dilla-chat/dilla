@@ -58,8 +58,9 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/desktop-gpui.yml'
+  # Not on the hour: GitHub drops top-of-hour scheduled runs under load.
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       tier:

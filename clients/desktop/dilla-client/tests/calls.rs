@@ -1586,13 +1586,18 @@ async fn rejoin_waits_for_pending_remove() {
     // She rejoins at once: the instance refuses her resync (409 E_REMOVE_PENDING) and the join waits.
     let rejoin = calls.join(target.clone());
     let mut phase = rejoin.phase();
-    tokio::time::timeout(
+    let waited = tokio::time::timeout(
         Duration::from_secs(5),
         phase.wait_for(|p| *p == CallPhase::WaitingForRemove),
     )
     .await
     .expect("the rejoin waits for the Remove")
-    .unwrap();
+    .map(|_| ());
+    if waited.is_err() {
+        // The join task ended (the phase sender dropped) before it waited: say how it ended.
+        let outcome = rejoin.outcome().await;
+        panic!("the rejoin ended before it waited for the Remove: {outcome:?}");
+    }
     // It stays waiting while nobody commits.
     tokio::time::sleep(REJOIN_STEP * 2).await;
     assert_eq!(*phase.borrow(), CallPhase::WaitingForRemove);

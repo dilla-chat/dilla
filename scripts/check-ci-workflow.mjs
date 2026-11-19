@@ -1740,8 +1740,8 @@ function gpuiMacPackageProblems(text, file) {
 
 /** desktop-gpui.yml's one TIER expression (CI speed plan, Task 2): schedule is nightly, a manual run takes its input, anything else is pr. */
 export const GPUI_TIER_EXPR = "github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr'";
-/** desktop-gpui's nightly tier: 03:00 UTC on main (the other workflows' NIGHTLY_CRON is their own). */
-const GPUI_NIGHTLY_CRON = '0 3 * * *';
+/** desktop-gpui's nightly tier: 03:17 UTC on main (the other workflows' NIGHTLY_CRON is their own). */
+const GPUI_NIGHTLY_CRON = '17 3 * * *';
 /** The Linux shard matrix: the Bot shard exists only outside the PR tier, so a PR builds nothing for it. */
 const GPUI_SHARDS = `\${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["client","bot","desktop","media"]' || '["client","desktop","media"]') }}`;
 
@@ -2362,7 +2362,7 @@ export function checkRerunStarvedWorkflow(root) {
     doc = yaml.load(text);
   } catch (error) { return [`${file}: ${error.code === 'ENOENT' ? 'missing' : `invalid YAML (${error.message.split('\n')[0]})`}`]; }
   // The CI workflows' own names, so renaming one cannot silently unhook this one.
-  const ciNames = Object.values(WORKFLOWS).map(({ file: ciFile, name }) => {
+  const ciNames = [...Object.values(WORKFLOWS).map(({ file: ciFile, name }) => ({ ciFile, name })), { ciFile: 'desktop-gpui.yml', name: 'desktop-gpui' }].map(({ ciFile, name }) => {
     try { return yaml.load(readFileSync(join(root, '.github', 'workflows', ciFile), 'utf8'))?.name ?? name; } catch { return name; /* checkCiWorkflow reports it missing */ }
   });
   if (!drSame(doc?.on, { workflow_run: { workflows: ciNames, types: ['completed'] } })) fail(`must trigger only on workflow_run of ${ciNames.map((n) => `"${n}"`).join(' and ')}, types [completed], no branches`);
