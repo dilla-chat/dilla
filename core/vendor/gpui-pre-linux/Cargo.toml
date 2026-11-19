@@ -157,6 +157,11 @@ default-features = false
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.notify-rust]
 version = "4"
 
+# DILLA PATCH: closes a notification by its server id (system_notifications.rs); notify-rust has no close-by-id.
+# The version is the one notify-rust 4 already pulls in.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.zbus]
+version = "6.2.1"
+
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.oo7]
 version = "0.6"
 features = [

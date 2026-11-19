@@ -2644,6 +2644,17 @@ test('the desktop-gpui macOS call tests are pinned: the app voice suite, the mac
   }
 });
 
+test('the Linux notification test keeps its private session bus and its Linux guard', () => {
+  for (const [what, from, to] of [
+    ['the private bus', 'run: dbus-run-session -- env DILLA_PRIVATE_BUS=1 cargo test -p gpui-pre-linux', 'run: cargo test -p gpui-pre-linux'],
+    ['the opt-in', 'dbus-run-session -- env DILLA_PRIVATE_BUS=1 cargo', 'dbus-run-session -- cargo'],
+    ['the Linux guard', "      - name: Linux notifications close and replace by tag (private session bus)\n        if: runner.os == 'Linux' && !cancelled()", '      - name: Linux notifications close and replace by tag (private session bus)\n        if: ${{ !cancelled() }}'],
+  ]) {
+    const problems = gpuiProblems((text) => { assert.ok(text.includes(from), what); return text.replace(from, to); });
+    assert.ok(problems.some((p) => p.includes('the linuxNotifications step')), `${what}: ${problems.join('|')}`);
+  }
+});
+
 test('the macOS parity and VideoToolbox steps cannot lose a line, their guard or their nightly gate (macOS CI plan)', () => {
   const edits = [
     ['    cargo test -p dilla-desktop --features automation --locked --test video_player_shot\n', '', 'macParity'],
@@ -2737,8 +2748,8 @@ test('server.yml has no main-push skip: every push to main runs every area (Jona
   assert.ok(problems.some((p) => p.includes('job "check-tree" does not belong')), problems.join('\n'));
 });
 
-test('desktop-gpui schedules a nightly at 03:00 UTC', () => {
-  const cron = "  schedule:\n    - cron: '0 3 * * *'\n";
+test('desktop-gpui schedules a nightly at 03:17 UTC (off the hour, which GitHub drops)', () => {
+  const cron = "  schedule:\n    - cron: '17 3 * * *'\n";
   assert.ok(gpuiProblems((text) => { assert.ok(text.includes(cron)); return text.replace(cron, ''); }).some((p) => p.includes('schedule')));
   const dispatch = '  workflow_dispatch:\n    inputs:\n      tier:\n        type: choice\n        options: [nightly, release]\n        default: nightly\n';
   assert.ok(gpuiProblems((text) => { assert.ok(text.includes(dispatch)); return text.replace(dispatch, ''); }).some((p) => p.includes('workflow_dispatch')));

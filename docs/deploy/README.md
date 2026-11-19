@@ -473,7 +473,9 @@ Both feeds are signed with the same key. The `channel` field and the version for
 server never serves a beta document, and a `beta` server never serves a GPUI one. An unknown value stops `serve`
 at startup with a usage error (exit 2, and no fallback to `beta`). Exit 2 is not in `RestartPreventExitStatus`, so
 check `journalctl -u dilla` after changing the flag. To switch an instance to the native GPUI client, add the flag
-to `ExecStart` with `systemctl edit dilla` and restart. The empty `ExecStart=` clears the unit's own line first:
+to `ExecStart` with `systemctl edit dilla` and restart. The empty `ExecStart=` clears the unit's own line first.
+A second `ExecStart=` in a drop-in replaces the whole command line, so repeat `--desktop-downloads` next to
+`--desktop-downloads-channel` (the channel flag alone does nothing), and keep the empty `ExecStart=` before it:
 
 ```ini
 [Service]

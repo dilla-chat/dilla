@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>dev.dilla.desktop</id>
+  <id>chat.dilla.Dilla</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-or-later</project_license>
   <name>Dilla</name>
@@ -15,7 +15,7 @@
       be running to sign in.
     </p>
   </description>
-  <launchable type="desktop-id">dev.dilla.desktop.desktop</launchable>
+  <launchable type="desktop-id">chat.dilla.Dilla.desktop</launchable>
   <url type="homepage">https://github.com/dilla-chat/dilla</url>
   <url type="bugtracker">https://github.com/dilla-chat/dilla/issues</url>
   <developer id="dev.dilla">

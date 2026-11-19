@@ -99,8 +99,10 @@ fn main() {
             },
             cx,
         );
-        // An autostart (`--hidden`) opens no window, but only with a tray to come back from.
+        // An autostart (`--hidden`) opens no window, but only with a tray to come back from. Its instances connect
+        // all the same (without a keychain prompt), so rings and messages notify from the tray.
         if hidden && native::NativeShell::stays_in_background(cx) {
+            windows::start_headless_clients(cx);
             return;
         }
         let listed = launch

@@ -68,3 +68,37 @@ livekit-net = "=0.1.4"
 # native/linux.cpp used libpipewire. Needs libpipewire-0.3-dev to build (CI installs it).
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "=0.9.2"
+
+# Application audio on Windows (GPUI gaps Task 4): WASAPI process loopback. The `windows` 0.62.2 already in the lock
+# (tauri-winrt-notification's); only the modules app_audio/windows.rs calls are enabled. `windows-core` directly too:
+# the `#[implement]` macro (the activation's completion handler) names the `windows_core` crate.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "=0.62.2", features = [
+  "Wdk_System_SystemServices",
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+] }
+windows-core = "=0.62.2"
+
+# Application audio on macOS (GPUI gaps Task 5, 14.2 and later): CoreAudio process taps. The objc2 0.6 / 0.3.2 family
+# already in the lock (gpui's, cpal's, dilla-desktop's); only what app_audio/macos.rs calls is enabled. libc: the
+# process table (proc_pidinfo, proc_name) and dlsym for the two tap functions macOS 13 lacks.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.189"
+objc2 = "0.6.5"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary"] }
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-core-audio-types", "objc2-foundation"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSUUID", "NSValue"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
+# The IOProc's real-time-safe ring to the capture thread (already in the lock).
+rtrb = "0.3.6"

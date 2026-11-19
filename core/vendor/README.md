@@ -126,14 +126,28 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   which the prebuilt library does not define); `build.rs` compiles them and defines
   `DILLA_TEST_FRAMES` only then.
 - `build.rs`, `src/lib.rs`: build and export the new bridge.
-- The desktop client's camera (GPUI parity plan Package 1, 2026-11-15), Linux and Windows only:
-  `include/livekit/dilla_camera.h`, `src/dilla_camera.{cpp,rs}` (`webrtc_sys::dilla_camera`:
-  `dilla_camera_devices`, `dilla_camera_open(id, sink)`, `DillaCamera::start(w, h, fps)`). It wraps
-  libwebrtc's own `VideoCaptureModule` of the prebuilt library (V4L2 on Linux, DirectShow on
-  Windows), converts each frame to I420 there and hands the planes to a Rust sink; the destructor
-  stops the capture and deregisters the sink before it returns. macOS's prebuilt has no
-  `VideoCaptureModule` implementation, so the bridge is not built there. Covered by
-  `clients/desktop/dilla-media/src/sources/camera.rs` (its packing test) and the manual
+- The desktop client's camera (GPUI parity plan Package 1, 2026-11-15; macOS GPUI gaps Task 6,
+  2026-11-19): `include/livekit/dilla_camera.h`, `src/dilla_camera.{cpp,rs}`
+  (`webrtc_sys::dilla_camera`: `dilla_camera_devices`, `dilla_camera_open(id, sink)`,
+  `DillaCamera::start(w, h, fps)`). On Linux and Windows it wraps libwebrtc's own
+  `VideoCaptureModule` of the prebuilt library (V4L2, DirectShow), converts each frame to I420 there
+  and hands the planes to a Rust sink (`dilla_camera_deliver`, shared); the destructor stops the
+  capture and deregisters the sink before it returns. macOS's prebuilt has no `VideoCaptureModule`
+  implementation, so there the same bridge is `src/dilla_camera_mac.mm`, AVFoundation directly:
+  the cameras of an `AVCaptureDeviceDiscoverySession` (built-in first, then external and Continuity),
+  an `AVCaptureSession` + `AVCaptureVideoDataOutput` in NV12 at the device format nearest the ask,
+  each frame converted with libyuv `NV12ToI420` into a `webrtc::I420Buffer` and handed to the same
+  sink; the destructor stops the session, detaches the delegate and drains its capture queue before
+  it returns. Camera authorisation: `Denied`/`Restricted` opens nothing (null, at once);
+  `NotDetermined` asks the system once per process and waits up to 60 s for the answer. `build.rs`
+  compiles the `.mm` as its own library (`webrtcsys-camera`) with `-fobjc-arc` (the upstream `.mm`
+  files are manual retain/release) and links AVFoundation, CoreMedia, CoreVideo. Test support, only
+  with `dilla-test-frames` on macOS: `include/livekit/dilla_camera_testing.h`,
+  `src/dilla_camera_testing.rs` (`webrtc_sys::dilla_camera_testing::force`: the authorisation gate
+  with a forced status instead of TCC's; while forced, `TEST_CAMERA` opens a deviceless camera whose
+  `start` calls are counted). Covered by `clients/desktop/dilla-media/src/sources/camera.rs`
+  (its packing test; on macOS the denied/restricted/refused gate) and, on a Mac with Camera access,
+  `DILLA_MAC_CAPTURE=1 cargo test -p dilla-media --test capture mac_camera`, plus the manual
   `capture-probe camera`.
 - `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
   `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
@@ -267,6 +281,31 @@ fields. Test: `altgr_with_the_ptt_key_does_not_open_the_mic` in `clients/desktop
 `altgr_s_state_is_kept_for_the_app` in `clients/desktop/dilla-desktop/tests/vendored_patches.rs`.
 
 Keep this patch until gpui reports AltGr itself (a Level3 modifier on `Modifiers`).
+
+A second change (2026-11-19), marked `DILLA PATCH`: system notifications close and replace by tag.
+`src/linux/system_notifications.rs` keeps the notification server's id per tag (`LiveIds`, from `NotificationHandle::id()`
+before `wait_for_action` consumes the handle). A same-tag `show` passes the old id as `replaces_id`, and `dismiss(tag)` sends
+`org.freedesktop.Notifications.CloseNotification(id)` on the session bus, off the UI thread, so a ring that ends or a
+conversation that is read leaves no stale notification in the shade. notify-rust has no close-by-id, so `Cargo.toml` adds
+`zbus` 6.2.1 (the version notify-rust 4.19 already uses) as a direct dependency. Not pinned in `vendored_patches.rs`: that file needs a window and this has none.
+Shows of one tag are serialised (a second waits for the first's id, then replaces it; after 5 s without an answer it goes
+out without a replace). Every show and dismiss takes a ticket on the calling thread: a show superseded before it ran is
+dropped, so a withdrawn ring does not come back, and only the newest show's thread reports a click (the server keeps one
+id for all of them and notify-rust wakes every thread waiting on it). A `dismiss` while a `Notify` is in flight closes the
+notification when its id arrives. The `LiveIds` unit tests and `dismiss_sends_close_notification_and_show_replaces` cover
+these (the last mocks the notification server and runs only with `DILLA_PRIVATE_BUS=1`, under `dbus-run-session`; the desktop
+workflow runs it that way on Linux).
+
+Keep this patch until gpui closes and replaces system notifications itself.
+
+A third change (2026-11-19, final review), marked `DILLA PATCH`: notifications name the app's desktop entry and icon.
+`set_app_identity` in `src/linux/platform.rs` dropped its identifier, and notify-rust adds no `desktop-entry` hint or icon
+by itself, so Plasma and GNOME showed a generic icon (worst on a hidden start, with no window to match by pid). The platform
+now keeps the identifier (`app_id`, `chat.dilla.Dilla` from `window_app_id()`), and `show` in
+`src/linux/system_notifications.rs` sends it as the `desktop-entry` hint and as the icon name. Test: the mock in
+`dismiss_sends_close_notification_and_show_replaces` asserts both.
+
+Keep this patch until gpui sends the app's desktop entry with its notifications.
 
 ## Retired: sqlite-wasm-vfs 0.2.0
 

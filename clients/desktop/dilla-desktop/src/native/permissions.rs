@@ -40,7 +40,8 @@ pub enum OsPermission {
 /// The macOS Info.plist usage strings (beta.5 `electron-builder.cjs` `extendInfo`, word for word), for the release
 /// plan's Task 12. Under the hardened runtime the bundle also needs the entitlements
 /// `com.apple.security.device.audio-input` and `com.apple.security.device.camera` (beta.5
-/// `assets/entitlements.mac.plist`); screen capture needs none.
+/// `assets/entitlements.mac.plist`); screen capture needs none. `NSAudioCaptureUsageDescription` is new (GPUI gaps
+/// Task 5): the "system audio recording" prompt of the CoreAudio process tap that shares an application's sound.
 pub const MACOS_USAGE: &[(&str, &str)] = &[
     (
         "NSMicrophoneUsageDescription",
@@ -53,6 +54,10 @@ pub const MACOS_USAGE: &[(&str, &str)] = &[
     (
         "NSScreenCaptureUsageDescription",
         "Dilla shares the screen or application you choose in a call.",
+    ),
+    (
+        "NSAudioCaptureUsageDescription",
+        "Dilla shares the sound of the application you choose when you share your screen.",
     ),
     (
         "NSLocalNetworkUsageDescription",
@@ -244,6 +249,7 @@ mod tests {
             "NSMicrophoneUsageDescription",
             "NSCameraUsageDescription",
             "NSScreenCaptureUsageDescription",
+            "NSAudioCaptureUsageDescription",
         ] {
             assert!(
                 MACOS_USAGE

@@ -7,14 +7,27 @@
 //!
 //! - Linux ([`linux`]): PipeWire. The capture stream (`dilla-application-capture`) does not connect on its own: it is
 //!   linked port by port to the chosen process's `Stream/Output/Audio` nodes (and to any it opens later).
-//! - macOS (14.2+, CoreAudio process taps) and Windows (WASAPI process loopback): not built yet; [`sources`] answers
-//!   [`AppAudioError::Unsupported`] there.
+//! - Windows (`windows.rs`, build 19041 and later): WASAPI process loopback for the chosen process and its child
+//!   processes; [`AppAudioError::Unsupported`] on older builds.
+//! - macOS (`macos.rs`, 14.2 and later): a CoreAudio process tap on the chosen process (and its playing descendants)
+//!   in a private aggregate device, converted to 48 kHz when the device runs at another rate;
+//!   [`AppAudioError::Unsupported`] on older versions.
+//!
+//! The platform-independent half (frame cutting, the sample check, the own-tree exclusion, the list's bounds) is
+//! `frames.rs`, shared by every platform.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod frames;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+
+pub use frames::{PcmFrames, cap_sources, in_tree};
 
 /// 48 kHz, stereo.
 pub const RATE: u32 = 48_000;
@@ -38,7 +51,7 @@ pub struct AppSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AppAudioError {
-    /// This system has no application capture (macOS and Windows for now).
+    /// This system has no application capture (macOS before 14.2, Windows before build 19041).
     #[error("application audio is not available on this system")]
     Unsupported,
     /// The audio server refused or could not be reached.
@@ -58,7 +71,15 @@ pub fn sources() -> Result<Vec<AppSource>, AppAudioError> {
     {
         linux::sources(std::process::id()).map(cap_sources)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::sources(std::process::id()).map(cap_sources)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::sources(std::process::id()).map(cap_sources)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(AppAudioError::Unsupported)
     }
@@ -76,7 +97,15 @@ pub fn start(
     {
         linux::start(source, std::process::id(), frames, ended)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::start(source, std::process::id(), frames, ended)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::start(source, std::process::id(), frames, ended)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = (source, frames, ended);
         Err(AppAudioError::Unsupported)
@@ -90,7 +119,10 @@ pub struct AppCapture {
 }
 
 impl AppCapture {
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "windows", target_os = "macos")),
+        allow(dead_code)
+    )]
     pub(crate) fn new(stop: Arc<AtomicBool>, label: String) -> Self {
         Self { stop, label }
     }
@@ -105,81 +137,6 @@ impl Drop for AppCapture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
     }
-}
-
-/// beta.5 `parseAudioSources`'s limits: at most [`MAX_SOURCES`], one per id, labels of 1 to [`MAX_LABEL`] characters.
-pub fn cap_sources(sources: Vec<AppSource>) -> Vec<AppSource> {
-    let mut seen = std::collections::HashSet::new();
-    sources
-        .into_iter()
-        .filter(|s| s.serial != 0 && s.pid != 0 && seen.insert((s.serial, s.pid)))
-        .map(|mut s| {
-            if s.label.trim().is_empty() {
-                s.label = format!("Application {}", s.pid);
-            }
-            if s.label.chars().count() > MAX_LABEL {
-                s.label = s.label.chars().take(MAX_LABEL).collect();
-            }
-            s
-        })
-        .take(MAX_SOURCES)
-        .collect()
-}
-
-/// beta.5 `PCMFrames`: assembles little-endian f32 stereo bytes into [`FRAME_SAMPLES`]-sample frames, each sample checked
-/// finite and clamped to [-1, 1]. It never keeps more than one frame's worth of bytes between chunks.
-#[derive(Default)]
-pub struct PcmFrames {
-    tail: Vec<u8>,
-}
-
-impl PcmFrames {
-    pub fn push(
-        &mut self,
-        chunk: &[u8],
-        mut emit: impl FnMut(Vec<f32>),
-    ) -> Result<(), AppAudioError> {
-        if chunk.len() > MAX_CHUNK_BYTES {
-            return Err(AppAudioError::Invalid("chunk"));
-        }
-        const FRAME_BYTES: usize = FRAME_SAMPLES * 4;
-        let mut bytes = std::mem::take(&mut self.tail);
-        bytes.extend_from_slice(chunk);
-        let mut at = 0;
-        while at + FRAME_BYTES <= bytes.len() {
-            let mut frame = Vec::with_capacity(FRAME_SAMPLES);
-            for raw in bytes[at..at + FRAME_BYTES].as_chunks::<4>().0 {
-                let v = f32::from_le_bytes(*raw);
-                if !v.is_finite() {
-                    return Err(AppAudioError::Invalid("sample"));
-                }
-                frame.push(v.clamp(-1.0, 1.0));
-            }
-            emit(frame);
-            at += FRAME_BYTES;
-        }
-        self.tail = bytes[at..].to_vec();
-        Ok(())
-    }
-}
-
-/// Whether `pid` is `root` or one of its descendants (beta.5 `excluded`: the audio service may run in a child of the
-/// app, so the whole tree is left out), walking at most 128 parents through `parent_of`.
-pub fn in_tree(pid: u32, root: u32, parent_of: impl Fn(u32) -> Option<u32>) -> bool {
-    let mut pid = pid;
-    for _ in 0..128 {
-        if pid <= 1 {
-            return false;
-        }
-        if pid == root {
-            return true;
-        }
-        match parent_of(pid) {
-            Some(parent) if parent != pid => pid = parent,
-            _ => return false,
-        }
-    }
-    false
 }
 
 /// A process's parent from `/proc/<pid>/stat` (the field after the command's closing parenthesis and the state).
@@ -204,26 +161,6 @@ mod tests {
 
     fn le(samples: &[f32]) -> Vec<u8> {
         samples.iter().flat_map(|s| s.to_le_bytes()).collect()
-    }
-
-    /// audio.test.ts / app-audio-lifetime.test.ts (beta.5 `PCMFrames`): frames are 960 samples, split chunks join, the
-    /// samples are clamped, and a partial frame waits for its rest.
-    #[test]
-    fn pcm_chunks_become_clamped_960_sample_frames() {
-        let mut p = PcmFrames::default();
-        let mut out = Vec::new();
-        let mut samples = vec![0.25f32; FRAME_SAMPLES * 2 + 10];
-        samples[1] = 3.0;
-        samples[2] = -7.5;
-        let bytes = le(&samples);
-        // Split mid-sample: the tail carries over.
-        p.push(&bytes[..1001], |f| out.push(f)).unwrap();
-        assert!(out.is_empty());
-        p.push(&bytes[1001..], |f| out.push(f)).unwrap();
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|f| f.len() == FRAME_SAMPLES));
-        assert_eq!((out[0][1], out[0][2]), (1.0, -1.0), "clamped");
-        assert_eq!(p.tail.len(), 40, "ten samples wait for their frame");
     }
 
     #[test]

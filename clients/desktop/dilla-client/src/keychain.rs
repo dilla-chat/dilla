@@ -1,8 +1,11 @@
 //! Where each instance's database key lives: the OS keychain ([`OsKeychain`]), or memory for tests
 //! ([`MemoryKeychain`]). There is no file fallback: a keychain that fails is an error.
+//!
+//! A start with no window (an autostart at login) reads keys through [`QuietKeychain`]: never a prompt or an unlock
+//! dialog ([`Keychain::get_quietly`]), and never a write.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use zeroize::{Zeroize, Zeroizing};
 
@@ -29,24 +32,96 @@ impl OsKeychain {
 
 impl Keychain for OsKeychain {
     fn get(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
-        match Self::entry(account)?.get_secret() {
-            Ok(secret) => Ok(Some(Zeroizing::new(secret))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(unavailable(e)),
-        }
+        let _serial = serial();
+        read(account)
     }
 
     fn set(&self, account: &str, secret: &[u8]) -> Result<(), KeychainError> {
+        let _serial = serial();
         Self::entry(account)?
             .set_secret(secret)
             .map_err(unavailable)
     }
 
     fn delete(&self, account: &str) -> Result<(), KeychainError> {
+        let _serial = serial();
         match Self::entry(account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(unavailable(e)),
         }
+    }
+
+    /// The Secret Service: only an item that is unlocked already is read. A locked one is `Unavailable`, and its
+    /// collection is never asked to unlock (`keyring`'s read calls `Unlock`, which shows the unlock dialog).
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    ))]
+    fn get_quietly(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+        secret_service_quietly(account)
+    }
+
+    /// Keychain Services: the read runs with the keychain's user interaction off for the process
+    /// (`SecKeychainSetUserInteractionAllowed`), so a locked keychain or an access prompt fails instead of asking.
+    /// Every other call here waits while it is off ([`serial`]), so none of them loses its prompt.
+    #[cfg(target_os = "macos")]
+    fn get_quietly(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+        let _serial = serial();
+        let _off = security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+            .map_err(|_| KeychainError::Unavailable)?;
+        read(account)
+    }
+
+    /// The Credential Manager never asks the person.
+    #[cfg(target_os = "windows")]
+    fn get_quietly(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+        read(account)
+    }
+}
+
+/// The secret of `account`, through `keyring`.
+fn read(account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+    match OsKeychain::entry(account)?.get_secret() {
+        Ok(secret) => Ok(Some(Zeroizing::new(secret))),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(unavailable(e)),
+    }
+}
+
+/// Every keychain call holds this: on macOS none runs while [`OsKeychain::get_quietly`] has the process's keychain user
+/// interaction off (elsewhere it only orders the calls, which are few: a start, a sign-in, a removal).
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The item `keyring` stores for `account` (attributes `service` and `username`), read only when the Secret Service
+/// holds it unlocked. More than one match is refused, as `keyring` refuses an ambiguous entry.
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+fn secret_service_quietly(account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+    use secret_service::EncryptionType;
+    use secret_service::blocking::SecretService;
+    // The service's errors carry no secret bytes; they are dropped, as `keyring`'s are.
+    let ss = SecretService::connect(EncryptionType::Dh).map_err(|_| KeychainError::Unavailable)?;
+    let found = ss
+        .search_items(std::collections::HashMap::from([
+            ("service", SERVICE),
+            ("username", account),
+        ]))
+        .map_err(|_| KeychainError::Unavailable)?;
+    match (found.unlocked.as_slice(), found.locked.is_empty()) {
+        ([], true) => Ok(None),
+        ([item], true) => item
+            .get_secret()
+            .map(|secret| Some(Zeroizing::new(secret)))
+            .map_err(|_| KeychainError::Unavailable),
+        // Locked (reading it would ask the person to unlock), or ambiguous.
+        _ => Err(KeychainError::Unavailable),
     }
 }
 
@@ -59,6 +134,34 @@ fn unavailable(e: keyring::Error) -> KeychainError {
         _ => {}
     }
     KeychainError::Unavailable
+}
+
+/// A keychain for a start no one is watching (an autostart at login): every read is the wrapped keychain's
+/// [`Keychain::get_quietly`], and it writes and deletes nothing (a start that would store a new key fails instead).
+pub struct QuietKeychain(Arc<dyn Keychain>);
+
+impl QuietKeychain {
+    pub fn new(inner: Arc<dyn Keychain>) -> Self {
+        Self(inner)
+    }
+}
+
+impl Keychain for QuietKeychain {
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+        self.0.get_quietly(account)
+    }
+
+    fn set(&self, _account: &str, _secret: &[u8]) -> Result<(), KeychainError> {
+        Err(KeychainError::Unavailable)
+    }
+
+    fn delete(&self, _account: &str) -> Result<(), KeychainError> {
+        Err(KeychainError::Unavailable)
+    }
+
+    fn get_quietly(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+        self.0.get_quietly(account)
+    }
 }
 
 /// An in-process keychain for tests. Its `Debug` prints account names only.
@@ -105,5 +208,10 @@ impl Keychain for MemoryKeychain {
     fn delete(&self, account: &str) -> Result<(), KeychainError> {
         self.lock().remove(account);
         Ok(())
+    }
+
+    /// Memory never asks anyone.
+    fn get_quietly(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>, KeychainError> {
+        self.get(account)
     }
 }

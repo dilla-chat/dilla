@@ -55,8 +55,14 @@
     <string>Dilla uses your microphone in encrypted calls.</string>
     <key>NSCameraUsageDescription</key>
     <string>Dilla uses your camera when you enable video in a call.</string>
+    <!-- Not a usage string (so not in MACOS_USAGE): without it macOS 14+ offers the app no Continuity Camera (an
+         iPhone), and the camera list (webrtc-sys dilla_camera_mac.mm) would hold only the Mac's own cameras. -->
+    <key>NSCameraUseContinuityCameraDeviceType</key>
+    <true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Dilla shares the screen or application you choose in a call.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Dilla shares the sound of the application you choose when you share your screen.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Dilla connects to your chosen instance and encrypted calls on your local network.</string>
   </dict>

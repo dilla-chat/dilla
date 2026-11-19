@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Linux release assets of the native Dilla desktop app (GPUI release plan, Task 5), from one release binary:
 #   dilla-<v>-linux-x64.AppImage   appimagetool (pinned) with the pinned type2 runtime; nothing bundled but the binary
-#   dilla-<v>-linux-x64.tar.gz     dilla-<v>/{dilla-desktop, dev.dilla.desktop.desktop, dev.dilla.desktop.metainfo.xml,
+#   dilla-<v>-linux-x64.tar.gz     dilla-<v>/{dilla-desktop, chat.dilla.Dilla.desktop, chat.dilla.Dilla.metainfo.xml,
 #                                  icons/hicolor/..., licenses/...}, reproducible (sorted, root-owned, fixed mtime)
 #   dilla-<v>-linux-x64.deb        nfpm (pinned) from clients/desktop/packaging/linux/nfpm.yaml: package `dilla`
 #   dilla-<v>-linux-x64.rpm        the same, rpm
@@ -65,9 +65,9 @@ stage=$work/dilla-$version
 mkdir -p "$stage/licenses" "$stage/icons"
 install -m 0755 "$bin" "$stage/dilla-desktop"
 # The entry every format ships registers the dilla: scheme and takes the link as %U (the app handles invite links).
-grep -qx 'MimeType=x-scheme-handler/dilla;' "$linux/dev.dilla.desktop.desktop" && grep -qx 'Exec=dilla-desktop %U' "$linux/dev.dilla.desktop.desktop" \
+grep -qx 'MimeType=x-scheme-handler/dilla;' "$linux/chat.dilla.Dilla.desktop" && grep -qx 'Exec=dilla-desktop %U' "$linux/chat.dilla.Dilla.desktop" \
   || { echo "desktop-gpui-package-linux: the desktop entry does not register x-scheme-handler/dilla with Exec=dilla-desktop %U" >&2; exit 1; }
-install -m 0644 "$linux/dev.dilla.desktop.desktop" "$linux/dev.dilla.desktop.metainfo.xml" "$stage/"
+install -m 0644 "$linux/chat.dilla.Dilla.desktop" "$linux/chat.dilla.Dilla.metainfo.xml" "$stage/"
 # The deb's /usr/share/doc/dilla/copyright and the deb and rpm's /usr/bin/dilla-desktop (nfpm.yaml's `../` sources),
 # outside the tarball's directory.
 install -m 0644 "$linux/copyright" "$work/copyright"
@@ -84,12 +84,12 @@ appdir=$work/Dilla.AppDir
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/metainfo" "$appdir/usr/share/icons" "$appdir/usr/share/licenses"
 install -m 0755 "$bin" "$appdir/usr/bin/dilla-desktop"
 install -m 0755 "$linux/AppRun" "$appdir/AppRun"
-install -m 0644 "$linux/dev.dilla.desktop.desktop" "$appdir/usr/share/applications/"
-install -m 0644 "$linux/dev.dilla.desktop.desktop" "$appdir/"
-install -m 0644 "$linux/dev.dilla.desktop.metainfo.xml" "$appdir/usr/share/metainfo/"
+install -m 0644 "$linux/chat.dilla.Dilla.desktop" "$appdir/usr/share/applications/"
+install -m 0644 "$linux/chat.dilla.Dilla.desktop" "$appdir/"
+install -m 0644 "$linux/chat.dilla.Dilla.metainfo.xml" "$appdir/usr/share/metainfo/"
 cp -R "$linux/icons/hicolor" "$appdir/usr/share/icons/"
-install -m 0644 "$linux/icons/hicolor/256x256/apps/dev.dilla.desktop.png" "$appdir/dev.dilla.desktop.png"
-ln -s dev.dilla.desktop.png "$appdir/.DirIcon"
+install -m 0644 "$linux/icons/hicolor/256x256/apps/chat.dilla.Dilla.png" "$appdir/chat.dilla.Dilla.png"
+ln -s chat.dilla.Dilla.png "$appdir/.DirIcon"
 cp -R "$stage/licenses" "$appdir/usr/share/licenses/dilla"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" --runtime-file "$runtime" "$appdir" "$out/$base.AppImage"
 chmod 0755 "$out/$base.AppImage"

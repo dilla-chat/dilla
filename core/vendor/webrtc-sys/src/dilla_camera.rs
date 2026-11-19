@@ -1,5 +1,6 @@
 // DILLA PATCH: the camera source of the desktop client (core/vendor/README.md): libwebrtc's own
-// VideoCaptureModule (V4L2 on Linux, DirectShow on Windows), its frames handed to Rust as I420.
+// VideoCaptureModule (V4L2 on Linux, DirectShow on Windows) and AVFoundation on macOS
+// (src/dilla_camera_mac.mm), its frames handed to Rust as I420.
 
 use crate::impl_thread_safety;
 

@@ -63,7 +63,8 @@ To check a download, keep `SHA256SUMS` beside the files and run `sha256sum --che
 graphics; PipeWire or PulseAudio for calls; and a running **Secret Service**: GNOME Keyring, KWallet or KeePassXC.
 Dilla keeps its database key there, so without one it cannot sign in. GNOME and KDE Plasma run one already; on other
 desktops install and start one of them first. File dialogs and printing go through the XDG desktop portal, and colour
-emoji need the Noto Color Emoji font.
+emoji need the Noto Color Emoji font. Application sound in a screen share needs nothing more on Linux; Windows and
+macOS have their own floors (see Platform notes).
 
 **Upgrading from Dilla beta (the Electron app).** The deb, rpm and Arch packages are named like beta's (`dilla`; the
 Arch recipe provides and conflicts with `dilla`), so installing one replaces an installed beta.5 in place. Beta's
@@ -73,6 +74,15 @@ another signed-in device and your recovery key at hand. Clicking a `dilla://` in
 did in beta (the deb, rpm and Arch packages register
 the scheme). An AppImage or tar.gz runs beside an installed
 beta.
+
+**Upgrading to alpha.2 on Linux.** The app id is now `chat.dilla.Dilla` (the desktop entry is
+`chat.dilla.Dilla.desktop`, the icons `chat.dilla.Dilla.*`). Under the old id KDE Plasma showed no icon in the taskbar
+and the launcher. The deb, rpm and Arch packages remove the old `dev.dilla.desktop.desktop` entry on upgrade, so a launcher you
+pinned to it must be pinned again. An AppImage or tar.gz installs no desktop entry unless you integrated it yourself
+(for example with AppImageLauncher, or by hand). An entry you made for it under the old name must be recreated with
+`Icon=chat.dilla.Dilla` and `StartupWMClass=chat.dilla.Dilla`. With the deb, rpm and Arch packages, `dilla://` links keep
+working. An entry you made by hand for an AppImage or tar.gz also needs `MimeType=x-scheme-handler/dilla;` (and `%U` on
+its `Exec=` line) for them to open Dilla. macOS and Windows are unchanged.
 
 ### Install on macOS and Windows
 
@@ -202,16 +212,21 @@ Settings → Keyboard lists seven of these, as the web does. A direct message's 
 web: right-click the direct message in the list for its menu, which starts (or joins) its call and opens its pinned
 messages.
 
-### Known gaps
+### Platform notes
 
-The client does not do these yet. Most are planned after the screens: native integrations, capture,
-the updater and packaging.
+What works the same on every system is described above. These are the places where the systems differ, and
+what the client still does not do.
 
 - **Tray and background:** the tray icon (its menu lists your open instances, "Start Dilla at login" and "Quit
   Dilla"), close to tray, the unread count (the tray's tooltip; the dock badge on macOS; the launcher badge on KDE and
-  Ubuntu's dock) and start at login (in the tray, with no window) work. GNOME shows no tray without the AppIndicator
-  extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
-  builds only. The ☰ button at the left of the title bar (and of "Dilla - your instances") opens the app menu (the system's own menu on macOS and Windows); F11 (Control-⌘-F on macOS) toggles full screen. On macOS
+  Ubuntu's dock) and start at login (in the tray, with no window) work. A start at login connects every instance, so
+  rings and messages notify from the tray with no window open. It never asks for the keychain at login: an instance
+  whose key cannot be read without a prompt (a locked keyring, or no Secret Service) connects when you open its
+  window. KeePassXC set to "confirm when passwords are retrieved" can still show its own confirmation. After a
+  start at login the dock or launcher unread badge updates once a window is open. GNOME shows no tray without the
+  AppIndicator extension, and then closing the last window quits, as before. Start at login is offered in installed
+  (release) builds only. The ☰ button at the left of the title bar (and of "Dilla - your instances") opens the app
+  menu (the system's own menu on macOS and Windows); F11 (Control-⌘-F on macOS) toggles full screen. On macOS
   the Dilla menu also has About Dilla, Settings… (⌘,), Services, Hide Dilla (⌘H), Hide Others (⌥⌘H), Show All and Quit
   Dilla (⌘Q, which asks first during a call as above); Window has Minimize (⌘M) and Bring All to Front. The sign-in and
   sign-up windows are moved by their top edge and closed with the × in their top-right corner, on every system.
@@ -229,14 +244,16 @@ the updater and packaging.
   manager or from the release page. An alpha before the first signed one does not check: download the next alpha by
   hand. Linux has an AppImage, a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR).
 - **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
-  and macOS the system's own dialog chooses). A share's sound comes from one application (the share menu's sound
-  section) on Linux only; macOS and Windows shares carry no sound yet. The camera works on Linux and Windows, not yet
-  on macOS.
+  and macOS the system's own dialog chooses). A share can carry the sound of one application (the share menu's sound
+  section) on Linux, on Windows 10 version 2004 (build 19041) or newer, and on macOS 14.2 or newer. On an older
+  Windows or macOS the share has no application sound. macOS may ask for permission to record system audio the first
+  time. The camera works on Linux, Windows and macOS (the built-in camera, an external one, and Continuity Camera on
+  macOS 14 or newer).
 - **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and
-  Decline), and a click opens the conversation. On Linux a notification cannot be taken back once shown (an ended ring
-  stays in the notification list until it times out); on Windows the notifications need the installer's Start-menu
-  entry, and on macOS the app bundle, so a build run from source shows them on Linux only. A ring that arrives while
-  an instance has no window open raises none.
+  Decline), and a click opens the conversation. A ring raises its notification and sound with every window closed to
+  the tray; Answer opens the window. On Linux an ended ring's notification is withdrawn, and a newer message in the
+  same conversation replaces the earlier notification instead of stacking. On Windows the notifications need the
+  installer's Start-menu entry, and on macOS the app bundle, so a build run from source shows them on Linux only.
 - **Screen readers:** the app exposes itself to Orca, VoiceOver and NVDA through AccessKit: every control is named, the shell has
   its landmarks (servers, channels, the message log, the call controls), messages are read with their author and time,
   and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Tab reaches

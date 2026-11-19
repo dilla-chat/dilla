@@ -1115,6 +1115,7 @@ pub fn open_pip(key: CardKey, cx: &mut App) {
             origin, size,
         ))),
         titlebar: None,
+        app_id: Some(crate::window_app_id().to_owned()),
         focus: false,
         show: true,
         kind: gpui::WindowKind::PopUp,

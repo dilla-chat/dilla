@@ -1539,7 +1539,7 @@ export const GPUI_PINNED_STEPS = {
     '  run: |',
     '    export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"',
     '    cargo test -p dilla-parity --locked -- --ignored',
-    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test share --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
+    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test hidden_start --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test share --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
     '    cargo test -p dilla-desktop --test integration --locked -- --ignored',
     '    cargo test -p dilla-desktop --test slice --locked -- --ignored',
   ].join('\n'),
@@ -1634,10 +1634,17 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-media --test live --test e2e_call --test capture --locked -- --ignored',
     '    cargo test -p dilla-desktop --test voice --test ring --locked -- --ignored --skip parity_',
   ].join('\n'),
+  // The vendored GPUI's Linux notification test (close and replace by tag, the desktop-entry hint and icon) claims
+  // org.freedesktop.Notifications, so it runs on a private session bus; without DILLA_PRIVATE_BUS=1 it skips itself.
+  linuxNotifications: [
+    '- name: Linux notifications close and replace by tag (private session bus)',
+    "  if: runner.os == 'Linux' && !cancelled()",
+    '  run: dbus-run-session -- env DILLA_PRIVATE_BUS=1 cargo test -p gpui-pre-linux --locked system_notifications',
+  ].join('\n'),
 };
 
 /** The job(s) each GPUI_PINNED_STEPS entry must be in; an entry not named here belongs to the gpui-linux job. */
-const GPUI_PIN_JOBS = { macParity: ['gpui'], macVideoToolbox: ['gpui'], tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'] };
+const GPUI_PIN_JOBS = { macParity: ['gpui'], macVideoToolbox: ['gpui'], tokens: ['gpui'], strings: ['gpui'], behaviourGates: ['gpui'], npm: ['gpui'], build: ['gpui', 'gpui-linux'], macAudio: ['gpui'], macCalls: ['gpui'], linuxNotifications: ['gpui'] };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
 const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
@@ -1740,8 +1747,8 @@ function gpuiMacPackageProblems(text, file) {
 
 /** desktop-gpui.yml's one TIER expression (CI speed plan, Task 2): schedule is nightly, a manual run takes its input, anything else is pr. */
 export const GPUI_TIER_EXPR = "github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'pr'";
-/** desktop-gpui's nightly tier: 03:00 UTC on main (the other workflows' NIGHTLY_CRON is their own). */
-const GPUI_NIGHTLY_CRON = '0 3 * * *';
+/** desktop-gpui's nightly tier: 03:17 UTC on main (the other workflows' NIGHTLY_CRON is their own). */
+const GPUI_NIGHTLY_CRON = '17 3 * * *';
 /** The Linux shard matrix: the Bot shard exists only outside the PR tier, so a PR builds nothing for it. */
 const GPUI_SHARDS = `\${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["client","bot","desktop","media"]' || '["client","desktop","media"]') }}`;
 
@@ -2143,8 +2150,9 @@ export function checkDesktopGpuiReleaseWorkflow(root) {
   return problems;
 }
 
-/** desktop-gpui.yml installs these for its tests only (the lavapipe Vulkan driver, ffmpeg for the call fixtures). */
-export const GPUI_TEST_ONLY_PACKAGES = ['mesa-vulkan-drivers', 'ffmpeg'];
+/** desktop-gpui.yml installs these for its tests only (the lavapipe Vulkan driver, ffmpeg for the call fixtures, the dbus daemon
+ * for dbus-run-session in the system_notifications test; the release build links libdbus-1-dev, which it does install). */
+export const GPUI_TEST_ONLY_PACKAGES = ['mesa-vulkan-drivers', 'ffmpeg', 'dbus'];
 
 /** The packages of the first `ci-apt-install.sh` invocation in a workflow's text (the GPUI build dependencies). */
 export function aptPackages(text) {
@@ -2362,7 +2370,7 @@ export function checkRerunStarvedWorkflow(root) {
     doc = yaml.load(text);
   } catch (error) { return [`${file}: ${error.code === 'ENOENT' ? 'missing' : `invalid YAML (${error.message.split('\n')[0]})`}`]; }
   // The CI workflows' own names, so renaming one cannot silently unhook this one.
-  const ciNames = Object.values(WORKFLOWS).map(({ file: ciFile, name }) => {
+  const ciNames = [...Object.values(WORKFLOWS).map(({ file: ciFile, name }) => ({ ciFile, name })), { ciFile: 'desktop-gpui.yml', name: 'desktop-gpui' }].map(({ ciFile, name }) => {
     try { return yaml.load(readFileSync(join(root, '.github', 'workflows', ciFile), 'utf8'))?.name ?? name; } catch { return name; /* checkCiWorkflow reports it missing */ }
   });
   if (!drSame(doc?.on, { workflow_run: { workflows: ciNames, types: ['completed'] } })) fail(`must trigger only on workflow_run of ${ciNames.map((n) => `"${n}"`).join(' and ')}, types [completed], no branches`);

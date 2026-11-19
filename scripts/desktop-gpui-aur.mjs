@@ -74,8 +74,8 @@ package() {
   install -Dm755 dilla-desktop "$pkgdir/opt/Dilla/dilla-desktop"
   install -dm755 "$pkgdir/usr/bin"
   ln -s /opt/Dilla/dilla-desktop "$pkgdir/usr/bin/dilla-desktop"
-  install -Dm644 dev.dilla.desktop.desktop "$pkgdir/usr/share/applications/dev.dilla.desktop.desktop"
-  install -Dm644 dev.dilla.desktop.metainfo.xml "$pkgdir/usr/share/metainfo/dev.dilla.desktop.metainfo.xml"
+  install -Dm644 chat.dilla.Dilla.desktop "$pkgdir/usr/share/applications/chat.dilla.Dilla.desktop"
+  install -Dm644 chat.dilla.Dilla.metainfo.xml "$pkgdir/usr/share/metainfo/chat.dilla.Dilla.metainfo.xml"
   local f
   for f in icons/hicolor/*/apps/*; do
     install -Dm644 "$f" "$pkgdir/usr/share/$f"

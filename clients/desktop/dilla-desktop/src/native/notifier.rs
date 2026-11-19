@@ -2,23 +2,27 @@
 //! `dismiss-notification`), on GPUI's own notification support (`App::show_system_notification`: XDG notifications
 //! through `notify-rust` on Linux, `UNUserNotificationCenter` on macOS, toasts on Windows).
 //!
-//! - **Messages and mentions.** [`attach`] starts the client's notify engine (`Notify::start`) with an [`OsNotifier`]
-//!   the first time a window draws the client's workspace; the engine keeps running while the client does (a closed
-//!   window keeps its client in the background) and stops when the client is released ([`release`]). The engine
+//! - **Messages and mentions.** [`start_engine`] starts the client's notify engine (`Notify::start`) with an
+//!   [`OsNotifier`] when the registry takes a client with no window (`windows::keep_client`: a hidden start at login
+//!   notifies from the tray), or when its window closes before drawing the workspace; [`attach`], on each frame of a
+//!   window that draws the workspace, starts it (knowing the window's focus) or tells it the window's focus and channel. The engine keeps running while the client does (a closed window keeps its client in the
+//!   background) and stops when the client is released ([`release`]). The engine
 //!   decides as before ([`dilla_client::features::notify::should_notify`]: the device switch, the permission, mutes,
 //!   the channel on screen), so what reaches the OS is what the in-app notifier recorded.
-//! - **Rings.** `screens::ring::effects` raises a ring's notification while its window is not focused
-//!   ([`show_ring`]): silent (the app plays the ring), with Answer and Decline. A ring that ends, or a window focused
-//!   again, withdraws it. Answer and Decline act only on the ring that is still current (the notification is live and
-//!   the ring is in the client's state now), as beta.5's `current()`; the tray lists each live ring with the same two
-//!   rows ([`super::TraySlot::Ring`]).
+//! - **Rings.** `screens::ring::effects` raises a ring's notification while no window of its instance is focused,
+//!   with no window at all too (closed to the tray) ([`show_ring`]): silent (the app plays the ring), with Answer and
+//!   Decline, owned by the instance. A ring that ends, or a window of the instance focused again, withdraws it; closing
+//!   the window does not. Answer and Decline act only on the ring that is still current (the notification is live and
+//!   the ring is in the client's state now), as beta.5's `current()`; Answer with no window opens the instance's
+//!   window, which answers. The tray lists each live ring with the same two rows ([`super::TraySlot::Ring`]).
 //! - **Click.** The body brings the instance's window forward and opens the conversation (beta.5
 //!   `notification-click`); with no window (closed to the tray) the instance's window opens.
 //! - **Lifecycle.** Notifications are keyed per instance (`dilla:<instance>:<tag>`, beta.5 `noticeKey`): a later one
 //!   with the same tag replaces it. At most [`MAX_LIVE`] are live; beta.5 refused the 65th, but GPUI reports no close
 //!   of a notification, so here the oldest is withdrawn to make room (otherwise 64 shown notifications would silence
-//!   the app for good). Closing a window withdraws its instance's notifications ([`super::WindowEvent::Closed`]).
-//! - **Identity.** [`install`] sets the app identity (`crate::APP_ID`): the Windows AppUserModelID, which needs the
+//!   the app for good). Closing a window withdraws its instance's message notifications
+//!   ([`super::WindowEvent::Closed`]); its rings' notifications stay while they ring.
+//! - **Identity.** [`install`] sets the app identity (`crate::window_app_id()`): the Windows AppUserModelID, which needs the
 //!   installer's Start-menu shortcut to show toasts (release plan Task 13), and the Linux notification's app name;
 //!   macOS shows notifications only from the app bundle.
 //!
@@ -84,11 +88,10 @@ impl Owner {
     }
 }
 
-/// A ring notification's part: the window that rings, the ring's key there (`screens::ring::ring_key`) and its title
-/// (the tray's submenu label).
+/// A ring notification's part: the ring's key in its instance (`screens::ring::ring_key`) and its title (the tray's
+/// submenu label).
 #[derive(Clone, Debug)]
 struct RingPart {
-    window: WindowId,
     key: SharedString,
     title: SharedString,
 }
@@ -268,7 +271,7 @@ impl NotifyEnv for Env {
 /// Called once by [`super::install`]: the app identity, the response handler, the pump from the engines' threads, the
 /// window-close withdrawal and the tray's ring rows.
 pub fn install(cx: &mut App) {
-    cx.set_app_identity(crate::APP_ID, crate::PRODUCT_NAME);
+    cx.set_app_identity(crate::window_app_id(), crate::PRODUCT_NAME);
     cx.on_system_notification_response(respond);
     sender(cx);
     NativeShell::on_window_event(
@@ -276,13 +279,16 @@ pub fn install(cx: &mut App) {
             if let WindowEvent::Closed { window, instance } = *event {
                 withdraw_owner(Owner::Window(window), cx);
                 if let Some(id) = instance {
-                    withdraw_owner(Owner::Instance(id), cx);
+                    // Its messages go; its rings ring on without the window (GPUI gaps Task 3), and with no focused
+                    // window left they notify now.
+                    let owner = Owner::Instance(id);
+                    withdraw_tags(|l| l.owner == owner && l.ring.is_none(), cx);
                     if let Some(e) = notices(cx).engines.iter().find(|e| e.instance == id) {
                         let presence = e.env.get().2;
                         e.env.set(false, None, presence);
                     }
+                    crate::screens::ring::effects::resync(id, cx);
                 }
-                withdraw_rings_of(window, cx);
             }
         }),
         cx,
@@ -323,9 +329,9 @@ fn sender(cx: &mut App) -> mpsc::UnboundedSender<Command> {
 // The engines
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// Every frame of a window that shows a client's workspace (`screens::ring::effects::sync`): starts the client's notify
-/// engine once, and tells it whether the window is focused and which channel it shows. A window the shell does not
-/// know (a fixture's) starts nothing.
+/// Every frame of a window that shows a client's workspace (`screens::ring::effects::sync`): tells the client's notify
+/// engine whether the window is focused and which channel it shows (starting the engine if the client has none yet,
+/// [`start_engine`]). A window the shell does not know (a fixture's) starts nothing.
 pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
     let Some(client) = &ctx.client else { return };
     let id = window.window_handle().window_id();
@@ -339,7 +345,32 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
         e.env.set(visible, ctx.channel, presence);
         return;
     }
-    // A new client of this instance (a sign-in again): the old engine goes.
+    start_with(instance, client, (visible, ctx.channel, presence), cx);
+}
+
+/// Starts `client`'s notify engine for `instance`, once per client, for a client no window draws: a hidden start
+/// (`windows::keep_client`; GPUI gaps Task 3b: it notifies from the tray), or a window closed before its first workspace
+/// frame (a window that draws one starts the engine in [`attach`]). It starts as no window sees it:
+/// not focused, no channel on screen, the account's presence choice as the client holds it; a window's frames
+/// ([`attach`]) tell it more. A new client of the instance (a sign-in again) replaces the old engine.
+pub fn start_engine(instance: InstanceId, client: &Rc<Client>, cx: &mut App) {
+    let key = Rc::as_ptr(client) as usize;
+    if notices(cx).engines.iter().any(|e| e.client == key) {
+        return;
+    }
+    let presence = presence_of(client.state().borrow().profile.presence_choice);
+    start_with(instance, client, (false, None, presence), cx);
+}
+
+/// Starts the engine of `client`, whose window sees `env` (focused, the channel on screen, the presence choice) from the
+/// first decision on.
+fn start_with(
+    instance: InstanceId,
+    client: &Rc<Client>,
+    (visible, on_screen, presence): (bool, Option<ChannelId>, Presence),
+    cx: &mut App,
+) {
+    let key = Rc::as_ptr(client) as usize;
     notices(cx).engines.retain(|e| {
         let keep = e.instance != instance;
         if !keep {
@@ -357,7 +388,7 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
     else {
         return;
     };
-    env.set(visible, ctx.channel, presence);
+    env.set(visible, on_screen, presence);
     let task = client.notify().start(
         client,
         Arc::new(notifier),
@@ -454,16 +485,15 @@ pub fn show(owner: Owner, notification: &Notification, cx: &mut App) -> SharedSt
     post(owner, notification, None, cx)
 }
 
-/// Shows a ring's notification, raised in `window` for the ring `key`: silent, with Answer and Decline.
+/// Shows a ring's notification, raised by `instance` for its ring `key`: silent, with Answer and Decline.
 pub fn show_ring(
-    window: WindowId,
+    instance: InstanceId,
     key: SharedString,
     notification: &Notification,
     cx: &mut App,
 ) -> SharedString {
-    let owner = Owner::of_window(window, cx);
+    let owner = Owner::Instance(instance);
     let ring = RingPart {
-        window,
         key,
         title: clip(&notification.title, TITLE_MAX),
     };
@@ -527,20 +557,13 @@ pub fn withdraw(owner: Owner, tag: &str, cx: &mut App) {
     withdraw_tags(|l| l.tag.as_ref() == full, cx);
 }
 
-/// Withdraws the ring notification of `key` raised in `window` (the ring ended, or the window is focused again).
-pub fn withdraw_ring(window: WindowId, key: &SharedString, cx: &mut App) {
+/// Withdraws the ring notification of `instance`'s ring `key` (the ring ended, or a window of it is focused again).
+pub fn withdraw_ring(instance: InstanceId, key: &SharedString, cx: &mut App) {
+    let owner = Owner::Instance(instance);
     withdraw_tags(
-        |l| {
-            l.ring
-                .as_ref()
-                .is_some_and(|r| r.window == window && r.key == *key)
-        },
+        |l| l.owner == owner && l.ring.as_ref().is_some_and(|r| r.key == *key),
         cx,
     );
-}
-
-fn withdraw_rings_of(window: WindowId, cx: &mut App) {
-    withdraw_tags(|l| l.ring.as_ref().is_some_and(|r| r.window == window), cx);
 }
 
 /// Withdraws every notification of `owner` (its window closed, its client was released).
@@ -601,7 +624,9 @@ pub fn respond(response: SystemNotificationResponse, cx: &mut App) {
 
 fn ring_action(live: &Live, ring: RingPart, answer: bool, cx: &mut App) {
     withdraw_tags(|l| l.tag == live.tag, cx);
-    crate::screens::ring::act_on(ring.window, &ring.key, answer, cx);
+    if let Owner::Instance(instance) = live.owner {
+        crate::screens::ring::act_on_instance(instance, &ring.key, answer, cx);
+    }
 }
 
 /// A click on the body: the window of the notification's instance comes forward (opened when it was closed to the
@@ -616,7 +641,7 @@ fn open(live: &Live, cx: &mut App) {
     };
     let Some(window) = window else {
         if let Owner::Instance(id) = live.owner {
-            super::tray::show_instance(id, cx);
+            let _ = super::tray::show_instance(id, cx);
         }
         return;
     };

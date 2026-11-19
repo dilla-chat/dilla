@@ -127,7 +127,7 @@ mod os {
 
     /// `application://<app id>.desktop`.
     pub fn app_uri() -> String {
-        format!("application://{}.desktop", crate::APP_ID)
+        format!("application://{}.desktop", crate::LINUX_APP_ID)
     }
 
     /// The signal's properties for `n`.
@@ -207,7 +207,7 @@ mod tests {
     fn the_launcher_entry_names_the_desktop_entry_and_hides_zero() {
         assert_eq!(
             os::app_uri(),
-            format!("application://{}.desktop", crate::APP_ID)
+            format!("application://{}.desktop", crate::LINUX_APP_ID)
         );
         let p = os::properties(0);
         assert_eq!(p["count-visible"], zbus::zvariant::Value::from(false));

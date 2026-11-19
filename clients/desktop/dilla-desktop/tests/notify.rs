@@ -265,7 +265,7 @@ mod os {
         assert!(shown[0].actions.is_empty(), "a message has no buttons");
         assert_eq!(
             cx.app_identity().map(|(id, _)| id),
-            Some(dilla_desktop::APP_ID.into())
+            Some(dilla_desktop::window_app_id().into())
         );
     }
 
@@ -355,9 +355,6 @@ mod os {
     #[gpui::test]
     fn at_most_64_live(cx: &mut TestAppContext) {
         installed(cx);
-        let w = cx
-            .add_empty_window()
-            .update(|w, _| w.window_handle().window_id());
         cx.update(|cx| {
             let mut ring = Notification::new(
                 NotificationKind::Ring,
@@ -365,7 +362,7 @@ mod os {
                 "Open dilla to answer.",
             );
             ring.tag = "dilla-ring-1".into();
-            let ring_tag = notifier::show_ring(w, "k".into(), &ring, cx);
+            let ring_tag = notifier::show_ring(InstanceId(1), "k".into(), &ring, cx);
             for i in 0..MAX_LIVE + 5 {
                 notifier::show(
                     Owner::Instance(InstanceId(1)),

@@ -268,13 +268,13 @@ fn real_source(r: &ShareRequest) -> Result<Box<dyn CaptureSource>, OpenError> {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn camera(cancel: &dyn Fn() -> bool) -> Result<Box<dyn CaptureSource>, OpenError> {
     dilla_media::sources::camera::open(None, desktop::START_WAIT, cancel)
         .map(|c| Box::new(c) as Box<dyn CaptureSource>)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn camera(_cancel: &dyn Fn() -> bool) -> Result<Box<dyn CaptureSource>, OpenError> {
     Err(OpenError::Unavailable(
         "no camera source on this system yet".to_owned(),
