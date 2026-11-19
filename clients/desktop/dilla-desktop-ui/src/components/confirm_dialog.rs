@@ -63,6 +63,7 @@ pub struct ConfirmDialog {
     field_focus: Option<FocusHandle>,
     on_confirm: Option<Handler>,
     on_close: Option<Handler>,
+    on_backdrop: Option<Handler>,
     in_section: bool,
 }
 
@@ -93,6 +94,7 @@ impl ConfirmDialog {
             field_focus: None,
             on_confirm: None,
             on_close: None,
+            on_backdrop: None,
             in_section: false,
         }
     }
@@ -159,6 +161,12 @@ impl ConfirmDialog {
         self.on_close = Some(Rc::new(handler));
         self
     }
+
+    /// A click on the scrim, apart from Cancel (ConfirmDialog.tsx `onBackdrop`: the caller abandons the question).
+    pub fn on_backdrop(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_backdrop = Some(Rc::new(handler));
+        self
+    }
 }
 
 impl RenderOnce for ConfirmDialog {
@@ -220,6 +228,9 @@ impl RenderOnce for ConfirmDialog {
         }
         if let Some(handler) = self.on_close {
             dialog = dialog.on_close(move |window, cx| handler(window, cx));
+        }
+        if let Some(handler) = self.on_backdrop {
+            dialog = dialog.on_backdrop(move |window, cx| handler(window, cx));
         }
         if let Some(name) = self.person {
             dialog =

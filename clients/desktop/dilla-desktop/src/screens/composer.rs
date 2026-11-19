@@ -505,6 +505,7 @@ impl Composer {
             match crate::screens::commands::on_send(
                 &self.slots,
                 &raw,
+                &|t| self.encoded(t),
                 window.window_handle().window_id(),
                 cx,
             ) {

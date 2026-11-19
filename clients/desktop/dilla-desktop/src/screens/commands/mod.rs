@@ -9,6 +9,7 @@
 //! - [`private_results`]: the rows only this device shows, for the log of their conversation; [`on_send`] decides what
 //!   a sent draft does (post it, or answer privately).
 
+pub mod builtins;
 pub mod chips;
 pub mod confirm;
 pub mod copy;
@@ -315,11 +316,23 @@ pub enum SendDecision {
 
 /// Decides what sending `draft` in the conversation of `ctx` does, and runs a private answer. A private answer is
 /// added to this device's in-memory results only (`dilla_client::features::bot`): nothing is posted or stored.
-pub fn on_send(ctx: &SlotCx, draft: &str, window: gpui::WindowId, cx: &mut App) -> SendDecision {
+///
+/// `encode` is the composer's encoder for text (`Composer::encoded`), for the built-ins that post or edit text (the
+/// ones Tasks 10 and 11 move onto [`Plan::Builtin`]).
+pub fn on_send(
+    ctx: &SlotCx,
+    draft: &str,
+    _encode: &dyn Fn(&str) -> String,
+    window: gpui::WindowId,
+    cx: &mut App,
+) -> SendDecision {
     let Some(channel) = ctx.channel else {
         return SendDecision::Post(draft.to_owned());
     };
-    let decision = match (&ctx.client, bot::plan(&ctx.state, ctx.community, draft)) {
+    let decision = match (
+        &ctx.client,
+        bot::plan_in(&ctx.state, ctx.community, Some(channel), draft),
+    ) {
         (_, Plan::Post(text)) => SendDecision::Post(text),
         (_, Plan::Incomplete) => SendDecision::Keep,
         (Some(client), Plan::Private(status, text, provider)) => {
@@ -374,6 +387,38 @@ pub fn on_send(ctx: &SlotCx, draft: &str, window: gpui::WindowId, cx: &mut App) 
             SendDecision::Handled
         }
         (None, Plan::Moderate(_)) => SendDecision::Handled,
+        // Another area's built-in: its row is pending from the start (CommandHost.tsx:236), then it asks, or runs.
+        (client, Plan::Builtin { run, confirm }) => {
+            let conversation = Conversation {
+                channel,
+                thread: None,
+            };
+            let row = client.as_ref().map_or(0, |c| {
+                c.bot().add_result(
+                    conversation,
+                    ResultStatus::Pending,
+                    copy::pending(run.id()),
+                    ResultProvider::Builtin,
+                )
+            });
+            match confirm {
+                Some(ask) => confirm::ask_builtin(
+                    window,
+                    confirm::AskingBuiltin {
+                        ask,
+                        run,
+                        row,
+                        conversation,
+                        client: client.clone(),
+                    },
+                    cx,
+                ),
+                // A fixture has no client to run it with.
+                None if client.is_some() => builtins::run(run, row, conversation, ctx, window, cx),
+                None => {}
+            }
+            SendDecision::Handled
+        }
     };
     if decision != SendDecision::Keep {
         draft_changed(window, "", cx);

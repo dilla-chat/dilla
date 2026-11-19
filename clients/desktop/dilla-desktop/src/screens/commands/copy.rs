@@ -99,3 +99,8 @@ pub const REASON: &str = "Reason";
 pub const NO_REASON: &str = "none given";
 pub const LOGGED: &str = "Logged";
 pub const LOGGED_NOTE: &str = "modlog · visible to moderators";
+
+/// CommandHost.tsx's generic `ConfirmDialog`: its confirm, busy and cancel labels.
+pub const CONTINUE: &str = "Continue";
+pub const WORKING: &str = "Working…";
+pub const CANCEL: &str = "Cancel";

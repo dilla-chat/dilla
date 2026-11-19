@@ -682,6 +682,77 @@ fn a_release_drops_an_open_moderation_confirmation(cx: &mut gpui::TestAppContext
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
 }
 
+/// Task 8 (CommandHost.tsx:294, `cancel && !moderation`): cancelling a built-in's question, or clicking outside it, takes
+/// the command's pending row away; nothing is left to read "Not confirmed". Run with a client, so a row exists before
+/// the cancel; the claim is checked against the row's presence first, or the test could not fail.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn a_cancelled_builtin_question_leaves_no_row(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::{Ask, Builtin};
+    use dilla_client::state::ChannelId;
+    use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
+    use dilla_desktop::screens::commands::confirm;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t8-cancel", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let alice = rt.block_on(world::sign_up(&host, &invite, "alice", "Alice", "t8"));
+    let client = Rc::new(rt.block_on(world::start(&alice)));
+    cx.update(dilla_desktop::install);
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    let conversation = Conversation {
+        channel: ChannelId([3; 16]),
+        thread: None,
+    };
+    // A row is published to the snapshot a moment after it is added or dismissed: wait for the count to settle.
+    let rows = |client: &dilla_client::Client, want: usize| {
+        for _ in 0..100 {
+            let n = client.state().borrow().bot.results(&conversation).len();
+            if n == want {
+                return n;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        client.state().borrow().bot.results(&conversation).len()
+    };
+    for answer in [Some(false), None] {
+        let row = client.bot().add_result(
+            conversation,
+            ResultStatus::Pending,
+            "/probe…".into(),
+            ResultProvider::Builtin,
+        );
+        assert_eq!(
+            rows(&client, 1),
+            1,
+            "the pending row is there before the answer"
+        );
+        let asking = confirm::AskingBuiltin {
+            ask: Ask {
+                title: "Probe?".into(),
+                body: "Nothing happens.".into(),
+            },
+            run: Builtin::Probe,
+            row,
+            conversation,
+            client: Some(client.clone()),
+        };
+        vcx.update(|_, cx| confirm::ask_builtin(window, asking, cx));
+        assert!(vcx.update(|_, cx| confirm::is_open(window, cx)));
+        vcx.update(|_, cx| confirm::answer_builtin(window, answer, cx));
+        assert!(!vcx.update(|_, cx| confirm::is_open(window, cx)));
+        assert_eq!(rows(&client, 0), 0, "answer {answer:?} leaves no row");
+    }
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
+
 /// Final review M7: what a window's command picker and reminders popover keep goes with its client's release: a typed
 /// command (a ban reason) does not stay in the picker after Forget or Sign out, and the popover's first read runs again
 /// for the next sign-in.

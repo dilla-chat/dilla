@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::client::{Client, Inner};
 use crate::gateway::frames::{self, Frame, Op};
 use crate::state::bot::{Conversation, ResultProvider, ResultStatus};
-use crate::state::{AppState, CommunityId};
+use crate::state::{AppState, ChannelId, CommunityId, TimelineItem, TimelineItemState};
 use crate::sync::route::AreaFrames;
 
 use registry::{CommandDefinition, Parsed, Provider};
@@ -102,6 +102,8 @@ pub enum RunOutcome {
     },
     /// A moderation command (`/kick`, `/ban`): the caller asks for confirmation, then runs it with [`Bot::moderate`].
     Moderate(Moderation),
+    /// A built-in that acts on another area ([`Plan::Builtin`]): the caller asks first when `confirm` is set, then runs it.
+    Builtin { run: Builtin, confirm: Option<Ask> },
 }
 
 /// `privateResultCopy.author`: who a private result names as its author.
@@ -135,6 +137,17 @@ pub fn definitions(state: &AppState, community: Option<CommunityId>) -> Vec<Comm
 /// What `draft` does in `community` without running it (the picker's and the composer's reading of a draft). Pure:
 /// [`Bot::run`] applies it.
 pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Plan {
+    plan_in(state, community, None, draft)
+}
+
+/// [`plan`] for a draft typed in `channel`: the built-ins that read the channel's timeline (`/delete`, `/edit`, ...) need
+/// it. `None` where no conversation is open (the picker's reading of a draft).
+pub fn plan_in(
+    state: &AppState,
+    community: Option<CommunityId>,
+    _channel: Option<ChannelId>,
+    draft: &str,
+) -> Plan {
     let defs = definitions(state, community);
     let refs: Vec<&CommandDefinition> = defs.iter().collect();
     match registry::parse_command(draft, &refs) {
@@ -227,7 +240,8 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
                         Plan::Post(format!("```{language}\n{text}\n```"))
                     }
                 }
-                // The other built-ins act on another area (voice, members, search, ...): those areas run them.
+                // The other built-ins act on another area (voice, members, search, ...): those areas move onto
+                // [`Plan::Builtin`] one by one, and until then they answer "unavailable".
                 _ => Plan::Private(
                     ResultStatus::Failed,
                     UNAVAILABLE.to_owned(),
@@ -286,7 +300,77 @@ pub enum Plan {
     },
     /// A moderation command, to confirm first (CommandHost.tsx: the moderation dialog), then [`Bot::moderate`].
     Moderate(Moderation),
+    /// A built-in that acts on another area: asks first when `confirm` is set (CommandHost.tsx's generic `Dialog`), then
+    /// the caller runs `run`. Its row is pending from the start (CommandHost.tsx:236).
+    Builtin {
+        run: Builtin,
+        confirm: Option<Ask>,
+    },
     Incomplete,
+}
+
+/// The question a built-in asks before it runs: the dialog's title and body (`ConfirmDialog`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ask {
+    pub title: String,
+    pub body: String,
+}
+
+/// A built-in command that acts on another area, with what it needs from the draft. The commands move here from the
+/// "unavailable" catch-all of [`plan_in`] as their areas land (Tasks 10, 11, 24, 25).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Builtin {
+    /// Runs nothing: stands in for a command until the first real one is added, so the plumbing can be driven.
+    #[doc(hidden)]
+    Probe,
+}
+
+impl Builtin {
+    /// The command's id, for its pending row's copy (`privateResultCopy.pending(id)`).
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Probe => "probe",
+        }
+    }
+
+    /// Whether cancelling its question removes its pending row (CommandHost.tsx:294: `cancel && !moderation`). A command
+    /// that wants its cancelled row kept (moderation) answers `false` in its own arm; the match has no wildcard so a new
+    /// command must decide.
+    pub fn dismissed_on_cancel(&self) -> bool {
+        match self {
+            Self::Probe => true,
+        }
+    }
+}
+
+/// builtin.ts:62-64: the stored message of `channel` whose id is `id` (hex): `Ok`, with a seq. An outbox row is not
+/// addressable yet.
+pub fn exact_message<'a>(
+    state: &'a AppState,
+    channel: ChannelId,
+    id: &str,
+) -> Option<&'a TimelineItem> {
+    state.timelines.get(&channel)?.items.iter().find(|i| {
+        i.state == TimelineItemState::Ok
+            && i.seq.is_some()
+            && i.msg_id.is_some_and(|m| m.hex() == id)
+    })
+}
+
+/// [`mutation_error`] for a sync step's failure: a refusal names its code (read as an API error of that code); any other
+/// failure is an uncertain outcome without a code.
+pub fn mutation_error_of(e: &crate::ClientError) -> String {
+    let code = match e {
+        crate::ClientError::Sync(code) => code.clone(),
+        _ => String::new(),
+    };
+    mutation_error(&crate::sync::api::ApiError {
+        status: 0,
+        code,
+        detail: String::new(),
+        retry_after_ms: None,
+        extra: Vec::new(),
+    })
 }
 
 /// A checked moderation command (builtin.ts `kick`, `ban`): its member, the name and `@username` the dialog shows, and
@@ -498,7 +582,12 @@ impl Bot {
         community: Option<CommunityId>,
         draft: &str,
     ) -> RunOutcome {
-        match plan(&self.inner.snapshot(), community, draft) {
+        match plan_in(
+            &self.inner.snapshot(),
+            community,
+            Some(conversation.channel),
+            draft,
+        ) {
             Plan::Post(text) => RunOutcome::Post(text),
             Plan::Incomplete => RunOutcome::Incomplete,
             Plan::Private(status, text, provider) => {
@@ -506,6 +595,7 @@ impl Bot {
             }
             Plan::Bot { definition, args } => RunOutcome::Bot { definition, args },
             Plan::Moderate(m) => RunOutcome::Moderate(m),
+            Plan::Builtin { run, confirm } => RunOutcome::Builtin { run, confirm },
         }
     }
 
@@ -592,6 +682,19 @@ impl Bot {
         provider: ResultProvider,
     ) -> u64 {
         self.runs().add_result(conversation, status, text, provider)
+    }
+
+    /// A built-in's row says how it ended (`status` and `text`): the pending row of [`Plan::Builtin`] becomes its result.
+    pub fn finish(&self, conversation: Conversation, row: u64, status: ResultStatus, text: String) {
+        self.runs().patch(
+            conversation,
+            row,
+            private::Patch {
+                status: Some(status),
+                text: Some(text),
+                hold: None,
+            },
+        );
     }
 
     /// The Dismiss button: the row goes, and a held run behind it is forgotten (its reply secret too).
@@ -888,6 +991,71 @@ mod tests {
     use super::*;
     use crate::gateway::frames::Value;
     use crate::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+
+    /// builtin.ts:62-64: a message is found by its id only when it is stored (`Ok` with a seq); an outbox row, a bad id
+    /// and another channel's message are not.
+    #[test]
+    fn plan_in_reads_the_channels_timeline() {
+        use crate::state::{
+            ChannelGroupState, ChannelId, MessageId, Timeline, TimelineItem, TimelineItemState,
+        };
+        let ch = ChannelId([1; 16]);
+        let item = |msg: u8, state, seq| TimelineItem {
+            key: format!("o{msg}"),
+            state,
+            reason: String::new(),
+            sender_user: None,
+            sender_device: None,
+            own: true,
+            bot: false,
+            ts: 0,
+            body: String::new(),
+            msg_id: Some(MessageId([msg; 16])),
+            seq,
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        };
+        let (m, p) = (MessageId([7; 16]), MessageId([8; 16]));
+        let mut s = AppState::default();
+        s.timelines.insert(
+            ch,
+            Timeline {
+                channel_id: ch,
+                group: ChannelGroupState::Active,
+                items: vec![
+                    item(7, TimelineItemState::Ok, Some(5)),
+                    item(8, TimelineItemState::Pending, None),
+                ],
+                has_earlier: false,
+            },
+        );
+        assert_eq!(
+            exact_message(&s, ch, &m.hex()).map(|i| i.seq),
+            Some(Some(5))
+        );
+        assert!(exact_message(&s, ch, &p.hex()).is_none());
+        assert!(exact_message(&s, ch, "nothex").is_none());
+        assert!(exact_message(&s, ChannelId([2; 16]), &m.hex()).is_none());
+    }
+
+    /// builtin.ts `mutationError` for a sync step: a definitive code is named, anything else is uncertain.
+    #[test]
+    fn mutation_error_of_names_definitive_codes() {
+        use crate::ClientError;
+        assert_eq!(
+            mutation_error_of(&ClientError::Sync("E_FORBIDDEN".into())),
+            "Command was refused (E_FORBIDDEN)."
+        );
+        assert_eq!(
+            mutation_error_of(&ClientError::Network("down".into())),
+            "The command result is uncertain. Check the current server state before retrying."
+        );
+    }
 
     /// Review HL item 15 (weak test), at the op 63 handler's level: three hints of one community's Bot inside 250 ms read
     /// its catalog twice (the first at once, one trailing read for the other two), as hints.test.ts expects of
