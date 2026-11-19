@@ -185,12 +185,17 @@ pub fn wipe_may_delete(cx: &App, id: InstanceId, generation: u64) -> bool {
     running_client(cx, id).is_none() && !is_starting(cx, id) && starts == generation
 }
 
-/// Hands the registry the client a window started for `id`, so closing the window does not stop it.
+/// Hands the registry the client a window started for `id`, so closing the window does not stop it. Its rings are
+/// observed from here on, window or not (GPUI gaps Task 3: `screens::ring::effects::watch_instance`).
 pub fn keep_client(cx: &mut App, id: InstanceId, client: Rc<Client>) {
-    if let Some(live) = Registry::of(cx).live.get_mut(&id.0) {
-        live.client = Some(client);
-        live.starting = None;
-    }
+    let Some(live) = Registry::of(cx).live.get_mut(&id.0) else {
+        return;
+    };
+    let key = Rc::as_ptr(&client) as usize;
+    let state = client.state();
+    live.client = Some(client);
+    live.starting = None;
+    crate::screens::ring::effects::watch_instance(id, key, state, cx);
 }
 
 /// Lets go of the client the registry keeps for `id` (Task 26's Forget closes its store): the window and the hold stay.

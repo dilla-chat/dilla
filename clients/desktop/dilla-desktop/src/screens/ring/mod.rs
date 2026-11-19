@@ -17,6 +17,7 @@ pub mod keys;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use dilla_client::seams::InstanceId;
 use dilla_client::state::ring::{BlockWhen, CallBlock, IncomingRing, RingState};
 use dilla_client::state::{AppState, ChannelId, CommunityId, UserId};
 use dilla_desktop_ui::components::ring::{AfkPage, OnRing, RingBanner, RingFocus, RingRow};
@@ -64,6 +65,8 @@ pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
     // Its notify engine and its badge watcher stop, and its OS notifications go (GPUI parity Packages 4 and 5).
     crate::native::notifier::release(client, cx);
     crate::native::badge::release(client, cx);
+    // Its rings' observer stops: their notifications go, and their sound (GPUI gaps Task 3).
+    effects::unwatch_client(Rc::as_ptr(client) as usize, cx);
     let gone: Vec<WindowId> = cx
         .default_global::<Windows>()
         .0
@@ -81,12 +84,12 @@ pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
     }
 }
 
-/// `window` closed or let go of its client: its banner's memory and its ring sound go at once (review M2).
+/// `window` closed or let go of its client: its banner's memory goes. The ring sound and notifications are its
+/// instance's and ring on (`effects::sync_instance`).
 pub fn window_closed(window: WindowId, cx: &mut App) {
     cx.default_global::<Windows>()
         .0
         .retain(|(w, _, _)| *w != window);
-    effects::window_gone(window, cx);
 }
 
 /// A ring's key: its call and the instance's expires_ts (Ring.tsx `key`).
@@ -120,6 +123,16 @@ pub fn ring_banner(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         .map(|(_, e, _)| e.clone())?;
     let state = env.ctx.state.clone();
     effects::sync(&env.ctx, window, cx);
+    // Answer on a notification raised while the instance had no window: this window opened for it and shows the
+    // ring, so it answers (after this frame: the answer navigates the shell that is drawing).
+    if let Some(key) = effects::take_answer(id, &state.ring.rings, cx) {
+        let env = env.clone();
+        window.defer(cx, move |window, cx| {
+            window.activate_window();
+            answer(&env, &key, window, cx);
+            cx.activate(true);
+        });
+    }
     let ring: &RingState = &state.ring;
     let keys: Vec<SharedString> = ring.rings.iter().map(ring_key).collect();
     // Each ring's focus handles, made once; those of rings gone are dropped.
@@ -264,6 +277,51 @@ pub fn act_on(window: WindowId, key: &SharedString, answer_it: bool, cx: &mut Ap
         cx.activate(true);
     }
     acted.is_ok()
+}
+
+/// Answer or Decline from an instance's ring notification (the OS, the tray): it acts only while the ring `key` is still
+/// current in `instance` (its client's state now; with no client, what its observer saw last). With a window, the
+/// window acts ([`act_on`]). With none (closed to the tray), Answer opens the instance's window, which answers on its
+/// first frame showing the ring, and Decline goes through the client. Answers whether it acted.
+pub fn act_on_instance(
+    instance: InstanceId,
+    key: &SharedString,
+    answer_it: bool,
+    cx: &mut App,
+) -> bool {
+    let client = crate::windows::running_client(cx, instance);
+    let ring = match &client {
+        Some(c) => find(&c.state().borrow(), key).cloned(),
+        None => effects::rings_of(instance, cx)
+            .into_iter()
+            .find(|r| ring_key(r) == *key),
+    };
+    let Some(ring) = ring else {
+        return false;
+    };
+    let window = crate::native::NativeShell::open_windows(cx)
+        .into_iter()
+        .find(|(_, i)| *i == Some(instance))
+        .map(|(w, _)| w);
+    if let Some(window) = window
+        && act_on(window, key, answer_it, cx)
+    {
+        return true;
+    }
+    if answer_it {
+        effects::await_window(instance, key.clone(), cx);
+        crate::native::tray::show_instance(instance, cx);
+        return true;
+    }
+    let Some(client) = client else {
+        return false;
+    };
+    let answered = client.ring().decline(ring.call_id, ring.ring_ts);
+    cx.background_spawn(async move {
+        let _ = answered.await;
+    })
+    .detach();
+    true
 }
 
 fn find<'a>(state: &'a AppState, key: &SharedString) -> Option<&'a IncomingRing> {

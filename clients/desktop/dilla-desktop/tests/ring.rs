@@ -11,10 +11,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use dilla_client::seams::InstanceId;
 use dilla_client::state::ring::{
     AfkNotice, AfkSnapshot, Away, BlockWhen, CallBlock, IncomingRing, RING, RingState,
 };
 use dilla_client::state::{AppState, ChannelId, CommunityId, UserId};
+use dilla_desktop::native::notifier;
 use dilla_desktop::screens::ring::{
     RingEnv, afk_explainer, afk_moved, afk_title, block_notice, dm_call_start, effects, join_held,
     provide, ring_banner, ring_key, ring_text,
@@ -741,43 +743,33 @@ fn answering_a_ring_opens_its_dm(cx: &mut TestAppContext) {
     );
 }
 
-/// Review M2: the ring sound belongs to the windows that ring: one window going (closed, or its client released) never
-/// silences another window's ring, and the last one going stops it at once.
+/// Review M2, now per instance (GPUI gaps Task 3): one ring sound for the app. It starts with the first instance that
+/// rings audibly and stops with the last; one instance's ring ending (or its client released) never silences another's.
 #[gpui::test]
-fn the_ring_sound_follows_the_windows_that_ring(cx: &mut TestAppContext) {
-    struct Blank;
-    impl Render for Blank {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-        }
-    }
+fn the_ring_sound_follows_the_instances_that_ring(cx: &mut TestAppContext) {
     install(cx);
-    let ringing = {
-        let mut s = AppState::default();
-        s.ring.rings.push(ring(DM, "Bob", false));
-        Arc::new(s)
-    };
-    let ctx = SlotCx {
-        state: ringing,
-        ..SlotCx::default()
-    };
-    let a = cx.add_window(|_, _| Blank);
-    let b = cx.add_window(|_, _| Blank);
-    for w in [a, b] {
-        let ctx = ctx.clone();
-        w.update(cx, |_, window, cx| effects::sync(&ctx, window, cx))
-            .unwrap();
+    let a = instance(cx, 1);
+    let b = instance(cx, 2);
+    for tx in [&a, &b] {
+        tx.send_replace(with_rings(vec![ring(DM, "Bob", false)]));
     }
+    cx.run_until_parked();
     assert!(cx.update(effects::sound_on));
-    let a_id = a.window_id();
-    let b_id = b.window_id();
-    cx.update(|cx| effects::window_gone(a_id, cx));
-    assert!(cx.update(effects::sound_on), "the other window still rings");
-    cx.update(|cx| effects::window_gone(b_id, cx));
+    a.send_replace(with_rings(Vec::new()));
+    cx.run_until_parked();
+    assert!(
+        cx.update(effects::sound_on),
+        "the other instance still rings"
+    );
+    cx.update(|cx| effects::unwatch_client(client_key(2), cx));
     assert!(
         !cx.update(effects::sound_on),
-        "the last ringing window went: silent"
+        "the last ringing instance went: silent"
     );
+    // A busy ring (this device is in a call) rings without a sound.
+    a.send_replace(with_rings(vec![ring(DM, "Bob", true)]));
+    cx.run_until_parked();
+    assert!(!cx.update(effects::sound_on));
 }
 
 /// Jonas's decision for Task 18: a ring that arrives takes the keyboard focus (Enter answers, Escape declines), and the
@@ -818,55 +810,189 @@ fn the_ring_takes_the_focus_and_gives_it_back(cx: &mut TestAppContext) {
     );
 }
 
-// ---- the OS ring notification (GPUI parity Package 4: beta.5 `notify-ring`) ----
+// ---- the OS ring notification (GPUI parity Package 4: beta.5 `notify-ring`; GPUI gaps Task 3: with no window) ----
 
-/// `ring.spec.ts` "answer: bob rings (banner, sound, one notification while hidden)…", its OS part: a ring in a window
-/// that is not focused raises one OS notification with Answer and Decline (not again on later frames), and focusing the
-/// window withdraws it.
-#[gpui::test]
-fn a_hidden_window_raises_one_os_ring_with_answer_and_decline(cx: &mut TestAppContext) {
+/// The test's stand-in for a running client's key (`Rc::as_ptr`).
+fn client_key(id: u8) -> usize {
+    1000 + usize::from(id)
+}
+
+/// A running instance whose client state the test sets: the app-level ring observer watches it, window or not
+/// (`windows::keep_client` starts the same observer on a real client's state).
+fn instance(cx: &mut TestAppContext, id: u8) -> tokio::sync::watch::Sender<Arc<AppState>> {
+    let (tx, rx) = tokio::sync::watch::channel(Arc::new(AppState::default()));
+    cx.update(|cx| effects::watch_instance(InstanceId(id), client_key(id), rx, cx));
+    cx.run_until_parked();
+    tx
+}
+
+fn os_installed(cx: &mut TestAppContext) {
     install(cx);
-    cx.update(dilla_desktop::native::notifier::install);
-    let (host, vcx) = cx.add_window_view(|_, cx| HookHost {
-        state: with_rings(Vec::new()),
-        other: cx.focus_handle(),
-    });
-    // An instance's window (the OS shell knows it): its rings reach the OS.
-    vcx.update(|window, cx| {
-        let id = window.window_handle().window_id();
-        dilla_desktop::native::NativeShell::window_opened(
-            id,
-            Some(dilla_client::seams::InstanceId(1)),
-            cx,
-        );
-    });
-    vcx.deactivate_window();
-    host.update(vcx, |h, cx| {
-        h.state = with_rings(vec![ring(DM, "Ada", false)]);
-        cx.notify();
-    });
-    vcx.run_until_parked();
-    host.update(vcx, |_, cx| cx.notify());
-    vcx.run_until_parked();
-    let shown = vcx.shown_system_notifications();
-    assert_eq!(shown.len(), 1, "one notification, not one per frame");
+    cx.update(notifier::install);
+}
+
+fn answer(tag: SharedString) -> gpui::SystemNotificationResponse {
+    gpui::SystemNotificationResponse {
+        tag,
+        action_id: Some("answer".into()),
+    }
+}
+
+/// Electron parity: the app closed to the tray (no window at all) still rings. The ring sound starts and one OS
+/// notification is raised with Answer and Decline (not again on a later state); the tray lists it with the same rows.
+#[gpui::test]
+fn a_ring_with_no_window_open_sounds_and_notifies(cx: &mut TestAppContext) {
+    os_installed(cx);
+    let tx = instance(cx, 1);
+    assert!(cx.windows().is_empty(), "no window is open");
+    tx.send_replace(with_rings(vec![ring(DM, "Ada", false)]));
+    cx.run_until_parked();
+    // A later state with the same ring raises nothing more.
+    tx.send_replace(with_rings(vec![ring(DM, "Ada", false)]));
+    cx.run_until_parked();
+    assert!(cx.update(effects::sound_on), "the ring sound plays");
+    let shown = cx.shown_system_notifications();
+    assert_eq!(shown.len(), 1, "one notification, not one per state");
     assert_eq!(shown[0].title.as_ref(), "Ada is calling");
+    assert!(
+        shown[0].tag.starts_with("dilla:1:"),
+        "the instance owns it: {}",
+        shown[0].tag
+    );
     let actions: Vec<(&str, &str)> = shown[0]
         .actions
         .iter()
         .map(|a| (a.id.as_ref(), a.label.as_ref()))
         .collect();
     assert_eq!(actions, [("answer", "Answer"), ("decline", "Decline")]);
-    // The tray lists the ring with the same two rows.
-    let tray = vcx.update(|_, cx| dilla_desktop::native::NativeShell::tray_menu(cx));
+    let tray = cx.update(|cx| dilla_desktop::native::NativeShell::tray_menu(cx));
     assert_eq!(tray.len(), 1);
     assert_eq!(
         tray[0].label().map(|l| l.to_string()).as_deref(),
         Some("Ada is calling")
     );
+}
+
+/// The ring ends (the caller gave up, another device answered): its notification is withdrawn and the sound stops.
+#[gpui::test]
+fn the_ring_notification_is_withdrawn_when_the_ring_ends(cx: &mut TestAppContext) {
+    os_installed(cx);
+    let tx = instance(cx, 1);
+    tx.send_replace(with_rings(vec![ring(DM, "Ada", false)]));
+    cx.run_until_parked();
+    let live = cx.update(|cx| notifier::live_tags(cx));
+    assert_eq!(live.len(), 1);
+    tx.send_replace(with_rings(Vec::new()));
+    cx.run_until_parked();
+    assert!(cx.update(|cx| notifier::live_tags(cx)).is_empty());
+    assert_eq!(cx.dismissed_system_notifications(), [live[0].clone()]);
+    assert!(!cx.update(effects::sound_on), "the sound stopped");
+}
+
+/// `ring.spec.ts` "answer: bob rings (banner, sound, one notification while hidden)…", its OS part, as before: while
+/// a window of the instance is focused its ring raises no notification (the banner shows it); unfocused, one is raised;
+/// focused again, it is withdrawn.
+#[gpui::test]
+fn a_focused_window_raises_no_ring_notification(cx: &mut TestAppContext) {
+    os_installed(cx);
+    let tx = instance(cx, 1);
+    let ringing = with_rings(vec![ring(DM, "Ada", false)]);
+    let (host, vcx) = cx.add_window_view(|_, cx| HookHost {
+        state: with_rings(Vec::new()),
+        other: cx.focus_handle(),
+    });
+    vcx.update(|window, cx| {
+        let id = window.window_handle().window_id();
+        dilla_desktop::native::NativeShell::window_opened(id, Some(InstanceId(1)), cx);
+        window.activate_window();
+    });
+    vcx.run_until_parked();
+    host.update(vcx, |h, cx| {
+        h.state = ringing.clone();
+        cx.notify();
+    });
+    tx.send_replace(ringing);
+    vcx.run_until_parked();
+    assert!(
+        vcx.shown_system_notifications().is_empty(),
+        "a focused window shows the banner, no notification"
+    );
+    assert!(vcx.update(|_, cx| effects::sound_on(cx)), "it still rings");
+    vcx.deactivate_window();
+    vcx.run_until_parked();
+    assert_eq!(vcx.shown_system_notifications().len(), 1, "unfocused: one");
     vcx.update(|window, _| window.activate_window());
     vcx.run_until_parked();
-    assert!(vcx.update(|_, cx| dilla_desktop::native::notifier::live_tags(cx).is_empty()));
+    assert!(vcx.update(|_, cx| notifier::live_tags(cx).is_empty()));
+}
+
+/// Closing the instance's focused window while it rings: the ring now notifies (no window of it is focused any more),
+/// and closing the window never withdraws a ring's notification.
+#[gpui::test]
+fn closing_the_ringing_window_raises_the_ring_notification(cx: &mut TestAppContext) {
+    os_installed(cx);
+    let tx = instance(cx, 1);
+    let vcx = cx.add_empty_window();
+    let w = vcx.update(|window, cx| {
+        let id = window.window_handle().window_id();
+        dilla_desktop::native::NativeShell::window_opened(id, Some(InstanceId(1)), cx);
+        window.activate_window();
+        id
+    });
+    vcx.run_until_parked();
+    // The window is focused when the ring comes: nothing is raised (the observer reads the window's focus itself).
+    tx.send_replace(with_rings(vec![ring(DM, "Ada", false)]));
+    vcx.run_until_parked();
+    assert!(vcx.shown_system_notifications().is_empty());
+    vcx.update(|_, cx| dilla_desktop::native::NativeShell::window_closed(w, cx));
+    vcx.run_until_parked();
+    assert_eq!(vcx.shown_system_notifications().len(), 1);
+    assert_eq!(vcx.update(|_, cx| notifier::live_tags(cx)).len(), 1);
+}
+
+/// Answer on the notification of a ring that rang with no window: the instance's window opens (the tray's
+/// `show_instance`; here the test opens it as that would) and, once it draws, it opens the ring's DM and joins its call
+/// (`Voice::join_dm` needs a client: a fixture's shell has none, so the DM is what shows here).
+#[gpui::test]
+fn answering_from_the_notification_opens_the_window_and_joins(cx: &mut TestAppContext) {
+    os_installed(cx);
+    let tx = instance(cx, 1);
+    let mut ringing = server();
+    ringing.ring.rings.push(ring(DM, "Bob", false));
+    tx.send_replace(Arc::new(ringing.clone()));
+    cx.run_until_parked();
+    let live = cx.update(|cx| notifier::live_tags(cx));
+    assert_eq!(live.len(), 1, "the ring raised its notification");
+    cx.update(|cx| notifier::respond(answer(live[0].clone()), cx));
+    cx.run_until_parked();
+    assert!(cx.update(|cx| notifier::live_tags(cx)).is_empty());
+    assert!(
+        cx.update(|cx| effects::answer_pending(InstanceId(1), cx)),
+        "the answer waits for the instance's window"
+    );
+    // The instance's window opens on the client's state (where it was last: its start route).
+    let (shell, vcx) = cx.add_window_view(move |window, cx| {
+        let id = window.window_handle().window_id();
+        dilla_desktop::native::NativeShell::window_opened(id, Some(InstanceId(1)), cx);
+        dilla_desktop::screens::shell::ShellView::new(
+            Arc::new(ringing),
+            None,
+            None,
+            dilla_desktop::screens::shell::Clock::Fixed { now: 0, utc: true },
+            window,
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert_eq!(
+        shell.read_with(vcx, |s, _| s.route().clone()),
+        dilla_desktop::router::Route::Dm(DM),
+        "the window answered: it shows the ring's DM"
+    );
+    assert!(vcx.update(|window, _| window.is_window_active()));
+    assert!(!vcx.update(|_, cx| effects::answer_pending(InstanceId(1), cx)));
 }
 
 /// beta.5 `current()`: Answer from the notification acts only on the ring that is still current. A ring that ended
@@ -879,45 +1005,42 @@ fn an_answer_from_the_notification_acts_only_on_the_current_ring(cx: &mut TestAp
     };
     let (shell, vcx) = shell_on(server(), general.clone(), cx);
     vcx.update(|window, cx| {
-        dilla_desktop::native::notifier::install(cx);
+        notifier::install(cx);
         let id = window.window_handle().window_id();
-        dilla_desktop::native::NativeShell::window_opened(
-            id,
-            Some(dilla_client::seams::InstanceId(1)),
-            cx,
-        );
+        dilla_desktop::native::NativeShell::window_opened(id, Some(InstanceId(1)), cx);
     });
+    let (tx, rx) = tokio::sync::watch::channel(Arc::new(server()));
+    vcx.update(|_, cx| effects::watch_instance(InstanceId(1), client_key(1), rx, cx));
     vcx.deactivate_window();
     vcx.run_until_parked();
     let ringing = |vcx: &mut VisualTestContext| {
         let mut s = server();
         s.ring.rings.push(ring(DM, "Bob", false));
-        shell.update(vcx, |shell, cx| shell.set_state(Arc::new(s), cx));
+        let s = Arc::new(s);
+        shell.update(vcx, |shell, cx| shell.set_state(s.clone(), cx));
+        tx.send_replace(s);
         vcx.run_until_parked();
         vcx.update(|window, _| window.refresh());
         vcx.run_until_parked();
-        let live = vcx.update(|_, cx| dilla_desktop::native::notifier::live_tags(cx));
+        let live = vcx.update(|_, cx| notifier::live_tags(cx));
         assert_eq!(live.len(), 1, "the ring raised its notification");
         live[0].clone()
-    };
-    let answer = |tag: SharedString| gpui::SystemNotificationResponse {
-        tag,
-        action_id: Some("answer".into()),
     };
     let stale = ringing(vcx);
     // The ring ends: its notification goes, and a late Answer does nothing.
     shell.update(vcx, |shell, cx| shell.set_state(Arc::new(server()), cx));
+    tx.send_replace(Arc::new(server()));
     vcx.run_until_parked();
     vcx.update(|window, _| window.refresh());
     vcx.run_until_parked();
-    assert!(vcx.update(|_, cx| dilla_desktop::native::notifier::live_tags(cx).is_empty()));
+    assert!(vcx.update(|_, cx| notifier::live_tags(cx).is_empty()));
     vcx.cx
-        .update(|cx| dilla_desktop::native::notifier::respond(answer(stale.clone()), cx));
+        .update(|cx| notifier::respond(answer(stale.clone()), cx));
     vcx.run_until_parked();
     assert_eq!(shell.read_with(vcx, |s, _| s.route().clone()), general);
     // A decline of a gone ring sends nothing either (no client here: nothing could be sent, and nothing panics).
     vcx.cx.update(|cx| {
-        dilla_desktop::native::notifier::respond(
+        notifier::respond(
             gpui::SystemNotificationResponse {
                 tag: stale,
                 action_id: Some("decline".into()),
@@ -927,8 +1050,7 @@ fn an_answer_from_the_notification_acts_only_on_the_current_ring(cx: &mut TestAp
     });
     // A live ring: Answer opens its DM and brings the window forward.
     let live = ringing(vcx);
-    vcx.cx
-        .update(|cx| dilla_desktop::native::notifier::respond(answer(live), cx));
+    vcx.cx.update(|cx| notifier::respond(answer(live), cx));
     vcx.run_until_parked();
     assert_eq!(
         shell.read_with(vcx, |s, _| s.route().clone()),
