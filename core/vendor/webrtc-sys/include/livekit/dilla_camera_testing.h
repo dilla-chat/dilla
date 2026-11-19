@@ -18,10 +18,13 @@ namespace livekit_ffi {
 
 // `status` is an AVAuthorizationStatus (0 not determined, 1 restricted, 2 denied, 3 authorized), or
 // -1 for the real one; `grants` answers a request. Resets the counters and the asked-once flag.
+// While forced, the id "dilla-test-camera" opens a camera with no device (its start fails).
 void dilla_camera_test_force(int32_t status, bool grants);
 // Requests made since the last force.
 uint64_t dilla_camera_test_requests();
 // Opens the gate refused since the last force.
 uint64_t dilla_camera_test_refusals();
+// DillaCamera::start calls since the last force.
+uint64_t dilla_camera_test_starts();
 
 }  // namespace livekit_ffi

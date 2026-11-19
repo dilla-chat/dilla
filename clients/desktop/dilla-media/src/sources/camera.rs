@@ -99,6 +99,11 @@ pub fn open(
     if device.is_null() {
         return Err(OpenError::Unavailable("the camera did not open".to_owned()));
     }
+    // Opening can wait for the person's answer to the system's camera prompt (macOS); withdrawn meanwhile, the camera
+    // is dropped unstarted, so its light never comes on.
+    if cancel() {
+        return Err(OpenError::Cancelled);
+    }
     if device.start(WIDTH, HEIGHT, FPS) != 0 {
         return Err(OpenError::Unavailable(
             "the camera did not start".to_owned(),
@@ -204,5 +209,33 @@ mod tests {
             assert_eq!(forced.refusals(), 1, "{status:?}: the gate refused it");
             assert_eq!(forced.requests(), requests, "{status:?}");
         }
+    }
+
+    /// An open withdrawn while the system's camera prompt was up (not asked yet, then cancelled, then allowed) drops
+    /// the camera without starting it: no session, no camera light.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_camera_cancelled_during_the_prompt_is_never_started() {
+        use webrtc_sys::dilla_camera_testing::{self as testing, Authorization, TEST_CAMERA};
+
+        let forced = testing::force(Authorization::NotDetermined, true);
+        let opened = open(Some(TEST_CAMERA), Duration::from_secs(5), &|| true);
+        assert!(
+            matches!(opened, Err(OpenError::Cancelled)),
+            "{:?}",
+            opened.err()
+        );
+        assert_eq!((forced.requests(), forced.starts()), (1, 0));
+        drop(forced);
+
+        // Not cancelled, the same allowed camera is started (its start fails: it has no device).
+        let forced = testing::force(Authorization::NotDetermined, true);
+        let opened = open(Some(TEST_CAMERA), Duration::from_secs(5), &|| false);
+        assert!(
+            matches!(opened, Err(OpenError::Unavailable(_))),
+            "{:?}",
+            opened.err()
+        );
+        assert_eq!((forced.requests(), forced.starts()), (1, 1));
     }
 }

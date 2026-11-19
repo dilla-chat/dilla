@@ -14,6 +14,7 @@ mod ffi {
         fn dilla_camera_test_force(status: i32, grants: bool);
         fn dilla_camera_test_requests() -> u64;
         fn dilla_camera_test_refusals() -> u64;
+        fn dilla_camera_test_starts() -> u64;
     }
 }
 
@@ -26,6 +27,9 @@ pub enum Authorization {
     Denied = 2,
     Authorized = 3,
 }
+
+/// While a status is forced, this id opens a camera with no device: `start` is counted ([`Forced::starts`]) and fails.
+pub const TEST_CAMERA: &str = "dilla-test-camera";
 
 static FORCED: Mutex<()> = Mutex::new(());
 
@@ -52,6 +56,11 @@ impl Forced {
     /// The opens the gate refused since [`force`].
     pub fn refusals(&self) -> u64 {
         ffi::dilla_camera_test_refusals()
+    }
+
+    /// The cameras started (`DillaCamera::start`) since [`force`].
+    pub fn starts(&self) -> u64 {
+        ffi::dilla_camera_test_starts()
     }
 }
 

@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <limits>
+#include <string_view>
 
 #include "api/video/i420_buffer.h"
 #include "libyuv/convert.h"
@@ -109,6 +110,10 @@ std::atomic<int32_t> g_forced{-1};
 std::atomic<bool> g_forced_grants{false};
 std::atomic<uint64_t> g_requests{0};
 std::atomic<uint64_t> g_refusals{0};
+std::atomic<uint64_t> g_starts{0};
+// With a forced status this id opens a camera with no device (its start fails), so a test reaches
+// start() without a real camera.
+constexpr char kTestCamera[] = "dilla-test-camera";
 #endif
 
 AVAuthorizationStatus CurrentAuthorization() {
@@ -213,6 +218,9 @@ DillaCamera::DillaCamera(std::unique_ptr<Mac> mac, rust::Box<DillaCameraSink> si
 DillaCamera::~DillaCamera() {
   @autoreleasepool {
     Mac& m = *mac_;
+    if (!m.queue) {
+      return;  // dilla_camera_testing's camera with no device: nothing ran.
+    }
     if (m.session.isRunning) {
       [m.session stopRunning];
     }
@@ -234,6 +242,9 @@ void DillaCamera::Deliver(const webrtc::I420BufferInterface& i420) {
 
 int32_t DillaCamera::start(uint32_t width, uint32_t height, uint32_t fps) const {
   @autoreleasepool {
+#ifdef DILLA_TEST_FRAMES
+    g_starts.fetch_add(1);
+#endif
     Mac& m = *mac_;
     if (m.session.isRunning) {
       return 0;
@@ -331,6 +342,11 @@ std::unique_ptr<DillaCamera> dilla_camera_open(rust::Str unique_id,
     if (!Authorized()) {
       return nullptr;
     }
+#ifdef DILLA_TEST_FRAMES
+    if (g_forced.load() >= 0 && std::string_view(unique_id.data(), unique_id.size()) == kTestCamera) {
+      return std::make_unique<DillaCamera>(std::make_unique<DillaCamera::Mac>(), std::move(sink));
+    }
+#endif
     NSString* id = [[NSString alloc] initWithBytes:unique_id.data()
                                             length:unique_id.size()
                                           encoding:NSUTF8StringEncoding];
@@ -353,6 +369,7 @@ void dilla_camera_test_force(int32_t status, bool grants) {
   g_forced_grants.store(grants);
   g_requests.store(0);
   g_refusals.store(0);
+  g_starts.store(0);
   g_requested.store(false);
   g_forced.store(status);
 }
@@ -363,6 +380,10 @@ uint64_t dilla_camera_test_requests() {
 
 uint64_t dilla_camera_test_refusals() {
   return g_refusals.load();
+}
+
+uint64_t dilla_camera_test_starts() {
+  return g_starts.load();
 }
 
 #endif  // DILLA_TEST_FRAMES

@@ -144,7 +144,8 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   files are manual retain/release) and links AVFoundation, CoreMedia, CoreVideo. Test support, only
   with `dilla-test-frames` on macOS: `include/livekit/dilla_camera_testing.h`,
   `src/dilla_camera_testing.rs` (`webrtc_sys::dilla_camera_testing::force`: the authorisation gate
-  with a forced status instead of TCC's). Covered by `clients/desktop/dilla-media/src/sources/camera.rs`
+  with a forced status instead of TCC's; while forced, `TEST_CAMERA` opens a deviceless camera whose
+  `start` calls are counted). Covered by `clients/desktop/dilla-media/src/sources/camera.rs`
   (its packing test; on macOS the denied/restricted/refused gate) and, on a Mac with Camera access,
   `DILLA_MAC_CAPTURE=1 cargo test -p dilla-media --test capture mac_camera`, plus the manual
   `capture-probe camera`.
