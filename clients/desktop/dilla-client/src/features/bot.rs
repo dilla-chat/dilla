@@ -437,6 +437,15 @@ impl ModerationGate<'_> {
     }
 }
 
+/// What a [`ModerationGate`] is read for (builtin.ts `ModerationAction`): the permission it needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateAction {
+    Kick,
+    Ban,
+    /// `/timeout`, `/untimeout` and `/warn`: Moderate Members.
+    Timeout,
+}
+
 /// The [`ModerationGate`] of `community` for a kick (`kick`) or a ban: `None` when the access is not loaded, the
 /// permission is not held, or this account is not a member there.
 pub fn moderation_gate(
@@ -444,12 +453,29 @@ pub fn moderation_gate(
     community: CommunityId,
     kick: bool,
 ) -> Option<ModerationGate<'_>> {
+    moderation_gate_for(
+        state,
+        community,
+        if kick {
+            GateAction::Kick
+        } else {
+            GateAction::Ban
+        },
+    )
+}
+
+/// [`moderation_gate`] by action: the permission is Kick Members, Ban Members or Moderate Members (builtin.ts:329).
+pub fn moderation_gate_for(
+    state: &AppState,
+    community: CommunityId,
+    action: GateAction,
+) -> Option<ModerationGate<'_>> {
     use crate::features::roles::rank;
     let access = state.roles.access_of(community);
-    let permitted = if kick {
-        access.kick_members
-    } else {
-        access.ban_members
+    let permitted = match action {
+        GateAction::Kick => access.kick_members,
+        GateAction::Ban => access.ban_members,
+        GateAction::Timeout => access.moderate_members,
     };
     if !access.loaded || !permitted {
         return None;
@@ -479,22 +505,85 @@ pub fn moderation_target(
     who: &str,
     kick: bool,
 ) -> Option<Target> {
+    moderation_target_for(
+        state,
+        community,
+        who,
+        if kick {
+            GateAction::Kick
+        } else {
+            GateAction::Ban
+        },
+    )
+}
+
+/// [`moderation_target`] by action.
+pub fn moderation_target_for(
+    state: &AppState,
+    community: CommunityId,
+    who: &str,
+    action: GateAction,
+) -> Option<Target> {
     let who = crate::state::UserId(crate::features::server_admin::unhex_id(who.trim())?);
-    let gate = moderation_gate(state, community, kick)?;
+    let gate = moderation_gate_for(state, community, action)?;
     let target = state
         .members
         .get(&community)?
         .iter()
         .find(|m| m.user_id == who)?;
-    gate.allows(target).then(|| Target {
-        user: target.user_id,
-        name: if target.display.is_empty() {
-            target.username.clone()
+    gate.allows(target).then(|| member_target(target))
+}
+
+fn member_target(member: &crate::state::members::Member) -> Target {
+    Target {
+        user: member.user_id,
+        name: if member.display.is_empty() {
+            member.username.clone()
         } else {
-            target.display.clone()
+            member.display.clone()
         },
-        username: target.username.clone(),
-    })
+        username: member.username.clone(),
+    }
+}
+
+/// builtin.ts `eligibleAssignableRole`: the role named `role` (hex) and the member `user` (hex) when this account may
+/// grant (`add`) or revoke it: roles are managed and loaded, both members are known, the member is neither this account
+/// nor the owner, the role is neither @everyone nor at or above this account's rank, it is not held (`add`) or held
+/// (revoke), and it carries no bit this account lacks ([`roles::assign_lock`]).
+pub fn assignable_role(
+    state: &AppState,
+    community: CommunityId,
+    user: &str,
+    role: &str,
+    add: bool,
+) -> Option<(crate::state::roles::RoleSummary, Target)> {
+    use crate::features::roles;
+    let user = crate::state::UserId(crate::features::server_admin::unhex_id(user.trim())?);
+    let role_id = crate::features::server_admin::unhex_id(role.trim())?;
+    let access = state.roles.access_of(community);
+    let everyone = access.everyone_id?;
+    if !access.loaded || !access.manage_roles {
+        return None;
+    }
+    let owner = state.communities.iter().find(|c| c.id == community)?.owner;
+    let all = state.roles.roles_of(community);
+    let members = state.members.get(&community)?;
+    let me = state.account.user_id?;
+    let target = members.iter().find(|m| m.user_id == user)?;
+    let mine = members.iter().find(|m| m.user_id == me)?;
+    let role = all.iter().find(|r| r.id == role_id)?;
+    if target.user_id == me
+        || target.user_id == owner
+        || role.id == everyone
+        || role.position == 0
+        || target.role_ids.contains(&role.id) == add
+    {
+        return None;
+    }
+    let held = roles::held_bits(access.owner, owner.0, everyone, all, &mine.role_ids, me.0);
+    roles::assign_lock(role, &access, held)
+        .is_none()
+        .then(|| (role.clone(), member_target(target)))
 }
 
 /// builtin.ts `reasonProblem`: more than 512 bytes, or a control character.
@@ -1041,6 +1130,105 @@ mod tests {
         assert!(exact_message(&s, ch, &p.hex()).is_none());
         assert!(exact_message(&s, ch, "nothex").is_none());
         assert!(exact_message(&s, ChannelId([2; 16]), &m.hex()).is_none());
+    }
+
+    /// builtin.ts `eligibleAssignableRole` (:384-393): a role is assignable when this account manages roles and ranks
+    /// above it, it carries nothing this account lacks, and the member is neither this account nor the owner nor already
+    /// holding it (revoke: holding it); @everyone never.
+    #[test]
+    fn assignable_role_follows_the_web_rules() {
+        use crate::state::members::Member;
+        use crate::state::roles::{CommunityAccess, RoleSummary};
+        use crate::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let (me, bea, owner) = (UserId([1; 16]), UserId([2; 16]), UserId([3; 16]));
+        let role = |n: u8, position: u32, allow: u32| RoleSummary {
+            id: [n; 16],
+            name: format!("r{n}"),
+            color: 0,
+            position,
+            hoist: false,
+            mentionable: false,
+            allow,
+            deny: 0,
+            members: 0,
+        };
+        let member = |user_id, username: &str, role_ids: Vec<[u8; 16]>| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids,
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner,
+            policy_version: 1,
+        });
+        // I hold role 10 (position 5, no bits); Bea holds role 13.
+        s.members.insert(
+            c,
+            vec![
+                member(me, "ada", vec![[10; 16]]),
+                member(bea, "bea", vec![[13; 16]]),
+                member(owner, "olaf", Vec::new()),
+            ],
+        );
+        s.roles.roles.insert(
+            c,
+            vec![
+                role(9, 0, 0),
+                role(10, 5, 0),
+                role(11, 5, 0),
+                role(12, 2, 0x1 << 25),
+                role(13, 2, 0),
+                role(14, 3, 0),
+            ],
+        );
+        s.roles.access.insert(
+            c,
+            CommunityAccess {
+                top: 5,
+                manage_roles: true,
+                loaded: true,
+                everyone_id: Some([9; 16]),
+                ..CommunityAccess::default()
+            },
+        );
+        let id = |n: u8| {
+            [n; 16]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let pick = |user: UserId, role: u8, add: bool| {
+            assignable_role(&s, c, &user.hex(), &id(role), add).map(|(r, t)| (r.id, t.user))
+        };
+        assert_eq!(
+            pick(bea, 14, true),
+            Some(([14; 16], bea)),
+            "a lower role not held"
+        );
+        assert_eq!(pick(bea, 14, false), None, "not held: nothing to remove");
+        assert_eq!(pick(bea, 13, true), None, "already held");
+        assert_eq!(
+            pick(bea, 13, false),
+            Some(([13; 16], bea)),
+            "held: removable"
+        );
+        assert_eq!(pick(bea, 9, true), None, "@everyone");
+        assert_eq!(pick(bea, 11, true), None, "at the caller's top");
+        assert_eq!(pick(bea, 12, true), None, "carries a bit the caller lacks");
+        assert_eq!(pick(me, 14, true), None, "oneself");
+        assert_eq!(pick(owner, 14, true), None, "the owner");
+        let mut no_manage = s.clone();
+        no_manage.roles.access.get_mut(&c).unwrap().manage_roles = false;
+        assert!(assignable_role(&no_manage, c, &bea.hex(), &id(14), true).is_none());
     }
 
     /// builtin.ts `mutationError` for a sync step: a definitive code is named, anything else is uncertain.

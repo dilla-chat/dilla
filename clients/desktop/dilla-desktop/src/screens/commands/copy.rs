@@ -22,6 +22,10 @@ pub const JOIN_VOICE_FIRST: &str = "join voice first";
 pub const SEPARATOR: &str = " · ";
 /// CommandHost.tsx `suggest`: a `/unban` suggestion's second line.
 pub const BANNED_MEMBER: &str = "Banned member";
+/// CommandHost.tsx `suggest`: a message suggestion's second line when it is this account's, and a `/join` voice
+/// channel's.
+pub const YOUR_MESSAGE: &str = "Your message";
+pub const VOICE_CHANNEL: &str = "Voice channel";
 /// `commandPickerCopy.sugTitle`: the suggestions' title, by what they suggest.
 pub const SUG_MEMBERS: &str = "Members";
 pub const SUG_DURATIONS: &str = "Durations";
