@@ -60,7 +60,7 @@ getrandom = "0.3"
 # Parity Package 12, inline video (Jonas 2026-11-15: before the switch; no FFmpeg of our own): libwebrtc's own decoders
 # through the patched webrtc-sys (core/vendor/README.md, "dilla_video_decoder"), already linked for calls, and two
 # pure-Rust demuxers for the web's playable containers (MP4, WebM/Matroska).
-webrtc-sys = "=0.3.53"
+webrtc-sys = "=0.3.54"
 re_mp4 = { version = "=0.5.1", default-features = false }
 matroska-demuxer = "=0.8.1"
 

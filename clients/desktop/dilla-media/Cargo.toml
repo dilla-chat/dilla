@@ -16,13 +16,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 # `rustls-tls-native-roots`: the signalling socket's TLS. Without it livekit-net's tokio-tungstenite 0.29 has no TLS at
 # all and every `wss://` room (dillad hands out `wss://<host>`) fails with "TLS support not compiled in"; only the
 # tests' `ws://` rooms connected. The crates are already in the lock (rustls, tokio-rustls, rustls-native-certs).
-livekit = { version = "=0.10.1", features = ["rustls-tls-native-roots"] }
+livekit = { version = "=0.11.0", features = ["rustls-tls-native-roots"] }
 # The process-wide rustls provider that socket's `ClientConfig::builder()` needs: rustls is built with both ring and
 # aws-lc-rs here, so none is chosen on its own (src/tls.rs). Already in the lock.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 # The dilla-sframe/1 hook (core/vendor/webrtc-sys, patched in the root Cargo.toml): the same crate
 # livekit links, used directly for `dilla_transform`.
-webrtc-sys = "=0.3.53"
+webrtc-sys = "=0.3.54"
 # The camera bridge's handle (core/vendor/webrtc-sys `dilla_camera`, parity plan Package 1): the cxx webrtc-sys links.
 cxx = "=1.0.205"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -41,7 +41,7 @@ cpal = "0.18.2"
 [dev-dependencies]
 # The hook's synthetic-frame test support (webrtc_sys::dilla_transform_testing): tests only, never in
 # a shipping binary.
-webrtc-sys = { version = "=0.3.53", features = ["dilla-test-frames"] }
+webrtc-sys = { version = "=0.3.54", features = ["dilla-test-frames"] }
 # tests/link.rs (Task 6b): open flags for the keyed store; the same rusqlite dilla-core links.
 rusqlite = "=0.41.1"
 # tests/call.rs: real call-group keys from a `ClientCore` and a `DillaGroup` member, through
@@ -62,7 +62,7 @@ hmac = "0.13"
 sha1 = "0.11"
 tokio = { version = "1", features = ["io-std", "io-util"] }
 # src/tls.rs's test: LiveKit's own WebSocket transport opens a `wss://` URL (already in the lock through livekit).
-livekit-net = "=0.1.4"
+livekit-net = "=0.2.0"
 
 # Application audio on Linux (parity plan Package 3): the PipeWire client (registry, links, a capture stream), as beta.5's
 # native/linux.cpp used libpipewire. Needs libpipewire-0.3-dev to build (CI installs it).

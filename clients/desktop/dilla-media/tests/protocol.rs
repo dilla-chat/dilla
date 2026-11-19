@@ -1,7 +1,7 @@
 //! The tripwire for the LiveKit signalling protocol the desktop speaks. dillad's /rtc gate admits a
 //! closed list of protocols (internal/sfu/rtcjoin.go `ClientProtocols`): 17 for the web client and the
-//! Go SDK, 18 (`RustClientProtocol`) for this crate's pinned `livekit =0.10.1`, whose
-//! livekit-signaling 0.1.9 sends `PROTOCOL_VERSION = 18`. A livekit bump that changes the number the
+//! Go SDK, 18 (`RustClientProtocol`) for this crate's pinned `livekit =0.11.0`, whose
+//! livekit-signaling 0.2.0 sends `PROTOCOL_VERSION = 18`. A livekit bump that changes the number the
 //! desktop sends makes every desktop call 400 at /rtc: this test fails first. Move it,
 //! `RustClientProtocol` and dillad's gate tests together (packages/media/test/protocol-version.test.ts
 //! is the web client's twin).
@@ -10,7 +10,7 @@
 //! signalling request's `protocol` query parameter, captured by a local listener. The call's own join
 //! takes the v1 path (`/rtc/v1`, the number inside the gzip'd join_request's client_info); this test
 //! asks for the v0 path, where the number is a plain query parameter. Both are the one
-//! `SignalOptions::protocol_version` (livekit-signaling 0.1.9 src/lib.rs:1053 and :1177).
+//! `SignalOptions::protocol_version` (livekit-signaling 0.2.0 src/lib.rs:1054 and :1178).
 
 use std::time::Duration;
 

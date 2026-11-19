@@ -96,11 +96,16 @@ sqlite-wasm-rs 0.6.3 builds SQLite3MC 2.6.1 on SQLite 3.54.0 (`sqlite3mc-src =20
 Since Task 6b the native store builds its own SQLite3MC too (change 2), from the same
 `sqlite3mc-src` release.
 
-## webrtc-sys 0.3.53
+## webrtc-sys 0.3.54
 
 Upstream: <https://github.com/livekit/rust-sdks> (`webrtc-sys/`; `.cargo_vcs_info.json` has the
 commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: webrtc-sys 0.3.53
-as published`), so `git diff` of that commit's successor shows the whole patch.
+as published`), so `git diff` of that commit's successor shows the whole patch. Moved to 0.3.54 for
+livekit 0.11.0 (Task 3 of the GPUI GUI-gaps plan, 2026-11-19) by applying upstream's own 0.3.53 to
+0.3.54 diff over the patched copy: `KeyProvider` refuses an out-of-range key index and clamps
+`key_ring_size` (`include/livekit/frame_cryptor.h`, `src/frame_cryptor.{cpp,rs}`), plus the version
+and changelog. It touches none of the dilla changes below and names the same `webrtc-sys-build
+0.3.21`, so the prebuilt libwebrtc is the same archive.
 
 Patched into the root workspace (`[patch.crates-io]` in `Cargo.toml`, Task 11) for `dilla-media`,
 which installs its hook (`dilla_media::transform::Router`) before the process's first
@@ -175,7 +180,7 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
 Every transformer has an opaque handle, process-unique and never reused, which Rust learns when the
 transformer is attached (`attached`) and which names it in every later call. A receiver is bound by
 that handle, found from the subscribed track's own C++ object (`receiver_handle`, compared by
-identity; see libwebrtc 0.4.0 below), never by a track id string the SFU chose; dilla-media refuses a
+identity; see libwebrtc 0.4.1 below), never by a track id string the SFU chose; dilla-media refuses a
 second bind of a handle.
 
 The transformer has no pass-through of its own: every frame goes to Rust, and only a frame Rust
@@ -216,12 +221,15 @@ dilla-desktop's tests which build they run in. It feeds the decoder access units
 each picture to BGRA with libyuv (the colour matrix the bitstream names, BT.601 when it names none), scaled down to
 fit the box Rust gives. No PeerConnection, transformer or network is involved, and nothing in libwebrtc is rebuilt.
 
-## libwebrtc 0.4.0
+## libwebrtc 0.4.1
 
 Upstream: <https://github.com/livekit/rust-sdks> (`libwebrtc/`; `.cargo_vcs_info.json` has the
 commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: libwebrtc 0.4.0 as
 published`), so the diff of that commit's successor shows the whole patch. Patched into the root
-workspace (`[patch.crates-io]`, Task 11).
+workspace (`[patch.crates-io]`, Task 11). Moved to 0.4.1 for livekit 0.11.0 (2026-11-19) by applying
+upstream's own 0.4.0 to 0.4.1 diff over the patched copy: the `KeyProvider` index checks, libwebrtc's
+log severities mapped onto `log` levels (`src/native/peer_connection_factory.rs`), webrtc-sys 0.3.54,
+the version and changelog. The dilla change below is untouched.
 
 The one change (`src/media_stream_track.rs`, `DILLA PATCH`): `sys_handle()` of `RtcAudioTrack`,
 `RtcVideoTrack` and `MediaStreamTrack` is public instead of `pub(crate)`, so dilla-media can hand a

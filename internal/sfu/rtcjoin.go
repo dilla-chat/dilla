@@ -35,8 +35,8 @@ var ErrClientProtocol = errors.New("sfu: client protocol not supported")
 // packages/media/test/protocol-version.test.ts for livekit-client: move them together.
 const ClientProtocol = 17
 
-// RustClientProtocol is the signalling protocol the GPUI desktop speaks: its `livekit =0.10.1` crate
-// (pinned in clients/desktop/dilla-media/Cargo.toml) connects through livekit-signaling 0.1.9, whose
+// RustClientProtocol is the signalling protocol the GPUI desktop speaks: its `livekit =0.11.0` crate
+// (pinned in clients/desktop/dilla-media/Cargo.toml) connects through livekit-signaling 0.2.0, whose
 // PROTOCOL_VERSION = 18 (src/lib.rs:63) is sent as `protocol` on the v0 query and as
 // client_info.protocol; Room::connect does not let the caller lower it. dilla-media's
 // tests/protocol.rs fails if that constant moves: move it, this constant and the test together.
