@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"runtime"
@@ -40,14 +41,22 @@ func freeSFUPorts(ctx context.Context) (tcp, udp int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	tcp = ln.Addr().(*net.TCPAddr).Port
+	ta, ok := ln.Addr().(*net.TCPAddr)
 	_ = ln.Close()
+	if !ok {
+		return 0, 0, fmt.Errorf("dilladtest: a tcp listener on %s", ln.Addr())
+	}
+	tcp = ta.Port
 	pc, err := lc.ListenPacket(ctx, "udp", "127.0.0.1:0")
 	if err != nil {
 		return 0, 0, err
 	}
-	udp = pc.LocalAddr().(*net.UDPAddr).Port
+	ua, ok := pc.LocalAddr().(*net.UDPAddr)
 	_ = pc.Close()
+	if !ok {
+		return 0, 0, fmt.Errorf("dilladtest: a udp socket on %s", pc.LocalAddr())
+	}
+	udp = ua.Port
 	return tcp, udp, nil
 }
 
