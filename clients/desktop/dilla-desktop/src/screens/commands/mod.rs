@@ -519,6 +519,21 @@ pub(super) fn dismiss_fixture_row(window: gpui::WindowId, row: u64, cx: &mut App
         .retain(|(_, r)| r.id != row);
 }
 
+/// A fixture window's row `row` ends with `status` and `text` (a moderation built-in's Cancel keeps its row).
+pub(super) fn finish_fixture_row(
+    window: gpui::WindowId,
+    row: u64,
+    status: ResultStatus,
+    text: String,
+    cx: &mut App,
+) {
+    let rows = &mut crate::per_window::get_mut::<FixtureRows>(window, cx).0;
+    if let Some((_, r)) = rows.iter_mut().find(|(_, r)| r.id == row) {
+        r.status = status;
+        r.text = text;
+    }
+}
+
 /// The private results of the open conversation, oldest first, each with its height in a log `width` wide: the log
 /// draws them after its last message. A fixture window draws its own built-in rows ([`FixtureRows`]).
 pub fn private_results(
@@ -756,6 +771,62 @@ mod tests {
                 } else {
                     crate::per_window::get_mut::<FixtureRows>(w, cx).0.clear();
                 }
+            }
+        });
+    }
+
+    /// Ruling R6 (CommandHost.tsx:294): a moderation built-in's Cancel keeps its row, "cancelled"; abandoning the
+    /// question (a click outside, leaving the conversation) still takes the row away.
+    #[gpui::test]
+    fn a_cancelled_moderation_builtin_keeps_its_row(cx: &mut gpui::TestAppContext) {
+        use dilla_client::features::bot::{Ask, Builtin};
+        use dilla_client::state::{CommunityId, UserId};
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let conversation = Conversation {
+            channel: ChannelId([5; 16]),
+            thread: None,
+        };
+        let rows = |cx: &App| {
+            crate::per_window::get::<FixtureRows>(w, cx).map_or(Vec::new(), |r| {
+                r.0.iter()
+                    .map(|(_, r)| (r.status, r.text.clone()))
+                    .collect()
+            })
+        };
+        cx.update(|cx| {
+            for (choice, left) in [
+                (
+                    Some(false),
+                    vec![(ResultStatus::Cancelled, "Cancelled.".to_owned())],
+                ),
+                (None, Vec::new()),
+            ] {
+                crate::per_window::get_mut::<FixtureRows>(w, cx).0.clear();
+                let row = add_fixture_row(w, conversation, Clock::Local, copy::pending("warn"), cx);
+                confirm::ask_builtin(
+                    w,
+                    confirm::AskingBuiltin {
+                        ask: Ask {
+                            title: "Warn bea?".into(),
+                            body: "spam".into(),
+                        },
+                        run: Builtin::Warn {
+                            community: CommunityId([7; 16]),
+                            user: UserId([2; 16]),
+                            name: "bea".into(),
+                            reason: "spam".into(),
+                        },
+                        row,
+                        conversation,
+                        client: None,
+                    },
+                    cx,
+                );
+                confirm::answer_builtin(w, choice, cx);
+                assert!(!confirm::is_open(w, cx));
+                assert_eq!(rows(cx), left, "{choice:?}");
             }
         });
     }

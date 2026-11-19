@@ -1042,6 +1042,123 @@ fn message_commands_reply_edit_pin_and_delete() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Picks `/{command}` from the list in the window and names `who` in its user chip (the member's id goes in): the next
+/// field, if any, is then the active one. Nothing is sent yet.
+fn pick_member_command(app: &mut Driver, command: &str, who: &str) {
+    app.type_text("composer", "/");
+    app.wait_for("command-picker", Duration::from_secs(10));
+    app.type_focused(command);
+    app.wait_idle();
+    // Greyed until this device knows its permissions here.
+    app.wait_for("command-active-ready", Duration::from_secs(60));
+    app.press("tab");
+    app.wait_for("command-chips", Duration::from_secs(5));
+    app.type_focused(&format!("@{who}"));
+    app.wait_for("command-suggestions", Duration::from_secs(10));
+    app.press("tab");
+    app.wait_idle();
+}
+
+/// builtin.ts `timeout`, `untimeout` and `warn` (:204-264) in the window: `/timeout` of Bea for 10 minutes asks first,
+/// and confirmed, Bea's own device reads her timeout; `/untimeout` reads it, asks, and confirmed lifts it; `/warn`,
+/// confirmed, ends in success. Every row ends in success.
+#[test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn timeout_and_warn_commands_apply_after_confirmation() {
+    use dilla_client::state::{CommunityId, UserId};
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t11-timeout", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t11-timeout"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t11-timeout"));
+    let community = CommunityId(world::community(&host, &ada, "Midgard", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let member = rt.block_on(world::start(&bea));
+    rt.block_on(world::wait_for(
+        &member,
+        Duration::from_secs(30),
+        "bea in Midgard",
+        |s| s.communities.iter().any(|c| c.id == community),
+    ));
+    let bea_id = UserId(bea.user_id);
+    // Bea's timeout as her own device reads it, once it is `held`.
+    let timed_out = |held: bool| {
+        for _ in 0..600 {
+            let now = rt
+                .block_on(member.moderation().timeout_of(community, bea_id))
+                .expect("bea reads her timeout");
+            if now.is_some() == held {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!(
+            "bea's timeout is never {}",
+            if held { "set" } else { "lifted" }
+        );
+    };
+    let confirm = |app: &mut Driver| {
+        app.wait_for("command-confirm", Duration::from_secs(30));
+        app.click("command-confirm");
+        app.wait_idle();
+    };
+    let succeeded = |app: &mut Driver| {
+        app.wait_for("bot-result-success", Duration::from_secs(30));
+        for _ in 0..600 {
+            if app.element("bot-result-pending").is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(app.element("bot-result-pending").is_none(), "settled");
+        assert!(app.element("bot-result-failed").is_none(), "no row failed");
+    };
+
+    let root = scratch_dir("t11-timeout-app");
+    let mut app = Driver::launch(&root);
+    sign_in_app(&mut app, &host, &mut ada);
+
+    // The duration chip: "10 min" is completed from its suggestions to "10 minutes" (10m).
+    pick_member_command(&mut app, "timeout", &bea.username);
+    app.type_focused("10 min");
+    app.wait_for("command-suggestions", Duration::from_secs(10));
+    app.press("tab");
+    app.wait_idle();
+    app.press("enter");
+    app.wait_idle();
+    confirm(&mut app);
+    timed_out(true);
+    succeeded(&mut app);
+
+    pick_member_command(&mut app, "untimeout", &bea.username);
+    app.press("enter");
+    app.wait_idle();
+    // The question comes once her timeout was read.
+    confirm(&mut app);
+    timed_out(false);
+    succeeded(&mut app);
+
+    pick_member_command(&mut app, "warn", &bea.username);
+    app.type_focused("spam links");
+    app.press("enter");
+    app.wait_idle();
+    confirm(&mut app);
+    succeeded(&mut app);
+    assert!(
+        app.element("command-confirm").is_none(),
+        "the dialog closed"
+    );
+
+    drop(app);
+    member.stop();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Final review M7: what a window's command picker and reminders popover keep goes with its client's release: a typed
 /// command (a ban reason) does not stay in the picker after Forget or Sign out, and the popover's first read runs again
 /// for the next sign-in.

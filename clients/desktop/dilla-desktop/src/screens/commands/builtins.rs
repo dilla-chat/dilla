@@ -6,15 +6,19 @@
 //! Task 10: the message commands, `/reply /edit /delete /pin /unpin /topic` (builtin.ts:42-60, :116-152, :337-376,
 //! :414-423). A decision made as the command runs reads the client's live state, not the frame's snapshot: a question
 //! may have been open a while.
+//!
+//! Task 11: the member moderation commands, `/timeout /untimeout /warn /unban` (builtin.ts:168-182, :204-264). Each
+//! checks the member (or Ban Members) again as it runs; `/untimeout` asks its question only once the timeout was read.
 
 use std::rc::Rc;
 
-use dilla_client::features::bot::{self, Builtin, RemovalStep};
-use dilla_client::features::moderation::{Evidence, Moderation, Removal, RemovalOutcome};
-use dilla_client::features::roles::{perm, viewer_channel_bits};
+use dilla_client::features::bot::{self, Ask, Builtin, GateAction, RemovalStep};
+use dilla_client::features::moderation::{self, Evidence, Moderation, Removal, RemovalOutcome};
+use dilla_client::features::roles::{perm, request_id, viewer_channel_bits};
 use dilla_client::features::server_admin::Parent;
 use dilla_client::state::bot::{Conversation, ResultStatus};
-use dilla_client::state::{AppState, ChannelId, CommunityId, MessageId};
+use dilla_client::state::{AppState, ChannelId, CommunityId, MessageId, UserId};
+use dilla_client::sync::api::ApiError;
 use dilla_client::{Client, ClientError};
 use gpui::App;
 use zeroize::Zeroizing;
@@ -81,7 +85,7 @@ pub fn run(
     row: u64,
     conversation: Conversation,
     ctx: &SlotCx,
-    _window: gpui::WindowId,
+    window: gpui::WindowId,
     cx: &mut App,
 ) {
     let Some(client) = ctx.client.clone() else {
@@ -157,7 +161,175 @@ pub fn run(
                 })
                 .detach();
         }
+        Builtin::Timeout {
+            community,
+            user,
+            name,
+            seconds,
+        } => {
+            if !still_target(&client, community, user) {
+                return finish(failed(RANK_CHANGED));
+            }
+            let job = client.moderation().run(move |mo| async move {
+                let expires = moderation::now_s() + seconds;
+                mo.timeout_for(community, user, request_id(), Some(expires))
+                    .await
+            });
+            moderated(job, format!("{name} was timed out."), finish, cx);
+        }
+        Builtin::Untimeout {
+            community,
+            user,
+            name,
+        } => untimeout(
+            &client,
+            (community, user, name),
+            row,
+            conversation,
+            window,
+            finish,
+            cx,
+        ),
+        Builtin::UntimeoutConfirmed {
+            community,
+            user,
+            name,
+        } => {
+            if !still_target(&client, community, user) {
+                return finish(failed(RANK_CHANGED));
+            }
+            let job = client.moderation().run(move |mo| async move {
+                mo.timeout_for(community, user, request_id(), None).await
+            });
+            moderated(job, format!("{name}’s timeout was removed."), finish, cx);
+        }
+        Builtin::Warn {
+            community,
+            user,
+            name,
+            reason,
+        } => {
+            let reason = Zeroizing::new(reason);
+            if !still_target(&client, community, user) {
+                return finish(failed(RANK_CHANGED));
+            }
+            let job = client.moderation().run(move |mo| async move {
+                mo.warn(community, user, request_id(), &reason)
+                    .await
+                    .map(|_| ())
+            });
+            moderated(job, format!("{name} was warned."), finish, cx);
+        }
+        Builtin::Unban {
+            community,
+            user,
+            name,
+        } => {
+            if !bot::may_unban(&client.state().borrow(), community) {
+                return finish(failed("Your permissions or conversation changed."));
+            }
+            // builtin.ts:177-180: the bans are read again; a ban lifted meanwhile is not lifted twice.
+            let job = client.moderation().run(move |mo| async move {
+                let bans = mo.load_bans(community).await?;
+                if !bans.iter().any(|b| b.user_id == user) {
+                    return Ok(false);
+                }
+                mo.unban(community, user).await.map(|()| true)
+            });
+            cx.background_executor()
+                .spawn(async move {
+                    finish(match job.await {
+                        Ok(true) => (ResultStatus::Success, format!("{name} was unbanned.")),
+                        Ok(false) => failed("That member is no longer banned."),
+                        Err(e) => failed(&bot::mutation_error(&e)),
+                    });
+                })
+                .detach();
+        }
     }
+}
+
+/// builtin.ts: a member's moderation re-checked as it runs (`moderationTarget`) fails with this.
+const RANK_CHANGED: &str = "Your permissions or the member’s rank changed.";
+
+/// builtin.ts `moderationTarget(context, member.userId, 'timeout')` against the client's live state: this account still
+/// holds Moderate Members in `community` and outranks `user`.
+fn still_target(client: &Rc<Client>, community: CommunityId, user: UserId) -> bool {
+    bot::moderation_target_for(
+        &client.state().borrow(),
+        community,
+        &user.hex(),
+        GateAction::Timeout,
+    )
+    .is_some_and(|t| t.user == user)
+}
+
+/// Waits for a moderation `job` and answers `ok`, or the refusal (builtin.ts `mutationError`). A client that stopped
+/// refuses the job (E_STOPPED): the row still ends.
+fn moderated(
+    job: impl std::future::Future<Output = Result<(), ApiError>> + Send + 'static,
+    ok: String,
+    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    cx: &mut App,
+) {
+    cx.background_executor()
+        .spawn(async move {
+            finish(match job.await {
+                Ok(()) => (ResultStatus::Success, ok),
+                Err(e) => failed(&bot::mutation_error(&e)),
+            });
+        })
+        .detach();
+}
+
+/// builtin.ts:245-254: `/untimeout` reads the member's timeout first. None: the row says so and nothing is asked; one:
+/// the question ([`super::confirm::ask_builtin`]), its run [`Builtin::UntimeoutConfirmed`] on this same pending row.
+fn untimeout(
+    client: &Rc<Client>,
+    (community, user, name): (CommunityId, UserId, String),
+    row: u64,
+    conversation: Conversation,
+    window: gpui::WindowId,
+    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    cx: &mut App,
+) {
+    let job = client
+        .moderation()
+        .run(move |mo| async move { mo.timeout_of(community, user).await });
+    // Weak: a client released while its timeout was read (Forget, sign-out) asks nothing, so its store can close.
+    let client = Rc::downgrade(client);
+    cx.spawn(async move |cx| {
+        let held = job.await;
+        let ask = |cx: &mut App| {
+            let Some(client) = client.upgrade() else {
+                return;
+            };
+            super::confirm::ask_builtin(
+                window,
+                super::confirm::AskingBuiltin {
+                    ask: Ask {
+                        title: format!("Remove {name}’s timeout?"),
+                        body: "This restores the member’s ability to send messages.".to_owned(),
+                    },
+                    run: Builtin::UntimeoutConfirmed {
+                        community,
+                        user,
+                        name: name.clone(),
+                    },
+                    row,
+                    conversation,
+                    client: Some(client),
+                },
+                cx,
+            );
+        };
+        match held {
+            Ok(Some(_)) => cx.update(ask),
+            Ok(None) => finish(failed(&format!("{name} is not timed out."))),
+            Err(e) => finish(failed(&bot::mutation_error(&e))),
+        }
+    })
+    .detach();
 }
 
 fn failed(text: &str) -> (ResultStatus, String) {

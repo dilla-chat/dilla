@@ -218,6 +218,9 @@ pub fn plan_in(
                     registry::classic_message(&command_id, arg("text")).unwrap_or_default(),
                 ),
                 "kick" | "ban" => moderation_plan(state, community, &command_id, &args),
+                "timeout" | "untimeout" | "warn" | "unban" => {
+                    member_builtin_plan(state, community, &command_id, &args)
+                }
                 "reply" | "edit" | "delete" | "pin" | "unpin" | "topic" => {
                     message_plan(state, community, channel, &command_id, &args)
                 }
@@ -351,6 +354,38 @@ pub enum Builtin {
     Pin { msg: MessageId, on: bool },
     /// `/topic`: sets `channel`'s topic to `text`.
     Topic { channel: ChannelId, text: String },
+    /// `/timeout`: restricts `user` (`name` is shown) for `seconds` from when it runs.
+    Timeout {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+        seconds: u64,
+    },
+    /// `/untimeout`: reads the member's timeout first, then asks ([`Self::UntimeoutConfirmed`]) only when there is one.
+    Untimeout {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+    },
+    /// `/untimeout` once its question was answered: lifts the timeout.
+    UntimeoutConfirmed {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+    },
+    /// `/warn`: warns `user` with `reason` (moderation evidence: never printed).
+    Warn {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+        reason: String,
+    },
+    /// `/unban`: lifts the ban of `user`, `name` as the ban row names them.
+    Unban {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+    },
 }
 
 impl std::fmt::Debug for Builtin {
@@ -365,6 +400,27 @@ impl std::fmt::Debug for Builtin {
             Self::Topic { channel, text } => {
                 write!(f, "Topic({channel:?}, {} bytes)", text.len())
             }
+            Self::Timeout {
+                community,
+                user,
+                seconds,
+                ..
+            } => write!(f, "Timeout({community:?}, {user:?}, {seconds})"),
+            Self::Untimeout {
+                community, user, ..
+            } => write!(f, "Untimeout({community:?}, {user:?})"),
+            Self::UntimeoutConfirmed {
+                community, user, ..
+            } => write!(f, "UntimeoutConfirmed({community:?}, {user:?})"),
+            Self::Warn {
+                community,
+                user,
+                reason,
+                ..
+            } => write!(f, "Warn({community:?}, {user:?}, {} bytes)", reason.len()),
+            Self::Unban {
+                community, user, ..
+            } => write!(f, "Unban({community:?}, {user:?})"),
         }
     }
 }
@@ -379,6 +435,10 @@ impl Builtin {
             Self::Pin { on: true, .. } => "pin",
             Self::Pin { on: false, .. } => "unpin",
             Self::Topic { .. } => "topic",
+            Self::Timeout { .. } => "timeout",
+            Self::Untimeout { .. } | Self::UntimeoutConfirmed { .. } => "untimeout",
+            Self::Warn { .. } => "warn",
+            Self::Unban { .. } => "unban",
         }
     }
 
@@ -395,6 +455,12 @@ impl Builtin {
             | Self::RemoveOther { .. }
             | Self::Pin { .. }
             | Self::Topic { .. } => true,
+            // Ruling R6: the moderation built-ins keep their cancelled row, as `/kick` and `/ban` do.
+            Self::Timeout { .. }
+            | Self::Untimeout { .. }
+            | Self::UntimeoutConfirmed { .. }
+            | Self::Warn { .. }
+            | Self::Unban { .. } => false,
         }
     }
 }
@@ -852,6 +918,122 @@ fn message_plan(
 /// builtin.ts `delete`: another person's message needs Manage Messages and a reason (checked again as it runs).
 pub const DELETE_OTHER_REFUSED: &str =
     "Deleting another person’s message requires Manage Messages and a reason.";
+
+/// builtin.ts `timeout`, `untimeout`, `warn` (:204-264) and `unban` (:168-182): the checks made before anything is
+/// asked. `/unban` reads the bans this device has (the member chip read them, Task 9); its run reads them again.
+fn member_builtin_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let Some(community) = community else {
+        return failed("This command needs a community channel.");
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let run = |run: Builtin, confirm: Option<Ask>| Plan::Builtin { run, confirm };
+    if command_id == "unban" {
+        if !may_unban(state, community) {
+            return failed("You cannot unban members here.");
+        }
+        let ban = crate::features::server_admin::unhex_id(arg("user").trim()).and_then(|who| {
+            state
+                .people
+                .bans
+                .get(&community)?
+                .iter()
+                .find(|b| b.user_id.0 == who)
+        });
+        let Some(ban) = ban else {
+            return failed("That member is not currently banned.");
+        };
+        return run(
+            Builtin::Unban {
+                community,
+                user: ban.user_id,
+                name: ban.name.clone(),
+            },
+            Some(Ask {
+                title: format!("Unban {}?", ban.name),
+                body: "This restores the member’s ability to join the community.".to_owned(),
+            }),
+        );
+    }
+    let Some(Target { user, name, .. }) =
+        moderation_target_for(state, community, arg("user"), GateAction::Timeout)
+    else {
+        return failed(if command_id == "warn" {
+            "This member cannot be warned with your current permissions and rank."
+        } else {
+            "This member cannot be timed out with your current permissions and rank."
+        });
+    };
+    match command_id {
+        "timeout" => {
+            let duration = arg("duration");
+            let Some(seconds) =
+                run::duration_seconds(duration).filter(|s| (60..=2_419_200).contains(s))
+            else {
+                return failed("Timeout duration must be from 1m to 28d.");
+            };
+            let ask = Ask {
+                title: format!("Timeout {name}?"),
+                body: format!("Restrict this member for {duration}."),
+            };
+            run(
+                Builtin::Timeout {
+                    community,
+                    user,
+                    name,
+                    seconds,
+                },
+                Some(ask),
+            )
+        }
+        "untimeout" => run(
+            Builtin::Untimeout {
+                community,
+                user,
+                name,
+            },
+            None,
+        ),
+        _ => {
+            let reason = arg("reason").trim();
+            if reason.is_empty() || reason_problem(reason) {
+                return failed(
+                    "Enter a reason of at most 512 UTF-8 bytes without control characters.",
+                );
+            }
+            let ask = Ask {
+                title: format!("Warn {name}?"),
+                body: reason.to_owned(),
+            };
+            run(
+                Builtin::Warn {
+                    community,
+                    user,
+                    name,
+                    reason: reason.to_owned(),
+                },
+                Some(ask),
+            )
+        }
+    }
+}
+
+/// builtin.ts `unban`'s `canBan`: this device knows its access in `community` and it holds Ban Members.
+pub fn may_unban(state: &AppState, community: CommunityId) -> bool {
+    let access = state.roles.access_of(community);
+    access.loaded && access.ban_members
+}
 
 fn moderation_plan(
     state: &AppState,
@@ -1793,9 +1975,24 @@ mod tests {
                 body: "Remove this message from everyone? Reason: secret reason".into(),
             }),
         };
+        // A warning's reason is its question's body.
+        let warn = Plan::Builtin {
+            run: Builtin::Warn {
+                community: CommunityId([7; 16]),
+                user: crate::state::UserId([2; 16]),
+                name: "bea".into(),
+                reason: "secret reason".into(),
+            },
+            confirm: Some(Ask {
+                title: "Warn bea?".into(),
+                body: "secret reason".into(),
+            }),
+        };
         for shown in [
             format!("{remove:?}"),
             format!("{reply:?}"),
+            format!("{warn:?}"),
+            format!("{warn:#?}"),
             format!("{plan:?}"),
             format!(
                 "{:#?}",
@@ -2178,6 +2375,206 @@ mod tests {
             plan(&s, Some(c), &format!("/kick user:{bea_id}")),
             cannot_kick
         );
+    }
+
+    /// builtin.ts `timeout`, `warn` and `unban` (:168-182, :204-264): the member, the length, the reason and the ban are
+    /// checked before anything is asked; `/timeout` and `/warn` need Moderate Members, `/unban` Ban Members and a ban this
+    /// device has read.
+    #[test]
+    fn moderation_builtins_check_before_running() {
+        use crate::state::members::{BanSummary, Member};
+        use crate::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let (me, bea) = (UserId([1; 16]), UserId([2; 16]));
+        let member = |user_id, username: &str| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: me,
+            policy_version: 1,
+        });
+        s.members
+            .insert(c, vec![member(me, "ada"), member(bea, "bea")]);
+        let mut access = s.roles.access_of(c);
+        access.loaded = true;
+        access.owner = true;
+        s.roles.access.insert(c, access.clone());
+        let refused =
+            |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
+        let bea_id = bea.hex();
+        let timeout = |d: &str| format!("/timeout user:{bea_id} duration:{d}");
+        assert_eq!(
+            plan(&s, Some(c), &timeout("10m")),
+            refused("This member cannot be timed out with your current permissions and rank."),
+            "no Moderate Members"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &format!("/untimeout user:{bea_id}")),
+            refused("This member cannot be timed out with your current permissions and rank.")
+        );
+        assert_eq!(
+            plan(&s, Some(c), &format!("/warn user:{bea_id} reason:spam")),
+            refused("This member cannot be warned with your current permissions and rank.")
+        );
+        access.moderate_members = true;
+        s.roles.access.insert(c, access.clone());
+        assert_eq!(
+            plan(&s, Some(c), &timeout("30s")),
+            refused("Timeout duration must be from 1m to 28d.")
+        );
+        assert_eq!(
+            plan(&s, Some(c), &timeout("29d")),
+            refused("Timeout duration must be from 1m to 28d.")
+        );
+        assert_eq!(
+            plan(&s, Some(c), &timeout("10m")),
+            Plan::Builtin {
+                run: Builtin::Timeout {
+                    community: c,
+                    user: bea,
+                    name: "bea".into(),
+                    seconds: 600,
+                },
+                confirm: Some(Ask {
+                    title: "Timeout bea?".into(),
+                    body: "Restrict this member for 10m.".into(),
+                }),
+            }
+        );
+        // The question comes once the timeout is read (builtins::run): none here.
+        assert_eq!(
+            plan(&s, Some(c), &format!("/untimeout user:{bea_id}")),
+            Plan::Builtin {
+                run: Builtin::Untimeout {
+                    community: c,
+                    user: bea,
+                    name: "bea".into(),
+                },
+                confirm: None,
+            }
+        );
+        let bad_reason =
+            refused("Enter a reason of at most 512 UTF-8 bytes without control characters.");
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/warn user:{bea_id} reason:\"a\u{1}b\"")
+            ),
+            bad_reason
+        );
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/warn user:{bea_id} reason:{}", "x".repeat(513))
+            ),
+            bad_reason
+        );
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/warn user:{bea_id} reason:\" spam \"")
+            ),
+            Plan::Builtin {
+                run: Builtin::Warn {
+                    community: c,
+                    user: bea,
+                    name: "bea".into(),
+                    reason: "spam".into(),
+                },
+                confirm: Some(Ask {
+                    title: "Warn bea?".into(),
+                    body: "spam".into(),
+                }),
+            }
+        );
+
+        let unban = format!("/unban user:{bea_id}");
+        assert_eq!(
+            plan(&s, Some(c), &unban),
+            refused("You cannot unban members here."),
+            "no Ban Members"
+        );
+        access.ban_members = true;
+        s.roles.access.insert(c, access);
+        assert_eq!(
+            plan(&s, Some(c), &unban),
+            refused("That member is not currently banned."),
+            "no bans read"
+        );
+        s.people.bans.insert(
+            c,
+            vec![BanSummary {
+                user_id: bea,
+                name: "Bea B".into(),
+                reason: String::new(),
+                by_user: me,
+                created: 0,
+                expires: None,
+            }],
+        );
+        assert_eq!(
+            plan(&s, Some(c), &unban),
+            Plan::Builtin {
+                run: Builtin::Unban {
+                    community: c,
+                    user: bea,
+                    name: "Bea B".into(),
+                },
+                confirm: Some(Ask {
+                    title: "Unban Bea B?".into(),
+                    body: "This restores the member’s ability to join the community.".into(),
+                }),
+            }
+        );
+        assert_eq!(
+            plan(&s, Some(c), &format!("/unban user:{}", me.hex())),
+            refused("That member is not currently banned.")
+        );
+        // A moderation command keeps its cancelled row (CommandHost.tsx:294, ruling R6).
+        for run in [
+            Builtin::Timeout {
+                community: c,
+                user: bea,
+                name: String::new(),
+                seconds: 60,
+            },
+            Builtin::Untimeout {
+                community: c,
+                user: bea,
+                name: String::new(),
+            },
+            Builtin::UntimeoutConfirmed {
+                community: c,
+                user: bea,
+                name: String::new(),
+            },
+            Builtin::Warn {
+                community: c,
+                user: bea,
+                name: String::new(),
+                reason: String::new(),
+            },
+            Builtin::Unban {
+                community: c,
+                user: bea,
+                name: String::new(),
+            },
+        ] {
+            assert!(!run.dismissed_on_cancel(), "{run:?}");
+        }
     }
 
     #[test]

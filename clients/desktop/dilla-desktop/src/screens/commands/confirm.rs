@@ -10,7 +10,7 @@
 
 use dilla_client::Client;
 use dilla_client::features::bot::{Ask, Builtin, ModAction, Moderation, ModerationTexts};
-use dilla_client::state::bot::Conversation;
+use dilla_client::state::bot::{Conversation, ResultStatus};
 use gpui::{AnyElement, App, IntoElement, ParentElement, Styled, Window, div, px};
 
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize};
@@ -66,7 +66,7 @@ pub fn ask_builtin(window: gpui::WindowId, asking: AskingBuiltin, cx: &mut App) 
 
 /// The person answered a built-in's question: `Some(true)` runs it, `Some(false)` (Cancel) and `None` (a click outside,
 /// the web's `abandonDialog`) dismiss its pending row (CommandHost.tsx:294: `cancel && !moderation`; a command that
-/// keeps its cancelled row says so in [`Builtin::dismissed_on_cancel`]).
+/// keeps its cancelled row says so in [`Builtin::dismissed_on_cancel`], and its Cancel ends the row "cancelled").
 ///
 /// A `Some(true)` before the dialog was first drawn is a no-op: nothing could have been clicked, and there is no
 /// context to run it with yet.
@@ -94,8 +94,25 @@ pub fn answer_builtin(window: gpui::WindowId, choice: Option<bool>, cx: &mut App
             Some(client) => client.bot().dismiss(asking.conversation, asking.row),
             None => super::dismiss_fixture_row(window, asking.row, cx),
         }
+    } else {
+        // A moderation command's Cancel (ruling R6): the row stays, "cancelled", with the handler's answer.
+        let text = CANCELLED.to_owned();
+        match &asking.client {
+            Some(client) => client.bot().finish(
+                asking.conversation,
+                asking.row,
+                ResultStatus::Cancelled,
+                text,
+            ),
+            None => {
+                super::finish_fixture_row(window, asking.row, ResultStatus::Cancelled, text, cx)
+            }
+        }
     }
 }
+
+/// builtin.ts's answer to a Cancel (`failure('Cancelled.')`): the text of a moderation built-in's kept row.
+const CANCELLED: &str = "Cancelled.";
 
 /// `window`'s command asks for confirmation (the composer's send of a `/kick` or `/ban`).
 pub fn ask(window: gpui::WindowId, confirming: Confirming, cx: &mut App) {

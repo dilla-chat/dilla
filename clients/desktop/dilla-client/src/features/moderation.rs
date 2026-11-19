@@ -164,10 +164,52 @@ pub struct WarnReceipt {
     pub evidence: Evidence,
 }
 
-fn now_s() -> u64 {
+/// Unix seconds by this device's clock: `/timeout`'s expiry is `now_s() + seconds` (builtin.ts:238).
+pub fn now_s() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// [`Moderation::timeout_for`]'s request: `PUT [request, expires]`, whose answer must echo both, or `DELETE [request]`.
+/// The request id is the idempotency key. Answers the expiry now in force.
+async fn send_timeout(
+    api: &crate::sync::api::Api,
+    community: CommunityId,
+    user: UserId,
+    request: [u8; 16],
+    expires: Option<u64>,
+) -> Result<Option<u64>, ApiError> {
+    let (c, u) = (community.hex(), user.hex());
+    let Some(expires) = expires else {
+        let body = Value::Array(vec![Value::Bytes(request.to_vec())]).encode();
+        return api
+            .socket_call::<r::DeleteMemberTimeout>(
+                &[&c, &u],
+                Some(body),
+                Some(request.to_vec()),
+                true,
+            )
+            .await
+            .map(|_| None);
+    };
+    let body = Value::Array(vec![Value::Bytes(request.to_vec()), Value::Uint(expires)]).encode();
+    let raw = api
+        .socket_call::<r::PutMemberTimeout>(&[&c, &u], Some(body), Some(request.to_vec()), true)
+        .await?
+        .body;
+    let v = decode(&raw)?;
+    let a = at_least(&v, 2).map_err(bad)?;
+    if bin16(&a[0]).map_err(bad)? != request {
+        return Err(refusal(
+            "E_CBOR_SHAPE",
+            "timeout response request id mismatch",
+        ));
+    }
+    if uint(&a[1]).map_err(bad)? != expires {
+        return Err(refusal("E_CBOR_SHAPE", "timeout response expiry mismatch"));
+    }
+    Ok(Some(expires))
 }
 
 fn bad(e: DecodeError) -> ApiError {
@@ -406,49 +448,26 @@ impl Moderation {
         user: UserId,
         length: TimeoutLength,
     ) -> Result<(), ApiError> {
+        self.timeout_for(
+            community,
+            user,
+            request_id(),
+            length.seconds().map(|s| now_s() + s),
+        )
+        .await
+    }
+
+    /// [`Self::timeout`] with the caller's `request` id and absolute expiry (Unix seconds; `None` lifts it): `/timeout`
+    /// passes a new id, and a remembered attempt sends its own again (builtin.ts:236-240).
+    pub async fn timeout_for(
+        &self,
+        community: CommunityId,
+        user: UserId,
+        request: [u8; 16],
+        expires: Option<u64>,
+    ) -> Result<(), ApiError> {
         self.listed(community)?;
-        let request = request_id();
-        let (c, u) = (community.hex(), user.hex());
-        let result = match length.seconds() {
-            Some(seconds) => {
-                let expires = now_s() + seconds;
-                let body = Value::Array(vec![Value::Bytes(request.to_vec()), Value::Uint(expires)])
-                    .encode();
-                let raw = call::<r::PutMemberTimeout>(
-                    &self.inner,
-                    &[&c, &u],
-                    Some(body),
-                    Some(request.to_vec()),
-                )
-                .await;
-                raw.and_then(|raw| {
-                    let v = decode(&raw)?;
-                    let a = at_least(&v, 2).map_err(bad)?;
-                    if bin16(&a[0]).map_err(bad)? != request {
-                        return Err(refusal(
-                            "E_CBOR_SHAPE",
-                            "timeout response request id mismatch",
-                        ));
-                    }
-                    if uint(&a[1]).map_err(bad)? != expires {
-                        return Err(refusal("E_CBOR_SHAPE", "timeout response expiry mismatch"));
-                    }
-                    Ok(Some(expires))
-                })
-            }
-            None => {
-                let body = Value::Array(vec![Value::Bytes(request.to_vec())]).encode();
-                call::<r::DeleteMemberTimeout>(
-                    &self.inner,
-                    &[&c, &u],
-                    Some(body),
-                    Some(request.to_vec()),
-                )
-                .await
-                .map(|_| None)
-            }
-        };
-        match result {
+        match send_timeout(self.inner.api(), community, user, request, expires).await {
             Ok(expires) => {
                 self.publish_timeout(community, user, expires);
                 Ok(())
@@ -1184,5 +1203,82 @@ mod removal_tests {
         for status in [408, 500, 503, 0] {
             assert!(!definite_refusal(&e(status)), "{status}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::sync::api::Api;
+    use crate::sync::requests::SocketRequests;
+    use crate::sync::requests::script::{Script, response, up};
+
+    /// An [`Api`] whose socket is `script`'s (up), and that socket to answer on.
+    fn scripted(script: &Arc<Script>) -> (Arc<Api>, Arc<SocketRequests>) {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let core = Arc::new(Mutex::new(
+            ClientCore::open(Arc::new(Mutex::new(conn))).unwrap(),
+        ));
+        let auth = crate::auth::AuthToken::new("token");
+        let http = crate::http::ReqwestHttp::new(
+            url::Url::parse("http://127.0.0.1:9").unwrap(),
+            auth.clone(),
+        )
+        .unwrap();
+        let socket = up(script);
+        let api = Api::new(http, socket.clone(), auth, core, Arc::new(|_: &str| {}));
+        (Arc::new(api), socket)
+    }
+
+    const C: CommunityId = CommunityId([1; 16]);
+    const U: UserId = UserId([2; 16]);
+
+    fn path() -> String {
+        format!("/v1/communities/{}/members/{}/timeout", C.hex(), U.hex())
+    }
+
+    /// builtin.ts:236-240: the caller's request id and absolute expiry are what is sent (Task 30 sends a remembered
+    /// attempt's again), the request id as the idempotency key too; the answer must echo both.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_for_sends_the_given_request_and_expiry() {
+        let script = Arc::new(Script::default());
+        let (api, socket) = scripted(&script);
+        let (request, expires) = ([7; 16], 1_900_000_000);
+        let call =
+            tokio::spawn(async move { send_timeout(&api, C, U, request, Some(expires)).await });
+        let (id, idem) = script.request(0).await;
+        let echo =
+            Value::Array(vec![Value::Bytes(request.to_vec()), Value::Uint(expires)]).encode();
+        assert_eq!(
+            (script.method(0), script.route(0)),
+            ("PUT".to_owned(), path())
+        );
+        assert_eq!(script.body(0), echo);
+        assert_eq!(idem, Some(request.to_vec()));
+        socket.on_response(&response(id, 200, &echo));
+        assert_eq!(call.await.unwrap().unwrap(), Some(expires));
+    }
+
+    /// `expires: None` lifts the timeout: the DELETE route, with the caller's request id.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_for_none_clears() {
+        let script = Arc::new(Script::default());
+        let (api, socket) = scripted(&script);
+        let request = [9; 16];
+        let call = tokio::spawn(async move { send_timeout(&api, C, U, request, None).await });
+        let (id, idem) = script.request(0).await;
+        assert_eq!(
+            (script.method(0), script.route(0)),
+            ("DELETE".to_owned(), path())
+        );
+        assert_eq!(
+            script.body(0),
+            Value::Array(vec![Value::Bytes(request.to_vec())]).encode()
+        );
+        assert_eq!(idem, Some(request.to_vec()));
+        socket.on_response(&response(id, 204, b""));
+        assert_eq!(call.await.unwrap().unwrap(), None);
     }
 }
