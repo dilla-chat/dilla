@@ -196,10 +196,16 @@ pub fn keep_client(cx: &mut App, id: InstanceId, client: Rc<Client>) {
     };
     let key = Rc::as_ptr(&client) as usize;
     let state = client.state();
+    let windowless = live.window.is_none();
     live.client = Some(client.clone());
     live.starting = None;
     crate::screens::ring::effects::watch_instance(id, key, state, cx);
-    crate::native::notifier::start_engine(id, &client, cx);
+    // A window's client starts its engine on the window's first frame (`notifier::attach`), already knowing the
+    // window's focus: started here, unfocused, a message could notify before that frame although the window is focused.
+    // A window closed before such a frame starts it then (`install_close_hook`).
+    if windowless {
+        crate::native::notifier::start_engine(id, &client, cx);
+    }
 }
 
 /// A hidden start (`--hidden`, the autostart at login) opens no window: this connects every listed instance instead
@@ -761,6 +767,13 @@ fn install_close_hook(cx: &mut App, launch: Launch, allow_loopback: bool) {
     cx.on_window_closed(move |cx, id| {
         on_closed(cx, id);
         let closed = note_closed(cx, id);
+        // The client stays in the background: its messages notify from the tray, even when the window closed before
+        // its first frame started the engine (`keep_client`). Once per client, so a running engine is kept.
+        if let Closed::Instance(instance) = closed
+            && let Some(client) = running_client(cx, instance)
+        {
+            crate::native::notifier::start_engine(instance, &client, cx);
+        }
         NativeShell::window_closed(id, cx);
         // With the tray up the app stays in the background (beta.5 `window-all-closed` does not quit).
         if cx.windows().is_empty() && !NativeShell::stays_in_background(cx) {

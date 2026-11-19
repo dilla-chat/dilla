@@ -3,9 +3,9 @@
 //! through `notify-rust` on Linux, `UNUserNotificationCenter` on macOS, toasts on Windows).
 //!
 //! - **Messages and mentions.** [`start_engine`] starts the client's notify engine (`Notify::start`) with an
-//!   [`OsNotifier`] when the registry takes the client (`windows::keep_client`), window or not (a hidden start at login
-//!   notifies from the tray); [`attach`], on each frame of a window that draws the workspace, tells it the window's
-//!   focus and channel. The engine keeps running while the client does (a closed window keeps its client in the
+//!   [`OsNotifier`] when the registry takes a client with no window (`windows::keep_client`: a hidden start at login
+//!   notifies from the tray), or when its window closes before drawing the workspace; [`attach`], on each frame of a
+//!   window that draws the workspace, starts it (knowing the window's focus) or tells it the window's focus and channel. The engine keeps running while the client does (a closed window keeps its client in the
 //!   background) and stops when the client is released ([`release`]). The engine
 //!   decides as before ([`dilla_client::features::notify::should_notify`]: the device switch, the permission, mutes,
 //!   the channel on screen), so what reaches the OS is what the in-app notifier recorded.
@@ -348,8 +348,9 @@ pub fn attach(ctx: &SlotCx, window: &Window, cx: &mut App) {
     start_with(instance, client, (visible, ctx.channel, presence), cx);
 }
 
-/// Starts `client`'s notify engine for `instance`, once per client: with the client, window or not
-/// (`windows::keep_client`; GPUI gaps Task 3b: a hidden start notifies from the tray). It starts as no window sees it:
+/// Starts `client`'s notify engine for `instance`, once per client, for a client no window draws: a hidden start
+/// (`windows::keep_client`; GPUI gaps Task 3b: it notifies from the tray), or a window closed before its first workspace
+/// frame (a window that draws one starts the engine in [`attach`]). It starts as no window sees it:
 /// not focused, no channel on screen, the account's presence choice as the client holds it; a window's frames
 /// ([`attach`]) tell it more. A new client of the instance (a sign-in again) replaces the old engine.
 pub fn start_engine(instance: InstanceId, client: &Rc<Client>, cx: &mut App) {
