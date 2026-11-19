@@ -211,7 +211,7 @@ jobs:
           libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
           libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libpipewire-0.3-dev
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
-          libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg
+          libxfixes-dev libxcomposite-dev libxrandr-dev ffmpeg dbus
       - run: rustup show active-toolchain
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -248,6 +248,11 @@ jobs:
       # The window test runs on GPUI's test platform, so it needs no display.
       - run: cargo test $GPUI_CRATES --locked --no-fail-fast  # every OS reports all its failing test binaries in one run
         shell: bash
+      # The vendored GPUI's Linux notification test claims org.freedesktop.Notifications on a session bus, so it runs on a
+      # private one (DILLA_PRIVATE_BUS=1 is only safe under dbus-run-session; without it the test skips itself).
+      - name: Linux notifications close and replace by tag (private session bus)
+        if: runner.os == 'Linux' && !cancelled()
+        run: dbus-run-session -- env DILLA_PRIVATE_BUS=1 cargo test -p gpui-pre-linux --locked system_notifications
       # The macOS call tests open a real CoreAudio unit (the app's voice join). D-D: the runner's own default input and
       # output when it has them (macos-15 had "Apple Virtual Sound Device" in every spike run, 2026-11-16), else
       # BlackHole 2ch, pinned by SHA-256 (the Null Audio Device is intermittently missing, runner-images #13668;

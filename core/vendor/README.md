@@ -268,6 +268,19 @@ fields. Test: `altgr_with_the_ptt_key_does_not_open_the_mic` in `clients/desktop
 
 Keep this patch until gpui reports AltGr itself (a Level3 modifier on `Modifiers`).
 
+A second change (2026-11-19), marked `DILLA PATCH`: system notifications close and replace by tag.
+`src/linux/system_notifications.rs` keeps the notification server's id per tag (`LiveIds`, from `NotificationHandle::id()`
+before `wait_for_action` consumes the handle). A same-tag `show` passes the old id as `replaces_id`, and `dismiss(tag)` sends
+`org.freedesktop.Notifications.CloseNotification(id)` on the session bus, off the UI thread, so a ring that ends or a
+conversation that is read leaves no stale notification in the shade. notify-rust has no close-by-id, so `Cargo.toml` adds
+`zbus` 6.2.1 (the version notify-rust 4.19 already uses) as a direct dependency. Tests: `live_ids_*`, `take_removes` and
+`closed_ignores_a_newer_id` in that file, and `dismiss_sends_close_notification_and_show_replaces`, which mocks the
+notification server on a session bus and runs only with `DILLA_PRIVATE_BUS=1` (under `dbus-run-session`; the desktop
+workflow runs it that way on Linux). Not pinned in `vendored_patches.rs`: that file needs a window and this has none.
+A `dismiss` that races the same tag's `show` (before the server answered) closes nothing.
+
+Keep this patch until gpui closes and replaces system notifications itself.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs
