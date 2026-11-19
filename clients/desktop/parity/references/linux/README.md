@@ -22,6 +22,12 @@ A surface the web client never had has no web frame to compare with. Its referen
 by the test that checks it and looked at by eye against the Signal design (the component it is built from) before it is
 committed; afterwards the test compares every run with it under `../../tolerance.toml`, as for a web reference.
 
+A `native/` reference is made with `assert_native_screen(fixture, golden, prepare)` (`parity/src/screen.rs`): it launches
+a GPUI-only fixture (a fixture JSON with no web sidecar), runs `prepare` for the steps that have no web counterpart,
+and compares the frame with `native/<golden>-2x.png`; `DILLA_PARITY_BLESS=1` writes that file instead, and it is blessed
+by eye, never by the tolerance. There is no fixture of its own for the helper: the harness test
+`native_screen_blesses_then_compares` runs it on `shell/channel-view` against a temporary references root.
+
 | Reference | What | Test |
 | --- | --- | --- |
 | `native/quit-active-call` | "Quit Dilla?" over the channel view (`quit-dialog active-call`) | `dilla-desktop::tests/quit::parity_quit_dialog_active_call` |
