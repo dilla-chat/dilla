@@ -14,7 +14,7 @@
 #                   the old app data is kept, dilla-desktop --version works through /usr/bin
 #   fedora-upgrade  the same with beta.5's rpm (its %postun must not break the upgrade)
 #   launch          the AppImage starts under Xvfb on lavapipe with a GNOME Keyring in a D-Bus session, has its
-#                   window (class dev.dilla.desktop) up and is still alive after 10 s, and exits on SIGTERM
+#                   window (class chat.dilla.Dilla) up and is still alive after 10 s, and exits on SIGTERM
 # The upgrade checks read beta.5's packages from <beta5-dir>, checked against their pinned SHA-256 here.
 #
 # Usage: desktop-gpui-smoke-linux.sh <check> <version> <assets-dir> [<beta5-dir>]
@@ -81,17 +81,17 @@ case "$check" in
     [ "$(dpkg-query -W -f '${Version}' dilla)" = "$core~alpha.$alpha-1" ] || fail "dpkg reports $(dpkg-query -W -f '${Version}' dilla)"
     says_version dilla-desktop
     [ "$(command -v dilla-desktop)" = /usr/bin/dilla-desktop ] || fail "dilla-desktop is not /usr/bin/dilla-desktop"
-    test -f /usr/share/applications/dev.dilla.desktop.desktop
-    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
-    test -f /usr/share/icons/hicolor/512x512/apps/dev.dilla.desktop.png
+    test -f /usr/share/applications/chat.dilla.Dilla.desktop
+    scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
+    test -f /usr/share/icons/hicolor/512x512/apps/chat.dilla.Dilla.png
     test -f /opt/Dilla/licenses/THIRD-PARTY.md
     if [ "$check" = ubuntu-deb ]; then
       cp "$assets/$base.AppImage" /tmp/dilla.AppImage
       chmod +x /tmp/dilla.AppImage
       (cd /tmp && says_version ./dilla.AppImage --appimage-extract-and-run)
       # The AppImage carries the same entry (appimaged and AppImageLauncher integrate it from the file).
-      (cd /tmp && ./dilla.AppImage --appimage-extract dev.dilla.desktop.desktop >/dev/null)
-      scheme_registered /tmp/squashfs-root/dev.dilla.desktop.desktop
+      (cd /tmp && ./dilla.AppImage --appimage-extract chat.dilla.Dilla.desktop >/dev/null)
+      scheme_registered /tmp/squashfs-root/chat.dilla.Dilla.desktop
     fi
     apt-get remove -y -q dilla
     [ ! -e /opt/Dilla ] && [ ! -e /usr/bin/dilla-desktop ] || fail "removing the package left files behind"
@@ -100,7 +100,7 @@ case "$check" in
     dnf install -y -q --setopt=install_weak_deps=False "$assets/$base.rpm"
     [ "$(rpm -q --qf '%{VERSION}-%{RELEASE}' dilla)" = "$core-0.alpha.$alpha.1" ] || fail "rpm reports $(rpm -q dilla)"
     says_version dilla-desktop
-    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
+    scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
     rpm -V dilla || fail "rpm -V found changed files"
     dnf remove -y -q dilla
     [ ! -e /opt/Dilla ] && [ ! -e /usr/bin/dilla-desktop ] || fail "removing the package left files behind"
@@ -129,7 +129,7 @@ case "$check" in
     [ "$(pacman -Q dilla-bin)" = "dilla-bin ${core}alpha$alpha-1" ] || fail "pacman reports $(pacman -Q dilla-bin)"
     [ "$(vercmp "${core}alpha$alpha-1" 0.1.0beta5-1)" = 1 ] || fail "vercmp orders the release below beta.5"
     says_version dilla-desktop
-    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
+    scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
     ;;
   ubuntu-upgrade)
     pinned "$beta5" "$BETA5_DEB" "$BETA5_DEB_SHA256"
@@ -142,7 +142,7 @@ case "$check" in
     [ "$(dpkg-query -W -f '${Version}' dilla)" = "$core~alpha.$alpha-1" ] || fail "dpkg reports $(dpkg-query -W -f '${Version}' dilla) after the upgrade"
     opt_is_gpui_only
     user_data_kept
-    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
+    scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
     says_version /usr/bin/dilla-desktop
     says_version dilla-desktop
     # beta.5's postrm removed its update-alternatives group during the upgrade; nothing of it is left.
@@ -162,7 +162,7 @@ case "$check" in
     [ "$(rpm -q --qf '%{VERSION}-%{RELEASE}' dilla)" = "$core-0.alpha.$alpha.1" ] || fail "rpm reports $(rpm -q dilla) after the upgrade"
     opt_is_gpui_only
     user_data_kept
-    scheme_registered /usr/share/applications/dev.dilla.desktop.desktop
+    scheme_registered /usr/share/applications/chat.dilla.Dilla.desktop
     says_version /usr/bin/dilla-desktop
     ;;
   launch)
@@ -181,7 +181,7 @@ pid=$!
 sleep 10
 if ! kill -0 "$pid" 2>/dev/null; then echo "the app exited within 10 s:"; cat /tmp/dilla.log; exit 1; fi
 # Its window is mapped, with the app id as its class (the desktop entry's StartupWMClass).
-if ! xwininfo -root -tree | grep -F '"dev.dilla.desktop"'; then echo "no window of class dev.dilla.desktop:"; xwininfo -root -tree; cat /tmp/dilla.log; kill -KILL "$pid"; exit 1; fi
+if ! xwininfo -root -tree | grep -F '"chat.dilla.Dilla"'; then echo "no window of class chat.dilla.Dilla:"; xwininfo -root -tree; cat /tmp/dilla.log; kill -KILL "$pid"; exit 1; fi
 kill -TERM "$pid"
 for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
 if kill -0 "$pid" 2>/dev/null; then echo "the app ignored SIGTERM:"; cat /tmp/dilla.log; kill -KILL "$pid"; exit 1; fi

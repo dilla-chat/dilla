@@ -456,7 +456,7 @@ mod os {
 
     impl ksni::Tray for Sni {
         fn id(&self) -> String {
-            crate::APP_ID.to_owned()
+            crate::LINUX_APP_ID.to_owned()
         }
 
         fn title(&self) -> String {

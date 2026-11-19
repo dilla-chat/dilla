@@ -61,6 +61,13 @@ test('the recipe is dilla-bin, provides and conflicts dilla, and pins the releas
   assert.throws(() => aurRecipe(V, 'A'.repeat(64)), /invalid tarball SHA-256/);
 });
 
+test('the recipe installs the desktop entry, metainfo and icons under chat.dilla.Dilla, never dev.dilla.desktop', () => {
+  const { PKGBUILD } = aurRecipe(V, SHA);
+  assert.match(PKGBUILD, /install -Dm644 chat\.dilla\.Dilla\.desktop "\$pkgdir\/usr\/share\/applications\/chat\.dilla\.Dilla\.desktop"/);
+  assert.match(PKGBUILD, /install -Dm644 chat\.dilla\.Dilla\.metainfo\.xml "\$pkgdir\/usr\/share\/metainfo\/chat\.dilla\.Dilla\.metainfo\.xml"/);
+  assert.ok(!PKGBUILD.includes('dev.dilla.desktop'));
+});
+
 test('the recipe archive is reproducible and holds exactly .SRCINFO and PKGBUILD', () => {
   const files = aurRecipe(V, SHA);
   assert.deepEqual(recipeArchive(files), recipeArchive(files));

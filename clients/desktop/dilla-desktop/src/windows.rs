@@ -411,7 +411,7 @@ pub fn manager_options(bounds: Bounds<gpui::Pixels>) -> WindowOptions {
         }),
         #[cfg(not(target_os = "macos"))]
         window_decorations: Some(gpui::WindowDecorations::Client),
-        app_id: Some(crate::APP_ID.to_owned()),
+        app_id: Some(crate::window_app_id().to_owned()),
         ..Default::default()
     }
 }

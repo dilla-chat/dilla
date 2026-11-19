@@ -18,7 +18,7 @@
 //!   with the same tag replaces it. At most [`MAX_LIVE`] are live; beta.5 refused the 65th, but GPUI reports no close
 //!   of a notification, so here the oldest is withdrawn to make room (otherwise 64 shown notifications would silence
 //!   the app for good). Closing a window withdraws its instance's notifications ([`super::WindowEvent::Closed`]).
-//! - **Identity.** [`install`] sets the app identity (`crate::APP_ID`): the Windows AppUserModelID, which needs the
+//! - **Identity.** [`install`] sets the app identity (`crate::window_app_id()`): the Windows AppUserModelID, which needs the
 //!   installer's Start-menu shortcut to show toasts (release plan Task 13), and the Linux notification's app name;
 //!   macOS shows notifications only from the app bundle.
 //!
@@ -268,7 +268,7 @@ impl NotifyEnv for Env {
 /// Called once by [`super::install`]: the app identity, the response handler, the pump from the engines' threads, the
 /// window-close withdrawal and the tray's ring rows.
 pub fn install(cx: &mut App) {
-    cx.set_app_identity(crate::APP_ID, crate::PRODUCT_NAME);
+    cx.set_app_identity(crate::window_app_id(), crate::PRODUCT_NAME);
     cx.on_system_notification_response(respond);
     sender(cx);
     NativeShell::on_window_event(

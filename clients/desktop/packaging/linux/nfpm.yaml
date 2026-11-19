@@ -60,57 +60,57 @@ contents:
     packager: deb
     file_info:
       mode: 0644
-  - src: ./dev.dilla.desktop.desktop
-    dst: /usr/share/applications/dev.dilla.desktop.desktop
+  - src: ./chat.dilla.Dilla.desktop
+    dst: /usr/share/applications/chat.dilla.Dilla.desktop
     file_info:
       mode: 0644
-  - src: ./dev.dilla.desktop.metainfo.xml
-    dst: /usr/share/metainfo/dev.dilla.desktop.metainfo.xml
+  - src: ./chat.dilla.Dilla.metainfo.xml
+    dst: /usr/share/metainfo/chat.dilla.Dilla.metainfo.xml
     file_info:
       mode: 0644
   # One entry per icon: an nfpm glob flattens directories, and a tree would claim the shared hicolor directories.
-  - src: ./icons/hicolor/16x16/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/16x16/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/16x16/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/16x16/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/22x22/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/22x22/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/22x22/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/22x22/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/24x24/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/24x24/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/24x24/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/24x24/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/32x32/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/32x32/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/32x32/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/32x32/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/48x48/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/48x48/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/48x48/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/48x48/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/64x64/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/64x64/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/64x64/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/64x64/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/128x128/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/128x128/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/128x128/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/128x128/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/256x256/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/256x256/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/256x256/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/256x256/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/512x512/apps/dev.dilla.desktop.png
-    dst: /usr/share/icons/hicolor/512x512/apps/dev.dilla.desktop.png
+  - src: ./icons/hicolor/512x512/apps/chat.dilla.Dilla.png
+    dst: /usr/share/icons/hicolor/512x512/apps/chat.dilla.Dilla.png
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/scalable/apps/dev.dilla.desktop.svg
-    dst: /usr/share/icons/hicolor/scalable/apps/dev.dilla.desktop.svg
+  - src: ./icons/hicolor/scalable/apps/chat.dilla.Dilla.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/chat.dilla.Dilla.svg
     file_info:
       mode: 0644
-  - src: ./icons/hicolor/symbolic/apps/dev.dilla.desktop-symbolic.svg
-    dst: /usr/share/icons/hicolor/symbolic/apps/dev.dilla.desktop-symbolic.svg
+  - src: ./icons/hicolor/symbolic/apps/chat.dilla.Dilla-symbolic.svg
+    dst: /usr/share/icons/hicolor/symbolic/apps/chat.dilla.Dilla-symbolic.svg
     file_info:
       mode: 0644
 overrides:

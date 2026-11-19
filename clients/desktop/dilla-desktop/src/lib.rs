@@ -36,10 +36,22 @@ pub use app::{AppView, Launch};
 /// The window title and product name: plain "Dilla", as beta.5 (release plan D3). The data root keeps its own name
 /// ([`dilla_client::instances::PRODUCT_DIR`]).
 pub const PRODUCT_NAME: &str = "Dilla";
-/// The application id (Wayland app id, desktop-entry name `dev.dilla.desktop.desktop`, the packages' `StartupWMClass`):
-/// beta.5's id, since the release replaces it (release plan D3). The data root and the keychain service keep their
-/// preview names, so GPUI data never mixes with Electron's.
+/// The application id on macOS (bundle id) and Windows (AppUserModelID): beta.5's id, since the release replaces it
+/// (release plan D3). The data root and the keychain service keep their preview names, so GPUI data never mixes with
+/// Electron's. Linux uses [`LINUX_APP_ID`].
 pub const APP_ID: &str = "dev.dilla.desktop";
+/// The application id on Linux: the Wayland app id, the desktop entry's name (`chat.dilla.Dilla.desktop`) and the
+/// packages' `StartupWMClass`. It must not end in `.desktop`: KDE strips that suffix before it looks the entry up.
+pub const LINUX_APP_ID: &str = "chat.dilla.Dilla";
+
+/// The id a window and the notifications carry: [`LINUX_APP_ID`] on Linux, [`APP_ID`] elsewhere.
+pub fn window_app_id() -> &'static str {
+    if cfg!(target_os = "linux") {
+        LINUX_APP_ID
+    } else {
+        APP_ID
+    }
+}
 
 /// Gives `child` the element id `id`, which the test-only automation interface looks up by name.
 /// Without the `automation` feature this is a plain id-carrying wrapper.
@@ -254,7 +266,7 @@ pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
             title: None,
             ..Default::default()
         }),
-        app_id: Some(APP_ID.to_owned()),
+        app_id: Some(window_app_id().to_owned()),
         window_min_size: Some(size(px(WORKSPACE_MIN.0), px(WORKSPACE_MIN.1))),
         ..Default::default()
     }
@@ -262,6 +274,35 @@ pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 
 #[cfg(test)]
 mod tests {
+    /// KDE strips a trailing `.desktop` from the app id before it looks up the desktop entry, so the entry named
+    /// `dev.dilla.desktop.desktop` was never found and Plasma drew a generic icon.
+    #[test]
+    fn linux_app_id_is_not_a_desktop_name() {
+        assert!(!super::LINUX_APP_ID.ends_with(".desktop"));
+        assert_eq!(super::LINUX_APP_ID, "chat.dilla.Dilla");
+        assert_eq!(
+            super::APP_ID,
+            "dev.dilla.desktop",
+            "macOS and Windows keep theirs"
+        );
+    }
+
+    #[test]
+    fn every_window_uses_window_app_id() {
+        let bounds = gpui::Bounds::new(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(900.0), gpui::px(600.0)),
+        );
+        assert_eq!(
+            super::main_window_options(bounds).app_id.as_deref(),
+            Some(super::window_app_id())
+        );
+        assert_eq!(
+            crate::windows::manager_options(bounds).app_id.as_deref(),
+            Some(super::window_app_id())
+        );
+    }
+
     /// Integration 3, step 5: the Bot page's step-up (Task 21's `bot_page::StepUp`) is the factor area's dialog (Task
     /// 26's `ask_step_up`), installed with the app, so a Bot capability save asks for a fresh factor instead of saying
     /// the step-up is missing.

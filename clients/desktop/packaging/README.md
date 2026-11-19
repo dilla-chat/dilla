@@ -4,11 +4,13 @@
 
 ## linux/
 
-- `dev.dilla.desktop.desktop`: the desktop entry. `StartupWMClass` and the file name equal `APP_ID`
-  (`dilla-desktop/src/lib.rs`), which Wayland matches the window's icon by. `MimeType=x-scheme-handler/dilla;` and `Exec=dilla-desktop %U`
+- `chat.dilla.Dilla.desktop`: the desktop entry. `StartupWMClass` and the file name equal `LINUX_APP_ID`
+  (`dilla-desktop/src/lib.rs`), which Wayland matches the window's icon by. It is not `APP_ID` (`dev.dilla.desktop`, the
+  macOS bundle id and Windows AUMID): KDE strips a trailing `.desktop` from the app id before it looks the entry up, so
+  `dev.dilla.desktop.desktop` was never found and Plasma drew a generic icon. `MimeType=x-scheme-handler/dilla;` and `Exec=dilla-desktop %U`
   register the `dilla:` scheme (D12, superseded 2026-11-16); the deb and rpm need no maintainer script, their package
   manager's desktop-database trigger indexes it. Check with `desktop-file-validate`.
-- `dev.dilla.desktop.metainfo.xml`: the AppStream metadata. Check with `appstreamcli validate --no-net` (appimagetool
+- `chat.dilla.Dilla.metainfo.xml`: the AppStream metadata. Check with `appstreamcli validate --no-net` (appimagetool
   runs it too).
 - `AppRun`: the AppImage's entry point, the binary alone (nothing is bundled, no `LD_LIBRARY_PATH`).
 - `nfpm.yaml`: the deb and rpm, package `dilla` (beta.5's name, so they upgrade it in place), with no maintainer
@@ -21,7 +23,7 @@
   cd clients/desktop
   for s in 16 22 24 32 48 64 128 256 512; do
     magick assets/brand/icon.png -filter Lanczos -resize ${s}x${s} -strip \
-      -define png:exclude-chunks=date,time PNG32:packaging/linux/icons/hicolor/${s}x${s}/apps/dev.dilla.desktop.png
+      -define png:exclude-chunks=date,time PNG32:packaging/linux/icons/hicolor/${s}x${s}/apps/chat.dilla.Dilla.png
   done
   ```
 

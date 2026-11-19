@@ -58,11 +58,12 @@ test('the tarball is dilla-<v>/ with the binary, desktop entry, metainfo, icons 
   const r = run();
   const listing = spawnSync('tar', ['-tvzf', join(r.out, `dilla-${V}-linux-x64.tar.gz`)], { encoding: 'utf8' }).stdout.trim().split('\n');
   const names = listing.map((l) => l.split(/\s+/).at(-1));
-  for (const want of [`dilla-${V}/dilla-desktop`, `dilla-${V}/dev.dilla.desktop.desktop`, `dilla-${V}/dev.dilla.desktop.metainfo.xml`,
-    `dilla-${V}/icons/hicolor/512x512/apps/dev.dilla.desktop.png`, `dilla-${V}/icons/hicolor/scalable/apps/dev.dilla.desktop.svg`,
+  for (const want of [`dilla-${V}/dilla-desktop`, `dilla-${V}/chat.dilla.Dilla.desktop`, `dilla-${V}/chat.dilla.Dilla.metainfo.xml`,
+    `dilla-${V}/icons/hicolor/512x512/apps/chat.dilla.Dilla.png`, `dilla-${V}/icons/hicolor/scalable/apps/chat.dilla.Dilla.svg`,
     `dilla-${V}/licenses/LICENSE`, `dilla-${V}/licenses/THIRD-PARTY.md`, `dilla-${V}/licenses/libwebrtc-LICENSE.md`, `dilla-${V}/licenses/OFL-JetBrainsMono.txt`]) {
     assert.ok(names.includes(want), want);
   }
+  assert.ok(names.every((name) => !name.includes('dev.dilla.desktop')), names.join('\n'));
   assert.ok(names.every((name) => name.startsWith(`dilla-${V}/`)), names.join('\n'));
   assert.ok(listing.every((l) => /^\S+ 0\/0 .* 1970-01-01 /.test(l)), listing.join('\n'));
   assert.match(listing.find((l) => l.endsWith('/dilla-desktop')), /^-rwxr-xr-x /);
@@ -109,4 +110,18 @@ test('a non-glibc binary, a bad version, a non-empty out-dir and a missing runti
   writeFileSync(join(busy, 'stale'), 'x');
   assert.match(run({ out: busy }).stderr, /is not empty/);
   assert.notEqual(run({ env: { DILLA_APPIMAGE_RUNTIME: join(dir, 'absent') } }).status, 0);
+});
+
+test('the desktop entry, metainfo and nfpm recipe use chat.dilla.Dilla (KDE strips a trailing .desktop from the app id)', () => {
+  const linux = join(root, 'clients', 'desktop', 'packaging', 'linux');
+  const entry = readFileSync(join(linux, 'chat.dilla.Dilla.desktop'), 'utf8').split('\n');
+  for (const line of ['Icon=chat.dilla.Dilla', 'StartupWMClass=chat.dilla.Dilla', 'MimeType=x-scheme-handler/dilla;', 'Exec=dilla-desktop %U']) assert.ok(entry.includes(line), line);
+  const metainfo = readFileSync(join(linux, 'chat.dilla.Dilla.metainfo.xml'), 'utf8');
+  assert.match(metainfo, /<id>chat\.dilla\.Dilla<\/id>/);
+  assert.match(metainfo, /<launchable type="desktop-id">chat\.dilla\.Dilla\.desktop<\/launchable>/);
+  const nfpm = readFileSync(join(linux, 'nfpm.yaml'), 'utf8');
+  assert.ok(!nfpm.includes('dev.dilla.desktop'));
+  for (const dst of ['usr/share/applications/chat.dilla.Dilla.desktop', 'usr/share/metainfo/chat.dilla.Dilla.metainfo.xml',
+    ...['16x16', '22x22', '24x24', '32x32', '48x48', '64x64', '128x128', '256x256', '512x512'].map((s) => `usr/share/icons/hicolor/${s}/apps/chat.dilla.Dilla.png`),
+    'usr/share/icons/hicolor/scalable/apps/chat.dilla.Dilla.svg']) assert.ok(nfpm.includes(`/${dst}`), dst);
 });
