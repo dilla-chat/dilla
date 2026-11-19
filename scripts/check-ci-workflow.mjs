@@ -1539,7 +1539,7 @@ export const GPUI_PINNED_STEPS = {
     '  run: |',
     '    export ALSA_CONFIG_PATH="$RUNNER_TEMP/asound-null.conf"',
     '    cargo test -p dilla-parity --locked -- --ignored',
-    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test share --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
+    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test hidden_start --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test share --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
     '    cargo test -p dilla-desktop --test integration --locked -- --ignored',
     '    cargo test -p dilla-desktop --test slice --locked -- --ignored',
   ].join('\n'),
@@ -2143,8 +2143,9 @@ export function checkDesktopGpuiReleaseWorkflow(root) {
   return problems;
 }
 
-/** desktop-gpui.yml installs these for its tests only (the lavapipe Vulkan driver, ffmpeg for the call fixtures). */
-export const GPUI_TEST_ONLY_PACKAGES = ['mesa-vulkan-drivers', 'ffmpeg'];
+/** desktop-gpui.yml installs these for its tests only (the lavapipe Vulkan driver, ffmpeg for the call fixtures, the dbus daemon
+ * for dbus-run-session in the system_notifications test; the release build links libdbus-1-dev, which it does install). */
+export const GPUI_TEST_ONLY_PACKAGES = ['mesa-vulkan-drivers', 'ffmpeg', 'dbus'];
 
 /** The packages of the first `ci-apt-install.sh` invocation in a workflow's text (the GPUI build dependencies). */
 export function aptPackages(text) {
