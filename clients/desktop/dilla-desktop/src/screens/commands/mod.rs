@@ -317,12 +317,12 @@ pub enum SendDecision {
 /// Decides what sending `draft` in the conversation of `ctx` does, and runs a private answer. A private answer is
 /// added to this device's in-memory results only (`dilla_client::features::bot`): nothing is posted or stored.
 ///
-/// `encode` is the composer's encoder for text (`Composer::encoded`), for the built-ins that post or edit text (the
-/// ones Tasks 10 and 11 move onto [`Plan::Builtin`]).
+/// `encode` is the composer's encoder for text (`Composer::encoded`): a built-in that posts or edits text carries it
+/// encoded ([`builtins::prepared`]), as builtin.ts sends `context.encodeMessage(text)`.
 pub fn on_send(
     ctx: &SlotCx,
     draft: &str,
-    _encode: &dyn Fn(&str) -> String,
+    encode: &dyn Fn(&str) -> String,
     window: gpui::WindowId,
     cx: &mut App,
 ) -> SendDecision {
@@ -393,6 +393,7 @@ pub fn on_send(
                 channel,
                 thread: None,
             };
+            let run = builtins::prepared(run, &ctx.state, channel, encode);
             let row = client.as_ref().map_or(0, |c| {
                 c.bot().add_result(
                     conversation,
@@ -642,6 +643,41 @@ mod tests {
             assert_eq!(picker_state(a, cx).selected, 0);
             assert!(keys::apply(a, picker::Key::Down, cx));
             assert_eq!(picker_state(a, cx).selected, 1);
+        });
+    }
+
+    /// Task 8's `Plan::Builtin` arm as the composer reaches it: `/delete` of an own message asks first (a fixture, without
+    /// a client, still asks so the dialog can be shot), `/pin` runs at once and asks nothing, and a refusal is answered
+    /// without a question. Each clears the draft. With a client, the pending row comes first: tests/bot.rs
+    /// `a_builtin_sent_from_the_composer_shows_its_row_then_asks_or_runs`.
+    #[gpui::test]
+    fn a_builtin_send_asks_or_runs(cx: &mut gpui::TestAppContext) {
+        let (state, dm, msg) = builtins::tests::dm_with("hello");
+        let ctx = SlotCx {
+            state: std::sync::Arc::new(state),
+            channel: Some(dm),
+            ..SlotCx::default()
+        };
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let encode = |t: &str| t.to_owned();
+        let id = msg.hex();
+        cx.update(|cx| {
+            for (draft, asks) in [
+                (format!("/delete message:{id}"), true),
+                (format!("/pin message:{id}"), false),
+                (
+                    format!("/edit message:{} text:x", ChannelId([9; 16]).hex()),
+                    false,
+                ),
+            ] {
+                draft_changed(w, &draft, cx);
+                assert_eq!(on_send(&ctx, &draft, &encode, w, cx), SendDecision::Handled);
+                assert_eq!(confirm::is_open(w, cx), asks, "{draft}");
+                assert_eq!(picker_state(w, cx).draft, "", "the draft is cleared");
+                confirm::answer_builtin(w, None, cx);
+            }
         });
     }
 

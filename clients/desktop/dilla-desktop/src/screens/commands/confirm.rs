@@ -55,26 +55,32 @@ pub struct AskingBuiltin {
 }
 
 /// The question, and what the window last drew around it: `Some(true)` runs the command with that context (the
-/// answer comes from a click, which has no [`SlotCx`] of its own).
+/// answer comes from a click, which has no [`SlotCx`] of its own). `None` until the dialog was first drawn.
 #[derive(Default)]
-struct OpenBuiltin(Option<(AskingBuiltin, SlotCx)>);
+struct OpenBuiltin(Option<(AskingBuiltin, Option<SlotCx>)>);
 
 /// `window`'s built-in command asks a question (the composer's send of a command with a `confirm`).
 pub fn ask_builtin(window: gpui::WindowId, asking: AskingBuiltin, cx: &mut App) {
-    crate::per_window::get_mut::<OpenBuiltin>(window, cx).0 = Some((asking, SlotCx::default()));
+    crate::per_window::get_mut::<OpenBuiltin>(window, cx).0 = Some((asking, None));
 }
 
 /// The person answered a built-in's question: `Some(true)` runs it, `Some(false)` (Cancel) and `None` (a click outside,
 /// the web's `abandonDialog`) dismiss its pending row (CommandHost.tsx:294: `cancel && !moderation`; a command that
 /// keeps its cancelled row says so in [`Builtin::dismissed_on_cancel`]).
+///
+/// A `Some(true)` before the dialog was first drawn is a no-op: nothing could have been clicked, and there is no
+/// context to run it with yet.
 pub fn answer_builtin(window: gpui::WindowId, choice: Option<bool>, cx: &mut App) {
-    let Some((asking, ctx)) = crate::per_window::get_mut::<OpenBuiltin>(window, cx)
-        .0
-        .take()
-    else {
+    let open = &mut crate::per_window::get_mut::<OpenBuiltin>(window, cx).0;
+    if choice == Some(true) && open.as_ref().is_some_and(|(_, ctx)| ctx.is_none()) {
+        return;
+    }
+    let Some((asking, ctx)) = open.take() else {
         return;
     };
-    if choice == Some(true) {
+    if choice == Some(true)
+        && let Some(ctx) = ctx
+    {
         super::builtins::run(
             asking.run,
             asking.row,
@@ -287,7 +293,7 @@ fn builtin_overlay(ctx: &SlotCx, w: gpui::WindowId, cx: &mut App) -> Option<AnyE
         answer_builtin(w, None, cx);
         return None;
     }
-    crate::per_window::get_mut::<OpenBuiltin>(w, cx).0 = Some((asking.clone(), ctx.clone()));
+    crate::per_window::get_mut::<OpenBuiltin>(w, cx).0 = Some((asking.clone(), Some(ctx.clone())));
     Some(
         ConfirmDialog::new(
             "command-builtin-confirm",
@@ -309,6 +315,8 @@ fn builtin_overlay(ctx: &SlotCx, w: gpui::WindowId, cx: &mut App) -> Option<AnyE
             answer_builtin(w, None, cx);
             window.refresh();
         })
+        // Tracked as the moderation dialog's action is, so a pointer can find it.
+        .confirm_wrap(|button| crate::tracked_box("command-confirm", button).into_any_element())
         .into_any_element(),
     )
 }
@@ -331,29 +339,37 @@ mod tests {
         assert_eq!(handle(&m), "@troll");
     }
 
-    /// A fixture window has no client: its question still opens (so the dialog can be shot), and any answer closes it
-    /// and runs nothing. The case with a client, where a pending row must go, is in tests/bot.rs
+    /// A fixture window has no client: its question still opens (so the dialog can be shot), and once drawn any answer
+    /// closes it and runs nothing. Before its first draw there is no context to run it with, so a Continue is a no-op:
+    /// the question stays. The case with a client, where a pending row must go, is in tests/bot.rs
     /// (`a_cancelled_builtin_question_leaves_no_row`).
     #[gpui::test]
     fn a_question_without_a_client_opens_and_every_answer_closes_it(cx: &mut gpui::TestAppContext) {
         use dilla_client::features::bot::{Ask, Builtin};
-        use dilla_client::state::ChannelId;
+        use dilla_client::state::{ChannelId, MessageId};
         let w = cx
             .add_empty_window()
             .update(|w, _| w.window_handle().window_id());
+        let channel = ChannelId([1; 16]);
+        let drawn = SlotCx {
+            channel: Some(channel),
+            ..SlotCx::default()
+        };
         for answer in [Some(true), Some(false), None] {
             cx.update(|cx| {
                 ask_builtin(
                     w,
                     AskingBuiltin {
                         ask: Ask {
-                            title: "Probe?".into(),
-                            body: "Nothing happens.".into(),
+                            title: "Delete this message?".into(),
+                            body: "This permanently deletes your message.".into(),
                         },
-                        run: Builtin::Probe,
+                        run: Builtin::DeleteOwn {
+                            msg: MessageId([2; 16]),
+                        },
                         row: 1,
                         conversation: Conversation {
-                            channel: ChannelId([1; 16]),
+                            channel,
                             thread: None,
                         },
                         client: None,
@@ -361,6 +377,9 @@ mod tests {
                     cx,
                 );
                 assert!(is_open(w, cx));
+                answer_builtin(w, Some(true), cx);
+                assert!(is_open(w, cx), "Continue before the first draw");
+                assert!(builtin_overlay(&drawn, w, cx).is_some());
                 answer_builtin(w, answer, cx);
                 assert!(!is_open(w, cx), "answer {answer:?}");
             });

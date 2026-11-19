@@ -24,9 +24,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::client::{Client, Inner};
+use crate::features::moderation::{Evidence, Removal, RemovalOutcome};
 use crate::gateway::frames::{self, Frame, Op};
 use crate::state::bot::{Conversation, ResultProvider, ResultStatus};
-use crate::state::{AppState, ChannelId, CommunityId, TimelineItem, TimelineItemState};
+use crate::state::{AppState, ChannelId, CommunityId, MessageId, TimelineItem, TimelineItemState};
 use crate::sync::route::AreaFrames;
 
 use registry::{CommandDefinition, Parsed, Provider};
@@ -145,7 +146,7 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
 pub fn plan_in(
     state: &AppState,
     community: Option<CommunityId>,
-    _channel: Option<ChannelId>,
+    channel: Option<ChannelId>,
     draft: &str,
 ) -> Plan {
     let defs = definitions(state, community);
@@ -217,6 +218,9 @@ pub fn plan_in(
                     registry::classic_message(&command_id, arg("text")).unwrap_or_default(),
                 ),
                 "kick" | "ban" => moderation_plan(state, community, &command_id, &args),
+                "reply" | "edit" | "delete" | "pin" | "unpin" | "topic" => {
+                    message_plan(state, community, channel, &command_id, &args)
+                }
                 "code" => {
                     let language = arg("language").unwrap_or_default().trim().to_owned();
                     let text = arg("text").unwrap_or_default();
@@ -317,19 +321,57 @@ pub struct Ask {
 }
 
 /// A built-in command that acts on another area, with what it needs from the draft. The commands move here from the
-/// "unavailable" catch-all of [`plan_in`] as their areas land (Tasks 10, 11, 24, 25).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// "unavailable" catch-all of [`plan_in`] as their areas land (Tasks 10, 11, 24, 25). The text a command carries is the
+/// composer's encoded text once `on_send` has prepared it (`Reply`, `Edit`), and `RemoveOther`'s excerpt is filled there
+/// too; its `Debug` never prints any of it (E2EE content stays out of logs).
+#[derive(Clone, PartialEq, Eq)]
 pub enum Builtin {
-    /// Runs nothing: stands in for a command until the first real one is added, so the plumbing can be driven.
-    #[doc(hidden)]
-    Probe,
+    /// `/reply`: posts `text` in the conversation as a reply to `to` (builtin.ts `publish`).
+    Reply { to: MessageId, text: String },
+    /// `/edit`: replaces the text of this account's message `msg`.
+    Edit { msg: MessageId, text: String },
+    /// `/delete` of this account's own message.
+    DeleteOwn { msg: MessageId },
+    /// `/delete` of another person's message (builtin.ts `removeOtherMessage`): removed for everyone with `reason`, the
+    /// message's `excerpt` kept as moderation evidence ([`removal_step`]).
+    RemoveOther {
+        msg: MessageId,
+        seq: u64,
+        reason: String,
+        excerpt: String,
+    },
+    /// `/pin` (`on`) and `/unpin`.
+    Pin { msg: MessageId, on: bool },
+    /// `/topic`: sets `channel`'s topic to `text`.
+    Topic { channel: ChannelId, text: String },
+}
+
+impl std::fmt::Debug for Builtin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Only the ids and the lengths: the texts are message bodies, reasons and excerpts.
+        match self {
+            Self::Reply { to, text } => write!(f, "Reply({to:?}, {} bytes)", text.len()),
+            Self::Edit { msg, text } => write!(f, "Edit({msg:?}, {} bytes)", text.len()),
+            Self::DeleteOwn { msg } => write!(f, "DeleteOwn({msg:?})"),
+            Self::RemoveOther { msg, seq, .. } => write!(f, "RemoveOther({msg:?}, {seq})"),
+            Self::Pin { msg, on } => write!(f, "Pin({msg:?}, {on})"),
+            Self::Topic { channel, text } => {
+                write!(f, "Topic({channel:?}, {} bytes)", text.len())
+            }
+        }
+    }
 }
 
 impl Builtin {
     /// The command's id, for its pending row's copy (`privateResultCopy.pending(id)`).
     pub fn id(&self) -> &'static str {
         match self {
-            Self::Probe => "probe",
+            Self::Reply { .. } => "reply",
+            Self::Edit { .. } => "edit",
+            Self::DeleteOwn { .. } | Self::RemoveOther { .. } => "delete",
+            Self::Pin { on: true, .. } => "pin",
+            Self::Pin { on: false, .. } => "unpin",
+            Self::Topic { .. } => "topic",
         }
     }
 
@@ -338,8 +380,97 @@ impl Builtin {
     /// command must decide.
     pub fn dismissed_on_cancel(&self) -> bool {
         match self {
-            Self::Probe => true,
+            // CommandHost's `moderation` is `/kick` and `/ban` only: a cancelled `/delete`, even of another person's
+            // message, leaves no row.
+            Self::Reply { .. }
+            | Self::Edit { .. }
+            | Self::DeleteOwn { .. }
+            | Self::RemoveOther { .. }
+            | Self::Pin { .. }
+            | Self::Topic { .. } => true,
         }
+    }
+}
+
+/// What the `/delete` of another person's message does next, after its one `remove_message` (builtin.ts:355-379). The
+/// removal is never sent again, so no step would.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemovalStep {
+    /// The removal may have landed: settle the same proof (`Moderation::resolve_removal`).
+    Resolve([u8; 16]),
+    /// Accepted, its evidence not stored yet: send it once more (`Moderation::send_removal_evidence`).
+    SendEvidence([u8; 16]),
+    /// The row's answer. `uncertain` marks the web's `result('uncertain', …)` lines.
+    Done {
+        status: ResultStatus,
+        text: String,
+        uncertain: bool,
+    },
+}
+
+/// The next [`RemovalStep`] for `o`, the outcome so far: `resolved` once it was resolved (`o` is then the resolved
+/// outcome), `evidence_sent` once its evidence was sent again (`o.evidence` is then that answer).
+pub fn removal_step(o: &RemovalOutcome, resolved: bool, evidence_sent: bool) -> RemovalStep {
+    let proof = o.proof_request_id;
+    let done = |status, text: String, uncertain| RemovalStep::Done {
+        status,
+        text,
+        uncertain,
+    };
+    match o.removal {
+        Removal::Rejected => done(
+            ResultStatus::Failed,
+            "The message could not be removed.".to_owned(),
+            false,
+        ),
+        Removal::Unknown if !resolved => RemovalStep::Resolve(proof),
+        Removal::Unknown => done(
+            ResultStatus::Failed,
+            format!(
+                "Message removal is unresolved. Recovery proof: {}.",
+                crate::state::hex(&proof)
+            ),
+            true,
+        ),
+        Removal::Accepted if o.evidence == Evidence::Accepted => done(
+            ResultStatus::Success,
+            "Message removed and moderation evidence recorded.".to_owned(),
+            false,
+        ),
+        // builtin.ts sends the evidence again only with the removal's evidence request id.
+        Removal::Accepted if !evidence_sent && o.evidence_request_id.is_some() => {
+            RemovalStep::SendEvidence(proof)
+        }
+        Removal::Accepted => {
+            let evidence = match o.evidence {
+                Evidence::Pending => "pending",
+                Evidence::Rejected => "rejected",
+                Evidence::Accepted | Evidence::Unknown => "unknown",
+            };
+            let hex = crate::state::hex(&proof);
+            let text = if resolved {
+                format!(
+                    "Message removal was accepted; moderation evidence is {evidence}. Recovery proof: {hex}."
+                )
+            } else {
+                format!(
+                    "Message removed; moderation evidence is {evidence}. Recovery proof: {hex}."
+                )
+            };
+            done(ResultStatus::Failed, text, true)
+        }
+    }
+}
+
+/// builtin.ts:344-349: why the one `remove_message` failed. A refusal (E_BAD_INPUT, E_FORBIDDEN, E_NOT_FOUND, or HTTP
+/// 400, 403 or 404) removed nothing; anything else may have.
+pub fn removal_error(e: &crate::sync::api::ApiError) -> String {
+    if ["E_BAD_INPUT", "E_FORBIDDEN", "E_NOT_FOUND"].contains(&e.code.as_str())
+        || [400, 403, 404].contains(&e.status)
+    {
+        "The message could not be removed with the current permissions or message state.".to_owned()
+    } else {
+        "Message removal outcome is uncertain. Check the conversation before retrying.".to_owned()
     }
 }
 
@@ -593,6 +724,127 @@ fn reason_problem(reason: &str) -> bool {
             .chars()
             .any(|c| matches!(c as u32, 0..=8 | 0x0b..=0x1f | 0x7f..=0x9f))
 }
+
+/// builtin.ts `reply`, `edit`, `delete`, `pin`/`unpin` (`pinMessage`) and `topic`: the checks made before anything is
+/// sent, against the message of `channel` the draft names ([`exact_message`]) and the reader's bits in that channel. In a
+/// DM (`community` is `None`) no bit is needed to pin, and no topic is set.
+fn message_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    channel: Option<ChannelId>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    use crate::features::roles::{perm, viewer_channel_bits};
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let has = |bit: u32| {
+        channel
+            .and_then(|c| viewer_channel_bits(state, c))
+            .is_some_and(|b| b & u64::from(bit) != 0)
+    };
+    let run = |run: Builtin, confirm: Option<Ask>| Plan::Builtin { run, confirm };
+    if command_id == "topic" {
+        return match channel {
+            Some(channel) if community.is_some() && has(perm::MANAGE_CHANNELS) => run(
+                Builtin::Topic {
+                    channel,
+                    text: arg("text").to_owned(),
+                },
+                None,
+            ),
+            _ => failed("You cannot manage this channel."),
+        };
+    }
+    let item = channel.and_then(|c| exact_message(state, c, arg("message")));
+    // `exact_message` finds only a stored message: it has its id and its seq.
+    let found = item.and_then(|i| Some((i, i.msg_id?, i.seq?)));
+    match command_id {
+        "reply" => match found {
+            Some((_, to, _)) => run(
+                Builtin::Reply {
+                    to,
+                    text: arg("text").to_owned(),
+                },
+                None,
+            ),
+            None => failed("That message is not available in this conversation."),
+        },
+        "edit" => match found.filter(|(i, ..)| i.own) {
+            Some((_, msg, _)) => run(
+                Builtin::Edit {
+                    msg,
+                    text: arg("text").to_owned(),
+                },
+                None,
+            ),
+            None => failed("You can edit only your own loaded message."),
+        },
+        "delete" => {
+            let Some((item, msg, seq)) = found else {
+                return failed("That message is not available in this conversation.");
+            };
+            let title = "Delete this message?".to_owned();
+            if item.own {
+                return run(
+                    Builtin::DeleteOwn { msg },
+                    Some(Ask {
+                        title,
+                        body: "This permanently deletes your message.".to_owned(),
+                    }),
+                );
+            }
+            let reason = arg("reason").trim();
+            if !has(perm::MANAGE_MESSAGES) || reason.is_empty() {
+                return failed(DELETE_OTHER_REFUSED);
+            }
+            run(
+                Builtin::RemoveOther {
+                    msg,
+                    seq,
+                    reason: reason.to_owned(),
+                    excerpt: String::new(),
+                },
+                Some(Ask {
+                    title,
+                    body: format!("Remove this message from everyone? Reason: {reason}"),
+                }),
+            )
+        }
+        _ => {
+            let on = command_id == "pin";
+            let Some((item, msg, _)) = found else {
+                return failed("That message is not available in this channel.");
+            };
+            if community.is_some() && !has(perm::PIN_MESSAGES) {
+                return failed("You cannot pin messages here.");
+            }
+            if item.pinned == on {
+                return Plan::Private(
+                    ResultStatus::Success,
+                    if on {
+                        "Message is already pinned."
+                    } else {
+                        "Message is already unpinned."
+                    }
+                    .to_owned(),
+                    ResultProvider::Builtin,
+                );
+            }
+            run(Builtin::Pin { msg, on }, None)
+        }
+    }
+}
+
+/// builtin.ts `delete`: another person's message needs Manage Messages and a reason (checked again as it runs).
+pub const DELETE_OTHER_REFUSED: &str =
+    "Deleting another person’s message requires Manage Messages and a reason.";
 
 fn moderation_plan(
     state: &AppState,
@@ -1130,6 +1382,392 @@ mod tests {
         assert!(exact_message(&s, ch, &p.hex()).is_none());
         assert!(exact_message(&s, ch, "nothex").is_none());
         assert!(exact_message(&s, ChannelId([2; 16]), &m.hex()).is_none());
+    }
+
+    /// A community channel `ch` read by Ada (not the owner) whose `@everyone` grants `allow`, beside a DM channel `dm`.
+    /// `ch` holds Ada's pinned message A, Bea's message B and Ada's outbox row P; `dm` holds A again, not pinned there.
+    fn message_world(allow: u32) -> (AppState, CommunityId, crate::state::ChannelId) {
+        use crate::features::roles::perm;
+        use crate::state::channels::{Channel, ChannelGroupState, Community};
+        use crate::state::members::Member;
+        use crate::state::roles::{CommunityAccess, RoleSummary};
+        use crate::state::{ChannelId, Timeline, TimelineItem, UserId};
+        let (c, ch, dm, everyone) = (
+            CommunityId([1; 16]),
+            ChannelId([2; 16]),
+            ChannelId([5; 16]),
+            [3; 16],
+        );
+        let (ada, bea) = (UserId([4; 16]), UserId([6; 16]));
+        let mut s = AppState::default();
+        s.account.user_id = Some(ada);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: UserId([9; 16]),
+            policy_version: 0,
+        });
+        s.channels.push(Channel {
+            id: ch,
+            community_id: c,
+            kind: 0,
+            mode: 0,
+            name: "general".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        });
+        let member = |user_id, username: &str| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        s.members
+            .insert(c, vec![member(ada, "ada"), member(bea, "bea")]);
+        s.roles.roles.insert(
+            c,
+            vec![RoleSummary {
+                id: everyone,
+                name: "@everyone".into(),
+                color: 0,
+                position: 0,
+                hoist: false,
+                mentionable: false,
+                allow: perm::VIEW_CHANNEL | perm::SEND_MESSAGES | allow,
+                deny: 0,
+                members: 2,
+            }],
+        );
+        s.roles.access.insert(
+            c,
+            CommunityAccess {
+                loaded: true,
+                everyone_id: Some(everyone),
+                ..CommunityAccess::default()
+            },
+        );
+        s.roles.overwrites.entry(c).or_default();
+        let item = |msg: u8, own: bool, state, seq, pinned| TimelineItem {
+            key: format!("o{msg}"),
+            state,
+            reason: String::new(),
+            sender_user: Some(if own { ada } else { bea }),
+            sender_device: None,
+            own,
+            bot: false,
+            ts: 0,
+            body: format!("body {msg}"),
+            msg_id: Some(MessageId([msg; 16])),
+            seq,
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        };
+        let timeline = |channel_id, items| Timeline {
+            channel_id,
+            group: ChannelGroupState::Active,
+            items,
+            has_earlier: false,
+        };
+        s.timelines.insert(
+            ch,
+            timeline(
+                ch,
+                vec![
+                    item(0xa, true, TimelineItemState::Ok, Some(1), true),
+                    item(0xb, false, TimelineItemState::Ok, Some(2), false),
+                    item(0xc, true, TimelineItemState::Pending, None, false),
+                ],
+            ),
+        );
+        s.timelines.insert(
+            dm,
+            timeline(
+                dm,
+                vec![item(0xa, true, TimelineItemState::Ok, Some(1), false)],
+            ),
+        );
+        (s, c, ch)
+    }
+
+    /// builtin.ts `reply`, `edit`, `delete`, `pin` and `topic` (:116-152, :414-423): each checks the message and the
+    /// channel's bits before it may run. Refused here, nothing is sent; an own message asks before it is deleted; a
+    /// message already pinned answers without a send; a DM needs no bit to pin.
+    #[test]
+    fn message_builtins_check_before_running() {
+        use crate::features::roles::perm;
+        use crate::state::ChannelId;
+        let (s, c, ch) = message_world(0);
+        let (a, b, p) = (
+            MessageId([0xa; 16]).hex(),
+            MessageId([0xb; 16]).hex(),
+            MessageId([0xc; 16]).hex(),
+        );
+        let failed =
+            |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
+        let run = |s: &AppState, draft: &str| plan_in(s, Some(c), Some(ch), draft);
+        assert_eq!(
+            run(&s, &format!("/edit message:{b} text:x")),
+            failed("You can edit only your own loaded message.")
+        );
+        assert_eq!(
+            run(&s, &format!("/delete message:{b} reason:spam")),
+            failed("Deleting another person’s message requires Manage Messages and a reason.")
+        );
+        assert_eq!(
+            run(&s, &format!("/delete message:{a}")),
+            Plan::Builtin {
+                run: Builtin::DeleteOwn {
+                    msg: MessageId([0xa; 16])
+                },
+                confirm: Some(Ask {
+                    title: "Delete this message?".into(),
+                    body: "This permanently deletes your message.".into(),
+                }),
+            }
+        );
+        assert_eq!(
+            run(&s, &format!("/pin message:{a}")),
+            failed("You cannot pin messages here.")
+        );
+        assert_eq!(
+            run(&s, &format!("/reply message:{p} text:x")),
+            failed("That message is not available in this conversation.")
+        );
+        assert_eq!(
+            run(&s, "/topic text:x"),
+            failed("You cannot manage this channel.")
+        );
+        assert_eq!(
+            run(&s, &format!("/reply message:{a} text:hello")),
+            Plan::Builtin {
+                run: Builtin::Reply {
+                    to: MessageId([0xa; 16]),
+                    text: "hello".into()
+                },
+                confirm: None,
+            }
+        );
+
+        let (s, c, ch) =
+            message_world(perm::PIN_MESSAGES | perm::MANAGE_MESSAGES | perm::MANAGE_CHANNELS);
+        let run = |draft: &str| plan_in(&s, Some(c), Some(ch), draft);
+        assert_eq!(
+            run(&format!("/pin message:{a}")),
+            Plan::Private(
+                ResultStatus::Success,
+                "Message is already pinned.".into(),
+                ResultProvider::Builtin
+            )
+        );
+        assert_eq!(
+            run("/topic text:x"),
+            Plan::Builtin {
+                run: Builtin::Topic {
+                    channel: ch,
+                    text: "x".into()
+                },
+                confirm: None,
+            }
+        );
+        // Another person's message: a moderator with a reason removes it for everyone, after the question.
+        assert_eq!(
+            run(&format!("/delete message:{b}")),
+            failed("Deleting another person’s message requires Manage Messages and a reason."),
+            "no reason"
+        );
+        assert_eq!(
+            run(&format!("/delete message:{b} reason:spam")),
+            Plan::Builtin {
+                run: Builtin::RemoveOther {
+                    msg: MessageId([0xb; 16]),
+                    seq: 2,
+                    reason: "spam".into(),
+                    excerpt: String::new(),
+                },
+                confirm: Some(Ask {
+                    title: "Delete this message?".into(),
+                    body: "Remove this message from everyone? Reason: spam".into(),
+                }),
+            }
+        );
+        // In a DM no bit is needed to pin (builtin.ts:417), and a topic is never set there.
+        let dm = ChannelId([5; 16]);
+        assert_eq!(
+            plan_in(&s, None, Some(dm), &format!("/pin message:{a}")),
+            Plan::Builtin {
+                run: Builtin::Pin {
+                    msg: MessageId([0xa; 16]),
+                    on: true
+                },
+                confirm: None,
+            }
+        );
+        assert_eq!(
+            plan_in(&s, None, Some(dm), "/topic text:x"),
+            failed("You cannot manage this channel.")
+        );
+        assert_eq!(
+            plan_in(&s, None, Some(dm), &format!("/unpin message:{a}")),
+            Plan::Private(
+                ResultStatus::Success,
+                "Message is already unpinned.".into(),
+                ResultProvider::Builtin
+            )
+        );
+        assert_eq!(
+            plan_in(&s, None, Some(dm), &format!("/pin message:{b}")),
+            failed("That message is not available in this channel.")
+        );
+    }
+
+    /// builtin.ts:355-379 as data (Review Focus 1): after the one `remove_message`, the steps only resolve the same proof
+    /// or send its evidence, each at most once; no step removes again (`RemovalStep` has no such variant).
+    #[test]
+    fn removal_steps_never_send_a_second_removal() {
+        use crate::features::moderation::{Evidence, Removal, RemovalOutcome};
+        const P: [u8; 16] = [7; 16];
+        let hex = crate::state::hex(&P);
+        let outcome = |removal, proof, evidence| RemovalOutcome {
+            removal,
+            proof_request_id: proof,
+            evidence_request_id: Some([8; 16]),
+            evidence,
+        };
+        let done = |status, text: String, uncertain| RemovalStep::Done {
+            status,
+            text,
+            uncertain,
+        };
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Unknown, P, Evidence::Pending),
+                false,
+                false
+            ),
+            RemovalStep::Resolve(P)
+        );
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Unknown, P, Evidence::Pending),
+                true,
+                false
+            ),
+            done(
+                ResultStatus::Failed,
+                format!("Message removal is unresolved. Recovery proof: {hex}."),
+                true
+            )
+        );
+        for resolved in [false, true] {
+            assert_eq!(
+                removal_step(
+                    &outcome(Removal::Rejected, P, Evidence::Pending),
+                    resolved,
+                    false
+                ),
+                done(
+                    ResultStatus::Failed,
+                    "The message could not be removed.".into(),
+                    false
+                )
+            );
+        }
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Accepted, P, Evidence::Pending),
+                false,
+                false
+            ),
+            RemovalStep::SendEvidence(P)
+        );
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Accepted, P, Evidence::Pending),
+                false,
+                true
+            ),
+            done(
+                ResultStatus::Failed,
+                format!("Message removed; moderation evidence is pending. Recovery proof: {hex}."),
+                true
+            )
+        );
+        match removal_step(
+            &outcome(Removal::Accepted, P, Evidence::Rejected),
+            true,
+            true,
+        ) {
+            RemovalStep::Done {
+                status: ResultStatus::Failed,
+                text,
+                uncertain: true,
+            } => assert!(
+                text.starts_with("Message removal was accepted; moderation evidence is rejected."),
+                "{text}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        for (resolved, sent) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(
+                removal_step(
+                    &outcome(Removal::Accepted, P, Evidence::Accepted),
+                    resolved,
+                    sent
+                ),
+                done(
+                    ResultStatus::Success,
+                    "Message removed and moderation evidence recorded.".into(),
+                    false
+                )
+            );
+        }
+        // The one removal's own failure (builtin.ts:344-349): a refusal is definitive, anything else uncertain.
+        let api = |status, code: &str| crate::sync::api::ApiError {
+            status,
+            code: code.into(),
+            detail: String::new(),
+            retry_after_ms: None,
+            extra: Vec::new(),
+        };
+        let refused =
+            "The message could not be removed with the current permissions or message state.";
+        let unsure =
+            "Message removal outcome is uncertain. Check the conversation before retrying.";
+        assert_eq!(removal_error(&api(0, "E_FORBIDDEN")), refused);
+        assert_eq!(removal_error(&api(404, "E_HTTP")), refused);
+        assert_eq!(removal_error(&api(0, "E_NETWORK")), unsure);
+        assert_eq!(removal_error(&api(409, "E_CONFLICT")), unsure);
+    }
+
+    /// builtin.ts:337-376 carries the message's text as its evidence: a [`Builtin`] never prints a body, a reason or an
+    /// excerpt (E2EE content stays out of logs and test output).
+    #[test]
+    fn a_builtin_never_prints_its_text() {
+        let remove = Builtin::RemoveOther {
+            msg: MessageId([1; 16]),
+            seq: 3,
+            reason: "secret reason".into(),
+            excerpt: "secret excerpt".into(),
+        };
+        let reply = Builtin::Reply {
+            to: MessageId([1; 16]),
+            text: "secret body".into(),
+        };
+        for shown in [format!("{remove:?}"), format!("{reply:?}")] {
+            assert!(!shown.contains("secret"), "{}", shown.len());
+        }
     }
 
     /// builtin.ts `eligibleAssignableRole` (:384-393): a role is assignable when this account manages roles and ranks

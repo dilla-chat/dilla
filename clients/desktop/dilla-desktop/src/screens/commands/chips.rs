@@ -404,7 +404,13 @@ pub fn provided_suggestions(
                 .filter(|(i, id)| id == query || i.body.to_lowercase().contains(&needle))
                 .map(|(i, id)| {
                     let own = me.is_some() && i.sender_user == me;
-                    let label: String = i.body.chars().take(100).collect();
+                    // `body.slice(0, 100)` in one line: HTML shows a line break as a space.
+                    let label: String = i
+                        .body
+                        .chars()
+                        .take(100)
+                        .map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c })
+                        .collect();
                     named(id, &label, if own { copy::YOUR_MESSAGE } else { "" }, false)
                 })
                 .collect();
@@ -2216,6 +2222,12 @@ mod tests {
         s.timelines.get_mut(&ch).unwrap().items.push(long);
         let last = provided(&s, Some(c), Some(ch), "reply", &message, "", &[]);
         assert_eq!(last[19].label.chars().count(), 100);
+        // A row is one line: a line break in the body shows as a space (the web's HTML does so), never reaching the
+        // single-line shaper, which refuses it.
+        let lines = timeline_item(51, "first\nsecond", TimelineItemState::Ok, None);
+        s.timelines.get_mut(&ch).unwrap().items.push(lines);
+        let last = provided(&s, Some(c), Some(ch), "reply", &message, "", &[]);
+        assert_eq!(last[19].label, "first second");
     }
 
     /// CommandHost.tsx:374: `/join` offers the voice channels (kind 1, mode 0) and nothing else.

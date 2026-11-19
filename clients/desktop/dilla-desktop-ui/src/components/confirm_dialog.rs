@@ -64,6 +64,7 @@ pub struct ConfirmDialog {
     on_confirm: Option<Handler>,
     on_close: Option<Handler>,
     on_backdrop: Option<Handler>,
+    confirm_wrap: Option<Box<dyn FnOnce(AnyElement) -> AnyElement>>,
     in_section: bool,
 }
 
@@ -95,6 +96,7 @@ impl ConfirmDialog {
             on_confirm: None,
             on_close: None,
             on_backdrop: None,
+            confirm_wrap: None,
             in_section: false,
         }
     }
@@ -167,6 +169,12 @@ impl ConfirmDialog {
         self.on_backdrop = Some(Rc::new(handler));
         self
     }
+
+    /// Puts the confirm button inside `wrap`'s element (the app's automation box, so a test's pointer can find it).
+    pub fn confirm_wrap(mut self, wrap: impl FnOnce(AnyElement) -> AnyElement + 'static) -> Self {
+        self.confirm_wrap = Some(Box::new(wrap));
+        self
+    }
 }
 
 impl RenderOnce for ConfirmDialog {
@@ -218,7 +226,10 @@ impl RenderOnce for ConfirmDialog {
             .can_close(self.can_close)
             .description(description)
             .a11y_description(self.body.clone())
-            .footer(confirm)
+            .footer(match self.confirm_wrap {
+                Some(wrap) => wrap(confirm.into_any_element()),
+                None => confirm.into_any_element(),
+            })
             .initial_focus(match &self.field_focus {
                 Some(h) => InitialFocus::Handle(h.clone()),
                 None => InitialFocus::Close,

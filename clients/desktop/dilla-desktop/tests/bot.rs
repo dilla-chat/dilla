@@ -78,6 +78,14 @@ fn parity_commands_reminders_b() {
     dilla_parity::screen::assert_screen(&fixture("commands/reminders-b.json")).unwrap();
 }
 
+/// `/delete` of Ada's own message asks first (builtin.ts:142, CommandHost.tsx's `ConfirmDialog`): "Delete this message?"
+/// over the channel, its row working under the log.
+#[test]
+#[ignore = "parity after the chips fix (Task 10 report): a click on a chip field (`command-field-0`) drops the composer's focus, so the fixture's message pick cannot be replayed; and a fixture adds no pending row"]
+fn parity_commands_confirm_delete() {
+    dilla_parity::screen::assert_screen(&fixture("commands/confirm-delete.json")).unwrap();
+}
+
 /// RemindersPopover.tsx: the bell opens the popover 36px under its top, its right edge 6px past the bell's, 342px wide,
 /// with the picked tab focused (Upcoming: nothing is due); ←→ move between the tabs; Escape closes it and gives the bell
 /// the focus back. A second press on the bell closes it, and so does a press outside it.
@@ -691,8 +699,8 @@ fn a_cancelled_builtin_question_leaves_no_row(cx: &mut gpui::TestAppContext) {
     use std::rc::Rc;
 
     use dilla_client::features::bot::{Ask, Builtin};
-    use dilla_client::state::ChannelId;
     use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
+    use dilla_client::state::{ChannelId, MessageId};
     use dilla_desktop::screens::commands::confirm;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -726,7 +734,7 @@ fn a_cancelled_builtin_question_leaves_no_row(cx: &mut gpui::TestAppContext) {
         let row = client.bot().add_result(
             conversation,
             ResultStatus::Pending,
-            "/probe…".into(),
+            "/delete…".into(),
             ResultProvider::Builtin,
         );
         assert_eq!(
@@ -736,10 +744,12 @@ fn a_cancelled_builtin_question_leaves_no_row(cx: &mut gpui::TestAppContext) {
         );
         let asking = confirm::AskingBuiltin {
             ask: Ask {
-                title: "Probe?".into(),
-                body: "Nothing happens.".into(),
+                title: "Delete this message?".into(),
+                body: "This permanently deletes your message.".into(),
             },
-            run: Builtin::Probe,
+            run: Builtin::DeleteOwn {
+                msg: MessageId([4; 16]),
+            },
             row,
             conversation,
             client: Some(client.clone()),
@@ -751,6 +761,249 @@ fn a_cancelled_builtin_question_leaves_no_row(cx: &mut gpui::TestAppContext) {
         assert_eq!(rows(&client, 0), 0, "answer {answer:?} leaves no row");
     }
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
+
+/// Task 8's `Plan::Builtin` arm with a client, as the composer sends (`on_send`): the command's row is pending from the
+/// start (CommandHost.tsx:236). `/delete` of an own message then asks, and abandoning it takes the row away; `/pin` asks
+/// nothing and runs, and its row says how it ended (`Bot::finish`): a failure here, as this account is in no such DM.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn a_builtin_sent_from_the_composer_shows_its_row_then_asks_or_runs(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use dilla_client::state::bot::{Conversation, ResultStatus};
+    use dilla_client::state::{
+        AppState, ChannelGroupState, ChannelId, MessageId, Timeline, TimelineItem,
+        TimelineItemState, UserId,
+    };
+    use dilla_desktop::screens::commands::{self, SendDecision, confirm};
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t10-send", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let alice = rt.block_on(world::sign_up(&host, &invite, "alice", "Alice", "t10"));
+    let client = Rc::new(rt.block_on(world::start(&alice)));
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    // A DM (no community) whose timeline the frame read: Alice's own stored message, not pinned.
+    let (dm, msg) = (ChannelId([3; 16]), MessageId([4; 16]));
+    let mut state = AppState::default();
+    state.account.user_id = Some(UserId(alice.user_id));
+    state.timelines.insert(
+        dm,
+        Timeline {
+            channel_id: dm,
+            group: ChannelGroupState::Active,
+            items: vec![TimelineItem {
+                key: "s1".into(),
+                state: TimelineItemState::Ok,
+                reason: String::new(),
+                sender_user: Some(UserId(alice.user_id)),
+                sender_device: None,
+                own: true,
+                bot: false,
+                ts: 0,
+                body: "hello".into(),
+                msg_id: Some(msg),
+                seq: Some(1),
+                edited: false,
+                reply: None,
+                reactions: Vec::new(),
+                pinned: false,
+                attachments: Vec::new(),
+                mention: false,
+                actions: Vec::new(),
+            }],
+            has_earlier: false,
+        },
+    );
+    let ctx = SlotCx {
+        state: Arc::new(state),
+        client: Some(client.clone()),
+        channel: Some(dm),
+        ..SlotCx::default()
+    };
+    let conversation = Conversation {
+        channel: dm,
+        thread: None,
+    };
+    // The rows as the client last published them.
+    let rows = |client: &dilla_client::Client| -> Vec<ResultStatus> {
+        client
+            .state()
+            .borrow()
+            .bot
+            .results(&conversation)
+            .iter()
+            .map(|r| r.status)
+            .collect()
+    };
+    let settle = |cx: &mut gpui::VisualTestContext, want: &dyn Fn(&[ResultStatus]) -> bool| {
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if want(&rows(&client)) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("rows {:?}", rows(&client));
+    };
+    let send = |cx: &mut gpui::VisualTestContext, draft: String| {
+        cx.update(|_, cx| commands::on_send(&ctx, &draft, &|t| t.to_owned(), window, cx))
+    };
+
+    let id = msg.hex();
+    assert_eq!(
+        send(vcx, format!("/delete message:{id}")),
+        SendDecision::Handled
+    );
+    settle(vcx, &|r| r == [ResultStatus::Pending]);
+    assert!(vcx.update(|_, cx| confirm::is_open(window, cx)), "it asks");
+    vcx.update(|_, cx| confirm::answer_builtin(window, None, cx));
+    settle(vcx, &|r| r.is_empty());
+
+    assert_eq!(
+        send(vcx, format!("/pin message:{id}")),
+        SendDecision::Handled
+    );
+    assert!(
+        !vcx.update(|_, cx| confirm::is_open(window, cx)),
+        "/pin asks nothing"
+    );
+    settle(vcx, &|r| r == [ResultStatus::Failed]);
+    drop(ctx);
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
+
+/// builtin.ts `reply`, `edit`, `pin` and `delete` in the window: Ada's `/reply` to her own message posts a reply that
+/// names it, `/edit` changes its text, `/pin` pins it and `/delete`, confirmed, removes it, as Bea's device sees; each
+/// row ends in success. A command publishes only its explicit text (`text:`), never the draft.
+#[test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn message_commands_reply_edit_pin_and_delete() {
+    use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItem};
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t10-msg", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t10-msg"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t10-msg"));
+    let community = CommunityId(world::community(&host, &ada, "Midgard", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let member = rt.block_on(world::start(&bea));
+    let general: ChannelId = rt.block_on(async {
+        let s = world::wait_for(&member, Duration::from_secs(30), "#general", |s| {
+            s.channel_named(community, "general").is_some()
+        })
+        .await;
+        let id = s.channel_named(community, "general").unwrap().id;
+        member
+            .open_channel(id)
+            .await
+            .unwrap()
+            .expect("bea opens #general");
+        id
+    });
+    // Bea's view of #general: the stored message whose text is `body`.
+    let seen = |s: &AppState, body: &str| -> Option<TimelineItem> {
+        s.timelines
+            .get(&general)?
+            .items
+            .iter()
+            .find(|i| i.body == body && i.seq.is_some())
+            .cloned()
+    };
+    let wait = |what: &str, pred: &dyn Fn(&AppState) -> bool| {
+        rt.block_on(world::wait_for(
+            &member,
+            Duration::from_secs(60),
+            what,
+            |s| pred(s),
+        ))
+    };
+
+    let root = scratch_dir("t10-msg-app");
+    let mut app = Driver::launch(&root);
+    sign_in_app(&mut app, &host, &mut ada);
+    app.type_text("composer", "first words");
+    app.press("enter");
+    let s = wait("Ada's message", &|s| seen(s, "first words").is_some());
+    let first = seen(&s, "first words").unwrap().msg_id.unwrap();
+    let id = first.hex();
+
+    // A command typed whole: the list closes on Escape, Enter sends the draft.
+    let command = |app: &mut Driver, draft: &str| {
+        app.type_text("composer", draft);
+        app.wait_idle();
+        if app.element("command-picker").is_some() {
+            app.press("escape");
+            app.wait_idle();
+        }
+        app.press("enter");
+        app.wait_idle();
+    };
+    let succeeded = |app: &mut Driver| {
+        app.wait_for("bot-result-success", Duration::from_secs(30));
+        for _ in 0..600 {
+            if app.element("bot-result-pending").is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(app.element("bot-result-pending").is_none(), "settled");
+        assert!(app.element("bot-result-failed").is_none(), "no row failed");
+    };
+
+    command(&mut app, &format!("/reply message:{id} text:answer"));
+    wait("the reply naming Ada's message", &|s| {
+        seen(s, "answer").is_some_and(|i| i.reply.is_some_and(|r| r.msg_id == first))
+    });
+    succeeded(&mut app);
+
+    command(&mut app, &format!("/edit message:{id} text:rewritten"));
+    let s = wait("the edit", &|s| {
+        seen(s, "rewritten").is_some_and(|i| i.msg_id == Some(first))
+    });
+    assert!(seen(&s, "rewritten").unwrap().edited);
+    succeeded(&mut app);
+
+    command(&mut app, &format!("/pin message:{id}"));
+    wait("the pin", &|s| {
+        seen(s, "rewritten").is_some_and(|i| i.pinned)
+    });
+    succeeded(&mut app);
+
+    command(&mut app, &format!("/delete message:{id}"));
+    app.wait_for("command-confirm", Duration::from_secs(30));
+    app.click("command-confirm");
+    wait("the delete", &|s| {
+        s.timelines.get(&general).is_some_and(|t| {
+            !t.items.iter().any(|i| {
+                i.msg_id == Some(first) && i.state == dilla_client::state::TimelineItemState::Ok
+            })
+        })
+    });
+    assert!(
+        app.element("command-confirm").is_none(),
+        "the dialog closed"
+    );
+    succeeded(&mut app);
+
+    drop(app);
+    member.stop();
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Final review M7: what a window's command picker and reminders popover keep goes with its client's release: a typed
