@@ -77,8 +77,10 @@ beta.
 
 **Upgrading to alpha.2 on Linux.** The app id is now `chat.dilla.Dilla` (the desktop entry is
 `chat.dilla.Dilla.desktop`, the icons `chat.dilla.Dilla.*`). Under the old id KDE Plasma showed no icon in the taskbar
-and the launcher. The package upgrade removes the old `dev.dilla.desktop.desktop` entry, so a launcher you pinned to it
-must be pinned again. `dilla://` links keep working. macOS and Windows are unchanged.
+and the launcher. The deb, rpm and Arch packages remove the old `dev.dilla.desktop.desktop` entry on upgrade, so a launcher you
+pinned to it must be pinned again. An AppImage or tar.gz installs no desktop entry unless you integrated it yourself
+(for example with AppImageLauncher, or by hand). An entry you made for it under the old name must be recreated with
+`Icon=chat.dilla.Dilla` and `StartupWMClass=chat.dilla.Dilla`. `dilla://` links keep working. macOS and Windows are unchanged.
 
 ### Install on macOS and Windows
 
@@ -219,9 +221,10 @@ what the client still does not do.
   rings and messages notify from the tray with no window open. It never asks for the keychain at login: an instance
   whose key cannot be read without a prompt (a locked keyring, or no Secret Service) connects when you open its
   window. KeePassXC set to "confirm when passwords are retrieved" can still show its own confirmation. After a
-  start at login the dock or launcher unread badge updates once a window is open. GNOME shows no tray without the AppIndicator
-  extension, and then closing the last window quits, as before. Start at login is offered in installed (release)
-  builds only. The ☰ button at the left of the title bar (and of "Dilla - your instances") opens the app menu (the system's own menu on macOS and Windows); F11 (Control-⌘-F on macOS) toggles full screen. On macOS
+  start at login the dock or launcher unread badge updates once a window is open. GNOME shows no tray without the
+  AppIndicator extension, and then closing the last window quits, as before. Start at login is offered in installed
+  (release) builds only. The ☰ button at the left of the title bar (and of "Dilla - your instances") opens the app
+  menu (the system's own menu on macOS and Windows); F11 (Control-⌘-F on macOS) toggles full screen. On macOS
   the Dilla menu also has About Dilla, Settings… (⌘,), Services, Hide Dilla (⌘H), Hide Others (⌥⌘H), Show All and Quit
   Dilla (⌘Q, which asks first during a call as above); Window has Minimize (⌘M) and Bring All to Front. The sign-in and
   sign-up windows are moved by their top edge and closed with the × in their top-right corner, on every system.
