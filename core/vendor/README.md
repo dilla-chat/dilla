@@ -106,7 +106,7 @@ Patched into the root workspace (`[patch.crates-io]` in `Cargo.toml`, Task 11) f
 which installs its hook (`dilla_media::transform::Router`) before the process's first
 PeerConnection. `experiments/gpui-voice-proof` (its own workspace and `[patch.crates-io]`) holds the
 original evidence, `experiments/gpui-voice-proof/REPORT.md`; `clients/desktop/dilla-media/tests/`
-(`glue.rs`, `hook_enforced.rs`, `call.rs`) covers the current glue.
+(`glue.rs`, `hook_enforced.rs`, `hook_exit.rs`, `call.rs`) covers the current glue.
 
 What it adds: a process-wide encoded-frame hook for dilla-sframe/1 (protocol/05), on LiveKit's
 prebuilt libwebrtc as it is downloaded (libwebrtc itself is not rebuilt). LiveKit's Rust SDK exposes
@@ -188,7 +188,11 @@ and every 20 ms on the hook's own timer thread, so a held frame of a silent trac
 Past a bound the oldest is dropped and reported, never released unauthenticated. The same timer
 sends the key-frame requests the hook asks for (`key_frame_requests`) through
 `VideoTrackSourceInterface::GenerateKeyFrame` on the receiving track's source, which libwebrtc turns
-into an RTCP PLI to the publisher.
+into an RTCP PLI to the publisher. The timer thread (`dilla-hold-tick`) belongs to the C++ glue,
+which stops and joins it when `exit()` runs the static destructors; the hook and the transformer
+registry are never destroyed, because libwebrtc's own threads, which nothing joins, can still run a
+transformer then (the registry used to be freed under the timer at exit, a SIGSEGV after the
+dilla-desktop voice tests had passed; `tests/hook_exit.rs`).
 
 Remove this copy when upstream exposes an equivalent custom frame transformer.
 

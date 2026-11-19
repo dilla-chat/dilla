@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -16,7 +17,9 @@
 #include "api/media_stream_interface.h"
 #include "api/video/video_frame_metadata.h"
 #include "modules/rtp_rtcp/source/rtp_video_header.h"
+#include "rtc_base/event.h"
 #include "rtc_base/logging.h"
+#include "rtc_base/platform_thread.h"
 #include "rtc_base/time_utils.h"
 #include "webrtc-sys/src/dilla_transform.rs.h"
 
@@ -40,24 +43,46 @@ constexpr uint8_t kReplace = 1;
 constexpr uint8_t kHold = 2;
 constexpr uint8_t kPassUnchanged = 3;
 
-webrtc::Mutex g_hook_mutex;
-std::shared_ptr<DillaHookHolder> g_hook;
+// The hook and the registry below are process-lifetime state that is never destroyed (allocated
+// once, deliberately leaked). libwebrtc's own threads, which nothing joins, can still attach, run or
+// destroy a transformer while exit() runs the static destructors. As plain namespace-scope objects
+// they were torn down under those threads, and under the hold timer: a use-after-free at exit,
+// dilla-hold-tick walking the registry's freed nodes (dilla-media tests/hook_exit.rs).
+struct HookState {
+  webrtc::Mutex mutex;
+  std::shared_ptr<DillaHookHolder> hook;
+};
+
+HookState& hook_state() {
+  static HookState* const state = new HookState();
+  return *state;
+}
 
 // Every live core by handle. Weak: a core lives exactly as long as its transformer (and any run
 // dilla_drain_all holds a strong reference for).
-webrtc::Mutex g_registry_mutex;
-std::map<uint64_t, std::weak_ptr<DillaTransformCore>> g_registry;
+struct Registry {
+  webrtc::Mutex mutex;
+  std::map<uint64_t, std::weak_ptr<DillaTransformCore>> cores;
+};
+
+Registry& registry() {
+  static Registry* const state = new Registry();
+  return *state;
+}
+
 std::atomic<uint64_t> g_next_handle{1};
 
 std::shared_ptr<DillaHookHolder> current_hook() {
-  webrtc::MutexLock lock(&g_hook_mutex);
-  return g_hook;
+  auto& state = hook_state();
+  webrtc::MutexLock lock(&state.mutex);
+  return state.hook;
 }
 
 std::vector<std::shared_ptr<DillaTransformCore>> live_cores() {
   std::vector<std::shared_ptr<DillaTransformCore>> out;
-  webrtc::MutexLock lock(&g_registry_mutex);
-  for (auto& [handle, weak] : g_registry) {
+  auto& reg = registry();
+  webrtc::MutexLock lock(&reg.mutex);
+  for (auto& [handle, weak] : reg.cores) {
     if (auto core = weak.lock()) {
       out.push_back(std::move(core));
     }
@@ -66,10 +91,46 @@ std::vector<std::shared_ptr<DillaTransformCore>> live_cores() {
 }
 
 std::shared_ptr<DillaTransformCore> core_of(uint64_t handle) {
-  webrtc::MutexLock lock(&g_registry_mutex);
-  auto it = g_registry.find(handle);
-  return it == g_registry.end() ? nullptr : it->second.lock();
+  auto& reg = registry();
+  webrtc::MutexLock lock(&reg.mutex);
+  auto it = reg.cores.find(handle);
+  return it == reg.cores.end() ? nullptr : it->second.lock();
 }
+
+// The hold timer (dilla-hold-tick): every tick it retries every transformer's held frames (expiring
+// those past a limit) and sends the key-frame requests the hook asks for. Its owner is g_hold_timer;
+// exit() destroys that, which stops and joins the thread, so the timer never outlives the process's
+// static teardown.
+class HoldTimer {
+ public:
+  HoldTimer(std::shared_ptr<DillaHookHolder> hook, webrtc::TimeDelta tick) {
+    thread_ = webrtc::PlatformThread::SpawnJoinable(
+        [this, hook = std::move(hook), tick] {
+          while (!stop_.Wait(tick)) {
+            dilla_drain_all();
+            for (uint64_t handle : dilla_key_frame_requests(*hook->hook)) {
+              dilla_request_key_frame(handle);
+            }
+          }
+        },
+        "dilla-hold-tick");
+  }
+
+  ~HoldTimer() {
+    stop_.Set();
+    thread_.Finalize();
+  }
+
+  HoldTimer(const HoldTimer&) = delete;
+  HoldTimer& operator=(const HoldTimer&) = delete;
+
+ private:
+  webrtc::Event stop_;
+  webrtc::PlatformThread thread_;
+};
+
+// Started once, by dilla_install_hook (under hook_state().mutex).
+std::optional<HoldTimer> g_hold_timer;
 
 bool is_opus(const std::string& mime) {
   std::string lower(mime);
@@ -92,8 +153,9 @@ webrtc::scoped_refptr<DillaFrameTransformer> make_transformer(
       hook, handle, send, video, std::move(track_id), std::move(track), owner,
       std::move(key_source));
   {
-    webrtc::MutexLock lock(&g_registry_mutex);
-    g_registry[handle] = core;
+    auto& reg = registry();
+    webrtc::MutexLock lock(&reg.mutex);
+    reg.cores[handle] = core;
   }
   dilla_transformer_attached(
       *hook->hook, handle, send, video,
@@ -103,12 +165,14 @@ webrtc::scoped_refptr<DillaFrameTransformer> make_transformer(
 
 }  // namespace
 
-bool dilla_install_hook(rust::Box<DillaHook> hook) {
-  webrtc::MutexLock lock(&g_hook_mutex);
-  if (g_hook) {
+bool dilla_install_hook(rust::Box<DillaHook> hook, uint64_t tick_ms) {
+  auto& state = hook_state();
+  webrtc::MutexLock lock(&state.mutex);
+  if (state.hook) {
     return false;
   }
-  g_hook = std::make_shared<DillaHookHolder>(std::move(hook));
+  state.hook = std::make_shared<DillaHookHolder>(std::move(hook));
+  g_hold_timer.emplace(state.hook, webrtc::TimeDelta::Millis(tick_ms));
   return true;
 }
 
@@ -233,11 +297,12 @@ DillaTransformCore::DillaTransformCore(
 
 DillaTransformCore::~DillaTransformCore() {
   {
-    webrtc::MutexLock lock(&g_registry_mutex);
-    auto it = g_registry.find(handle);
+    auto& reg = registry();
+    webrtc::MutexLock lock(&reg.mutex);
+    auto it = reg.cores.find(handle);
     // Only this core's own entry (the weak pointer is already expired here).
-    if (it != g_registry.end() && it->second.expired()) {
-      g_registry.erase(it);
+    if (it != reg.cores.end() && it->second.expired()) {
+      reg.cores.erase(it);
     }
   }
   dilla_transformer_detached(*hook_->hook, handle);

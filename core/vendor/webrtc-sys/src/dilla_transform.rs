@@ -5,7 +5,7 @@
 // own FrameCryptor and packet-trailer transformers are never attached while a hook is installed.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use cxx::SharedPtr;
@@ -72,36 +72,17 @@ pub trait FrameTransform: Send + Sync + 'static {
 
 pub struct DillaHook(Arc<dyn FrameTransform>);
 
-/// How often the hook's own thread retries every held frame (and expires those past a limit) and
+/// How often the hook's own timer thread (`dilla-hold-tick`, owned by the C++ glue, which stops and
+/// joins it when the process exits) retries every held frame (and expires those past a limit) and
 /// sends the key-frame requests the hook asks for.
-pub const HOLD_TICK: Duration = Duration::from_millis(20);
-
-static INSTALLED: OnceLock<Arc<dyn FrameTransform>> = OnceLock::new();
+pub const HOLD_TICK: Duration = Duration::from_millis(HOLD_TICK_MS);
+const HOLD_TICK_MS: u64 = 20;
 
 /// Installs the process-wide hook and starts its timer thread. Call it before the first
 /// PeerConnection is created. False when a hook is already installed (the new one is dropped):
 /// there is exactly one for the process life.
 pub fn install(transform: Box<dyn FrameTransform>) -> bool {
-    let transform: Arc<dyn FrameTransform> = Arc::from(transform);
-    if !ffi::dilla_install_hook(Box::new(DillaHook(transform.clone()))) {
-        return false;
-    }
-    let _ = INSTALLED.set(transform.clone());
-    let spawned = std::thread::Builder::new().name("dilla-hold-tick".into()).spawn(move || loop {
-        std::thread::sleep(HOLD_TICK);
-        ffi::dilla_drain_all();
-        let wanted = catch_unwind(AssertUnwindSafe(|| transform.key_frame_requests()))
-            .unwrap_or_default();
-        for handle in wanted {
-            ffi::dilla_request_key_frame(handle);
-        }
-    });
-    // Without the timer a held frame still drains on its track's next frame and on every
-    // `drain`; it is never released unauthenticated either way.
-    if spawned.is_err() {
-        log::error!("dilla: the hold timer thread could not start");
-    }
-    true
+    ffi::dilla_install_hook(Box::new(DillaHook(Arc::from(transform))), HOLD_TICK_MS)
 }
 
 /// True once a hook is installed.
@@ -189,6 +170,10 @@ fn dilla_sif_trailer(hook: &DillaHook, trailer: &[u8]) {
     let _ = catch_unwind(AssertUnwindSafe(|| hook.0.sif_trailer(trailer)));
 }
 
+fn dilla_key_frame_requests(hook: &DillaHook) -> Vec<u64> {
+    catch_unwind(AssertUnwindSafe(|| hook.0.key_frame_requests())).unwrap_or_default()
+}
+
 #[cxx::bridge(namespace = "livekit_ffi")]
 pub mod ffi {
     extern "Rust" {
@@ -221,6 +206,7 @@ pub mod ffi {
         fn dilla_hold_expired(hook: &DillaHook, handle: u64, send: bool);
         fn dilla_pass_refused(hook: &DillaHook, handle: u64, send: bool);
         fn dilla_sif_trailer(hook: &DillaHook, trailer: &[u8]);
+        fn dilla_key_frame_requests(hook: &DillaHook) -> Vec<u64>;
     }
 
     unsafe extern "C++" {
@@ -228,7 +214,7 @@ pub mod ffi {
 
         type MediaStreamTrack = crate::media_stream_track::ffi::MediaStreamTrack;
 
-        fn dilla_install_hook(hook: Box<DillaHook>) -> bool;
+        fn dilla_install_hook(hook: Box<DillaHook>, tick_ms: u64) -> bool;
         fn dilla_owns_transforms() -> bool;
         fn dilla_receiver_handle(track: &MediaStreamTrack) -> u64;
         fn dilla_sender_handle(track: &MediaStreamTrack) -> u64;
