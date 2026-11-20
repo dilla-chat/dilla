@@ -214,15 +214,6 @@ impl ShareSound {
         }
     }
 
-    /// The application the person chose, the only one a share carries before its window is looked up: `Window(_)`
-    /// and `Unset` are none.
-    pub fn chosen(&self) -> Option<&dilla_media::app_audio::AppSource> {
-        match self {
-            ShareSound::Person(app) => app.as_ref(),
-            _ => None,
-        }
-    }
-
     /// A share starts: `Window(_)` becomes `Unset`; everything else is kept.
     pub fn on_share(self) -> ShareSound {
         match self {
@@ -1359,15 +1350,13 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
         return;
     }
     if kind == ShareKind::Screen {
-        // The system's own dialog chooses and Dilla never learns the window: nothing is looked up.
+        // The system's own dialog chooses and Dilla never learns the window: nothing is looked up. The share starts with
+        // the person's choice or none, in the same command.
         let ui = ui_mut(w, cx);
         ui.share_seq += 1;
         ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
-        // The sound the share starts with is the person's choice or none, never one left waiting by an earlier share.
-        let asks = share_start_asks(&ui.share_sound);
-        for ask in asks.before.into_iter().chain(asks.after.map(Some)) {
-            session.app_audio(ask);
-        }
+        session.share_screen(None, options, ui.share_seq, ui.share_sound.clone());
+        return;
     }
     session.share(kind, true, options);
 }
@@ -1411,36 +1400,6 @@ pub fn set_share_app(
     }
 }
 
-/// What a share's start asks its media session for, as `[before the share, after it]` application sounds. Nothing but
-/// the person's choice is published (the window's own is added once it is found): an application left waiting by an
-/// earlier share that never came up is dropped by the `None` before, so what the sound row says is what the share
-/// carries. Only the choice itself is sent after.
-fn share_start_asks(sound: &ShareSound) -> StartAsks {
-    let chosen = sound.chosen().cloned();
-    StartAsks {
-        before: chosen.is_none().then_some(None),
-        after: chosen,
-    }
-}
-
-/// [`share_start_asks`]'s answer: `before` is sent ahead of the share (`Some(None)`: clear what waits), `after` once the
-/// share is on its way.
-struct StartAsks {
-    before: Option<Option<dilla_media::app_audio::AppSource>>,
-    after: Option<dilla_media::app_audio::AppSource>,
-}
-
-impl StartAsks {
-    /// The application sounds asked for, in order.
-    #[cfg(test)]
-    fn in_order(self) -> Vec<Option<dilla_media::app_audio::AppSource>> {
-        self.before
-            .into_iter()
-            .chain(self.after.map(Some))
-            .collect()
-    }
-}
-
 /// The picker's choice: `window`'s call shares `source` at `options` (only that window's media session).
 pub fn share_source(
     window: WindowId,
@@ -1464,16 +1423,9 @@ pub fn share_source(
         .then(|| crate::screens::share_picker::apps::window_sound(cx))
         .flatten();
     if let Some(s) = &session {
-        // The start comes first: while it replaces a running share, what is asked next waits for the new source.
-        s.share_source(source.clone(), options, seq);
-        let asks = share_start_asks(&ui_sound);
-        if let Some(before) = asks.before {
-            s.app_audio(before);
-        }
-        // The sound section's application comes with the share.
-        if asks.after.is_some() {
-            s.app_audio(asks.after);
-        }
+        // The start carries its sound (the sound section's choice, or none until the window's is found): the session
+        // gives the new share exactly that once it is up, and the running share keeps its own until then.
+        s.share_screen(Some(source.clone()), options, seq, ui_sound);
     }
     // A shared window brings its application's sound (D21): found off the UI thread, applied only to this share.
     let Some(find) = look_up else { return };
@@ -4048,11 +4000,6 @@ mod tests {
         assert_eq!(Person(None).on_share().found(Some(a.clone())), Person(None));
         assert_eq!(Window(a.clone()).on_share(), Unset);
         assert_eq!(Unset.found(None), Unset);
-        // Only the person's choice goes out before the window's application is found.
-        assert_eq!(Window(a.clone()).chosen(), None);
-        assert_eq!(Unset.chosen(), None);
-        assert_eq!(Person(None).chosen(), None);
-        assert_eq!(Person(Some(m.clone())).chosen(), Some(&m));
         assert_eq!(Window(a).ended(), Unset);
         assert_eq!(Person(None).ended(), Unset);
         assert_eq!(Person(Some(m.clone())).ended(), Person(Some(m)));
