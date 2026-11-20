@@ -86,8 +86,12 @@ pub struct OwnCall {
     pub epoch: Option<u64>,
     /// The epoch's safety code (6 groups of 5 digits).
     pub code: Option<String>,
-    /// The `E_*` code of the last join or leave that failed.
+    /// The `E_*` code of the last join or leave that failed; while the call is `In`, the code its newest epoch was refused
+    /// with (the call is paused: [`OwnCall::paused`]).
     pub error: Option<String>,
+    /// The contact whose changed identity paused the call (controller.ts `changedUser`), only for an `E_UMK_CHANGED`
+    /// pause and only among the call's own roster; `None` when none is known.
+    pub changed_user: Option<UserId>,
     /// `(user, device, leaf)` of every member of the call group.
     pub roster: Vec<(UserId, DeviceId, u16)>,
     /// The link's ping to the SFU in ms (session.ts `link.rttMs`), read by the media every few seconds; `None` until
@@ -99,6 +103,15 @@ pub struct OwnCall {
     /// The link's packet loss in percent (stats.ts `linkSample`'s `lossPct`), from the media's link reads; `None` until
     /// two reads gave one. With the ping it names the dock's link quality.
     pub loss_pct: Option<f32>,
+}
+
+impl OwnCall {
+    /// The web's call phase `paused` (controller.ts `rekey`, RV-3): the call is joined but its newest epoch was refused,
+    /// so every media key is dropped (`RefusedEpoch::Pause`), nothing is sent or played and the error stands until an
+    /// epoch passes again.
+    pub fn paused(&self) -> bool {
+        self.phase == CallPhase::In && self.error.is_some()
+    }
 }
 
 /// What this device publishes besides its microphone.

@@ -737,6 +737,7 @@ impl Voice {
                 epoch: Some(epoch),
                 code: Some(code),
                 error: None,
+                changed_user: None,
                 roster,
                 ping_ms: None,
                 rate_kbps: None,
@@ -815,6 +816,7 @@ impl Voice {
                                 s.voice.call.code = Some(code);
                                 s.voice.call.roster = roster;
                                 s.voice.call.error = None;
+                                s.voice.call.changed_user = None;
                             }
                         });
                     }
@@ -858,9 +860,29 @@ impl Voice {
                             let _ = this.leave_inner().await;
                             return Ok(());
                         }
+                        // controller.ts `rekey`: the pause names the changed contact among the call's own roster
+                        // (`changedUser`), read from the core's trust state once per refusal code.
+                        let snap = this.inner.snapshot();
+                        let call = &snap.voice.call;
+                        let changed = if code != "E_UMK_CHANGED" {
+                            None
+                        } else if call.error.as_deref() == Some(code.as_str()) {
+                            call.changed_user
+                        } else {
+                            let candidates: Vec<UserId> = call.roster.iter().map(|r| r.0).collect();
+                            crate::features::ring::changed_user(
+                                &crate::features::ring::changed_users(&this.inner).await,
+                                snap.account.user_id,
+                                &candidates,
+                                None,
+                            )
+                        };
+                        // session.ts: the speaking detector stays off while the call is paused.
                         this.inner.publish(move |s| {
                             if s.voice.call.group_id == Some(live.group_id) {
                                 s.voice.call.error = Some(code);
+                                s.voice.call.changed_user = changed;
+                                s.voice.speaking.clear();
                             }
                         });
                     }
@@ -1088,7 +1110,10 @@ impl Voice {
     /// The devices heard speaking now (the media layer's speaking detector).
     pub fn set_speaking(&self, devices: std::collections::BTreeSet<DeviceId>) {
         self.inner.publish(move |s| {
-            if s.voice.speaking != devices {
+            // session.ts: nobody is heard speaking while the call is paused (its keys are dropped).
+            if s.voice.call.paused() {
+                s.voice.speaking.clear();
+            } else if s.voice.speaking != devices {
                 s.voice.speaking = devices;
             }
         });

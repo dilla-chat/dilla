@@ -1084,7 +1084,7 @@ async fn text_block(inner: &Arc<Inner>, channel: ChannelId) -> Option<String> {
 }
 
 /// The users the core's trust state holds as changed (none when it cannot be read).
-async fn changed_users(inner: &Arc<Inner>) -> Vec<UserId> {
+pub(crate) async fn changed_users(inner: &Arc<Inner>) -> Vec<UserId> {
     let core = inner.engine().core().clone();
     try_core(&core, |c| c.trust_state().ok())
         .await

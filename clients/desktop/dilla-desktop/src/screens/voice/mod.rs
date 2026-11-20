@@ -84,11 +84,15 @@ mod m {
     pub const CAPTION_GAP: f32 = 6.0;
     pub const TILE_EDGE: f32 = 1.0;
     pub const TILE_EDGE_STRONG: f32 = 2.0;
-    /// The media notice: 12x10 in, a 12px gap, the 14px warning glyph.
+    /// CallStage.css `.d-call-stage__notice`: 12x10 in, a 12px column gap, the 14px pause glyph, the left edge 3px wide;
+    /// its action a `md` button (`min-height: 2rem`); the media notice's 28px close button.
     pub const NOTICE_PAD_X: f32 = 12.0;
     pub const NOTICE_PAD_Y: f32 = 10.0;
     pub const NOTICE_GAP: f32 = 12.0;
     pub const NOTICE_GLYPH: f32 = 14.0;
+    pub const NOTICE_EDGE_LEFT: f32 = 3.0;
+    pub const NOTICE_ACTION_H: f32 = 32.0;
+    pub const NOTICE_CLOSE: f32 = 28.0;
     /// CallStage.css `.d-call-stage__controls[data-bar]`: the 64px bar (`--panel-h`), 6px between its parts, 10px by 16px in;
     /// `__room`: the 6px `--ok` dot 6px before the name.
     pub const CONTROLS_H: f32 = 64.0;
@@ -316,12 +320,17 @@ struct Sim {
     verified: std::collections::BTreeSet<DeviceId>,
     screens: std::collections::BTreeSet<DeviceId>,
     speaking: std::collections::BTreeSet<DeviceId>,
+    /// The call is paused by this contact's changed identity (`voice-sim paused <person>`).
+    paused: Option<UserId>,
 }
 
 #[cfg(feature = "test-hooks")]
 impl Sim {
     fn is_empty(&self) -> bool {
-        self.roster.is_empty() && self.remotes.is_empty() && self.speaking.is_empty()
+        self.roster.is_empty()
+            && self.remotes.is_empty()
+            && self.speaking.is_empty()
+            && self.paused.is_none()
     }
 
     /// `state` with the simulated devices in the call's roster, SFU room, verified set and screen streams, and the
@@ -350,7 +359,34 @@ impl Sim {
         }
         s.voice.verified_peers.extend(self.verified.iter().copied());
         s.voice.screen_streams.extend(self.screens.iter().copied());
-        s.voice.speaking.extend(self.speaking.iter().copied());
+        if let Some(user) = self.paused {
+            // `RefusedEpoch::Pause` for a changed identity: the call stays `In` with the refusal's code and the contact
+            // it names, whose trust record (its changed key) the notice's comparison opens.
+            s.voice.call.error = Some("E_UMK_CHANGED".to_owned());
+            s.voice.call.changed_user = Some(user);
+            if !s.trust.contacts.iter().any(|r| r.user_id == user) {
+                s.trust
+                    .contacts
+                    .push(dilla_client::state::trust::TrustSummary {
+                        user_id: user,
+                        name: dilla_client::features::ring::name_of(&s, user),
+                        shared: true,
+                        umk: "0".repeat(64),
+                        first_seen: 0,
+                        verified: false,
+                        changed_umk: Some("1".repeat(64)),
+                        unlisted: false,
+                        removed_in: Vec::new(),
+                        blocked: None,
+                    });
+            }
+        }
+        // `Voice::set_speaking`: nobody is heard speaking while the call is paused.
+        if s.voice.call.paused() {
+            s.voice.speaking.clear();
+        } else {
+            s.voice.speaking.extend(self.speaking.iter().copied());
+        }
         Arc::new(s)
     }
 }
@@ -687,23 +723,38 @@ fn stage_title(channel: &Channel, glyph: IconName, topic: String) -> Div {
         )
 }
 
-/// The ring area's stage notice for `channel` (VoiceView.tsx `stageNotice`): a block (Task 18's
-/// `ring::block_notice`, with the comparison of the changed contact it names), else the line an AFK move left on the
-/// stage of a voice channel of that server (`ring::afk_moved`).
-pub fn ring_notice(state: &AppState, channel: &Channel) -> Option<AnyElement> {
-    use crate::screens::ring::{afk_moved, block_notice};
-    if let Some(n) = block_notice(state, channel.id, |u| {
-        dilla_client::features::ring::name_of(state, u)
-    }) {
-        let record = n.compare.and_then(|u| {
-            state
-                .trust
-                .contacts
-                .iter()
-                .find(|r| r.user_id == u)
-                .cloned()
-        });
-        return Some(notice_strip("voice-blocked", n.text, record));
+/// CallStage.tsx `CallStageNotice.kind`: the RV-3 pause banner, a block notice, or a transient notice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    Paused,
+    Blocked,
+    Info,
+}
+
+impl NoticeKind {
+    /// CallStage.tsx `hideMedia`: while a pause or a block shows, no tile shows media and no screen tile is drawn.
+    pub fn hides_media(self) -> bool {
+        self != NoticeKind::Info
+    }
+}
+
+/// One stage notice (CallStage.tsx `CallStageNotice`): its kind and line, the changed contact whose comparison it offers
+/// (`voice.pausedAction`), and the element id the tests find it by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageNotice {
+    pub kind: NoticeKind,
+    pub text: String,
+    pub compare: Option<UserId>,
+    pub id: &'static str,
+}
+
+/// VoiceView.tsx `stageNotice` (:268-307) for `channel`, the parts the desktop's state holds, in the web's order: this
+/// device's call paused, then a block ([`call_notice`]), then the line an AFK move left on the stage of a voice channel
+/// of that server (`ring::afk_moved`, the web's `call.notice`). The web's `voice.failed` and microphone lines are the
+/// media notice here ([`notice`]), drawn when no stage notice shows; `voice.removedNotMember` has no desktop state.
+pub fn stage_notice(state: &AppState, channel: &Channel) -> Option<StageNotice> {
+    if let Some(n) = call_notice(state, channel.id) {
+        return Some(n);
     }
     let afk_channel = state
         .ring
@@ -716,24 +767,86 @@ pub fn ring_notice(state: &AppState, channel: &Channel) -> Option<AnyElement> {
         .as_ref()
         .filter(|n| n.community == channel.community_id && afk_channel != Some(channel.id))
         .and_then(|_| {
-            afk_moved(state, |id| {
+            crate::screens::ring::afk_moved(state, |id| {
                 state
                     .channel(id)
                     .map(|c| c.name.clone())
                     .unwrap_or_default()
             })
         })?;
-    Some(notice_strip("voice-afk-moved", moved, None))
+    Some(StageNotice {
+        kind: NoticeKind::Info,
+        text: moved,
+        compare: None,
+        id: "voice-afk-moved",
+    })
 }
 
-/// One stage notice: its line, and the comparison it offers (`voice.pausedAction`) when it names a changed contact.
+/// The notices of `channel` that hide its media (VoiceView.tsx:276-294): this device's call paused (`OwnCall::paused`,
+/// the web's slice phase `paused`) says `voice.held` for any refusal but a changed identity, else `voice.paused` naming
+/// the changed contact (empty when none is known) and offering the comparison when one is; then a block (Task 18's
+/// `ring::block_notice`, the web's phase `blocked`).
+fn call_notice(state: &AppState, channel: ChannelId) -> Option<StageNotice> {
+    let call = &state.voice.call;
+    if call.channel == Some(channel) && call.paused() {
+        if call.error.as_deref() != Some("E_UMK_CHANGED") {
+            return Some(StageNotice {
+                kind: NoticeKind::Paused,
+                text: t("voice.held").to_owned(),
+                compare: None,
+                id: "voice-paused",
+            });
+        }
+        let name = call
+            .changed_user
+            .map(|u| dilla_client::features::ring::name_of(state, u))
+            .unwrap_or_default();
+        return Some(StageNotice {
+            kind: NoticeKind::Paused,
+            text: tf("voice.paused", &[("name", &name)]),
+            compare: call.changed_user,
+            id: "voice-paused",
+        });
+    }
+    let n = crate::screens::ring::block_notice(state, channel, |u| {
+        dilla_client::features::ring::name_of(state, u)
+    })?;
+    Some(StageNotice {
+        kind: NoticeKind::Blocked,
+        text: n.text,
+        compare: n.compare,
+        id: "voice-blocked",
+    })
+}
+
+/// Whether `channel`'s stage hides its media now (CallStage.tsx `hideMedia`): its notice is a pause or a block. The
+/// tiles then show no frames, no stats and nobody speaking, and the screen tiles go.
+pub fn media_hidden(state: &AppState, channel: ChannelId) -> bool {
+    call_notice(state, channel).is_some_and(|n| n.kind.hides_media())
+}
+
+/// The stage notice of `channel` ([`stage_notice`]), drawn: on the stage, in the DM call box and as the DM's strip.
+pub fn ring_notice(state: &AppState, channel: &Channel) -> Option<AnyElement> {
+    let n = stage_notice(state, channel)?;
+    let record = n.compare.and_then(|u| {
+        state
+            .trust
+            .contacts
+            .iter()
+            .find(|r| r.user_id == u)
+            .cloned()
+    });
+    Some(notice_strip(n, record))
+}
+
+/// One stage notice (CallStage.tsx's notice region, `role="status"`): its glyph, its line, and the comparison it offers
+/// (`voice.pausedAction`) when it names a changed contact this device holds a trust record of.
 fn notice_strip(
-    id: &'static str,
-    text: String,
+    n: StageNotice,
     compare: Option<dilla_client::state::trust::TrustSummary>,
 ) -> AnyElement {
     let action = compare.map(|record| {
-        tracked_box(
+        let button = tracked_box(
             "voice-notice-compare",
             dilla_desktop_ui::components::Button::new(
                 "voice-notice-compare-b",
@@ -743,9 +856,18 @@ fn notice_strip(
                 let client = client_of(wid(window), cx);
                 crate::screens::dms::compare::open(wid(window), &record, client, cx);
             }),
-        )
+        );
+        (button.into_any_element(), button_baseline())
     });
-    tracked_box(id, notice_box(text).children(action)).into_any_element()
+    let id = n.id;
+    tracked_box(
+        id,
+        notice_box(n.kind, n.text.clone(), action)
+            .id(ElementId::Name(format!("{id}-region").into()))
+            .a11y(Role::Status, n.text)
+            .live(dilla_desktop_ui::a11y::Live::Polite),
+    )
+    .into_any_element()
 }
 
 impl VoiceUi {
@@ -789,7 +911,8 @@ fn test_pattern_image() -> Arc<RenderImage> {
 
 /// The automation command `voice-sim media <person>`, `speaking <person>`, `camera <person> test-pattern` or `screen <person>
 /// test-pattern`: `person` (a name or username in the stage's call) gets simulated media, so a tile of theirs shows, and
-/// is heard speaking, shows a static camera frame, or shows a static screen frame. The simulation is kept over every later
+/// is heard speaking, shows a static camera frame, or shows a static screen frame. `paused <person>` pauses the call
+/// as a refused epoch does for `person`'s changed identity (`RefusedEpoch::Pause`). The simulation is kept over every later
 /// state (feature `test-hooks`; the GPUI-only references of `voice/stage-group` are made with it).
 #[cfg(feature = "test-hooks")]
 pub fn simulate(
@@ -821,8 +944,15 @@ pub fn simulate(
                     .flatten()
                     .any(|m| m.user_id == p.user_id && m.username.eq_ignore_ascii_case(person))
         })
-        .map(|(_, p)| p.device_id)
+        .map(|(_, p)| (p.user_id, p.device_id))
         .ok_or_else(|| format!("nobody called `{person}` is in a call"))?;
+    let (user, found) = found;
+    if what == "paused" {
+        // The call is paused by `person`'s changed identity: `voice-sim paused <person>`.
+        ui.sim.paused = Some(user);
+        ui.state = ui.sim.over(ui.state.clone());
+        return Ok(());
+    }
     // `media`, `speaking`, `camera` and `screen` give the device a verified peer (roster, room and frames); `connecting`
     // only the roster, `unverified` only the room, `not-heard` both but no frame.
     let (roster, remote, verified) = match what {
@@ -2253,9 +2383,27 @@ pub fn tiles(state: &AppState, channel: ChannelId) -> Vec<TileKey> {
             push(user, device, true);
         }
     }
-    let mut order: Vec<(usize, (TileKey, usize))> = built.into_iter().enumerate().collect();
+    // CallStage.tsx: while a pause or a block hides the media, no screen tile renders.
+    let hidden = media_hidden(state, channel);
+    let mut order: Vec<(usize, (TileKey, usize))> = built
+        .into_iter()
+        .filter(|(k, _)| !(hidden && k.screen))
+        .enumerate()
+        .collect();
     order.sort_by_key(|(i, (k, rank))| (!k.screen, *rank, *i));
     order.into_iter().map(|(_, (k, _))| k).collect()
+}
+
+/// Whether a tile of `channel` in `tile_state` shows its frames: an `ok` one (session.ts `show`: unverified frames are
+/// never shown) while no pause or block hides the stage's media (CallStage.tsx `hideMedia`).
+pub fn shows_media(state: &AppState, channel: ChannelId, tile_state: TileState) -> bool {
+    tile_state == TileState::Ok && !media_hidden(state, channel)
+}
+
+/// Whether `device` is drawn speaking on `channel`'s stage: heard, and the call not paused (session.ts: the speaking
+/// detector is off while paused) nor its media hidden.
+pub fn shows_speaking(state: &AppState, channel: ChannelId, device: DeviceId) -> bool {
+    !media_hidden(state, channel) && state.voice.speaking.contains(&device)
 }
 
 /// The grid's band (CallStage.css): up to two tiles 46% (at most 560px) wide, up to four 46% (420px), more 31.5%
@@ -2301,6 +2449,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     if let Some(k) = fullscreen_tile(w, cx) {
         let here = ui_of(w, cx).is_some_and(|u| {
             u.state.voice.call.channel == Some(channel.id)
+                && !media_hidden(&u.state, channel.id)
                 && tiles(&u.state, channel.id).contains(&k)
         });
         if !here {
@@ -2312,7 +2461,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let state = ui.state.clone();
     let focus = ui.stage_focus.clone()?;
     let keys = tiles(&state, channel.id);
-    let focused = ui.focused.clone().filter(|k| keys.contains(k));
+    // CallStage.tsx `focusedHere`: a pause or a block clears the focus.
+    let hidden = media_hidden(&state, channel.id);
+    let focused = ui.focused.clone().filter(|k| !hidden && keys.contains(k));
     let selected = ui.selected.min(keys.len().saturating_sub(1));
     let pointer = ui.pointer;
     let joined = joined(&state, channel.id);
@@ -2483,8 +2634,8 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             window.refresh();
         })
         .child(title)
-        .children(ring_notice(&state, channel))
-        .child(notice(&state))
+        // CallStage.tsx's one notice region: the stage notice, else the media notice.
+        .child(ring_notice(&state, channel).unwrap_or_else(|| notice(&state)))
         .child(
             div()
                 .flex_1()
@@ -2669,7 +2820,7 @@ fn tile(
         .iter()
         .find(|p| p.device_id == k.device);
     let name = name_of(state, Some(channel), k.user);
-    let speaking = !k.screen && state.voice.speaking.contains(&k.device);
+    let speaking = !k.screen && shows_speaking(state, channel.id, k.device);
     let stream = StreamKey {
         device: k.device.hex(),
         kind: if k.screen {
@@ -2687,7 +2838,7 @@ fn tile(
     let video = images
         .get(&stream)
         .cloned()
-        .filter(|_| tile_state == TileState::Ok);
+        .filter(|_| shows_media(state, channel.id, tile_state));
     let has_media = video.is_some();
     let own = p.is_some_and(|p| p.own);
     // VoiceView.tsx `withTileStats`: a screen says its frames; the own person tile what its microphone sends (this
@@ -2698,12 +2849,15 @@ fn tile(
         .flatten()
         .map(|(h, fps)| frame_stat(*h, *fps))
         .or_else(|| {
-            (own && !k.screen && state.voice.call.phase == CallPhase::In).then(|| {
-                tf(
-                    "callStage.stat.codec",
-                    &[("codec", OWN_CODEC.0), ("khz", OWN_CODEC.1)],
-                )
-            })
+            (own && !k.screen
+                && !media_hidden(state, channel.id)
+                && state.voice.call.phase == CallPhase::In)
+                .then(|| {
+                    tf(
+                        "callStage.stat.codec",
+                        &[("codec", OWN_CODEC.0), ("khz", OWN_CODEC.1)],
+                    )
+                })
         });
     // Signal §5.6: the own tile is "{name} (you)".
     let title = if own && !k.screen {
@@ -3240,7 +3394,7 @@ pub fn dm_call_box(channel: &Channel, window: &mut Window, cx: &mut App) -> Opti
         .min_h_0()
         .overflow_y_scroll()
         .child(head)
-        .children(notice_or_none(&state))
+        .children(ring_notice(&state, channel).or_else(|| notice_or_none(&state)))
         .child(body);
     Some(
         div()
@@ -3426,7 +3580,7 @@ fn card(
     let video = images
         .get(&stream)
         .cloned()
-        .filter(|_| tile_state == TileState::Ok);
+        .filter(|_| channel.is_some_and(|c| shows_media(state, c, tile_state)));
     let (muted, deafened) = if own {
         (state.voice.self_mute, state.voice.self_deaf)
     } else {
@@ -3460,7 +3614,7 @@ fn card(
         .filter_map(|(on, icon, tone)| on.then_some((icon, tone)))
         .collect()
     };
-    let speaking = p.is_some_and(|p| state.voice.speaking.contains(&p.device_id));
+    let speaking = channel.is_some_and(|c| shows_speaking(state, c, k.device)) && p.is_some();
     let edge = if speaking {
         m::TILE_EDGE_STRONG
     } else {
@@ -3683,30 +3837,71 @@ fn toolbar_control(
     tracked_box(id, button)
 }
 
-/// A stage notice's box: the warning glyph and its line (the media notice and the ring area's notices).
-fn notice_box(text: String) -> Div {
+/// Where the label's baseline of a `md` button (32px, `--text-btn`) stands below its top: the notice's action.
+fn button_baseline() -> f32 {
+    let lh = dilla_desktop_ui::text::root_line_height(text::BTN);
+    (m::NOTICE_ACTION_H - lh) / 2.0 + chromium_baseline(Face::Mono, f32::from(text::BTN), lh)
+}
+
+/// A stage notice's box (CallStage.css `.d-call-stage__notice`): `--surface-2`, a 1px `--warn` edge 3px wide on the
+/// left (`--line-strong` for `info`), 10px by 12px in, the glyph (the pause icon, `!`, or `›` in `--fg-2` for `info`), its
+/// line in `--text-ui` and the action, 12px apart and on their first baselines (`align-items: baseline`); `action` is the
+/// element and where its baseline stands below its top.
+fn notice_box(kind: NoticeKind, text: String, action: Option<(AnyElement, f32)>) -> Div {
+    use dilla_desktop_ui::text::{flow_paragraph, root_line_height};
+    let (edge, tone) = match kind {
+        NoticeKind::Info => (color::LINE_STRONG, color::FG_2),
+        NoticeKind::Paused | NoticeKind::Blocked => (color::WARN, color::WARN),
+    };
+    // The glyph inherits the root's `--text-base` and line height; the pause icon stands on that line's baseline.
+    let glyph_lh = root_line_height(text::BASE);
+    let glyph_base = chromium_baseline(Face::Mono, f32::from(text::BASE), glyph_lh);
+    let text_lh = root_line_height(text::UI);
+    let text_base = chromium_baseline(Face::Mono, f32::from(text::UI), text_lh);
+    let lowest = [
+        Some(glyph_base),
+        Some(text_base),
+        action.as_ref().map(|a| a.1),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0.0_f32, f32::max);
+    let glyph = match kind {
+        NoticeKind::Paused => div()
+            .h(px(glyph_lh))
+            .child(
+                div().mt(px(glyph_base - m::NOTICE_GLYPH)).child(
+                    Icon::new(IconName::Pause)
+                        .size(px(m::NOTICE_GLYPH))
+                        .color(tone),
+                ),
+            )
+            .into_any_element(),
+        NoticeKind::Blocked => line("!", text::BASE, glyph_lh, tone).into_any_element(),
+        NoticeKind::Info => line("›", text::BASE, glyph_lh, tone).into_any_element(),
+    };
     div()
         .mx(px(m::STAGE_PAD))
         .mt(px(m::STAGE_PAD))
         .px(px(m::NOTICE_PAD_X))
         .py(px(m::NOTICE_PAD_Y))
         .flex()
-        .items_center()
+        .items_start()
         .gap(px(m::NOTICE_GAP))
         .bg(color::SURFACE_2)
         .border_1()
-        .border_color(color::LINE_STRONG)
+        .border_l(px(m::NOTICE_EDGE_LEFT))
+        .border_color(edge)
         .rounded(radius::MD)
-        .child(
-            Icon::new(IconName::TriangleAlert)
-                .size(px(m::NOTICE_GLYPH))
-                .color(color::WARN),
-        )
+        .child(div().flex_none().mt(px(lowest - glyph_base)).child(glyph))
         .child(
             div()
                 .flex_1()
-                .child(line(text, text::UI, line_height(text::UI, 1.3), color::FG)),
+                .min_w_0()
+                .mt(px(lowest - text_base))
+                .child(flow_paragraph(text, text::UI, text_lh, color::FG)),
         )
+        .children(action.map(|(a, base)| div().flex_none().mt(px(lowest - base)).child(a)))
 }
 
 /// The media notice over the tiles, until dismissed.
@@ -3722,24 +3917,28 @@ fn notice(state: &AppState) -> AnyElement {
         Some(VoiceNotice::ShareWithoutSound) => "voice.shareAudio.none.application",
         Some(VoiceNotice::MediaFailed) => "voice.failed",
     };
-    notice_box(t(key).to_owned())
-        .id("voice-notice")
-        .a11y(Role::Status, t(key))
-        .live(dilla_desktop_ui::a11y::Live::Polite)
-        .child(
-            IconButton::new(
-                "voice-notice-close",
-                IconName::X,
-                t("voice.unsupported.close"),
-            )
-            .size(IconButtonSize::S28)
-            .on_click(|_, window, cx| {
-                if let Some(v) = voice(wid(window), cx) {
-                    v.set_notice(None);
-                }
-            }),
-        )
-        .into_any_element()
+    // A transient notice (`info`); the close button is the desktop's own, an icon-only control whose baseline Chromium
+    // would put at its bottom edge.
+    let close = IconButton::new(
+        "voice-notice-close",
+        IconName::X,
+        t("voice.unsupported.close"),
+    )
+    .size(IconButtonSize::S28)
+    .on_click(|_, window, cx| {
+        if let Some(v) = voice(wid(window), cx) {
+            v.set_notice(None);
+        }
+    });
+    notice_box(
+        NoticeKind::Info,
+        t(key).to_owned(),
+        Some((close.into_any_element(), m::NOTICE_CLOSE)),
+    )
+    .id("voice-notice")
+    .a11y(Role::Status, t(key))
+    .live(dilla_desktop_ui::a11y::Live::Polite)
+    .into_any_element()
 }
 
 /// The not-joined preview (CallStage.tsx `preview`, Signal §5.6): the faces of who is inside (each 48px, 10px over the
@@ -4796,6 +4995,141 @@ mod tests {
         s.voice.share.screen = true;
         in_call(&mut s, &ch, 1, (&[], &[], &[], &[]));
         assert_eq!(devices(&tiles(&s, ch.id)), vec![(1, true), (1, false)]);
+    }
+
+    /// VoiceView.tsx `stageNotice` (:268-307), per kind: a call paused by a refusal other than a changed identity says
+    /// `voice.held`; one paused by a changed identity says `voice.paused` with the contact's name (empty when none is
+    /// known) and offers the comparison; a pause comes before a block; a block is `blocked` with Task 18's line; an AFK
+    /// move is `info`; an error outside a joined call is no pause. Only `paused` and `blocked` hide media.
+    #[test]
+    fn the_stage_notice_follows_the_web_s_kinds() {
+        use dilla_client::state::ring::{AfkNotice, BlockWhen, CallBlock};
+        use dilla_client::state::voice::OwnCall;
+        let (mut s, ch) = state_with(&[(1, 1, flags::IN_CALL), (2, 2, flags::IN_CALL)]);
+        in_call(&mut s, &ch, 1, (&[2], &[2], &[2], &[]));
+        s.voice.call.phase = CallPhase::In;
+        assert_eq!(
+            stage_notice(&s, &ch),
+            None,
+            "a call that runs has no notice"
+        );
+
+        s.voice.call.error = Some("E_DEVICE_LIST_STALE".into());
+        let held = stage_notice(&s, &ch).expect("held");
+        assert_eq!(
+            (held.kind, held.text.as_str(), held.compare),
+            (NoticeKind::Paused, t("voice.held"), None)
+        );
+
+        s.voice.call.error = Some("E_UMK_CHANGED".into());
+        let unnamed = stage_notice(&s, &ch).expect("paused, nobody named");
+        assert_eq!(
+            (unnamed.kind, unnamed.text, unnamed.compare),
+            (
+                NoticeKind::Paused,
+                tf("voice.paused", &[("name", "")]),
+                None
+            )
+        );
+        let bea = UserId([2; 16]);
+        s.voice.call.changed_user = Some(bea);
+        let name = dilla_client::features::ring::name_of(&s, bea);
+        let named = stage_notice(&s, &ch).expect("paused, named");
+        assert_eq!(
+            (named.kind, named.text, named.compare, named.id),
+            (
+                NoticeKind::Paused,
+                tf("voice.paused", &[("name", &name)]),
+                Some(bea),
+                "voice-paused"
+            )
+        );
+
+        // A pause stands before a block of the same channel.
+        s.ring.blocked = Some(CallBlock {
+            channel: ch.id,
+            code: "E_DEVICE_UNLISTED".into(),
+            changed_user: None,
+            when: BlockWhen::Left,
+        });
+        assert_eq!(
+            stage_notice(&s, &ch).map(|n| n.kind),
+            Some(NoticeKind::Paused)
+        );
+
+        // The call left: the block shows, with Task 18's line.
+        s.voice.call = OwnCall {
+            error: Some("E_DEVICE_UNLISTED".into()),
+            ..OwnCall::default()
+        };
+        let blocked = stage_notice(&s, &ch).expect("blocked");
+        let line = crate::screens::ring::block_notice(&s, ch.id, |_| String::new())
+            .expect("Task 18's block notice")
+            .text;
+        assert_eq!(
+            (blocked.kind, blocked.text, blocked.id),
+            (NoticeKind::Blocked, line, "voice-blocked")
+        );
+
+        // An error outside a joined call (a refused join) is no pause; an AFK move elsewhere is `info`.
+        s.ring.blocked = None;
+        assert_eq!(stage_notice(&s, &ch), None);
+        s.ring.afk_notice = Some(AfkNotice {
+            community: ch.community_id,
+            channel: None,
+            reason: 2,
+            seq: 1,
+        });
+        let info = stage_notice(&s, &ch).expect("the AFK move");
+        assert_eq!(
+            (info.kind, info.text.as_str(), info.id),
+            (NoticeKind::Info, t("afk.elsewhere"), "voice-afk-moved")
+        );
+
+        assert!(NoticeKind::Paused.hides_media() && NoticeKind::Blocked.hides_media());
+        assert!(!NoticeKind::Info.hides_media());
+    }
+
+    /// CallStage.tsx `hideMedia` and session.ts `paused`: a paused call (its epoch refused, `RefusedEpoch::Pause`) keeps
+    /// every person tile but draws no frame, no screen tile and nobody speaking; once an epoch passes again (the error
+    /// clears) all of it comes back.
+    #[test]
+    fn a_paused_call_hides_media_and_speaking() {
+        let (mut s, ch) = state_with(&[(1, 1, flags::IN_CALL), (2, 2, flags::IN_CALL)]);
+        in_call(&mut s, &ch, 1, (&[2], &[2], &[2], &[2]));
+        s.voice.call.phase = CallPhase::In;
+        s.voice.speaking.insert(DeviceId([2; 16]));
+        let running = (
+            devices(&tiles(&s, ch.id)),
+            shows_media(&s, ch.id, state_of(&s, &ch, 2)),
+            shows_speaking(&s, ch.id, DeviceId([2; 16])),
+        );
+        assert_eq!(
+            running,
+            (vec![(2, true), (1, false), (2, false)], true, true)
+        );
+
+        s.voice.call.error = Some("E_UMK_CHANGED".into());
+        assert!(media_hidden(&s, ch.id));
+        assert_eq!(
+            devices(&tiles(&s, ch.id)),
+            vec![(1, false), (2, false)],
+            "the person tiles stay, the screen tile goes"
+        );
+        assert_eq!(devices(&dm_tiles(&s, ch.id)), vec![(1, false), (2, false)]);
+        assert!(!shows_media(&s, ch.id, state_of(&s, &ch, 2)), "no frame");
+        assert!(
+            !shows_speaking(&s, ch.id, DeviceId([2; 16])),
+            "nobody speaks"
+        );
+
+        s.voice.call.error = None;
+        let resumed = (
+            devices(&tiles(&s, ch.id)),
+            shows_media(&s, ch.id, state_of(&s, &ch, 2)),
+            shows_speaking(&s, ch.id, DeviceId([2; 16])),
+        );
+        assert_eq!(resumed, running);
     }
 
     #[test]

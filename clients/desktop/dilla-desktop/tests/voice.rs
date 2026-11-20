@@ -2692,6 +2692,30 @@ fn native_voice_screen_tile() {
     );
 }
 
+/// RV-3 (CallStage stories `Paused`): the call is paused by Mira's changed identity (`RefusedEpoch::Pause`). The stage
+/// says `voice.paused` with the comparison in CallStage's pause notice (the pause glyph, the `--warn` edge), and no tile
+/// shows media: Sam's screen tile and Mira's camera frame are gone and nobody speaks, while every person tile stays.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_stage_paused() {
+    shoot_group(
+        "voice-stage-paused",
+        &[
+            ALL_MEDIA,
+            &[
+                "camera mira test-pattern",
+                "screen sam test-pattern",
+                "speaking mira",
+                "paused mira",
+            ],
+        ]
+        .concat(),
+    );
+}
+
 /// Eight people with media at 1440x900 (`voice/stage-group-b`): the grid wraps. The web has no reference of it (the parity
 /// world holds no media), so the wrapped grid is checked here, by eye against CallStage's grid.
 #[test]
