@@ -251,8 +251,8 @@ pub struct Body {
     pub join_role: Rc<RefCell<JoinRoleDraft>>,
     /// The Welcome page's draft, and its template field.
     pub welcome: Rc<RefCell<WelcomeDraft>>,
-    pub(super) welcome_template: Entity<TextareaState>,
-    name: Entity<InputState>,
+    pub welcome_template: Entity<TextareaState>,
+    pub name: Entity<InputState>,
     // The dialogs: one at a time, with their one action's state.
     dialogue: Dialogue,
     dialogue_busy: bool,
@@ -339,15 +339,9 @@ impl Body {
             subscriptions.push(cx.subscribe_in(
                 &name,
                 window,
-                move |this: &mut Self, input, event: &InputEvent, window, cx| {
+                move |this: &mut Self, input, event: &InputEvent, _window, cx| {
                     if matches!(event, InputEvent::Change) {
-                        let mut value = input.read(cx).value().to_string();
-                        // `maxLength`: typing (or a paste) past the limit is cut.
-                        if let Some(kept) = super::welcome::capped_typing(&value) {
-                            value = kept.to_owned();
-                            let again = value.clone();
-                            input.update(cx, |s, cx| s.set_value(again, window, cx));
-                        }
+                        let value = input.read(cx).value().to_string();
                         let mut d = draft.borrow_mut();
                         if d.name != value {
                             d.name = value;
@@ -381,9 +375,15 @@ impl Body {
             subscriptions.push(cx.subscribe_in(
                 &welcome_template,
                 window,
-                move |this: &mut Self, input, event: &InputEvent, _window, cx| {
+                move |this: &mut Self, input, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
-                        let value = input.read(cx).value().to_string();
+                        let mut value = input.read(cx).value().to_string();
+                        // The template's `maxLength={2000}`: typing (or a paste) past the limit is cut.
+                        if let Some(kept) = super::welcome::capped_typing(&value) {
+                            value = kept.to_owned();
+                            let again = value.clone();
+                            input.update(cx, |s, cx| s.set_value(again, window, cx));
+                        }
                         let mut d = draft.borrow_mut();
                         if d.template != value {
                             d.template = value;

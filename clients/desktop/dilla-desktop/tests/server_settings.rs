@@ -166,6 +166,145 @@ fn the_loaded_welcome_page_offers_the_channel_the_template_and_reload() {
     );
 }
 
+/// Pastes `text` into `input`, as the platform paste does (its Change event follows).
+fn paste_into<T: gpui::Focusable + 'static>(
+    cx: &mut gpui::VisualTestContext,
+    input: &gpui::Entity<T>,
+    text: &str,
+) {
+    use gpui::Focusable as _;
+    cx.update(|window, cx| {
+        let handle = input.focus_handle(cx);
+        window.focus(&handle, cx);
+    });
+    cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned())));
+    cx.simulate_keystrokes("secondary-v");
+    cx.run_until_parked();
+}
+
+/// The server's owner with a ready Bot that holds the welcome capability and one Bot channel: the Overview's name field
+/// and the Welcome form are enabled, so they take keys.
+fn managed_state(community: dilla_client::state::CommunityId) -> dilla_client::state::AppState {
+    use dilla_client::state::bot_admin::{BotCatalog, CatalogState, Installation};
+    use dilla_client::state::{AppState, Channel, ChannelGroupState, ChannelId, Community, UserId};
+    let general = ChannelId([7; 16]);
+    let mut state = AppState {
+        communities: vec![Community {
+            id: community,
+            name: "Midgard".to_owned(),
+            owner: UserId([2; 16]),
+            policy_version: 0,
+        }],
+        channels: vec![Channel {
+            id: general,
+            community_id: community,
+            kind: 0,
+            mode: 0,
+            name: "general".to_owned(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::default(),
+        }],
+        ..AppState::default()
+    };
+    state.bot_admin.installation.insert(
+        community,
+        Installation {
+            id: [4; 16],
+            state: 3,
+            revision: 1,
+            user_id: None,
+            capabilities: 1 << 1,
+            updated_at: 0,
+            restart_requested: 0,
+            restart_handled: 0,
+            version: None,
+            music_volume: 50,
+            music_idle_minutes: 15,
+        },
+    );
+    state.bot_admin.catalog.insert(
+        community,
+        BotCatalog {
+            state: CatalogState::Ready,
+            since: None,
+            fingerprint: None,
+            bot_channels: Some(vec![general]),
+        },
+    );
+    state.roles.access.insert(
+        community,
+        dilla_client::features::roles::rank::access_of(0, 0, true),
+    );
+    state
+}
+
+fn body_in(
+    cx: &mut gpui::TestAppContext,
+    section: ServerSection,
+) -> (
+    gpui::Entity<dilla_desktop::screens::server_settings::Body>,
+    &mut gpui::VisualTestContext,
+) {
+    cx.update(dilla_desktop::install);
+    let community = dilla_client::state::CommunityId([1; 16]);
+    let (body, cx) = cx.add_window_view(|window, cx| {
+        dilla_desktop::screens::server_settings::Body::new(
+            community,
+            std::sync::Arc::new(managed_state(community)),
+            None,
+            dilla_desktop::screens::shell::Clock::Local,
+            window,
+            cx,
+        )
+    });
+    body.update(cx, |b, _| b.show(section));
+    cx.run_until_parked();
+    (body, cx)
+}
+
+/// WelcomeSettingsPanel.tsx's textarea has `maxLength={2000}` (UTF-16 code units): a paste past it stops at 2000, and
+/// the draft holds the cut value.
+#[gpui::test]
+fn the_welcome_template_stops_at_2000_utf16_units(cx: &mut gpui::TestAppContext) {
+    let (body, cx) = body_in(cx, ServerSection::Welcome);
+    // The form shows once the page is loaded; the textarea is then in the window to take the focus.
+    let (draft, field) = body.read_with(cx, |b, _| (b.welcome.clone(), b.welcome_template.clone()));
+    draft.borrow_mut().loaded = true;
+    body.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    paste_into(cx, &field, &"a".repeat(2100));
+    let value = field.read_with(cx, |s, _| s.value().to_string());
+    assert_eq!(
+        value.encode_utf16().count(),
+        2000,
+        "the field stops at the limit"
+    );
+    assert_eq!(
+        draft.borrow().template.encode_utf16().count(),
+        2000,
+        "and the draft with it"
+    );
+}
+
+/// The server name field keeps its own limit (checked on Save, as the web's Overview does): a paste of the same length
+/// is not cut while typing.
+#[gpui::test]
+fn the_server_name_field_is_not_capped_like_the_template(cx: &mut gpui::TestAppContext) {
+    let (body, cx) = body_in(cx, ServerSection::Overview);
+    let name = body.read_with(cx, |b, _| b.name.clone());
+    paste_into(cx, &name, &"b".repeat(2100));
+    let value = name.read_with(cx, |s, _| s.value().to_string());
+    assert_eq!(
+        value.encode_utf16().count(),
+        7 + 2100,
+        "the name (\"Midgard\" and the paste) is not cut while typing"
+    );
+}
+
 /// The loaded form as the app draws it (a GPUI-only reference: Jonas's "design, not pixels", ruling R34; the web's frame
 /// of this state needs a Bot whose clock agrees with the shooter's frozen one).
 #[test]
