@@ -91,6 +91,9 @@ pub struct PickerState {
     /// The field of the composer that reported the draft (t28-bot-review I1): the list's and the chips' keys are
     /// taken only while it holds the focus.
     pub composer: Option<gpui::WeakFocusHandle>,
+    /// A command draft to show again in the composer of its conversation (Task 30: its run's answer was uncertain,
+    /// CommandHost.tsx:293-296); the composer takes it as it draws ([`take_reopen`]).
+    pub reopen: Option<(Conversation, String)>,
 }
 
 impl std::fmt::Debug for PickerState {
@@ -102,6 +105,10 @@ impl std::fmt::Debug for PickerState {
             .field("rows", &self.rows.as_ref().map(Vec::len))
             .field("picked", &self.picked)
             .field("chips", &self.chips)
+            .field(
+                "reopen_len",
+                &self.reopen.as_ref().map(|(_, text)| text.len()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -149,6 +156,77 @@ pub fn draft_changed(window: gpui::WindowId, draft: &str, cx: &mut App) {
             state.closed_for = None;
         }
     }
+}
+
+/// An uncertain run's draft goes back into `window`'s composer (CommandHost.tsx:293-296), while the window still shows
+/// `at` (`isCurrent()`): the composer takes it as it next draws ([`take_reopen`]), and the picker opens on it. A window
+/// that moved on leaves it to the command memory, which the composer reads when it comes back to `at`.
+pub fn reopen(window: gpui::WindowId, at: Conversation, text: String, cx: &mut App) {
+    if crate::screens::threads::channel_of(window, cx).is_some_and(|c| c != at.channel) {
+        return;
+    }
+    picker_state_mut(window, cx).reopen = Some((at, text));
+    cx.refresh_windows();
+}
+
+/// The draft [`reopen`] left for `at` in `window`, once.
+pub fn take_reopen(window: gpui::WindowId, at: Conversation, cx: &mut App) -> Option<String> {
+    let state = picker_state_mut(window, cx);
+    if state.reopen.as_ref().is_none_or(|(c, _)| *c != at) {
+        return None;
+    }
+    state.reopen.take().map(|(_, text)| text)
+}
+
+/// The run of `draft` in `at` (CommandHost.tsx:243-246): the request id the client's command memory remembers for the
+/// same invocation, else a new one. A fixture has no memory: every run is a new request.
+pub fn attempt_of(ctx: &SlotCx, at: Conversation, draft: &str) -> bot::Attempt {
+    let invocation =
+        bot::invocation_key(&ctx.state, ctx.community, draft).unwrap_or_else(|| draft.to_owned());
+    let request = match &ctx.client {
+        Some(client) => with_memory(client, |m| m.attempt(at, &invocation, draft)),
+        None => dilla_client::features::roles::request_id(),
+    };
+    bot::Attempt {
+        request,
+        invocation,
+        text: draft.to_owned(),
+    }
+}
+
+/// Runs `f` over `client`'s command memory ([`bot::Bot::memory`]).
+pub fn with_memory<T>(
+    client: &dilla_client::Client,
+    f: impl FnOnce(&mut bot::memory::CommandMemory) -> T,
+) -> T {
+    let memory = client.bot().memory();
+    let mut memory = memory
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut memory)
+}
+
+/// [`bot::Bot::settle`] from the window's own thread: an uncertain run's draft is offered back to `window`'s composer at
+/// once ([`reopen`]) instead of waiting for the composer to find it in the memory.
+pub fn settle(
+    client: &dilla_client::Client,
+    window: gpui::WindowId,
+    (at, row): (Conversation, u64),
+    attempt: &bot::Attempt,
+    outcome: bot::Outcome,
+    cx: &mut App,
+) {
+    let uncertain = matches!(outcome, bot::Outcome::Uncertain(_));
+    client.bot().settle(at, row, attempt, outcome);
+    // Only while the window shows `at`: else the memory keeps it for when the composer comes back there.
+    let here = crate::screens::threads::channel_of(window, cx).is_none_or(|c| c == at.channel);
+    if uncertain
+        && here
+        && let Some(text) = with_memory(client, |m| m.take_reopen(at))
+    {
+        reopen(window, at, text, cx);
+    }
+    cx.refresh_windows();
 }
 
 /// The zone and locale times are drawn in: UTC under a fixture's frozen clock (the references are shot in UTC), else
@@ -448,12 +526,17 @@ pub fn on_send(
         return SendDecision::Post(draft.to_owned());
     };
     let plan = bot::plan_in(&ctx.state, ctx.community, Some(channel), draft);
+    let at = Conversation {
+        channel,
+        thread: None,
+    };
     // The web runs `poll create` through its own handler, not as a typed Bot command: the form opens over the
-    // conversation (UtilityCommandProvider.tsx `handlers['poll create']`), with or without a client.
+    // conversation (UtilityCommandProvider.tsx `handlers['poll create']`), with or without a client. Its run takes the
+    // remembered request id (Task 30), so a create whose answer was uncertain is reconciled, not made twice.
     if let Plan::Bot { definition, args } = &plan
         && definition.id == "poll create"
     {
-        poll_form::open(ctx, args, window, cx);
+        poll_form::open(ctx, args, attempt_of(ctx, at, draft), window, cx);
         draft_changed(window, "", cx);
         return SendDecision::Handled;
     }
@@ -462,7 +545,7 @@ pub fn on_send(
     if let Plan::Bot { definition, args } = &plan
         && let Some(command) = announcement_form::Command::of(&definition.id)
     {
-        announcement_form::run(ctx, command, args, window, cx);
+        announcement_form::run(ctx, command, args, attempt_of(ctx, at, draft), window, cx);
         draft_changed(window, "", cx);
         return SendDecision::Handled;
     }
@@ -523,10 +606,15 @@ pub fn on_send(
         (None, Plan::Moderate(_)) => SendDecision::Handled,
         // Another area's built-in: its row is pending from the start (CommandHost.tsx:236), then it asks, or runs.
         (client, Plan::Builtin { run, confirm }) => {
-            let conversation = Conversation {
-                channel,
-                thread: None,
-            };
+            let conversation = at;
+            let attempt = attempt_of(ctx, at, draft);
+            // builtin.ts:225-230: a `/timeout` whose request id was already sent asks nothing again; it reads the
+            // timeout (or refuses another member or length) as it runs.
+            let confirm = confirm.filter(|_| {
+                !client
+                    .as_ref()
+                    .is_some_and(|c| builtins::timeout_was_sent(c, &run, attempt.request))
+            });
             let run = builtins::prepared(run, &ctx.state, channel, encode);
             let text = copy::pending(run.id());
             let row = match client {
@@ -545,13 +633,16 @@ pub fn on_send(
                         ask,
                         run,
                         row,
+                        attempt,
                         conversation,
                         client: client.clone(),
                     },
                     cx,
                 ),
                 // A fixture has no client to run it with.
-                None if client.is_some() => builtins::run(run, row, conversation, ctx, window, cx),
+                None if client.is_some() => {
+                    builtins::run(run, row, attempt, conversation, ctx, window, cx);
+                }
                 None => builtins::run_in_fixture(run, row, conversation, window, cx),
             }
             SendDecision::Handled
@@ -1062,6 +1153,11 @@ mod tests {
                             reason: "spam".into(),
                         },
                         row,
+                        attempt: bot::Attempt {
+                            request: [1; 16],
+                            invocation: String::new(),
+                            text: String::new(),
+                        },
                         conversation,
                         client: None,
                     },
@@ -1085,6 +1181,7 @@ mod tests {
             picked: None,
             chips: None,
             composer: None,
+            reopen: None,
         };
         // draft_changed's rule, applied without an App.
         let next = "/r";

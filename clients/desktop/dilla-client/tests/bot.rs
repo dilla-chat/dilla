@@ -718,7 +718,12 @@ async fn a_bot_authored_role_panel_reaction_grant_keeps_its_own_source() {
 
     // His own self-service pick is a second source.
     b.roles()
-        .select_self_role(community, readers, true)
+        .select_self_role(
+            community,
+            readers,
+            true,
+            dilla_client::features::roles::request_id(),
+        )
         .await
         .expect("bjorn picks Readers");
     b.reactions()
@@ -750,7 +755,12 @@ async fn a_bot_authored_role_panel_reaction_grant_keeps_its_own_source() {
 
     // Dropping the pick takes it: the panel's grant went with the reaction.
     b.roles()
-        .select_self_role(community, readers, false)
+        .select_self_role(
+            community,
+            readers,
+            false,
+            dilla_client::features::roles::request_id(),
+        )
         .await
         .expect("bjorn drops Readers");
     wait_for(&b, Duration::from_secs(30), "Readers gone", |s| {

@@ -310,7 +310,9 @@ pub fn section(
             move |id, on, cx| {
                 if let Some(client) = &client {
                     self_roles_job(w, client, cx, move |r| {
-                        Box::pin(async move { r.select_self_role(community, id, on).await })
+                        Box::pin(async move {
+                            r.select_self_role(community, id, on, request_id()).await
+                        })
                     });
                 }
             },

@@ -10,7 +10,10 @@
 //!   dialog does. Only Post sends (the web's fields have no Enter handler).
 //! - The answer ([`settled`]): posted, the toast and the row say so and the form closes; an answer that may or may not
 //!   have taken effect closes the form too (the row says to check the conversation); any definitive refusal keeps the
-//!   form open with the reason, and a second Post sends the same request.
+//!   form open with the reason, and a second Post is a new request (R29).
+//! - Task 30: the form's request id is the one the command memory remembers for the draft, and the poll is kept there
+//!   (`CommandMemory::polls`) as it goes. An uncertain answer puts the draft back in the composer; sent again, the
+//!   command reconciles that poll without the form ([`reconcile`]).
 //! - Cancel, Escape, a click outside and leaving the conversation close the form and leave no row (CommandHost.tsx:297).
 //!   The Bot no longer offering polls closes it with a Failed row.
 //!
@@ -19,7 +22,9 @@
 use std::rc::Rc;
 
 use dilla_client::Client;
+use dilla_client::features::bot::memory::PollAttempt;
 use dilla_client::features::bot::registry::Args;
+use dilla_client::features::bot::{Attempt, Outcome};
 use dilla_client::features::utilities::{UtilityError, polls};
 use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
 use dilla_client::state::bot_admin::sealed_operation;
@@ -225,8 +230,12 @@ pub struct PollForm {
     pub error: Option<String>,
     /// A Post is out: Post is disabled, and Enter sends nothing.
     pub busy: bool,
-    /// The form's one request id: every Post of this form sends it.
+    /// The form's one request id: every Post of this form sends it. It is the command's remembered id (Task 30) until a
+    /// definitive refusal, after which the next Post is a new request.
     pub request: [u8; 16],
+    /// The command's invocation key and draft, which an uncertain answer keeps in the command memory with the request.
+    invocation: String,
+    draft: String,
     /// The command's row, once a Post made it pending.
     pub row: Option<u64>,
     pub conversation: Conversation,
@@ -289,7 +298,7 @@ struct Wanted {
     conversation: Conversation,
     community: CommunityId,
     client: Option<Rc<Client>>,
-    request: [u8; 16],
+    attempt: Attempt,
     bot_user: Option<UserId>,
 }
 
@@ -342,8 +351,9 @@ fn fail(ctx: &SlotCx, window: WindowId, conversation: Conversation, text: &str, 
 }
 
 /// `/poll create` was sent from the composer: the form opens with the typed arguments, or the command's row says why it
-/// cannot (Failed). The form is drawn from the next frame ([`overlay`]).
-pub fn open(ctx: &SlotCx, args: &Args, window: WindowId, cx: &mut App) {
+/// cannot (Failed). The form is drawn from the next frame ([`overlay`]). A run whose request already sent a poll that may
+/// have been made reconciles it instead, without the form ([`reconcile`]).
+pub fn open(ctx: &SlotCx, args: &Args, attempt: Attempt, window: WindowId, cx: &mut App) {
     let Some(channel) = ctx.channel else {
         return;
     };
@@ -351,6 +361,12 @@ pub fn open(ctx: &SlotCx, args: &Args, window: WindowId, cx: &mut App) {
         channel,
         thread: None,
     };
+    if let Some(client) = &ctx.client {
+        let prior = super::with_memory(client, |m| m.polls.get(&attempt.request).cloned());
+        if let Some(prior) = prior {
+            return reconcile(ctx, client, prior, attempt, window, cx);
+        }
+    }
     match can_open(&ctx.state, ctx.community, channel) {
         Err(why) => fail(ctx, window, conversation, why, cx),
         Ok(community) => {
@@ -359,7 +375,7 @@ pub fn open(ctx: &SlotCx, args: &Args, window: WindowId, cx: &mut App) {
                 conversation,
                 community,
                 client: ctx.client.clone(),
-                request: dilla_client::features::roles::request_id(),
+                attempt,
                 bot_user: ctx
                     .state
                     .bot
@@ -370,6 +386,106 @@ pub fn open(ctx: &SlotCx, args: &Args, window: WindowId, cx: &mut App) {
         }
     }
     cx.refresh_windows();
+}
+
+/// UtilityCommandProvider.tsx:366, :368 (Task 30): a poll create that may have been made settles that request. The
+/// mutation it went out with is immutable, so the form does not open: the saved poll is sent again under the same id (the
+/// web's `read`, which resends what its page sent), and the Bot answers what it did. A record that matches it and whose
+/// post is in the conversation ends it made; a refusal of the change ends it rejected; anything else stays uncertain.
+/// Another conversation, community or Bot, or a channel where polls cannot be made now, is uncertain at once.
+fn reconcile(
+    ctx: &SlotCx,
+    client: &Rc<Client>,
+    prior: PollAttempt,
+    attempt: Attempt,
+    window: WindowId,
+    cx: &mut App,
+) {
+    let conversation = prior.at;
+    let row = client.bot().add_result(
+        conversation,
+        ResultStatus::Pending,
+        copy::pending("poll create"),
+        ResultProvider::Builtin,
+    );
+    let uncertain = || Outcome::Uncertain(t("poll.createdUncertain").to_owned());
+    let pinned = client
+        .utilities()
+        .bot_identity(prior.community)
+        .map(|b| b.user);
+    if ctx.channel != Some(conversation.channel)
+        || ctx.community != Some(prior.community)
+        || can_open(&ctx.state, ctx.community, conversation.channel).is_err()
+        || pinned != Some(prior.bot_user)
+    {
+        return super::settle(
+            client,
+            window,
+            (conversation, row),
+            &attempt,
+            uncertain(),
+            cx,
+        );
+    }
+    let (community, request, value) = (prior.community, attempt.request, prior.value.clone());
+    let thread = prior.value.thread.map(dilla_client::state::MessageId);
+    let job = client.utilities().run(move |u| async move {
+        let resent = u.create_poll(community, value, request).await;
+        if matches!(resent, Err(UtilityError::Status(4))) {
+            return Ok(Err(4));
+        }
+        let held = u
+            .poll_by_id(community, request, conversation.channel, thread)
+            .await;
+        Ok(Ok(held))
+    });
+    let client = client.clone();
+    cx.spawn(async move |cx| {
+        let answer = job.await;
+        cx.update(|cx| {
+            let state = client.state().borrow().clone();
+            let outcome = match answer {
+                Ok(Err(_)) => {
+                    super::with_memory(&client, |m| m.drop_poll(request));
+                    Outcome::Failure(
+                        "Poll creation was rejected. Start a new poll command.".to_owned(),
+                    )
+                }
+                Ok(Ok(Ok(poll)))
+                    if poll.question == prior.value.question
+                        && poll.answers == prior.value.answers
+                        && poll.multi == prior.value.multi
+                        && published(&state, conversation.channel, prior.bot_user, request) =>
+                {
+                    super::with_memory(&client, |m| m.drop_poll(request));
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        Some(window),
+                        t("poll.created"),
+                        cx,
+                    );
+                    Outcome::Success(t("poll.created").to_owned())
+                }
+                _ => uncertain(),
+            };
+            super::settle(&client, window, (conversation, row), &attempt, outcome, cx);
+        });
+    })
+    .detach();
+}
+
+/// `pollPublished` (UtilityCommandProvider.tsx:59-66): the conversation holds the Bot's post of the poll `id`: an
+/// unedited post of `bot_user`, as a Bot, whose last line is `[dilla-poll:v1:{id}]`.
+fn published(state: &AppState, channel: ChannelId, bot_user: UserId, id: [u8; 16]) -> bool {
+    state.timelines.get(&channel).is_some_and(|t| {
+        t.items.iter().any(|item| {
+            item.state == dilla_client::state::TimelineItemState::Ok
+                && !item.edited
+                && item.bot
+                && item.sender_user == Some(bot_user)
+                && item.msg_id.is_some()
+                && polls::final_poll_marker(&item.body) == Some(id)
+        })
+    })
 }
 
 /// One of the form's inputs: a change clears the form's refusal.
@@ -429,7 +545,9 @@ fn make(w: WindowId, wanted: Wanted, window: &mut Window, cx: &mut App) -> PollF
         multi: wanted.opening.multi,
         error: None,
         busy: false,
-        request: wanted.request,
+        request: wanted.attempt.request,
+        invocation: wanted.attempt.invocation,
+        draft: wanted.attempt.text,
         row: None,
         conversation: wanted.conversation,
         community: wanted.community,
@@ -499,6 +617,24 @@ pub fn submit(w: WindowId, cx: &mut App) {
         return;
     };
     let (conversation, community) = (form.conversation, form.community);
+    let attempt = Attempt {
+        request,
+        invocation: form.invocation.clone(),
+        text: form.draft.clone(),
+    };
+    // :384-386: the attempt is kept just before the create, so a run of the same request reconciles it.
+    let bot_user = form
+        .bot_user
+        .or_else(|| client.utilities().bot_identity(community).map(|b| b.user));
+    if let Some(bot_user) = bot_user {
+        let kept = PollAttempt {
+            at: conversation,
+            community,
+            bot_user,
+            value: input.clone(),
+        };
+        super::with_memory(&client, |m| m.keep_poll(request, kept));
+    }
     // The row is pending from the post (`startResult`, :379); a second Post after a refusal makes a second row.
     let row = client.bot().add_result(
         conversation,
@@ -514,7 +650,7 @@ pub fn submit(w: WindowId, cx: &mut App) {
         .run(move |u| async move { u.create_poll(community, input, request).await });
     cx.spawn(async move |cx| {
         let answer = job.await.map(|_| ());
-        cx.update(|cx| settled(w, (&client, conversation, row), request, answer, cx));
+        cx.update(|cx| settled(w, (&client, conversation, row), &attempt, answer, cx));
     })
     .detach();
     cx.refresh_windows();
@@ -536,22 +672,32 @@ fn refusal(e: &UtilityError) -> &'static str {
 fn settled(
     w: WindowId,
     sent: (&Rc<Client>, Conversation, u64),
-    request: [u8; 16],
+    attempt: &Attempt,
     answer: Result<(), UtilityError>,
     cx: &mut App,
 ) {
     let (client, conversation, row) = sent;
-    let (status, text, keep_open) = match &answer {
-        Ok(()) => (ResultStatus::Success, t("poll.created"), false),
-        // A mutation that may have happened: the form goes; Task 30 keeps the request so a resend reconciles.
-        Err(UtilityError::Uncertain { .. }) => {
-            (ResultStatus::Failed, t("poll.createdUncertain"), false)
-        }
-        Err(e) => (ResultStatus::Failed, refusal(e), true),
+    let request = attempt.request;
+    let (outcome, text, keep_open) = match &answer {
+        Ok(()) => (
+            Outcome::Success(t("poll.created").to_owned()),
+            t("poll.created"),
+            false,
+        ),
+        // A mutation that may have happened: the form goes, and the attempt stays so a resend of the same request
+        // reconciles it.
+        Err(UtilityError::Uncertain { .. }) => (
+            Outcome::Uncertain(t("poll.createdUncertain").to_owned()),
+            t("poll.createdUncertain"),
+            false,
+        ),
+        Err(e) => (Outcome::Failure(refusal(e).to_owned()), refusal(e), true),
     };
-    client
-        .bot()
-        .finish(conversation, row, status, text.to_owned());
+    // :392-394: an accepted create, and a refusal of a first attempt, release it.
+    if !matches!(answer, Err(UtilityError::Uncertain { .. })) {
+        super::with_memory(client, |m| m.drop_poll(request));
+    }
+    super::settle(client, w, (conversation, row), attempt, outcome, cx);
     if answer.is_ok() {
         dilla_desktop_ui::components::toast::show_toast_in(Some(w), t("poll.created"), cx);
     }
@@ -904,7 +1050,11 @@ mod tests {
                     },
                     community: CommunityId([1; 16]),
                     client: None,
-                    request: [9; 16],
+                    attempt: Attempt {
+                        request: [9; 16],
+                        invocation: String::new(),
+                        text: String::new(),
+                    },
                     bot_user: None,
                 },
                 window,

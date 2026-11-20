@@ -15,6 +15,7 @@ pub mod announcements;
 pub mod catalog;
 pub mod hints;
 mod io;
+pub mod memory;
 pub mod private;
 pub mod registry;
 pub mod room;
@@ -307,6 +308,108 @@ pub fn mutation_error(e: &crate::sync::api::ApiError) -> String {
             )
         },
     )
+}
+
+/// [`mutation_error`] as the run's [`Outcome`]: a definitive refusal is a failure, anything else is uncertain (builtin.ts
+/// `mutationError`'s `status`).
+pub fn mutation_outcome(e: &crate::sync::api::ApiError) -> Outcome {
+    refusal_or_uncertain(mutation_error(e))
+}
+
+/// [`mutation_error_of`] as the run's [`Outcome`].
+pub fn mutation_outcome_of(e: &crate::ClientError) -> Outcome {
+    refusal_or_uncertain(mutation_error_of(e))
+}
+
+fn refusal_or_uncertain(text: String) -> Outcome {
+    if text.starts_with("Command was refused") {
+        Outcome::Failure(text)
+    } else {
+        Outcome::Uncertain(text)
+    }
+}
+
+/// [`removal_error`] as the run's [`Outcome`]: a refusal removed nothing, anything else may have.
+pub fn removal_outcome(e: &crate::sync::api::ApiError) -> Outcome {
+    let text = removal_error(e);
+    if text.starts_with("Message removal outcome is uncertain") {
+        Outcome::Uncertain(text)
+    } else {
+        Outcome::Failure(text)
+    }
+}
+
+/// The memory key of a draft (CommandHost.tsx:243 `invocationKey`): for a complete invocation, its command id, then each
+/// `name=value` of its arguments (sorted: [`registry::Args`] is a `BTreeMap`), joined by `\0`; `None` for anything else.
+/// The web's key also leads with its `contextKey`; here that is the memory's own scope (one memory per client, a row per
+/// conversation).
+pub fn invocation_key(
+    state: &AppState,
+    community: Option<CommunityId>,
+    draft: &str,
+) -> Option<String> {
+    let defs = definitions(state, community);
+    let refs: Vec<&CommandDefinition> = defs.iter().collect();
+    match registry::parse_command(draft, &refs) {
+        Parsed::Invocation { command_id, args } => Some(
+            std::iter::once(command_id)
+                .chain(args.iter().map(|(k, v)| format!("{k}={v}")))
+                .collect::<Vec<_>>()
+                .join("\0"),
+        ),
+        _ => None,
+    }
+}
+
+/// How a command's run ended (CommandHost.tsx `CommandResult.status`): a definitive answer, or one that may or may not
+/// have taken effect. Its Debug gives the text's length only (it may name a member or quote a sealed answer).
+#[derive(Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Success(String),
+    Failure(String),
+    Uncertain(String),
+}
+
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (name, text) = match self {
+            Self::Success(t) => ("Success", t),
+            Self::Failure(t) => ("Failure", t),
+            Self::Uncertain(t) => ("Uncertain", t),
+        };
+        f.debug_tuple(name)
+            .field(&crate::state::Redacted(text))
+            .finish()
+    }
+}
+
+impl Outcome {
+    /// The row this outcome leaves: an uncertain answer reads failed (CommandHost.tsx:280-284).
+    pub fn row(&self) -> (ResultStatus, &str) {
+        match self {
+            Self::Success(t) => (ResultStatus::Success, t),
+            Self::Failure(t) | Self::Uncertain(t) => (ResultStatus::Failed, t),
+        }
+    }
+}
+
+/// One run of a command (CommandHost.tsx:243-246): the request id it sends ([`memory::CommandMemory::attempt`]), its
+/// invocation key ([`invocation_key`]) and the draft it was typed as. Its Debug gives lengths only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Attempt {
+    pub request: [u8; 16],
+    pub invocation: String,
+    pub text: String,
+}
+
+impl std::fmt::Debug for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attempt")
+            .field("request", &self.request)
+            .field("invocation", &crate::state::Redacted(&self.invocation))
+            .field("text", &crate::state::Redacted(&self.text))
+            .finish()
+    }
 }
 
 /// What a draft does ([`plan`]).
@@ -1583,6 +1686,31 @@ impl Bot {
                 hold: None,
             },
         );
+    }
+
+    /// The command memory of this client ([`memory`]).
+    pub fn memory(&self) -> Arc<Mutex<memory::CommandMemory>> {
+        self.sealed().memory()
+    }
+
+    /// A run of `attempt` in `at` ended as `outcome`: its row `row` says so, and the memory learns it (CommandHost.tsx
+    /// :280-298). A definitive answer retires the request id; an uncertain one keeps it and the draft, which the composer
+    /// shows again ([`memory::CommandMemory::take_reopen`]), and its row reads failed.
+    pub fn settle(&self, at: Conversation, row: u64, attempt: &Attempt, outcome: Outcome) {
+        {
+            let memory = self.memory();
+            let mut memory = memory
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &outcome {
+                Outcome::Success(_) | Outcome::Failure(_) => memory.settled(at, attempt.request),
+                Outcome::Uncertain(_) => {
+                    memory.uncertain(at, &attempt.text, attempt.request, &attempt.invocation);
+                }
+            }
+        }
+        let (status, text) = outcome.row();
+        self.finish(at, row, status, text.to_owned());
     }
 
     /// The Dismiss button: the row goes, and a held run behind it is forgotten (its reply secret too).
@@ -3681,6 +3809,55 @@ mod tests {
         assert_eq!(
             format!("{:?}", Builtin::Modlog { community }),
             format!("Modlog({community:?})")
+        );
+    }
+
+    /// CommandHost.tsx:243: a draft's memory key is its command and its parsed arguments, whatever order they were typed
+    /// in; another value is another key, and a draft that is no invocation has none.
+    #[test]
+    fn invocation_key_reads_the_parsed_arguments() {
+        let s = AppState::default();
+        let a = crate::state::UserId([2; 16]).hex();
+        let key = |draft: &str| invocation_key(&s, None, draft);
+        let first = key(&format!("/timeout user:{a} duration:10m")).expect("an invocation");
+        assert!(first.starts_with("timeout\0"), "the command first");
+        assert_eq!(
+            key(&format!("/timeout duration:10m user:{a}")),
+            Some(first.clone())
+        );
+        assert_ne!(key(&format!("/timeout user:{a} duration:1h")), Some(first));
+        assert_eq!(key("hello"), None);
+        assert_eq!(key("/timeout"), None, "incomplete");
+    }
+
+    /// R21: an attempt's draft and invocation and an outcome's text show as lengths only; an uncertain outcome's row
+    /// reads failed.
+    #[test]
+    fn an_attempt_and_an_outcome_keep_their_text_out_of_debug() {
+        let attempt = Attempt {
+            request: [1; 16],
+            invocation: "warn\0reason=secret".into(),
+            text: "/warn user:x reason:secret".into(),
+        };
+        let outcome = Outcome::Uncertain("secret".into());
+        for shown in [format!("{attempt:?}"), format!("{outcome:?}")] {
+            assert!(!shown.contains("secret"), "{shown}");
+        }
+        assert_eq!(outcome.row(), (ResultStatus::Failed, "secret"));
+        assert_eq!(
+            Outcome::Success("ok".into()).row(),
+            (ResultStatus::Success, "ok")
+        );
+        assert_eq!(
+            mutation_outcome_of(&crate::ClientError::Network("x".into())),
+            Outcome::Uncertain(
+                "The command result is uncertain. Check the current server state before retrying."
+                    .into()
+            )
+        );
+        assert_eq!(
+            mutation_outcome_of(&crate::ClientError::Sync("E_FORBIDDEN".into())),
+            Outcome::Failure("Command was refused (E_FORBIDDEN).".into())
         );
     }
 }

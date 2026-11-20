@@ -1419,15 +1419,17 @@ impl Roles {
         }
     }
 
-    /// controller.ts `selectSelfRole`: picks (or drops) a self-assignable role for oneself.
+    /// controller.ts `selectSelfRole`: picks (or drops) a self-assignable role for oneself, under `request` (the
+    /// idempotency key: `/selfrole` sends its command's remembered id, so a resend after an uncertain answer is the same
+    /// request, builtin.ts:428; the Self roles page a fresh [`request_id`]).
     pub async fn select_self_role(
         &self,
         community: CommunityId,
         role: RoleId,
         enabled: bool,
+        request: [u8; 16],
     ) -> Result<(), ApiError> {
         self.listed(community)?;
-        let request = request_id();
         let body = Value::Array(vec![
             Value::Bytes(request.to_vec()),
             Value::Uint(enabled.into()),

@@ -818,7 +818,7 @@ fn a_release_drops_an_open_moderation_confirmation(cx: &mut gpui::TestAppContext
 fn a_cancelled_builtin_question_leaves_no_row(cx: &mut gpui::TestAppContext) {
     use std::rc::Rc;
 
-    use dilla_client::features::bot::{Ask, Builtin};
+    use dilla_client::features::bot::{self, Ask, Builtin};
     use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
     use dilla_client::state::{ChannelId, MessageId};
     use dilla_desktop::screens::commands::confirm;
@@ -871,6 +871,11 @@ fn a_cancelled_builtin_question_leaves_no_row(cx: &mut gpui::TestAppContext) {
                 msg: MessageId([4; 16]),
             },
             row,
+            attempt: bot::Attempt {
+                request: dilla_client::features::roles::request_id(),
+                invocation: String::new(),
+                text: String::new(),
+            },
             conversation,
             client: Some(client.clone()),
         };
@@ -1607,6 +1612,7 @@ fn role_commands_grant_then_ask_and_revoke(cx: &mut gpui::TestAppContext) {
             builtins::run(
                 run,
                 row,
+                commands::attempt_of(&ctx, conversation, &remove),
                 conversation,
                 &ctx,
                 window.window_handle().window_id(),

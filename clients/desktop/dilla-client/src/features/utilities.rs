@@ -417,6 +417,33 @@ impl Utilities {
         Ok(poll)
     }
 
+    /// Reads the poll `id` from `community`'s Bot (71), as [`Utilities::read_poll`] decodes it, without holding it: a
+    /// poll's id is its create request id, so this settles a create whose answer was uncertain (the web's
+    /// `pollGet(requestId, {channelId, threadId})`, UtilityCommandProvider.tsx:369). A record for another channel or
+    /// thread is `Invalid`.
+    pub async fn poll_by_id(
+        &self,
+        community: CommunityId,
+        id: [u8; 16],
+        channel: ChannelId,
+        thread: Option<MessageId>,
+    ) -> Result<PollView, UtilityError> {
+        let result = self
+            .send(
+                community,
+                BotRequest {
+                    operation: 71,
+                    args: vec![BotArg::Text(hex16(&id))],
+                    ..BotRequest::default()
+                },
+            )
+            .await?;
+        wire::decode_poll(&result.data, id, None)
+            .ok()
+            .filter(|p| poll_in_place(p, channel, thread))
+            .ok_or(UtilityError::Invalid)
+    }
+
     /// Creates the poll of `input` in `community`'s Bot (70) under `request`: the form's one id, so a send that is
     /// repeated after an unanswered one settles the same poll instead of making a second. The poll is held under no
     /// message until its post is seen.

@@ -1,7 +1,7 @@
 //! The built-in commands that act on another area (builtin.ts): what each does once it may run, after its question
 //! (if it asks one, [`super::confirm`]) was answered. [`dilla_client::features::bot::plan_in`] names the command
-//! ([`Builtin`]); Tasks 10, 11, 24 and 25 add their commands here, each finishing the pending row it was given with
-//! [`dilla_client::features::bot::Bot::finish`].
+//! ([`Builtin`]); Tasks 10, 11, 24 and 25 add their commands here, each ending the pending row it was given with
+//! [`dilla_client::features::bot::Bot::settle`].
 //!
 //! Task 10: the message commands, `/reply /edit /delete /pin /unpin /topic` (builtin.ts:42-60, :116-152, :337-376,
 //! :414-423). A decision made as the command runs reads the client's live state, not the frame's snapshot: a question
@@ -17,15 +17,22 @@
 //! Task 24: the navigation, UI-opening and voice commands, `/giphy /invite /search /thread /dm /modlog /join /leave /mute
 //! /unmute /deafen /undeafen` (builtin.ts:88-130, :153-162, :272-277, :400-408). Each opens its screen or changes the
 //! call and answers its row; `/dm`, `/invite` and `/join` answer when the thing they wait for has ended.
+//!
+//! Task 30: every run ends as an [`Outcome`], and an uncertain one keeps its request id in the command memory so the same
+//! draft sent again is the same request. The commands that write send that id: `/untimeout`, `/warn` and `/selfrole`
+//! as their idempotency key; `/reply` refuses to send again what it sent without an answer
+//! ([`dilla_client::features::bot::memory::Publications`]); `/timeout` never sends a sent request again, it reads the
+//! timeout instead ([`dilla_client::features::bot::memory::TimeoutAttempts`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
 use dilla_client::calls::CallPhase;
-use dilla_client::features::bot::{self, Ask, Builtin, GateAction, RemovalStep};
+use dilla_client::features::bot::memory::{Publications, TimeoutAttempt};
+use dilla_client::features::bot::{self, Ask, Attempt, Builtin, GateAction, Outcome, RemovalStep};
 use dilla_client::features::moderation::{self, Evidence, Moderation, Removal, RemovalOutcome};
-use dilla_client::features::roles::{perm, request_id, viewer_channel_bits};
+use dilla_client::features::roles::{perm, viewer_channel_bits};
 use dilla_client::features::server_admin::{Parent, hex_id};
 use dilla_client::state::bot::{Conversation, ResultStatus};
 use dilla_client::state::roles::SelfRole;
@@ -60,6 +67,12 @@ const NOT_SENT: [&str; 7] = [
     "E_TRAY_NOT_READY",
     "E_OFFLINE",
 ];
+
+/// builtin.ts:42: a `/reply` whose send was uncertain is not sent again under the same request.
+const NO_MESSAGE_ID: &str = "This send attempt has no returned message ID. Check the conversation and outbox before starting another send.";
+
+/// builtin.ts:227: a sent `/timeout` whose expiry is no longer the one it asked for.
+const TIMEOUT_DIFFERS: &str = "The current timeout differs from this attempt. It may have expired or another moderator may have changed it. Review the current timeout before starting a new command.";
 
 /// What `on_send` hands on: `run` with the composer's encoding of its text (`Reply`, `Edit`), and for the removal of
 /// another person's message its excerpt (shell-model.ts `excerpt` of the body, at most 512 UTF-8 bytes), read from
@@ -100,10 +113,34 @@ pub fn prepared(
     }
 }
 
-/// Runs `run` for the pending private row `row` of `conversation`; the row says how it ended.
+/// Whether `run` is a `/timeout` whose `request` already went out (builtin.ts:225): it then asks nothing again and reads
+/// the timeout as it runs. Another member or length under the same request asks nothing either: it is refused.
+pub fn timeout_was_sent(client: &Client, run: &Builtin, request: [u8; 16]) -> bool {
+    let Builtin::Timeout {
+        community,
+        user,
+        seconds,
+        ..
+    } = run
+    else {
+        return false;
+    };
+    let memory = client.bot().memory();
+    let memory = memory
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    !matches!(
+        memory.timeouts.check(request, *community, *user, *seconds),
+        Ok(None)
+    )
+}
+
+/// Runs `run` for the pending private row `row` of `conversation`, as the run `attempt`; the row says how it ended and
+/// the command memory learns it ([`bot::Bot::settle`]).
 pub fn run(
     run: Builtin,
     row: u64,
+    attempt: Attempt,
     conversation: Conversation,
     ctx: &SlotCx,
     window: gpui::WindowId,
@@ -113,9 +150,12 @@ pub fn run(
         return;
     };
     let channel = conversation.channel;
+    let request = attempt.request;
     let bot = client.bot();
-    let finish = move |(status, text): (ResultStatus, String)| {
-        bot.finish(conversation, row, status, text);
+    let memory = bot.memory();
+    let asked = attempt.clone();
+    let finish = move |outcome: Outcome| {
+        bot.settle(conversation, row, &attempt, outcome);
     };
     match run {
         Builtin::Reply { to, text } => {
@@ -125,12 +165,22 @@ pub fn run(
             if text.len() > MAX_LEN {
                 return finish(failed("Message exceeds the 4000 byte limit."));
             }
+            // builtin.ts:41-42: a send of this request whose answer was uncertain is never sent again.
+            let key = Publications::key(request, channel, None, Some(to), &text);
+            if lock(&memory).publications.contains(&key) {
+                return finish(Outcome::Uncertain(NO_MESSAGE_ID.to_owned()));
+            }
             let sent = client.threads().reply(channel, to, text);
             cx.background_executor()
                 .spawn(async move {
-                    finish(sent_answer(sent.await.unwrap_or_else(|_| {
-                        Err(ClientError::Network("stopped".into()))
-                    })));
+                    let answer = sent_answer(
+                        sent.await
+                            .unwrap_or_else(|_| Err(ClientError::Network("stopped".into()))),
+                    );
+                    if matches!(answer, Outcome::Uncertain(_)) {
+                        lock(&memory).publications.insert(key);
+                    }
+                    finish(answer);
                 })
                 .detach();
         }
@@ -171,13 +221,8 @@ pub fn run(
             cx.background_executor()
                 .spawn(async move {
                     finish(match reply.wait().await {
-                        Ok(()) => (ResultStatus::Success, "Channel topic updated.".to_owned()),
-                        Err(e) => (
-                            ResultStatus::Failed,
-                            bot::mutation_error(&dilla_client::sync::api::ApiError::local(
-                                e.status, &e.code, "",
-                            )),
-                        ),
+                        Ok(()) => done("Channel topic updated."),
+                        Err(e) => bot::mutation_outcome(&ApiError::local(e.status, &e.code, "")),
                     });
                 })
                 .detach();
@@ -191,12 +236,13 @@ pub fn run(
             if !still_target(&client, community, user) {
                 return finish(failed(RANK_CHANGED));
             }
-            let job = client.moderation().run(move |mo| async move {
-                let expires = moderation::now_s() + seconds;
-                mo.timeout_for(community, user, request_id(), Some(expires))
-                    .await
-            });
-            moderated(job, format!("{name} was timed out."), finish, cx);
+            timeout(
+                &client,
+                (community, user, name, seconds),
+                request,
+                finish,
+                cx,
+            );
         }
         Builtin::Untimeout {
             community,
@@ -205,7 +251,7 @@ pub fn run(
         } => untimeout(
             &client,
             (community, user, name),
-            row,
+            (row, asked),
             conversation,
             window,
             finish,
@@ -219,9 +265,10 @@ pub fn run(
             if !still_target(&client, community, user) {
                 return finish(failed(RANK_CHANGED));
             }
-            let job = client.moderation().run(move |mo| async move {
-                mo.timeout_for(community, user, request_id(), None).await
-            });
+            // builtin.ts:256: the command's request id, so a resend after an uncertain answer is the same request.
+            let job = client
+                .moderation()
+                .run(move |mo| async move { mo.timeout_for(community, user, request, None).await });
             moderated(job, format!("{name}’s timeout was removed."), finish, cx);
         }
         Builtin::Warn {
@@ -234,10 +281,9 @@ pub fn run(
             if !still_target(&client, community, user) {
                 return finish(failed(RANK_CHANGED));
             }
+            // builtin.ts:267: the command's request id.
             let job = client.moderation().run(move |mo| async move {
-                mo.warn(community, user, request_id(), &reason)
-                    .await
-                    .map(|_| ())
+                mo.warn(community, user, request, &reason).await.map(|_| ())
             });
             moderated(job, format!("{name} was warned."), finish, cx);
         }
@@ -260,9 +306,9 @@ pub fn run(
             cx.background_executor()
                 .spawn(async move {
                     finish(match job.await {
-                        Ok(true) => (ResultStatus::Success, format!("{name} was unbanned.")),
+                        Ok(true) => Outcome::Success(format!("{name} was unbanned.")),
                         Ok(false) => failed("That member is no longer banned."),
-                        Err(e) => failed(&bot::mutation_error(&e)),
+                        Err(e) => bot::mutation_outcome(&e),
                     });
                 })
                 .detach();
@@ -307,8 +353,8 @@ pub fn run(
             cx.background_executor()
                 .spawn(async move {
                     finish(match job.await {
-                        Ok(rows) => (ResultStatus::Success, self_role_rows(&rows)),
-                        Err(e) => failed(&bot::mutation_error(&e)),
+                        Ok(rows) => Outcome::Success(self_role_rows(&rows)),
+                        Err(e) => bot::mutation_outcome(&e),
                     });
                 })
                 .detach();
@@ -319,30 +365,27 @@ pub fn run(
             add,
         } => {
             // builtin.ts `selfRole` (:405-413): the offered roles are read first; only one of them is picked or
-            // dropped, and one already in the asked state is not sent again.
+            // dropped, and one already in the asked state is not sent again. The pick carries the command's request id
+            // (:428).
             let job = client.roles().run(move |r| async move {
                 let rows = r.load_self_roles(community).await?;
                 let Some(row) = rows.into_iter().find(|row| hex_id(&row.id) == role) else {
                     return Ok(failed("That role is not currently self-assignable."));
                 };
                 if row.self_selected == add {
-                    let text = if add {
+                    return Ok(Outcome::Success(if add {
                         format!("You already have {}.", row.name)
                     } else {
                         format!("You do not have {}.", row.name)
-                    };
-                    return Ok((ResultStatus::Success, text));
+                    }));
                 }
-                r.select_self_role(community, row.id, add).await?;
+                r.select_self_role(community, row.id, add, request).await?;
                 let verb = if add { "added" } else { "removed" };
-                Ok((ResultStatus::Success, format!("{} {verb}.", row.name)))
+                Ok(Outcome::Success(format!("{} {verb}.", row.name)))
             });
             cx.background_executor()
                 .spawn(async move {
-                    finish(
-                        job.await
-                            .unwrap_or_else(|e| failed(&bot::mutation_error(&e))),
-                    );
+                    finish(job.await.unwrap_or_else(|e| bot::mutation_outcome(&e)));
                 })
                 .detach();
         }
@@ -370,7 +413,7 @@ pub fn run(
                 query,
                 cx,
             );
-            finish((ResultStatus::Success, "GIF search opened.".to_owned()));
+            finish(done("GIF search opened."));
         }
         Builtin::Invite { community } => {
             // The row waits for the dialog: its link shows (created), or it closes first (cancelled).
@@ -379,10 +422,7 @@ pub fn run(
                 community,
                 Box::new(move |created, _| {
                     finish(if created {
-                        (
-                            ResultStatus::Success,
-                            "Invite created and shown privately.".to_owned(),
-                        )
+                        done("Invite created and shown privately.")
                     } else {
                         failed("Invite creation cancelled.")
                     });
@@ -392,24 +432,21 @@ pub fn run(
         }
         Builtin::Search { query } => {
             crate::screens::search::request_open_with(window, query, cx);
-            finish((ResultStatus::Success, "Search opened.".to_owned()));
+            finish(done("Search opened."));
         }
         Builtin::Thread { root } => {
             crate::screens::threads::open_thread(channel, root, ctx, cx);
-            finish((ResultStatus::Success, "Thread opened.".to_owned()));
+            finish(done("Thread opened."));
         }
         Builtin::Dm { user } => open_dm(&client, user, channel, window, finish, cx),
         Builtin::Modlog { community } => {
             super::modlog_dialog::open(window, community, conversation, cx);
-            finish((
-                ResultStatus::Success,
-                "Moderation history opened.".to_owned(),
-            ));
+            finish(done("Moderation history opened."));
         }
         Builtin::Join { channel: target } => join(&client, target, (window, channel), finish, cx),
         Builtin::Leave => {
             crate::screens::voice::leave(window, cx);
-            finish((ResultStatus::Success, "Left voice.".to_owned()));
+            finish(done("Left voice."));
         }
         Builtin::Voice { muted, deafened } => {
             finish(set_voice(&client, muted, deafened));
@@ -417,8 +454,92 @@ pub fn run(
     }
 }
 
+/// The command memory, locked (a poisoned lock is still the memory: it holds no invariant a panic could break).
+fn lock(
+    memory: &std::sync::Mutex<bot::memory::CommandMemory>,
+) -> std::sync::MutexGuard<'_, bot::memory::CommandMemory> {
+    memory
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// builtin.ts `timeout` (:217-243) once its question was answered. A request id that was already sent is never sent
+/// again (the endpoint does not deduplicate): the member's timeout is read, and only the expiry this attempt asked for
+/// confirms it. Otherwise the attempt is kept as sent, then sent; a definitive refusal takes it away.
+fn timeout(
+    client: &Rc<Client>,
+    (community, user, name, seconds): (CommunityId, UserId, String, u64),
+    request: [u8; 16],
+    finish: impl FnOnce(Outcome) + Send + 'static,
+    cx: &mut App,
+) {
+    let memory = client.bot().memory();
+    let prior = match lock(&memory)
+        .timeouts
+        .check(request, community, user, seconds)
+    {
+        Err(why) => return finish(failed(why)),
+        Ok(prior) => prior.cloned(),
+    };
+    let ok = format!("{name} was timed out.");
+    if let Some(prior) = prior {
+        let job = client
+            .moderation()
+            .run(move |mo| async move { mo.timeout_of(community, user).await });
+        cx.background_executor()
+            .spawn(async move {
+                finish(match job.await {
+                    Ok(Some(expires)) if expires == prior.expires => {
+                        lock(&memory).timeouts.settle(request);
+                        Outcome::Success(ok)
+                    }
+                    Ok(_) => Outcome::Uncertain(TIMEOUT_DIFFERS.to_owned()),
+                    Err(e) => bot::mutation_outcome(&e),
+                });
+            })
+            .detach();
+        return;
+    }
+    let expires = moderation::now_s() + seconds;
+    let begun = lock(&memory).timeouts.begin(
+        request,
+        TimeoutAttempt {
+            community,
+            user,
+            expires,
+            seconds,
+            settled: false,
+        },
+    );
+    if let Err(why) = begun {
+        return finish(failed(why));
+    }
+    let job = client.moderation().run(move |mo| async move {
+        mo.timeout_for(community, user, request, Some(expires))
+            .await
+    });
+    cx.background_executor()
+        .spawn(async move {
+            let outcome = match job.await {
+                Ok(()) => {
+                    lock(&memory).timeouts.settle(request);
+                    Outcome::Success(ok)
+                }
+                Err(e) => {
+                    let outcome = bot::mutation_outcome(&e);
+                    if matches!(outcome, Outcome::Failure(_)) {
+                        lock(&memory).timeouts.remove(request);
+                    }
+                    outcome
+                }
+            };
+            finish(outcome);
+        })
+        .detach();
+}
+
 /// `/giphy` runs only where the community's GIFs are on; elsewhere the row says it is not a command here.
-fn giphy_gate(gifs_on: bool) -> Result<(), (ResultStatus, String)> {
+fn giphy_gate(gifs_on: bool) -> Result<(), Outcome> {
     if gifs_on {
         Ok(())
     } else {
@@ -454,7 +575,7 @@ fn open_dm(
     user: UserId,
     channel: ChannelId,
     window: gpui::WindowId,
-    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    finish: impl FnOnce(Outcome) + Send + 'static,
     cx: &mut App,
 ) {
     let answer = client.dms().open_dm(user);
@@ -476,7 +597,7 @@ fn open_dm(
             .is_ok()
         });
         finish(if went {
-            (ResultStatus::Success, "Direct message opened.".to_owned())
+            done("Direct message opened.")
         } else {
             failed("The direct message was opened, but navigation was skipped because the conversation changed.")
         });
@@ -489,10 +610,10 @@ fn open_dm(
 struct OnceRow(Rc<RefCell<Option<RowEnd>>>);
 
 /// What ends a row, given how it ended.
-type RowEnd = Box<dyn FnOnce((ResultStatus, String))>;
+type RowEnd = Box<dyn FnOnce(Outcome)>;
 
 impl OnceRow {
-    fn new(finish: impl FnOnce((ResultStatus, String)) + 'static) -> Self {
+    fn new(finish: impl FnOnce(Outcome) + 'static) -> Self {
         Self(Rc::new(RefCell::new(Some(Box::new(finish)))))
     }
 
@@ -500,7 +621,7 @@ impl OnceRow {
         self.0.borrow().is_some()
     }
 
-    fn end(&self, answer: (ResultStatus, String)) {
+    fn end(&self, answer: Outcome) {
         if let Some(finish) = self.0.borrow_mut().take() {
             finish(answer);
         }
@@ -508,14 +629,14 @@ impl OnceRow {
 }
 
 /// builtin.ts `waitForVoiceJoin` (:296-300): what a look at the call decides. The conversation changing comes first (the
-/// join goes on, but the row can no longer say how it ended), then a call that is joined.
-fn join_poll(conversation_moved: bool, joined: bool) -> Option<(ResultStatus, String)> {
+/// join goes on, but the row can no longer say how it ended: uncertain), then a call that is joined.
+fn join_poll(conversation_moved: bool, joined: bool) -> Option<Outcome> {
     if conversation_moved {
-        Some(failed(
-            "Voice join is still running after this conversation changed.",
+        Some(Outcome::Uncertain(
+            "Voice join is still running after this conversation changed.".to_owned(),
         ))
     } else if joined {
-        Some((ResultStatus::Success, "Joined voice.".to_owned()))
+        Some(done("Joined voice."))
     } else {
         None
     }
@@ -523,13 +644,13 @@ fn join_poll(conversation_moved: bool, joined: bool) -> Option<(ResultStatus, St
 
 /// What a join's own answer says (builtin.ts:301): the notice's key when it has one. A join with no notice (cancelled,
 /// or a trust refusal, which the web sets no join notice for either: `joinFailureKey` is `None`) waits out the web's 35
-/// seconds, so its row is the pending sentence.
-fn join_answer(answer: Result<(), dilla_client::ClientError>) -> (ResultStatus, String) {
+/// seconds, so its row is the pending sentence, which is uncertain.
+fn join_answer(answer: Result<(), dilla_client::ClientError>) -> Outcome {
     match answer {
-        Ok(()) => (ResultStatus::Success, "Joined voice.".to_owned()),
+        Ok(()) => done("Joined voice."),
         Err(e) => match crate::screens::voice::join_failure_key(&e) {
             Some(key) => failed(&format!("Could not join voice ({key}).")),
-            None => failed(JOIN_PENDING),
+            None => Outcome::Uncertain(JOIN_PENDING.to_owned()),
         },
     }
 }
@@ -541,7 +662,7 @@ fn join(
     client: &Rc<Client>,
     target: ChannelId,
     (window, channel): (gpui::WindowId, ChannelId),
-    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    finish: impl FnOnce(Outcome) + Send + 'static,
     cx: &mut App,
 ) {
     let (joined, joining) = {
@@ -587,7 +708,7 @@ fn join(
             cx.background_executor().timer(JOIN_POLL).await;
             waited += JOIN_POLL;
         }
-        row.end(failed(JOIN_PENDING));
+        row.end(Outcome::Uncertain(JOIN_PENDING.to_owned()));
     })
     .detach();
 }
@@ -595,7 +716,7 @@ fn join(
 /// builtin.ts `setVoice` (:442-450): the call ends muted and deafened as asked. The deafen is set first, as the web
 /// toggles it first, and the mute only where it then differs (a deafened device is muted too, and unmuting one undeafens
 /// it: `Voice::set_muted`).
-fn set_voice(client: &Rc<Client>, muted: bool, deafened: bool) -> (ResultStatus, String) {
+fn set_voice(client: &Rc<Client>, muted: bool, deafened: bool) -> Outcome {
     let (in_call, self_mute, self_deaf) = {
         let state = client.state();
         let state = state.borrow();
@@ -616,7 +737,7 @@ fn set_voice(client: &Rc<Client>, muted: bool, deafened: bool) -> (ResultStatus,
     if let Some(muted) = mute {
         voice.set_muted(muted);
     }
-    (ResultStatus::Success, "Voice settings updated.".to_owned())
+    done("Voice settings updated.")
 }
 
 /// The calls `/mute`, `/unmute`, `/deafen` and `/undeafen` make to end as `(muted, deafened)` from the call's
@@ -658,33 +779,34 @@ fn still_target(client: &Rc<Client>, community: CommunityId, user: UserId) -> bo
     .is_some_and(|t| t.user == user)
 }
 
-/// Waits for a moderation `job` and answers `ok`, or the refusal (builtin.ts `mutationError`). A client that stopped
-/// refuses the job (E_STOPPED): the row still ends.
+/// Waits for a moderation `job` and answers `ok`, or the refusal (builtin.ts `mutationError`: a definitive one fails, any
+/// other is uncertain). A client that stopped refuses the job (E_STOPPED): the row still ends.
 fn moderated(
     job: impl std::future::Future<Output = Result<(), ApiError>> + Send + 'static,
     ok: String,
-    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    finish: impl FnOnce(Outcome) + Send + 'static,
     cx: &mut App,
 ) {
     cx.background_executor()
         .spawn(async move {
             finish(match job.await {
-                Ok(()) => (ResultStatus::Success, ok),
-                Err(e) => failed(&bot::mutation_error(&e)),
+                Ok(()) => Outcome::Success(ok),
+                Err(e) => bot::mutation_outcome(&e),
             });
         })
         .detach();
 }
 
 /// builtin.ts:245-254: `/untimeout` reads the member's timeout first. None: the row says so and nothing is asked; one:
-/// the question ([`super::confirm::ask_builtin`]), its run [`Builtin::UntimeoutConfirmed`] on this same pending row.
+/// the question ([`super::confirm::ask_builtin`]), its run [`Builtin::UntimeoutConfirmed`] on this same pending row and
+/// attempt.
 fn untimeout(
     client: &Rc<Client>,
     (community, user, name): (CommunityId, UserId, String),
-    row: u64,
+    (row, attempt): (u64, Attempt),
     conversation: Conversation,
     window: gpui::WindowId,
-    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    finish: impl FnOnce(Outcome) + Send + 'static,
     cx: &mut App,
 ) {
     let job = client
@@ -696,9 +818,9 @@ fn untimeout(
         let held = job.await;
         // Released meanwhile: nothing is asked, and the row still ends (as a stopped client's does in `settle`).
         let Some(client) = client.upgrade() else {
-            return finish(failed(&bot::mutation_error_of(&ClientError::Network(
+            return finish(bot::mutation_outcome_of(&ClientError::Network(
                 "stopped".into(),
-            ))));
+            )));
         };
         let ask = |cx: &mut App| {
             super::confirm::ask_builtin(
@@ -714,6 +836,7 @@ fn untimeout(
                         name: name.clone(),
                     },
                     row,
+                    attempt,
                     conversation,
                     client: Some(client),
                 },
@@ -723,49 +846,53 @@ fn untimeout(
         match held {
             Ok(Some(_)) => cx.update(ask),
             Ok(None) => finish(failed(&format!("{name} is not timed out."))),
-            Err(e) => finish(failed(&bot::mutation_error(&e))),
+            Err(e) => finish(bot::mutation_outcome(&e)),
         }
     })
     .detach();
 }
 
-fn failed(text: &str) -> (ResultStatus, String) {
-    (ResultStatus::Failed, text.to_owned())
+fn failed(text: &str) -> Outcome {
+    Outcome::Failure(text.to_owned())
 }
 
-/// Waits for a message fold and answers `done`, or the refusal (builtin.ts `mutationError`).
+fn done(text: &str) -> Outcome {
+    Outcome::Success(text.to_owned())
+}
+
+/// Waits for a message fold and answers `ok`, or the refusal (builtin.ts `mutationError`).
 fn settle(
     done: tokio::sync::oneshot::Receiver<Result<(), ClientError>>,
     ok: &'static str,
-    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    finish: impl FnOnce(Outcome) + Send + 'static,
     cx: &mut App,
 ) {
     cx.background_executor()
         .spawn(async move {
             finish(match done.await {
-                Ok(Ok(())) => (ResultStatus::Success, ok.to_owned()),
-                Ok(Err(e)) => failed(&bot::mutation_error_of(&e)),
-                Err(_) => failed(&bot::mutation_error_of(&ClientError::Network(
-                    "stopped".into(),
-                ))),
+                Ok(Ok(())) => Outcome::Success(ok.to_owned()),
+                Ok(Err(e)) => bot::mutation_outcome_of(&e),
+                Err(_) => bot::mutation_outcome_of(&ClientError::Network("stopped".into())),
             });
         })
         .detach();
 }
 
-/// builtin.ts `publish`: what the row says of a reply's send.
-fn sent_answer(sent: Result<MessageId, ClientError>) -> (ResultStatus, String) {
+/// builtin.ts `publish`: what the row says of a reply's send. A send that definitely did not leave names its code; any
+/// other failure may have sent it, and is uncertain.
+fn sent_answer(sent: Result<MessageId, ClientError>) -> Outcome {
     match sent {
-        Ok(id) => (
-            ResultStatus::Success,
-            format!("Sent. Message {} is in the conversation outbox.", id.hex()),
-        ),
+        Ok(id) => Outcome::Success(format!(
+            "Sent. Message {} is in the conversation outbox.",
+            id.hex()
+        )),
         Err(ClientError::Sync(code)) if NOT_SENT.contains(&code.as_str()) => {
             failed(&format!("Message was not sent ({code})."))
         }
-        Err(_) => failed(
+        Err(_) => Outcome::Uncertain(
             "The send result is uncertain and this attempt cannot safely be retried. Check the conversation and outbox \
-             before starting another send.",
+             before starting another send."
+                .to_owned(),
         ),
     }
 }
@@ -778,7 +905,7 @@ fn remove_other(
     (msg, seq): (MessageId, u64),
     reason: String,
     excerpt: String,
-    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    finish: impl FnOnce(Outcome) + Send + 'static,
     cx: &mut App,
 ) {
     let (reason, excerpt) = (Zeroizing::new(reason), Zeroizing::new(excerpt));
@@ -799,10 +926,7 @@ fn remove_other(
     // A client that stopped refuses the job (E_STOPPED): the row still ends, as one whose outcome is unknown.
     cx.background_executor()
         .spawn(async move {
-            finish(
-                job.await
-                    .unwrap_or_else(|e| failed(&bot::removal_error(&e))),
-            );
+            finish(job.await.unwrap_or_else(|e| bot::removal_outcome(&e)));
         })
         .detach();
 }
@@ -816,10 +940,10 @@ async fn removal(
     seq: u64,
     reason: &str,
     excerpt: &str,
-) -> (ResultStatus, String) {
+) -> Outcome {
     let mut o = match mo.remove_message(channel, msg, seq, reason, excerpt).await {
         Ok(o) => o,
-        Err(e) => return failed(&bot::removal_error(&e)),
+        Err(e) => return bot::removal_outcome(&e),
     };
     let (mut resolved, mut evidence_sent) = (false, false);
     loop {
@@ -846,9 +970,21 @@ async fn removal(
                     .1;
                 evidence_sent = true;
             }
-            // Task 30 maps `uncertain` to its own outcome; until then an uncertain line is a failed row.
-            RemovalStep::Done { status, text, .. } => return (status, text),
+            RemovalStep::Done {
+                status,
+                text,
+                uncertain,
+            } => return removal_done(status, text, uncertain),
         }
+    }
+}
+
+/// A removal's last step as the run's [`Outcome`]: the web's `result('uncertain', …)` lines are uncertain.
+fn removal_done(status: ResultStatus, text: String, uncertain: bool) -> Outcome {
+    match (uncertain, status) {
+        (true, _) => Outcome::Uncertain(text),
+        (false, ResultStatus::Success) => Outcome::Success(text),
+        (false, _) => Outcome::Failure(text),
     }
 }
 
@@ -996,45 +1132,49 @@ pub(super) mod tests {
     }
 
     /// builtin.ts:296-300: a changed conversation ends the wait before a joined call does; neither leaves it running.
+    /// The changed conversation's answer is uncertain (the join goes on).
     #[test]
     fn a_join_poll_names_a_moved_conversation_before_a_joined_call() {
         assert_eq!(join_poll(false, false), None);
-        assert_eq!(
-            join_poll(false, true),
-            Some((ResultStatus::Success, "Joined voice.".to_owned()))
+        assert_eq!(join_poll(false, true), Some(done("Joined voice.")));
+        let moved = Outcome::Uncertain(
+            "Voice join is still running after this conversation changed.".to_owned(),
         );
-        let moved = failed("Voice join is still running after this conversation changed.");
         assert_eq!(join_poll(true, false), Some(moved.clone()));
         assert_eq!(join_poll(true, true), Some(moved));
     }
 
     /// builtin.ts:301: a refused join names its notice's key; a cancelled one or a trust refusal has none and so waits out
-    /// the web's 35 seconds; the first answer ends the row and a second finds it gone.
+    /// the web's 35 seconds (uncertain); the first answer ends the row and a second finds it gone.
     #[test]
     fn a_join_answers_with_its_notice_key_once() {
         let sync = |code: &str| Err(ClientError::Sync(code.into()));
-        assert_eq!(join_answer(Ok(())).1, "Joined voice.");
+        assert_eq!(join_answer(Ok(())), done("Joined voice."));
         assert_eq!(
-            join_answer(sync("E_CALL_FULL")).1,
-            "Could not join voice (voice.full)."
+            join_answer(sync("E_CALL_FULL")),
+            failed("Could not join voice (voice.full).")
         );
         assert_eq!(
-            join_answer(Err(ClientError::Network("x".into()))).1,
-            "Could not join voice (voice.failed)."
+            join_answer(Err(ClientError::Network("x".into()))),
+            failed("Could not join voice (voice.failed).")
         );
         for none in ["E_CANCELLED", "E_UMK_CHANGED", "E_DEVICE_REVOKED"] {
-            assert_eq!(join_answer(sync(none)).1, JOIN_PENDING, "{none}");
+            assert_eq!(
+                join_answer(sync(none)),
+                Outcome::Uncertain(JOIN_PENDING.to_owned()),
+                "{none}"
+            );
         }
         let seen = Rc::new(RefCell::new(Vec::new()));
         let row = {
             let seen = seen.clone();
-            OnceRow::new(move |a| seen.borrow_mut().push(a.1))
+            OnceRow::new(move |a| seen.borrow_mut().push(a))
         };
         assert!(row.open());
         row.end(failed("first"));
         row.end(failed("second"));
         assert!(!row.open());
-        assert_eq!(*seen.borrow(), ["first"]);
+        assert_eq!(*seen.borrow(), [failed("first")]);
     }
 
     /// builtin.ts:267-271: the self roles are listed held or not, in the order read, or the row says there are none.
@@ -1056,16 +1196,17 @@ pub(super) mod tests {
         );
     }
 
-    /// builtin.ts:52-59: a send that definitely did not leave names its code; any other failure may have sent it.
+    /// builtin.ts:52-59: a send that definitely did not leave names its code; any other failure may have sent it
+    /// (uncertain).
     #[test]
     fn a_reply_that_may_have_been_sent_is_uncertain() {
         let id = MessageId([1; 16]);
         assert_eq!(
             sent_answer(Ok(id)),
-            (
-                ResultStatus::Success,
-                format!("Sent. Message {} is in the conversation outbox.", id.hex())
-            )
+            Outcome::Success(format!(
+                "Sent. Message {} is in the conversation outbox.",
+                id.hex()
+            ))
         );
         assert_eq!(
             sent_answer(Err(ClientError::Sync("E_OFFLINE".into()))),
@@ -1076,11 +1217,29 @@ pub(super) mod tests {
             ClientError::Network("reset".into()),
         ] {
             assert!(
-                sent_answer(Err(maybe))
-                    .1
-                    .starts_with("The send result is uncertain"),
+                matches!(
+                    sent_answer(Err(maybe)),
+                    Outcome::Uncertain(t) if t.starts_with("The send result is uncertain")
+                ),
                 "uncertain"
             );
         }
+    }
+
+    /// Task 30: a removal's `result('uncertain', …)` lines are uncertain; the others keep their status.
+    #[test]
+    fn a_removal_that_may_have_landed_is_uncertain() {
+        assert_eq!(
+            removal_done(ResultStatus::Failed, "x".into(), true),
+            Outcome::Uncertain("x".into())
+        );
+        assert_eq!(
+            removal_done(ResultStatus::Success, "x".into(), false),
+            done("x")
+        );
+        assert_eq!(
+            removal_done(ResultStatus::Failed, "x".into(), false),
+            failed("x")
+        );
     }
 }

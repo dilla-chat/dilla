@@ -292,16 +292,36 @@ impl Composer {
         self.write_draft(cx);
         self.loaded = next;
         let draft = match (&self.slots.client, next) {
-            (Some(client), Some(channel)) => client
-                .prefs()
-                .get::<String>(&composing::draft_key(channel))
-                .unwrap_or_default(),
+            (Some(client), Some(channel)) => loaded_draft(
+                crate::screens::commands::with_memory(client, |m| m.take_reopen(here(channel))),
+                || client.prefs().get::<String>(&composing::draft_key(channel)),
+            ),
             _ => String::new(),
         };
         self.dismissed = None;
         self.active = 0;
         self.input
             .update(cx, |s, cx| s.set_value(draft, window, cx));
+    }
+
+    /// Task 30 (CommandHost.tsx:293-296): a command run from this field whose answer was uncertain comes back into it, so
+    /// the picker opens on the same draft and a resend is the same request. The draft the window was handed
+    /// (`commands::reopen`) is taken first, else the one the command memory keeps for this conversation (an answer that
+    /// landed off the window's thread).
+    fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(channel) = self.loaded else {
+            return;
+        };
+        let wid = window.window_handle().window_id();
+        let text = crate::screens::commands::take_reopen(wid, here(channel), cx).or_else(|| {
+            self.slots.client.as_ref().and_then(|client| {
+                crate::screens::commands::with_memory(client, |m| m.take_reopen(here(channel)))
+            })
+        });
+        if let Some(text) = text {
+            self.set_text(&text, None, window, cx);
+            crate::screens::commands::draft_changed(wid, &text, cx);
+        }
     }
 
     fn on_input_event(
@@ -647,6 +667,20 @@ impl Composer {
 
 /// The field's accessible name (`shell.composer.label`, "message #general"): the target is the channel's `#name` or the
 /// DM's `@name`, put where the web's `#{channel}` is.
+/// The conversation of `channel`'s composer (its own log; a thread has a composer of its own).
+fn here(channel: ChannelId) -> dilla_client::state::bot::Conversation {
+    dilla_client::state::bot::Conversation {
+        channel,
+        thread: None,
+    }
+}
+
+/// The draft a composer loads for a channel (Task 30, CommandHost.tsx:123-129: an active row restores its text): the
+/// draft of an uncertain command to reopen wins over the stored `drafts.<channel>`.
+fn loaded_draft(reopen: Option<String>, stored: impl FnOnce() -> Option<String>) -> String {
+    reopen.or_else(stored).unwrap_or_default()
+}
+
 fn composer_label(target: &str) -> String {
     t("shell.composer.label").replace("#{channel}", target)
 }
@@ -766,6 +800,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.switch_channel(window, cx);
+        self.reopen(window, cx);
         // ComposerArea.tsx: a reply started (the toolbar's Reply) puts the keyboard in the field.
         let reply = crate::screens::threads::replying_of(&self.slots, cx)
             .filter(|r| Some(r.channel) == self.slots.channel)
@@ -1145,6 +1180,75 @@ mod tests {
             "",
             "the draft left the field"
         );
+    }
+
+    /// Task 30 (CommandHost.tsx:123-129, :293-296): an uncertain command's draft comes back into the composer of its
+    /// conversation on the next draw, once; and when the composer next loads a conversation the person left, the draft
+    /// the command memory keeps for it wins over the stored `drafts.<channel>`.
+    #[gpui::test]
+    fn an_uncertain_command_reopens_its_draft(cx: &mut gpui::TestAppContext) {
+        use dilla_client::features::bot::memory::CommandMemory;
+        use dilla_client::state::bot::Conversation;
+        cx.update(crate::install);
+        let (a, b) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.set_slots(SlotCx {
+                channel: Some(a),
+                ..SlotCx::default()
+            });
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let w = vcx.update(|window, _| window.window_handle().window_id());
+        vcx.update(|_, cx| {
+            crate::screens::commands::reopen(
+                w,
+                Conversation {
+                    channel: a,
+                    thread: None,
+                },
+                "/warn user:x reason:y".into(),
+                cx,
+            );
+        });
+        draw(vcx);
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "/warn user:x reason:y"
+        );
+        assert_eq!(
+            vcx.update(|_, cx| crate::screens::commands::picker_state(w, cx).draft),
+            "/warn user:x reason:y",
+            "the picker opens on it"
+        );
+        // Taken once: a later edit is not overwritten.
+        vcx.update(|window, cx| {
+            let input = composer.read(cx).input.clone();
+            input.update(cx, |s, cx| s.set_value("/warn", window, cx));
+        });
+        draw(vcx);
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "/warn"
+        );
+        // Another conversation the person comes back to: the memory's draft wins over the stored one, once.
+        let at_b = Conversation {
+            channel: b,
+            thread: None,
+        };
+        let mut memory = CommandMemory::default();
+        memory.uncertain(at_b, "/topic text:z", [1; 16], "topic\0text=z");
+        let stored = || Some("old".to_owned());
+        assert_eq!(
+            loaded_draft(memory.take_reopen(at_b), stored),
+            "/topic text:z"
+        );
+        assert_eq!(loaded_draft(memory.take_reopen(at_b), stored), "old");
+        assert_eq!(loaded_draft(None, || None), "");
     }
 
     /// A server with one text channel, the viewer holding only @everyone (allow `everyone_allow`), and one mentionable

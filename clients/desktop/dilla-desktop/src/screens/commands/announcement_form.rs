@@ -18,14 +18,21 @@
 //!   next Save is a new request, and an answer that may have taken effect keeps the draft and the request id, so the next
 //!   Save resends it and the Bot answers what it did. The row says what the Bot answered. Cancel,
 //!   Escape, a click outside and leaving the conversation end the command with "Announcement editing cancelled.".
+//! - Task 30: the command's request id is the one the command memory remembers for its draft, and a save or deletion
+//!   that went out is kept there (`CommandMemory::announcements`). An answer that may have taken effect also puts the
+//!   draft back in the composer; sent again, the command reconciles that mutation (its own request, with neither the
+//!   catalog's offer nor the editor), and without Manage Community it stays pending.
 //!
 //! The form's Debug gives no text: the message is decrypted content (R20, R21).
 
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use dilla_client::Client;
 use dilla_client::features::bot::announcements::{self, Schedule, ScheduleKind, ScheduleRow};
+use dilla_client::features::bot::memory::CommandMemory;
 use dilla_client::features::bot::registry::Args;
+use dilla_client::features::bot::{Attempt, Outcome};
 use dilla_client::features::roles::perm::MANAGE_COMMUNITY;
 use dilla_client::features::server_admin::hex_id;
 use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
@@ -337,8 +344,8 @@ pub struct AnnouncementForm {
     pub error: Option<String>,
     /// A save is out: Save is disabled, and a second sends nothing.
     pub busy: bool,
-    /// The editor's one request id: every save of this editor sends it (Task 30 replaces it with the remembered
-    /// attempt's).
+    /// The editor's one request id: every save of this editor sends it. It is the command's remembered id (Task 30) until
+    /// a refusal, after which the next Save is a new request.
     pub parent: [u8; 16],
     /// The command's row.
     pub row: u64,
@@ -350,10 +357,14 @@ pub struct AnnouncementForm {
     pub clock: Clock,
     /// `None` in a fixture: its Save does nothing.
     pub client: Option<Rc<Client>>,
-    /// The save that went out and may have taken effect: the one thing a Save sends again until the Bot answers for it, as
-    /// the web resends the stored attempt's own arguments (bot-handlers.ts:386-392) and never a changed form. The fields
-    /// are locked while it is held.
-    attempt: Option<Attempt>,
+    /// The client's command memory (a fixture's own, which nothing writes). It holds the save that went out and may have
+    /// taken effect (`announcements`, under `parent` and the community): the one thing a Save sends again until the Bot
+    /// answers for it, as the web resends the stored attempt's own arguments (bot-handlers.ts:386-392) and never a changed
+    /// form. The fields are locked while it is held.
+    memory: Arc<Mutex<CommandMemory>>,
+    /// The command's invocation key and draft (Task 30): an uncertain answer keeps them with the request.
+    invocation: String,
+    draft: String,
     /// Each input's subscription.
     _subs: Vec<Subscription>,
     /// The save is out and the editor is to go.
@@ -388,39 +399,45 @@ impl AnnouncementForm {
         Some(self.parent)
     }
 
-    /// What a Save sends: the held attempt exactly as it went out (the same schedule, existing row and list revision,
-    /// whatever the fields say now), else the fields as checked ([`validate_schedule`]).
-    pub fn next_attempt(
+    /// What a Save sends: `None` while a sent attempt is held, which goes again exactly as it went out (the same schedule,
+    /// existing row and list revision, whatever the fields say now: `Bot::reconcile_announcement`), else the fields as
+    /// checked ([`validate_schedule`]).
+    pub fn next_save(
         &self,
         values: &FormValues,
         now: jiff::Timestamp,
-    ) -> Result<Attempt, &'static str> {
-        if let Some(held) = &self.attempt {
-            return Ok(held.clone());
+    ) -> Result<Option<Fields>, &'static str> {
+        if self.locked() {
+            return Ok(None);
         }
-        Ok(Attempt {
+        Ok(Some(Fields {
             schedule: validate_schedule(values, now)?,
             existing: self.existing.clone(),
             list_revision: self.list_revision,
-        })
+        }))
     }
 
     /// Whether the fields are locked (an attempt may have taken effect and is the one thing Save sends).
     pub fn locked(&self) -> bool {
-        self.attempt.is_some()
+        announcements::sent_attempt(&self.memory, self.parent, self.community)
+    }
+
+    /// The command's run under the editor's current request id.
+    fn attempt(&self) -> Attempt {
+        Attempt {
+            request: self.parent,
+            invocation: self.invocation.clone(),
+            text: self.draft.clone(),
+        }
     }
 
     /// The permission was lost as Save went. With no attempt out the command ends Failed (bot-handlers.ts:434) and the
     /// editor goes. With one held the answer stays uncertain and the editor and the attempt stay, to be sent again once
     /// the permission is back (:383-385).
     pub fn permission_lost(&mut self) -> (ResultStatus, String) {
-        if self.attempt.is_some() {
+        if self.locked() {
             self.busy = false;
-            return (
-                ResultStatus::Cancelled,
-                "This schedule attempt is still pending. Restore Manage Community permission in its original community to reconcile it."
-                    .to_owned(),
-            );
+            return (ResultStatus::Cancelled, PENDING_PERMISSION.to_owned());
         }
         self.done = true;
         failed("Manage Community permission changed before saving.")
@@ -429,32 +446,30 @@ impl AnnouncementForm {
     /// How Cancel ends the command's row: Failed "Announcement editing cancelled." (:432), but never over an attempt that
     /// may have taken effect (the web only releases the row it holds) or a save still out, which finish their own row.
     pub fn cancelled_row(&self) -> Option<(ResultStatus, String)> {
-        (!self.busy && self.attempt.is_none()).then(|| failed("Announcement editing cancelled."))
+        (!self.busy && !self.locked()).then(|| failed("Announcement editing cancelled."))
     }
 
     /// The save is answered: Save is enabled again. An accepted save closes the editor. A refusal leaves it open with its
     /// draft, and the next save is a new request (R29: the Bot would answer a stored refusal again). An answer that may
     /// have taken effect leaves it open too and keeps the id, so the next Save resends that request and the Bot answers
-    /// what it did (CommandHost.tsx restores the draft and holds the row).
+    /// what it did (CommandHost.tsx restores the draft and holds the row). The command memory's attempt is settled by the
+    /// client as the answer lands (`announcements::save_over`).
     pub fn end_save(&mut self, end: SaveEnd) {
         self.busy = false;
         match end {
-            SaveEnd::Accepted => {
-                self.done = true;
-                self.attempt = None;
-            }
-            SaveEnd::Refused => {
-                self.parent = dilla_client::features::roles::request_id();
-                self.attempt = None;
-            }
+            SaveEnd::Accepted => self.done = true,
+            SaveEnd::Refused => self.parent = dilla_client::features::roles::request_id(),
             SaveEnd::Uncertain => {}
         }
     }
 }
 
-/// A save as it went out: what a Save sends again while it may have taken effect.
+/// bot-handlers.ts:383-384: an attempt held when the permission is gone stays uncertain.
+const PENDING_PERMISSION: &str = "This schedule attempt is still pending. Restore Manage Community permission in its original community to reconcile it.";
+
+/// What the fields ask a first save to send ([`AnnouncementForm::next_save`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Attempt {
+pub struct Fields {
     pub schedule: Schedule,
     pub existing: Option<ScheduleRow>,
     pub list_revision: u64,
@@ -474,7 +489,8 @@ struct Wanted {
     channels: Vec<(ChannelId, String)>,
     existing: Option<ScheduleRow>,
     list_revision: u64,
-    parent: [u8; 16],
+    attempt: Attempt,
+    memory: Arc<Mutex<CommandMemory>>,
     row: u64,
     conversation: Conversation,
     community: CommunityId,
@@ -486,7 +502,7 @@ struct Wanted {
 struct Deleting {
     target: ScheduleRow,
     list_revision: u64,
-    parent: [u8; 16],
+    attempt: Attempt,
     row: u64,
     conversation: Conversation,
     community: CommunityId,
@@ -543,6 +559,28 @@ fn finish(
     cx.refresh_windows();
 }
 
+/// The command's run of `attempt` ends as `(status, text)` (Task 28's words: Cancelled, "Not confirmed", is an answer that
+/// may have taken effect): its row says so and the command memory learns it ([`super::settle`]). A fixture keeps its row
+/// in the window.
+fn end(
+    client: Option<&Rc<Client>>,
+    window: WindowId,
+    (conversation, row): (Conversation, u64),
+    attempt: &Attempt,
+    (status, text): (ResultStatus, String),
+    cx: &mut App,
+) {
+    let Some(client) = client else {
+        return finish(None, window, conversation, row, (status, text), cx);
+    };
+    let outcome = match status {
+        ResultStatus::Success => Outcome::Success(text),
+        ResultStatus::Cancelled => Outcome::Uncertain(text),
+        ResultStatus::Pending | ResultStatus::Failed => Outcome::Failure(text),
+    };
+    super::settle(client, window, (conversation, row), attempt, outcome, cx);
+}
+
 /// The command's row goes (its question was cancelled, or abandoned).
 fn dismiss(
     client: Option<&Rc<Client>>,
@@ -564,7 +602,14 @@ fn failed(text: &str) -> (ResultStatus, String) {
 /// One of the four commands was sent from the composer. Its row is pending from here ([`finish`] ends it); a community
 /// without the rights or the Bot's offer ends it Failed ([`check`]); otherwise the schedules are read from the Bot and
 /// the command goes on in [`after_list`]. A fixture has no Bot to read: its `create` opens the editor at once.
-pub fn run(ctx: &SlotCx, command: Command, args: &Args, window: WindowId, cx: &mut App) {
+pub fn run(
+    ctx: &SlotCx,
+    command: Command,
+    args: &Args,
+    attempt: Attempt,
+    window: WindowId,
+    cx: &mut App,
+) {
     let Some(channel) = ctx.channel else {
         return;
     };
@@ -590,15 +635,41 @@ pub fn run(ctx: &SlotCx, command: Command, args: &Args, window: WindowId, cx: &m
             row
         }
     };
+    let parent = attempt.request;
+    // bot-handlers.ts:382-392 (Task 30): a run whose request already sent a schedule mutation reconciles it first: its
+    // own request goes again, with neither the catalog's offer nor the editor; without the permission it stays pending.
+    if let (Some(client), Some(community)) = (&ctx.client, ctx.community)
+        && client.bot().announcement_pending(community, parent)
+    {
+        if !holds_manage(&client.state().borrow(), channel) {
+            let pending = (ResultStatus::Cancelled, PENDING_PERMISSION.to_owned());
+            return end(
+                Some(client),
+                window,
+                (conversation, row),
+                &attempt,
+                pending,
+                cx,
+            );
+        }
+        let client = client.clone();
+        cx.spawn(async move |cx| {
+            let answer = reconciled(&client, community, parent).await;
+            cx.update(|cx| settled(window, &client, (conversation, row), &attempt, answer, cx));
+        })
+        .detach();
+        return;
+    }
     let community = match check(&ctx.state, ctx.community, channel) {
         Ok(community) => community,
         Err(why) => {
-            return finish(
+            let refused = failed(why);
+            return end(
                 ctx.client.as_ref(),
                 window,
-                conversation,
-                row,
-                failed(why),
+                (conversation, row),
+                &attempt,
+                refused,
                 cx,
             );
         }
@@ -610,20 +681,37 @@ pub fn run(ctx: &SlotCx, command: Command, args: &Args, window: WindowId, cx: &m
         community,
         row,
         clock: ctx.clock,
+        attempt,
     };
     let Some(client) = ctx.client.clone() else {
         if command == Command::Create {
-            let parent = dilla_client::features::roles::request_id();
-            open_editor(&ctx.state, started, (None, 0, parent), None, window, cx);
+            open_editor(&ctx.state, started, (None, 0), None, window, cx);
         }
         return;
     };
-    let parent = dilla_client::features::roles::request_id();
     cx.spawn(async move |cx| {
         let listed = client.bot().list_announcements(community, parent).await;
-        cx.update(|cx| after_list(window, &client, started, parent, listed, cx));
+        cx.update(|cx| after_list(window, &client, started, listed, cx));
     })
     .detach();
+}
+
+/// The sent schedule mutation of the command `parent`, reconciled (`Bot::reconcile_announcement`).
+async fn reconciled(
+    client: &Client,
+    community: CommunityId,
+    parent: [u8; 16],
+) -> Result<String, announcements::Failure> {
+    client
+        .bot()
+        .reconcile_announcement(community, parent)
+        .await
+        .unwrap_or_else(|| {
+            Err(announcements::Failure {
+                status: ResultStatus::Failed,
+                text: "The announcement could not be saved.".to_owned(),
+            })
+        })
 }
 
 /// A command that is reading the schedules.
@@ -634,6 +722,7 @@ struct Started {
     community: CommunityId,
     row: u64,
     clock: Clock,
+    attempt: Attempt,
 }
 
 /// The Bot answered the read of the schedules: the command goes on (`announcementHandler` after `listAnnouncements`).
@@ -641,7 +730,6 @@ fn after_list(
     w: WindowId,
     client: &Rc<Client>,
     started: Started,
-    parent: [u8; 16],
     listed: Result<(Vec<ScheduleRow>, u64), String>,
     cx: &mut App,
 ) {
@@ -651,11 +739,12 @@ fn after_list(
         conversation,
         community,
         row,
+        attempt,
         ..
     } = &started;
     let (command, conversation, community, row) = (*command, *conversation, *community, *row);
     let end = |outcome: (ResultStatus, String), cx: &mut App| {
-        finish(Some(client), w, conversation, row, outcome, cx);
+        end(Some(client), w, (conversation, row), attempt, outcome, cx);
     };
     let (rows, list_revision) = match listed {
         Ok(read) => read,
@@ -687,7 +776,7 @@ fn after_list(
                 slot(w, cx).deleting = Some(Deleting {
                     target,
                     list_revision,
-                    parent,
+                    attempt: attempt.clone(),
                     row,
                     conversation,
                     community,
@@ -704,7 +793,7 @@ fn after_list(
             open_editor(
                 &state,
                 started,
-                (named, list_revision, parent),
+                (named, list_revision),
                 Some(client.clone()),
                 w,
                 cx,
@@ -717,7 +806,7 @@ fn after_list(
 fn open_editor(
     state: &AppState,
     started: Started,
-    (existing, list_revision, parent): (Option<ScheduleRow>, u64, [u8; 16]),
+    (existing, list_revision): (Option<ScheduleRow>, u64),
     client: Option<Rc<Client>>,
     w: WindowId,
     cx: &mut App,
@@ -734,7 +823,10 @@ fn open_editor(
         channels,
         existing,
         list_revision,
-        parent,
+        memory: client
+            .as_ref()
+            .map_or_else(Arc::default, |c| c.bot().memory()),
+        attempt: started.attempt,
         row: started.row,
         conversation: started.conversation,
         community: started.community,
@@ -796,8 +888,10 @@ fn make(w: WindowId, wanted: Wanted, window: &mut Window, cx: &mut App) -> Annou
         editing: wanted.existing.is_some(),
         error: None,
         busy: false,
-        attempt: None,
-        parent: wanted.parent,
+        parent: wanted.attempt.request,
+        invocation: wanted.attempt.invocation,
+        draft: wanted.attempt.text,
+        memory: wanted.memory,
         row: wanted.row,
         conversation: wanted.conversation,
         community: wanted.community,
@@ -848,8 +942,8 @@ pub fn submit(w: WindowId, cx: &mut App) {
     }
     let now = jiff::Timestamp::from_second(i64::try_from(form.clock.now()).unwrap_or(0))
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    let attempt = match form.next_attempt(&values, now) {
-        Ok(attempt) => attempt,
+    let next = match form.next_save(&values, now) {
+        Ok(next) => next,
         Err(key) => {
             if let Some(form) = slot(w, cx).form.as_mut() {
                 form.error = Some(t(key).to_owned());
@@ -867,6 +961,7 @@ pub fn submit(w: WindowId, cx: &mut App) {
     let Some(parent) = form.begin_save() else {
         return;
     };
+    let attempt = form.attempt();
     let (conversation, community, row) = (form.conversation, form.community, form.row);
     // The editor stays open, busy, until the Bot answers: only an accepted save closes it, so a refusal or an unsure answer
     // finds its draft (and, if unsure, its attempt) as the person left it.
@@ -877,11 +972,10 @@ pub fn submit(w: WindowId, cx: &mut App) {
         if form.locked() {
             form.error = Some(ended.1.clone());
         }
-        finish(Some(&client), w, conversation, row, ended, cx);
+        end(Some(&client), w, (conversation, row), &attempt, ended, cx);
         return;
     }
     form.error = None;
-    form.attempt = Some(attempt.clone());
     // A second attempt's row works again.
     finish(
         Some(&client),
@@ -892,17 +986,22 @@ pub fn submit(w: WindowId, cx: &mut App) {
         cx,
     );
     cx.spawn(async move |cx| {
-        let answer = client
-            .bot()
-            .save_announcement(
-                community,
-                parent,
-                attempt.existing.as_ref(),
-                &attempt.schedule,
-                attempt.list_revision,
-            )
-            .await;
-        cx.update(|cx| settled(w, &client, (conversation, row), parent, answer, cx));
+        let answer = match next {
+            Some(fields) => {
+                client
+                    .bot()
+                    .save_announcement(
+                        community,
+                        parent,
+                        fields.existing.as_ref(),
+                        &fields.schedule,
+                        fields.list_revision,
+                    )
+                    .await
+            }
+            None => reconciled(&client, community, parent).await,
+        };
+        cx.update(|cx| settled(w, &client, (conversation, row), &attempt, answer, cx));
     })
     .detach();
     cx.refresh_windows();
@@ -914,7 +1013,7 @@ fn settled(
     w: WindowId,
     client: &Rc<Client>,
     (conversation, row): (Conversation, u64),
-    parent: [u8; 16],
+    attempt: &Attempt,
     answer: Result<String, announcements::Failure>,
     cx: &mut App,
 ) {
@@ -930,9 +1029,9 @@ fn settled(
         super::chips::announcements_changed(client);
     }
     let (outcome_status, outcome_text) = (outcome.0, outcome.1.clone());
-    finish(Some(client), w, conversation, row, outcome, cx);
+    end(Some(client), w, (conversation, row), attempt, outcome, cx);
     if let Some(form) = slot(w, cx).form.as_mut()
-        && form.parent == parent
+        && form.parent == attempt.request
     {
         let end = match (&outcome_status, uncertain) {
             (ResultStatus::Success, _) => SaveEnd::Accepted,
@@ -974,11 +1073,12 @@ pub fn cancel(w: WindowId, cx: &mut App) {
         return;
     };
     if let Some(ended) = form.cancelled_row() {
-        finish(
+        let attempt = form.attempt();
+        end(
             form.client.as_ref(),
             w,
-            form.conversation,
-            form.row,
+            (form.conversation, form.row),
+            &attempt,
             ended,
             cx,
         );
@@ -998,11 +1098,11 @@ pub fn answer_delete(w: WindowId, choice: Option<bool>, cx: &mut App) {
     }
     let held = holds_manage(&d.client.state().borrow(), d.conversation.channel);
     if !held {
-        finish(
+        end(
             Some(&d.client),
             w,
-            d.conversation,
-            d.row,
+            (d.conversation, d.row),
+            &d.attempt,
             failed("Manage Community permission changed before deletion."),
             cx,
         );
@@ -1011,7 +1111,7 @@ pub fn answer_delete(w: WindowId, choice: Option<bool>, cx: &mut App) {
     let Deleting {
         target,
         list_revision,
-        parent,
+        attempt,
         row,
         conversation,
         community,
@@ -1020,9 +1120,9 @@ pub fn answer_delete(w: WindowId, choice: Option<bool>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let answer = client
             .bot()
-            .delete_announcement(community, parent, &target, list_revision)
+            .delete_announcement(community, attempt.request, &target, list_revision)
             .await;
-        cx.update(|cx| settled(w, &client, (conversation, row), parent, answer, cx));
+        cx.update(|cx| settled(w, &client, (conversation, row), &attempt, answer, cx));
     })
     .detach();
     cx.refresh_windows();
@@ -1767,7 +1867,12 @@ mod tests {
                     channels: vec![(ChannelId(CHANNEL), "general".into())],
                     existing: None,
                     list_revision: 7,
-                    parent: [9; 16],
+                    attempt: Attempt {
+                        request: [9; 16],
+                        invocation: "announcement create".into(),
+                        text: "/announcement create".into(),
+                    },
+                    memory: Arc::default(),
                     row: 1,
                     conversation: Conversation {
                         channel: ChannelId(CHANNEL),
@@ -1802,23 +1907,32 @@ mod tests {
         assert!(form.done, "an accepted save closes it");
     }
 
-    fn attempt(text: &str) -> Attempt {
-        Attempt {
-            schedule: validate_schedule(
-                &FormValues {
-                    text: text.into(),
-                    ..values()
-                },
-                now(),
-            )
-            .unwrap(),
-            existing: None,
-            list_revision: 7,
-        }
+    /// The save of `form`'s request that went out and may have taken effect, as the client keeps it in the command
+    /// memory (`announcements::save_over`).
+    fn hold_sent(form: &AnnouncementForm) {
+        form.memory.lock().unwrap().keep_announcement(
+            (form.parent, form.community),
+            dilla_client::features::bot::memory::AnnouncementAttempt {
+                operation: announcements::SAVE,
+                request: [1; 16],
+                args: Vec::new(),
+                revision: 7,
+                sent: true,
+            },
+        );
     }
 
-    /// N1 (bot-handlers.ts:386-392): after an answer that may have taken effect, a Save sends the stored attempt as it went
-    /// out, never the fields as they read now (not even invalid ones); an accepted or a refused save releases it.
+    /// The client settled that save (accepted or refused): the memory lets it go.
+    fn release_sent(form: &AnnouncementForm) {
+        form.memory
+            .lock()
+            .unwrap()
+            .drop_announcement((form.parent, form.community));
+    }
+
+    /// N1 (bot-handlers.ts:386-392), Task 30: after an answer that may have taken effect, a Save sends the attempt the
+    /// command memory holds as it went out (`None` here: the client reconciles it), never the fields as they read now
+    /// (not even invalid ones); once the client settles it the fields are checked again.
     #[gpui::test]
     fn a_save_after_an_unsure_answer_sends_the_stored_attempt(cx: &mut gpui::TestAppContext) {
         let mut form = form(cx);
@@ -1828,34 +1942,38 @@ mod tests {
             ..values()
         };
         assert_eq!(
-            form.next_attempt(&edited, now()),
+            form.next_save(&edited, now()),
             Err("botCommand.dialog.invalid"),
             "with no attempt held the fields are checked"
         );
-        let first = attempt("the original text");
-        form.attempt = Some(first.clone());
+        assert!(matches!(form.next_save(&values(), now()), Ok(Some(f)) if f.list_revision == 7));
         form.busy = true;
+        hold_sent(&form);
         form.end_save(SaveEnd::Uncertain);
         assert!(form.locked(), "the fields are locked while it is held");
-        assert!(
-            form.next_attempt(&edited, now()).as_ref() == Ok(&first),
-            "the same schedule, existing row and list revision"
+        assert_eq!(
+            form.next_save(&edited, now()),
+            Ok(None),
+            "the held attempt, whatever the fields say"
         );
         assert_eq!(
             form.begin_save(),
             Some([9; 16]),
             "under the same request id"
         );
+        release_sent(&form);
         form.end_save(SaveEnd::Refused);
         assert!(!form.locked());
         assert_eq!(
-            form.next_attempt(&edited, now()),
+            form.next_save(&edited, now()),
             Err("botCommand.dialog.invalid"),
             "released: the fields are checked again"
         );
-        form.attempt = Some(first);
-        form.end_save(SaveEnd::Accepted);
-        assert!(!form.locked() && form.done);
+        assert_eq!(
+            form.attempt().text,
+            "/announcement create",
+            "the command's draft goes with its run"
+        );
     }
 
     /// N2 (bot-handlers.ts:383-385, :434): losing the permission as Save goes ends a first save Failed and closes the
@@ -1873,7 +1991,7 @@ mod tests {
         );
         assert!(first.done);
         let mut held = form(cx);
-        held.attempt = Some(attempt("text"));
+        hold_sent(&held);
         held.busy = true;
         let (status, text) = held.permission_lost();
         assert_eq!(status, ResultStatus::Cancelled);
@@ -1896,9 +2014,9 @@ mod tests {
                 "Announcement editing cancelled.".to_owned()
             ))
         );
-        form.attempt = Some(attempt("text"));
+        hold_sent(&form);
         assert_eq!(form.cancelled_row(), None, "an unsure attempt");
-        form.attempt = None;
+        release_sent(&form);
         form.busy = true;
         assert_eq!(form.cancelled_row(), None, "a save still out");
     }

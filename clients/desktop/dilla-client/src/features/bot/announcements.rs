@@ -11,9 +11,10 @@
 //!
 //! A schedule's text is a decrypted post: the types holding it give its length only in Debug (R20, R21).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::features::bot::Bot;
+use crate::features::bot::memory::{AnnouncementAttempt, CommandMemory};
 use crate::features::bot_admin::{BotArg, BotOperations, BotRequest, BotResult, OpError};
 use crate::gateway::frames::Value;
 use crate::state::bot::ResultStatus;
@@ -347,26 +348,102 @@ pub async fn list_over(
     }
 }
 
-/// What a sent mutation answered, as the web's handler reads it: a refusal and an unsent request are [`Failure`]s, an
-/// answer is the Bot's.
+const MAY_HAVE_BEEN_SENT: &str = "This schedule mutation may have been sent. Its original request and body remain reserved; retry this same request to reconcile it.";
+
+/// Where a command's schedule mutation is remembered (Task 30): the client's command memory, and the community its
+/// command runs in. The attempt's key is the command's request id (`parent`) and this community.
+#[derive(Clone, Copy)]
+pub struct Attempts<'a> {
+    pub memory: &'a Mutex<CommandMemory>,
+    pub community: CommunityId,
+}
+
+impl Attempts<'_> {
+    fn with<T>(&self, f: impl FnOnce(&mut CommandMemory) -> T) -> T {
+        f(&mut self
+            .memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    fn get(&self, parent: [u8; 16]) -> Option<AnnouncementAttempt> {
+        self.with(|m| m.announcements.get(&(parent, self.community)).cloned())
+    }
+
+    fn drop(&self, parent: [u8; 16]) {
+        self.with(|m| m.drop_announcement((parent, self.community)));
+    }
+}
+
+/// Sends `attempt` again as it went (its own request id, arguments and revision): the Bot answers what it did with it and
+/// never runs it twice. The web's `api.read` resends what its page sent; here the memory holds what was sent.
+async fn resend(ops: &BotOperations, attempt: &AnnouncementAttempt) -> Result<BotResult, OpError> {
+    ops.request(BotRequest {
+        operation: attempt.operation,
+        args: attempt.args.clone(),
+        revision: Some(attempt.revision),
+        request_id: Some(attempt.request),
+        ..BotRequest::default()
+    })
+    .await
+}
+
+/// `runAnnouncementMutation` (bot-handlers.ts:107-137): the `stage` mutation (`operation` with `args` at the list's
+/// `revision`) of the command `parent`, over the attempt store. A first run keeps the attempt, marks it sent and sends it;
+/// a refusal takes it away. An attempt already sent is reconciled: its own request goes again, whatever this run asked,
+/// and the Bot answers what it did. An attempt bound to another operation or revision is not replaced.
 async fn mutate(
     ops: &BotOperations,
-    operation: u64,
-    request: BotRequest,
+    attempts: Attempts<'_>,
+    parent: [u8; 16],
+    stage: &str,
+    (operation, args, revision): (u64, Vec<BotArg>, u64),
 ) -> Result<BotResult, Failure> {
-    let id = request.request_id.expect("a mutation names its request");
-    // A request this handle sent before is settled by sending it again as it was (`runAnnouncementMutation`).
-    let sent = match ops.read(id, operation).await {
-        Ok(Some(prior)) => Ok(prior),
-        Ok(None) => ops.request(request).await,
-        Err(e) => Err(e),
-    };
-    sent.map_err(|e| match e {
-        OpError::Uncertain { .. } => Failure::unsure(
-            "This schedule mutation may have been sent. Its original request and body remain reserved; retry this same request to reconcile it.",
-        ),
-        other => Failure::failed(&other.to_string()),
+    let held = attempts.get(parent);
+    if let Some(a) = &held
+        && (a.operation != operation || a.revision != revision)
+    {
+        if !a.sent || a.operation != operation {
+            return Err(Failure::unsure(
+                "This announcement attempt is bound to a different schedule revision. Reconcile it before starting another command.",
+            ));
+        }
+        return resend(ops, a)
+            .await
+            .map_err(|_| Failure::unsure("The prior announcement result is still pending."));
+    }
+    let mut attempt = held.unwrap_or_else(|| AnnouncementAttempt {
+        operation,
+        request: request_of(parent, &format!("announcement:{stage}")),
+        args,
+        revision,
+        sent: false,
+    });
+    if attempt.sent {
+        return resend(ops, &attempt).await.map_err(|e| {
+            Failure::unsure(&format!(
+                "Could not reconcile the prior schedule mutation: {e}"
+            ))
+        });
+    }
+    attempt.sent = true;
+    attempts.with(|m| m.keep_announcement((parent, attempts.community), attempt.clone()));
+    resend(ops, &attempt).await.map_err(|e| match e {
+        // Refused before the Bot took it, or never sent: nothing happened, and the attempt goes.
+        OpError::Refused { .. } | OpError::Invalid => {
+            attempts.drop(parent);
+            Failure::failed(&e.to_string())
+        }
+        OpError::Uncertain { .. } => Failure::unsure(MAY_HAVE_BEEN_SENT),
     })
+}
+
+/// A mutation's answer settles its attempt: an accepted (confirmed) one and any refusal take it away; an answer that may
+/// or may not have taken effect (a malformed receipt, status 5) keeps it for the resend.
+fn settle_attempt(attempts: Attempts<'_>, parent: [u8; 16], answer: &Result<String, Failure>) {
+    if answer.as_ref().err().is_none_or(|f| !f.uncertain()) {
+        attempts.drop(parent);
+    }
 }
 
 /// The text a settled save or deletion ends with: `done` when the Bot confirmed it, else the web's words for what it
@@ -407,6 +484,7 @@ fn ended(
 /// same document.
 pub async fn save_over(
     ops: &BotOperations,
+    attempts: Attempts<'_>,
     parent: [u8; 16],
     existing: Option<&ScheduleRow>,
     s: &Schedule,
@@ -419,18 +497,12 @@ pub async fn save_over(
         existing.is_none_or(|r| r.enabled),
         existing.map_or(1, |r| r.revision + 1),
     );
-    let request = BotRequest {
-        operation: SAVE,
-        args: vec![
-            existing.map_or(BotArg::Null, |r| BotArg::Bytes(r.id.to_vec())),
-            BotArg::Bytes(document),
-        ],
-        revision: Some(list_revision),
-        request_id: Some(request_of(parent, "announcement:save")),
-        ..BotRequest::default()
-    };
-    let result = mutate(ops, SAVE, request).await?;
-    ended(
+    let args = vec![
+        existing.map_or(BotArg::Null, |r| BotArg::Bytes(r.id.to_vec())),
+        BotArg::Bytes(document),
+    ];
+    let result = mutate(ops, attempts, parent, "save", (SAVE, args, list_revision)).await?;
+    let answer = ended(
         &result,
         list_revision,
         false,
@@ -439,30 +511,99 @@ pub async fn save_over(
         } else {
             "Announcement scheduled."
         },
-    )
+    );
+    settle_attempt(attempts, parent, &answer);
+    answer
 }
 
 /// The deletion's request over `ops` (:418-427): operation 52 with `[id, the row's revision]` at the list's revision.
 pub async fn delete_over(
     ops: &BotOperations,
+    attempts: Attempts<'_>,
     parent: [u8; 16],
     row: &ScheduleRow,
     list_revision: u64,
 ) -> Result<String, Failure> {
-    let request = BotRequest {
-        operation: DELETE,
-        args: vec![BotArg::Bytes(row.id.to_vec()), BotArg::Uint(row.revision)],
-        revision: Some(list_revision),
-        request_id: Some(request_of(parent, "announcement:delete")),
-        ..BotRequest::default()
-    };
-    let result = mutate(ops, DELETE, request).await?;
-    ended(
+    let args = vec![BotArg::Bytes(row.id.to_vec()), BotArg::Uint(row.revision)];
+    let result = mutate(
+        ops,
+        attempts,
+        parent,
+        "delete",
+        (DELETE, args, list_revision),
+    )
+    .await?;
+    let answer = ended(
         &result,
         list_revision,
         true,
         "Scheduled announcement deleted.",
+    );
+    settle_attempt(attempts, parent, &answer);
+    answer
+}
+
+/// Reconciles the sent attempt of the command `parent` (bot-handlers.ts:386-400): its own request goes again and the
+/// Bot's answer ends it, in the reconcile's words. `None` when no attempt of `parent` was sent (the command runs as a new
+/// one).
+pub async fn reconcile_over(
+    ops: &BotOperations,
+    attempts: Attempts<'_>,
+    parent: [u8; 16],
+) -> Option<Result<String, Failure>> {
+    let held = attempts.get(parent).filter(|a| a.sent)?;
+    let stage = if held.operation == DELETE {
+        "delete"
+    } else {
+        "save"
+    };
+    let result = match mutate(
+        ops,
+        attempts,
+        parent,
+        stage,
+        (held.operation, held.args.clone(), held.revision),
     )
+    .await
+    {
+        Ok(result) => result,
+        Err(f) => return Some(Err(f)),
+    };
+    let answer = match result.status {
+        0 if confirmed(&result, held.revision) => Ok(if held.operation == DELETE {
+            "Scheduled announcement deleted."
+        } else if held.args.first() == Some(&BotArg::Null) {
+            "Announcement scheduled."
+        } else {
+            "Announcement updated."
+        }
+        .to_owned()),
+        0 => Err(Failure::unsure(
+            "The Bot accepted the schedule change, but its revision receipt was malformed. Refresh the list before retrying.",
+        )),
+        5 => Err(Failure::unsure(
+            "The Bot reported an ambiguous schedule mutation. Retry this same attempt to reconcile it; the schedule was not resent.",
+        )),
+        4 => Err(Failure::failed(
+            "The schedule changed before saving. Refresh the announcement list and try again.",
+        )),
+        2 => Err(Failure::failed(PERMISSION)),
+        _ => Err(Failure::failed("The announcement could not be saved.")),
+    };
+    settle_attempt(attempts, parent, &answer);
+    Some(answer)
+}
+
+/// Whether the command `parent` has a schedule mutation out in `community` that may have taken effect (bot-handlers.ts
+/// :382-385: it is reconciled before anything else, and the editor's fields are locked while it is held).
+pub fn sent_attempt(
+    memory: &Mutex<CommandMemory>,
+    parent: [u8; 16],
+    community: CommunityId,
+) -> bool {
+    Attempts { memory, community }
+        .get(parent)
+        .is_some_and(|a| a.sent)
 }
 
 /// Reads the schedules and lands them in `state.bot.announcements`.
@@ -536,10 +677,15 @@ impl Bot {
         list_revision: u64,
     ) -> Result<String, Failure> {
         let ops = self.announcement_operations(community);
+        let memory = self.memory();
         let (existing, s) = (existing.cloned(), s.clone());
         let answer = self
             .run_mutation(async move {
-                save_over(&ops, parent, existing.as_ref(), &s, list_revision).await
+                let attempts = Attempts {
+                    memory: &memory,
+                    community,
+                };
+                save_over(&ops, attempts, parent, existing.as_ref(), &s, list_revision).await
             })
             .await;
         self.forget_listed(community, &answer);
@@ -555,12 +701,51 @@ impl Bot {
         list_revision: u64,
     ) -> Result<String, Failure> {
         let ops = self.announcement_operations(community);
+        let memory = self.memory();
         let row = row.clone();
         let answer = self
-            .run_mutation(async move { delete_over(&ops, parent, &row, list_revision).await })
+            .run_mutation(async move {
+                let attempts = Attempts {
+                    memory: &memory,
+                    community,
+                };
+                delete_over(&ops, attempts, parent, &row, list_revision).await
+            })
             .await;
         self.forget_listed(community, &answer);
         answer
+    }
+
+    /// Reconciles the sent schedule mutation of the command `parent` in `community` ([`reconcile_over`]); `None` when
+    /// there is none.
+    pub async fn reconcile_announcement(
+        &self,
+        community: CommunityId,
+        parent: [u8; 16],
+    ) -> Option<Result<String, Failure>> {
+        if !sent_attempt(&self.memory(), parent, community) {
+            return None;
+        }
+        let ops = self.announcement_operations(community);
+        let memory = self.memory();
+        let answer = self
+            .run_mutation(async move {
+                let attempts = Attempts {
+                    memory: &memory,
+                    community,
+                };
+                reconcile_over(&ops, attempts, parent)
+                    .await
+                    .unwrap_or_else(|| Err(Failure::unsure(MAY_HAVE_BEEN_SENT)))
+            })
+            .await;
+        self.forget_listed(community, &answer);
+        Some(answer)
+    }
+
+    /// Whether the command `parent` holds a sent schedule mutation in `community` ([`sent_attempt`]).
+    pub fn announcement_pending(&self, community: CommunityId, parent: [u8; 16]) -> bool {
+        sent_attempt(&self.memory(), parent, community)
     }
 
     /// What the chips hold of `community`'s schedules goes once a save or a deletion may have changed them (it was
@@ -693,6 +878,82 @@ mod tests {
             minute: 0,
             weekday: 3,
         }
+    }
+
+    fn attempts(memory: &Mutex<CommandMemory>) -> Attempts<'_> {
+        Attempts {
+            memory,
+            community: COMMUNITY,
+        }
+    }
+
+    /// Task 30 (bot-handlers.ts:107-137, :386-400): a sent attempt is reconciled by its own request, in the reconcile's
+    /// words; an attempt bound to another revision is not replaced; a refusal takes the attempt away.
+    #[test]
+    fn a_sent_attempt_is_reconciled_by_its_own_request() {
+        let empty = Value::Array(vec![]).encode();
+        let memory = Mutex::default();
+        let none = Script::new(vec![]);
+        let ops = BotOperations::new(COMMUNITY, none.clone());
+        assert_eq!(run(reconcile_over(&ops, attempts(&memory), [4; 16])), None);
+        // An ambiguous deletion is held, sent.
+        let script = Script::new(vec![
+            Ok(refusal("E_UNAVAILABLE")),
+            Ok(refusal("E_UNAVAILABLE")),
+            Ok(answer(Some(8), vec![0xff])),
+            Ok(answer(Some(8), empty)),
+        ]);
+        let ops = BotOperations::new(COMMUNITY, script.clone());
+        let row = listed();
+        assert!(
+            run(delete_over(&ops, attempts(&memory), [4; 16], &row, 7))
+                .unwrap_err()
+                .uncertain()
+        );
+        // A save of the same command at another revision is refused before anything is sent.
+        let other = run(save_over(
+            &ops,
+            attempts(&memory),
+            [4; 16],
+            None,
+            &schedule(),
+            9,
+        ))
+        .unwrap_err();
+        assert!(other.uncertain());
+        assert_eq!(
+            other.text,
+            "This announcement attempt is bound to a different schedule revision. Reconcile it before starting another command."
+        );
+        let reconcile = || run(reconcile_over(&ops, attempts(&memory), [4; 16])).unwrap();
+        let ambiguous = reconcile().unwrap_err();
+        assert!(ambiguous.uncertain());
+        assert!(
+            ambiguous
+                .text
+                .starts_with("The Bot reported an ambiguous schedule mutation.")
+        );
+        let malformed = reconcile().unwrap_err();
+        assert!(
+            malformed
+                .text
+                .starts_with("The Bot accepted the schedule change, but its revision receipt")
+        );
+        assert_eq!(
+            reconcile(),
+            Ok("Scheduled announcement deleted.".to_owned())
+        );
+        assert!(!sent_attempt(&memory, [4; 16], COMMUNITY));
+        let sent = script.sent.lock().unwrap();
+        assert_eq!(sent.len(), 4, "the refused save sent nothing");
+        assert!(sent.iter().all(|c| c.request_id == sent[0].request_id));
+        assert!(sent.iter().all(|c| c.args == sent[0].args));
+        drop(sent);
+        // A refusal on the first send takes the attempt away.
+        let refused = Script::new(vec![Ok(refusal("E_CONFLICT"))]);
+        let ops = BotOperations::new(COMMUNITY, refused);
+        run(delete_over(&ops, attempts(&memory), [5; 16], &row, 7)).unwrap_err();
+        assert!(!sent_attempt(&memory, [5; 16], COMMUNITY));
     }
 
     fn listed() -> ScheduleRow {
@@ -838,15 +1099,36 @@ mod tests {
             Ok(answer(Some(8), empty)),
         ]);
         let ops = BotOperations::new(COMMUNITY, script.clone());
-        let first = run(save_over(&ops, [4; 16], None, &schedule(), 7)).expect_err("ambiguous");
+        let memory = Mutex::default();
+        let first = run(save_over(
+            &ops,
+            attempts(&memory),
+            [4; 16],
+            None,
+            &schedule(),
+            7,
+        ))
+        .expect_err("ambiguous");
         assert!(first.uncertain());
         assert!(
             first
                 .text
                 .starts_with("The Bot reported an ambiguous schedule save.")
         );
-        let second = run(save_over(&ops, [4; 16], None, &schedule(), 7));
+        assert!(sent_attempt(&memory, [4; 16], COMMUNITY), "kept, sent");
+        // Task 30: the resend carries the stored attempt, whatever this run's schedule says.
+        let mut changed = schedule();
+        changed.text = "changed".into();
+        let second = run(save_over(
+            &ops,
+            attempts(&memory),
+            [4; 16],
+            None,
+            &changed,
+            7,
+        ));
         assert_eq!(second, Ok("Announcement scheduled.".to_owned()));
+        assert!(!sent_attempt(&memory, [4; 16], COMMUNITY), "settled");
         let sent = script.sent.lock().unwrap();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[0].request_id, sent[1].request_id);
@@ -871,7 +1153,15 @@ mod tests {
         let save = |answers: Vec<Result<SealedAnswer, SendError>>,
                     existing: Option<&ScheduleRow>| {
             let ops = BotOperations::new(COMMUNITY, Script::new(answers));
-            run(save_over(&ops, [4; 16], existing, &schedule(), 7))
+            let memory = Mutex::default();
+            run(save_over(
+                &ops,
+                attempts(&memory),
+                [4; 16],
+                existing,
+                &schedule(),
+                7,
+            ))
         };
         assert_eq!(
             save(vec![Ok(answer(Some(8), empty.clone()))], Some(&listed())),
@@ -912,7 +1202,8 @@ mod tests {
         let delete = |answers: Vec<Result<SealedAnswer, SendError>>| {
             let script = Script::new(answers);
             let ops = BotOperations::new(COMMUNITY, script.clone());
-            let r = run(delete_over(&ops, [4; 16], &row, 7));
+            let memory = Mutex::default();
+            let r = run(delete_over(&ops, attempts(&memory), [4; 16], &row, 7));
             (r, script.sent.lock().unwrap().clone())
         };
         let (done, sent) = delete(vec![Ok(answer(Some(8), empty.clone()))]);

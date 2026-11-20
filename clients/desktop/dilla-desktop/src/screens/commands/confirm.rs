@@ -9,7 +9,7 @@
 //! [`Bot::moderate`]: dilla_client::features::bot::Bot::moderate
 
 use dilla_client::Client;
-use dilla_client::features::bot::{Ask, Builtin, ModAction, Moderation, ModerationTexts};
+use dilla_client::features::bot::{Ask, Attempt, Builtin, ModAction, Moderation, ModerationTexts};
 use dilla_client::state::bot::Conversation;
 use gpui::{AnyElement, App, IntoElement, ParentElement, Styled, Window, div, px};
 
@@ -50,6 +50,8 @@ pub struct AskingBuiltin {
     pub run: Builtin,
     /// The command's pending private row (0 without a client).
     pub row: u64,
+    /// The run's request id and draft (Task 30): what its answer settles in the command memory.
+    pub attempt: Attempt,
     pub conversation: Conversation,
     pub client: Option<std::rc::Rc<Client>>,
 }
@@ -84,6 +86,7 @@ pub fn answer_builtin(window: gpui::WindowId, choice: Option<bool>, cx: &mut App
         super::builtins::run(
             asking.run,
             asking.row,
+            asking.attempt,
             asking.conversation,
             &ctx,
             window,
@@ -369,6 +372,11 @@ mod tests {
                             msg: MessageId([2; 16]),
                         },
                         row: 1,
+                        attempt: Attempt {
+                            request: [1; 16],
+                            invocation: String::new(),
+                            text: String::new(),
+                        },
                         conversation: Conversation {
                             channel,
                             thread: None,
