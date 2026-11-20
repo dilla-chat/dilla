@@ -668,10 +668,23 @@ mod tests {
             chips: Some(chips.clone()),
             ..PickerState::default()
         };
+        let offered = chips::Offered {
+            title: "member",
+            items: vec![chips::Suggestion {
+                label: "Bjornsson".to_owned(),
+                value: "Bjornsson".to_owned(),
+                sub: "@bjornsson".to_owned(),
+                icon: dilla_desktop_ui::IconName::User,
+                avatar: Some("Bjornsson".to_owned()),
+            }],
+            can_accept: true,
+            enter_accepts: true,
+        };
         for shown in [
             format!("{chips:?}"),
             format!("{picker:?}"),
             format!("{picker:#?}"),
+            format!("{offered:?}").to_lowercase(),
         ] {
             assert!(!shown.contains("Bjornsson"), "a name");
             assert!(!shown.contains("secret"), "a reason");

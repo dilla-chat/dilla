@@ -214,6 +214,7 @@ mod tests {
         };
         let banned = format!("{:?}", UserId([2; 16]));
         let timed_out = format!("{:?}", UserId([3; 16]));
+        let banner = format!("{:?}", UserId([1; 16]));
         for shown in [
             format!("{ban:?}"),
             format!("{ban:#?}"),
@@ -226,6 +227,7 @@ mod tests {
                 !shown.contains(&banned) && !shown.contains(&timed_out),
                 "a person's id"
             );
+            assert!(!shown.contains(&banner), "the banning moderator's id");
         }
     }
 }

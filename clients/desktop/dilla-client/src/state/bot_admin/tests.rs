@@ -24,6 +24,10 @@ fn a_moderation_case_keeps_its_reason_excerpt_and_actor_out_of_debug() {
     for shown in [format!("{case:?}"), format!("{page:#?}")] {
         assert!(!shown.contains("secret"), "reason or excerpt");
         assert!(!shown.contains(&"a".repeat(32)), "the actor");
+        assert!(
+            !shown.contains(&"m".repeat(32)) && !shown.contains(&"c".repeat(32)),
+            "the message and channel the case is tied to"
+        );
     }
 }
 

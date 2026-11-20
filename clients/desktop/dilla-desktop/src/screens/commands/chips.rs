@@ -223,8 +223,9 @@ pub const WHEN_SUGGESTIONS: [&str; 5] = [
 /// CommandPicker.tsx `MAX_SUGGESTIONS`.
 pub const MAX_SUGGESTIONS: usize = 6;
 
-/// One suggestion (`Sug`): what its row shows, and what a pick puts in the field (its label, or a command's id).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One suggestion (`Sug`): what its row shows, and what a pick puts in the field (its label, or a command's id). Its
+/// Debug gives the lengths only: a `/ban` or `/warn` member field suggests the members it could act on.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Suggestion {
     pub label: String,
     pub value: String,
@@ -232,6 +233,19 @@ pub struct Suggestion {
     pub icon: IconName,
     /// A member suggestion's name: its row draws that member's avatar.
     pub avatar: Option<String>,
+}
+
+impl std::fmt::Debug for Suggestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Suggestion({}, {}, {} bytes, avatar: {})",
+            self.label.len(),
+            self.value.len(),
+            self.sub.len(),
+            self.avatar.is_some()
+        )
+    }
 }
 
 /// The suggestions of the active field.

@@ -637,12 +637,19 @@ impl ModAction {
     }
 }
 
-/// A member [`moderation_target`] names: their id, the name to show and their username.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A member [`moderation_target`] names: their id, the name to show and their username. Its Debug names none of them:
+/// the member a moderation command acts on is moderation content.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Target {
     pub user: crate::state::UserId,
     pub name: String,
     pub username: String,
+}
+
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Target").finish_non_exhaustive()
+    }
 }
 
 /// builtin.ts `eligibleModerationTarget` read once for a community: this account's permission for the action and its
@@ -2035,6 +2042,74 @@ mod tests {
         }
         // The question is still listed, by its lengths ("Delete this message?" is 20 bytes).
         assert!(format!("{plan:?}").contains("Ask(20 bytes"));
+    }
+
+    /// R20 round 1: every moderation built-in, and a moderation target, print neither the member's id nor their name
+    /// (one case per variant, so re-adding either to any arm fails here).
+    #[test]
+    fn each_moderation_builtin_keeps_its_member_out_of_debug() {
+        let (community, user) = (CommunityId([7; 16]), crate::state::UserId([2; 16]));
+        let name = || "Bjornsson".to_owned();
+        let cases = [
+            (
+                "Timeout",
+                Builtin::Timeout {
+                    community,
+                    user,
+                    name: name(),
+                    seconds: 600,
+                },
+            ),
+            (
+                "Untimeout",
+                Builtin::Untimeout {
+                    community,
+                    user,
+                    name: name(),
+                },
+            ),
+            (
+                "UntimeoutConfirmed",
+                Builtin::UntimeoutConfirmed {
+                    community,
+                    user,
+                    name: name(),
+                },
+            ),
+            (
+                "Warn",
+                Builtin::Warn {
+                    community,
+                    user,
+                    name: name(),
+                    reason: "secret-reason".into(),
+                },
+            ),
+            (
+                "Unban",
+                Builtin::Unban {
+                    community,
+                    user,
+                    name: name(),
+                },
+            ),
+        ];
+        let id = format!("{user:?}");
+        for (variant, b) in cases {
+            for shown in [format!("{b:?}"), format!("{b:#?}")] {
+                assert!(shown.starts_with(variant), "{variant}: the variant shows");
+                assert!(!shown.contains(&id), "{variant}: the member's id");
+                assert!(!shown.contains("Bjornsson"), "{variant}: the member's name");
+                assert!(!shown.contains("secret"), "{variant}: the reason");
+            }
+        }
+        let target = Target {
+            user,
+            name: name(),
+            username: "bjornsson".into(),
+        };
+        let shown = format!("{target:?}");
+        assert!(!shown.contains(&id) && !shown.to_lowercase().contains("bjornsson"));
     }
 
     /// R20: a checked kick or ban, its private row's copy and the row itself name neither the member nor the reason.

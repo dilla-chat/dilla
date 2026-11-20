@@ -1972,6 +1972,8 @@ mod tests {
             assert!(shown.contains("Ban"), "the kind shows");
             assert!(!shown.contains("Bjornsson"), "a name");
             assert!(!shown.contains(&user), "the member's id");
+            assert!(!shown.contains("Midgard"), "the server's name");
+            assert!(!shown.contains("9, 9"), "the request id");
         }
     }
 
