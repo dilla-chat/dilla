@@ -437,7 +437,9 @@ async fn mutate(
         }
         // No answer, an accepted answer that cannot be read (R30), or any other throw: the attempt is sent and stays,
         // as the web's handler answers uncertain for a sent attempt (:452-457).
-        OpError::Uncertain { .. } | OpError::Invalid => Failure::unsure(MAY_HAVE_BEEN_SENT),
+        OpError::Uncertain { .. } | OpError::Unreadable { .. } | OpError::Invalid => {
+            Failure::unsure(MAY_HAVE_BEEN_SENT)
+        }
     })
 }
 

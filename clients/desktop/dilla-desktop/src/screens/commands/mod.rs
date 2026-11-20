@@ -92,8 +92,17 @@ pub struct PickerState {
     /// taken only while it holds the focus.
     pub composer: Option<gpui::WeakFocusHandle>,
     /// A command draft to show again in the composer of its conversation (Task 30: its run's answer was uncertain,
-    /// CommandHost.tsx:293-296); the composer takes it as it draws ([`take_reopen`]).
-    pub reopen: Option<(Conversation, String)>,
+    /// CommandHost.tsx:293-296); the composer takes it as it draws ([`take_reopen`]), and only for the client that ran it.
+    pub reopen: Option<Reopen>,
+}
+
+/// An uncertain run's draft, for the composer of `at` in a window of the client numbered `client` (`Client::serial`,
+/// `None` in a fixture). A composer of another client (another session, or none after a sign-out) never takes it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Reopen {
+    pub client: Option<u64>,
+    pub at: Conversation,
+    pub text: String,
 }
 
 impl std::fmt::Debug for PickerState {
@@ -105,10 +114,7 @@ impl std::fmt::Debug for PickerState {
             .field("rows", &self.rows.as_ref().map(Vec::len))
             .field("picked", &self.picked)
             .field("chips", &self.chips)
-            .field(
-                "reopen_len",
-                &self.reopen.as_ref().map(|(_, text)| text.len()),
-            )
+            .field("reopen_len", &self.reopen.as_ref().map(|r| r.text.len()))
             .finish_non_exhaustive()
     }
 }
@@ -160,22 +166,39 @@ pub fn draft_changed(window: gpui::WindowId, draft: &str, cx: &mut App) {
 
 /// An uncertain run's draft goes back into `window`'s composer (CommandHost.tsx:293-296), while the window still shows
 /// `at` (`isCurrent()`): the composer takes it as it next draws ([`take_reopen`]), and the picker opens on it. A window
-/// that moved on leaves it to the command memory, which the composer reads when it comes back to `at`.
-pub fn reopen(window: gpui::WindowId, at: Conversation, text: String, cx: &mut App) {
+/// that moved on leaves it to the command memory, which the composer reads when it comes back to `at`. `client` is the
+/// serial of the client that ran it (`None` in a fixture): only its composer takes the draft.
+pub fn reopen(
+    window: gpui::WindowId,
+    client: Option<u64>,
+    at: Conversation,
+    text: String,
+    cx: &mut App,
+) {
     if crate::screens::threads::channel_of(window, cx).is_some_and(|c| c != at.channel) {
         return;
     }
-    picker_state_mut(window, cx).reopen = Some((at, text));
+    picker_state_mut(window, cx).reopen = Some(Reopen { client, at, text });
     cx.refresh_windows();
 }
 
-/// The draft [`reopen`] left for `at` in `window`, once.
-pub fn take_reopen(window: gpui::WindowId, at: Conversation, cx: &mut App) -> Option<String> {
+/// The draft [`reopen`] left for `at` in `window`, once, for the composer of the client numbered `client`. A draft left
+/// for another client is dropped unread (a late answer of a released session never reaches the next one).
+pub fn take_reopen(
+    window: gpui::WindowId,
+    client: Option<u64>,
+    at: Conversation,
+    cx: &mut App,
+) -> Option<String> {
     let state = picker_state_mut(window, cx);
-    if state.reopen.as_ref().is_none_or(|(c, _)| *c != at) {
-        return None;
+    match &state.reopen {
+        Some(r) if r.client != client => {
+            state.reopen = None;
+            None
+        }
+        Some(r) if r.at == at => state.reopen.take().map(|r| r.text),
+        _ => None,
     }
-    state.reopen.take().map(|(_, text)| text)
 }
 
 /// The run of `draft` in `at` (CommandHost.tsx:243-246): the request id the client's command memory remembers for the
@@ -208,8 +231,12 @@ pub fn with_memory<T>(
 
 /// [`bot::Bot::settle`] from the window's own thread: an uncertain run's draft is offered back to `window`'s composer at
 /// once ([`reopen`]) instead of waiting for the composer to find it in the memory.
+///
+/// Only while `window` still runs `client` (`create::windows_of`: a sign-out or a Forget releases it first, and a late
+/// answer of a released session must never put its decrypted draft back for whoever uses the window next), and shows
+/// `at`; else the memory keeps it for when that client's composer comes back there, and goes with it at sign-out.
 pub fn settle(
-    client: &dilla_client::Client,
+    client: &std::rc::Rc<dilla_client::Client>,
     window: gpui::WindowId,
     (at, row): (Conversation, u64),
     attempt: &bot::Attempt,
@@ -218,15 +245,25 @@ pub fn settle(
 ) {
     let uncertain = matches!(outcome, bot::Outcome::Uncertain(_));
     client.bot().settle(at, row, attempt, outcome);
-    // Only while the window shows `at`: else the memory keeps it for when the composer comes back there.
-    let here = crate::screens::threads::channel_of(window, cx).is_none_or(|c| c == at.channel);
     if uncertain
-        && here
+        && session_shows(client, window, at, cx)
         && let Some(text) = with_memory(client, |m| m.take_reopen(at))
     {
-        reopen(window, at, text, cx);
+        reopen(window, Some(client.serial()), at, text, cx);
     }
     cx.refresh_windows();
+}
+
+/// Whether `window` still runs `client` (it was not released: sign-out, Forget) and does not show a conversation other
+/// than `at`.
+fn session_shows(
+    client: &std::rc::Rc<dilla_client::Client>,
+    window: gpui::WindowId,
+    at: Conversation,
+    cx: &mut App,
+) -> bool {
+    crate::screens::create::windows_of(client, cx).contains(&window)
+        && crate::screens::threads::channel_of(window, cx).is_none_or(|c| c == at.channel)
 }
 
 /// The zone and locale times are drawn in: UTC under a fixture's frozen clock (the references are shot in UTC), else

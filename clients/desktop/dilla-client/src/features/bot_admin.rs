@@ -180,8 +180,22 @@ pub enum OpError {
     Refused { code: String, request_id: [u8; 16] },
     #[error("the Bot did not answer in time")]
     Uncertain { request_id: [u8; 16] },
+    /// The Bot took the request and answered 200, but its answer cannot be read (Task 30, R30). A mutation reads it as
+    /// [`OpError::Uncertain`]: it may have acted. A read (the provider status) reads it as unavailable, as the web does.
+    #[error("the Bot's answer could not be read")]
+    Unreadable { request_id: [u8; 16] },
     #[error("invalid Bot request")]
     Invalid,
+}
+
+impl OpError {
+    /// The request that may have taken effect: no answer in time, or an accepted answer that cannot be read.
+    pub fn uncertain_request(&self) -> Option<[u8; 16]> {
+        match self {
+            Self::Uncertain { request_id } | Self::Unreadable { request_id } => Some(*request_id),
+            Self::Refused { .. } | Self::Invalid => None,
+        }
+    }
 }
 
 /// The v1 argument positions that hold an id (sent as 16 bytes when given as hex).
@@ -210,16 +224,15 @@ fn status_of_code(code: &str) -> Option<u8> {
 }
 
 /// `appOperationAnswer`: 200 `[revision, data, extra?]`, or a refusal's v1 status. A 200 whose body cannot be read is
-/// uncertain (Task 30, R30): the Bot took the request and may have acted, so a mutation keeps its attempt and request id
-/// for the resend, as the web's decode throw is no `BotOperationRefusedError` (operations.ts:64-145). A read that gets
-/// it is retried as one that got no answer.
+/// [`OpError::Unreadable`] (Task 30, R30): the Bot took the request and may have acted, so a mutation keeps its attempt
+/// and request id for the resend, as the web's decode throw is no `BotOperationRefusedError` (operations.ts:64-145).
 fn app_answer(request_id: [u8; 16], answer: &SealedAnswer) -> Result<BotResult, OpError> {
     let refused = |code: &str| OpError::Refused {
         code: code.to_owned(),
         request_id,
     };
     if answer.status == 200 {
-        let unreadable = || OpError::Uncertain { request_id };
+        let unreadable = || OpError::Unreadable { request_id };
         let value = Value::decode(&answer.body).map_err(|_| unreadable())?;
         let f = value.as_array().ok_or_else(unreadable)?;
         if !(2..=3).contains(&f.len()) {
@@ -1131,6 +1144,7 @@ impl BotAdmin {
                     _ => ProviderStatusState::Unavailable,
                 },
                 Ok(_) => ProviderStatusState::Unavailable,
+                // Only no answer in time is partial (MusicProviderStatus.tsx:46): an unreadable one is unavailable.
                 Err(OpError::Uncertain { .. }) => ProviderStatusState::Partial,
                 Err(_) => ProviderStatusState::Unavailable,
             };
@@ -1287,7 +1301,9 @@ fn wipe_values(items: &mut [Value]) {
 fn op_err(e: OpError) -> ClientError {
     match e {
         OpError::Refused { code, .. } => ClientError::Sync(clean_code(&code)),
-        OpError::Uncertain { .. } => ClientError::Sync("E_BOT_UNCERTAIN".to_owned()),
+        OpError::Uncertain { .. } | OpError::Unreadable { .. } => {
+            ClientError::Sync("E_BOT_UNCERTAIN".to_owned())
+        }
         OpError::Invalid => ClientError::Sync("E_ROUTE_INPUT".to_owned()),
     }
 }
@@ -1342,7 +1358,9 @@ fn welcome_answer(op: u64, r: BotResult) -> WelcomeAnswer {
 fn welcome_outcome(op: u64, r: Result<BotResult, OpError>) -> Result<WelcomeAnswer, OpError> {
     match r {
         Ok(result) => Ok(welcome_answer(op, result)),
-        Err(OpError::Uncertain { request_id }) => Ok(WelcomeAnswer::Uncertain { request_id }),
+        Err(OpError::Uncertain { request_id } | OpError::Unreadable { request_id }) => {
+            Ok(WelcomeAnswer::Uncertain { request_id })
+        }
         Err(e) => Err(e),
     }
 }
@@ -1387,7 +1405,9 @@ pub async fn retry_welcome(
     match ops.read(request_id, operation).await {
         Ok(Some(r)) => Ok(welcome_answer(operation, r)),
         Ok(None) => Ok(WelcomeAnswer::Failed),
-        Err(OpError::Uncertain { request_id }) => Ok(WelcomeAnswer::Uncertain { request_id }),
+        Err(OpError::Uncertain { request_id } | OpError::Unreadable { request_id }) => {
+            Ok(WelcomeAnswer::Uncertain { request_id })
+        }
         Err(e) => Err(e),
     }
 }
@@ -1793,7 +1813,7 @@ mod tests {
         ] {
             assert_eq!(
                 app_answer(id, &SealedAnswer { status: 200, body }),
-                Err(OpError::Uncertain { request_id: id })
+                Err(OpError::Unreadable { request_id: id })
             );
         }
         let refused = SealedAnswer {

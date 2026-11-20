@@ -1915,3 +1915,551 @@ fn the_composer_opens_the_announcement_editor() {
     );
     app.wait_for("bot-result-failed", Duration::from_secs(5));
 }
+
+// ---- Task 30: an uncertain command keeps its request id, and a resend reconciles (dillad) ----
+
+/// The last private row of `conversation` once it settled (not Pending), after `sent` rows in all.
+fn settled_row(
+    client: &dilla_client::Client,
+    conversation: dilla_client::state::bot::Conversation,
+    sent: usize,
+    cx: &mut gpui::VisualTestContext,
+    drive: &mut dyn FnMut(&mut gpui::VisualTestContext),
+) -> (dilla_client::state::bot::ResultStatus, String) {
+    use dilla_client::state::bot::ResultStatus;
+    for _ in 0..1200 {
+        cx.run_until_parked();
+        drive(cx);
+        let state = client.state().borrow().clone();
+        let rows = state.bot.results(&conversation);
+        if rows.len() == sent
+            && let Some(last) = rows.last()
+            && last.status != ResultStatus::Pending
+        {
+            return (last.status, last.text.clone());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("the row never settled");
+}
+
+/// Task 30 (builtin.ts:217-243, :256, :267; CommandHost.tsx:243-307), against dillad: the draft of a run whose answer was
+/// uncertain is the same request when it is sent again.
+/// - `/timeout`: a request that already went out asks nothing again and is never sent again; the member's timeout is
+///   read, and the expiry this attempt asked for settles it. Another expiry is uncertain, and its draft is kept to reopen.
+/// - `/warn`: the resend carries the remembered request id, so the instance answers the warning it already recorded.
+/// - Fix round 2 (I3): a reopen is only for the session that ran the command: another account's composer never takes it,
+///   and an answer that lands after the client was released (sign-out) puts nothing back in the window.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn an_uncertain_timeout_or_warn_resend_reconciles_under_its_request(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::memory::TimeoutAttempt;
+    use dilla_client::features::bot::{self, Outcome, Plan};
+    use dilla_client::features::moderation;
+    use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
+    use dilla_client::state::{CommunityId, UserId};
+    use dilla_desktop::screens::commands::{self, SendDecision, builtins, confirm};
+    use dilla_desktop::screens::create;
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t30-replay", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t30-replay"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t30-replay"));
+    let c = CommunityId(world::community(&host, &ada, "Midgard", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let within = Duration::from_secs(30);
+    let bea_id = UserId(bea.user_id);
+    let client = Rc::new(rt.block_on(world::start(&ada)));
+    let general = rt
+        .block_on(async {
+            world::wait_for(&client, within, "both members", |s| {
+                s.members.get(&c).is_some_and(|m| m.len() == 2)
+            })
+            .await;
+            client.roles().load_access(c).await.unwrap();
+            world::wait_for(&client, within, "access, #general", |s| {
+                s.roles.access_of(c).loaded && s.channel_named(c, "general").is_some()
+            })
+            .await
+        })
+        .channel_named(c, "general")
+        .unwrap()
+        .id;
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, cx| {
+        // The shell attaches its client to its window as it starts.
+        create::attach(window, client.clone(), Rc::new(|_, _, _| {}), cx);
+        window.window_handle().window_id()
+    });
+    let at = Conversation {
+        channel: general,
+        thread: None,
+    };
+    let ctx = SlotCx {
+        state: client.state().borrow().clone(),
+        client: Some(client.clone()),
+        community: Some(c),
+        channel: Some(general),
+        ..SlotCx::default()
+    };
+    let key = |draft: &str| {
+        bot::invocation_key(&ctx.state, Some(c), draft).unwrap_or_else(|| {
+            panic!(
+                "{draft}: {:?}",
+                bot::plan_in(&ctx.state, Some(c), Some(general), draft)
+            )
+        })
+    };
+    let none = &mut |_: &mut gpui::VisualTestContext| {};
+    let mut sent = 0;
+
+    // /timeout: the first send went out and its answer was lost (uncertain): the attempt and the draft are remembered.
+    let timeout = format!("/timeout user:{} duration:10m", bea_id.hex());
+    let request = [0x30; 16];
+    let expires = moderation::now_s() + 600;
+    rt.block_on(
+        client
+            .moderation()
+            .timeout_for(c, bea_id, request, Some(expires)),
+    )
+    .expect("the first send");
+    let held = |expires| TimeoutAttempt {
+        community: c,
+        user: bea_id,
+        expires,
+        seconds: 600,
+        settled: false,
+    };
+    commands::with_memory(&client, |m| {
+        m.timeouts.begin(request, held(expires)).unwrap();
+        m.uncertain(at, &timeout, request, &key(&timeout));
+    });
+    assert_eq!(
+        vcx.update(|_, cx| commands::on_send(&ctx, &timeout, &|t| t.to_owned(), window, cx)),
+        SendDecision::Handled
+    );
+    sent += 1;
+    assert!(
+        !vcx.update(|_, cx| confirm::is_open(window, cx)),
+        "a sent request asks nothing again"
+    );
+    let (status, text) = settled_row(&client, at, sent, vcx, none);
+    assert_eq!(status, ResultStatus::Success, "{text}");
+    assert!(text.ends_with(" was timed out."), "{text}");
+    assert_eq!(
+        rt.block_on(client.moderation().timeout_of(c, bea_id))
+            .unwrap(),
+        Some(expires),
+        "read, never sent again"
+    );
+    // Another expiry than this attempt's: uncertain, nothing sent, and the draft kept to reopen.
+    commands::with_memory(&client, |m| {
+        m.timeouts.begin(request, held(expires + 7)).unwrap();
+        m.uncertain(at, &timeout, request, &key(&timeout));
+    });
+    assert_eq!(
+        vcx.update(|_, cx| commands::on_send(&ctx, &timeout, &|t| t.to_owned(), window, cx)),
+        SendDecision::Handled
+    );
+    sent += 1;
+    let (status, text) = settled_row(&client, at, sent, vcx, none);
+    assert_eq!(status, ResultStatus::Failed);
+    assert!(
+        text.starts_with("The current timeout differs from this attempt."),
+        "{text}"
+    );
+    assert_eq!(
+        commands::with_memory(&client, |m| m.take_reopen(at)),
+        Some(timeout.clone()),
+        "the uncertain draft is kept to reopen"
+    );
+
+    // /warn: the first send was recorded, its answer lost; the resend carries the remembered request id.
+    let warn = format!("/warn user:{} reason:spam", bea_id.hex());
+    let request = [0x31; 16];
+    let first = rt
+        .block_on(client.moderation().warn(c, bea_id, request, "spam"))
+        .expect("the first send");
+    commands::with_memory(&client, |m| m.uncertain(at, &warn, request, &key(&warn)));
+    assert_eq!(
+        vcx.update(|_, cx| commands::on_send(&ctx, &warn, &|t| t.to_owned(), window, cx)),
+        SendDecision::Handled
+    );
+    assert!(vcx.update(|_, cx| confirm::is_open(window, cx)), "it asks");
+    // The question is answered by its dialog, which this window does not draw: its run is what a confirmation runs.
+    vcx.update(|_, cx| confirm::answer_builtin(window, None, cx));
+    let Plan::Builtin { run, .. } = bot::plan_in(&ctx.state, Some(c), Some(general), &warn) else {
+        panic!("/warn plans a built-in");
+    };
+    let attempt = commands::attempt_of(&ctx, at, &warn);
+    assert_eq!(attempt.request, request, "the remembered request id");
+    let row = client.bot().add_result(
+        at,
+        ResultStatus::Pending,
+        "/warn…".into(),
+        ResultProvider::Builtin,
+    );
+    vcx.update(|window, cx| {
+        builtins::run(
+            run,
+            row,
+            attempt.clone(),
+            at,
+            &ctx,
+            window.window_handle().window_id(),
+            cx,
+        );
+    });
+    let (status, text) = settled_row(&client, at, sent + 1, vcx, none);
+    assert_eq!(status, ResultStatus::Success, "{text}");
+    assert!(text.ends_with(" was warned."), "{text}");
+    let again = rt
+        .block_on(client.moderation().warn(c, bea_id, request, "spam"))
+        .expect("the same request");
+    assert_eq!(
+        again.action_id, first.action_id,
+        "one warning: the instance answered the request it recorded"
+    );
+
+    // I3: the window's reopen is this session's only. Another account's composer never takes it, and drops it.
+    let other = rt.block_on(world::start(&bea));
+    vcx.update(|_, cx| {
+        commands::settle(
+            &client,
+            window,
+            (at, row),
+            &attempt,
+            Outcome::Uncertain("x".into()),
+            cx,
+        );
+        assert!(
+            commands::picker_state(window, cx).reopen.is_some(),
+            "the session that ran it is handed its draft"
+        );
+        assert_eq!(
+            commands::take_reopen(window, Some(other.serial()), at, cx),
+            None
+        );
+        assert!(
+            commands::picker_state(window, cx).reopen.is_none(),
+            "dropped unread"
+        );
+    });
+    // An answer that lands after the sign-out released the client puts nothing back.
+    vcx.update(|_, cx| {
+        dilla_desktop::release::release_client(&client, cx);
+        commands::settle(
+            &client,
+            window,
+            (at, row),
+            &attempt,
+            Outcome::Uncertain("x".into()),
+            cx,
+        );
+        assert!(
+            commands::picker_state(window, cx).reopen.is_none(),
+            "no reopen after the release"
+        );
+        assert_eq!(
+            commands::take_reopen(window, Some(client.serial()), at, cx),
+            None,
+            "no draft for the released session either"
+        );
+    });
+    drop(ctx);
+    other.stop();
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
+
+/// Task 30 (bot-handlers.ts:382-400, UtilityCommandProvider.tsx:364-377), against dillad and its Bot: a run whose request
+/// already sent a schedule save or a poll reconciles it from the pending branch, with no editor and no form. The Bot
+/// answers the request it recorded: the schedule and the poll exist once.
+#[gpui::test]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+fn an_uncertain_schedule_or_poll_is_reconciled_from_the_pending_branch(
+    cx: &mut gpui::TestAppContext,
+) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::announcements::{
+        self, Schedule, ScheduleKind, child_id, encode_schedule,
+    };
+    use dilla_client::features::bot::memory::{AnnouncementAttempt, PollAttempt};
+    use dilla_client::features::bot::{self, Plan};
+    use dilla_client::features::bot_admin::BotArg;
+    use dilla_client::features::roles::viewer_channel_bits;
+    use dilla_client::features::server_admin::hex_id as hex;
+    use dilla_client::features::utilities::UtilityError;
+    use dilla_client::features::utilities::polls::{PollCreate, final_poll_marker};
+    use dilla_client::state::CommunityId;
+    use dilla_client::state::bot::{Conversation, ResultStatus};
+    use dilla_client::state::bot_admin::sealed_operation;
+    use dilla_desktop::screens::commands::{self, SendDecision, announcement_form, poll_form};
+    use dilla_desktop::screens::create;
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_bot_host("t30-reconcile", "127.0.0.1:0");
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(
+        &host,
+        &invite,
+        "ada",
+        "Ada",
+        "t30-reconcile",
+    ));
+    let c = CommunityId(world::community(&host, &ada, "Harbour", &[]));
+    world::clear_session(&ada);
+    let client = Rc::new(rt.block_on(world::start(&ada)));
+    rt.block_on(world::bot::enable_bot(
+        &client,
+        c.0,
+        world::bot::cap::ANNOUNCEMENTS | world::bot::cap::POLLS,
+    ));
+    let general = rt
+        .block_on(world::wait_for(
+            &client,
+            Duration::from_secs(30),
+            "#general",
+            |s| s.channel_named(c, "general").is_some(),
+        ))
+        .channel_named(c, "general")
+        .unwrap()
+        .id;
+    rt.block_on(client.bot_admin().mark_bot_channel(c, general))
+        .expect("an answer")
+        .expect("#general is marked a Bot channel");
+    let ready = |state: &dilla_client::state::AppState| {
+        matches!(
+            bot::plan_in(state, Some(c), Some(general), "/announcement list"),
+            Plan::Bot { .. }
+        ) && state.bot.catalogs.get(&c).is_some_and(|v| {
+            [50, 70].iter().all(|op| {
+                v.commands
+                    .iter()
+                    .any(|x| u64::from(x.operation) == sealed_operation(*op))
+            })
+        }) && state
+            .bot
+            .catalogs
+            .get(&c)
+            .is_some_and(|v| v.bot_user.is_some())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while !ready(&client.state().borrow()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Bot's catalog never offered announcements and polls: {:?}",
+            host.bot_refusals()
+        );
+        let _ = rt.block_on(client.bot().sync_catalog(c));
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    client.threads().set_channel_bits(
+        general,
+        viewer_channel_bits(&client.state().borrow(), general),
+    );
+    let _ = rt.block_on(client.open_channel(general));
+
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, cx| {
+        create::attach(window, client.clone(), Rc::new(|_, _, _| {}), cx);
+        window.window_handle().window_id()
+    });
+    let at = Conversation {
+        channel: general,
+        thread: None,
+    };
+    let ctx = |client: &Rc<dilla_client::Client>| SlotCx {
+        state: client.state().borrow().clone(),
+        client: Some(client.clone()),
+        community: Some(c),
+        channel: Some(general),
+        ..SlotCx::default()
+    };
+    let none = &mut |_: &mut gpui::VisualTestContext| {};
+    let mut sent = 0;
+
+    // A schedule save went out and the Bot stored it; its answer was lost, so the attempt is held as sent.
+    let schedule = Schedule {
+        channel: general,
+        text: "Harbour watch".into(),
+        kind: ScheduleKind::Daily,
+        timezone: "UTC".into(),
+        date: String::new(),
+        hour: 9,
+        minute: 0,
+        // A daily schedule carries no weekday (recurrence.go:146).
+        weekday: 0,
+    };
+    let parent = [0x40; 16];
+    let (_, list_revision) = rt
+        .block_on(client.bot().list_announcements(c, [0x41; 16]))
+        .expect("the list");
+    assert_eq!(
+        rt.block_on(
+            client
+                .bot()
+                .save_announcement(c, parent, None, &schedule, list_revision)
+        ),
+        Ok("Announcement scheduled.".to_owned()),
+        "{:?}",
+        host.bot_refusals()
+    );
+    let parent_hex = hex(&parent);
+    let document = encode_schedule(child_id(&parent_hex, "announcement:id"), &schedule, true, 1);
+    let draft = "/announcement create";
+    let key = bot::invocation_key(&ctx(&client).state, Some(c), draft).expect("an invocation");
+    commands::with_memory(&client, |m| {
+        m.keep_announcement(
+            (parent, c),
+            AnnouncementAttempt {
+                operation: announcements::SAVE,
+                request: child_id(&parent_hex, "announcement:save"),
+                args: vec![BotArg::Null, BotArg::Bytes(document)],
+                revision: list_revision,
+                sent: true,
+            },
+        );
+        m.uncertain(at, draft, parent, &key);
+    });
+    let here = ctx(&client);
+    assert_eq!(
+        vcx.update(|_, cx| commands::on_send(&here, draft, &|t| t.to_owned(), window, cx)),
+        SendDecision::Handled
+    );
+    sent += 1;
+    assert!(
+        !vcx.update(|_, cx| announcement_form::is_open(window, cx)),
+        "no editor"
+    );
+    assert_eq!(
+        settled_row(&client, at, sent, vcx, none),
+        (ResultStatus::Success, "Announcement scheduled.".to_owned()),
+        "{:?}",
+        host.bot_refusals()
+    );
+    let (rows, _) = rt
+        .block_on(client.bot().list_announcements(c, [0x42; 16]))
+        .expect("the list");
+    assert_eq!(rows.len(), 1, "the schedule exists once");
+
+    // A poll create went out and the Bot made it; its answer was lost, so the attempt is held.
+    let request = [0x50; 16];
+    let value = PollCreate {
+        channel: general.0,
+        thread: None,
+        question: "Raid on Friday?".into(),
+        answers: vec!["the bridge".into(), "the harbour".into()],
+        multi: false,
+        duration: 86_400,
+    };
+    let bot_user = client
+        .utilities()
+        .bot_identity(c)
+        .expect("the pinned Bot")
+        .user;
+    // The first create may itself be answered uncertainly (the Bot's first poll can outlast the wait): either way it
+    // is the attempt a resend of the draft reconciles.
+    let made = value.clone();
+    let first = rt.block_on(
+        client
+            .utilities()
+            .run(move |u| async move { u.create_poll(c, made, request).await }),
+    );
+    assert!(
+        matches!(first, Ok(_) | Err(UtilityError::Uncertain { .. })),
+        "{first:?}"
+    );
+    let draft = "/poll create";
+    let key = bot::invocation_key(&ctx(&client).state, Some(c), draft).expect("an invocation");
+    commands::with_memory(&client, |m| {
+        m.keep_poll(
+            request,
+            PollAttempt {
+                at,
+                community: c,
+                bot_user,
+                value: value.clone(),
+            },
+        );
+        m.uncertain(at, draft, request, &key);
+    });
+    // The draft sent again reconciles: no form, the same request. Until the Bot's post is in the conversation the
+    // answer stays uncertain (`pollPublished`) and the draft is kept, so it is sent again, as a person would.
+    let mut made = None;
+    for _ in 0..30 {
+        let here = ctx(&client);
+        assert_eq!(
+            vcx.update(|_, cx| commands::on_send(&here, draft, &|t| t.to_owned(), window, cx)),
+            SendDecision::Handled
+        );
+        sent += 1;
+        assert!(
+            !vcx.update(|_, cx| poll_form::is_open(window, cx)),
+            "no form"
+        );
+        let row = settled_row(&client, at, sent, vcx, none);
+        if row.0 == ResultStatus::Success {
+            made = Some(row);
+            break;
+        }
+        assert_eq!(
+            row,
+            (
+                ResultStatus::Failed,
+                dilla_desktop::strings::t("poll.createdUncertain").to_owned()
+            ),
+            "{:?}",
+            host.bot_refusals()
+        );
+        assert_eq!(
+            commands::attempt_of(&ctx(&client), at, draft).request,
+            request,
+            "kept"
+        );
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    assert_eq!(
+        made.map(|r| r.1),
+        Some(dilla_desktop::strings::t("poll.created").to_owned()),
+        "{:?}",
+        host.bot_refusals()
+    );
+    assert!(
+        commands::with_memory(&client, |m| m.polls.is_empty()),
+        "settled"
+    );
+    let posts = client
+        .state()
+        .borrow()
+        .timelines
+        .get(&general)
+        .map_or(0, |t| {
+            t.items
+                .iter()
+                .filter(|i| i.bot && final_poll_marker(&i.body) == Some(request))
+                .count()
+        });
+    assert_eq!(posts, 1, "the poll was made once");
+    drop(here);
+    vcx.update(|_, cx| dilla_desktop::release::release_client(&client, cx));
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}

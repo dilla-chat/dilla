@@ -539,7 +539,7 @@ impl RolePanels {
             .await;
         let result = match answer {
             Ok(r) => r,
-            Err(OpError::Uncertain { request_id }) => {
+            Err(OpError::Uncertain { request_id } | OpError::Unreadable { request_id }) => {
                 return Err(PanelError::Uncertain { request_id });
             }
             Err(OpError::Refused { code, .. }) => return Err(PanelError::Refused(code)),

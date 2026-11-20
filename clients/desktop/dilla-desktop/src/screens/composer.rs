@@ -307,13 +307,15 @@ impl Composer {
     /// Task 30 (CommandHost.tsx:293-296): a command run from this field whose answer was uncertain comes back into it, so
     /// the picker opens on the same draft and a resend is the same request. The draft the window was handed
     /// (`commands::reopen`) is taken first, else the one the command memory keeps for this conversation (an answer that
-    /// landed off the window's thread).
+    /// landed off the window's thread). Only this composer's own client's drafts: one left for another session is dropped.
     fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(channel) = self.loaded else {
             return;
         };
         let wid = window.window_handle().window_id();
-        let text = crate::screens::commands::take_reopen(wid, here(channel), cx).or_else(|| {
+        let serial = self.slots.client.as_ref().map(|c| c.serial());
+        let handed = crate::screens::commands::take_reopen(wid, serial, here(channel), cx);
+        let text = handed.or_else(|| {
             self.slots.client.as_ref().and_then(|client| {
                 crate::screens::commands::with_memory(client, |m| m.take_reopen(here(channel)))
             })
@@ -1205,8 +1207,30 @@ mod tests {
         draw(vcx);
         let w = vcx.update(|window, _| window.window_handle().window_id());
         vcx.update(|_, cx| {
+            // Fix round 2 (I3): a draft left for another session (here, a client numbered 7; this composer has none, as
+            // after a sign-out) is never shown, and is dropped.
             crate::screens::commands::reopen(
                 w,
+                Some(7),
+                Conversation {
+                    channel: a,
+                    thread: None,
+                },
+                "/warn user:other reason:secret".into(),
+                cx,
+            );
+        });
+        draw(vcx);
+        assert_eq!(composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(), "");
+        assert!(
+            vcx.update(|_, cx| crate::screens::commands::picker_state(w, cx).reopen)
+                .is_none(),
+            "dropped unread"
+        );
+        vcx.update(|_, cx| {
+            crate::screens::commands::reopen(
+                w,
+                None,
                 Conversation {
                     channel: a,
                     thread: None,

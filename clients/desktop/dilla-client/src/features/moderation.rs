@@ -728,6 +728,9 @@ async fn sealed_evidence(
         Ok(r) if r.status == 0 => Evidence::Accepted,
         Ok(r) if r.status == 1 || r.status == 2 => Evidence::Rejected,
         Ok(_) | Err(OpError::Refused { .. }) => Evidence::Pending,
+        // An answer that cannot be read is deliberately unknown (Task 30, R30): the web says `unknown` for a decode throw
+        // but `pending` for a malformed shape (manual-removal.ts:49, controller.ts:5501); here both may have been
+        // stored, and unknown is the conservative reading.
         Err(_) => Evidence::Unknown,
     }
 }

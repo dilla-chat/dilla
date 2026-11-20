@@ -225,15 +225,13 @@ pub fn retry_after(failures: usize) -> Option<Duration> {
 /// A failure that retrying cannot mend, as PollCard.tsx has it: the post is no poll this device may show (the author is
 /// not the pinned Bot), or the Bot refused the read (`botDefinitelyUnavailable`: every refusal of an operation but op 3,
 /// which includes status 5 on the poll read). Everything else is retried 2, 5 and 10 s: a read that got no answer in time
-/// (`E_BOT_TIMEOUT`), a Bot status, a record for another channel or thread, an answer that cannot be read (`Invalid`,
-/// `Payload`, an answer envelope that cannot be read: `E_BOT_ANSWER`), and a client that is stopping (`E_STOPPED`).
+/// (`E_BOT_TIMEOUT`, which an answer envelope that cannot be read also comes as: `OpError::Unreadable`), a Bot status, a
+/// record for another channel or thread, an answer whose data cannot be read (`Invalid`, `Payload`), and a client that is
+/// stopping (`E_STOPPED`).
 pub fn definitive(e: &UtilityError) -> bool {
     match e {
         UtilityError::NotAPoll => true,
-        UtilityError::Unavailable(code) => !matches!(
-            code.as_str(),
-            "E_BOT_TIMEOUT" | "E_BOT_ANSWER" | "E_STOPPED"
-        ),
+        UtilityError::Unavailable(code) => !matches!(code.as_str(), "E_BOT_TIMEOUT" | "E_STOPPED"),
         _ => false,
     }
 }
@@ -315,10 +313,14 @@ const MUTATIONS: [u64; 6] = [70, 73, 74, 80, 82, 83];
 async fn send_over(ops: &BotOperations, request: BotRequest) -> Result<BotResult, UtilityError> {
     let operation = request.operation;
     let result = ops.request(request).await.map_err(|e| match e {
-        OpError::Uncertain { request_id } if MUTATIONS.contains(&operation) => {
+        OpError::Uncertain { request_id } | OpError::Unreadable { request_id }
+            if MUTATIONS.contains(&operation) =>
+        {
             UtilityError::Uncertain { request_id }
         }
         OpError::Uncertain { .. } => UtilityError::Unavailable("E_BOT_TIMEOUT".into()),
+        // A read whose answer cannot be read: retried like one with no answer.
+        OpError::Unreadable { .. } => UtilityError::Unavailable("E_BOT_TIMEOUT".into()),
         OpError::Refused { code, .. } => UtilityError::Unavailable(code),
         OpError::Invalid => UtilityError::Payload,
     })?;
@@ -693,11 +695,12 @@ mod tests {
         assert_eq!(checks[&id(3)], PollCheck::Pending);
     }
 
-    /// An answer envelope the transport cannot decode is a plain failure in the web: retried.
+    /// An answer envelope the transport cannot decode is a plain failure in the web: retried. A read gets it as no
+    /// answer in time (`an_unreadable_create_answer_is_uncertain` reads one through the transport).
     #[test]
     fn an_unreadable_answer_envelope_is_retried() {
         assert!(!definitive(&UtilityError::Unavailable(
-            "E_BOT_ANSWER".into()
+            "E_BOT_TIMEOUT".into()
         )));
     }
 

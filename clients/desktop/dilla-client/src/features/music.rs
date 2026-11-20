@@ -393,7 +393,10 @@ impl Music {
                     }
                     return Err(MusicError::Transport(code));
                 }
-                Err(OpError::Uncertain { request_id: rid }) => {
+                Err(
+                    OpError::Uncertain { request_id: rid }
+                    | OpError::Unreadable { request_id: rid },
+                ) => {
                     return Err(MusicError::AcceptedUnconfirmed { request_id: rid });
                 }
                 Err(OpError::Invalid) => return Err(MusicError::Invalid("music request")),
@@ -689,7 +692,9 @@ impl Music {
 fn transport(e: OpError) -> MusicError {
     match e {
         OpError::Refused { code, .. } => MusicError::Transport(code),
-        OpError::Uncertain { request_id } => MusicError::AcceptedUnconfirmed { request_id },
+        OpError::Uncertain { request_id } | OpError::Unreadable { request_id } => {
+            MusicError::AcceptedUnconfirmed { request_id }
+        }
         OpError::Invalid => MusicError::Invalid("music request"),
     }
 }
