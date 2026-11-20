@@ -101,6 +101,8 @@ enum Update {
     /// A re-establishment of a refused session ended.
     Renewed(Renewal),
     Structure,
+    /// A leave or delete of this community went through ([`Inner::list_written`]).
+    ListWritten(CommunityId),
     /// A structure read ended: its start's number ([`StructureOrder::start`]) and what it read.
     Loaded(u64, Box<Loaded>),
     Focus(Option<ChannelId>),
@@ -940,6 +942,11 @@ impl Inner {
     }
 
     /// The account's upkeep (key packages, backups: [`crate::account`]).
+    /// Tells the publisher a leave or delete of `community` went through (controller.ts `listWritten`).
+    pub(crate) fn list_written(&self, community: CommunityId) {
+        let _ = self.updates.send(Update::ListWritten(community));
+    }
+
     /// The servers this account left or deleted itself, locked (a poisoned lock keeps its marks).
     pub(crate) fn self_removed(&self) -> std::sync::MutexGuard<'_, SelfRemoved> {
         self.self_removed
@@ -1381,6 +1388,13 @@ impl StructureOrder {
         self.started
     }
 
+    /// A local write of the community list (controller.ts `listWritten`): every read started so far counts as older
+    /// than it, so one still in flight is not applied over it.
+    fn written(&mut self) {
+        self.started += 1;
+        self.shown = self.started;
+    }
+
     /// Whether read `seq`'s answer is shown (no newer one is); if so, it is the one shown.
     fn lands(&mut self, seq: u64) -> bool {
         if seq <= self.shown {
@@ -1544,6 +1558,7 @@ impl Publisher {
                         }
                     }
                     Update::Structure => structure = true,
+                    Update::ListWritten(c) => self.list_written(c),
                     Update::Loaded(seq, loaded) => {
                         if self.structure.lands(seq) {
                             self.on_loaded(*loaded).await;
@@ -1929,6 +1944,16 @@ impl Publisher {
                 answers: (started, still),
             });
         });
+    }
+
+    /// controller.ts `listWritten` + `dropCommunity`: a leave or delete this account made went through. A read that
+    /// began before it is discarded (it would list the server again and clear its self-removed mark), and the server
+    /// leaves the list the next read is compared with, so it is never told as a removal.
+    fn list_written(&mut self, community: CommunityId) {
+        self.structure.written();
+        if let Some(listed) = &mut self.listed {
+            listed.remove(&community);
+        }
     }
 
     async fn on_loaded(&mut self, loaded: Loaded) {

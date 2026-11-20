@@ -1761,7 +1761,10 @@ fn end_removal(
         .end(community, failed.map(|e| e.status));
     match failed {
         Some(e) if e.status != 404 => Err(e.clone()),
-        _ => Ok(()),
+        _ => {
+            inner.list_written(community);
+            Ok(())
+        }
     }
 }
 
