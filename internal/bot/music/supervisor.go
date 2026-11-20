@@ -952,7 +952,11 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 		next.Paused = true
 		next.PositionAtMS = 0
 	}
-	revision, saveErr := s.store.Save(s.ctx, s.channel, s.revision, next)
+	// The save's notice (DeferNotice) goes out once the next track has started: the listeners' reads it sets off would
+	// otherwise run on the Bot's helper between the start's own calls (advance_notice.go).
+	saveCtx, flushNotices := withDeferredNotices(s.ctx)
+	defer flushNotices()
+	revision, saveErr := s.store.Save(saveCtx, s.channel, s.revision, next)
 	if saveErr != nil {
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
