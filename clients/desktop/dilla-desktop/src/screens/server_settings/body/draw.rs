@@ -502,6 +502,12 @@ impl Body {
             .into_any_element()
     }
 
+    /// The two dialogs reachable from a channel's Edit: the edit form and the private-channel question. The shell draws them
+    /// over the conversation for the channel row menu's Edit channel.
+    pub fn edit_dialogs(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![self.edit_dialog(window, cx), self.private_dialog(cx)]
+    }
+
     fn edit_dialog(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Dialogue::Edit(channel_id) = self.dialogue else {
             return div().into_any_element();

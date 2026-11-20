@@ -467,6 +467,11 @@ impl Body {
         }
     }
 
+    /// A dialogue is open (the shell's channel edit drops its body once this turns false).
+    pub fn dialog_open(&self) -> bool {
+        !matches!(self.dialogue, Dialogue::None)
+    }
+
     pub fn current(&self) -> ServerSection {
         self.section
     }
@@ -947,7 +952,7 @@ impl Body {
         });
     }
 
-    fn open_edit(&mut self, channel: ChannelId, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_edit(&mut self, channel: ChannelId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.state.channel(channel).cloned() else {
             return;
         };

@@ -119,7 +119,7 @@ pub const SERVER_MUTE: &str = "mute";
 pub const SERVER_MODE: &str = "mode:";
 
 /// Shell.tsx `NOTIFY_MODES`: a server's own notify mode, `default` deletes the stored value.
-const NOTIFY_MODES: [(&str, &str); 4] = [
+pub const NOTIFY_MODES: [(&str, &str); 4] = [
     ("default", "signalSettings.menu.notifyDefault"),
     ("all", "signalSettings.menu.notifyAll"),
     ("mentions", "signalSettings.menu.notifyMentions"),
@@ -143,6 +143,23 @@ pub fn server_menu_items(settings: &dyn SettingsSource, community: CommunityId) 
         MenuItem::new(format!("{SERVER_MODE}{value}"), t(key)).checked(mode == *value)
     }));
     items
+}
+
+/// A channel row menu's item id prefix (Shell.tsx `mode:`): `mode:<value>` per notify mode.
+pub const ROW_MODE: &str = "mode:";
+
+/// A channel's or DM's own notify mode in its row menu (Shell.tsx `rowMenu`): the four modes as single-choice items, the
+/// stored one checked, `default` when none is stored (the same key Settings writes).
+pub fn row_mode_items(settings: &dyn SettingsSource, channel: ChannelId) -> Vec<MenuItem> {
+    let mode = settings
+        .get(&notify::key_channel_mode(channel))
+        .unwrap_or_else(|| "default".to_owned());
+    NOTIFY_MODES
+        .iter()
+        .map(|(value, key)| {
+            MenuItem::new(format!("{ROW_MODE}{value}"), t(key)).checked(mode == *value)
+        })
+        .collect()
 }
 
 /// Whether `c` is the server's AFK channel (the built-in voice channel; the slice's state does not mark it).

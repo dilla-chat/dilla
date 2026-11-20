@@ -54,6 +54,23 @@ parity! {
     parity_shell_header_tooltip_b => "shell/header-tooltip-b",
 }
 
+/// A GPUI-only reference (`native/row-menu`): the channel row's menu with the web's items (pins, Mute, the four notify
+/// modes, Edit channel for the owner) and, after them, Mark as read and copy link, which only the desktop has (Decision
+/// D6, Jonas 2026-11-19), so the web's frame of `shell/row-menu` cannot be its reference.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_shell_row_menu() {
+    dilla_parity::screen::assert_native_screen(&fixture("shell/row-menu"), "row-menu", |app| {
+        // The row takes the focus, then the keyboard asks for its menu where the pointer is.
+        app.click("channel-general");
+        app.press("shift-f10");
+    })
+    .unwrap_or_else(|e| panic!("shell/row-menu differs from its golden shot: {e}"));
+}
+
 fn rect(app: &mut Driver, id: &str) -> dilla_parity::ElementInfo {
     app.element(id)
         .unwrap_or_else(|| panic!("`{id}` is not on screen"))

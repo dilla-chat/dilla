@@ -94,7 +94,8 @@ use crate::screens::composer::{Composer, Sent};
 use crate::screens::header::{self, AsideKind};
 use crate::screens::search::{self, Navigate, SearchEnv};
 use crate::screens::{
-    FocusNext, FocusPrevious, channel_list, dms, rail, timeline, titlebar, user_panel,
+    FocusNext, FocusPrevious, channel_list, dms, rail, server_settings, timeline, titlebar,
+    user_panel,
 };
 use crate::slots::{self, SlotCx};
 use crate::strings::{t, tf};
@@ -142,9 +143,18 @@ impl Clock {
     }
 }
 
-/// The labels of the channel row's menu that `strings.rs` has no key for (the web client's row menu holds pins, mute and
-/// edit; the Wave 1 plan's holds mark read, mute and copy link). "copy link" is `invite.copy`'s.
-const MARK_READ: &str = "Mark as read";
+/// Whether the viewer may edit `community`'s channels (Shell.tsx `canManageChannels`): the access read once it landed,
+/// the owner's say until then.
+fn can_manage_channels(state: &AppState, community: CommunityId) -> bool {
+    let access = dilla_client::state::server_admin::access_in(state, community);
+    if access.loaded {
+        return access.manage_channels;
+    }
+    state
+        .communities
+        .iter()
+        .any(|k| k.id == community && Some(k.owner) == state.account.user_id)
+}
 
 /// A pane drag in progress: where the pointer went down and the width the pane had then.
 #[derive(Clone, Copy, Debug)]
@@ -233,6 +243,12 @@ pub struct ShellView {
     controls: bool,
     /// The text channel last opened in each server: the AFK page's Come back returns there (Shell.tsx `lastText`).
     last_text: HashMap<CommunityId, ChannelId>,
+    /// The servers whose access this shell asked the client to read (Shell.tsx's worker reads it on every community select;
+    /// once per server here), so the row menu's Edit channel follows the permissions, not only the owner fallback.
+    access_asked: HashSet<CommunityId>,
+    /// The channel edit dialog a row menu's Edit channel opened: the server settings' own channel body, drawn over the
+    /// conversation (Shell.tsx `ChannelEditFlow`). Dropped when its dialog closes.
+    channel_edit: Option<Entity<server_settings::body::Body>>,
     /// The window this shell is drawn in: the voice area keeps its state per window (one per instance).
     window_id: gpui::WindowId,
     _subscriptions: Vec<Subscription>,
@@ -310,6 +326,8 @@ impl ShellView {
             aside_splitter: cx.focus_handle().tab_stop(true),
             controls: false,
             last_text: HashMap::new(),
+            access_asked: HashSet::new(),
+            channel_edit: None,
             window_id: window.window_handle().window_id(),
             _subscriptions: vec![sent],
         };
@@ -386,6 +404,10 @@ impl ShellView {
         crate::screens::voice::sync(self.window_id, state.clone(), self.client.as_ref(), cx);
         self.state = state;
         self.settle_selection(cx);
+        if let Some(body) = &self.channel_edit {
+            let (state, client) = (self.state.clone(), self.client.clone());
+            body.update(cx, |b, cx| b.sync(state, client, cx));
+        }
         if grew {
             self.pinned = true;
         }
@@ -418,6 +440,7 @@ impl ShellView {
         {
             self.community = self.state.communities.first().map(|c| c.id);
         }
+        self.read_access(cx);
         let valid = self
             .channel
             .and_then(|c| self.state.channel(c))
@@ -852,6 +875,42 @@ impl ShellView {
 
     // ---- the channel row's menu -------------------------------------------------------------------------------
 
+    /// Reads the open server's access once (controller.ts's worker does on every community select). Its result is ignored:
+    /// a failure leaves the owner fallback of [`can_manage_channels`].
+    fn read_access(&mut self, cx: &mut Context<Self>) {
+        let (Some(client), Some(community)) = (self.client.clone(), self.community) else {
+            return;
+        };
+        if dilla_client::state::server_admin::access_in(&self.state, community).loaded
+            || !self.access_asked.insert(community)
+        {
+            return;
+        }
+        let reply = client.server_admin().load_access(community);
+        cx.background_spawn(async move {
+            let _ = reply.wait().await;
+        })
+        .detach();
+    }
+
+    /// Row menu Edit channel (Shell.tsx `edit`): the channel edit dialog over the conversation.
+    fn open_channel_edit(
+        &mut self,
+        channel: ChannelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(community) = self.state.channel(channel).map(|c| c.community_id) else {
+            return;
+        };
+        let (state, client, clock) = (self.state.clone(), self.client.clone(), self.clock);
+        let body = cx.new(|cx| {
+            server_settings::body::Body::new(community, state, client, clock, window, cx)
+        });
+        body.update(cx, |b, cx| b.open_edit(channel, window, cx));
+        self.channel_edit = Some(body);
+    }
+
     fn open_menu(&mut self, channel: ChannelId, at: Point<Pixels>, cx: &mut Context<Self>) {
         self.menu = Some(ChannelMenu { channel, at });
         cx.notify();
@@ -879,15 +938,35 @@ impl ShellView {
                     MenuItem::new("pins", t("shell.pins.open")),
                     MenuItem::new("mute", t("notify.mute")).check(muted),
                 ])
+                .chain(self.row_modes(channel))
                 .collect();
         }
-        vec![
+        // Shell.tsx `rowMenu`: pins, Mute, the four notify modes, then Edit channel for managers. Mark as read and copy
+        // link are desktop only (Decision D6), after the web's items.
+        let mut items = vec![
             // Ruling X: the channel row's menu holds the pins (the header has no pin button).
             MenuItem::new("pins", t("shell.pins.open")),
-            MenuItem::new("read", MARK_READ),
             MenuItem::new("mute", t("notify.mute")).check(muted),
-            MenuItem::new("link", t("invite.copy")),
-        ]
+        ];
+        items.extend(self.row_modes(channel));
+        if self
+            .state
+            .channel(channel)
+            .is_some_and(|c| can_manage_channels(&self.state, c.community_id))
+        {
+            items.push(MenuItem::new("edit", t("admin.channel.open")));
+        }
+        items.push(MenuItem::new("read", t("shell.channels.markRead")));
+        items.push(MenuItem::new("link", t("invite.copy")));
+        items
+    }
+
+    /// The row menu's four notify modes, the stored one checked (none stored without preferences: a fixture).
+    fn row_modes(&self, channel: ChannelId) -> Vec<MenuItem> {
+        match &self.prefs {
+            Some(prefs) => channel_list::row_mode_items(prefs, channel),
+            None => channel_list::row_mode_items(&HashMap::<String, String>::new(), channel),
+        }
     }
 
     fn choose(
@@ -938,6 +1017,28 @@ impl ShellView {
                     );
                 }
             }
+            // Shell.tsx `mode:<value>` (handled before the other items): the channel's own notify mode; `default` deletes it.
+            mode if mode.starts_with(channel_list::ROW_MODE) => {
+                let mode = notify::NotifyMode::parse(&mode[channel_list::ROW_MODE.len()..]);
+                if let Some(client) = &self.client {
+                    warn(
+                        "the channel's notify mode",
+                        client.notify().set_channel_mode(channel, mode),
+                    );
+                } else if let Some(prefs) = &self.prefs {
+                    // A shell without a client (tests): the same key in the same preferences.
+                    let key = notify::key_channel_mode(channel);
+                    warn(
+                        "the channel's notify mode",
+                        match mode {
+                            Some(m) => prefs.set(&key, &m.as_str().to_owned()),
+                            None => prefs.remove(&key),
+                        },
+                    );
+                }
+            }
+            // Shell.tsx `edit`: ChannelEditFlow opens over the conversation.
+            "edit" => self.open_channel_edit(channel, window, cx),
             "link" => {
                 if let Some(community) = self.state.channel(channel).map(|c| c.community_id) {
                     let route = Route::Channel {
@@ -1586,6 +1687,14 @@ impl Render for ShellView {
                 })
                 .into_any_element(),
             );
+        }
+        // The channel edit dialog (and the private-channel question it can ask) sits over the shell until it closes.
+        if let Some(body) = self.channel_edit.clone() {
+            if body.read(cx).dialog_open() {
+                overlays.extend(body.update(cx, |b, cx| b.edit_dialogs(window, cx)));
+            } else {
+                self.channel_edit = None;
+            }
         }
         // The open palette is one of these too; a second Ctrl+K over it is ignored either way.
         self.overlay_open = !overlays.is_empty();
@@ -2361,6 +2470,107 @@ mod tests {
         let prefs = Prefs::instance(&dir);
         assert!(!notify::is_muted(&prefs, ChannelId([3; 16]), None));
         assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Shell.tsx `rowMenu`: a channel's row menu holds pins, Mute, the four notify modes, Edit channel for managers, then the
+    /// desktop-only Mark as read and copy link (Decision D6); a mode writes the channel's own key and `default` deletes it; a
+    /// DM's menu has the modes and no edit.
+    #[gpui::test]
+    fn the_row_menu_sets_the_channel_notify_mode_and_offers_edit_to_managers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::install);
+        let dir = scratch("row-menu");
+        let ch = ChannelId([3; 16]);
+        let dm = ChannelId([9; 16]);
+        let mut owned = (*world()).clone();
+        owned.account.user_id = Some(UserId([9; 16]));
+        owned.dms.list = Some(vec![dilla_client::state::dms::DmSummary {
+            id: dm,
+            kind: dilla_client::state::dms::DM_KIND_PAIR,
+            members: Vec::new(),
+            name: "Mira".into(),
+            group: ChannelGroupState::None,
+        }]);
+        let owned = Arc::new(owned);
+        let (shell, vcx) = cx.add_window_view({
+            let (state, prefs) = (owned.clone(), Prefs::instance(&dir));
+            move |window, cx| {
+                ShellView::new(
+                    state,
+                    None,
+                    None,
+                    Clock::Fixed { now: 0, utc: true },
+                    window,
+                    cx,
+                )
+                .with_prefs(prefs)
+            }
+        });
+        let ids = |s: &ShellView, c| -> Vec<String> {
+            s.menu_items(c).iter().map(|i| i.id.to_string()).collect()
+        };
+        let modes = ["mode:default", "mode:all", "mode:mentions", "mode:nothing"];
+        let with = |head: &[&str], tail: &[&str]| -> Vec<String> {
+            head.iter()
+                .chain(modes.iter())
+                .chain(tail.iter())
+                .map(|i| (*i).to_owned())
+                .collect()
+        };
+        shell.update_in(vcx, |s, window, cx| {
+            assert_eq!(
+                ids(s, ch),
+                with(&["pins", "mute"], &["edit", "read", "link"])
+            );
+            assert_eq!(
+                s.menu_items(ch)[7].label.as_ref(),
+                t("shell.channels.markRead")
+            );
+            assert_eq!(t("shell.channels.markRead"), "Mark as read");
+            assert_eq!(s.menu_items(ch)[2].checked, Some(true));
+            s.choose(ch, "mode:mentions", window, cx);
+            let prefs = Prefs::instance(&dir);
+            assert_eq!(
+                prefs
+                    .get::<String>(&notify::key_channel_mode(ch))
+                    .as_deref(),
+                Some("mentions")
+            );
+            assert_eq!(s.menu_items(ch)[4].checked, Some(true));
+            s.choose(ch, "mode:default", window, cx);
+            let prefs = Prefs::instance(&dir);
+            assert!(prefs.get::<String>(&notify::key_channel_mode(ch)).is_none());
+            assert_eq!(s.menu_items(ch)[2].checked, Some(true));
+            // A DM: the call to start (none while in it), pins, Mute and the modes; no edit, no Mark as read, no link.
+            assert_eq!(ids(s, dm), with(&["call", "pins", "mute"], &[]));
+        });
+        // A viewer who is no owner and whose access has not been read: no Edit channel.
+        let mut member = (*owned).clone();
+        member.account.user_id = Some(UserId([5; 16]));
+        let member = Arc::new(member);
+        shell.update_in(vcx, |s, _, cx| {
+            s.set_state(member.clone(), cx);
+            assert_eq!(ids(s, ch), with(&["pins", "mute"], &["read", "link"]));
+        });
+        // The same viewer once the access read says they manage channels.
+        let mut manager = (*member).clone();
+        manager.roles.access.insert(
+            CommunityId([1; 16]),
+            dilla_client::state::roles::CommunityAccess {
+                loaded: true,
+                manage_channels: true,
+                ..Default::default()
+            },
+        );
+        shell.update_in(vcx, |s, _, cx| {
+            s.set_state(Arc::new(manager), cx);
+            assert_eq!(
+                ids(s, ch),
+                with(&["pins", "mute"], &["edit", "read", "link"])
+            );
+        });
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2220] = [
+pub static STRINGS: [(&str, &str); 2221] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -1698,6 +1698,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("shell.channels.empty", "no channels you can see"),
     ("shell.channels.label", "channels"),
     ("shell.channels.loading", "loading channels…"),
+    ("shell.channels.markRead", "Mark as read"),
     ("shell.channels.rowLabel", "{name}, unread {unread}, mentions {mentions}"),
     ("shell.channels.rowLabelMuted", "{name}, muted, mentions {mentions}"),
     ("shell.code.copied", "Copied"),

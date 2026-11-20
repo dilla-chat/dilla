@@ -35,6 +35,7 @@ by eye, never by the tolerance. There is no fixture of its own for the helper: t
 | `native/quit-unsent-draft` | the same question for unsent text (`quit-dialog unsent-draft`) | `dilla-desktop::tests/quit::parity_quit_dialog_unsent_draft` |
 | `native/quit-not-responding` | "Dilla is not responding" (`quit-dialog not-responding`) | `dilla-desktop::tests/quit::parity_quit_dialog_not_responding` |
 | `native/unread-badge-b` | the northern server with "1 new" on the three channels other than the open one (`notify/unread-badge-b`). Native because the web's live-unread count for non-open channels is nondeterministic (one random pill per shoot); GPUI marks all three; Jonas 2026-11-19 | `dilla-desktop::tests/notify::parity_notify_unread_badge_b` |
+| `native/row-menu` | a channel row's menu as the owner sees it (`shell/row-menu`): the web's items, then Mark as read and copy link (desktop only, Jonas 2026-11-19) | `dilla-desktop::tests/shell::parity_shell_row_menu` |
 
 Remake them after a deliberate change with `DILLA_PARITY_BLESS=1 cargo test -p dilla-desktop --test quit parity_`, and
 look at them again before committing.
