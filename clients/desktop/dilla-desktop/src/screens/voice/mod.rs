@@ -55,6 +55,8 @@ mod m {
     /// The row's bottom margin (`--list-gap`, 1px): it stays inside the `flow-root` item, so the people start that far
     /// below the row, and the item's own bottom padding is that margin's (the list takes it back, [`channel_people`]).
     pub const PEOPLE_TOP: f32 = 1.0;
+    /// `.d-call-tile__state`'s gap between its glyph and its word (0.25rem).
+    pub const STATE_WORD_GAP: f32 = 4.0;
     /// A person's row gap.
     pub const PERSON_GAP: f32 = 8.0;
     /// The speaking ring: 2px of the sidebar between the avatar and the 1.5px `--ok` ring.
@@ -306,21 +308,43 @@ pub struct VoiceUi {
 #[cfg(feature = "test-hooks")]
 #[derive(Default)]
 struct Sim {
-    media: std::collections::BTreeSet<DeviceId>,
+    /// In the call group's roster.
+    roster: std::collections::BTreeSet<DeviceId>,
+    /// In the SFU room.
+    remotes: std::collections::BTreeSet<DeviceId>,
+    /// Frames authenticated.
+    verified: std::collections::BTreeSet<DeviceId>,
     screens: std::collections::BTreeSet<DeviceId>,
     speaking: std::collections::BTreeSet<DeviceId>,
 }
 
 #[cfg(feature = "test-hooks")]
 impl Sim {
-    /// `state` with the simulated devices among the call's media peers (and screen streams) and the simulated voices in
-    /// its speaking set.
+    fn is_empty(&self) -> bool {
+        self.roster.is_empty() && self.remotes.is_empty() && self.speaking.is_empty()
+    }
+
+    /// `state` with the simulated devices in the call's roster, SFU room, verified set and screen streams, and the
+    /// simulated voices in its speaking set.
     fn over(&self, state: Arc<AppState>) -> Arc<AppState> {
-        if self.media.is_empty() && self.speaking.is_empty() {
+        if self.is_empty() {
             return state;
         }
         let mut s = (*state).clone();
-        s.voice.media_peers.extend(self.media.iter().copied());
+        let people: Vec<(UserId, DeviceId)> = s
+            .voice
+            .calls
+            .values()
+            .flat_map(|c| c.participants.iter().map(|p| (p.user_id, p.device_id)))
+            .collect();
+        for (user, device) in people {
+            if self.roster.contains(&device) && !s.voice.call.roster.iter().any(|r| r.1 == device) {
+                let leaf = s.voice.call.roster.len() as u16;
+                s.voice.call.roster.push((user, device, leaf));
+            }
+        }
+        s.voice.sfu_remotes.extend(self.remotes.iter().copied());
+        s.voice.verified_peers.extend(self.verified.iter().copied());
         s.voice.screen_streams.extend(self.screens.iter().copied());
         s.voice.speaking.extend(self.speaking.iter().copied());
         Arc::new(s)
@@ -789,9 +813,26 @@ pub fn simulate(
         })
         .map(|(_, p)| p.device_id)
         .ok_or_else(|| format!("nobody called `{person}` is in a call"))?;
-    ui.sim.media.insert(found);
+    // `media`, `speaking`, `camera` and `screen` give the device a verified peer (roster, room and frames); `connecting`
+    // only the roster, `unverified` only the room, `not-heard` both but no frame.
+    let (roster, remote, verified) = match what {
+        "media" | "speaking" | "camera" | "screen" => (true, true, true),
+        "connecting" => (true, false, false),
+        "unverified" => (false, true, false),
+        "not-heard" => (true, true, false),
+        other => return Err(format!("unknown voice-sim `{other}`")),
+    };
+    for (on, set) in [
+        (roster, &mut ui.sim.roster),
+        (remote, &mut ui.sim.remotes),
+        (verified, &mut ui.sim.verified),
+    ] {
+        if on {
+            set.insert(found);
+        }
+    }
     match (what, pattern) {
-        ("media", None) => {}
+        ("media" | "connecting" | "unverified" | "not-heard", None) => {}
         ("speaking", None) => {
             ui.sim.speaking.insert(found);
         }
@@ -2087,17 +2128,78 @@ pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
 
 // ---- the stage ----------------------------------------------------------------------------------------------------
 
-/// The tiles of `channel`'s stage, built as VoiceView.tsx `callTiles` builds them: this device's own person tile (and its
-/// screen tile while it shares), then one person tile for each remote device that has media in the call
-/// (`voice.media_peers`, the media session's peers; `call.state.tiles` on the web), plus a screen tile for each of them
-/// whose screen stream is arriving (`voice.screen_streams`, not the voice list's flag). A peer the room (the voice list)
-/// does not list still gets its tiles; somebody who is only in the voice list has none. The shared screens come first,
-/// then the people in the room's own order, a device the room does not list after the listed ones, in the order built
-/// (the own device first among them).
-pub fn tiles(state: &AppState, channel: ChannelId) -> Vec<TileKey> {
+/// A remote device's tile state (session.ts `TileState`, drawn by CallTile's `voiceStateWords`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileState {
+    /// In the call group's roster, not in the SFU room yet.
+    Connecting,
+    /// In the room and the roster, no frame has authenticated.
+    NotHeard,
+    /// In the room, not in the roster: nothing of it is shown.
+    Unverified,
+    Ok,
+}
+
+/// The remote devices that have a tile, in the web's build order (session.ts `tiles()`): each SFU remote with its state
+/// (`unverified` when the call group's roster does not list it, `ok` when its frames authenticated, else `not-heard`),
+/// then each roster member not in the room yet, `connecting`. The device's user comes from the roster, else from the
+/// room's voice list; a device with neither has no name to show and no tile.
+fn remote_tiles(state: &AppState, channel: ChannelId) -> Vec<(UserId, DeviceId, TileState)> {
     let call = &state.voice.call;
+    if call.channel != Some(channel) {
+        return Vec::new();
+    }
     let room = state.voice.participants(channel);
-    let in_this_call = call.channel == Some(channel);
+    let own = room
+        .iter()
+        .find(|p| p.own)
+        .map(|p| p.device_id)
+        .or(state.account.device_id);
+    let mut out = Vec::new();
+    for device in &state.voice.sfu_remotes {
+        if Some(*device) == own {
+            continue;
+        }
+        let rostered = call.roster.iter().find(|r| r.1 == *device);
+        let tile_state = match rostered {
+            None => TileState::Unverified,
+            Some(_) if state.voice.verified_peers.contains(device) => TileState::Ok,
+            Some(_) => TileState::NotHeard,
+        };
+        let user = rostered.map(|r| r.0).or_else(|| {
+            room.iter()
+                .find(|p| p.device_id == *device)
+                .map(|p| p.user_id)
+        });
+        if let Some(user) = user {
+            out.push((user, *device, tile_state));
+        }
+    }
+    for (user, device, _) in &call.roster {
+        if Some(*device) != own && !state.voice.sfu_remotes.contains(device) {
+            out.push((*user, *device, TileState::Connecting));
+        }
+    }
+    out
+}
+
+/// The state of `device`'s tile in `channel`'s stage: the own device's is always `ok`.
+pub fn tile_state(state: &AppState, channel: ChannelId, device: DeviceId) -> TileState {
+    remote_tiles(state, channel)
+        .into_iter()
+        .find(|(_, d, _)| *d == device)
+        .map_or(TileState::Ok, |(_, _, s)| s)
+}
+
+/// The tiles of `channel`'s stage, built as VoiceView.tsx `callTiles` builds them: this device's own person tile (and its
+/// screen tile while it shares), then a person tile for each remote device of the call ([`remote_tiles`]: every SFU
+/// remote, and every roster member not in the room yet), plus a screen tile for each `ok` one whose screen stream is
+/// arriving (`voice.screen_streams`, not the voice list's flag). Somebody who is only in the voice list has no tile. The
+/// shared screens come first, then the people in the room's own order, a device the room does not list after the listed
+/// ones, in the order built (the own device first among them).
+pub fn tiles(state: &AppState, channel: ChannelId) -> Vec<TileKey> {
+    let room = state.voice.participants(channel);
+    let in_this_call = state.voice.call.channel == Some(channel);
     let mut built: Vec<(TileKey, usize)> = Vec::new();
     let rank = |device: DeviceId| {
         room.iter()
@@ -2126,22 +2228,10 @@ pub fn tiles(state: &AppState, channel: ChannelId) -> Vec<TileKey> {
             push(user, device, true);
         }
     }
-    if in_this_call {
-        for device in &state.voice.media_peers {
-            if Some(*device) == own.map(|o| o.1) {
-                continue;
-            }
-            // The room's row names the person; a peer it does not list is known by the call group's roster.
-            let user = room
-                .iter()
-                .find(|p| p.device_id == *device)
-                .map(|p| p.user_id)
-                .or_else(|| call.roster.iter().find(|r| r.1 == *device).map(|r| r.0));
-            let Some(user) = user else { continue };
-            push(user, *device, false);
-            if state.voice.screen_streams.contains(device) {
-                push(user, *device, true);
-            }
+    for (user, device, tile_state) in remote_tiles(state, channel) {
+        push(user, device, false);
+        if tile_state == TileState::Ok && state.voice.screen_streams.contains(&device) {
+            push(user, device, true);
         }
     }
     let mut order: Vec<(usize, (TileKey, usize))> = built.into_iter().enumerate().collect();
@@ -2487,6 +2577,47 @@ type TileImages = HashMap<StreamKey, Arc<RenderImage>>;
 type TileStats = HashMap<StreamKey, (u32, u32)>;
 type TileBounds = Rc<std::cell::RefCell<HashMap<TileKey, gpui::Bounds<gpui::Pixels>>>>;
 
+/// CallTile.tsx `voiceStateWords`'s stream state word: "connecting" with the dashed pending dot, "not heard yet" with
+/// a "?", "unverified stream" with a "!". A person who says they are muted or deafened and sends no camera or screen is
+/// not expected to send a frame, so a not-heard tile of theirs shows the muted glyph alone (`silentByChoice`). `None`
+/// for an `ok` tile.
+fn state_word(
+    id: String,
+    tile_state: TileState,
+    silent_by_choice: bool,
+    size: gpui::Pixels,
+    height: f32,
+) -> Option<AnyElement> {
+    let (glyph, text_key, tone) = match tile_state {
+        TileState::Ok => return None,
+        TileState::Connecting => (None, "voice.state.connecting", color::FG_2),
+        TileState::NotHeard if silent_by_choice => return None,
+        TileState::NotHeard => (Some("?"), "voice.state.notHeard", color::FG_2),
+        TileState::Unverified => (Some("!"), "voice.state.unverified", color::WARN),
+    };
+    let glyph = match glyph {
+        Some(g) => line(g.to_owned(), size, height, tone).into_any_element(),
+        None => dilla_desktop_ui::components::state_dot::StateDot::new(
+            ElementId::Name(format!("{id}-dot").into()),
+            dilla_desktop_ui::components::state_dot::StateDotTone::Pending,
+        )
+        .into_any_element(),
+    };
+    let selector = id.clone();
+    Some(
+        div()
+            .id(ElementId::Name(id.into()))
+            .debug_selector(move || selector.clone())
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(m::STATE_WORD_GAP))
+            .child(glyph)
+            .child(line(t(text_key), size, height, tone).weight(font::WEIGHT_BODY))
+            .into_any_element(),
+    )
+}
+
 fn tile(
     state: &AppState,
     channel: &Channel,
@@ -2514,7 +2645,16 @@ fn tile(
             ShareKind::Camera
         },
     };
-    let video = images.get(&stream).cloned();
+    // A tile that is not `ok` shows no media: unverified frames are never shown (session.ts `show`).
+    let tile_state = if k.screen {
+        TileState::Ok
+    } else {
+        tile_state(state, channel.id, k.device)
+    };
+    let video = images
+        .get(&stream)
+        .cloned()
+        .filter(|_| tile_state == TileState::Ok);
     let has_media = video.is_some();
     let own = p.is_some_and(|p| p.own);
     // VoiceView.tsx `withTileStats`: a screen says its frames; the own person tile what its microphone sends (this
@@ -2660,6 +2800,13 @@ fn tile(
                 .when(!speaking, |d| d.invisible())
                 .children((0..3).map(|_| div().w(px(m::METER_W)).h(px(m::METER_H)).bg(color::OK))),
         )
+        .children(state_word(
+            format!("voice-tile-state-{}", k.device.hex()),
+            tile_state,
+            muted && !p.is_some_and(|p| p.video() || p.screen()),
+            caption_text,
+            dilla_desktop_ui::text::root_line_height(caption_text),
+        ))
         .children(volume.map(menu::volume_chip));
     #[cfg(feature = "automation")]
     let probe = (own && !k.screen).then(|| crate::automation::bounds_probe("voice-tile-own"));
@@ -3235,7 +3382,15 @@ fn card(
             ShareKind::Camera
         },
     };
-    let video = images.get(&stream).cloned();
+    let tile_state = if k.screen {
+        TileState::Ok
+    } else {
+        channel.map_or(TileState::Ok, |c| tile_state(state, c, k.device))
+    };
+    let video = images
+        .get(&stream)
+        .cloned()
+        .filter(|_| tile_state == TileState::Ok);
     let (muted, deafened) = if own {
         (state.voice.self_mute, state.voice.self_deaf)
     } else {
@@ -3294,7 +3449,14 @@ fn card(
             glyphs
                 .into_iter()
                 .map(|(icon, tone)| Icon::new(icon).size(px(m::GLYPH)).color(tone)),
-        );
+        )
+        .children(state_word(
+            format!("dm-tile-state-{}", k.device.hex()),
+            tile_state,
+            muted && !p.is_some_and(|p| p.video() || p.screen()),
+            text::XS,
+            line_height(text::XS, 1.3),
+        ));
     let id = format!(
         "dm-tile-{}{}",
         k.device.hex(),
@@ -4402,14 +4564,25 @@ mod tests {
         assert_eq!(count(&s, ch.id), 2);
     }
 
-    /// `state_with`'s call as this device's own: `me` is the viewer's device, `media` the remote devices whose media is
-    /// connected (the media session's peers) and `screens` those a screen stream arrives from.
-    fn in_call(s: &mut AppState, ch: &Channel, me: u8, media: &[u8], screens: &[u8]) {
+    /// `state_with`'s call as this device's own: `me` is the viewer's device. `rostered` are the call group's roster (the
+    /// MLS members), `room` the SFU room's remote devices, `verified` those whose frames authenticated and `screens`
+    /// those a screen stream arrives from.
+    fn in_call(
+        s: &mut AppState,
+        ch: &Channel,
+        me: u8,
+        (rostered, room, verified, screens): (&[u8], &[u8], &[u8], &[u8]),
+    ) {
         let dev = |d: &u8| DeviceId([*d; 16]);
         s.account.device_id = Some(DeviceId([me; 16]));
         s.account.user_id = Some(UserId([me; 16]));
         s.voice.call.channel = Some(ch.id);
-        s.voice.media_peers = media.iter().map(dev).collect();
+        s.voice.call.roster = rostered
+            .iter()
+            .map(|d| (UserId([*d; 16]), dev(d), u16::from(*d)))
+            .collect();
+        s.voice.sfu_remotes = room.iter().map(dev).collect();
+        s.voice.verified_peers = verified.iter().map(dev).collect();
         s.voice.screen_streams = screens.iter().map(dev).collect();
     }
 
@@ -4417,8 +4590,12 @@ mod tests {
         t.iter().map(|k| (k.device.0[0], k.screen)).collect()
     }
 
-    /// VoiceView.tsx `callTiles`: a tile is a media peer. Somebody who is only in the voice list has none, the own tile is
-    /// always there (the stage-group parity fixtures hold exactly this).
+    fn state_of(s: &AppState, ch: &Channel, device: u8) -> TileState {
+        tile_state(s, ch.id, DeviceId([device; 16]))
+    }
+
+    /// VoiceView.tsx `callTiles`: a tile is a device of the call. Somebody who is only in the voice list has none, the own
+    /// tile is always there (the stage-group parity fixtures hold exactly this).
     #[test]
     fn a_voice_state_only_member_has_no_tile_and_the_own_tile_always_shows() {
         let (mut s, ch) = state_with(&[
@@ -4426,51 +4603,92 @@ mod tests {
             (2, 2, flags::IN_CALL | flags::SELF_MUTE),
             (3, 3, flags::IN_CALL | flags::SCREEN),
         ]);
-        in_call(&mut s, &ch, 1, &[], &[]);
+        in_call(&mut s, &ch, 1, (&[], &[], &[], &[]));
         assert_eq!(devices(&tiles(&s, ch.id)), vec![(1, false)]);
     }
 
-    /// A peer the room does not list still gets a tile (its user from the call group's roster), after the listed ones;
-    /// the own device, unlisted too, comes before it (`[...own, ...others]`, stable).
+    /// session.ts `tiles()`: a room device is `unverified` when the roster does not list it, `not-heard` when it does and
+    /// no frame authenticated, `ok` when one did.
     #[test]
-    fn an_unlisted_media_peer_gets_a_tile_after_the_listed_ones_and_the_own_device_leads_them() {
+    fn a_room_device_is_unverified_not_heard_or_ok() {
+        let (mut s, ch) = state_with(&[
+            (1, 1, flags::IN_CALL),
+            (2, 2, flags::IN_CALL),
+            (3, 3, flags::IN_CALL),
+            (4, 4, flags::IN_CALL),
+        ]);
+        // 2: in the room only; 3: in the room and the roster; 4: in both and heard.
+        in_call(&mut s, &ch, 1, (&[3, 4], &[2, 3, 4], &[4], &[]));
+        assert_eq!(state_of(&s, &ch, 2), TileState::Unverified);
+        assert_eq!(state_of(&s, &ch, 3), TileState::NotHeard);
+        assert_eq!(state_of(&s, &ch, 4), TileState::Ok);
+        assert_eq!(state_of(&s, &ch, 1), TileState::Ok, "the own tile");
+        assert_eq!(
+            devices(&tiles(&s, ch.id)),
+            vec![(1, false), (2, false), (3, false), (4, false)],
+            "every one of them has a tile"
+        );
+    }
+
+    /// A roster member who is not in the SFU room yet has a `connecting` tile, after the room's devices (and the voice
+    /// list's order wins among the tiles built).
+    #[test]
+    fn a_roster_member_not_in_the_room_is_connecting() {
+        let (mut s, ch) = state_with(&[(2, 2, flags::IN_CALL), (3, 3, flags::IN_CALL)]);
+        in_call(&mut s, &ch, 1, (&[2, 3, 5], &[3], &[3], &[]));
+        assert_eq!(state_of(&s, &ch, 2), TileState::Connecting);
+        assert_eq!(state_of(&s, &ch, 5), TileState::Connecting);
+        assert_eq!(
+            devices(&tiles(&s, ch.id)),
+            vec![(2, false), (3, false), (1, false), (5, false)],
+            "the room's order first, then the unlisted ones with the own device ahead of them"
+        );
+    }
+
+    /// A device the voice list does not list still gets a tile after the listed ones; the own device leads the unlisted.
+    #[test]
+    fn an_unlisted_device_gets_a_tile_after_the_listed_ones_and_the_own_device_leads_them() {
         let (mut s, ch) = state_with(&[(2, 2, flags::IN_CALL), (4, 4, flags::IN_CALL)]);
-        in_call(&mut s, &ch, 1, &[4, 2, 7], &[]);
-        s.voice.call.roster = vec![(UserId([7; 16]), DeviceId([7; 16]), 0)];
+        in_call(&mut s, &ch, 1, (&[2, 4, 7], &[4, 2, 7], &[4, 2, 7], &[]));
         assert_eq!(
             devices(&tiles(&s, ch.id)),
             vec![(2, false), (4, false), (1, false), (7, false)],
-            "the room's order, then the unlisted: the own device before the unlisted peer"
         );
         // The room lists this device: it takes the room's place.
         let (mut s, ch) = state_with(&[(1, 1, flags::IN_CALL), (2, 2, flags::IN_CALL)]);
-        in_call(&mut s, &ch, 2, &[1], &[]);
+        in_call(&mut s, &ch, 2, (&[1], &[1], &[1], &[]));
         assert_eq!(devices(&tiles(&s, ch.id)), vec![(1, false), (2, false)]);
     }
 
-    /// A remote screen tile needs a real screen stream; the voice list's `screen` flag alone gives none. With the stream
-    /// there it has one and leads, the share first.
+    /// A remote screen tile needs a real screen stream of an `ok` device; the voice list's `screen` flag alone gives none,
+    /// and a stream of a device that is not heard gives none either (media is shown only when `ok`).
     #[test]
-    fn a_remote_screen_tile_needs_a_stream_not_the_voice_flag() {
+    fn a_remote_screen_tile_needs_a_stream_of_an_ok_device() {
         let (mut s, ch) = state_with(&[
             (1, 1, flags::IN_CALL),
             (3, 3, flags::IN_CALL | flags::SCREEN),
         ]);
-        in_call(&mut s, &ch, 1, &[3], &[]);
+        in_call(&mut s, &ch, 1, (&[3], &[3], &[3], &[]));
         assert_eq!(
             devices(&tiles(&s, ch.id)),
             vec![(1, false), (3, false)],
             "the flag without a stream: the person only"
         );
-        in_call(&mut s, &ch, 1, &[3], &[3]);
+        in_call(&mut s, &ch, 1, (&[3], &[3], &[3], &[3]));
         assert_eq!(
             devices(&tiles(&s, ch.id)),
             vec![(3, true), (1, false), (3, false)],
             "the stream is there: the screen leads"
         );
+        in_call(&mut s, &ch, 1, (&[3], &[3], &[], &[3]));
+        assert_eq!(
+            devices(&tiles(&s, ch.id)),
+            vec![(1, false), (3, false)],
+            "not heard yet: no media is shown"
+        );
         // The own share is the own device's (`call.state.sharing`), whatever the voice list says.
         s.voice.share.screen = true;
-        in_call(&mut s, &ch, 1, &[], &[]);
+        in_call(&mut s, &ch, 1, (&[], &[], &[], &[]));
         assert_eq!(devices(&tiles(&s, ch.id)), vec![(1, true), (1, false)]);
     }
 

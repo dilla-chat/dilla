@@ -189,7 +189,7 @@ Totals: 233 e2e tests; 189 with a Rust test, 42 n/a (browser/phone only), 2 next
 | `e2e/voice/share.spec.ts` | cancelling native screen selection publishes no video or sound and leaves the voice call usable | dilla-desktop::tests/share::cancel_publishes_nothing_and_the_call_goes_on |
 | `e2e/voice/share.spec.ts` | a shared tab’s sound is heard by the other browser | n/a (browser/phone only): a browser tab's audio through getDisplayMedia |
 | `e2e/voice/speaking.spec.ts` | alice speaking lights her tile and bob's tile for her within a beat, and a mute puts it out | dilla-desktop::src/screens/voice/session::speaking_lights_after_its_onset_and_holds_for_the_hangover |
-| `e2e/voice/stage.spec.ts` | the stage shows a tile per camera and screen, focuses a shared screen, and keeps every stream running | dilla-desktop::tests/voice::stage_tile_per_stream_focuses_share; dilla-desktop::src/screens/voice/mod::the_stage_has_a_tile_per_device_and_one_per_screen_share |
+| `e2e/voice/stage.spec.ts` | the stage shows a tile per camera and screen, focuses a shared screen, and keeps every stream running | dilla-desktop::tests/voice::stage_tile_per_stream_focuses_share; dilla-desktop::src/screens/voice/mod::a_room_device_is_unverified_not_heard_or_ok; dilla-desktop::src/screens/voice/mod::a_remote_screen_tile_needs_a_stream_of_an_ok_device |
 | `e2e/voice/stage.spec.ts` | a DM call box keeps compact tiles when the other person shares their screen | dilla-desktop::tests/voice::a_dm_call_box_keeps_compact_tiles_when_the_other_person_shares_their_screen |
 
 The Bot music timing rows (`e2e/voice/bot-music.spec.ts`: G3, the gap and the repeat start) measure the first audio a

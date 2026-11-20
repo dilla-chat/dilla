@@ -76,8 +76,13 @@ fn state(n: u8) -> Arc<AppState> {
         call_id: Some(VOICE.0),
         ..OwnCall::default()
     };
-    // Everyone's media is there, and person 1's screen: a stage tile is a media peer (VoiceView.tsx `callTiles`).
-    s.voice.media_peers = (1..n).map(|i| DeviceId([100 + i; 16])).collect();
+    // Everyone is in the call group, in the SFU room and heard, and person 1 shares a screen: a stage tile is a device of
+    // the call (VoiceView.tsx `callTiles`).
+    s.voice.call.roster = (1..n)
+        .map(|i| (UserId([i; 16]), DeviceId([100 + i; 16]), u16::from(i)))
+        .collect();
+    s.voice.sfu_remotes = (1..n).map(|i| DeviceId([100 + i; 16])).collect();
+    s.voice.verified_peers = s.voice.sfu_remotes.clone();
     s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
@@ -605,8 +610,10 @@ fn dm_state() -> Arc<AppState> {
         call_id: Some(DM.0),
         ..OwnCall::default()
     };
-    // Bob's media and screen are there (a stage tile is a media peer).
-    s.voice.media_peers = [DeviceId([101; 16])].into_iter().collect();
+    // Bob is in the call group, the room and heard, with his screen (a stage tile is a device of the call).
+    s.voice.call.roster = vec![(UserId([1; 16]), DeviceId([101; 16]), 1)];
+    s.voice.sfu_remotes = [DeviceId([101; 16])].into_iter().collect();
+    s.voice.verified_peers = s.voice.sfu_remotes.clone();
     s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
@@ -2703,6 +2710,50 @@ fn native_voice_stage_wrap() {
             "media ola",
             "media kai",
             "speaking eva",
+        ],
+    );
+}
+
+/// CallTile.tsx `voiceStateWords`: a tile whose device is not heard says so beside its name, "connecting" (a roster member
+/// not in the room yet), "not heard yet" (in the room and the roster, no frame verified) and "unverified stream" (in the
+/// room, not in the roster); a muted person who is not heard shows the muted glyph alone (`silentByChoice`); an `ok` tile
+/// says nothing. The words are session.ts `tiles()`' states.
+#[gpui::test]
+fn a_tile_that_is_not_heard_says_why(cx: &mut TestAppContext) {
+    let mut s = (*state(5)).clone();
+    // Person 1: ok. 2: connecting (roster only). 3: not heard (room and roster). 4: unverified (room only).
+    let dev = |i: u8| DeviceId([100 + i; 16]);
+    s.voice.sfu_remotes = [1, 3, 4].map(dev).into_iter().collect();
+    s.voice.verified_peers = [1].map(dev).into_iter().collect();
+    s.voice.call.roster = [1, 2, 3]
+        .map(|i| (UserId([i; 16]), dev(i), u16::from(i)))
+        .to_vec();
+    let cx = host(cx, Arc::new(s));
+    let word = |cx: &mut VisualTestContext, i: u8| {
+        cx.debug_bounds(selector(format!("voice-tile-state-{}", dev(i).hex())))
+            .is_some()
+    };
+    assert!(!word(cx, 1), "an ok tile says nothing");
+    assert!(word(cx, 2), "connecting");
+    assert!(word(cx, 3), "not heard yet");
+    assert!(word(cx, 4), "unverified stream");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_tile_states() {
+    // Mira is not heard yet (in the room and the roster), Björn (muted) is connecting, Lin (deafened) is not heard but
+    // says it with the glyph alone, Sam's stream is unverified; Ada's own tile is ok.
+    shoot_group(
+        "voice-tile-states",
+        &[
+            "not-heard mira",
+            "connecting bjorn",
+            "not-heard lin",
+            "unverified sam",
         ],
     );
 }

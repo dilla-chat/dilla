@@ -791,12 +791,14 @@ async fn in_call(
     let mut states = ctx.states.clone();
     let mut levels = call.remote_audio_levels();
     let mut videos = call.remote_videos();
+    let mut remotes = call.remote_participants();
     let mut events = call.events();
     let mut ended = call.shares_ended();
     let mut app_ended = call.app_audio_ended();
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
     // The remote devices with a verified audio track, and those with a video stream: the media peers the stage's tiles are.
+    let mut sfu_peers: BTreeSet<DeviceId> = BTreeSet::new();
     let mut audio_peers: BTreeSet<DeviceId> = BTreeSet::new();
     let mut video_peers: BTreeSet<DeviceId> = BTreeSet::new();
     let mut screen_peers: BTreeSet<DeviceId> = BTreeSet::new();
@@ -859,11 +861,22 @@ async fn in_call(
                         let heard = levels.borrow_and_update().clone();
                         audio_peers = heard.keys().filter_map(|h| unhex(h).map(DeviceId)).collect();
                         audio_peers.retain(|d| Some(*d) != own);
-                        publish_peers(ctx, &audio_peers, &video_peers, &screen_peers);
+                        publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
                         let now = speaking.update(&heard, Instant::now());
                         let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
                         set.retain(|d| Some(*d) != own);
                         ctx.voice.set_speaking(set);
+                    }
+                }
+                r = remotes.changed() => {
+                    if r.is_ok() {
+                        sfu_peers = remotes
+                            .borrow_and_update()
+                            .iter()
+                            .filter_map(|h| unhex(h).map(DeviceId))
+                            .filter(|d| Some(*d) != own)
+                            .collect();
+                        publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
                     }
                 }
                 r = videos.changed() => {
@@ -880,7 +893,7 @@ async fn in_call(
                             .filter_map(|k| unhex(&k.device).map(DeviceId))
                             .filter(|d| Some(*d) != own)
                             .collect();
-                        publish_peers(ctx, &audio_peers, &video_peers, &screen_peers);
+                        publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
                         *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
                         *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
                         ctx.video_seq.fetch_add(1, Ordering::Relaxed);
@@ -1033,16 +1046,20 @@ async fn superseded(mut links: watch::Receiver<Option<Arc<MediaLink>>>, call_id:
 
 /// The media did not start (the room refused, no key in time): the person is told the join failed and the call is
 /// left, so the signalling never stays "in" a call nobody hears.
-/// Tells the state which remote devices have media in the call (an audio or a video stream) and which of them send a
-/// screen: the stage's tiles (`voice::tiles`).
+/// Tells the state which remote devices are in the call's SFU room, which of them are verified (an authenticated audio or
+/// video stream) and which send a screen: the stage's tiles (`voice::tiles`).
 fn publish_peers(
     ctx: &Ctx,
+    sfu: &BTreeSet<DeviceId>,
     audio: &BTreeSet<DeviceId>,
     video: &BTreeSet<DeviceId>,
     screens: &BTreeSet<DeviceId>,
 ) {
-    let peers: BTreeSet<DeviceId> = audio.union(video).copied().collect();
-    ctx.voice.set_media_peers(peers, screens.clone());
+    // A device with an authenticated stream is in the room whatever the participant list said first.
+    let verified: BTreeSet<DeviceId> = audio.union(video).copied().collect();
+    let remotes: BTreeSet<DeviceId> = sfu.union(&verified).copied().collect();
+    ctx.voice
+        .set_media_peers(remotes, verified, screens.clone());
 }
 
 fn failed(

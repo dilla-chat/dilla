@@ -714,6 +714,8 @@ pub struct Call {
     events_tx: mpsc::UnboundedSender<MediaEvent>,
     events: Mutex<Option<mpsc::UnboundedReceiver<MediaEvent>>>,
     levels: watch::Receiver<RemoteLevels>,
+    /// The identities of the room's remote participants, verified or not (session.ts `remotes()`).
+    remotes: watch::Receiver<BTreeSet<String>>,
     tails: Tails,
     screen_sound: ScreenSound,
     muted: Arc<AtomicBool>,
@@ -920,6 +922,12 @@ impl Call {
             })?;
 
         let (levels_tx, levels) = watch::channel(RemoteLevels::new());
+        let (remotes_tx, remotes) = watch::channel(
+            room.remote_participants()
+                .keys()
+                .map(|i| i.as_str().to_owned())
+                .collect::<BTreeSet<String>>(),
+        );
         let (videos_tx, videos) = watch::channel(RemoteVideos::new());
         let (shares_ended, shares_ended_rx) = mpsc::unbounded_channel();
         let (app_audio_ended, app_audio_ended_rx) = mpsc::unbounded_channel();
@@ -931,6 +939,7 @@ impl Call {
             events,
             media.clone(),
             (levels_tx, videos_tx),
+            remotes_tx,
             (tails.clone(), screen_sound.clone()),
             speaker.as_ref().map(|s| s.sink()),
             ended_tx,
@@ -948,6 +957,7 @@ impl Call {
             events_tx,
             events: Mutex::new(Some(events_rx)),
             levels,
+            remotes,
             tails,
             screen_sound,
             muted,
@@ -1132,6 +1142,12 @@ impl Call {
 
     pub fn is_muted(&self) -> bool {
         self.muted.load(Ordering::SeqCst)
+    }
+
+    /// The identities of the room's remote participants, whether their frames verified or not: the web's SFU remotes,
+    /// each of which has a tile (an unverified one says so).
+    pub fn remote_participants(&self) -> watch::Receiver<BTreeSet<String>> {
+        self.remotes.clone()
     }
 
     /// The speaking level of each verified remote device.
@@ -1777,6 +1793,7 @@ async fn remote_tracks(
     mut events: mpsc::UnboundedReceiver<RoomEvent>,
     media: Arc<CallMedia>,
     (levels, videos): (watch::Sender<RemoteLevels>, watch::Sender<RemoteVideos>),
+    remotes: watch::Sender<BTreeSet<String>>,
     (tails, screen_sound): (Tails, ScreenSound),
     playout: Option<PlayoutSink>,
     ended: watch::Sender<Option<RoomEnd>>,
@@ -1791,6 +1808,7 @@ async fn remote_tracks(
                 participant,
             } => {
                 let identity = participant.identity().as_str().to_owned();
+                remotes.send_if_modified(|set| set.insert(identity.clone()));
                 // An unverified stream (identity not 32 lowercase hex), a source without a slot or a
                 // NONE-flagged publication is never bound: its frames are held, then dropped.
                 let (Some(device), Some(slot)) =
@@ -1905,6 +1923,14 @@ async fn remote_tracks(
                         });
                     }
                 }
+            }
+            RoomEvent::ParticipantConnected(participant) => {
+                let identity = participant.identity().as_str().to_owned();
+                remotes.send_if_modified(|set| set.insert(identity));
+            }
+            RoomEvent::ParticipantDisconnected(participant) => {
+                let identity = participant.identity().as_str().to_owned();
+                remotes.send_if_modified(|set| set.remove(&identity));
             }
             RoomEvent::Disconnected { reason } => {
                 why = Some(RoomEnd::of(reason));

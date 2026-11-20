@@ -917,7 +917,8 @@ impl Voice {
             }
             s.voice.call = OwnCall::default();
             s.voice.speaking.clear();
-            s.voice.media_peers.clear();
+            s.voice.sfu_remotes.clear();
+            s.voice.verified_peers.clear();
             s.voice.screen_streams.clear();
             s.voice.share = LocalShare::default();
         });
@@ -1097,12 +1098,16 @@ impl Voice {
     /// the web's `call.state.tiles` lists).
     pub fn set_media_peers(
         &self,
-        peers: std::collections::BTreeSet<DeviceId>,
+        remotes: std::collections::BTreeSet<DeviceId>,
+        verified: std::collections::BTreeSet<DeviceId>,
         screens: std::collections::BTreeSet<DeviceId>,
     ) {
         self.inner.publish(move |s| {
-            if s.voice.media_peers != peers {
-                s.voice.media_peers = peers;
+            if s.voice.sfu_remotes != remotes {
+                s.voice.sfu_remotes = remotes;
+            }
+            if s.voice.verified_peers != verified {
+                s.voice.verified_peers = verified;
             }
             if s.voice.screen_streams != screens {
                 s.voice.screen_streams = screens;
@@ -1317,7 +1322,8 @@ fn ended_removed(s: &mut AppState, channel: ChannelId, own: Option<DeviceId>) {
         ..OwnCall::default()
     };
     s.voice.speaking.clear();
-    s.voice.media_peers.clear();
+    s.voice.sfu_remotes.clear();
+    s.voice.verified_peers.clear();
     s.voice.screen_streams.clear();
     s.voice.share = LocalShare::default();
 }
@@ -1356,7 +1362,16 @@ mod tests {
             ..OwnCall::default()
         };
         s.voice.share.camera = true;
+        s.voice.sfu_remotes.insert(DeviceId([3; 16]));
+        s.voice.verified_peers.insert(DeviceId([3; 16]));
+        s.voice.screen_streams.insert(DeviceId([3; 16]));
         ended_removed(&mut s, ch, Some(own));
+        assert!(
+            s.voice.sfu_remotes.is_empty()
+                && s.voice.verified_peers.is_empty()
+                && s.voice.screen_streams.is_empty(),
+            "the call's media peers go with it"
+        );
         assert_eq!(s.voice.call.phase, CallPhase::Idle);
         assert_eq!(s.voice.call.error.as_deref(), Some("E_REMOVED"));
         assert_eq!(s.voice.call.call_id, None);
