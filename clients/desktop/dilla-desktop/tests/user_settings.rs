@@ -258,8 +258,8 @@ fn every_printed_chord_is_bound_on_every_platform(cx: &mut TestAppContext) {
     }
 }
 
-/// V4: choosing Compact in a window without a client (the fixture's) takes effect at once: the Compact option shows as
-/// chosen and Regular does not, as the Notify section's local choices do (`notify::settings_section`).
+/// V4: the click on an option of either control shows it chosen at once in a window without a client: the density's
+/// Compact, and the motion's "On" (reduced motion; `local_motion`), each letting go of the option it replaces.
 #[test]
 fn appearance_compact_click_selects_compact() {
     let mut app = Driver::launch_fixture(&fixture_path("appearance-b"), None, &[]);
@@ -279,6 +279,14 @@ fn appearance_compact_click_selects_compact() {
     app.wait_idle();
     assert!(chosen(&mut app, "Compact"), "the click chose Compact");
     assert!(!chosen(&mut app, "Regular"), "Regular is let go");
+
+    let system = dilla_desktop::strings::t("workspace.motion.system");
+    let on = dilla_desktop::strings::t("workspace.motion.on");
+    assert!(chosen(&mut app, system), "system motion is chosen at first");
+    app.click("appearance-motion-on");
+    app.wait_idle();
+    assert!(chosen(&mut app, on), "the click chose reduced motion");
+    assert!(!chosen(&mut app, system), "system motion is let go");
 }
 
 /// V4, the live half: against a real dillad, the density a person chooses is written to the store
