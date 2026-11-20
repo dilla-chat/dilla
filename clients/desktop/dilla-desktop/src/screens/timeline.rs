@@ -289,13 +289,15 @@ pub fn day_label(ts: u64, clock: Clock) -> String {
 
 /// The people a conversation names its authors from: a channel's server members; a DM's (a channel of no server) every
 /// server's members, a person's first row kept (Shell.tsx `allMembers`, which `nameBook` reads for a DM).
-fn log_members(state: &AppState, channel: &Channel) -> Vec<Member> {
+fn log_members<'a>(state: &'a AppState, channel: &Channel) -> std::borrow::Cow<'a, [Member]> {
+    use std::borrow::Cow;
     if state.dms.get(channel.id).is_none() {
-        return state
-            .members
-            .get(&channel.community_id)
-            .cloned()
-            .unwrap_or_default();
+        return Cow::Borrowed(
+            state
+                .members
+                .get(&channel.community_id)
+                .map_or(&[][..], Vec::as_slice),
+        );
     }
     let mut all: Vec<Member> = Vec::new();
     for community in &state.communities {
@@ -305,7 +307,7 @@ fn log_members(state: &AppState, channel: &Channel) -> Vec<Member> {
             }
         }
     }
-    all
+    Cow::Owned(all)
 }
 
 /// webhook.ts and shell-model.ts `authorName`: the member's display name, else the username, else the viewer's own,

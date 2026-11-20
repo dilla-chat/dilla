@@ -1870,9 +1870,10 @@ impl Render for ShellView {
         let no_server = takeover.is_none() && channel.is_none() && no_server(&state);
         let main = match takeover {
             Some(stage) => main.child(div().flex_1().min_h_0().flex().flex_col().child(stage)),
-            // `/dm` with no conversation open: Shell.tsx leaves `main` null, so the column is empty (no header, no composer).
-            None if self.dm_view && channel.is_none() => main,
+            // Shell.tsx checks `noServerState` before it leaves `main` null, so the no-server view wins on `/dm` too.
             None if no_server => main.child(div().flex_1().min_h_0().relative().child(log)),
+            // `/dm` with no conversation open: Shell.tsx leaves `main` null, so the column is empty (no header, no composer).
+            None if dm_home_is_empty(self.dm_view, channel.is_some()) => main,
             None => main
                 .child(header::render(
                     &header::HeaderModel {
@@ -2210,6 +2211,12 @@ fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
     );
 }
 
+/// `/dm` with no conversation open draws an empty main column (Shell.tsx leaves `main` null). The caller has already
+/// answered the no-server state, which Shell.tsx checks first.
+fn dm_home_is_empty(dm_view: bool, has_channel: bool) -> bool {
+    dm_view && !has_channel
+}
+
 /// Shell.tsx `noServer`: `communities !== undefined && communities.length === 0`.
 pub(crate) fn no_server(state: &AppState) -> bool {
     state.communities_loaded && state.communities.is_empty()
@@ -2460,6 +2467,39 @@ mod tests {
             assert!(s.in_no_server());
             assert!(s.home_shown());
         });
+    }
+
+    /// `/dm` with no server draws the no-server state, not an empty column: the shell's main column asks the no-server
+    /// view before the empty `/dm` one (Shell.tsx:1165), and with a server the DM home is empty.
+    #[gpui::test]
+    fn dm_home_without_a_server_is_the_no_server_state(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let mut s = AppState::default();
+        s.account.phase = dilla_client::state::AccountPhase::Ready;
+        s.communities_loaded = true;
+        let state = Arc::new(s);
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        shell.update(vcx, |s, cx| s.navigate(Route::Dms, cx));
+        vcx.run_until_parked();
+        shell.read_with(vcx, |s, _| {
+            assert!(s.dm_view && s.in_no_server());
+            assert!(
+                no_server(&s.state),
+                "the no-server state is what is asked first"
+            );
+        });
+        assert!(dm_home_is_empty(true, false));
+        assert!(!dm_home_is_empty(true, true));
+        assert!(!dm_home_is_empty(false, false));
     }
 
     /// Integration 3, step 1: Ctrl+, in the shell asks the app for the user settings host (`OpenSettings`).
