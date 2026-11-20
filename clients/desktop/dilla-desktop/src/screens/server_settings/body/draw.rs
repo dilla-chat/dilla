@@ -24,6 +24,7 @@ use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, Setting
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toggle::Toggle;
 use dilla_desktop_ui::components::trailing_slot::TrailingSlot;
+use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
@@ -299,6 +300,7 @@ impl Body {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let density = Density::of(window, cx);
         let afk = self.afk_channel();
         let all = self.channels();
         let groups = model::grouped(&all);
@@ -339,7 +341,8 @@ impl Body {
                 .gap(layout::INVITE_GAP)
                 .h(layout::HEAD_H)
                 .pr(layout::LIST_PAD_X)
-                .mb(layout::HEAD_GAP)
+                // `.dw-admin-group`: its head and its card `--row-gap` apart.
+                .mb(density.row_gap())
                 .child(
                     div().flex_1().min_w_0().child(
                         // The `h3` inherits the page's `--text-base` (`.dw-admin-grouphead h3 { font-size: inherit }`).
@@ -613,7 +616,7 @@ impl Body {
             body = body.child(dim(t("afk.channel.note")));
         }
         if c.kind != 2 && !afk && access.manage_roles {
-            body = body.child(self.permissions_panel(&c, cx));
+            body = body.child(self.permissions_panel(&c, Density::of(window, cx), cx));
         }
         if let Some(e) = &self.dialogue_error {
             body = body.child(alert(e.clone()));
@@ -657,7 +660,7 @@ impl Body {
 
     /// ChannelPermissions.tsx: the private switch, who has settings of their own here (each a disclosure over a tri-state grid
     /// of the channel's rights, rank-gated), and the Add select. While the overwrites are unknown nothing is called public.
-    fn permissions_panel(&self, c: &Channel, cx: &Context<Self>) -> AnyElement {
+    fn permissions_panel(&self, c: &Channel, density: Density, cx: &Context<Self>) -> AnyElement {
         use dilla_client::features::server_admin::{
             PERM_GROUPS, PermContext, Tri, add_options, channel_grid_bits, my_channel_bits,
             perm_entries, tri_of,
@@ -732,11 +735,11 @@ impl Body {
             }
         };
 
-        // `.dw-settings-section`: a column, `--group-gap` apart.
+        // `.dw-settings-section`: a column, `--group-gap` apart (the window's density).
         let mut panel = div()
             .flex()
             .flex_col()
-            .gap(layout::GROUP_GAP)
+            .gap(density.group_gap())
             .child(heading());
         panel = panel.child(
             Toggle::new("channel-private", t("chperm.private"), private)
@@ -764,6 +767,13 @@ impl Body {
         if entries.is_empty() {
             panel = panel.child(dim(t("chperm.none")));
         }
+        // `ul.dw-admin-rows`: `--group-gap` in from the left, its entries `--row-gap` apart; each entry an
+        // `li.dw-admin-group`, its row and its grid `--row-gap` apart.
+        let mut rows = div()
+            .flex()
+            .flex_col()
+            .pl(density.group_gap())
+            .gap(density.row_gap());
         for entry in &entries {
             let key = (entry.kind, entry.target);
             let shown = self.perm_open == Some(key);
@@ -773,11 +783,12 @@ impl Body {
                 entry.kind,
                 dilla_client::features::server_admin::hex_id(&entry.target)
             );
+            // `.dw-admin-row`: `--row-gap` between its parts.
             let mut head = div()
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(layout::ROW_GAP)
+                .gap(density.row_gap())
                 .child(
                     Button::new(
                         SharedString::from(format!("perm-entry-{suffix}")),
@@ -811,7 +822,7 @@ impl Body {
                     })),
                 );
             }
-            panel = panel.child(head);
+            let mut group = div().flex().flex_col().gap(density.row_gap()).child(head);
             if shown {
                 let groups: Vec<GridGroup> = PERM_GROUPS
                     .iter()
@@ -831,7 +842,7 @@ impl Body {
                     })
                     .filter(|g| !g.rows.is_empty())
                     .collect();
-                panel = panel.child(
+                group = group.child(
                     PermissionGrid::new(
                         SharedString::from(format!("perm-grid-{suffix}")),
                         groups,
@@ -856,6 +867,10 @@ impl Body {
                     }),
                 );
             }
+            rows = rows.child(group);
+        }
+        if !entries.is_empty() {
+            panel = panel.child(rows);
         }
         if !options.is_empty() {
             let picked = self

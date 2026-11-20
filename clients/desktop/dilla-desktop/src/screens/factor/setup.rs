@@ -33,6 +33,7 @@ use dilla_desktop_ui::components::factor::{CodeList, code_list_columns, copy_tex
 use dilla_desktop_ui::components::onboarding::frame::{BodyParagraph, Part};
 use dilla_desktop_ui::components::qr_code::QrCode;
 use dilla_desktop_ui::components::text_field::TextField;
+use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
 
@@ -41,8 +42,10 @@ use super::frame::{Action, AuthFrame, body_para, error_line, link, nav_row};
 use crate::strings::{t, tf};
 use crate::tracked_box;
 
-/// The QR code's side and the gap to the key (FactorSetup.css `.dw-factor-key`).
+/// The QR code's side. app.css `.dw-factor-key` sets it `--group-gap` from the key, and `.dw-factor-key__text` sets the
+/// key's label `--row-gap` over its field: both the window's density.
 const QR_SIDE: f32 = 132.0;
+/// The gap between the factor dialog's banner and its body.
 const KEY_GAP: f32 = 16.0;
 /// The card's content width (400 − 2 × 28), for the code list's columns.
 const CARD_CONTENT: f32 = 344.0;
@@ -759,7 +762,11 @@ impl FactorSetupView {
         }
     }
 
-    fn body(&mut self, cx: &mut Context<Self>) -> (Vec<Part>, Option<Action>, Vec<AnyElement>) {
+    fn body(
+        &mut self,
+        density: Density,
+        cx: &mut Context<Self>,
+    ) -> (Vec<Part>, Option<Action>, Vec<AnyElement>) {
         let instance = self.instance.name.clone();
         let embedded = self.embedded();
         let mut body = Vec::new();
@@ -867,7 +874,7 @@ impl FactorSetupView {
                             &mut body,
                             div()
                                 .flex()
-                                .gap(px(KEY_GAP))
+                                .gap(density.group_gap())
                                 .items_start()
                                 .child(
                                     QrCode::new("factor-totp-qr", key.uri.as_str())
@@ -879,7 +886,7 @@ impl FactorSetupView {
                                         .min_w_0()
                                         .flex()
                                         .flex_col()
-                                        .gap(px(KEY_GAP / 2.0))
+                                        .gap(density.row_gap())
                                         .child(line(
                                             t("factor.totp.key"),
                                             text::XS,
@@ -1054,7 +1061,7 @@ fn push_part(body: &mut Vec<Part>, part: impl IntoElement + 'static) {
 impl Render for FactorSetupView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.title();
-        let (body, action, below) = self.body(cx);
+        let (body, action, below) = self.body(Density::of(window, cx), cx);
         let banner = self.problem.clone().map(|p| (BannerTone::Danger, p));
         if self.embedded() {
             let close_label = if self.step == Step::Codes {

@@ -41,8 +41,6 @@ pub mod layout {
     /// A manage-list row (`.d-manage-list__row`): 48px and 16px across, in a card of one hairline edge.
     pub const LIST_ROW_H: Pixels = px(48.0);
     pub const LIST_PAD_X: Pixels = px(16.0);
-    /// The space between a group's head and its card (`--row-gap`).
-    pub const HEAD_GAP: Pixels = px(2.0);
     /// The gap between the lines of a manage-list row's text (`.d-manage-list__text { display: grid; gap: 2px }`, packages/ui/src/ManageList/ManageList.css:7).
     pub const BAN_TEXT_GAP: Pixels = px(2.0);
     /// The width the ban-row wrapping test lays a row out in: the test's own chosen width, with no web source.

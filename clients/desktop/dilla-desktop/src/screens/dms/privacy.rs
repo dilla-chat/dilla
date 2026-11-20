@@ -55,7 +55,7 @@ pub fn section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
     if let Some(client) = &ctx.client {
         client.trust().start();
     }
-    let density = Density::Regular;
+    let density = Density::of(window, cx);
     let contacts = ctx.state.trust.contacts.clone();
     let n = contacts.len();
     let handles: Vec<gpui::FocusHandle> = (0..n).map(|i| compare_handle(wid, i, cx)).collect();
@@ -130,6 +130,13 @@ pub fn section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
                 .child(section_header(t("privacy.section"), None)),
         )
         .children(crate::screens::attachments::dm_gif_privacy(ctx, window, cx))
-        .child(div().flex().flex_col().children(rows))
+        // `ul.dw-trust-list`: its records `--group-gap` apart, the window's density.
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(density.group_gap())
+                .children(rows),
+        )
         .into_any_element()
 }
