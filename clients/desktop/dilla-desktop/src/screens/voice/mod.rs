@@ -1364,7 +1364,10 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
         ui.share_seq += 1;
         ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
         // The sound the share starts with is the person's choice or none, never one left waiting by an earlier share.
-        session.app_audio(ui.share_sound.chosen().cloned());
+        let asks = share_start_asks(&ui.share_sound);
+        for ask in asks.before.into_iter().chain(asks.after.map(Some)) {
+            session.app_audio(ask);
+        }
     }
     session.share(kind, true, options);
 }
@@ -1408,6 +1411,36 @@ pub fn set_share_app(
     }
 }
 
+/// What a share's start asks its media session for, as `[before the share, after it]` application sounds. Nothing but
+/// the person's choice is published (the window's own is added once it is found): an application left waiting by an
+/// earlier share that never came up is dropped by the `None` before, so what the sound row says is what the share
+/// carries. Only the choice itself is sent after.
+fn share_start_asks(sound: &ShareSound) -> StartAsks {
+    let chosen = sound.chosen().cloned();
+    StartAsks {
+        before: chosen.is_none().then_some(None),
+        after: chosen,
+    }
+}
+
+/// [`share_start_asks`]'s answer: `before` is sent ahead of the share (`Some(None)`: clear what waits), `after` once the
+/// share is on its way.
+struct StartAsks {
+    before: Option<Option<dilla_media::app_audio::AppSource>>,
+    after: Option<dilla_media::app_audio::AppSource>,
+}
+
+impl StartAsks {
+    /// The application sounds asked for, in order.
+    #[cfg(test)]
+    fn in_order(self) -> Vec<Option<dilla_media::app_audio::AppSource>> {
+        self.before
+            .into_iter()
+            .chain(self.after.map(Some))
+            .collect()
+    }
+}
+
 /// The picker's choice: `window`'s call shares `source` at `options` (only that window's media session).
 pub fn share_source(
     window: WindowId,
@@ -1425,21 +1458,20 @@ pub fn share_source(
     ui.share_seq += 1;
     let seq = ui.share_seq;
     ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
-    let person_app = ui.share_sound.chosen().cloned();
+    let ui_sound = ui.share_sound.clone();
     let look_up = (source.kind == dilla_media::sources::desktop::SourceKind::Window
         && ui.share_sound == ShareSound::Unset)
         .then(|| crate::screens::share_picker::apps::window_sound(cx))
         .flatten();
     if let Some(s) = &session {
-        // Nothing but the person's choice (or the window's, once found) is published: an application left waiting by an
-        // earlier share that never came up is dropped (what the sound row says is what the share carries).
-        if person_app.is_none() {
-            s.app_audio(None);
+        let asks = share_start_asks(&ui_sound);
+        if let Some(before) = asks.before {
+            s.app_audio(before);
         }
         s.share_source(source.clone(), options);
         // The sound section's application comes with the share.
-        if person_app.is_some() {
-            s.app_audio(person_app);
+        if asks.after.is_some() {
+            s.app_audio(asks.after);
         }
     }
     // A shared window brings its application's sound (D21): found off the UI thread, applied only to this share.
