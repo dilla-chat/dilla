@@ -1577,11 +1577,12 @@ fn an_announcement_scheduled_from_the_editor_is_listed(cx: &mut gpui::TestAppCon
     use std::rc::Rc;
 
     use dilla_client::features::bot::announcements::ScheduleKind;
+    use dilla_client::features::bot::{self, Plan};
     use dilla_client::features::roles::viewer_channel_bits;
     use dilla_client::state::CommunityId;
     use dilla_client::state::bot::{Conversation, ResultStatus};
     use dilla_client::state::bot_admin::sealed_operation;
-    use dilla_desktop::screens::commands::{self, announcement_form};
+    use dilla_desktop::screens::commands::{self, SendDecision, announcement_form};
     use dilla_desktop::slots::SlotCx;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1614,14 +1615,15 @@ fn an_announcement_scheduled_from_the_editor_is_listed(cx: &mut gpui::TestAppCon
     rt.block_on(client.bot_admin().mark_bot_channel(c, general))
         .expect("an answer")
         .expect("#general is marked a Bot channel");
-    // The Bot's catalog lists its announcement operations (the real catalog has no typed `/announcement` commands, so the
-    // commands run through the handler directly, as the picker would hand them over).
+    // The Bot's catalog lists the typed `/announcement` commands and its announcement operation, once its key is verified.
     let ready = |state: &dilla_client::state::AppState| {
-        state.bot.catalogs.get(&c).is_some_and(|v| {
-            v.fingerprint.is_some()
-                && v.commands
-                    .iter()
-                    .any(|x| u64::from(x.operation) == sealed_operation(50))
+        matches!(
+            bot::plan_in(state, Some(c), Some(general), "/announcement list"),
+            Plan::Bot { .. }
+        ) && state.bot.catalogs.get(&c).is_some_and(|v| {
+            v.commands
+                .iter()
+                .any(|x| u64::from(x.operation) == sealed_operation(50))
         })
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(90);
@@ -1667,17 +1669,10 @@ fn an_announcement_scheduled_from_the_editor_is_listed(cx: &mut gpui::TestAppCon
                    draft: &str,
                    drive: &mut dyn FnMut(&mut gpui::VisualTestContext)|
      -> (ResultStatus, String) {
-        let (name, argument) = match draft.split_once(" announcement:") {
-            Some((name, id)) => (name, Some(id)),
-            None => (draft, None),
-        };
-        let command =
-            announcement_form::Command::of(name.trim_start_matches('/')).expect("a command");
-        let mut args = dilla_client::features::bot::registry::Args::new();
-        if let Some(id) = argument {
-            args.insert("announcement".to_owned(), id.to_owned());
-        }
-        cx.update(|_, cx| announcement_form::run(&ctx, command, &args, window, cx));
+        assert_eq!(
+            cx.update(|_, cx| commands::on_send(&ctx, draft, &|t| t.to_owned(), window, cx)),
+            SendDecision::Handled
+        );
         sent += 1;
         for _ in 0..600 {
             cx.run_until_parked();

@@ -1,7 +1,8 @@
 //! `/announcement list|create|edit|delete` (Task 28; bot-handlers.ts `announcementHandler`, BotCommandDialogs.tsx
 //! `AnnouncementEditor`). The web runs the four through its own handler: the Bot keeps the schedules and the handler
-//! reads, saves and deletes them with sealed operations 50, 51 and 52. They are not typed catalog commands, which the
-//! Bot cannot read as a schedule.
+//! reads, saves and deletes them with sealed operations 50, 51 and 52 (the app operations 150, 151 and 152). The four are
+//! typed commands of the Bot's catalog (internal/bot/catalog/catalog.go), which the composer offers and this module
+//! handles in place of the ordinary typed-command run, which the Bot could not read as a schedule.
 //!
 //! - Every command ([`run`]): the command's pending row is added first and says how the command ended. Only in a
 //!   community channel where this member holds Manage Community and whose Bot offers announcements ([`check`]), else the
@@ -12,7 +13,10 @@
 //!   permission again and deletes.
 //! - `create` and `edit`: the editor opens ([`AnnouncementForm`]), the `text` argument prefilling the message. Save checks the fields in the
 //!   web's order ([`validate_schedule`]), then the permission again, and sends the one save of the editor's `parent`
-//!   request id; the editor closes as it sends, as the web's dialog does, and the row says what the Bot answered. Cancel,
+//!   request id. The editor stays open, its Save busy, until the Bot answers (the web closes its dialog and restores the draft
+//!   on a refusal; here it simply stays): an accepted save closes it, a refusal keeps the draft with the reason and the
+//!   next Save is a new request, and an answer that may have taken effect keeps the draft and the request id, so the next
+//!   Save resends it and the Bot answers what it did. The row says what the Bot answered. Cancel,
 //!   Escape, a click outside and leaving the conversation end the command with "Announcement editing cancelled.".
 //!
 //! The form's Debug gives no text: the message is decrypted content (R20, R21).
@@ -205,8 +209,10 @@ pub fn validate_schedule(
         },
         hour,
         minute,
-        // The Bot refuses a daily schedule that carries a weekday (recurrence.go `validate`), which the web's editor sends as
-        // today's: only a weekly schedule has one.
+        // A deliberate deviation from the web (Jonas, 2026-11-20): the Bot refuses a daily schedule that carries a weekday
+        // (internal/bot/announcements/recurrence.go:146-147), and the web's editor sends today's (BotCommandDialogs.tsx:38,
+        // :55-56), so its daily saves fail six days of seven. Only a weekly schedule has a weekday here, and a one-off, which
+        // the Bot ignores it for, sends 0 too.
         weekday: if form.kind == ScheduleKind::Weekly {
             weekday as u8
         } else {
@@ -378,17 +384,26 @@ impl AnnouncementForm {
         Some(self.parent)
     }
 
-    /// The save is answered: Save is enabled again. `keep_open` is false for an answer that may have taken effect, which
-    /// keeps its id (a resend settles that request); after any definitive answer the next save is a new request (R29: the
-    /// Bot would answer a stored refusal again).
-    pub fn end_save(&mut self, keep_open: bool) {
+    /// The save is answered: Save is enabled again. An accepted save closes the editor. A refusal leaves it open with its
+    /// draft, and the next save is a new request (R29: the Bot would answer a stored refusal again). An answer that may
+    /// have taken effect leaves it open too and keeps the id, so the next Save resends that request and the Bot answers
+    /// what it did (CommandHost.tsx restores the draft and holds the row).
+    pub fn end_save(&mut self, end: SaveEnd) {
         self.busy = false;
-        if keep_open {
-            self.parent = dilla_client::features::roles::request_id();
-        } else {
-            self.done = true;
+        match end {
+            SaveEnd::Accepted => self.done = true,
+            SaveEnd::Refused => self.parent = dilla_client::features::roles::request_id(),
+            SaveEnd::Uncertain => {}
         }
     }
+}
+
+/// How a save ended ([`AnnouncementForm::end_save`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveEnd {
+    Accepted,
+    Refused,
+    Uncertain,
 }
 
 /// What the command's answer asks the window to show, until its window draws it (an input is made with a window).
@@ -792,11 +807,12 @@ pub fn submit(w: WindowId, cx: &mut App) {
     };
     let (conversation, community, row) = (form.conversation, form.community, form.row);
     let (existing, list_revision) = (form.existing.clone(), form.list_revision);
-    // The web closes the dialog as it submits (the row carries the rest): the editor goes on the next frame.
-    form.done = true;
+    // The editor stays open, busy, until the Bot answers: only an accepted save closes it, so a refusal or an unsure answer
+    // finds its draft (and, if unsure, its request id) as the person left it.
     // The permission is read again as the save goes (`validateCurrent` after the dialog).
     let held = holds_manage(&client.state().borrow(), conversation.channel);
     if !held {
+        form.done = true;
         finish(
             Some(&client),
             w,
@@ -807,6 +823,15 @@ pub fn submit(w: WindowId, cx: &mut App) {
         );
         return;
     }
+    // A second attempt's row works again.
+    finish(
+        Some(&client),
+        w,
+        conversation,
+        row,
+        (ResultStatus::Pending, copy::pending("announcement create")),
+        cx,
+    );
     cx.spawn(async move |cx| {
         let answer = client
             .bot()
@@ -845,11 +870,18 @@ fn settled(
     if uncertain || outcome.0 == ResultStatus::Success {
         super::chips::announcements_changed(client);
     }
+    let (outcome_status, outcome_text) = (outcome.0, outcome.1.clone());
     finish(Some(client), w, conversation, row, outcome, cx);
     if let Some(form) = slot(w, cx).form.as_mut()
         && form.parent == parent
     {
-        form.end_save(!uncertain);
+        let end = match (&outcome_status, uncertain) {
+            (ResultStatus::Success, _) => SaveEnd::Accepted,
+            (_, true) => SaveEnd::Uncertain,
+            _ => SaveEnd::Refused,
+        };
+        form.end_save(end);
+        form.error = (end == SaveEnd::Refused).then_some(outcome_text);
     }
 }
 
@@ -1659,22 +1691,23 @@ mod tests {
         })
     }
 
-    /// While one save is out a second sends nothing; after a definitive answer the next save is a new request (R29: the Bot
-    /// would answer a stored refusal again), and only an answer that may have taken effect keeps its id and closes the
-    /// editor.
+    /// While one save is out a second sends nothing. An accepted save closes the editor; a refusal leaves it open and the
+    /// next save is a new request (R29); an answer that may have taken effect leaves it open and keeps its id.
     #[gpui::test]
     fn a_second_save_while_busy_sends_nothing(cx: &mut gpui::TestAppContext) {
         let mut form = form(cx);
         assert_eq!(form.begin_save(), Some([9; 16]));
         assert!(form.busy);
         assert_eq!(form.begin_save(), None, "a second press while it is out");
-        form.end_save(true);
-        assert!(!form.busy && !form.done);
+        form.end_save(SaveEnd::Refused);
+        assert!(!form.busy && !form.done, "a refusal leaves the editor open");
         let fresh = form.begin_save().expect("idle again");
-        assert_ne!(fresh, [9; 16], "a new request after a definitive answer");
-        form.end_save(false);
-        assert!(form.done, "an uncertain answer closes the editor");
-        assert_eq!(form.parent, fresh, "and keeps its id");
+        assert_ne!(fresh, [9; 16], "a new request after a refusal");
+        form.end_save(SaveEnd::Uncertain);
+        assert!(!form.busy && !form.done, "an unsure answer leaves it open");
+        assert_eq!(form.begin_save(), Some(fresh), "and keeps its id");
+        form.end_save(SaveEnd::Accepted);
+        assert!(form.done, "an accepted save closes it");
     }
 
     /// R20/R21: the editor and the opening hold the message; their Debug says how much, never what.

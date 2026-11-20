@@ -83,7 +83,7 @@ the active chip. Escape leaves command mode and keeps your text.
 | Search and conversation | `giphy [query]`, `dm <user>`, `invite`, `search <query> [scope]`, `topic <text>`, `thread <message>`, `reply <message> <text>`, `edit <message> <text>`, `delete <message> [reason]`, `pin <message>`, `unpin <message>` |
 | Voice and music | `join <voice-channel>`, `leave`, `mute`, `unmute`, `deafen`, `undeafen`, `play <query-or-url>`, `pause`, `resume`, `skip`, `stop`, `queue`, `nowplaying`, `seek <position>`, `volume <0..100>`, `shuffle <on|off>`, `repeat <off|one|all>`, `queue remove <item>`, `queue move <item> <position>`, `queue clear`, `music` |
 | Moderation | `kick <user>`, `ban <user> [duration] [reason]`, `unban <user>`, `timeout <user> <duration>`, `untimeout <user>`, `warn <user> <reason>`, `modlog`, `role add <user> <role>`, `role remove <user> <role>`, `selfrole list`, `selfrole add <role>`, `selfrole remove <role>`, `rolepanel create` |
-| Announcements | `announcement list`, `announcement create`, `announcement edit`, `announcement delete` |
+| Announcements | `announcement list`, `announcement create [text]`, `announcement edit <announcement> [text]`, `announcement delete <announcement>` (need the Announcements feature on and Manage Community) |
 | Polls and reminders | `poll create`, `poll vote`, `poll results`, `poll close`, `remind <when> <text>`, `reminders list`, `reminders cancel`, `reminders dismiss` |
 
 ![The command list](screenshots/signal-command-list.png)
@@ -96,6 +96,19 @@ the active chip. Escape leaves command mode and keeps your text.
 Ban also shows Duration and Reason; Kick has neither. **Cancel** adds a private
 **Not confirmed** row only for Kick and Ban. Closing another command’s dialog
 abandons it without that row. A permanent ban has no end date.
+
+**Scheduled announcements** need the Announcements feature on, a Bot channel as the
+place they post to, and the Manage Community permission. `/announcement list`
+answers one line per schedule (its id, the text and when it runs).
+`/announcement create` opens an editor: destination channel, message, whether it
+repeats once, daily or weekly, the date (once), the day of the week (weekly), the
+hour and minute, and the time zone. Save is checked against those limits first; a
+one-time announcement must be a whole minute in the future in its time zone.
+The editor stays open until the Bot accepts the schedule, so a refusal leaves your
+draft as you wrote it; if the Bot may or may not have taken it, Save again and the
+same request is settled, never run twice. `/announcement edit` and
+`/announcement delete` take the announcement from the suggestions; delete asks
+first. Daily and one-time schedules do not use the day of the week.
 
 Some commands open a dialog for actions with more choices. Voice/music
 commands target the voice channel you joined. Music playback selects the first

@@ -219,6 +219,10 @@ func TestEveryCatalogOperationHasASealedAdapter(t *testing.T) {
 		if !SealedOperationSupported(c.Operation) {
 			t.Fatalf("catalog command %q (operation %d) has no sealed adapter", c.Name, c.Operation)
 		}
+		// An announcement's typed command is a name for the composer: the app asks for the schedules with the read.
+		if catalog.IsTypedAnnouncement(c) {
+			continue
+		}
 		if read := c.HandlerKind == catalog.HandlerRead; read != sealedAdapters[c.Operation].read {
 			t.Fatalf("catalog command %q: handler kind %d but the adapter's read is %v", c.Name, c.HandlerKind, !read)
 		}
