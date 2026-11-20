@@ -973,6 +973,16 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
             gpui_component::input::InputState::new(window, cx)
                 .placeholder(t("gif.search.placeholder"))
         });
+        // `/giphy cats` opens the picker with its query ([`ui::open_gifs`]): the field starts with it, so it is not
+        // searched again as if the person had cleared it.
+        let query = ui::ui(cx)
+            .gif
+            .as_ref()
+            .map(|g| g.query.clone())
+            .unwrap_or_default();
+        if !query.is_empty() {
+            input.update(cx, |s, cx| s.set_value(query, window, cx));
+        }
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         if let Some(g) = ui::ui(cx).gif.as_mut() {

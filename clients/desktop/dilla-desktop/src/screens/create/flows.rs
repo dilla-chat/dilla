@@ -157,6 +157,10 @@ pub struct CreateFlows {
     partial: Option<Partial>,
     invite_state: InviteState,
     invite_status: Option<SharedString>,
+    /// What a `/invite` waits for ([`super::open_invite_then`]): handed in just before the dialog opens, then answered by
+    /// its link or its close.
+    pub(super) invite_waiting: Option<super::InviteDone>,
+    invite_done: Option<super::InviteDone>,
     /// The invite the join dialog opened with (its refusal stays until the person types).
     prefilled: Option<String>,
     /// Counts the opens; work from an earlier one is ignored once its dialog closed.
@@ -220,6 +224,8 @@ impl CreateFlows {
             partial: None,
             invite_state: InviteState::Creating,
             invite_status: None,
+            invite_waiting: None,
+            invite_done: None,
             prefilled: None,
             session: 0,
             first_choice: cx.focus_handle().tab_stop(true),
@@ -300,14 +306,21 @@ impl CreateFlows {
             Open::Invite { community } => {
                 self.dialog = Some(Dialog::Invite);
                 self.community = Some(community);
+                self.invite_done = self.invite_waiting.take();
                 self.make_invite(community, window, cx);
             }
+        }
+        // A waiter that no invite dialog took (any other opening) is closed unanswered.
+        if let Some(done) = self.invite_waiting.take() {
+            done(false, cx);
         }
         cx.notify();
     }
 
     /// Closes the dialog and forgets what it held (each open starts empty).
     fn close_quietly(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An invite that never showed its link ends here (CommandHost.tsx `onClose`: `resolve(false)`).
+        self.settle_invite(false, cx);
         self.session += 1;
         self.dialog = None;
         self.error = None;
@@ -861,6 +874,7 @@ impl CreateFlows {
             .map(|i| i.url.clone());
         if let Some(url) = held {
             self.invite_state = InviteState::Ready(url.clone());
+            self.settle_invite(true, cx);
             self.copy(&url, cx);
             return;
         }
@@ -876,6 +890,7 @@ impl CreateFlows {
                 match made {
                     Ok(invite) => {
                         this.invite_state = InviteState::Ready(invite.url.clone());
+                        this.settle_invite(true, cx);
                         if opened.elapsed().as_millis() <= AUTO_COPY_MS {
                             this.copy(&invite.url, cx);
                         }
@@ -895,6 +910,13 @@ impl CreateFlows {
             });
         })
         .detach();
+    }
+
+    /// Answers the `/invite` waiting on this dialog, once: `true` as its link shows, `false` as it closes without one.
+    fn settle_invite(&mut self, created: bool, cx: &mut Context<Self>) {
+        if let Some(done) = self.invite_done.take() {
+            done(created, cx);
+        }
     }
 
     fn copy(&mut self, url: &str, cx: &mut Context<Self>) {

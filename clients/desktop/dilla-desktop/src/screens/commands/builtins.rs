@@ -13,9 +13,16 @@
 //! Task 25: the role commands, `/role add|remove` and `/selfrole list|add|remove` (builtin.ts:265-271, :395-413). A
 //! role grant or revocation checks the role and the member again as it runs; a self role is picked only from the roles
 //! read as the command runs. The server stays the authority on both.
+//!
+//! Task 24: the navigation, UI-opening and voice commands, `/giphy /invite /search /thread /dm /modlog /join /leave /mute
+//! /unmute /deafen /undeafen` (builtin.ts:88-130, :153-162, :272-277, :400-408). Each opens its screen or changes the
+//! call and answers its row; `/dm`, `/invite` and `/join` answer when the thing they wait for has ended.
 
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
+use dilla_client::calls::CallPhase;
 use dilla_client::features::bot::{self, Ask, Builtin, GateAction, RemovalStep};
 use dilla_client::features::moderation::{self, Evidence, Moderation, Removal, RemovalOutcome};
 use dilla_client::features::roles::{perm, request_id, viewer_channel_bits};
@@ -30,6 +37,12 @@ use zeroize::Zeroizing;
 
 use crate::screens::messages::composing::MAX_LEN;
 use crate::slots::SlotCx;
+
+/// builtin.ts `waitForVoiceJoin`: how long `/join` waits for the call before its row says the join is still pending.
+const JOIN_ANSWER_WAIT: Duration = Duration::from_secs(35);
+
+/// The row's answer once the join is neither done nor failed (builtin.ts:304; also a join cancelled without a notice).
+const JOIN_PENDING: &str = "Voice join is still pending. Check the call before trying again.";
 
 /// The moderation excerpt's budget in UTF-8 bytes (builtin.test.ts:204, the worker's limit).
 const EXCERPT_MAX_BYTES: usize = 512;
@@ -330,7 +343,205 @@ pub fn run(
                 })
                 .detach();
         }
+        Builtin::Giphy { query } => {
+            let community = client
+                .state()
+                .borrow()
+                .channel(channel)
+                .map(|c| c.community_id);
+            let Some(community) = community else {
+                return finish(failed(
+                    "GIF search is available only in a community channel.",
+                ));
+            };
+            crate::screens::attachments::ui::open_gifs(
+                client.clone(),
+                window,
+                channel,
+                community,
+                query,
+                cx,
+            );
+            finish((ResultStatus::Success, "GIF search opened.".to_owned()));
+        }
+        Builtin::Invite { community } => {
+            // The row waits for the dialog: its link shows (created), or it closes first (cancelled).
+            crate::screens::create::open_invite_then(
+                window,
+                community,
+                Box::new(move |created, _| {
+                    finish(if created {
+                        (
+                            ResultStatus::Success,
+                            "Invite created and shown privately.".to_owned(),
+                        )
+                    } else {
+                        failed("Invite creation cancelled.")
+                    });
+                }),
+                cx,
+            );
+        }
+        Builtin::Search { query } => {
+            crate::screens::search::request_open_with(window, query, cx);
+            finish((ResultStatus::Success, "Search opened.".to_owned()));
+        }
+        Builtin::Thread { root } => {
+            crate::screens::threads::open_thread(channel, root, ctx, cx);
+            finish((ResultStatus::Success, "Thread opened.".to_owned()));
+        }
+        Builtin::Dm { user } => open_dm(&client, user, channel, window, finish, cx),
+        Builtin::Modlog { community } => {
+            super::modlog_dialog::open(window, community, conversation, cx);
+            finish((
+                ResultStatus::Success,
+                "Moderation history opened.".to_owned(),
+            ));
+        }
+        Builtin::Join { channel: target } => join(&client, target, window, finish, cx),
+        Builtin::Leave => {
+            crate::screens::voice::leave(window, cx);
+            finish((ResultStatus::Success, "Left voice.".to_owned()));
+        }
+        Builtin::Voice { muted, deafened } => {
+            finish(set_voice(&client, muted, deafened));
+        }
     }
+}
+
+/// A command typed in a fixture window, which has no client: only `/modlog` has anything to show without one (its dialog
+/// draws from the fixture's state), and its row ends as a client's would. The others stay pending, as before.
+pub fn run_in_fixture(
+    run: Builtin,
+    row: u64,
+    conversation: Conversation,
+    window: gpui::WindowId,
+    cx: &mut App,
+) {
+    if let Builtin::Modlog { community } = run {
+        super::modlog_dialog::open(window, community, conversation, cx);
+        super::finish_fixture_row(
+            window,
+            row,
+            ResultStatus::Success,
+            "Moderation history opened.".to_owned(),
+            cx,
+        );
+    }
+}
+
+/// builtin.ts `dm` (:98-106): opens (or makes) the direct message with `user` and goes there, unless the window moved off
+/// `channel`, the conversation the command was typed in, while it was made.
+fn open_dm(
+    client: &Rc<Client>,
+    user: UserId,
+    channel: ChannelId,
+    window: gpui::WindowId,
+    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    cx: &mut App,
+) {
+    let answer = client.dms().open_dm(user);
+    let handle = cx.windows().into_iter().find(|h| h.window_id() == window);
+    cx.spawn(async move |cx| {
+        let Ok(Ok(dm)) = answer.await else {
+            return finish(failed("Could not open that direct message."));
+        };
+        let current = cx.update(|cx| crate::screens::threads::channel_of(window, cx));
+        if current != Some(channel) {
+            return finish(failed(
+                "The direct message was opened, but navigation was skipped because the conversation changed.",
+            ));
+        }
+        let went = handle.is_some_and(|handle| {
+            gpui::AppContext::update_window(cx, handle, |_, window, cx| {
+                crate::screens::dms::navigate(crate::screens::dms::Nav::Dm(dm), window, cx);
+            })
+            .is_ok()
+        });
+        finish(if went {
+            (ResultStatus::Success, "Direct message opened.".to_owned())
+        } else {
+            failed("The direct message was opened, but navigation was skipped because the conversation changed.")
+        });
+    })
+    .detach();
+}
+
+/// builtin.ts `join` and `waitForVoiceJoin` (:128-130, :294-307): joins `target` and answers once the call is joined, the
+/// join failed (with the notice's key) or [`JOIN_ANSWER_WAIT`] passed. A call already in `target` is joined.
+fn join(
+    client: &Rc<Client>,
+    target: ChannelId,
+    window: gpui::WindowId,
+    finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
+    cx: &mut App,
+) {
+    let joined = (ResultStatus::Success, "Joined voice.".to_owned());
+    {
+        let state = client.state();
+        let state = state.borrow();
+        if state.voice.call.channel == Some(target) && state.voice.phase() == CallPhase::In {
+            return finish(joined);
+        }
+    }
+    // The join's answer and the wait race for the row: the first one ends it.
+    type Row = Rc<RefCell<Option<Box<dyn FnOnce((ResultStatus, String))>>>>;
+    let row: Row = Rc::new(RefCell::new(Some(Box::new(finish))));
+    let end = {
+        let row = row.clone();
+        move |answer: (ResultStatus, String)| {
+            if let Some(finish) = row.borrow_mut().take() {
+                finish(answer);
+            }
+        }
+    };
+    let on_join = end.clone();
+    crate::screens::voice::join_then(
+        target,
+        window,
+        Box::new(move |joined_or_not, _| {
+            on_join(match joined_or_not {
+                Ok(()) => joined,
+                Err(e) => match crate::screens::voice::join_failure_key(&e) {
+                    Some(key) => failed(&format!("Could not join voice ({key}).")),
+                    // A join someone cancelled says nothing, and neither does one a trust refusal explains elsewhere.
+                    None => failed(JOIN_PENDING),
+                },
+            });
+        }),
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(JOIN_ANSWER_WAIT).await;
+        end(failed(JOIN_PENDING));
+    })
+    .detach();
+}
+
+/// builtin.ts `setVoice` (:442-450): the call ends muted and deafened as asked. The deafen is set first, as the web
+/// toggles it first, and the mute only where it then differs (a deafened device is muted too, and unmuting one undeafens
+/// it: `Voice::set_muted`).
+fn set_voice(client: &Rc<Client>, muted: bool, deafened: bool) -> (ResultStatus, String) {
+    let (in_call, self_mute, self_deaf) = {
+        let state = client.state();
+        let state = state.borrow();
+        (
+            state.voice.phase() == CallPhase::In,
+            state.voice.self_mute,
+            state.voice.self_deaf,
+        )
+    };
+    if !in_call {
+        return failed("Join a voice call first.");
+    }
+    let voice = client.voice();
+    if self_deaf != deafened {
+        voice.set_deafened(deafened);
+    }
+    if (self_mute || deafened) != muted {
+        voice.set_muted(muted);
+    }
+    (ResultStatus::Success, "Voice settings updated.".to_owned())
 }
 
 /// builtin.ts `selfrole list` (:267-271): each offered role as `[x] {name}` (held) or `[ ] {name}`, in the order read.

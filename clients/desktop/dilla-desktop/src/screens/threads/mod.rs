@@ -181,6 +181,12 @@ fn current(window: WindowId, cx: &mut App) -> Option<SlotCx> {
     ui(cx).windows.get(&window)?.ctx.clone()
 }
 
+/// The channel `window`'s shell last drew (`None` before it drew, or where it shows no conversation): what a command that
+/// finished after an `await` checks the conversation it was typed in against (CommandHost.tsx `isCurrent`).
+pub fn channel_of(window: WindowId, cx: &mut App) -> Option<ChannelId> {
+    current(window, cx)?.channel
+}
+
 /// The open thread: the client's, or a fixture's own.
 fn open_of(ctx: &SlotCx, cx: &mut App) -> Option<OpenThread> {
     if ctx.client.is_some() {

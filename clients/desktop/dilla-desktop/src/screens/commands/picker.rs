@@ -242,14 +242,14 @@ pub fn bot_name(state: &AppState, community: Option<CommunityId>) -> String {
         .map_or_else(|| copy::AUTHOR_BOT.to_owned(), str::to_owned)
 }
 
-/// Whether the community's GIF search is on (Task 12's setting); until that area publishes it, `/giphy` stays unlisted,
-/// as the web lists it only with GIFs enabled.
-fn gifs_enabled(_state: &AppState, _community: Option<CommunityId>) -> bool {
-    false
-}
-
 /// The commands the picker offers in `community` (the host's `definitions`): the available built-ins, then the Bot's.
-pub fn definitions(state: &AppState, community: Option<CommunityId>) -> Vec<CommandDefinition> {
+/// `/giphy` is listed only with `gifs` (the community's GIFs are on: [`crate::screens::attachments::ui::gif_on`],
+/// CommandHost.tsx:186).
+pub fn definitions_in(
+    state: &AppState,
+    community: Option<CommunityId>,
+    gifs: bool,
+) -> Vec<CommandDefinition> {
     // The member's bits in the server once its access is read (`/kick`, `/ban` and the other permission-gated
     // built-ins are listed only then, as `commandAvailability` fails closed on unknown bits).
     let bits = community
@@ -262,8 +262,7 @@ pub fn definitions(state: &AppState, community: Option<CommunityId>) -> Vec<Comm
     let mut out: Vec<CommandDefinition> = registry::commands()
         .iter()
         .filter(|c| {
-            (c.id != "giphy" || gifs_enabled(state, community))
-                && registry::command_availability(c, &context).is_ok()
+            (c.id != "giphy" || gifs) && registry::command_availability(c, &context).is_ok()
         })
         .cloned()
         .collect();
@@ -271,6 +270,12 @@ pub fn definitions(state: &AppState, community: Option<CommunityId>) -> Vec<Comm
         out.extend(registry::bot_command_definitions(&view.commands));
     }
     out
+}
+
+/// [`definitions_in`] with GIFs off: the list as a test that does not look for `/giphy` reads it.
+#[cfg(test)]
+pub fn definitions(state: &AppState, community: Option<CommunityId>) -> Vec<CommandDefinition> {
+    definitions_in(state, community, false)
 }
 
 /// `botSince`: the 24-hour local time of a Bot status's since, or "—".
@@ -327,11 +332,12 @@ pub fn list(
     community: Option<CommunityId>,
     draft: &str,
     zone: crate::format::Zone,
+    gifs: bool,
 ) -> Option<Vec<Row>> {
     if !draft.starts_with('/') || draft.starts_with("//") {
         return None;
     }
-    let defs = definitions(state, community);
+    let defs = definitions_in(state, community, gifs);
     let mut parse_set: Vec<&CommandDefinition> = defs.iter().collect();
     parse_set.extend(
         registry::commands()
@@ -516,7 +522,7 @@ mod tests {
     #[test]
     fn the_slash_lists_built_ins_first_in_registry_order() {
         let (s, c) = state(BotStatusState::Ready, Some(vec![]));
-        let rows = list(&s, Some(c), "/", &utc).unwrap();
+        let rows = list(&s, Some(c), "/", &utc, false).unwrap();
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -559,10 +565,30 @@ mod tests {
         assert_eq!(rows[3].entry.args, "opens a form");
     }
 
+    /// CommandHost.tsx:186: `/giphy` is offered only where the community's GIFs are on, and nowhere else.
+    #[test]
+    fn giphy_is_listed_only_where_gifs_are_on() {
+        let (s, c) = state(BotStatusState::Ready, Some(vec![]));
+        let ids = |gifs| -> Vec<String> {
+            definitions_in(&s, Some(c), gifs)
+                .into_iter()
+                .map(|d| d.id)
+                .collect()
+        };
+        assert!(!ids(false).contains(&"giphy".to_owned()));
+        assert!(ids(true).contains(&"giphy".to_owned()));
+        // Nothing else depends on it.
+        let mut with = ids(true);
+        with.retain(|id| id != "giphy");
+        assert_eq!(with, ids(false));
+        let row = |gifs| list(&s, Some(c), "/giph", &utc, gifs).unwrap().len();
+        assert_eq!((row(false), row(true)), (0, 1), "the list follows");
+    }
+
     #[test]
     fn a_query_lists_prefix_matches_then_substrings() {
         let (s, c) = state(BotStatusState::Ready, Some(vec![]));
-        let ids: Vec<String> = list(&s, Some(c), "/re", &utc)
+        let ids: Vec<String> = list(&s, Some(c), "/re", &utc, false)
             .unwrap()
             .into_iter()
             .map(|r| r.id)
@@ -577,29 +603,29 @@ mod tests {
                 "poll create"
             ]
         );
-        let ids: Vec<String> = list(&s, Some(c), "/flip", &utc)
+        let ids: Vec<String> = list(&s, Some(c), "/flip", &utc, false)
             .unwrap()
             .into_iter()
             .map(|r| r.id)
             .collect();
         assert_eq!(ids, ["tableflip", "unflip"]);
-        assert_eq!(list(&s, Some(c), "/zzz", &utc).unwrap(), vec![]);
+        assert_eq!(list(&s, Some(c), "/zzz", &utc, false).unwrap(), vec![]);
     }
 
     #[test]
     fn the_list_closes_on_text_double_slash_and_a_typed_command_with_arguments() {
         let (s, c) = state(BotStatusState::Ready, None);
-        assert!(list(&s, Some(c), "hello", &utc).is_none());
-        assert!(list(&s, Some(c), "//shrug", &utc).is_none());
-        assert!(list(&s, Some(c), "/me waves", &utc).is_none());
-        assert_eq!(list(&s, Some(c), "/me 1", &utc), None);
-        assert_eq!(list(&s, Some(c), "/x1", &utc), Some(vec![]));
+        assert!(list(&s, Some(c), "hello", &utc, false).is_none());
+        assert!(list(&s, Some(c), "//shrug", &utc, false).is_none());
+        assert!(list(&s, Some(c), "/me waves", &utc, false).is_none());
+        assert_eq!(list(&s, Some(c), "/me 1", &utc, false), None);
+        assert_eq!(list(&s, Some(c), "/x1", &utc, false), Some(vec![]));
     }
 
     #[test]
     fn bot_commands_are_greyed_with_the_reason_and_stay_listed() {
         let (s, c) = state(BotStatusState::Offline, None);
-        let rows = list(&s, Some(c), "/", &utc).unwrap();
+        let rows = list(&s, Some(c), "/", &utc, false).unwrap();
         let remind = rows.iter().find(|r| r.id == "remind").unwrap();
         assert_eq!(
             remind.reason.as_deref(),
@@ -613,7 +639,7 @@ mod tests {
                 .is_none()
         );
         let (s, c) = state(BotStatusState::Ready, Some(vec![]));
-        let rows = list(&s, Some(c), "/poll", &utc).unwrap();
+        let rows = list(&s, Some(c), "/poll", &utc, false).unwrap();
         assert_eq!(
             rows[0].reason.as_deref(),
             Some("Mark a channel as a Bot channel first")
@@ -623,7 +649,7 @@ mod tests {
             Some(vec![dilla_client::state::ChannelId([2; 16])]),
         );
         assert!(
-            list(&s, Some(c), "/poll", &utc).unwrap()[0]
+            list(&s, Some(c), "/poll", &utc, false).unwrap()[0]
                 .reason
                 .is_none()
         );
@@ -632,7 +658,7 @@ mod tests {
     #[test]
     fn a_dm_lists_no_community_commands() {
         let (s, _) = state(BotStatusState::Ready, None);
-        let ids: Vec<String> = list(&s, None, "/", &utc)
+        let ids: Vec<String> = list(&s, None, "/", &utc, false)
             .unwrap()
             .into_iter()
             .map(|r| r.id)

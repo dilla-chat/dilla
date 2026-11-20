@@ -276,6 +276,8 @@ pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyEleme
     out.extend(commands::poll_form::overlay(ctx, window, cx));
     // The announcement editor and the deletion's question (Task 28).
     out.extend(commands::announcement_form::overlay(ctx, window, cx));
+    // The moderation history `/modlog` opens (Task 24).
+    out.extend(commands::modlog_dialog::overlay(ctx, window, cx));
     // The screen-share picker (parity Package 2), over everything of its window.
     out.extend(crate::screens::share_picker::overlay(window, cx));
     out

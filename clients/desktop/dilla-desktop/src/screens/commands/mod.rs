@@ -18,6 +18,7 @@ pub mod chips;
 pub mod confirm;
 pub mod copy;
 pub mod keys;
+pub mod modlog_dialog;
 pub mod picker;
 pub mod poll_form;
 pub mod reminders;
@@ -132,6 +133,7 @@ pub fn release_windows(windows: &[gpui::WindowId], cx: &mut App) {
         poll_form::forget_window(window, cx);
         announcement_form::forget_window(window, cx);
     }
+    modlog_dialog::release_windows(windows, cx);
 }
 
 /// The composer of `window` reports its draft on every change. A new draft moves the highlight back to the first row
@@ -323,17 +325,34 @@ fn list_items(rows: &[picker::Row]) -> Vec<ListItem> {
         .collect()
 }
 
+/// Whether `ctx`'s community has GIF search on: `/giphy` is listed only then (CommandHost.tsx:186). The first ask reads the
+/// instance, and the picker draws again when it answers ([`crate::screens::attachments::ui::gif_on`]).
+pub fn gifs_on(ctx: &SlotCx, cx: &mut App) -> bool {
+    match (&ctx.client, ctx.community) {
+        (Some(client), Some(community)) => {
+            crate::screens::attachments::ui::gif_on(client, community, cx)
+        }
+        _ => false,
+    }
+}
+
 /// The command picker over the composer (`slots::composer_popup`).
 pub fn picker(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
     let state = crate::per_window::get::<PickerState>(wid, cx)?.clone();
     // A picked command's chips: the popup is the active chip's suggestions instead of the list.
     if let Some(chips) = &state.chips {
-        return chips::popup(ctx, chips, wid);
+        return chips::popup(ctx, chips, gifs_on(ctx, cx), wid);
     }
     let (zone, _) = zone_of(ctx.clock);
-    let rows = picker::list(&ctx.state, ctx.community, &state.draft, &zone)
-        .filter(|_| state.closed_for.as_deref() != Some(state.draft.as_str()));
+    let rows = picker::list(
+        &ctx.state,
+        ctx.community,
+        &state.draft,
+        &zone,
+        gifs_on(ctx, cx),
+    )
+    .filter(|_| state.closed_for.as_deref() != Some(state.draft.as_str()));
     let shown = rows
         .as_ref()
         .map(|r| r.iter().map(|r| r.id.clone()).collect::<Vec<_>>());
@@ -533,7 +552,7 @@ pub fn on_send(
                 ),
                 // A fixture has no client to run it with.
                 None if client.is_some() => builtins::run(run, row, conversation, ctx, window, cx),
-                None => {}
+                None => builtins::run_in_fixture(run, row, conversation, window, cx),
             }
             SendDecision::Handled
         }
@@ -625,6 +644,22 @@ fn add_fixture_row(
         },
     ));
     id
+}
+
+/// A fixture window's row `row` ends as `status` with `text` (a built-in that needs no client ran).
+pub(super) fn finish_fixture_row(
+    window: gpui::WindowId,
+    row: u64,
+    status: ResultStatus,
+    text: String,
+    cx: &mut App,
+) {
+    for (_, r) in &mut crate::per_window::get_mut::<FixtureRows>(window, cx).0 {
+        if r.id == row {
+            r.status = status;
+            r.text.clone_from(&text);
+        }
+    }
 }
 
 /// A fixture window's row `row` goes (its question was cancelled or abandoned).

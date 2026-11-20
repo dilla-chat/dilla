@@ -1275,6 +1275,20 @@ pub fn toggle_gifs(
         cx.refresh_windows();
         return;
     }
+    open_gifs(client, owner, channel, community, String::new(), cx);
+}
+
+/// Opens the GIF picker of `channel` in `community` with `query` in its search field and searches it (`/giphy`,
+/// CommandHost.tsx `openGif(query)`). Unlike [`toggle_gifs`] it never closes: one that is open is replaced, so the
+/// command always shows its search.
+pub fn open_gifs(
+    client: Rc<Client>,
+    owner: WindowId,
+    channel: ChannelId,
+    community: CommunityId,
+    query: String,
+    cx: &mut App,
+) {
     ui(cx).gif = Some(GifState {
         channel: Some(channel),
         community: Some(community),
@@ -1282,7 +1296,8 @@ pub fn toggle_gifs(
         owner: Some(owner),
         ..GifState::default()
     });
-    search_gifs(String::new(), false, cx);
+    // The field is made as the picker first draws, with this query in it (`gif_overlay`).
+    search_gifs(query, false, cx);
 }
 
 /// The DM GIF notice (DmGifPrivacy.test.tsx): it names the server a 1:1 DM's GIFs would go through; nothing is

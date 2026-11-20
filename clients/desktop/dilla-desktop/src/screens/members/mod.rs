@@ -1375,9 +1375,13 @@ fn log_date(seconds: &str) -> String {
     }
 }
 
-fn moderation_log_section(
+/// The moderation log (`ModerationLog.tsx`). Its settings page opens with the page's own `section_head`; `in_dialog` is
+/// the `/modlog` dialog's body, where the web's component draws its own `<h3>` (`showHeading` is true there): the
+/// browser's default h3, 1.17 times the dialog's `--text-ui`, bold, with a 1em margin each side.
+pub(crate) fn moderation_log_section(
     ctx: &SlotCx,
     community: CommunityId,
+    in_dialog: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -1398,11 +1402,30 @@ fn moderation_log_section(
         .flex()
         .flex_col()
         .gap(space::S10)
-        .child(section_head(t("admin.bot.moderationLog.title"), None))
+        .child(if in_dialog {
+            let size = text::UI * 1.17;
+            // 1em above and below; the column's own gap already gives the 10px of the bottom one.
+            div().mt(size).mb(size - space::S10).child(
+                line(
+                    t("admin.bot.moderationLog.title").to_owned(),
+                    size,
+                    dilla_desktop_ui::text::root_line_height(size),
+                    color::FG_2,
+                )
+                .weight(font::WEIGHT_DISPLAY),
+            )
+        } else {
+            section_head(t("admin.bot.moderationLog.title"), None)
+        })
         .child(
             div()
                 .flex()
-                .gap(space::S8)
+                // The web's two buttons are inline, side by side (the settings page lays them 8px apart).
+                .gap(if in_dialog {
+                    gpui::Pixels::default()
+                } else {
+                    space::S8
+                })
                 .child(
                     Button::new(
                         "modlog-automatic",
@@ -1509,7 +1532,7 @@ pub fn settings_section(
         }
         SectionId::Server(ServerSection::Bans) => bans_section(ctx, community, window, cx),
         SectionId::Server(ServerSection::ModerationLog) => {
-            moderation_log_section(ctx, community, window, cx)
+            moderation_log_section(ctx, community, false, window, cx)
         }
         _ => div().into_any_element(),
     }

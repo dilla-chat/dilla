@@ -78,6 +78,17 @@ fn parity_commands_reminders_b() {
     dilla_parity::screen::assert_screen(&fixture("commands/reminders-b.json")).unwrap();
 }
 
+/// `/modlog` (CommandHost.tsx:411, Decision D1): the moderation history opens in a dialog over the channel, the row under
+/// the log saying so.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_commands_modlog_dialog() {
+    dilla_parity::screen::assert_screen(&fixture("commands/modlog-dialog.json")).unwrap();
+}
+
 /// `/delete` of Ada's own message asks first (builtin.ts:142, CommandHost.tsx's `ConfirmDialog`): "Delete this message?"
 /// over the channel, its row working under the log.
 #[test]
@@ -1110,6 +1121,59 @@ fn message_commands_reply_edit_pin_and_delete() {
     );
     succeeded(&mut app);
 
+    drop(app);
+    member.stop();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// builtin.ts `dm` (:98-106) in the window: `/dm` naming Bea, from #general of Midgard, opens (or makes) the direct message
+/// with her and goes there. The DM's composer names her.
+#[test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn a_dm_command_opens_the_conversation() {
+    use dilla_client::state::CommunityId;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t24-dm", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t24-dm"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t24-dm"));
+    let community = CommunityId(world::community(&host, &ada, "Midgard", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let member = rt.block_on(world::start(&bea));
+    let bea_id = rt.block_on(world::wait_for(
+        &member,
+        Duration::from_secs(30),
+        "Bea's own id",
+        |s| s.account.user_id.is_some() && s.channel_named(community, "general").is_some(),
+    ));
+    let bea_hex = bea_id.account.user_id.unwrap().hex();
+
+    let root = scratch_dir("t24-dm-app");
+    let mut app = Driver::launch(&root);
+    sign_in_app(&mut app, &host, &mut ada);
+    app.type_text("composer", &format!("/dm user:{bea_hex}"));
+    app.wait_idle();
+    if app.element("command-picker").is_some() {
+        app.press("escape");
+        app.wait_idle();
+    }
+    app.press("enter");
+    // The route is the DM with Bea: its composer is named for her (shell.dm.composer). The command's row stays in the
+    // conversation it was typed in, so it is not on screen here: the window goes there only after the DM was opened, and
+    // the row's success is written right after that.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !app.a11y_tree().has("MultilineTextInput", "message Bea") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the window never went to the DM with Bea"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
     drop(app);
     member.stop();
     let _ = std::fs::remove_dir_all(&root);

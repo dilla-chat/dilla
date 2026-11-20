@@ -913,7 +913,8 @@ fn definition(
     community: Option<CommunityId>,
     id: &str,
 ) -> Option<CommandDefinition> {
-    picker::definitions(state, community)
+    // A chip's command was offered when it was picked, `/giphy` with the GIFs on; it is found whatever they are now.
+    picker::definitions_in(state, community, true)
         .into_iter()
         .find(|d| d.id == id)
 }
@@ -1056,7 +1057,7 @@ fn bans_asked() -> std::sync::MutexGuard<'static, BansAsked> {
 }
 
 /// The suggestions of `chips`' active field in the conversation of `ctx` (`None`: the command has no field, or went).
-pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
+pub fn offer(ctx: &SlotCx, chips: &Chips, gifs: bool) -> Option<Offered> {
     let definition = definition(&ctx.state, ctx.community, &chips.command)?;
     let last = definition.options.len().checked_sub(1)?;
     let option = &definition.options[chips.active.min(last)];
@@ -1067,7 +1068,7 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         .unwrap_or_default();
     let listed: Vec<(String, Entry)> = if suggest_for(&definition, option) == Suggest::Command {
         let bot_name = picker::bot_name(&ctx.state, ctx.community);
-        picker::definitions(&ctx.state, ctx.community)
+        picker::definitions_in(&ctx.state, ctx.community, gifs)
             .iter()
             .map(|d| (d.id.clone(), picker::entry(d, &bot_name)))
             .collect()
@@ -1266,10 +1267,15 @@ pub const SUGGESTION_IDS: [&str; MAX_SUGGESTIONS] = [
 
 /// The active chip's suggestions over the composer (`CommandSuggestions`, in `slots::composer_popup` while chips show):
 /// a row clicked goes in the field as Tab would put it; `None` with nothing to suggest.
-pub fn popup(ctx: &SlotCx, chips: &Chips, window: gpui::WindowId) -> Option<AnyElement> {
+pub fn popup(
+    ctx: &SlotCx,
+    chips: &Chips,
+    gifs: bool,
+    window: gpui::WindowId,
+) -> Option<AnyElement> {
     use dilla_desktop_ui::components::commands::list::{PICKER_GAP, PICKER_INSET_X};
     use dilla_desktop_ui::components::commands::suggestions::{CommandSuggestions, SuggestionItem};
-    let offer = offer(ctx, chips)?;
+    let offer = offer(ctx, chips, gifs)?;
     if offer.items.is_empty() {
         return None;
     }
@@ -1398,7 +1404,7 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
         None => (entry.description.clone(), BarTone::Info),
     };
     // The active field's suggestions, kept for the keys (`Chips::suggestion_key`); `popup` draws them.
-    let offer = offer(ctx, &chips);
+    let offer = offer(ctx, &chips, super::gifs_on(ctx, cx));
     if let Some(c) = super::picker_state_mut(wid, cx).chips.as_mut() {
         let text = c.values.get(c.active).cloned().unwrap_or_default();
         if c.sug_for != text {

@@ -180,6 +180,17 @@ pub fn request_open_in(window: WindowId, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// The text a command (`/search`) asks the window's palette to open with.
+#[derive(Default)]
+struct OpenQuery(Option<String>);
+
+/// Asks for `window`'s palette to open with `query` in its field, as `/search` does (Shell.tsx:2175 `openSearch`, which
+/// takes a scope the palette ignores). An open palette takes the query too.
+pub fn request_open_with(window: WindowId, query: String, cx: &mut App) {
+    crate::per_window::get_mut::<OpenQuery>(window, cx).0 = Some(query);
+    cx.refresh_windows();
+}
+
 /// What the palette remembers between frames, one per window.
 struct Palette {
     open: bool,
@@ -437,11 +448,15 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
     let env = env_of(wid, cx)?;
     let memory = palette_of(window, cx);
-    if std::mem::take(&mut crate::per_window::get_mut::<OpenRequest>(wid, cx).0)
-        && !memory.read(cx).open
+    let query = crate::per_window::get_mut::<OpenQuery>(wid, cx).0.take();
+    if (std::mem::take(&mut crate::per_window::get_mut::<OpenRequest>(wid, cx).0)
+        && !memory.read(cx).open)
+        || query.is_some()
     {
         let input = memory.read(cx).input.clone();
-        input.update(cx, |s, cx| s.set_value("", window, cx));
+        input.update(cx, |s, cx| {
+            s.set_value(query.unwrap_or_default(), window, cx)
+        });
         memory.update(cx, |p, _| {
             p.open = true;
             p.active = None;
@@ -795,6 +810,50 @@ mod tests {
             assert!(crate::per_window::get::<OpenRequest>(a, cx).is_some_and(|r| r.0));
             assert!(crate::per_window::get::<OpenRequest>(b, cx).is_none_or(|r| !r.0));
         });
+    }
+
+    /// `/search` (Shell.tsx:2175): the palette opens with the command's query in its field, in the window that asked; an
+    /// open palette takes a new query too.
+    #[gpui::test]
+    fn a_search_command_opens_the_palette_with_its_query(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let vcx = cx.add_empty_window();
+        let w = vcx.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            provide(
+                w,
+                SearchEnv {
+                    ctx: SlotCx::default(),
+                    navigate: std::rc::Rc::new(|_, _, _| NavOutcome::Done),
+                },
+                cx,
+            );
+            w
+        });
+        let shown = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                drop(palette(window, cx));
+                let seen = inspect(window, cx).expect("drawn");
+                (
+                    seen.open,
+                    palette_of(window, cx)
+                        .read(cx)
+                        .input
+                        .read(cx)
+                        .value()
+                        .to_string(),
+                )
+            })
+        };
+        assert_eq!(shown(vcx), (false, String::new()));
+        vcx.update(|_, cx| request_open_with(w, "harbour".into(), cx));
+        assert_eq!(shown(vcx), (true, "harbour".to_owned()));
+        vcx.update(|_, cx| request_open_with(w, "lantern".into(), cx));
+        assert_eq!(
+            shown(vcx),
+            (true, "lantern".to_owned()),
+            "an open palette takes it"
+        );
     }
 
     /// Re-review N2: a release forgets what the palette showed (decrypted snippets, their hits) and the query typed

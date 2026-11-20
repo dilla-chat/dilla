@@ -116,9 +116,6 @@ pub fn not_a_command(name: &str) -> String {
     format!("/{name} isn’t a command here. To post it as text, start with //.")
 }
 
-/// privateResultCopy `unavailable`.
-pub const UNAVAILABLE: &str = "This command is temporarily unavailable.";
-
 static NEXT_RESULT: AtomicU64 = AtomicU64::new(1);
 
 fn now_ms() -> u64 {
@@ -250,15 +247,13 @@ pub fn plan_in(
                         Plan::Post(format!("```{language}\n{text}\n```"))
                     }
                 }
-                // Left here: the navigation, UI-opening and voice built-ins (`/giphy /dm /invite /search /thread
-                // /join /leave /mute /unmute /deafen /undeafen /modlog`), which answer "unavailable" until their areas
-                // move onto [`Plan::Builtin`]; `every_builtin_has_a_handler` lists them exactly, and this arm goes
-                // with the last of them (`registry::commands()` is closed, so no other id reaches it).
-                _ => Plan::Private(
-                    ResultStatus::Failed,
-                    UNAVAILABLE.to_owned(),
-                    ResultProvider::Builtin,
-                ),
+                "giphy" | "invite" | "search" | "thread" | "dm" | "modlog" | "join" | "leave"
+                | "mute" | "unmute" | "deafen" | "undeafen" => {
+                    navigation_plan(state, community, channel, &command_id, &args)
+                }
+                // `registry::commands()` is closed and `every_builtin_has_a_handler` walks it: a built-in added there
+                // without an arm above does not parse there, which fails that test. Nothing answers "unavailable".
+                _ => Plan::Incomplete,
             }
         }
     }
@@ -478,6 +473,27 @@ pub enum Builtin {
         role: String,
         add: bool,
     },
+    /// `/giphy`: opens the GIF picker of the conversation, searching `query` (`query` is search text: never printed).
+    Giphy { query: String },
+    /// `/invite`: opens the invite flow of `community` and answers once it shows a link (or is closed).
+    Invite { community: CommunityId },
+    /// `/search`: opens the search palette with `query` in its field (the scope is checked, not carried: the palette has
+    /// none, Shell.tsx:2175).
+    Search { query: String },
+    /// `/thread`: opens the thread of the stored message `root` of this conversation.
+    Thread { root: MessageId },
+    /// `/dm`: opens (or makes) the direct message with `user`.
+    Dm { user: crate::state::UserId },
+    /// `/modlog`: opens the moderation history of `community` (Decision D1).
+    Modlog { community: CommunityId },
+    /// `/join`: joins the voice channel `channel` of this community.
+    Join { channel: ChannelId },
+    /// `/leave`: leaves this device's call.
+    Leave,
+    /// `/mute`, `/unmute`, `/deafen`, `/undeafen`: the settings this device's call ends with (builtin.ts `setVoice`).
+    /// One variant for the four, as the interface fixes; its row's pending text names none of them, and never shows (the
+    /// run answers in the frame that adds it).
+    Voice { muted: bool, deafened: bool },
 }
 
 impl std::fmt::Debug for Builtin {
@@ -508,6 +524,16 @@ impl std::fmt::Debug for Builtin {
             Self::Role { community, add, .. } => write!(f, "Role({community:?}, {add})"),
             Self::SelfRoleList { community } => write!(f, "SelfRoleList({community:?})"),
             Self::SelfRole { community, add, .. } => write!(f, "SelfRole({community:?}, {add})"),
+            // A search or GIF query is what the person is looking for: its length only. Whom a `/dm` opens is not printed.
+            Self::Giphy { query } => write!(f, "Giphy({} bytes)", query.len()),
+            Self::Invite { community } => write!(f, "Invite({community:?})"),
+            Self::Search { query } => write!(f, "Search({} bytes)", query.len()),
+            Self::Thread { root } => write!(f, "Thread({root:?})"),
+            Self::Dm { .. } => write!(f, "Dm"),
+            Self::Modlog { community } => write!(f, "Modlog({community:?})"),
+            Self::Join { channel } => write!(f, "Join({channel:?})"),
+            Self::Leave => write!(f, "Leave"),
+            Self::Voice { muted, deafened } => write!(f, "Voice({muted}, {deafened})"),
         }
     }
 }
@@ -531,6 +557,15 @@ impl Builtin {
             Self::SelfRoleList { .. } => "selfrole list",
             Self::SelfRole { add: true, .. } => "selfrole add",
             Self::SelfRole { add: false, .. } => "selfrole remove",
+            Self::Giphy { .. } => "giphy",
+            Self::Invite { .. } => "invite",
+            Self::Search { .. } => "search",
+            Self::Thread { .. } => "thread",
+            Self::Dm { .. } => "dm",
+            Self::Modlog { .. } => "modlog",
+            Self::Join { .. } => "join",
+            Self::Leave => "leave",
+            Self::Voice { .. } => "voice",
         }
     }
 
@@ -555,7 +590,16 @@ impl Builtin {
             | Self::Unban { .. }
             | Self::Role { .. }
             | Self::SelfRoleList { .. }
-            | Self::SelfRole { .. } => true,
+            | Self::SelfRole { .. }
+            | Self::Giphy { .. }
+            | Self::Invite { .. }
+            | Self::Search { .. }
+            | Self::Thread { .. }
+            | Self::Dm { .. }
+            | Self::Modlog { .. }
+            | Self::Join { .. }
+            | Self::Leave
+            | Self::Voice { .. } => true,
         }
     }
 }
@@ -1166,6 +1210,119 @@ fn member_builtin_plan(
                 Some(ask),
             )
         }
+    }
+}
+
+/// builtin.ts `giphy` (:88-92), `invite` (:93-97), `dm` (:98-106), `search` (:108-115), `thread` (:121-127), `join`
+/// (:128-130), `leave` (:153-158), `mute`/`unmute`/`deafen`/`undeafen` (:159-162, `setVoice`) and `modlog` (:272-277):
+/// the checks made before the command opens something or changes the call. What a draft in a DM (`community` is `None`)
+/// may do is what the web's `binding.communityId === null` allows.
+fn navigation_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    channel: Option<ChannelId>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    use crate::features::roles::{perm, viewer_channel_bits};
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let has = |bit: u32| {
+        channel
+            .and_then(|c| viewer_channel_bits(state, c))
+            .is_some_and(|b| b & u64::from(bit) != 0)
+    };
+    let run = |run: Builtin| Plan::Builtin { run, confirm: None };
+    let call = &state.voice;
+    let in_call = call.phase() == crate::calls::CallPhase::In;
+    match command_id {
+        "giphy" => match community {
+            Some(_) => run(Builtin::Giphy {
+                query: arg("query").to_owned(),
+            }),
+            None => failed("GIF search is available only in a community channel."),
+        },
+        "invite" => match community {
+            Some(community) if has(perm::CREATE_INVITE) => run(Builtin::Invite { community }),
+            _ => failed("You cannot create invites here."),
+        },
+        "search" => {
+            let scope = args.get("scope").map_or("channel", String::as_str);
+            if !["channel", "community", "all"].contains(&scope) {
+                failed("Scope must be channel, community, or all.")
+            } else if scope == "community" && community.is_none() {
+                failed("Community search is unavailable here.")
+            } else {
+                run(Builtin::Search {
+                    query: arg("query").to_owned(),
+                })
+            }
+        }
+        "thread" => {
+            let root = channel
+                .and_then(|c| exact_message(state, c, arg("message")))
+                .and_then(|i| i.msg_id);
+            match (community, root) {
+                (Some(_), Some(root)) => run(Builtin::Thread { root }),
+                _ => failed("That message is not available in this channel."),
+            }
+        }
+        "dm" => match crate::features::server_admin::unhex_id(arg("user").trim()) {
+            Some(user) => run(Builtin::Dm {
+                user: crate::state::UserId(user),
+            }),
+            None => failed("Could not open that direct message."),
+        },
+        "modlog" => match community {
+            Some(community) if has(perm::VIEW_AUDIT_LOG) => run(Builtin::Modlog { community }),
+            _ => failed("Moderation history needs a community and View Audit Log permission."),
+        },
+        "join" => {
+            let Some(community) = community else {
+                return failed("This command needs a community channel.");
+            };
+            // The community's own voice channel (`kind == 1`): a category, a text channel, another server's or an
+            // unreadable id is none.
+            let target = crate::features::server_admin::unhex_id(arg("voice-channel"))
+                .map(ChannelId)
+                .and_then(|id| state.channel(id))
+                .filter(|c| c.community_id == community && c.kind == 1);
+            match target {
+                Some(c) => run(Builtin::Join { channel: c.id }),
+                None => failed("Choose an accessible voice channel."),
+            }
+        }
+        "leave" => {
+            if call.call.channel.is_none() {
+                failed("You are not in a voice call.")
+            } else {
+                run(Builtin::Leave)
+            }
+        }
+        // mute, unmute, deafen, undeafen: the setting each leaves alone keeps what this device has now.
+        _ if !in_call => failed("Join a voice call first."),
+        "mute" => run(Builtin::Voice {
+            muted: true,
+            deafened: call.self_deaf,
+        }),
+        "unmute" => run(Builtin::Voice {
+            muted: false,
+            deafened: call.self_deaf,
+        }),
+        "deafen" => run(Builtin::Voice {
+            muted: true,
+            deafened: true,
+        }),
+        _ => run(Builtin::Voice {
+            muted: call.self_mute,
+            deafened: false,
+        }),
     }
 }
 
@@ -3054,17 +3211,12 @@ mod tests {
 
     /// builtin.test.ts:501 (`has a real handler registered for every built-in catalog entry`): in a state where this
     /// account may do anything (the community's owner, every permission loaded), each built-in of the registry, given
-    /// valid arguments, parses and is answered by its own arm, never by the "unavailable" catch-all. `PENDING` lists the
-    /// built-ins that still answer it (the navigation, UI-opening and voice commands, whose areas land next); the list is
-    /// exact, so giving one of them its arm fails here until it leaves the list, and the catch-all goes with the last.
+    /// valid arguments, parses and is answered by its own arm: `plan_in` has no catch-all, so a built-in without one is
+    /// `Plan::Incomplete` here.
     #[test]
     fn every_builtin_has_a_handler() {
         use super::registry::ArgKind;
         use crate::state::MessageId;
-        const PENDING: [&str; 12] = [
-            "giphy", "dm", "invite", "search", "thread", "join", "leave", "mute", "unmute",
-            "deafen", "undeafen", "modlog",
-        ];
         let (mut s, c, ch) = message_world(u32::MAX);
         let ada = s.account.user_id.unwrap();
         s.communities[0].owner = ada;
@@ -3088,7 +3240,6 @@ mod tests {
             },
         );
         let bea = crate::state::UserId([6; 16]).hex();
-        let mut unavailable = Vec::new();
         for command in registry::commands() {
             let mut draft = format!("/{}", command.id);
             for option in command.options.iter().filter(|o| o.required) {
@@ -3103,15 +3254,12 @@ mod tests {
                 };
                 draft.push_str(&format!(" {}:{value}", option.name));
             }
-            match plan_in(&s, Some(c), Some(ch), &draft) {
-                Plan::Incomplete => panic!("{draft} does not parse"),
-                Plan::Private(_, text, _) if text == UNAVAILABLE => {
-                    unavailable.push(command.id.as_str());
-                }
-                _ => {}
-            }
+            assert_ne!(
+                plan_in(&s, Some(c), Some(ch), &draft),
+                Plan::Incomplete,
+                "{draft} has no handler"
+            );
         }
-        assert_eq!(unavailable, PENDING);
     }
 
     /// builtin.ts `updateMemberRole` (:395-404): a role is granted or revoked only where [`assignable_role`] allows it;
@@ -3297,5 +3445,240 @@ mod tests {
             }
             assert!(b.dismissed_on_cancel(), "{variant}");
         }
+    }
+
+    /// builtin.ts:88-130, :153-162, :272-277: the navigation, UI-opening and voice built-ins check before they run. Each
+    /// refusal is its sentence; a command that may run names what it needs; the voice commands compute what the call ends
+    /// with from the person's own mute and deafen.
+    #[test]
+    fn navigation_builtins_check_before_running() {
+        use crate::calls::CallPhase;
+        use crate::features::roles::perm;
+        use crate::state::ChannelId;
+        use crate::state::channels::{Channel, ChannelGroupState};
+        let (mut s, c, ch) = message_world(0);
+        let voice = ChannelId([8; 16]);
+        let mut room = s.channel(ch).unwrap().clone();
+        (room.id, room.kind, room.name) = (voice, 1, "lounge".into());
+        s.channels.push(room);
+        let mut other = Channel {
+            community_id: CommunityId([0xee; 16]),
+            id: ChannelId([9; 16]),
+            kind: 1,
+            ..s.channel(voice).unwrap().clone()
+        };
+        other.group = ChannelGroupState::Active;
+        s.channels.push(other);
+        let failed =
+            |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
+        let run = |run: Builtin| Plan::Builtin { run, confirm: None };
+        let plan = |s: &AppState, draft: &str| plan_in(s, Some(c), Some(ch), draft);
+        let in_dm = |s: &AppState, draft: &str| plan_in(s, None, Some(ChannelId([5; 16])), draft);
+        let msg = MessageId([0xb; 16]).hex();
+
+        // giphy: a community's, never a DM's.
+        assert_eq!(
+            in_dm(&s, "/giphy query:cats"),
+            failed("GIF search is available only in a community channel.")
+        );
+        assert_eq!(
+            plan(&s, "/giphy query:cats"),
+            run(Builtin::Giphy {
+                query: "cats".into()
+            })
+        );
+        assert_eq!(
+            plan(&s, "/giphy"),
+            run(Builtin::Giphy {
+                query: String::new()
+            })
+        );
+
+        // invite: Create Invite in the channel.
+        let refused = failed("You cannot create invites here.");
+        assert_eq!(plan(&s, "/invite"), refused);
+        assert_eq!(in_dm(&s, "/invite"), refused);
+        let (allowed, ..) = message_world(perm::CREATE_INVITE | perm::VIEW_AUDIT_LOG);
+        assert_eq!(
+            plan(&allowed, "/invite"),
+            run(Builtin::Invite { community: c })
+        );
+
+        // search: the scope is one of three, and a community's search needs one.
+        assert_eq!(
+            plan(&s, "/search query:x scope:all"),
+            run(Builtin::Search { query: "x".into() })
+        );
+        assert_eq!(
+            plan(&s, "/search query:x"),
+            run(Builtin::Search { query: "x".into() })
+        );
+        assert_eq!(
+            plan(&s, "/search query:x scope:galaxy"),
+            failed("Scope must be channel, community, or all.")
+        );
+        assert_eq!(
+            in_dm(&s, "/search query:x scope:community"),
+            failed("Community search is unavailable here.")
+        );
+        assert_eq!(
+            in_dm(&s, "/search query:x scope:all"),
+            run(Builtin::Search { query: "x".into() }),
+            "all and channel search work in a DM"
+        );
+
+        // thread: a stored message of a community channel.
+        assert_eq!(
+            plan(&s, &format!("/thread message:{msg}")),
+            run(Builtin::Thread {
+                root: MessageId([0xb; 16])
+            })
+        );
+        let unavailable = failed("That message is not available in this channel.");
+        assert_eq!(
+            plan(
+                &s,
+                &format!("/thread message:{}", MessageId([0xc; 16]).hex())
+            ),
+            unavailable,
+            "an outbox row has no id to open yet"
+        );
+        assert_eq!(
+            plan(&s, &format!("/thread message:{}", MessageId([1; 16]).hex())),
+            unavailable
+        );
+        assert_eq!(
+            in_dm(
+                &s,
+                &format!("/thread message:{}", MessageId([0xa; 16]).hex())
+            ),
+            unavailable
+        );
+
+        // dm: the member's id, whoever it names (the instance decides when it runs).
+        let bea = crate::state::UserId([6; 16]);
+        assert_eq!(
+            plan(&s, &format!("/dm user:{}", bea.hex())),
+            run(Builtin::Dm { user: bea })
+        );
+        assert_eq!(
+            plan(&s, "/dm user:nobody"),
+            failed("Could not open that direct message.")
+        );
+
+        // modlog: View Audit Log in a community.
+        let refused = failed("Moderation history needs a community and View Audit Log permission.");
+        assert_eq!(plan(&s, "/modlog"), refused);
+        assert_eq!(in_dm(&s, "/modlog"), refused);
+        assert_eq!(
+            plan(&allowed, "/modlog"),
+            run(Builtin::Modlog { community: c })
+        );
+
+        // join: this community's voice channel.
+        let pick = |id: ChannelId| format!("/join voice-channel:{}", id.hex());
+        assert_eq!(
+            plan(&s, &pick(voice)),
+            run(Builtin::Join { channel: voice })
+        );
+        let refused = failed("Choose an accessible voice channel.");
+        assert_eq!(plan(&s, &pick(ch)), refused, "a text channel");
+        assert_eq!(
+            plan(&s, &pick(ChannelId([9; 16]))),
+            refused,
+            "another server's"
+        );
+        assert_eq!(plan(&s, &pick(ChannelId([0x77; 16]))), refused, "none");
+        assert_eq!(
+            in_dm(&s, &pick(voice)),
+            failed("This command needs a community channel.")
+        );
+
+        // leave and the four voice settings need a call.
+        assert_eq!(plan(&s, "/leave"), failed("You are not in a voice call."));
+        for draft in ["/mute", "/unmute", "/deafen", "/undeafen"] {
+            assert_eq!(
+                plan(&s, draft),
+                failed("Join a voice call first."),
+                "{draft}"
+            );
+        }
+        s.voice.call.channel = Some(voice);
+        s.voice.call.phase = CallPhase::Joining;
+        assert_eq!(
+            plan(&s, "/leave"),
+            run(Builtin::Leave),
+            "a join on its way is left too"
+        );
+        assert_eq!(
+            plan(&s, "/mute"),
+            failed("Join a voice call first."),
+            "the settings wait for the call"
+        );
+        s.voice.call.phase = CallPhase::In;
+        let voice_of = |muted, deafened| run(Builtin::Voice { muted, deafened });
+        assert_eq!(plan(&s, "/deafen"), voice_of(true, true));
+        assert_eq!(plan(&s, "/mute"), voice_of(true, false));
+        assert_eq!(plan(&s, "/unmute"), voice_of(false, false));
+        assert_eq!(plan(&s, "/undeafen"), voice_of(false, false));
+        (s.voice.self_mute, s.voice.self_deaf) = (true, true);
+        assert_eq!(
+            plan(&s, "/undeafen"),
+            voice_of(true, false),
+            "the mute it had is kept"
+        );
+        assert_eq!(plan(&s, "/mute"), voice_of(true, true), "a deafen is kept");
+        assert_eq!(plan(&s, "/unmute"), voice_of(false, true));
+    }
+
+    /// A search or GIF query is what the person looks for, and a `/dm` names a member: the commands' Debug shows
+    /// lengths, ids of the conversation and no more.
+    #[test]
+    fn navigation_builtins_keep_queries_and_members_out_of_debug() {
+        let (community, root) = (CommunityId([7; 16]), MessageId([0xcd; 16]));
+        let user = crate::state::UserId([0xab; 16]);
+        let secret = "needle-in-the-haystack";
+        for (shown, want) in [
+            (
+                Builtin::Giphy {
+                    query: secret.into(),
+                },
+                "Giphy(22 bytes)",
+            ),
+            (
+                Builtin::Search {
+                    query: secret.into(),
+                },
+                "Search(22 bytes)",
+            ),
+            (Builtin::Dm { user }, "Dm"),
+            (Builtin::Leave, "Leave"),
+            (
+                Builtin::Voice {
+                    muted: true,
+                    deafened: false,
+                },
+                "Voice(true, false)",
+            ),
+        ] {
+            for text in [format!("{shown:?}"), format!("{shown:#?}")] {
+                assert_eq!(text, want);
+                assert!(!text.contains("needle"), "{want}: the query");
+                assert!(!text.contains(&format!("{user:?}")), "{want}: the member");
+            }
+            assert!(shown.dismissed_on_cancel());
+        }
+        assert_eq!(
+            format!("{:?}", Builtin::Thread { root }),
+            format!("Thread({root:?})")
+        );
+        assert_eq!(
+            format!("{:?}", Builtin::Invite { community }),
+            format!("Invite({community:?})")
+        );
+        assert_eq!(
+            format!("{:?}", Builtin::Modlog { community }),
+            format!("Modlog({community:?})")
+        );
     }
 }
