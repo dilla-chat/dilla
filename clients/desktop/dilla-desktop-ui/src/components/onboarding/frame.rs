@@ -77,7 +77,17 @@ pub struct BodyParagraph {
     text: SharedString,
     color: gpui::Hsla,
     first: std::cell::Cell<bool>,
-    flow: bool,
+    flow: Flow,
+}
+
+/// Where GPUI flows a paragraph's text itself instead of the frame wrapping it to the card's 342px.
+#[derive(Clone, Copy, PartialEq)]
+enum Flow {
+    Never,
+    /// In the desktop authentication window, where the card is the window's width.
+    Desktop,
+    /// Always: text outside the card (a dialog).
+    Always,
 }
 
 impl BodyParagraph {
@@ -86,21 +96,38 @@ impl BodyParagraph {
             text: text_.into(),
             color: color_,
             first: std::cell::Cell::new(false),
-            flow: false,
+            flow: Flow::Never,
         }
     }
 
     /// In the desktop authentication window the card is the window's width, not 342px: the text then wraps where GPUI
     /// flows it, as a block of text does.
     pub fn flowing(mut self) -> Self {
-        self.flow = true;
+        self.flow = Flow::Desktop;
         self
+    }
+
+    /// Text that is not in the card at all (a dialog's): GPUI flows it wherever it is.
+    pub fn flowing_always(mut self) -> Self {
+        self.flow = Flow::Always;
+        self
+    }
+}
+
+impl BodyParagraph {
+    /// The lines the card wraps the text into: `text-wrap: pretty` for the body's first paragraph, greedy otherwise.
+    fn lines(&self) -> Vec<String> {
+        if self.first.get() {
+            pretty_lines(&self.text, text::SM, CARD_INNER_W)
+        } else {
+            wrap_mono(&self.text, columns(text::SM, CARD_INNER_W))
+        }
     }
 }
 
 impl RenderOnce for BodyParagraph {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        if self.flow && desktop_window(window, cx) {
+        if self.flow == Flow::Always || (self.flow == Flow::Desktop && desktop_window(window, cx)) {
             return div()
                 .min_h(px(body_line()))
                 .text_size(text::SM)
@@ -110,11 +137,7 @@ impl RenderOnce for BodyParagraph {
                 .child(self.text)
                 .into_any_element();
         }
-        let lines = if self.first.get() {
-            pretty_lines(&self.text, text::SM, CARD_INNER_W)
-        } else {
-            wrap_mono(&self.text, columns(text::SM, CARD_INNER_W))
-        };
+        let lines = self.lines();
         div()
             .flex()
             .flex_col()
@@ -143,13 +166,18 @@ impl Part {
         }
     }
 
-    /// The part drawn; `first` is the body's `:first-child` (no banner before it).
+    /// The part in its place: `first` is the body's `:first-child` (no banner before it).
+    fn placed(self, first: bool) -> Self {
+        if let Part::Paragraph(p) = &self {
+            p.first.set(first);
+        }
+        self
+    }
+
+    /// The part drawn in its place ([`Part::placed`]).
     pub fn render(self, first: bool) -> AnyElement {
-        match self {
-            Part::Paragraph(p) => {
-                p.first.set(first);
-                p.into_any_element()
-            }
+        match self.placed(first) {
+            Part::Paragraph(p) => p.into_any_element(),
             Part::Other(e) => e,
         }
     }
@@ -933,27 +961,18 @@ mod wrap_tests {
         );
     }
 
-    /// Every step's first body paragraph gets `text-wrap: pretty` from the frame, not from its call site: the first
-    /// paragraph of any step never ends on a single word, a later one wraps greedily as the web's does.
+    /// Every step's first body paragraph gets `text-wrap: pretty` from the frame, not from its call site: a paragraph
+    /// placed first (`Part::render` places it, then draws the lines it picked) never ends on a single word, a later one
+    /// wraps greedily as the web's does.
     #[test]
     fn the_frame_wraps_a_first_paragraph_pretty_in_any_step() {
         let body = "Shown once. You need it to add another device.";
-        let placed = |is_first| {
-            let Part::Paragraph(p) = Part::of(body_paragraph(body, color::FG_2)) else {
-                panic!("a paragraph stays one")
-            };
-            p.first.set(is_first);
-            p
+        let lines = |first: bool| match Part::of(body_paragraph(body, color::FG_2)).placed(first) {
+            Part::Paragraph(p) => p.lines(),
+            Part::Other(_) => panic!("a paragraph stays one"),
         };
-        let lines = |p: &BodyParagraph| {
-            if p.first.get() {
-                pretty_lines(&p.text, text::SM, CARD_INNER_W)
-            } else {
-                wrap_mono(&p.text, columns(text::SM, CARD_INNER_W))
-            }
-        };
-        assert_eq!(lines(&placed(true)).last().unwrap(), "another device.");
-        assert_eq!(lines(&placed(false)).last().unwrap(), "device.");
+        assert_eq!(lines(true).last().unwrap(), "another device.");
+        assert_eq!(lines(false).last().unwrap(), "device.");
         assert!(matches!(Part::of(div()), Part::Other(_)));
     }
 }

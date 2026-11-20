@@ -242,6 +242,12 @@ impl AuthFrame {
         self
     }
 
+    /// The next part of the body, already a [`Part`].
+    pub fn part(mut self, part: Part) -> Self {
+        self.body.push(part);
+        self
+    }
+
     pub fn child(mut self, child: impl IntoElement + 'static) -> Self {
         self.body.push(Part::of(child));
         self

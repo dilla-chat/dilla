@@ -30,13 +30,14 @@ use dilla_desktop_ui::components::check_list::check_box;
 use dilla_desktop_ui::components::choice_cards::{ChoiceCardOption, ChoiceCards};
 use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::factor::{CodeList, code_list_columns, copy_text};
+use dilla_desktop_ui::components::onboarding::frame::{BodyParagraph, Part};
 use dilla_desktop_ui::components::qr_code::QrCode;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::code::{CodeEvent, CodeField};
-use super::frame::{Action, AuthFrame, error_line, link, nav_row, para};
+use super::frame::{Action, AuthFrame, body_para, error_line, link, nav_row};
 use crate::strings::{t, tf};
 use crate::tracked_box;
 
@@ -758,11 +759,9 @@ impl FactorSetupView {
         }
     }
 
-    fn body(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> (Vec<AnyElement>, Option<Action>, Vec<AnyElement>) {
+    fn body(&mut self, cx: &mut Context<Self>) -> (Vec<Part>, Option<Action>, Vec<AnyElement>) {
         let instance = self.instance.name.clone();
+        let embedded = self.embedded();
         let mut body = Vec::new();
         let mut below = Vec::new();
         let back = |cx: &mut Context<Self>| {
@@ -783,13 +782,21 @@ impl FactorSetupView {
         };
         let action = match self.step {
             Step::Choose => {
-                body.push(para(match self.origin {
-                    Origin::Required => tf("factor.choose.required", &[("instance", &instance)]),
-                    Origin::Signup { .. } => t("factor.choose.bodySignup").to_owned(),
-                    _ => tf("factor.choose.body", &[("instance", &instance)]),
-                }));
+                push_part(
+                    &mut body,
+                    lead(
+                        embedded,
+                        match self.origin {
+                            Origin::Required => {
+                                tf("factor.choose.required", &[("instance", &instance)])
+                            }
+                            Origin::Signup { .. } => t("factor.choose.bodySignup").to_owned(),
+                            _ => tf("factor.choose.body", &[("instance", &instance)]),
+                        },
+                    ),
+                );
                 if !self.has_password {
-                    body.push(para(t("factor.choose.noPassword")));
+                    push_part(&mut body, lead(embedded, t("factor.choose.noPassword")));
                 }
                 let mut options = Vec::new();
                 if self.has_password {
@@ -822,7 +829,8 @@ impl FactorSetupView {
                     Choice::Passkey => "passkey",
                 };
                 let this = cx.entity().downgrade();
-                body.push(
+                push_part(
+                    &mut body,
                     tracked_box(
                         "factor-kind",
                         ChoiceCards::new("factor-kind", options, value).on_change(
@@ -848,14 +856,15 @@ impl FactorSetupView {
                 match &self.key {
                     None => {
                         if self.busy {
-                            body.push(para(t("factor.totp.loading")));
+                            push_part(&mut body, lead(embedded, t("factor.totp.loading")));
                         }
                     }
                     Some(key) => {
-                        body.push(para(t("factor.totp.body")));
+                        push_part(&mut body, lead(embedded, t("factor.totp.body")));
                         let secret = self.secret_text.clone().unwrap_or_default();
                         let copy_secret = Zeroizing::new(key.secret.as_str().to_owned());
-                        body.push(
+                        push_part(
+                            &mut body,
                             div()
                                 .flex()
                                 .gap(px(KEY_GAP))
@@ -918,18 +927,20 @@ impl FactorSetupView {
                                 .into_any_element(),
                         );
                         if matches!(self.origin, Origin::Signup { .. }) {
-                            body.push(para(t("factor.totp.codeHint")));
+                            push_part(&mut body, lead(embedded, t("factor.totp.codeHint")));
                         }
                         let focus = gpui::Focusable::focus_handle(self.code.read(cx), cx);
-                        body.push(
+                        push_part(
+                            &mut body,
                             crate::tracked_focus("factor-totp-code", &focus, self.code.clone())
                                 .into_any_element(),
                         );
                         if !matches!(self.origin, Origin::Signup { .. }) {
-                            body.push(para(t("factor.totp.codeHint")));
+                            push_part(&mut body, lead(embedded, t("factor.totp.codeHint")));
                         }
                         if let Some(e) = self.code_error {
-                            body.push(
+                            push_part(
+                                &mut body,
                                 tracked_box("factor-code-error", error_line(t(e)))
                                     .into_any_element(),
                             );
@@ -950,14 +961,17 @@ impl FactorSetupView {
                 primary(label, ready, cx)
             }
             Step::Passkey => {
-                body.push(para(t("factor.passkey.body")));
+                push_part(&mut body, lead(embedded, t("factor.passkey.body")));
                 let mut field =
                     TextField::new("factor-passkey-name", t("factor.passkey.name"), &self.name)
                         .hint(t("factor.passkey.nameHint"));
                 if let Some(e) = self.name_error {
                     field = field.error(t(e));
                 }
-                body.push(tracked_box("factor-passkey-name", field).into_any_element());
+                push_part(
+                    &mut body,
+                    tracked_box("factor-passkey-name", field).into_any_element(),
+                );
                 if !self.embedded() {
                     below.push(nav_row(back(cx), None));
                 }
@@ -969,10 +983,11 @@ impl FactorSetupView {
                 primary(label, !self.busy, cx)
             }
             Step::Codes => {
-                body.push(para(t("factor.codes.body")));
-                body.push(para(t("factor.codes.notKey")));
+                push_part(&mut body, lead(embedded, t("factor.codes.body")));
+                push_part(&mut body, lead(embedded, t("factor.codes.notKey")));
                 let all = copy_text(&self.codes);
-                body.push(
+                push_part(
+                    &mut body,
                     CodeList::new("factor-codes", t("factor.codes.label"), &self.codes)
                         .columns(code_list_columns(CARD_CONTENT))
                         .action(tracked_box(
@@ -986,7 +1001,8 @@ impl FactorSetupView {
                         .into_any_element(),
                 );
                 let ack = self.ack;
-                body.push(
+                push_part(
+                    &mut body,
                     tracked_box(
                         "factor-ack",
                         check_row("factor-ack", t("factor.codes.ack"), ack).on_click(cx.listener(
@@ -999,20 +1015,40 @@ impl FactorSetupView {
                     .into_any_element(),
                 );
                 if !ack {
-                    body.push(para(t("factor.codes.ackHint")));
+                    push_part(&mut body, lead(embedded, t("factor.codes.ackHint")));
                 }
                 primary(t("factor.codes.next"), ack, cx)
             }
             Step::Done => {
-                body.push(para(t(match self.added {
-                    Added::Totp => "factor.done.totp",
-                    Added::Passkey => "factor.done.passkey",
-                })));
+                push_part(
+                    &mut body,
+                    lead(
+                        embedded,
+                        t(match self.added {
+                            Added::Totp => "factor.done.totp",
+                            Added::Passkey => "factor.done.passkey",
+                        }),
+                    ),
+                );
                 primary(t("factor.done.next"), true, cx)
             }
         };
         (body, Some(action), below)
     }
+}
+
+/// A paragraph of a step's body: in the card the frame wraps it (`text-wrap: pretty` as the first one, as FactorSetup.tsx
+/// renders it inside `OnboardingFrame`); in the Settings dialog, outside the frame, GPUI flows it.
+fn lead(embedded: bool, text: impl Into<SharedString>) -> BodyParagraph {
+    if embedded {
+        BodyParagraph::new(text, color::FG_2).flowing_always()
+    } else {
+        body_para(text)
+    }
+}
+
+fn push_part(body: &mut Vec<Part>, part: impl IntoElement + 'static) {
+    body.push(Part::of(part));
 }
 
 impl Render for FactorSetupView {
@@ -1041,7 +1077,7 @@ impl Render for FactorSetupView {
                                 p,
                             )
                         }))
-                        .children(body),
+                        .children(body.into_iter().map(|p| p.render(false))),
                 )
                 .on_close(move |_, cx| {
                     let _ = this.update(cx, |this, cx| {
@@ -1065,7 +1101,7 @@ impl Render for FactorSetupView {
             frame = frame.progress(n, total);
         }
         for b in body {
-            frame = frame.child(b);
+            frame = frame.part(b);
         }
         if let Some(action) = action {
             frame = frame.action(action);

@@ -15,7 +15,7 @@ use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::{Badge, BadgeKind};
 use dilla_desktop_ui::metrics::focus_ring;
 use dilla_desktop_ui::roving::{Roving, focus_handles};
-use dilla_desktop_ui::text::{line, line_height, mono_width};
+use dilla_desktop_ui::text::{line, line_height, mono_covers, mono_width};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
@@ -85,22 +85,36 @@ fn selected_ring() -> [(Pixels, BoxShadow); 2] {
     })
 }
 
-/// Where `letters` characters of initials start in the 38px tile: centred by their width on the layout unit.
-fn initials_x(letters: usize) -> f32 {
-    (f32::from(layout::RAIL_TILE) - mono_width(letters, text::XS)) / 2.0
+/// Where the initials start in the 38px tile when the web's centring puts them at a fraction of a pixel: centred by their
+/// width on Chromium's layout unit, which is known only for text the embedded mono face covers (one advance a character,
+/// 12.4px for two letters). Anything else (CJK, emoji, a fallback face) has the text system's own measured width, which
+/// only the layout sees: `None`, and the initials are centred by a flex box instead.
+fn initials_x(initials: &str) -> Option<f32> {
+    initials.chars().all(mono_covers).then(|| {
+        (f32::from(layout::RAIL_TILE) - mono_width(initials.chars().count(), text::XS)) / 2.0
+    })
 }
 
 /// A server's initials in its tile (`.d-community-rail__item`: 11px/700 on `line-height: 1`, the tile an inline flex box
-/// centring them): the 11px line box is centred in the 38px tile, and the text in it by its width on Chromium's layout
-/// unit. The glyphs start where that centring puts them, at a fraction of a pixel (12.4px for two letters), which a
-/// flex box of GPUI would snap to a whole one: the line is placed from the fractions instead ([`Line::exact`]).
+/// centring them): the 11px line box is centred in the 38px tile, and the text in it by its width. Where that width is
+/// the mono advances ([`initials_x`]) the glyphs start at a fraction of a pixel (12.4px for two letters), which a flex
+/// box of GPUI would snap to a whole one: the line is placed from the fraction ([`Line::exact`]). Otherwise a flex box
+/// centres the measured text.
 fn initials_line(initials: &str, colour: gpui::Hsla) -> gpui::AnyElement {
     let tile = f32::from(layout::RAIL_TILE);
     let height = line_height(text::XS, 1.0);
-    let x = initials_x(initials.chars().count());
-    line(initials.to_owned(), text::XS, height, colour)
-        .weight(font::WEIGHT_DISPLAY)
-        .exact(x, (tile - height) / 2.0)
+    let text = line(initials.to_owned(), text::XS, height, colour).weight(font::WEIGHT_DISPLAY);
+    match initials_x(initials) {
+        Some(x) => text.exact(x, (tile - height) / 2.0),
+        None => div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(text)
+            .into_any_element(),
+    }
 }
 
 /// A tile in its slot of the rail: the slot is the tile's 38px box, and a selected tile has its ring's two layers drawn
@@ -448,11 +462,16 @@ mod tests {
 
     /// Two letters of 11px mono are 13.2px (13.203125 on the layout unit) in the 38px `.d-community-rail__item`, so the web's
     /// flex centring starts them at 12.4px: measured from the shot's `*.layout.json` of shell/conversation (a fraction a
-    /// flex box of GPUI would snap to 12).
+    /// flex box of GPUI would snap to 12). Initials the mono face does not cover (a CJK or emoji initial) have no such
+    /// width here and are centred by the layout's measured one; "ß" is upper-cased to "SS" before it is drawn.
     #[test]
     fn initials_start_where_the_web_centres_them() {
-        assert!((initials_x(2) - 12.4).abs() < 0.01, "{}", initials_x(2));
-        assert!((initials_x(1) - 15.7).abs() < 0.01, "{}", initials_x(1));
+        let x = |name: &str| initials_x(&dilla_desktop_ui::components::avatar::initials_of(name));
+        assert!((x("Midgard Chat").unwrap() - 12.4).abs() < 0.01);
+        assert!((x("M").unwrap() - 15.7).abs() < 0.01);
+        assert!((x("ß").unwrap() - 12.4).abs() < 0.01, "ß draws as SS");
+        assert_eq!(x("世界"), None, "CJK is measured by the layout");
+        assert_eq!(x("😀"), None, "an emoji is measured by the layout");
     }
 
     #[test]
