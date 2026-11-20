@@ -76,7 +76,7 @@ pub enum VoiceNotice {
 }
 
 /// This device's own call (types.ts `CallState`, the parts the desktop draws).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OwnCall {
     pub phase: CallPhase,
     pub channel: Option<ChannelId>,
@@ -96,6 +96,9 @@ pub struct OwnCall {
     /// What this device sends and receives, kb/s (stats.ts `linkSample`'s `upKbps` / `downKbps`), from the media's link
     /// reads; `None` until two reads gave a rate (the dock and the call bar then say the ping alone).
     pub rate_kbps: Option<(u32, u32)>,
+    /// The link's packet loss in percent (stats.ts `linkSample`'s `lossPct`), from the media's link reads; `None` until
+    /// two reads gave one. With the ping it names the dock's link quality.
+    pub loss_pct: Option<f32>,
 }
 
 /// What this device publishes besides its microphone.
@@ -108,7 +111,7 @@ pub struct LocalShare {
 }
 
 /// The voice slice.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct VoiceState {
     /// `voice`: each channel's (and DM's) live call, by channel.
     pub calls: BTreeMap<ChannelId, VoiceCall>,

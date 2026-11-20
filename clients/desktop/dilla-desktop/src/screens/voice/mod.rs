@@ -1495,6 +1495,45 @@ pub fn link_text(ms: Option<u32>, rate: Option<(u32, u32)>) -> String {
     }
 }
 
+/// How good the link is (call/stats.ts `linkQuality`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkQuality {
+    Good,
+    Poor,
+    Bad,
+}
+
+/// stats.ts `linkQuality`: bad over 300 ms or 5 % loss, poor from 150 ms, else good.
+pub fn link_quality(ms: u32, loss_pct: f32) -> LinkQuality {
+    if ms > 300 || loss_pct > 5.0 {
+        LinkQuality::Bad
+    } else if ms >= 150 {
+        LinkQuality::Poor
+    } else {
+        LinkQuality::Good
+    }
+}
+
+/// The dock line's spoken text (`voice.dock.stats`, VoiceDock.tsx:116-118): the visual line is hidden from a reader and
+/// this sentence stands in; an unread rate is "—".
+pub fn link_spoken(ms: u32, q: LinkQuality, rate: Option<(u32, u32)>) -> String {
+    let quality = match q {
+        LinkQuality::Good => t("voice.dock.quality.good"),
+        LinkQuality::Poor => t("voice.dock.quality.poor"),
+        LinkQuality::Bad => t("voice.dock.quality.bad"),
+    };
+    let kbps = |v: Option<u32>| v.map_or_else(|| "—".to_owned(), |v| v.to_string());
+    tf(
+        "voice.dock.stats",
+        &[
+            ("ms", &ms.to_string()),
+            ("quality", quality),
+            ("up", &kbps(rate.map(|r| r.0))),
+            ("down", &kbps(rate.map(|r| r.1))),
+        ],
+    )
+}
+
 /// VoiceView.tsx `Dock`'s ping of the link (`call.ping_ms`, the media's read): "— ms" until one is read (a parity
 /// fixture's call has none), "<1 ms" under a millisecond, else "{ms} ms".
 pub fn ping_text(ms: Option<u32>) -> String {
@@ -1521,6 +1560,26 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         CallPhase::WaitingForRemove => t("voice.announce.rejoining").to_owned(),
         _ => t("voice.dock.connecting").to_owned(),
     };
+    // VoiceDock.css:21-24: the line is `--fg-3`, `--warn` when poor and `--danger` when bad, once the call is in and both
+    // the ping and the loss are read; then it also has its spoken text (never announced).
+    let quality = match (call.phase, call.ping_ms, call.loss_pct) {
+        (CallPhase::In, Some(ms), Some(loss)) => Some((ms, link_quality(ms, loss))),
+        _ => None,
+    };
+    let tint = match quality {
+        Some((_, LinkQuality::Poor)) => color::WARN,
+        Some((_, LinkQuality::Bad)) => color::DANGER,
+        _ => color::FG_3,
+    };
+    let mut stats = div().id("voice-dock-stats").child(line(
+        where_,
+        text::META,
+        line_height(text::META, 1.3),
+        tint,
+    ));
+    if let Some((ms, q)) = quality {
+        stats = stats.a11y(Role::Label, link_spoken(ms, q, call.rate_kbps));
+    }
     // VoiceView.tsx `Dock`: camera and share are the stage's controls; the dock holds leave only.
     let controls = div()
         .flex()
@@ -1543,12 +1602,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             line(name, text::UI, line_height(text::UI, 1.3), color::OK_TEXT)
                 .weight(font::WEIGHT_LABEL),
         )
-        .child(line(
-            where_,
-            text::META,
-            line_height(text::META, 1.3),
-            color::FG_3,
-        ));
+        .child(stats);
     // VoiceDock.tsx: `role="region" aria-label="voice controls"`.
     let card = div()
         .id("voice-dock-region")
@@ -3910,6 +3964,21 @@ mod tests {
         assert_eq!(outgoing_text(&s, dm).as_deref(), Some("No answer."));
         s.voice.call.roster.push((bob, bobs, 1));
         assert_eq!(outgoing_text(&s, dm), None, "bob's device is in the call");
+    }
+
+    /// stats.ts `linkQuality` and VoiceDock.tsx's spoken line.
+    #[test]
+    fn the_link_quality_follows_the_web_s_thresholds() {
+        assert_eq!(link_quality(149, 0.0), LinkQuality::Good);
+        assert_eq!(link_quality(150, 0.0), LinkQuality::Poor);
+        assert_eq!(link_quality(300, 5.0), LinkQuality::Poor);
+        assert_eq!(link_quality(301, 0.0), LinkQuality::Bad);
+        assert_eq!(link_quality(20, 5.1), LinkQuality::Bad);
+        assert_eq!(
+            link_spoken(24, LinkQuality::Poor, Some((38, 71))),
+            "Ping 24 milliseconds, poor. Sending 38, receiving 71 kilobits per second."
+        );
+        assert!(link_spoken(24, LinkQuality::Good, None).contains("Sending —, receiving —"));
     }
 
     /// VoiceView.tsx `Dock`'s ping: "— ms" until a ping is read, "<1 ms" under a millisecond, else "{ms} ms".

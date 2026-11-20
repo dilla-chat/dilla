@@ -740,6 +740,7 @@ impl Voice {
                 roster,
                 ping_ms: None,
                 rate_kbps: None,
+                loss_pct: None,
             };
         });
         // Product walk M5: a call started muted or deafened says so to the others at once.
@@ -1108,6 +1109,17 @@ impl Voice {
             let c = &mut s.voice.call;
             if c.call_id == Some(call) && c.phase == CallPhase::In && c.rate_kbps != kbps {
                 c.rate_kbps = kbps;
+            }
+        });
+    }
+
+    /// The link's packet loss in percent (stats.ts `linkSample`'s `lossPct`), for the dock's quality; ignored unless it
+    /// is this device's live call.
+    pub fn set_loss(&self, call: [u8; 16], pct: Option<f32>) {
+        self.inner.publish(move |s| {
+            let c = &mut s.voice.call;
+            if c.call_id == Some(call) && c.phase == CallPhase::In && c.loss_pct != pct {
+                c.loss_pct = pct;
             }
         });
     }

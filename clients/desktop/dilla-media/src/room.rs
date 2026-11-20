@@ -492,6 +492,10 @@ pub struct LinkRead {
     pub rtt_ms: Option<u32>,
     pub sent: HashMap<String, u64>,
     pub received: HashMap<String, u64>,
+    /// The packets received and lost (cumulative) of each inbound RTP stream, by stream id.
+    pub inbound_packets: HashMap<String, (u64, i64)>,
+    /// The largest `fractionLost` (0..1) any remote report gives of what this device sends (stats.ts `connectionOf`).
+    pub remote_fraction_lost: Option<f64>,
 }
 
 impl LinkRead {
@@ -514,6 +518,14 @@ impl LinkRead {
                     read.received
                         .entry(i.rtc.id.clone())
                         .or_insert(i.inbound.bytes_received);
+                    read.inbound_packets
+                        .entry(i.rtc.id.clone())
+                        .or_insert((i.received.packets_received, i.received.packets_lost));
+                }
+                RtcStats::RemoteInboundRtp(r) => {
+                    let f = r.remote_inbound.fraction_lost;
+                    read.remote_fraction_lost =
+                        Some(read.remote_fraction_lost.map_or(f, |m| m.max(f)));
                 }
                 _ => {}
             }
@@ -537,6 +549,27 @@ impl LinkRead {
             kbps(delta(&self.sent, &before.sent)),
             kbps(delta(&self.received, &before.received)),
         ))
+    }
+
+    /// stats.ts `linkSample`'s `lossPct`: the larger of the remote report's worst `fractionLost` and the worst inbound
+    /// stream's lost share of the packets since `before`, in percent to one decimal. Only the streams in both reads
+    /// count, and one whose counters went down (a restart) is skipped.
+    pub fn loss_since(&self, before: &LinkRead) -> f32 {
+        let remote = self.remote_fraction_lost.map_or(0.0, |f| f * 100.0);
+        let inbound = self
+            .inbound_packets
+            .iter()
+            .filter_map(|(id, (recv, lost))| {
+                let (was_recv, was_lost) = before.inbound_packets.get(id)?;
+                if recv < was_recv || lost < was_lost {
+                    return None;
+                }
+                let lost = (lost - was_lost) as f64;
+                let total = (recv - was_recv) as f64 + lost;
+                (total > 0.0).then(|| lost / total * 100.0)
+            })
+            .fold(0.0, f64::max);
+        ((remote.max(inbound) * 10.0).round() / 10.0) as f32
     }
 }
 
@@ -2367,6 +2400,7 @@ mod rtt_tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_owned(), *v))
                 .collect(),
+            ..LinkRead::default()
         };
         let before = read(&[("a", 1_000)], &[("x", 10_000), ("y", 500)]);
         let now = read(
@@ -2376,6 +2410,30 @@ mod rtt_tests {
         // 5 000 bytes in 2 s up: 20 kb/s; down 10 000 + 100 (y restarted) bytes: 40.4 -> 40 kb/s.
         assert_eq!(now.rate_since(&before, 2_000.0), Some((20, 40)));
         assert_eq!(now.rate_since(&before, 0.0), None);
+    }
+
+    /// stats.ts `linkSample`'s `lossPct`: the worse of the remote report's `fractionLost` and the inbound streams' lost
+    /// share since the previous read, to one decimal; a stream that appeared adds nothing.
+    #[test]
+    fn loss_is_the_worse_of_the_remote_report_and_the_inbound_delta() {
+        let read = |packets: &[(&str, u64, i64)], remote: Option<f64>| LinkRead {
+            inbound_packets: packets
+                .iter()
+                .map(|(k, r, l)| ((*k).to_owned(), (*r, *l)))
+                .collect(),
+            remote_fraction_lost: remote,
+            ..LinkRead::default()
+        };
+        let before = read(&[("a", 100, 0)], None);
+        // 10 lost of 100 since: 10 %, over the remote report's 2 %.
+        assert_eq!(
+            read(&[("a", 190, 10)], Some(0.02)).loss_since(&before),
+            10.0
+        );
+        // 1 lost of 100: the remote report's 2 % is the worse.
+        assert_eq!(read(&[("a", 199, 1)], Some(0.02)).loss_since(&before), 2.0);
+        // A stream only in the new read adds nothing.
+        assert_eq!(read(&[("b", 50, 50)], None).loss_since(&before), 0.0);
     }
 
     #[test]

@@ -879,6 +879,8 @@ async fn in_call(
                         if let Some((at, before)) = &last_link {
                             let ms = now.duration_since(*at).as_secs_f64() * 1000.0;
                             ctx.voice.set_rate(link.call_id, read.rate_since(before, ms));
+                            ctx.voice
+                                .set_loss(link.call_id, Some(read.loss_since(before)));
                         }
                         last_link = Some((now, read));
                     }
