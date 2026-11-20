@@ -392,6 +392,11 @@ async fn main() {
     }
     call.leave().await;
     emit(json!({"event": "closed"}));
+    // The call is closed: exit now. Returning from main would drop the runtime, which waits for the stdin reader's
+    // blocking read (tokio::io::stdin cannot cancel it) until the driver closes stdin or kills this process: a driver
+    // that waits for the exit (MediaPeer::quit) would wait out its whole bound.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    std::process::exit(0);
 }
 
 /// macOS: the main display through ScreenCaptureKit with its system picker off (the picker is the app's way; a test has
