@@ -315,6 +315,11 @@ async function shoot(args, fixture, text) {
     const target = [...fixture.route.matchAll(/\{([^}/]+\/[^}]+)\}/g)].map((m) => m[1]).at(-1);
     const last = (fixture.world.messages ?? []).filter((m) => m.channel === target).at(-1);
     if (last && !boot) await page.getByText(last.body, { exact: true }).first().waitFor();
+    // Task 19b: a fixture's `density` is put on the document root as App.tsx:105 puts the saved choice (`data-density`);
+    // the stylesheet's `[data-density]` rules then step every rule that reads the six density variables.
+    if (fixture.density !== undefined) {
+      await page.evaluate((d) => { document.documentElement.dataset.density = d; }, fixture.density);
+    }
     for (const step of fixture.steps ?? []) await replayStep(page, step, state);
     if (!(fixture.steps ?? []).some((s) => s.do === 'hover')) {
       await page.mouse.move(viewport.width - 2, viewport.height - 2);

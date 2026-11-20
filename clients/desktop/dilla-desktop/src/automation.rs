@@ -131,6 +131,11 @@ fn with_bounds<R>(f: impl FnOnce(&mut HashMap<&'static str, Bounds<Pixels>>) -> 
     f(guard.get_or_insert_with(HashMap::new))
 }
 
+/// The bounds the probe `id` recorded when it last painted: what the driver's `element` answers, for an in-process test.
+pub fn probed(id: &str) -> Option<Bounds<Pixels>> {
+    with_bounds(|map| map.get(id).copied())
+}
+
 /// An invisible overlay that records the bounds of its parent under `id` each time it paints.
 pub fn bounds_probe(id: &'static str) -> impl gpui::IntoElement {
     canvas(

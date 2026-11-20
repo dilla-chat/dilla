@@ -188,6 +188,8 @@ mod driven {
         parity_messages_slow_mode_b => "slow-mode-b";
         parity_messages_log_earlier => "log-earlier";
         parity_messages_log_earlier_b => "log-earlier-b";
+        // Task 19b: the log at the compact density (`"density": "compact"`, the web shot with `data-density="compact"`).
+        parity_messages_compact => "compact";
     }
 
     fn launch(name: &str) -> Driver {
