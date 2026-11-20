@@ -12,10 +12,11 @@ pub mod time;
 pub mod wire;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::client::{Client, Inner};
 use crate::features::bot_admin::{BotArg, BotOperations, BotRequest, BotResult, OpError};
-use crate::state::bot::{PollView, ReminderStatus, ReminderView};
+use crate::state::bot::{PollCheck, PollView, ReminderStatus, ReminderView};
 use crate::state::{ChannelId, CommunityId, MessageId, TimelineItem, TimelineItemState, UserId};
 
 /// The bot area's handle for utilities: cheap to clone, no I/O on construction.
@@ -44,6 +45,67 @@ impl Utilities {
         self.inner.publish(move |s| {
             s.bot.polls.insert(message, poll);
         });
+    }
+
+    /// Starts reading the record of the poll the post `item` claims, once. Nothing happens when a check is under way or
+    /// given up, or the poll is held. Otherwise the check is `Pending` and [`Utilities::read_poll`] runs on the client's
+    /// runtime: success holds the poll and removes the check; a [`definitive`] failure or the last retry ([`retry_after`])
+    /// gives up; any other failure waits and reads again. Only `read_poll` decides a post is a verified poll, so a forged
+    /// or unreadable one never gets a card.
+    pub fn verify_poll(
+        &self,
+        community: CommunityId,
+        channel: ChannelId,
+        thread: Option<MessageId>,
+        item: TimelineItem,
+    ) {
+        let Some(message) = item.msg_id else { return };
+        let snapshot = self.inner.snapshot();
+        if snapshot.bot.poll_checks.contains_key(&message)
+            || snapshot.bot.polls.contains_key(&message)
+        {
+            return;
+        }
+        // The snapshot lags the publish below by a moment, and a view draws again in between: one read at a time per
+        // message, which the guard frees when the read ends or its runtime stops.
+        let Some(guard) = ReadingGuard::enter(message) else {
+            return;
+        };
+        self.inner.publish(move |s| {
+            s.bot
+                .poll_checks
+                .entry(message)
+                .or_insert(PollCheck::Pending);
+        });
+        let this = self.clone();
+        // The answer is only the check's state in the snapshot, so the receiver is not awaited.
+        drop(self.inner.spawn(async move {
+            let _guard = guard;
+            let mut failures = 0;
+            loop {
+                let end = match this.read_poll(community, channel, thread, &item).await {
+                    Ok(_) => None,
+                    Err(e) if definitive(&e) => Some(PollCheck::GaveUp),
+                    Err(_) => match retry_after(failures) {
+                        Some(wait) => {
+                            failures += 1;
+                            tokio::time::sleep(wait).await;
+                            continue;
+                        }
+                        None => Some(PollCheck::GaveUp),
+                    },
+                };
+                this.inner.publish(move |s| match end {
+                    Some(check) => {
+                        s.bot.poll_checks.insert(message, check);
+                    }
+                    None => {
+                        s.bot.poll_checks.remove(&message);
+                    }
+                });
+                return Ok(());
+            }
+        }));
     }
 
     /// This member's reminders in `community`, soonest first.
@@ -144,6 +206,46 @@ pub fn poll_claim(
 /// The Bot's record is for the channel and thread the post is in.
 pub fn poll_in_place(poll: &PollView, channel: ChannelId, thread: Option<MessageId>) -> bool {
     poll.channel == channel && poll.thread == thread
+}
+
+/// PollCard.tsx `RETRY_DELAYS`: a failed read tries again after 2, 5 and 10 seconds, then gives up. `failures` is how many
+/// reads have failed so far.
+pub fn retry_after(failures: usize) -> Option<Duration> {
+    [2, 5, 10].get(failures).map(|s| Duration::from_secs(*s))
+}
+
+/// A failure that retrying cannot mend (PollCard.tsx): the post is no poll this device may show, the record is for another
+/// channel or thread (`Invalid`), or no Bot is ready (`botDefinitelyUnavailable`). A Bot that is busy, stopped or
+/// unreachable (`E_UNAVAILABLE`, `E_STOPPED`) is transient.
+pub fn definitive(e: &UtilityError) -> bool {
+    match e {
+        UtilityError::NotAPoll | UtilityError::Invalid => true,
+        UtilityError::Unavailable(code) => code != "E_UNAVAILABLE" && code != "E_STOPPED",
+        _ => false,
+    }
+}
+
+/// The messages whose poll is being read right now ([`Utilities::verify_poll`]).
+static READING: std::sync::Mutex<std::collections::BTreeSet<MessageId>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Holds one message's place in [`READING`] until dropped.
+struct ReadingGuard(MessageId);
+
+impl ReadingGuard {
+    fn enter(message: MessageId) -> Option<Self> {
+        let mut reading = READING.lock().unwrap_or_else(|e| e.into_inner());
+        reading.insert(message).then_some(Self(message))
+    }
+}
+
+impl Drop for ReadingGuard {
+    fn drop(&mut self) {
+        READING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
 }
 
 /// The v1 operations that change something: an answer that cannot be read leaves them uncertain.
@@ -454,6 +556,29 @@ mod tests {
             mention: false,
             actions: Vec::new(),
         }
+    }
+
+    /// PollCard.tsx `RETRY_DELAYS`: 2, 5 and 10 seconds, then no more.
+    #[test]
+    fn poll_retries_follow_the_web() {
+        assert_eq!(retry_after(0), Some(Duration::from_secs(2)));
+        assert_eq!(retry_after(1), Some(Duration::from_secs(5)));
+        assert_eq!(retry_after(2), Some(Duration::from_secs(10)));
+        assert_eq!(retry_after(3), None);
+    }
+
+    /// A post that is no poll, a record for another place and a Bot that is not ready give up at once; a busy, stopped
+    /// or unreadable Bot is tried again.
+    #[test]
+    fn definitive_failures_give_up_at_once() {
+        assert!(definitive(&UtilityError::NotAPoll));
+        assert!(definitive(&UtilityError::Invalid));
+        assert!(definitive(&UtilityError::Unavailable("E_NO_BOT".into())));
+        assert!(!definitive(&UtilityError::Unavailable(
+            "E_UNAVAILABLE".into()
+        )));
+        assert!(!definitive(&UtilityError::Unavailable("E_STOPPED".into())));
+        assert!(!definitive(&UtilityError::Status(3)));
     }
 
     /// slash-commands.spec.ts "reject forged markers": a member reposting the Bot's `[dilla-poll:v1:aaaa…]` line gets no

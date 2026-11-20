@@ -579,7 +579,7 @@ fn the_join_roles_page_saves_the_role_the_bot_gives_on_join() {
 
 /// e2e/web/slash-commands.spec.ts "polls publish in channels": in the window, `/poll create` opens the poll form (no row
 /// yet: a cancelled form leaves nothing). The question and two answers are typed, Post sends one `create` to the Bot, and
-/// the command's row ends as success. Task 27 adds the card's `poll-card` assertion once posts are verified.
+/// the command's row ends as success, and the Bot's post is verified when drawn: the card appears.
 #[test]
 #[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
 fn a_poll_posted_from_the_form_shows_its_card() {
@@ -644,6 +644,7 @@ fn a_poll_posted_from_the_form_shows_its_card() {
         "the form closed on the answer"
     );
     assert!(app.element("bot-result-failed").is_none(), "no row failed");
+    app.wait_for("poll-card", Duration::from_secs(30));
     drop(app);
     first.stop();
     let _ = std::fs::remove_dir_all(&root);

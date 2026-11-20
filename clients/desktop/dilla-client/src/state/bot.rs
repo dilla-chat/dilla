@@ -233,6 +233,15 @@ impl std::fmt::Debug for ReminderView {
     }
 }
 
+/// Where the read of a poll post's record stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PollCheck {
+    /// Being read, or waiting to read again: the card says it is loading.
+    Pending,
+    /// The Bot said no for good, or the retries ran out: the post's own text shows and no card is drawn.
+    GaveUp,
+}
+
 /// The bot area's slice.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BotState {
@@ -242,6 +251,9 @@ pub struct BotState {
     pub private_results: BTreeMap<Conversation, Vec<PrivateResult>>,
     /// The verified polls, by the message that carries each.
     pub polls: BTreeMap<MessageId, PollView>,
+    /// The polls being read from the Bot, by the message that claims each (PollCard.tsx's retry state). A message with
+    /// neither a check nor a held poll has not been asked about yet; a successful read removes its check.
+    pub poll_checks: BTreeMap<MessageId, PollCheck>,
     /// This member's reminders, by community, soonest first.
     pub reminders: BTreeMap<CommunityId, Vec<ReminderView>>,
 }

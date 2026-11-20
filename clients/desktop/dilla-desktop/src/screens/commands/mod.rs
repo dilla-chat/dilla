@@ -20,16 +20,21 @@ pub mod poll_form;
 pub mod reminders;
 
 use dilla_client::features::bot::{self, Plan, run};
-use dilla_client::features::utilities::polls;
+use dilla_client::features::utilities::{poll_claim, polls};
 use dilla_client::state::TimelineItem;
 use dilla_client::state::bot::{
-    Conversation, PollView, PrivateResult, ResultProvider, ResultStatus,
+    Conversation, PollCheck, PollView, PrivateResult, ResultProvider, ResultStatus,
 };
-use gpui::{AnyElement, App, ElementId, IntoElement, ParentElement, Styled, Window, div};
+use gpui::{
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
+};
 
+use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::commands::bot_result::{self, Author, BotResult, Status};
 use dilla_desktop_ui::components::commands::list::{CommandList, ListItem, ListLabels};
 use dilla_desktop_ui::components::commands::poll_card::{self, PollCard};
+use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::tokens::{color, text};
 
 use crate::screens::shell::Clock;
 use crate::slots::{Extra, SlotCx};
@@ -149,10 +154,45 @@ fn zone_of(clock: Clock) -> (fn(i64) -> jiff::tz::Offset, String) {
     }
 }
 
-/// A poll's card under its message (`slots::message_extras`, after the attachments).
+/// A poll's card under its message (`slots::message_extras`, after the attachments): [`poll_card_in`] for a post in the
+/// channel's own log.
 pub fn poll_card(
     item: &TimelineItem,
     ctx: &SlotCx,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    poll_card_in(item, ctx, None, window, cx)
+}
+
+/// The loading line of a poll that is being read from the Bot (PollCard.tsx `poll.loading`): one line of the row's body
+/// text, announced as a status.
+fn poll_loading() -> Extra {
+    let height = line_height(text::INPUT, 1.55);
+    let label = t("poll.loading");
+    let text_line = line(label, text::INPUT, height, color::FG_BODY);
+    Extra {
+        element: crate::tracked_box(
+            "poll-loading",
+            div()
+                .id("poll-loading-text")
+                .a11y(Role::Status, label)
+                .child(text_line),
+        )
+        .into_any_element(),
+        height,
+    }
+}
+
+/// [`poll_card`] for a post in `thread` (the thread's root; `None` in the channel). The card is for a verified record this
+/// device holds. While none is held a post that claims a poll (the pinned Bot's, unedited, with the marker) draws the
+/// loading line, and the first such draw starts the read (`Utilities::verify_poll`); a read that was given up draws
+/// nothing, so the post's own text is all there is. A post that is not the Bot's claim never reads, nor draws, anything:
+/// a forged or unverifiable post is never drawn as a verified poll.
+pub fn poll_card_in(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    thread: Option<dilla_client::state::MessageId>,
     _window: &mut Window,
     _cx: &mut App,
 ) -> Option<Extra> {
@@ -160,7 +200,22 @@ pub fn poll_card(
     if !item.bot || item.edited {
         return None;
     }
-    let poll = ctx.state.bot.polls.get(&item.msg_id?)?;
+    let message = item.msg_id?;
+    let Some(poll) = ctx.state.bot.polls.get(&message) else {
+        return match ctx.state.bot.poll_checks.get(&message) {
+            Some(PollCheck::Pending) => Some(poll_loading()),
+            Some(PollCheck::GaveUp) => None,
+            None => {
+                let (client, community, channel) =
+                    (ctx.client.as_ref()?, ctx.community?, ctx.channel?);
+                let utilities = client.utilities();
+                let pinned = utilities.bot_identity(community)?.user;
+                poll_claim(item, Some(pinned))?;
+                utilities.verify_poll(community, channel, thread, item.clone());
+                Some(poll_loading())
+            }
+        };
+    };
     // The card is at most 440px of content; at the desktop sizes the log is always wider than the card's box.
     let width = f32::MAX;
     let height = PollCard::height(&poll.question, poll.answers.len(), width);
@@ -755,6 +810,57 @@ mod tests {
             poll_meta(&poll(vec![2, 1], false, true, 604_800)),
             "Open for 7 days · pick any · 4+ voters"
         );
+    }
+
+    fn bot_post(message: u8) -> TimelineItem {
+        TimelineItem {
+            key: format!("m{message}"),
+            state: dilla_client::state::TimelineItemState::Ok,
+            reason: String::new(),
+            sender_user: Some(UserId([0xb0; 16])),
+            sender_device: None,
+            own: false,
+            bot: true,
+            ts: 1,
+            body: "Mira asked:\n[dilla-poll:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]".into(),
+            msg_id: Some(dilla_client::state::MessageId([message; 16])),
+            seq: Some(1),
+            edited: false,
+            reply: None,
+            reactions: vec![],
+            pinned: false,
+            attachments: vec![],
+            mention: false,
+            actions: Vec::new(),
+        }
+    }
+
+    /// PollCard.tsx: a poll being read says so (`poll.loading`), a held record is the card, a read that was given up
+    /// draws nothing, and a post with no check and no client to read it draws nothing: never a card that is not verified.
+    #[gpui::test]
+    fn a_claimed_poll_shows_loading_until_verified(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let item = bot_post(7);
+        let message = item.msg_id.unwrap();
+        let draw = |bot: dilla_client::state::bot::BotState, vcx: &mut gpui::VisualTestContext| {
+            let ctx = SlotCx {
+                state: std::sync::Arc::new(dilla_client::state::AppState {
+                    bot,
+                    ..Default::default()
+                }),
+                ..SlotCx::default()
+            };
+            vcx.update(|window, cx| poll_card(&item, &ctx, window, cx))
+        };
+        let mut bot = dilla_client::state::bot::BotState::default();
+        assert!(draw(bot.clone(), vcx).is_none(), "nothing reads it here");
+        bot.poll_checks.insert(message, PollCheck::Pending);
+        assert!(draw(bot.clone(), vcx).is_some_and(|e| e.height > 0.0));
+        bot.poll_checks.insert(message, PollCheck::GaveUp);
+        assert!(draw(bot.clone(), vcx).is_none());
+        bot.polls
+            .insert(message, poll(vec![0, 0], false, false, 86_400));
+        assert!(draw(bot, vcx).is_some_and(|e| e.height > 0.0));
     }
 
     /// Integration 3, final review M4: each window's composer has its own `/` list: a draft typed in window A opens
