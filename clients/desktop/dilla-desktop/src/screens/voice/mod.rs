@@ -1464,11 +1464,12 @@ pub fn share_source(
         .then(|| crate::screens::share_picker::apps::window_sound(cx))
         .flatten();
     if let Some(s) = &session {
+        // The start comes first: while it replaces a running share, what is asked next waits for the new source.
+        s.share_source(source.clone(), options, seq);
         let asks = share_start_asks(&ui_sound);
         if let Some(before) = asks.before {
             s.app_audio(before);
         }
-        s.share_source(source.clone(), options);
         // The sound section's application comes with the share.
         if asks.after.is_some() {
             s.app_audio(asks.after);
@@ -1493,7 +1494,7 @@ pub fn share_source(
             let ui = ui_mut(window, cx);
             ui.share_sound = std::mem::take(&mut ui.share_sound).found(found.clone());
             if let (Some(s), Some(app)) = (session, found) {
-                s.app_audio(Some(app));
+                s.window_sound(seq, Some(app));
             }
             crate::screens::share_picker::refresh(window, cx);
         });
@@ -3941,8 +3942,14 @@ fn sound_row(ui: &VoiceUi) -> Option<AnyElement> {
     if !crate::screens::share_picker::apps::available_now() {
         return None;
     }
-    let on = ui.share_sound.app().is_some();
-    let note = match ui.share_sound.app() {
+    // A running share shows what its session publishes (a source switch that is still opening, or one that failed,
+    // keeps the old share's sound on the row); before a share, the choice made.
+    let shown = match (&ui.session, ui.state.voice.share.screen) {
+        (Some(session), true) => session.app_sound(),
+        _ => ui.share_sound.app().cloned(),
+    };
+    let on = shown.is_some();
+    let note = match &shown {
         Some(app) => tf("callStage.share.audioAppOf", &[("app", app.label.as_str())]),
         None => t("callStage.share.audioAppNote").to_owned(),
     };

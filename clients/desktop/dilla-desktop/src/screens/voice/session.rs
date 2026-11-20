@@ -105,7 +105,10 @@ const LINK_STALL: std::time::Duration = std::time::Duration::from_millis(1_500);
 pub enum Command {
     Share(ShareKind, bool, ShareOptions),
     /// A screen share of the source the person chose in the picker.
-    ShareSource(DesktopSource, ShareOptions),
+    /// `u64`: the UI's token of this start, which the window's sound ([`Command::WindowSound`]) names.
+    ShareSource(DesktopSource, ShareOptions, u64),
+    /// The application the shared window of the start `u64` plays, once found. Dropped when that start did not come up.
+    WindowSound(u64, Option<dilla_media::app_audio::AppSource>),
     /// The stream quality changed while sharing: the running screen share goes on at it (the same source).
     Quality(ShareOptions),
     /// The running screen share carries the sound of this application from now on (`None`: no sound).
@@ -206,6 +209,8 @@ pub struct MediaSession {
     pub video_seq: Arc<AtomicU64>,
     /// The devices (hex) whose screen share carries sound.
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
+    /// The application the running screen share publishes the sound of ([`MediaSession::app_sound`]).
+    app_sound: Arc<Mutex<Option<dilla_media::app_audio::AppSource>>>,
 }
 
 /// What a share asks its [`SourceFactory`] for.
@@ -339,6 +344,7 @@ impl MediaSession {
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
         let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
+        let app_sound = Arc::new(Mutex::new(None));
         let ctx = Ctx {
             voice: client.voice(),
             states: client.state(),
@@ -346,6 +352,7 @@ impl MediaSession {
             videos: videos.clone(),
             video_seq: video_seq.clone(),
             screen_sound: screen_sound.clone(),
+            app_sound: app_sound.clone(),
             sources,
             host,
             live: live.clone(),
@@ -362,6 +369,7 @@ impl MediaSession {
             videos,
             video_seq,
             screen_sound,
+            app_sound,
         })
     }
 
@@ -377,8 +385,23 @@ impl MediaSession {
     }
 
     /// Starts a screen share of the source the person chose in the picker.
-    pub fn share_source(&self, source: DesktopSource, options: ShareOptions) {
-        self.send(Command::ShareSource(source, options));
+    /// `token` names this start for [`MediaSession::window_sound`].
+    pub fn share_source(&self, source: DesktopSource, options: ShareOptions, token: u64) {
+        self.send(Command::ShareSource(source, options, token));
+    }
+
+    /// The application the shared window of the start `token` plays. While that start replaces a running share it waits
+    /// for the new source to open; if the start fails it is dropped.
+    pub fn window_sound(&self, token: u64, app: Option<dilla_media::app_audio::AppSource>) {
+        self.send(Command::WindowSound(token, app));
+    }
+
+    /// The application whose sound the running screen share publishes now (what the share menu's sound row shows).
+    pub fn app_sound(&self) -> Option<dilla_media::app_audio::AppSource> {
+        self.app_sound
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Shares the sound of `source` with the running screen share (`None` stops it). Nothing while no screen is shared.
@@ -474,6 +497,7 @@ fn end_wait() -> std::time::Duration {
 
 struct Ctx {
     voice: Voice,
+    app_sound: Arc<Mutex<Option<dilla_media::app_audio::AppSource>>>,
     states: watch::Receiver<Arc<AppState>>,
     prefs: dilla_client::prefs::Prefs,
     videos: Arc<Mutex<RemoteVideos>>,
@@ -757,7 +781,7 @@ async fn in_call(
     let mut applied: Option<(bool, bool)> = None;
     let mut opens = Opens::default();
     // The application sound asked for before the screen share is up: it starts with the share.
-    let mut pending_app = AppSoundSlot::default();
+    let mut sound = AppSoundSlot::default();
     let (opened_tx, mut opened) = mpsc::unbounded_channel::<Opened>();
     let mut gained = std::collections::BTreeMap::new();
     // The loop is cancelled outright when the session is dropped: whatever an arm was awaiting (a share being
@@ -829,6 +853,7 @@ async fn in_call(
                     // The application went away: the share goes on without sound, and says so.
                     let mut share = ctx.states.borrow().voice.share;
                     share.screen_audio = false;
+                    *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
                     let _ = ctx.voice.set_share(share).await;
                     ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
                 }
@@ -837,19 +862,29 @@ async fn in_call(
                     None => break,
                     Some(Command::Share(kind, false, _)) => {
                         if kind == ShareKind::Screen {
-                            pending_app.stopped();
+                            sound.stopped();
                         }
                         stop_share(ctx, &call, &mut opens, kind).await;
                     }
-                    Some(Command::Share(kind, true, options)) => opens.start(ctx, &opened_tx, kind, None, options),
-                    Some(Command::ShareSource(source, options)) => {
+                    Some(Command::Share(kind, true, options)) => {
+                        if kind == ShareKind::Screen {
+                            sound.started(None);
+                        }
+                        opens.start(ctx, &opened_tx, kind, None, options);
+                    }
+                    Some(Command::ShareSource(source, options, token)) => {
+                        sound.started(Some(token));
                         opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
                     }
                     Some(Command::AppAudio(source)) => {
                         let sharing = ctx.states.borrow().voice.share.screen;
-                        if let Some(source) = pending_app.asked(source, sharing) {
-                            app_audio(ctx, &call, source).await;
-                        }
+                        let switching = sharing && opens.is_pending(ShareKind::Screen);
+                        perform(ctx, &call, sound.asked(source, sharing, switching)).await;
+                    }
+                    Some(Command::WindowSound(token, app)) => {
+                        let sharing = ctx.states.borrow().voice.share.screen;
+                        let switching = sharing && opens.is_pending(ShareKind::Screen);
+                        perform(ctx, &call, sound.window_found(token, app, sharing, switching)).await;
                     }
                     Some(Command::Quality(options)) => {
                         if ctx.states.borrow().voice.share.screen
@@ -861,12 +896,15 @@ async fn in_call(
                 },
                 Some(done) = opened.recv() => {
                     if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
-                        publish_share(ctx, &call, done.kind, result, done.options).await;
+                        let was_live = ctx.states.borrow().voice.share.screen;
+                        let outcome = publish_share(ctx, &call, done.kind, result, done.options).await;
                         if done.kind == ShareKind::Screen {
-                            let sharing = ctx.states.borrow().voice.share.screen;
-                            if let Some(source) = pending_app.opened(sharing) {
-                                app_audio(ctx, &call, Some(source)).await;
-                            }
+                            let act = match outcome {
+                                Published::Up => sound.opened(was_live),
+                                Published::Kept => sound.not_opened(),
+                                Published::Down => sound.down(),
+                            };
+                            perform(ctx, &call, act).await;
                         }
                     }
                 }
@@ -1048,6 +1086,11 @@ impl Opens {
         }
     }
 
+    /// Whether a selection of `kind` is still being opened.
+    fn is_pending(&self, kind: ShareKind) -> bool {
+        self.pending.contains_key(&kind)
+    }
+
     /// The answer of a selection: kept when it is still the current one of its kind, dropped otherwise.
     fn finish<T>(&mut self, kind: ShareKind, generation: u64, result: T) -> Option<T> {
         match self.pending.get(&kind) {
@@ -1060,38 +1103,127 @@ impl Opens {
     }
 }
 
-/// The application sound asked for before the screen share is up: it starts with the share, and it never outlives the
-/// share it was asked for (Task 44 fix rounds 1 and 2: the published sound must match what the share's menu says).
+/// What the loop does with the screen share's application sound.
+#[derive(Debug, PartialEq)]
+enum Act {
+    Nothing,
+    Publish(dilla_media::app_audio::AppSource),
+    Unpublish,
+}
+
+/// The screen share's application sound, decided in one place so the published sound always matches the share the
+/// person sees (Task 44 fix rounds 1 to 3). Every answer is an [`Act`] that [`perform`] carries out.
+/// - Before the share is up, an application asked for waits (`parked`) and starts with the share; a share that did not
+///   come up drops it.
+/// - While a share is replaced by another source (a switch), the running share keeps exactly its own application's
+///   sound: what is asked meanwhile (`switch`) is applied only once the new source has opened, and dropped when it
+///   failed or was cancelled.
+/// - The window's application ([`MediaSession::window_sound`]) names its start by `token` and is dropped when that start
+///   did not come up.
 #[derive(Default)]
 struct AppSoundSlot {
     parked: Option<dilla_media::app_audio::AppSource>,
+    switch: Option<Option<dilla_media::app_audio::AppSource>>,
+    token: Option<u64>,
+    failed: bool,
 }
 
 impl AppSoundSlot {
-    /// `Command::AppAudio(source)`: `Some(what)` is to be applied now (`what` `None` stops the sound), `None` means it
-    /// waits for the share to come up. Any earlier waiting sound is replaced.
+    /// A screen share starts (`token`: a picked source; `None`: the system's dialog chose).
+    fn started(&mut self, token: Option<u64>) {
+        self.token = token;
+        self.failed = false;
+        self.switch = None;
+    }
+
+    /// `Command::AppAudio(source)` (`None` stops the sound).
     fn asked(
         &mut self,
         source: Option<dilla_media::app_audio::AppSource>,
         sharing: bool,
-    ) -> Option<Option<dilla_media::app_audio::AppSource>> {
+        switching: bool,
+    ) -> Act {
+        if switching {
+            self.switch = Some(source);
+            return Act::Nothing;
+        }
         if source.is_some() && !sharing {
             self.parked = source;
-            None
-        } else {
-            self.parked = None;
-            Some(source)
+            return Act::Nothing;
         }
+        self.parked = None;
+        match source {
+            Some(app) => Act::Publish(app),
+            None => Act::Unpublish,
+        }
+    }
+
+    /// `Command::WindowSound`: the shared window's application, for the start `token`.
+    fn window_found(
+        &mut self,
+        token: u64,
+        app: Option<dilla_media::app_audio::AppSource>,
+        sharing: bool,
+        switching: bool,
+    ) -> Act {
+        if self.token != Some(token) || self.failed {
+            return Act::Nothing;
+        }
+        match app {
+            None => Act::Nothing,
+            Some(app) if switching => {
+                self.switch = Some(Some(app));
+                Act::Nothing
+            }
+            Some(app) if sharing => Act::Publish(app),
+            Some(app) => {
+                self.parked = Some(app);
+                Act::Nothing
+            }
+        }
+    }
+
+    /// The source opened and replaced the old one (`was_live`: a switch) or started the share.
+    fn opened(&mut self, was_live: bool) -> Act {
+        if was_live {
+            match self.switch.take() {
+                Some(Some(app)) => Act::Publish(app),
+                // Asked for none: the new source has no sound, so the old one's goes.
+                Some(None) => Act::Unpublish,
+                None => Act::Nothing,
+            }
+        } else {
+            self.parked.take().map_or(Act::Nothing, Act::Publish)
+        }
+    }
+
+    /// The source did not open or was cancelled: the running share (if any) is untouched, so its sound is too.
+    fn not_opened(&mut self) -> Act {
+        self.parked = None;
+        self.switch = None;
+        self.failed = true;
+        Act::Nothing
+    }
+
+    /// The source opened but its track did not publish: the share is over, and its sound goes.
+    fn down(&mut self) -> Act {
+        self.not_opened();
+        Act::Unpublish
     }
 
     /// A screen share was stopped: what waited for it goes.
     fn stopped(&mut self) {
-        self.parked = None;
+        self.not_opened();
+        self.token = None;
     }
+}
 
-    /// A screen open finished: the waiting sound starts when the share came up and is dropped when it did not.
-    fn opened(&mut self, sharing: bool) -> Option<dilla_media::app_audio::AppSource> {
-        self.parked.take().filter(|_| sharing)
+/// Carries out an [`Act`].
+async fn perform(ctx: &Ctx, call: &Call, act: Act) {
+    match act {
+        Act::Nothing => {}
+        Act::Publish(app) => app_audio(ctx, call, Some(app)).await,
+        Act::Unpublish => app_audio(ctx, call, None).await,
     }
 }
 
@@ -1101,6 +1233,7 @@ impl AppSoundSlot {
 async fn app_audio(ctx: &Ctx, call: &Call, source: Option<dilla_media::app_audio::AppSource>) {
     let mut share = ctx.states.borrow().voice.share;
     let Some(source) = source.filter(|_| share.screen) else {
+        *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
         call.unpublish_app_audio().await;
         if share.screen_audio {
             share.screen_audio = false;
@@ -1110,11 +1243,13 @@ async fn app_audio(ctx: &Ctx, call: &Call, source: Option<dilla_media::app_audio
     };
     match call.publish_app_audio(&source).await {
         Ok(_) => {
+            *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = Some(source);
             share.screen_audio = true;
             let _ = ctx.voice.set_share(share).await;
             ctx.voice.set_notice(None);
         }
         Err(e) => {
+            *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
             log::warn!("voice: the application sound did not start: {e}");
             ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
         }
@@ -1129,6 +1264,7 @@ async fn stop_share(ctx: &Ctx, call: &Call, opens: &mut Opens, kind: ShareKind) 
     call.unpublish_video(kind).await;
     if kind == ShareKind::Screen {
         // The share's sound goes with it.
+        *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
         call.unpublish_app_audio().await;
     }
     set_kind(&mut next, kind, false);
@@ -1143,7 +1279,7 @@ async fn publish_share(
     kind: ShareKind,
     result: Result<Box<dyn CaptureSource>, OpenError>,
     options: ShareOptions,
-) {
+) -> Published {
     let source = match result {
         Ok(source) => source,
         Err(e) => {
@@ -1151,7 +1287,7 @@ async fn publish_share(
                 log::warn!("voice: the {kind:?} share did not open: {e}");
             }
             ctx.voice.set_notice(Some(VoiceNotice::ShareCancelled));
-            return;
+            return Published::Kept;
         }
     };
     let mut next = ctx.states.borrow().voice.share;
@@ -1163,24 +1299,26 @@ async fn publish_share(
     if let Ok(Ok(())) = ctx.voice.set_share(next).await {
         if let Err(e) = call.publish_video_with(source, options).await {
             log::warn!("voice: the share did not start: {e}");
-            if unpublish_sound_after_failed_start(&mut next, kind) {
-                // A source switch that failed leaves no sound behind: what is published matches a live share.
-                call.unpublish_app_audio().await;
-            }
+            set_kind(&mut next, kind, false);
             let _ = ctx.voice.set_share(next).await;
-            return;
+            return Published::Down;
         }
         if kind == ShareKind::Screen && !audio {
             ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
         }
+        return Published::Up;
     }
+    Published::Kept
 }
 
-/// A share whose track did not publish is over: its slot is freed, and a screen share's application sound must be
-/// unpublished with it (`true`).
-fn unpublish_sound_after_failed_start(next: &mut LocalShare, kind: ShareKind) -> bool {
-    set_kind(next, kind, false);
-    kind == ShareKind::Screen
+/// What [`publish_share`] did.
+enum Published {
+    /// The source is published: the share is up (or switched to it).
+    Up,
+    /// Nothing was published (the source did not open, or the instance refused): a running share is untouched.
+    Kept,
+    /// The track did not publish: the share's slot is freed, the share is over.
+    Down,
 }
 
 fn notice_of(e: MediaEvent) -> VoiceNotice {
@@ -1208,96 +1346,155 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 mod tests {
     use super::*;
 
-    fn music() -> dilla_media::app_audio::AppSource {
+    fn app(pid: u32, label: &str) -> dilla_media::app_audio::AppSource {
         dilla_media::app_audio::AppSource {
-            serial: 1,
-            pid: 2,
-            label: "Music".to_owned(),
+            serial: u64::from(pid),
+            pid,
+            label: label.to_owned(),
         }
     }
 
-    /// What a share's start asks the session for (voice/mod.rs `share_start_asks`), run against the slot while the share
-    /// is not up yet: whether an application sound is published once it is.
-    fn publishes_after(
-        slot: &mut AppSoundSlot,
-        asks: &[Option<dilla_media::app_audio::AppSource>],
-    ) -> bool {
-        for source in asks {
-            slot.asked(source.clone(), false);
-        }
-        slot.opened(true).is_some()
+    fn music() -> dilla_media::app_audio::AppSource {
+        app(2, "Music")
     }
 
-    /// Task 44 fix round 2 (C1): the window share's application waits, its open fails, and the next share (a screen,
-    /// with no application chosen) publishes no sound, by the session's own bookkeeping.
+    /// The slot driven the way the loop drives it, with what the session publishes (`published`: what the sound row
+    /// shows) and the commands the UI sends ([`crate::screens::voice::share_start_asks`]).
+    #[derive(Default)]
+    struct Sim {
+        slot: AppSoundSlot,
+        published: Option<dilla_media::app_audio::AppSource>,
+        live: bool,
+        pending: bool,
+    }
+
+    impl Sim {
+        fn run(&mut self, act: Act) {
+            match act {
+                Act::Nothing => {}
+                Act::Publish(app) => self.published = Some(app),
+                Act::Unpublish => self.published = None,
+            }
+        }
+
+        /// The person picks a source: the UI's `share_source` (its asks come after the start, as the UI sends them).
+        fn start(&mut self, token: u64, sound: &crate::screens::voice::ShareSound) {
+            self.slot.started(Some(token));
+            self.pending = true;
+            let asks = crate::screens::voice::share_start_asks(sound).in_order();
+            for ask in asks {
+                let act = self.slot.asked(ask, self.live, self.live && self.pending);
+                self.run(act);
+            }
+        }
+
+        /// The window's lookup lands.
+        fn found(&mut self, token: u64, app: Option<dilla_media::app_audio::AppSource>) {
+            let act = self
+                .slot
+                .window_found(token, app, self.live, self.live && self.pending);
+            self.run(act);
+        }
+
+        /// The open ends: `Published::Up`, `Kept` (failed or cancelled) or `Down`.
+        fn end(&mut self, outcome: Published) {
+            let was_live = self.live;
+            self.pending = false;
+            let act = match outcome {
+                Published::Up => {
+                    self.live = true;
+                    self.slot.opened(was_live)
+                }
+                Published::Kept => self.slot.not_opened(),
+                Published::Down => {
+                    self.live = false;
+                    self.slot.down()
+                }
+            };
+            self.run(act);
+        }
+    }
+
+    use crate::screens::voice::ShareSound;
+
+    /// Task 44 fix round 3: a share running window A's sound, switched to window B: while B opens, A's share keeps
+    /// A's sound (B's application, found meanwhile, waits); B failing or being cancelled leaves A's sound published;
+    /// B opening replaces it with B's.
+    #[test]
+    fn a_source_switch_keeps_the_old_sound_until_the_new_source_opens() {
+        let (a, b) = (app(10, "A"), app(20, "B"));
+        for outcome in [Published::Kept, Published::Up] {
+            let mut sim = Sim::default();
+            sim.start(1, &ShareSound::Unset);
+            sim.found(1, Some(a.clone()));
+            sim.end(Published::Up);
+            assert_eq!(sim.published, Some(a.clone()), "window A shares its sound");
+            // The switch to B (the UI's share_sound went Window(a) to Unset): nothing changes while B opens.
+            sim.start(2, &ShareSound::Unset);
+            assert_eq!(sim.published, Some(a.clone()), "while B opens");
+            sim.found(2, Some(b.clone()));
+            assert_eq!(sim.published, Some(a.clone()), "B's sound waits for B");
+            let up = matches!(outcome, Published::Up);
+            sim.end(outcome);
+            assert_eq!(sim.published, Some(if up { b.clone() } else { a.clone() }));
+            // B's lookup landing after a failed start is dropped.
+            if !up {
+                sim.found(2, Some(b.clone()));
+                assert_eq!(sim.published, Some(a.clone()), "a late B is dropped");
+            }
+        }
+        // A window whose application is silent replaces A's sound with none once it opens.
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Unset);
+        sim.found(1, Some(a.clone()));
+        sim.end(Published::Up);
+        sim.start(2, &ShareSound::Unset);
+        sim.found(2, None);
+        assert_eq!(sim.published, Some(a));
+        sim.end(Published::Up);
+        assert_eq!(sim.published, None);
+    }
+
+    /// Task 44 fix rounds 2 and 3: a window share whose application is found and whose open then fails leaves no
+    /// sound for the next share (a screen, or a window with a silent application), and the person's own choice goes out.
     #[test]
     fn a_failed_window_share_leaves_no_sound_for_the_next_share() {
-        let mut slot = AppSoundSlot::default();
-        assert_eq!(
-            slot.asked(Some(music()), false),
-            None,
-            "waits for the share"
-        );
-        assert_eq!(slot.opened(false), None, "the share did not come up");
-        // The next share asks for nothing at all (no UI-side clearing here).
-        assert!(!publishes_after(&mut slot, &[]));
-        // A share that is stopped drops what waited for it.
-        slot.asked(Some(music()), false);
-        slot.stopped();
-        assert!(!publishes_after(&mut slot, &[]));
-        // One that came up applies it.
-        slot.asked(Some(music()), false);
-        assert_eq!(slot.opened(true), Some(music()));
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Unset);
+        sim.found(1, Some(music()));
+        sim.end(Published::Kept);
+        sim.start(2, &ShareSound::Unset);
+        sim.end(Published::Up);
+        assert_eq!(sim.published, None);
+        // A person who switched the sound off gets none; one who chose an application gets it.
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Person(None));
+        // The UI looks nothing up for a person who chose (voice/mod.rs `share_source`).
+        sim.end(Published::Up);
+        assert_eq!(sim.published, None);
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Person(Some(app(30, "Radio"))));
+        sim.end(Published::Up);
+        assert_eq!(sim.published, Some(app(30, "Radio")));
     }
 
-    /// Task 44 fix round 2 (C1): whatever an earlier share left waiting, a share started with no chosen application
-    /// (a screen, or a window whose application is silent) publishes none, by what the UI asks at its start
-    /// (`share_start_asks`); a share with a chosen one publishes it.
-    #[test]
-    fn a_share_start_without_a_chosen_application_publishes_no_sound() {
-        use crate::screens::voice::{ShareSound, share_start_asks};
-        let mut slot = AppSoundSlot::default();
-        for sound in [
-            ShareSound::Unset,
-            ShareSound::Person(None),
-            ShareSound::Window(music()),
-        ] {
-            slot.asked(Some(music()), false);
-            assert!(
-                !publishes_after(&mut slot, &share_start_asks(&sound).in_order()),
-                "{sound:?}"
-            );
-        }
-        let chosen = ShareSound::Person(Some(music()));
-        assert!(publishes_after(
-            &mut slot,
-            &share_start_asks(&chosen).in_order()
-        ));
-    }
-
-    /// Task 44 fix round 2: a screen share whose track did not publish unpublishes its application sound too; a camera
-    /// has none.
+    /// Task 44 fix round 3: a screen share whose track did not publish is over and its application sound goes with
+    /// it ([`AppSoundSlot::down`] is what the loop performs), and a stop drops what waited.
     #[test]
     fn a_failed_screen_start_unpublishes_its_sound() {
-        let mut share = LocalShare {
-            screen: true,
-            screen_audio: true,
-            ..LocalShare::default()
-        };
-        assert!(unpublish_sound_after_failed_start(
-            &mut share,
-            ShareKind::Screen
-        ));
-        assert!(!share.screen && !share.screen_audio);
-        let mut share = LocalShare {
-            camera: true,
-            ..LocalShare::default()
-        };
-        assert!(!unpublish_sound_after_failed_start(
-            &mut share,
-            ShareKind::Camera
-        ));
-        assert!(!share.camera);
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Unset);
+        sim.found(1, Some(music()));
+        sim.end(Published::Up);
+        assert!(sim.published.is_some());
+        sim.start(2, &ShareSound::Unset);
+        sim.end(Published::Down);
+        assert_eq!(sim.published, None);
+        assert_eq!(AppSoundSlot::default().down(), Act::Unpublish);
+        let mut slot = AppSoundSlot::default();
+        slot.asked(Some(music()), false, false);
+        slot.stopped();
+        assert_eq!(slot.opened(false), Act::Nothing);
     }
 
     /// Share fix review I1: a dropped session waits only while a call's media is live. A call whose media already
