@@ -10,6 +10,7 @@
 //! - **Keyboard**: the Profile form's tab order and the shortcuts table.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use dilla_client::testing::spec::ScreenFixture;
 use dilla_desktop::router::UserSection;
@@ -17,10 +18,13 @@ use dilla_desktop::screens::FocusNext;
 use dilla_desktop::screens::user_settings::UserSettings;
 use dilla_desktop::screens::user_settings::keys::SHORTCUTS;
 use dilla_desktop::slots::SlotCx;
+use dilla_parity::Driver;
 use gpui::{
     AppContext, Context, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     TestAppContext, Window, div,
 };
+
+mod support;
 
 const NAMES: [&str; 12] = [
     "appearance",
@@ -252,4 +256,68 @@ fn every_printed_chord_is_bound_on_every_platform(cx: &mut TestAppContext) {
             );
         }
     }
+}
+
+/// V4: choosing Compact in a window without a client (the fixture's) takes effect at once: the Compact option shows as
+/// chosen and Regular does not, as the Notify section's local choices do (`notify::settings_section`).
+#[test]
+fn appearance_compact_click_selects_compact() {
+    let mut app = Driver::launch_fixture(&fixture_path("appearance-b"), None, &[]);
+    app.wait_for("appearance-density-compact", Duration::from_secs(60));
+    let chosen = |app: &mut Driver, label: &str| {
+        app.a11y_tree()
+            .nodes
+            .iter()
+            .find(|n| n.role == "RadioButton" && n.label.as_deref() == Some(label))
+            .unwrap_or_else(|| panic!("no {label} option"))
+            .toggled
+            .as_deref()
+            == Some("True")
+    };
+    assert!(chosen(&mut app, "Regular"), "Regular is chosen at first");
+    app.click("appearance-density-compact");
+    app.wait_idle();
+    assert!(chosen(&mut app, "Compact"), "the click chose Compact");
+    assert!(!chosen(&mut app, "Regular"), "Regular is let go");
+}
+
+/// V4, the live half: against a real dillad, the density a person chooses is written to the store
+/// (`Profile::set_density`) and is still chosen after the client restarts and the Appearance section loads it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn appearance_density_saves_on_a_real_instance() {
+    use dilla_client::state::profile::DensitySetting;
+    use support::world;
+
+    let host = tokio::task::spawn_blocking(|| world::start_host("v4-density", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let ada = world::sign_up(&host, &invite, "ada", "Ada", "v4-density").await;
+    let ada = tokio::task::spawn_blocking(move || {
+        world::clear_session(&ada);
+        ada
+    })
+    .await
+    .unwrap();
+    let within = Duration::from_secs(30);
+    let client = world::start(&ada).await;
+    client
+        .profile()
+        .set_density(DensitySetting::Compact)
+        .await
+        .unwrap()
+        .unwrap();
+    world::wait_for(&client, within, "Compact in the store", |s| {
+        s.profile.density == DensitySetting::Compact
+    })
+    .await;
+
+    drop(client);
+    let client = world::start(&ada).await;
+    client.profile().load_appearance().await.unwrap().unwrap();
+    world::wait_for(&client, within, "Compact after the restart", |s| {
+        s.profile.density == DensitySetting::Compact
+    })
+    .await;
 }

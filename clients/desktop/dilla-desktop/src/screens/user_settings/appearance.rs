@@ -36,6 +36,10 @@ impl UserSettings {
             return;
         };
         let Some(client) = self.ctx.client.clone() else {
+            // No client (a fixture's window): the choice is kept in the window, as Notify keeps its own, so a click
+            // shows what it shows in the app.
+            self.local_density = Some(setting);
+            cx.notify();
             return;
         };
         self.appearance_failed = false;
@@ -49,6 +53,10 @@ impl UserSettings {
             return;
         };
         let Some(client) = self.ctx.client.clone() else {
+            // No client (a fixture's window): the choice is kept in the window, as Notify keeps its own, so a click
+            // shows what it shows in the app.
+            self.local_motion = Some(setting);
+            cx.notify();
             return;
         };
         self.appearance_failed = false;
@@ -77,6 +85,8 @@ impl UserSettings {
     pub(super) fn appearance_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.ctx.state.profile;
         let this = cx.entity();
+        let density_now = self.local_density.unwrap_or(state.density);
+        let motion_now = self.local_motion.unwrap_or(state.reduce_motion);
 
         let theme = SettingsRow::new("appearance-theme-row", t("appearance.theme.label"))
             .icon(IconName::Eye)
@@ -94,7 +104,7 @@ impl UserSettings {
                         ("regular", t("workspace.density.regular")),
                         ("compact", t("workspace.density.compact")),
                     ],
-                    state.density.id(),
+                    density_now.id(),
                 )
                 .option_child(|v| option_probe("appearance-density", v))
                 .on_change({
@@ -115,7 +125,7 @@ impl UserSettings {
                         ("on", t("workspace.motion.on")),
                         ("off", t("workspace.motion.off")),
                     ],
-                    state.reduce_motion.id(),
+                    motion_now.id(),
                 )
                 .option_child(|v| option_probe("appearance-motion", v))
                 .on_change({

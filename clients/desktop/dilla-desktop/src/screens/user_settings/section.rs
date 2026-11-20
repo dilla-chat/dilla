@@ -82,6 +82,10 @@ pub struct UserSettings {
     load_error: Option<String>,
     // Appearance
     pub(super) appearance_pending: bool,
+    /// The density chosen in a window without a client (a fixture's), shown instead of the store's; `None` with a client.
+    pub(super) local_density: Option<dilla_client::state::profile::DensitySetting>,
+    /// The motion choice kept the same way as [`Self::local_density`].
+    pub(super) local_motion: Option<dilla_client::state::profile::MotionSetting>,
     pub(super) appearance_failed: bool,
     /// The settings host's guard asks for a save (its Save, or leaving with a change still to send): the request comes
     /// back here, where the client is (integration 3: Profile registers with the Task 1b host's `SlotCx::workspace`).
@@ -178,6 +182,8 @@ impl UserSettings {
             plain_error: None,
             load_error: None,
             appearance_pending: false,
+            local_density: None,
+            local_motion: None,
             appearance_failed: false,
             _subscriptions: subs,
         }
@@ -281,7 +287,7 @@ impl UserSettings {
     }
 
     pub(super) fn density(&self) -> Density {
-        match self.ctx.state.profile.density {
+        match self.local_density.unwrap_or(self.ctx.state.profile.density) {
             dilla_client::state::profile::DensitySetting::Compact => Density::Compact,
             dilla_client::state::profile::DensitySetting::Regular => Density::Regular,
         }
