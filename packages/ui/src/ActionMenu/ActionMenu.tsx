@@ -195,7 +195,7 @@ export function ActionMenu({ label, items, open, onOpenChange, onSelect, at, foc
     itemButtons.push(<div key={`group:${group}:${run[0].id}`} role="group" aria-label={group} className="d-action-menu__group">{run.map(itemButton)}</div>);
   }
   const style = at
-    ? { position: 'fixed' as const, left: `${clamped?.x ?? at.x}px`, top: `${clamped?.y ?? at.y}px` }
+    ? { position: 'fixed' as const, left: `${clamped?.x ?? at.x}px`, top: `${clamped?.y ?? at.y}px`, right: 'auto' }
     : undefined;
 
   return (
