@@ -888,12 +888,60 @@ parity! {
     parity_server_settings_members_b => "server-settings/members-b";
     parity_server_settings_roles => "server-settings/roles", "parity after T6c: chrome 0.2172 % (lane E drew RolesSection.tsx's two panes; the residue is the permission switches: each single-line row's switch sits 1 css px lower than the web's, though it is where the CSS puts it (an isolated Chromium render of the same rule set agrees with GPUI); the two-line row matches)";
     parity_server_settings_roles_b => "server-settings/roles-b", "parity after T6c: chrome 0.3006 % (as roles: the switches 1 css px low; the overflowing role row is drawn as the web draws it)";
-    parity_server_settings_self_roles => "server-settings/self-roles", "parity after T28 wave 2: whole frame 1.0478 % (SelfRolesSection.tsx's layout is drawn: the fieldset of role checkboxes and the Publish-a-role-panel form; what is left is the browser's own widgets: the groove-edged fieldset sits 1px higher and 1px further left, the native checkbox and the native <select> in its UA sans face)";
-    parity_server_settings_self_roles_b => "server-settings/self-roles-b", "parity after T28 wave 2: whole frame 1.9086 % (as self-roles, and the browser wraps the checkbox labels inline mid-label, 'role number / 05', where GPUI wraps whole label boxes)";
     parity_server_settings_bans => "server-settings/bans";
     parity_server_settings_bans_b => "server-settings/bans-b";
     parity_server_settings_moderation_log => "server-settings/moderation-log";
     parity_server_settings_moderation_log_b => "server-settings/moderation-log-b";
+}
+
+/// Task 18 (Decision D19): server settings -> Self roles is drawn with the design system's `CheckList`s and `Select`,
+/// not the browser's `<fieldset>`: the approve box is a check list of one 32px row per role under a label line (the
+/// 10px micro label at 1.5 plus its 6px gap), and no fieldset is drawn. (The rows themselves carry no automation id: the
+/// list's height is the label line plus its rows.)
+#[test]
+fn self_roles_draw_checklists() {
+    let mut app = Driver::launch_fixture(&fixture_path("server-settings/self-roles"), None, &[]);
+    let list = app.wait_for("self-roles-approve", Duration::from_secs(60));
+    // The fixture's one approvable role is `crew`.
+    let label_line = 10.0 * 1.5 + 6.0;
+    assert!(
+        (list.height - (label_line + 32.0)).abs() < 0.01,
+        "a label line and one 32px row, got {}",
+        list.height
+    );
+    assert!(
+        app.element("self-roles-fieldset").is_none(),
+        "no browser-style fieldset"
+    );
+}
+
+/// GPUI-only references (`native/`): the web's frame of these two worlds shows the browser's own fieldset, check boxes
+/// and `<select>`, which the desktop app does not draw (Decision D19); the frame is the app's, compared with
+/// `native/server-settings-self-roles(-b)-2x.png`.
+fn shoot_self_roles(fixture: &str, golden: &str) {
+    dilla_parity::screen::assert_native_screen(&fixture_path(fixture), golden, |_| {})
+        .unwrap_or_else(|e| panic!("{golden} differs from its golden shot: {e}"));
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_server_settings_self_roles() {
+    shoot_self_roles("server-settings/self-roles", "server-settings-self-roles");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_server_settings_self_roles_b() {
+    shoot_self_roles(
+        "server-settings/self-roles-b",
+        "server-settings-self-roles-b",
+    );
 }
 
 /// role-palette.ts `signalPalette` (Package 10b): a role whose colour is none of the six swatches (one set by the web's
