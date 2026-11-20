@@ -74,12 +74,11 @@ fn state(n: u8) -> Arc<AppState> {
         channel: Some(VOICE),
         community: Some(COMMUNITY),
         call_id: Some(VOICE.0),
-        // Everyone's media is there: a stage tile is a device of the call group (VoiceView.tsx `callTiles`).
-        roster: (0..n)
-            .map(|i| (UserId([i; 16]), DeviceId([100 + i; 16]), u16::from(i)))
-            .collect(),
         ..OwnCall::default()
     };
+    // Everyone's media is there, and person 1's screen: a stage tile is a media peer (VoiceView.tsx `callTiles`).
+    s.voice.media_peers = (1..n).map(|i| DeviceId([100 + i; 16])).collect();
+    s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
 
@@ -604,10 +603,11 @@ fn dm_state() -> Arc<AppState> {
         channel: Some(DM),
         community: None,
         call_id: Some(DM.0),
-        // Bob's media is there (a stage tile is a device of the call group).
-        roster: vec![(UserId([1; 16]), DeviceId([101; 16]), 1)],
         ..OwnCall::default()
     };
+    // Bob's media and screen are there (a stage tile is a media peer).
+    s.voice.media_peers = [DeviceId([101; 16])].into_iter().collect();
+    s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
 
@@ -2636,7 +2636,11 @@ fn the_people_list_starts_a_list_gap_under_the_row(cx: &mut TestAppContext) {
 const ALL_MEDIA: &[&str] = &["media mira", "media bjorn", "media lin", "media sam"];
 
 fn shoot_group(golden: &str, sims: &[&str]) {
-    dilla_parity::screen::assert_native_screen(&parity_fixture("stage-group"), golden, |driver| {
+    shoot_fixture("stage-group", golden, sims)
+}
+
+fn shoot_fixture(fixture: &str, golden: &str, sims: &[&str]) {
+    dilla_parity::screen::assert_native_screen(&parity_fixture(fixture), golden, |driver| {
         for sim in sims {
             let reply = driver.request(&format!("voice-sim {sim}"));
             assert_eq!(reply, "ok", "voice-sim {sim}: {reply}");
@@ -2676,5 +2680,29 @@ fn native_voice_screen_tile() {
     shoot_group(
         "voice-screen-tile",
         &[ALL_MEDIA, &["screen sam test-pattern"]].concat(),
+    );
+}
+
+/// Eight people with media at 1440x900 (`voice/stage-group-b`): the grid wraps. The web has no reference of it (the parity
+/// world holds no media), so the wrapped grid is checked here, by eye against CallStage's grid.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_stage_wrap() {
+    shoot_fixture(
+        "stage-group-b",
+        "voice-stage-wrap",
+        &[
+            "media mira",
+            "media bjorn",
+            "media lin",
+            "media sam",
+            "media eva",
+            "media ola",
+            "media kai",
+            "speaking eva",
+        ],
     );
 }

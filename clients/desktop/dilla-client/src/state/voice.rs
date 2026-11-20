@@ -125,6 +125,11 @@ pub struct VoiceState {
     pub ptt_held: bool,
     /// The devices heard speaking now (this device's own included while its microphone is live).
     pub speaking: BTreeSet<DeviceId>,
+    /// The remote devices whose media is connected to this device's call (the SFU's peers, session.ts `call.state.tiles`):
+    /// the stage draws a tile for each. Not the call group's roster, and not the instance's voice list.
+    pub media_peers: BTreeSet<DeviceId>,
+    /// The remote devices a screen stream of is arriving: their screen tile needs it, not the voice list's flag.
+    pub screen_streams: BTreeSet<DeviceId>,
     pub share: LocalShare,
     /// The last media notice, until the person dismisses it.
     pub notice: Option<VoiceNotice>,

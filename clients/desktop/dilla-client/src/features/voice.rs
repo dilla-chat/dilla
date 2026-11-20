@@ -917,6 +917,8 @@ impl Voice {
             }
             s.voice.call = OwnCall::default();
             s.voice.speaking.clear();
+            s.voice.media_peers.clear();
+            s.voice.screen_streams.clear();
             s.voice.share = LocalShare::default();
         });
         // A join in flight was cancelled just above: this answers once it has torn down (its self-Remove posted, a call
@@ -1087,6 +1089,23 @@ impl Voice {
         self.inner.publish(move |s| {
             if s.voice.speaking != devices {
                 s.voice.speaking = devices;
+            }
+        });
+    }
+
+    /// The remote devices whose media is connected, and those a screen stream arrives from (the media layer's peers: what
+    /// the web's `call.state.tiles` lists).
+    pub fn set_media_peers(
+        &self,
+        peers: std::collections::BTreeSet<DeviceId>,
+        screens: std::collections::BTreeSet<DeviceId>,
+    ) {
+        self.inner.publish(move |s| {
+            if s.voice.media_peers != peers {
+                s.voice.media_peers = peers;
+            }
+            if s.voice.screen_streams != screens {
+                s.voice.screen_streams = screens;
             }
         });
     }
@@ -1298,6 +1317,8 @@ fn ended_removed(s: &mut AppState, channel: ChannelId, own: Option<DeviceId>) {
         ..OwnCall::default()
     };
     s.voice.speaking.clear();
+    s.voice.media_peers.clear();
+    s.voice.screen_streams.clear();
     s.voice.share = LocalShare::default();
 }
 

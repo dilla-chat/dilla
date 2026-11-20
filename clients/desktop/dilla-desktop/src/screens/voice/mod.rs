@@ -307,29 +307,21 @@ pub struct VoiceUi {
 #[derive(Default)]
 struct Sim {
     media: std::collections::BTreeSet<DeviceId>,
+    screens: std::collections::BTreeSet<DeviceId>,
     speaking: std::collections::BTreeSet<DeviceId>,
 }
 
 #[cfg(feature = "test-hooks")]
 impl Sim {
-    /// `state` with the simulated media in the call's roster and the simulated voices in its speaking set.
+    /// `state` with the simulated devices among the call's media peers (and screen streams) and the simulated voices in
+    /// its speaking set.
     fn over(&self, state: Arc<AppState>) -> Arc<AppState> {
         if self.media.is_empty() && self.speaking.is_empty() {
             return state;
         }
         let mut s = (*state).clone();
-        let people: Vec<(UserId, DeviceId)> = s
-            .voice
-            .calls
-            .values()
-            .flat_map(|c| c.participants.iter().map(|p| (p.user_id, p.device_id)))
-            .collect();
-        for (user, device) in people {
-            if self.media.contains(&device) && !s.voice.call.roster.iter().any(|r| r.1 == device) {
-                let leaf = s.voice.call.roster.len() as u16;
-                s.voice.call.roster.push((user, device, leaf));
-            }
-        }
+        s.voice.media_peers.extend(self.media.iter().copied());
+        s.voice.screen_streams.extend(self.screens.iter().copied());
         s.voice.speaking.extend(self.speaking.iter().copied());
         Arc::new(s)
     }
@@ -809,6 +801,9 @@ pub fn simulate(
             } else {
                 ShareKind::Camera
             };
+            if what == "screen" {
+                ui.sim.screens.insert(found);
+            }
             ui.test_frames.insert(
                 StreamKey {
                     device: found.hex(),
@@ -1192,16 +1187,28 @@ pub fn after_leaving_other_calls(
     start: impl FnOnce(&dilla_client::features::voice::Voice) -> VoiceAnswer + 'static,
     cx: &mut App,
 ) {
+    after_leaving_other_calls_then(window, voice, start, None, cx);
+}
+
+/// [`after_leaving_other_calls`] that also tells `done` how the join ended ([`handover_then`]).
+fn after_leaving_other_calls_then(
+    window: WindowId,
+    voice: dilla_client::features::voice::Voice,
+    start: impl FnOnce(&dilla_client::features::voice::Voice) -> VoiceAnswer + 'static,
+    done: Option<JoinDone>,
+    cx: &mut App,
+) {
     let leaves: Vec<_> = other_calls(window, cx)
         .into_iter()
         .map(|c| c.voice().leave())
         .collect();
     let undo = voice.clone();
-    handover(
+    handover_then(
         window,
         leaves,
         move || start(&voice),
         move || drop(undo.leave()),
+        done,
         cx,
     );
 }
@@ -1216,11 +1223,36 @@ pub fn after_leaving_other_calls(
 /// voice area shows, its microphone closed.
 pub fn handover(
     window: WindowId,
-    mut leaves: Vec<VoiceAnswer>,
+    leaves: Vec<VoiceAnswer>,
     start: impl FnOnce() -> VoiceAnswer + 'static,
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
+    handover_then(window, leaves, start, undo, None, cx);
+}
+
+/// What a join's caller does with its end ([`join_then`]).
+pub type JoinDone = Box<dyn FnOnce(Result<(), dilla_client::ClientError>, &mut App)>;
+
+/// [`handover`] that tells `done`, once, how the join ended: its own answer (`Ok`, or the error its notice came from), a
+/// leave that never answered (`voice.failed`), or the join given up for a newer one or a closed window (`E_CANCELLED`,
+/// which says nothing, as a cancelled join does). A join whose answer never comes within [`JOIN_WAIT`] answers nothing:
+/// the caller's own wait ends it.
+fn handover_then(
+    window: WindowId,
+    mut leaves: Vec<VoiceAnswer>,
+    start: impl FnOnce() -> VoiceAnswer + 'static,
+    undo: impl FnOnce() + 'static,
+    done: Option<JoinDone>,
+    cx: &mut App,
+) {
+    let done = std::rc::Rc::new(std::cell::RefCell::new(done));
+    let tell = move |result: Result<(), dilla_client::ClientError>, cx: &mut App| {
+        if let Some(done) = done.borrow_mut().take() {
+            done(result, cx);
+        }
+    };
+    let cancelled = || Err(dilla_client::ClientError::Sync("E_CANCELLED".into()));
     let ticket = {
         let areas = cx.default_global::<VoiceAreas>();
         areas.handovers += 1;
@@ -1240,29 +1272,36 @@ pub fn handover(
                 break;
             }
             if !cx.update(|cx| newest(cx)) {
-                return;
+                return cx.update(|cx| tell(cancelled(), cx));
             }
             if waited >= HANDOVER_WAIT {
                 log::warn!(
                     "voice: another instance's call did not answer its leave; the join is dropped"
                 );
-                cx.update(|cx| join_failed(window, cx));
-                return;
+                return cx.update(|cx| {
+                    join_failed(window, cx);
+                    tell(
+                        Err(dilla_client::ClientError::Network(
+                            "another call did not leave".into(),
+                        )),
+                        cx,
+                    );
+                });
             }
             cx.background_executor().timer(HANDOVER_POLL).await;
             waited += HANDOVER_POLL;
         }
         // A newer join started meanwhile (in this window or another): it is the device's one call (review L m1).
         if !cx.update(|cx| area_open(window, cx) && newest(cx)) {
-            return;
+            return cx.update(|cx| tell(cancelled(), cx));
         }
         // The join answers on the client's runtime; it is polled on the same timer, for [`JOIN_WAIT`] at most. (The
         // platform dispatcher would wake an await on the answer from another thread, but the tests' scheduler runs only
         // what its own clock and turns wake, so the poll keeps both alike.)
         let mut join = start();
         let mut joining = Duration::ZERO;
-        // `None`: joined; else the notice to show (shell-model.ts `joinFailureKey`), if any.
-        let failure: Option<Option<&'static str>> = loop {
+        // `None`: joined; else the notice to show (shell-model.ts `joinFailureKey`), if any; and the answer for `done`.
+        let (failure, answer): (Option<Option<&'static str>>, _) = loop {
             match join.try_recv() {
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                     if joining >= JOIN_WAIT {
@@ -1274,9 +1313,12 @@ pub fn handover(
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     log::warn!("voice: the join's answer was dropped (its client task ended)");
-                    break Some(Some("voice.failed"));
+                    break (
+                        Some(Some("voice.failed")),
+                        Err(dilla_client::ClientError::Stopped),
+                    );
                 }
-                Ok(Ok(())) => break None,
+                Ok(Ok(())) => break (None, Ok(())),
                 Ok(Err(e)) => {
                     let key = join_failure_key(&e);
                     log::warn!(
@@ -1284,15 +1326,20 @@ pub fn handover(
                         join_error_line(&e),
                         key.unwrap_or("none")
                     );
-                    break Some(key);
+                    break (Some(key), Err(e));
                 }
             }
         };
         cx.update(|cx| {
             if !area_open(window, cx) {
                 undo();
-            } else if let Some(Some(key)) = failure {
-                join_notice(window, key, cx);
+                // The window went, and the call it just joined is left again: nothing joined.
+                tell(cancelled(), cx);
+            } else {
+                if let Some(Some(key)) = failure {
+                    join_notice(window, key, cx);
+                }
+                tell(answer, cx);
             }
         });
     })
@@ -1409,6 +1456,19 @@ fn join_notice(window: WindowId, key: &'static str, cx: &mut App) {
 pub fn join(channel: ChannelId, window: WindowId, cx: &mut App) {
     let Some(v) = voice(window, cx) else { return };
     after_leaving_other_calls(window, v, move |v| v.join(channel), cx);
+}
+
+/// [`join`] that tells `done` how it ended (`/join`, builtin.ts `waitForVoiceJoin`): `Ok` once the call is joined, the
+/// refusal otherwise ([`join_failure_key`] names its notice), `E_CANCELLED` when a newer join or a closed window took it.
+/// A window with no voice area answers `E_CANCELLED` at once. Its notice shows as the plain join's does.
+pub fn join_then(channel: ChannelId, window: WindowId, done: JoinDone, cx: &mut App) {
+    let Some(v) = voice(window, cx) else {
+        return done(
+            Err(dilla_client::ClientError::Sync("E_CANCELLED".into())),
+            cx,
+        );
+    };
+    after_leaving_other_calls_then(window, v, move |v| v.join(channel), Some(done), cx);
 }
 
 /// Leaves `window`'s call; the focus goes back to the call's voice row (leave-reload.spec.ts).
@@ -2027,47 +2087,66 @@ pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
 
 // ---- the stage ----------------------------------------------------------------------------------------------------
 
-/// The tiles of `channel`'s stage (VoiceView.tsx `callTiles`): this device's own person tile always, a remote device's
-/// only once its media is there (a device of this call's roster, `call.state.tiles` on the web; somebody who is only in
-/// `voice_state` shows in the sidebar list alone). A device that shares also has a screen tile. The shared screens come
-/// first, then the people in the room's own order, a device the room does not list yet after them.
+/// The tiles of `channel`'s stage, built as VoiceView.tsx `callTiles` builds them: this device's own person tile (and its
+/// screen tile while it shares), then one person tile for each remote device that has media in the call
+/// (`voice.media_peers`, the media session's peers; `call.state.tiles` on the web), plus a screen tile for each of them
+/// whose screen stream is arriving (`voice.screen_streams`, not the voice list's flag). A peer the room (the voice list)
+/// does not list still gets its tiles; somebody who is only in the voice list has none. The shared screens come first,
+/// then the people in the room's own order, a device the room does not list after the listed ones, in the order built
+/// (the own device first among them).
 pub fn tiles(state: &AppState, channel: ChannelId) -> Vec<TileKey> {
     let call = &state.voice.call;
+    let room = state.voice.participants(channel);
     let in_this_call = call.channel == Some(channel);
-    let own_device = state.account.device_id;
-    let is_own = |p: &VoiceParticipant| p.own || Some(p.device_id) == own_device;
-    let has_media = |p: &VoiceParticipant| {
-        is_own(p) || (in_this_call && call.roster.iter().any(|r| r.1 == p.device_id))
+    let mut built: Vec<(TileKey, usize)> = Vec::new();
+    let rank = |device: DeviceId| {
+        room.iter()
+            .position(|p| p.device_id == device)
+            .unwrap_or(room.len())
     };
-    let mut people: Vec<(UserId, DeviceId, bool)> = Vec::new();
-    for p in state.voice.participants(channel) {
-        if has_media(p) {
-            let shares = if is_own(p) {
-                p.screen() || state.voice.share.screen
-            } else {
-                p.screen()
-            };
-            people.push((p.user_id, p.device_id, shares));
+    let mut push = |user: UserId, device: DeviceId, screen: bool| {
+        built.push((
+            TileKey {
+                user,
+                device,
+                screen,
+            },
+            rank(device),
+        ));
+    };
+    // This device: the room's own row when it lists one, else the account's own ids.
+    let own = room
+        .iter()
+        .find(|p| p.own)
+        .map(|p| (p.user_id, p.device_id))
+        .or_else(|| state.account.user_id.zip(state.account.device_id));
+    if in_this_call && let Some((user, device)) = own {
+        push(user, device, false);
+        if state.voice.share.screen {
+            push(user, device, true);
         }
     }
-    if in_this_call
-        && let (Some(user), Some(device)) = (state.account.user_id, own_device)
-        && !people.iter().any(|(_, d, _)| *d == device)
-    {
-        people.push((user, device, state.voice.share.screen));
+    if in_this_call {
+        for device in &state.voice.media_peers {
+            if Some(*device) == own.map(|o| o.1) {
+                continue;
+            }
+            // The room's row names the person; a peer it does not list is known by the call group's roster.
+            let user = room
+                .iter()
+                .find(|p| p.device_id == *device)
+                .map(|p| p.user_id)
+                .or_else(|| call.roster.iter().find(|r| r.1 == *device).map(|r| r.0));
+            let Some(user) = user else { continue };
+            push(user, *device, false);
+            if state.voice.screen_streams.contains(device) {
+                push(user, *device, true);
+            }
+        }
     }
-    let key = |(user, device, _): &(UserId, DeviceId, bool), screen| TileKey {
-        user: *user,
-        device: *device,
-        screen,
-    };
-    let mut out: Vec<TileKey> = people
-        .iter()
-        .filter(|p| p.2)
-        .map(|p| key(p, true))
-        .collect();
-    out.extend(people.iter().map(|p| key(p, false)));
-    out
+    let mut order: Vec<(usize, (TileKey, usize))> = built.into_iter().enumerate().collect();
+    order.sort_by_key(|(i, (k, rank))| (!k.screen, *rank, *i));
+    order.into_iter().map(|(_, (k, _))| k).collect()
 }
 
 /// The grid's band (CallStage.css): up to two tiles 46% (at most 560px) wide, up to four 46% (420px), more 31.5%
@@ -4323,64 +4402,76 @@ mod tests {
         assert_eq!(count(&s, ch.id), 2);
     }
 
-    /// `state_with`'s call as this device's own: `me` is the viewer's device, `media` the devices whose media is there.
-    fn in_call(s: &mut AppState, ch: &Channel, me: u8, media: &[u8]) {
+    /// `state_with`'s call as this device's own: `me` is the viewer's device, `media` the remote devices whose media is
+    /// connected (the media session's peers) and `screens` those a screen stream arrives from.
+    fn in_call(s: &mut AppState, ch: &Channel, me: u8, media: &[u8], screens: &[u8]) {
+        let dev = |d: &u8| DeviceId([*d; 16]);
         s.account.device_id = Some(DeviceId([me; 16]));
         s.account.user_id = Some(UserId([me; 16]));
         s.voice.call.channel = Some(ch.id);
-        s.voice.call.roster = media
-            .iter()
-            .map(|d| (UserId([*d; 16]), DeviceId([*d; 16]), 0))
-            .collect();
+        s.voice.media_peers = media.iter().map(dev).collect();
+        s.voice.screen_streams = screens.iter().map(dev).collect();
     }
 
-    #[test]
-    fn the_stage_has_a_tile_per_device_with_media_and_one_per_screen_share() {
-        let (mut s, ch) = state_with(&[
-            (1, 1, flags::IN_CALL | flags::SCREEN),
-            (2, 2, flags::IN_CALL | flags::VIDEO),
-        ]);
-        in_call(&mut s, &ch, 2, &[1, 2]);
-        let t = tiles(&s, ch.id);
-        assert_eq!(t.len(), 3);
-        assert!(
-            t[0].screen && t[0].device == DeviceId([1; 16]),
-            "the share leads"
-        );
-        assert!(!t[1].screen && t[1].device == DeviceId([1; 16]));
+    fn devices(t: &[TileKey]) -> Vec<(u8, bool)> {
+        t.iter().map(|k| (k.device.0[0], k.screen)).collect()
     }
 
-    /// VoiceView.tsx `callTiles`: a remote person has a tile once their media connects; one only in `voice_state` is in
-    /// the sidebar list alone, and the own tile is always there (the stage-group parity fixtures hold exactly this).
+    /// VoiceView.tsx `callTiles`: a tile is a media peer. Somebody who is only in the voice list has none, the own tile is
+    /// always there (the stage-group parity fixtures hold exactly this).
     #[test]
-    fn a_remote_person_without_media_has_no_tile_and_the_own_tile_always_shows() {
+    fn a_voice_state_only_member_has_no_tile_and_the_own_tile_always_shows() {
         let (mut s, ch) = state_with(&[
             (1, 1, flags::IN_CALL),
             (2, 2, flags::IN_CALL | flags::SELF_MUTE),
             (3, 3, flags::IN_CALL | flags::SCREEN),
         ]);
-        in_call(&mut s, &ch, 1, &[]);
-        let t = tiles(&s, ch.id);
-        assert_eq!(t.len(), 1, "only the own tile: nobody's media is there");
-        assert_eq!(t[0].device, DeviceId([1; 16]));
-        // The own device is in the call even when the instance's list has not placed it yet.
-        let (mut s, ch) = state_with(&[(2, 2, flags::IN_CALL)]);
-        in_call(&mut s, &ch, 1, &[2]);
-        let t = tiles(&s, ch.id);
+        in_call(&mut s, &ch, 1, &[], &[]);
+        assert_eq!(devices(&tiles(&s, ch.id)), vec![(1, false)]);
+    }
+
+    /// A peer the room does not list still gets a tile (its user from the call group's roster), after the listed ones;
+    /// the own device, unlisted too, comes before it (`[...own, ...others]`, stable).
+    #[test]
+    fn an_unlisted_media_peer_gets_a_tile_after_the_listed_ones_and_the_own_device_leads_them() {
+        let (mut s, ch) = state_with(&[(2, 2, flags::IN_CALL), (4, 4, flags::IN_CALL)]);
+        in_call(&mut s, &ch, 1, &[4, 2, 7], &[]);
+        s.voice.call.roster = vec![(UserId([7; 16]), DeviceId([7; 16]), 0)];
         assert_eq!(
-            t.iter().map(|k| k.device).collect::<Vec<_>>(),
-            vec![DeviceId([2; 16]), DeviceId([1; 16])],
-            "a device the room does not list yet comes after the listed ones"
+            devices(&tiles(&s, ch.id)),
+            vec![(2, false), (4, false), (1, false), (7, false)],
+            "the room's order, then the unlisted: the own device before the unlisted peer"
         );
-        // Media arrives: the person and their screen get tiles, the share first.
+        // The room lists this device: it takes the room's place.
+        let (mut s, ch) = state_with(&[(1, 1, flags::IN_CALL), (2, 2, flags::IN_CALL)]);
+        in_call(&mut s, &ch, 2, &[1], &[]);
+        assert_eq!(devices(&tiles(&s, ch.id)), vec![(1, false), (2, false)]);
+    }
+
+    /// A remote screen tile needs a real screen stream; the voice list's `screen` flag alone gives none. With the stream
+    /// there it has one and leads, the share first.
+    #[test]
+    fn a_remote_screen_tile_needs_a_stream_not_the_voice_flag() {
         let (mut s, ch) = state_with(&[
             (1, 1, flags::IN_CALL),
             (3, 3, flags::IN_CALL | flags::SCREEN),
         ]);
-        in_call(&mut s, &ch, 1, &[3]);
-        let t = tiles(&s, ch.id);
-        assert_eq!(t.len(), 3);
-        assert!(t[0].screen && t[0].device == DeviceId([3; 16]));
+        in_call(&mut s, &ch, 1, &[3], &[]);
+        assert_eq!(
+            devices(&tiles(&s, ch.id)),
+            vec![(1, false), (3, false)],
+            "the flag without a stream: the person only"
+        );
+        in_call(&mut s, &ch, 1, &[3], &[3]);
+        assert_eq!(
+            devices(&tiles(&s, ch.id)),
+            vec![(3, true), (1, false), (3, false)],
+            "the stream is there: the screen leads"
+        );
+        // The own share is the own device's (`call.state.sharing`), whatever the voice list says.
+        s.voice.share.screen = true;
+        in_call(&mut s, &ch, 1, &[], &[]);
+        assert_eq!(devices(&tiles(&s, ch.id)), vec![(1, true), (1, false)]);
     }
 
     #[test]

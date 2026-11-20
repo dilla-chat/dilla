@@ -796,6 +796,10 @@ async fn in_call(
     let mut app_ended = call.app_audio_ended();
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
+    // The remote devices with a verified audio track, and those with a video stream: the media peers the stage's tiles are.
+    let mut audio_peers: BTreeSet<DeviceId> = BTreeSet::new();
+    let mut video_peers: BTreeSet<DeviceId> = BTreeSet::new();
+    let mut screen_peers: BTreeSet<DeviceId> = BTreeSet::new();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
     let mut link_read = tokio::time::interval(LINK_EVERY);
     let mut ping: PingRead<'_, dilla_media::LinkRead> = PingRead::default();
@@ -852,7 +856,11 @@ async fn in_call(
                 }
                 r = levels.changed() => {
                     if r.is_ok() {
-                        let now = speaking.update(&levels.borrow_and_update(), Instant::now());
+                        let heard = levels.borrow_and_update().clone();
+                        audio_peers = heard.keys().filter_map(|h| unhex(h).map(DeviceId)).collect();
+                        audio_peers.retain(|d| Some(*d) != own);
+                        publish_peers(ctx, &audio_peers, &video_peers, &screen_peers);
+                        let now = speaking.update(&heard, Instant::now());
                         let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
                         set.retain(|d| Some(*d) != own);
                         ctx.voice.set_speaking(set);
@@ -861,6 +869,18 @@ async fn in_call(
                 r = videos.changed() => {
                     if r.is_ok() {
                         let next = videos.borrow_and_update().clone();
+                        video_peers = next
+                            .keys()
+                            .filter_map(|k| unhex(&k.device).map(DeviceId))
+                            .filter(|d| Some(*d) != own)
+                            .collect();
+                        screen_peers = next
+                            .keys()
+                            .filter(|k| k.kind == ShareKind::Screen)
+                            .filter_map(|k| unhex(&k.device).map(DeviceId))
+                            .filter(|d| Some(*d) != own)
+                            .collect();
+                        publish_peers(ctx, &audio_peers, &video_peers, &screen_peers);
                         *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
                         *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
                         ctx.video_seq.fetch_add(1, Ordering::Relaxed);
@@ -1013,6 +1033,18 @@ async fn superseded(mut links: watch::Receiver<Option<Arc<MediaLink>>>, call_id:
 
 /// The media did not start (the room refused, no key in time): the person is told the join failed and the call is
 /// left, so the signalling never stays "in" a call nobody hears.
+/// Tells the state which remote devices have media in the call (an audio or a video stream) and which of them send a
+/// screen: the stage's tiles (`voice::tiles`).
+fn publish_peers(
+    ctx: &Ctx,
+    audio: &BTreeSet<DeviceId>,
+    video: &BTreeSet<DeviceId>,
+    screens: &BTreeSet<DeviceId>,
+) {
+    let peers: BTreeSet<DeviceId> = audio.union(video).copied().collect();
+    ctx.voice.set_media_peers(peers, screens.clone());
+}
+
 fn failed(
     ctx: &Ctx,
     links: &watch::Receiver<Option<Arc<MediaLink>>>,
