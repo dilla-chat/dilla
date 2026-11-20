@@ -350,6 +350,10 @@ pub struct AnnouncementForm {
     pub clock: Clock,
     /// `None` in a fixture: its Save does nothing.
     pub client: Option<Rc<Client>>,
+    /// The save that went out and may have taken effect: the one thing a Save sends again until the Bot answers for it, as
+    /// the web resends the stored attempt's own arguments (bot-handlers.ts:386-392) and never a changed form. The fields
+    /// are locked while it is held.
+    attempt: Option<Attempt>,
     /// Each input's subscription.
     _subs: Vec<Subscription>,
     /// The save is out and the editor is to go.
@@ -384,6 +388,50 @@ impl AnnouncementForm {
         Some(self.parent)
     }
 
+    /// What a Save sends: the held attempt exactly as it went out (the same schedule, existing row and list revision,
+    /// whatever the fields say now), else the fields as checked ([`validate_schedule`]).
+    pub fn next_attempt(
+        &self,
+        values: &FormValues,
+        now: jiff::Timestamp,
+    ) -> Result<Attempt, &'static str> {
+        if let Some(held) = &self.attempt {
+            return Ok(held.clone());
+        }
+        Ok(Attempt {
+            schedule: validate_schedule(values, now)?,
+            existing: self.existing.clone(),
+            list_revision: self.list_revision,
+        })
+    }
+
+    /// Whether the fields are locked (an attempt may have taken effect and is the one thing Save sends).
+    pub fn locked(&self) -> bool {
+        self.attempt.is_some()
+    }
+
+    /// The permission was lost as Save went. With no attempt out the command ends Failed (bot-handlers.ts:434) and the
+    /// editor goes. With one held the answer stays uncertain and the editor and the attempt stay, to be sent again once
+    /// the permission is back (:383-385).
+    pub fn permission_lost(&mut self) -> (ResultStatus, String) {
+        if self.attempt.is_some() {
+            self.busy = false;
+            return (
+                ResultStatus::Cancelled,
+                "This schedule attempt is still pending. Restore Manage Community permission in its original community to reconcile it."
+                    .to_owned(),
+            );
+        }
+        self.done = true;
+        failed("Manage Community permission changed before saving.")
+    }
+
+    /// How Cancel ends the command's row: Failed "Announcement editing cancelled." (:432), but never over an attempt that
+    /// may have taken effect (the web only releases the row it holds) or a save still out, which finish their own row.
+    pub fn cancelled_row(&self) -> Option<(ResultStatus, String)> {
+        (!self.busy && self.attempt.is_none()).then(|| failed("Announcement editing cancelled."))
+    }
+
     /// The save is answered: Save is enabled again. An accepted save closes the editor. A refusal leaves it open with its
     /// draft, and the next save is a new request (R29: the Bot would answer a stored refusal again). An answer that may
     /// have taken effect leaves it open too and keeps the id, so the next Save resends that request and the Bot answers
@@ -391,11 +439,25 @@ impl AnnouncementForm {
     pub fn end_save(&mut self, end: SaveEnd) {
         self.busy = false;
         match end {
-            SaveEnd::Accepted => self.done = true,
-            SaveEnd::Refused => self.parent = dilla_client::features::roles::request_id(),
+            SaveEnd::Accepted => {
+                self.done = true;
+                self.attempt = None;
+            }
+            SaveEnd::Refused => {
+                self.parent = dilla_client::features::roles::request_id();
+                self.attempt = None;
+            }
             SaveEnd::Uncertain => {}
         }
     }
+}
+
+/// A save as it went out: what a Save sends again while it may have taken effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attempt {
+    pub schedule: Schedule,
+    pub existing: Option<ScheduleRow>,
+    pub list_revision: u64,
 }
 
 /// How a save ended ([`AnnouncementForm::end_save`]).
@@ -734,6 +796,7 @@ fn make(w: WindowId, wanted: Wanted, window: &mut Window, cx: &mut App) -> Annou
         editing: wanted.existing.is_some(),
         error: None,
         busy: false,
+        attempt: None,
         parent: wanted.parent,
         row: wanted.row,
         conversation: wanted.conversation,
@@ -785,8 +848,8 @@ pub fn submit(w: WindowId, cx: &mut App) {
     }
     let now = jiff::Timestamp::from_second(i64::try_from(form.clock.now()).unwrap_or(0))
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    let schedule = match validate_schedule(&values, now) {
-        Ok(schedule) => schedule,
+    let attempt = match form.next_attempt(&values, now) {
+        Ok(attempt) => attempt,
         Err(key) => {
             if let Some(form) = slot(w, cx).form.as_mut() {
                 form.error = Some(t(key).to_owned());
@@ -798,7 +861,6 @@ pub fn submit(w: WindowId, cx: &mut App) {
     let Some(form) = slot(w, cx).form.as_mut() else {
         return;
     };
-    form.error = None;
     let Some(client) = form.client.clone() else {
         return;
     };
@@ -806,23 +868,20 @@ pub fn submit(w: WindowId, cx: &mut App) {
         return;
     };
     let (conversation, community, row) = (form.conversation, form.community, form.row);
-    let (existing, list_revision) = (form.existing.clone(), form.list_revision);
     // The editor stays open, busy, until the Bot answers: only an accepted save closes it, so a refusal or an unsure answer
-    // finds its draft (and, if unsure, its request id) as the person left it.
+    // finds its draft (and, if unsure, its attempt) as the person left it.
     // The permission is read again as the save goes (`validateCurrent` after the dialog).
     let held = holds_manage(&client.state().borrow(), conversation.channel);
     if !held {
-        form.done = true;
-        finish(
-            Some(&client),
-            w,
-            conversation,
-            row,
-            failed("Manage Community permission changed before saving."),
-            cx,
-        );
+        let ended = form.permission_lost();
+        if form.locked() {
+            form.error = Some(ended.1.clone());
+        }
+        finish(Some(&client), w, conversation, row, ended, cx);
         return;
     }
+    form.error = None;
+    form.attempt = Some(attempt.clone());
     // A second attempt's row works again.
     finish(
         Some(&client),
@@ -838,9 +897,9 @@ pub fn submit(w: WindowId, cx: &mut App) {
             .save_announcement(
                 community,
                 parent,
-                existing.as_ref(),
-                &schedule,
-                list_revision,
+                attempt.existing.as_ref(),
+                &attempt.schedule,
+                attempt.list_revision,
             )
             .await;
         cx.update(|cx| settled(w, &client, (conversation, row), parent, answer, cx));
@@ -881,7 +940,28 @@ fn settled(
             _ => SaveEnd::Refused,
         };
         form.end_save(end);
-        form.error = (end == SaveEnd::Refused).then_some(outcome_text);
+        // A refusal's reason, or the hint of an attempt that may have taken effect, shows in the open editor.
+        form.error = (end != SaveEnd::Accepted).then_some(outcome_text);
+        let locked = form.locked();
+        lock_inputs(w, locked, cx);
+    }
+}
+
+/// The fields take no typing while an attempt that may have taken effect is the one thing Save sends.
+fn lock_inputs(w: WindowId, locked: bool, cx: &mut App) {
+    let Some(form) = slot(w, cx).form.as_ref() else {
+        return;
+    };
+    let message = form.message.clone();
+    let singles = [
+        form.date.clone(),
+        form.hour.clone(),
+        form.minute.clone(),
+        form.timezone.clone(),
+    ];
+    message.update(cx, |s, cx| s.set_disabled(locked, cx));
+    for input in singles {
+        input.update(cx, |s, cx| s.set_disabled(locked, cx));
     }
 }
 
@@ -893,13 +973,13 @@ pub fn cancel(w: WindowId, cx: &mut App) {
     let Some(form) = s.form.take() else {
         return;
     };
-    if !form.busy {
+    if let Some(ended) = form.cancelled_row() {
         finish(
             form.client.as_ref(),
             w,
             form.conversation,
             form.row,
-            failed("Announcement editing cancelled."),
+            ended,
             cx,
         );
     }
@@ -950,7 +1030,9 @@ pub fn answer_delete(w: WindowId, choice: Option<bool>, cx: &mut App) {
 
 /// The destination select chose `channel` (`None`: "Choose a channel").
 pub fn choose_channel(w: WindowId, channel: Option<ChannelId>, cx: &mut App) {
-    if let Some(form) = slot(w, cx).form.as_mut() {
+    if let Some(form) = slot(w, cx).form.as_mut()
+        && !form.locked()
+    {
         form.channel = channel;
         form.error = None;
     }
@@ -959,7 +1041,9 @@ pub fn choose_channel(w: WindowId, channel: Option<ChannelId>, cx: &mut App) {
 
 /// The repeat select chose `kind`: a one-off shows its date, a weekly one its weekday.
 pub fn choose_kind(w: WindowId, kind: ScheduleKind, cx: &mut App) {
-    if let Some(form) = slot(w, cx).form.as_mut() {
+    if let Some(form) = slot(w, cx).form.as_mut()
+        && !form.locked()
+    {
         form.kind = kind;
         form.error = None;
     }
@@ -968,7 +1052,9 @@ pub fn choose_kind(w: WindowId, kind: ScheduleKind, cx: &mut App) {
 
 /// The weekday select chose `weekday` (0 is Sunday).
 pub fn choose_weekday(w: WindowId, weekday: u8, cx: &mut App) {
-    if let Some(form) = slot(w, cx).form.as_mut() {
+    if let Some(form) = slot(w, cx).form.as_mut()
+        && !form.locked()
+    {
         form.weekday = weekday;
         form.error = None;
     }
@@ -1049,6 +1135,7 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
         form.timezone.clone(),
     );
     let (editing, busy, error) = (form.editing, form.busy, form.error.clone());
+    let locked = form.locked();
 
     let ids: Vec<(String, String)> = std::iter::once((
         NO_CHANNEL.to_owned(),
@@ -1063,6 +1150,7 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
         &pairs,
         channel.map_or_else(|| NO_CHANNEL.to_owned(), |c| c.hex()),
     )
+    .disabled(locked)
     .on_change(move |value, _, cx| {
         choose_channel(
             w,
@@ -1083,6 +1171,7 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
         ],
         kind.wire(),
     )
+    .disabled(locked)
     .on_change(move |value, _, cx| {
         choose_kind(
             w,
@@ -1106,7 +1195,8 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
                 "announcement-message-field",
                 t("botCommand.announcement.message"),
                 &message,
-            ),
+            )
+            .disabled(locked),
         ))
         .child(crate::tracked_box("announcement-recurrence", recurrence));
     if kind == ScheduleKind::OneOff {
@@ -1117,7 +1207,8 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
                 "announcement-date-field",
                 t("botCommand.announcement.date"),
                 &date,
-            ),
+            )
+            .disabled(locked),
         ));
     }
     if kind == ScheduleKind::Weekly {
@@ -1137,6 +1228,7 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
                 &pairs,
                 weekday.to_string(),
             )
+            .disabled(locked)
             .on_change(move |value, _, cx| choose_weekday(w, value.parse().unwrap_or(0), cx)),
         );
     }
@@ -1144,7 +1236,7 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
         crate::tracked_focus(
             id,
             &input.focus_handle(cx),
-            TextField::new(format!("{id}-field"), t(key), input),
+            TextField::new(format!("{id}-field"), t(key), input).disabled(locked),
         )
     };
     body = body
@@ -1708,6 +1800,107 @@ mod tests {
         assert_eq!(form.begin_save(), Some(fresh), "and keeps its id");
         form.end_save(SaveEnd::Accepted);
         assert!(form.done, "an accepted save closes it");
+    }
+
+    fn attempt(text: &str) -> Attempt {
+        Attempt {
+            schedule: validate_schedule(
+                &FormValues {
+                    text: text.into(),
+                    ..values()
+                },
+                now(),
+            )
+            .unwrap(),
+            existing: None,
+            list_revision: 7,
+        }
+    }
+
+    /// N1 (bot-handlers.ts:386-392): after an answer that may have taken effect, a Save sends the stored attempt as it went
+    /// out, never the fields as they read now (not even invalid ones); an accepted or a refused save releases it.
+    #[gpui::test]
+    fn a_save_after_an_unsure_answer_sends_the_stored_attempt(cx: &mut gpui::TestAppContext) {
+        let mut form = form(cx);
+        let edited = FormValues {
+            text: "changed after the first save".into(),
+            hour: "99".into(),
+            ..values()
+        };
+        assert_eq!(
+            form.next_attempt(&edited, now()),
+            Err("botCommand.dialog.invalid"),
+            "with no attempt held the fields are checked"
+        );
+        let first = attempt("the original text");
+        form.attempt = Some(first.clone());
+        form.busy = true;
+        form.end_save(SaveEnd::Uncertain);
+        assert!(form.locked(), "the fields are locked while it is held");
+        assert!(
+            form.next_attempt(&edited, now()).as_ref() == Ok(&first),
+            "the same schedule, existing row and list revision"
+        );
+        assert_eq!(
+            form.begin_save(),
+            Some([9; 16]),
+            "under the same request id"
+        );
+        form.end_save(SaveEnd::Refused);
+        assert!(!form.locked());
+        assert_eq!(
+            form.next_attempt(&edited, now()),
+            Err("botCommand.dialog.invalid"),
+            "released: the fields are checked again"
+        );
+        form.attempt = Some(first);
+        form.end_save(SaveEnd::Accepted);
+        assert!(!form.locked() && form.done);
+    }
+
+    /// N2 (bot-handlers.ts:383-385, :434): losing the permission as Save goes ends a first save Failed and closes the
+    /// editor, but with an attempt held the answer is uncertain and the editor and the attempt stay.
+    #[gpui::test]
+    fn losing_the_permission_after_an_unsure_answer_stays_unsure(cx: &mut gpui::TestAppContext) {
+        let mut first = form(cx);
+        first.busy = true;
+        assert_eq!(
+            first.permission_lost(),
+            (
+                ResultStatus::Failed,
+                "Manage Community permission changed before saving.".to_owned()
+            )
+        );
+        assert!(first.done);
+        let mut held = form(cx);
+        held.attempt = Some(attempt("text"));
+        held.busy = true;
+        let (status, text) = held.permission_lost();
+        assert_eq!(status, ResultStatus::Cancelled);
+        assert!(
+            text.starts_with("This schedule attempt is still pending."),
+            "{text}"
+        );
+        assert!(!held.done && !held.busy && held.locked());
+    }
+
+    /// N3 (CommandHost's held row): Cancel ends the row Failed only when nothing may have taken effect; over an unsure
+    /// attempt, or while a save is out, the row stays as it is.
+    #[gpui::test]
+    fn cancel_leaves_the_row_of_an_unsure_attempt(cx: &mut gpui::TestAppContext) {
+        let mut form = form(cx);
+        assert_eq!(
+            form.cancelled_row(),
+            Some((
+                ResultStatus::Failed,
+                "Announcement editing cancelled.".to_owned()
+            ))
+        );
+        form.attempt = Some(attempt("text"));
+        assert_eq!(form.cancelled_row(), None, "an unsure attempt");
+        form.attempt = None;
+        form.busy = true;
+        assert_eq!(form.cancelled_row(), None, "a save still out");
     }
 
     /// R20/R21: the editor and the opening hold the message; their Debug says how much, never what.
