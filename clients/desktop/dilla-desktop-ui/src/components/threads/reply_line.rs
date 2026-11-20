@@ -101,6 +101,7 @@ impl RenderOnce for ReplyLine {
                 .items_center()
                 .gap(px(GAP))
                 .min_w_0()
+                .overflow_hidden()
                 .child(Avatar::new("reply-avatar", self.author.clone()).size(AvatarSize::Mini))
                 .child(
                     line(self.author.clone(), size, lh, color::FG_STRONG)
@@ -112,6 +113,7 @@ impl RenderOnce for ReplyLine {
                 .items_center()
                 .gap(px(GAP))
                 .min_w_0()
+                .overflow_hidden()
                 .child(line(self.text.clone(), size, lh, color::FG_3).ellipsis()),
         };
         let can_jump = self.on_jump.is_some() && self.state != ReplyState::Missing;
@@ -143,5 +145,60 @@ mod tests {
         // 11.5px at 1.5 is 17.25 (layout units), taller than the 14px avatar; the margin adds 2.
         assert_eq!(line_box(), 17.25);
         assert_eq!(height(), 19.25);
+    }
+
+    thread_local! {
+        /// The boxes of every text line the test window painted, in paint order.
+        static LINES: std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn probe() -> gpui::AnyElement {
+        gpui::canvas(
+            |bounds, _, _| LINES.with(|l| l.borrow_mut().push(bounds)),
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
+    }
+
+    /// threads/reply-chip-b: a 400-character excerpt in a 600px row is cut at the row's edge (the line shrinks below its
+    /// text, which `text-overflow: ellipsis` then ends with "…"): the excerpt's line box ends inside the row.
+    #[gpui::test]
+    fn a_long_excerpt_ends_in_an_ellipsis(cx: &mut gpui::TestAppContext) {
+        crate::text::set_hooks(crate::text::Hooks {
+            probe: Some(probe),
+            ..Default::default()
+        });
+        let window = cx.add_empty_window();
+        LINES.with(|l| l.borrow_mut().clear());
+        window.draw(
+            gpui::point(px(0.0), px(0.0)),
+            gpui::size(
+                gpui::AvailableSpace::Definite(px(600.0)),
+                gpui::AvailableSpace::Definite(px(100.0)),
+            ),
+            |_, _| {
+                div().w(px(600.0)).child(ReplyLine::new(
+                    "reply",
+                    "Mira",
+                    "x".repeat(400),
+                    ReplyState::Ok,
+                ))
+            },
+        );
+        let lines = LINES.with(|l| l.borrow().clone());
+        // The author, then the excerpt.
+        let excerpt = lines.last().expect("the excerpt was painted");
+        assert!(
+            excerpt.right() <= px(600.0) + px(0.01),
+            "the excerpt's box ends at {:?}, past the 600px row",
+            excerpt.right()
+        );
+        // Its natural width is 400 characters of 11.5px mono; it was cut well short of that.
+        assert!(excerpt.size.width < px(400.0 * 11.5 * 0.6));
     }
 }

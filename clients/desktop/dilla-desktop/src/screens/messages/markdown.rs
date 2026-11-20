@@ -771,6 +771,18 @@ fn resolve_tree(tree: &[Tree], resolve: &dyn Fn(&str) -> Pill, links: bool) -> V
 mod tests {
     use super::*;
 
+    /// messages/code-block-b: the card spans the body (its right edge is the body's right, to the 640px content maximum
+    /// plus the frame), and Copy sits the head's 0.375rem right padding from the card's inner edge.
+    #[test]
+    fn code_card_spans_the_body() {
+        use super::super::body::{COPY_RIGHT, card_width};
+        for body in [300.0, 641.0, 642.0] {
+            assert_eq!(card_width(body), body, "card right == body right at {body}");
+        }
+        assert_eq!(card_width(900.0), 642.0, "capped at 40rem plus the frame");
+        assert_eq!(COPY_RIGHT, 6.0);
+    }
+
     /// R21: a parsed body (the tree and the resolved parts), and a highlighted code block, print no decrypted text in
     /// Debug output.
     #[test]

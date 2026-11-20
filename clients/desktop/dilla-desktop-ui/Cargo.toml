@@ -17,3 +17,7 @@ gpui-component = "=0.9.1"
 ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }
 # Task 6 (plan R1, declared by Task 1 so Cargo.lock is settled once): the QrCode component's matrix.
 qrcodegen = "1.8.0"
+
+[dev-dependencies]
+# The reply line's test draws it in a test window (a `#[gpui::test]`).
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }

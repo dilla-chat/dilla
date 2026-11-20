@@ -461,6 +461,15 @@ fn layout_run(out: &mut Vec<AnyElement>, parts: &[Body], top: f32, avail: f32, f
     y - top
 }
 
+/// The card's outer width in a body `body_w` wide: the whole body, up to `max-width: 40rem` of content plus the 1px frame on
+/// each side (CodeBlock.css sets no `box-sizing`, so the 640px is the content box).
+pub(crate) fn card_width(body_w: f32) -> f32 {
+    body_w.min(CARD_MAX + 2.0)
+}
+
+/// `.d-code-block__head`'s right padding, 0.375rem: the Copy button's inset from the head's right (inner) edge.
+pub(crate) const COPY_RIGHT: f32 = 6.0;
+
 fn code_height(lines: usize) -> f32 {
     let body = (lines as f32 * CARD_LINE).min(CARD_BODY_MAX) + 2.0 * CARD_BODY_PAD;
     // The 1px frame, the head (its 1px rule inside it), then the body.
@@ -500,13 +509,13 @@ fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
     let meta_lh = line_height(meta, 1.5);
     let copy = t("shell.code.copy");
     let copy_w = copy.chars().count() as f32 * f32::from(meta) * MONO_ADVANCE;
-    // 22px high, 0 8px padding, a 12px icon and 5px between it and the label; 6px from the head's right edge.
+    // 22px high, 0 8px padding, a 12px icon and 5px between it and the label; `COPY_RIGHT` from the head's right edge
+    // (anchored by its right, so rounding its width never moves its edge off the web's).
     let btn_w = 8.0 + 12.0 + 5.0 + copy_w + 8.0;
-    let btn_x = inner - 6.0 - btn_w;
     kids.push(
         div()
             .absolute()
-            .left(px(btn_x.round()))
+            .right(len(COPY_RIGHT))
             .top(px((CARD_HEAD_CONTENT - 22.0) / 2.0))
             .w(px(btn_w.round()))
             .h(len(22.))
@@ -695,7 +704,7 @@ pub fn layout_from(parts: &[Body], width: f32, fg: Hsla, y0: f32) -> Laid {
                 y += BLOCK_GAP;
             }
             first = false;
-            let (card, h) = code_card(lang.as_deref(), text, width.min(CARD_MAX + 2.0));
+            let (card, h) = code_card(lang.as_deref(), text, card_width(width));
             out.push(
                 div()
                     .absolute()
