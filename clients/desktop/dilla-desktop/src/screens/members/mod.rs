@@ -28,20 +28,21 @@ use dilla_client::features::roles::{
     AssignLock, AssignRefusal, PermLock, assign_lock, assign_refusal, assignable, held_bits,
     permission_lock, request_id,
 };
-use dilla_client::state::members::Presence as Wire;
+use dilla_client::state::members::{BanSummary, Member, Presence as Wire};
 use dilla_client::state::roles::{RoleId, RoleSummary};
 use dilla_client::state::{AppState, CommunityId, UserId};
 use dilla_client::sync::api::ApiError;
 use gpui::{
     AnyElement, App, AppContext, Entity, InteractiveElement, IntoElement, ParentElement, Pixels,
     Point, SharedString, Styled, Window, WindowId, anchored, deferred, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::InputState;
 
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, Presence, colour_of};
-use dilla_desktop_ui::components::button::Button;
+use dilla_desktop_ui::components::button::{Button, ButtonSize};
 use dilla_desktop_ui::components::check_list::{CheckList, CheckListItem};
 use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
 use dilla_desktop_ui::components::dialog::Dialog;
@@ -49,10 +50,11 @@ use dilla_desktop_ui::components::members::{
     CardAction, GroupKind, ListGroup, ListMember, MemberList, ProfileCard, space,
 };
 use dilla_desktop_ui::components::select::Select;
+use dilla_desktop_ui::components::server_settings::layout as settings_layout;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toast::show_toast_in;
 use dilla_desktop_ui::text::{line, line_height};
-use dilla_desktop_ui::tokens::{color, font, layout, text};
+use dilla_desktop_ui::tokens::{color, font, radius, text};
 
 use crate::router::{Route, ServerSection};
 use crate::slots::{SectionId, SlotCx};
@@ -100,6 +102,9 @@ pub struct MembersUi {
     pub role: Option<[u8; 16]>,
     /// What this view asked the client to read already (a section reads once per community).
     asked: HashSet<(&'static str, CommunityId)>,
+    /// A failed ban-list read's code, per community (BansSection.tsx `loadError`). Its `asked` entry stays until the
+    /// retry clears both, so the section does not read again on every draw.
+    bans_error: std::collections::HashMap<CommunityId, String>,
     /// The DeleteRole confirmation: the role and its name, and the request in flight.
     role_delete: Option<(CommunityId, RoleId, String)>,
     role_delete_busy: bool,
@@ -259,10 +264,17 @@ fn ensure_loaded(
         ),
     };
     cx.spawn(async move |cx| {
-        if job.await.is_err() {
-            // Read again on the next draw.
+        if let Err(e) = job.await {
             cx.update(|cx| {
-                ui(w, cx).asked.remove(&(what, community));
+                let u = ui(w, cx);
+                if what == "bans" {
+                    // The Bans section says the failure and offers a retry, which clears both.
+                    u.bans_error.insert(community, e.code);
+                    cx.refresh_windows();
+                } else {
+                    // Read again on the next draw.
+                    u.asked.remove(&(what, community));
+                }
             });
         }
     })
@@ -1070,6 +1082,60 @@ fn sorted_roles(state: &AppState, community: CommunityId) -> Vec<RoleSummary> {
     roles
 }
 
+/// BansSection.tsx `SOON_S`: a ban that ends within this many seconds says the time as well as the date.
+const BAN_SOON_S: u64 = 2 * 86_400;
+
+/// A ban row's detail lines (BansSection.tsx `rows[].detail`), each drawn as its own line: who banned and when (only once
+/// `members` is read; a banner who is no longer a member is `admin.member.former`), how long the ban lasts (`lastsLine`:
+/// for ever, lapsed on a day, or until a day, with the time when it ends within [`BAN_SOON_S`]), and the reason.
+pub fn ban_details(ban: &BanSummary, members: Option<&[Member]>, now: u64) -> Vec<String> {
+    ban_details_in(ban, members, now, &crate::format::local_zone)
+}
+
+/// [`ban_details`] with its dates in `zone`: the section draws them in its clock's zone (UTC under a fixture's frozen
+/// clock, as the web reference is shot).
+fn ban_details_in(
+    ban: &BanSummary,
+    members: Option<&[Member]>,
+    now: u64,
+    zone: crate::format::Zone,
+) -> Vec<String> {
+    let locale = crate::format::date_locale();
+    let day = |ts| crate::format::day_in(ts, zone, &locale);
+    let mut lines = Vec::with_capacity(3);
+    if let Some(members) = members {
+        let by = members
+            .iter()
+            .find(|m| m.user_id == ban.by_user)
+            .map_or_else(
+                || t("admin.member.former").to_owned(),
+                |m| member_name(m).to_owned(),
+            );
+        lines.push(tf(
+            "admin.bans.by",
+            &[("name", &by), ("date", &day(ban.created))],
+        ));
+    }
+    lines.push(match ban.expires {
+        None => t("admin.bans.forever").to_owned(),
+        Some(at) if at <= now => tf("admin.bans.lapsed", &[("date", &day(at))]),
+        Some(at) => {
+            let date = if at - now <= BAN_SOON_S {
+                crate::format::day_time_in(at, zone, &locale)
+            } else {
+                day(at)
+            };
+            tf("admin.bans.until", &[("date", &date)])
+        }
+    });
+    lines.push(if ban.reason.is_empty() {
+        t("admin.bans.noReason").to_owned()
+    } else {
+        ban.reason.clone()
+    });
+    lines
+}
+
 fn bans_section(
     ctx: &SlotCx,
     community: CommunityId,
@@ -1086,85 +1152,104 @@ fn bans_section(
         .find(|c| c.id == community)
         .map_or_else(String::new, |c| c.name.clone());
     let access = state.roles.access_of(community);
+    let members = state.members.get(&community).map(Vec::as_slice);
+    let clock = ctx.clock;
+    let now = clock.now();
+    let error = ui(w, cx).bans_error.get(&community).cloned();
     let mut root = div()
         .id("settings-bans")
         .flex()
         .flex_col()
         .gap(space::S4)
         .child(section_head(t("admin.bans.title"), None));
-    match state.people.bans.get(&community) {
-        None => root = root.child(note(t("admin.bans.loading"))),
-        Some(bans) if bans.is_empty() => {
+    match (error, state.people.bans.get(&community)) {
+        // BansSection.tsx: a failed read says its code, with a retry that reads again.
+        (Some(code), _) => {
+            root = root.child(
+                div()
+                    .id("bans-error")
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(space::S6)
+                    .child(line(
+                        tf("admin.bans.error.load", &[("code", &code)]),
+                        text::UI,
+                        line_height(text::UI, 1.5),
+                        color::DANGER,
+                    ))
+                    .child(Button::new("bans-retry", t("admin.bans.retry")).on_click(
+                        move |_, _w, cx| {
+                            let u = ui(w, cx);
+                            u.bans_error.remove(&community);
+                            u.asked.remove(&("bans", community));
+                            cx.refresh_windows();
+                        },
+                    )),
+            );
+        }
+        (None, None) => root = root.child(note(t("admin.bans.loading"))),
+        (None, Some(bans)) if bans.is_empty() => {
             root = root.child(note(tf("admin.bans.empty", &[("server", &server)])));
         }
-        Some(bans) => {
-            for b in bans {
+        (None, Some(bans)) => {
+            // ManageList.tsx: one card of one hairline edge, rows of at least 48px (8px 16px) with a hairline between,
+            // the title at `--text-ui` and each detail its own `d-manage-list__detail` line at `--text-xs` `--fg-2`.
+            // The web section is a 14px column under a margin-less h2 (`.dw-settings-section`), whose taller line box puts
+            // the list 6px lower than the head's own 16px margin and the 4px gap here leave (measured on the references).
+            let mut card = div()
+                .mt(space::S6)
+                .flex()
+                .flex_col()
+                .border_1()
+                .border_color(color::HAIRLINE)
+                .rounded(radius::XL)
+                .overflow_hidden();
+            for (i, b) in bans.iter().enumerate() {
                 let name = if b.name.is_empty() {
                     t("admin.bans.unknownUser").to_owned()
                 } else {
                     b.name.clone()
                 };
-                let reason = if b.reason.is_empty() {
-                    t("admin.bans.noReason").to_owned()
-                } else {
-                    b.reason.clone()
-                };
-                let until = match b.expires {
-                    None => t("admin.bans.forever").to_owned(),
-                    Some(at) => tf(
-                        "admin.bans.until",
-                        &[("date", &crate::format::day_time(at))],
-                    ),
-                };
+                let mut text_col = div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(line(
+                        name.clone(),
+                        text::UI,
+                        line_height(text::UI, 1.4),
+                        color::FG,
+                    ));
+                for detail in ban_details_in(b, members, now, &|s| clock.offset(s)) {
+                    text_col = text_col.child(line(
+                        detail,
+                        text::XS,
+                        line_height(text::XS, 1.4),
+                        color::FG_2,
+                    ));
+                }
                 let (user, name2, server2) = (b.user_id, name.clone(), server.clone());
                 let mut row = div()
                     .id(SharedString::from(format!("ban-{}", b.user_id.hex())))
-                    .min_h(layout::ROW_H_2)
-                    .px(space::S10)
-                    .py(space::S6)
+                    .min_h(settings_layout::LIST_ROW_H)
+                    .px(settings_layout::LIST_PAD_X)
+                    .py(settings_layout::ROW_GAP)
                     .flex()
                     .items_center()
-                    .gap(space::S10)
-                    .border_b_1()
+                    .gap(settings_layout::FIELD_GAP)
                     .border_color(color::HAIRLINE)
-                    .child(
-                        Avatar::new(
-                            SharedString::from(format!("ban-avatar-{}", b.user_id.hex())),
-                            name.clone(),
-                        )
-                        .size(AvatarSize::Member),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                line(
-                                    name.clone(),
-                                    text::SM,
-                                    line_height(text::SM, 1.5),
-                                    color::FG,
-                                )
-                                .ellipsis(),
-                            )
-                            .child(
-                                line(
-                                    format!("{reason} · {until}"),
-                                    text::META,
-                                    line_height(text::META, 1.5),
-                                    color::FG_3,
-                                )
-                                .ellipsis(),
-                            ),
-                    );
+                    .when(i > 0, |r| r.border_t_1())
+                    .child(text_col);
                 if access.loaded && access.ban_members {
                     row = row.child(
                         Button::new(
                             SharedString::from(format!("unban-{}", b.user_id.hex())),
                             t("admin.bans.unban"),
                         )
+                        .size(ButtonSize::Row)
                         .on_click(move |_, _w, cx| {
                             let u = ui(w, cx);
                             u.error = None;
@@ -1182,8 +1267,9 @@ fn bans_section(
                         }),
                     );
                 }
-                root = root.child(row);
+                card = card.child(row);
             }
+            root = root.child(card);
         }
     }
     if let Some(d) = dialog_overlay(ctx, window, cx) {
@@ -1749,4 +1835,77 @@ fn assign_dialog(w: WindowId, ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> 
         .on_close(move |_w, cx| close_assign(w, cx))
         .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::{day, day_time};
+
+    const T: u64 = 1_794_481_738;
+
+    fn ada() -> Member {
+        Member {
+            user_id: UserId([1; 16]),
+            username: "ada".to_owned(),
+            display: "Ada".to_owned(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        }
+    }
+
+    fn ban(expires: Option<u64>) -> BanSummary {
+        BanSummary {
+            user_id: UserId([2; 16]),
+            name: "Björn".to_owned(),
+            reason: String::new(),
+            by_user: UserId([1; 16]),
+            created: T,
+            expires,
+        }
+    }
+
+    #[test]
+    fn a_ban_row_names_who_banned_and_when_it_ends() {
+        let now = T + 60;
+        let members = [ada()];
+        let soon = ban(Some(T + 3600));
+        let until_soon = tf("admin.bans.until", &[("date", &day_time(T + 3600))]);
+        assert_eq!(
+            ban_details(&soon, Some(&members), now),
+            vec![
+                tf("admin.bans.by", &[("name", "Ada"), ("date", &day(T))]),
+                until_soon.clone(),
+                t("admin.bans.noReason").to_owned(),
+            ]
+        );
+        // Until the members are read, the clause naming the banner is left out.
+        assert_eq!(
+            ban_details(&soon, None, now),
+            vec![until_soon, t("admin.bans.noReason").to_owned()]
+        );
+        // A banner who left is a former member.
+        assert_eq!(
+            ban_details(&soon, Some(&[]), now)[0],
+            tf(
+                "admin.bans.by",
+                &[("name", t("admin.member.former")), ("date", &day(T))]
+            )
+        );
+        // Further off than two days: the day alone.
+        assert_eq!(
+            ban_details(&ban(Some(T + 3 * 86_400)), None, now)[0],
+            tf("admin.bans.until", &[("date", &day(T + 3 * 86_400))])
+        );
+        assert_eq!(
+            ban_details(&ban(Some(now - 1)), None, now)[0],
+            tf("admin.bans.lapsed", &[("date", &day(now - 1))])
+        );
+        assert_eq!(
+            ban_details(&ban(None), None, now)[0],
+            t("admin.bans.forever")
+        );
+    }
 }

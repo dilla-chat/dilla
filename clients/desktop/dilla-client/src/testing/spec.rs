@@ -149,6 +149,21 @@ pub struct ServerSpec {
     pub roles: Vec<RoleSpec>,
     /// In creation order; the world makes `general` itself, so a seeded server lists a text channel `general`.
     pub channels: Vec<ChannelSpec>,
+    /// The server's bans, each made once the members have joined (the banned person leaves the member list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bans: Vec<BanSpec>,
+}
+
+/// One ban of a server: `user` banned by `by` (a member who may ban them), for `hours` from the frame's clock, or for
+/// ever without them.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BanSpec {
+    pub user: String,
+    pub by: String,
+    pub reason: String,
+    #[serde(default)]
+    pub hours: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -739,6 +754,14 @@ impl WorldSpec {
                             s.id, r.id
                         ));
                     }
+                }
+            }
+            for b in &s.bans {
+                if !s.members.contains(&b.user) || !s.members.contains(&b.by) || b.user == s.owner {
+                    return invalid(format!(
+                        "server {} ban: `{}` and `{}` must be members, and the owner cannot be banned",
+                        s.id, b.user, b.by
+                    ));
                 }
             }
         }

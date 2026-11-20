@@ -286,6 +286,7 @@ async fn main() {
     if target > now {
         tokio::task::block_in_place(|| world::advance_clock(&host, target - now));
     }
+    seed::at_frame(&f, &people, &clients, &host).await;
     let sidecar = spec::Shot {
         digest,
         shift,

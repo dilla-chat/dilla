@@ -98,3 +98,13 @@ pub async fn seed(
     reactions::seed(f, people, clients).await;
     threads::seed(f, people).await;
 }
+
+/// Seeds what must be made at the frame's clock, once the host's clock reached it.
+pub async fn at_frame(
+    f: &ScreenFixture,
+    people: &[(String, Person)],
+    clients: &[(&str, Client)],
+    host: &dilla_client::testing::host::Host,
+) {
+    members::at_frame(f, people, clients, host).await;
+}

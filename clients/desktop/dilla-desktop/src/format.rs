@@ -67,8 +67,13 @@ pub fn day(ts: u64) -> String {
 
 /// The date and the 24-hour time (the web's `formatDayTime`): `Oct 3, 2026, 14:05`.
 pub fn day_time(ts: u64) -> String {
-    let when = at(ts, &local_zone);
-    format!("{}, {}", fmt_day(&when, &date_locale()), fmt_time(&when))
+    day_time_in(ts, &local_zone, &date_locale())
+}
+
+/// [`day_time`] in `zone` and `locale`.
+pub fn day_time_in(ts: u64, zone: Zone, locale: &str) -> String {
+    let when = at(ts, zone);
+    format!("{}, {}", fmt_day(&when, locale), fmt_time(&when))
 }
 
 /// A diagnostics clock, 24-hour `HH:MM:SS` from milliseconds (the web's `formatClock`).
