@@ -169,8 +169,13 @@ async fn main() {
     }
     // What the browser must find made before it signs in, with the ids its route names (the DMs, seed/dms.rs).
     seed::before_browser(&f, &clients, &mut ids).await;
+    // A DM's path (`dm/<id>`) is named `dm:<id>` in `ids`: a DM belongs to no server.
     let channel_real = |path: &str| -> ChannelId {
-        ChannelId(spec::unhex16(&ids[&format!("channel:{path}")]).expect("hex"))
+        let key = match path.strip_prefix("dm/") {
+            Some(dm) => format!("dm:{dm}"),
+            None => format!("channel:{path}"),
+        };
+        ChannelId(spec::unhex16(&ids[&key]).expect("hex"))
     };
     // Every channel the browser visits (the history's, and the route's own even when it is empty): each client opens it
     // (joins its group).
@@ -266,7 +271,16 @@ async fn main() {
         let want = (*n).min(dilla_client::state::TIMELINE_PAGE as usize);
         let newest = posted[&m.key];
         // Every client holds the message before the next one goes out, so the order is the fixture's.
-        for (_, c) in &clients {
+        // Only the members of a DM hold its messages.
+        let dm_members = m
+            .channel
+            .strip_prefix("dm/")
+            .and_then(|dm| f.world.dms.iter().find(|d| d.id == dm))
+            .map(|d| &d.members);
+        for (who, c) in &clients {
+            if dm_members.is_some_and(|members| !members.iter().any(|p| p == who)) {
+                continue;
+            }
             world::wait_for(c, Duration::from_secs(20), "the message", |s| {
                 s.timelines.get(&channel).is_some_and(|t| {
                     let ok = |i: &&dilla_client::state::TimelineItem| {

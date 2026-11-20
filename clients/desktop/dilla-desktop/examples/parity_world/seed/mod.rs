@@ -27,6 +27,9 @@ pub async fn post(
     channel: dilla_client::state::ChannelId,
     posted: &std::collections::HashMap<String, dilla_client::state::MessageId>,
 ) -> Option<Result<dilla_client::state::MessageId, dilla_client::ClientError>> {
+    if let Some(sent) = dms::post(m, client, channel).await {
+        return Some(sent);
+    }
     if let Some(sent) = attachments::send(client, channel, m).await {
         return Some(sent);
     }

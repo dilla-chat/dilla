@@ -162,10 +162,28 @@ impl Dms {
 
     /// controller.ts `openDm`: the DM with `user` (made if there is none: `POST /v1/dms`), listed before it answers.
     pub fn open_dm(&self, user: UserId) -> oneshot::Receiver<Result<ChannelId, ClientError>> {
+        self.open_with(vec![user])
+    }
+
+    /// `POST /v1/dms` with several recipients: the group DM of the caller and `users` (made each time; the instance
+    /// gives a group DM a fresh id). Feature `testing`: the desktop has no group-DM creation of its own yet; the
+    /// parity world seeds the crew DM of `dms/home-b` and `dms/conversation-b` with it.
+    #[cfg(feature = "testing")]
+    pub fn open_group_dm(
+        &self,
+        users: Vec<UserId>,
+    ) -> oneshot::Receiver<Result<ChannelId, ClientError>> {
+        self.open_with(users)
+    }
+
+    fn open_with(&self, users: Vec<UserId>) -> oneshot::Receiver<Result<ChannelId, ClientError>> {
         let inner = self.inner.clone();
         self.inner.spawn(async move {
-            let body =
-                Value::Array(vec![Value::Array(vec![Value::Bytes(user.0.to_vec())])]).encode();
+            let recipients = users
+                .iter()
+                .map(|u| Value::Bytes(u.0.to_vec()))
+                .collect::<Vec<_>>();
+            let body = Value::Array(vec![Value::Array(recipients)]).encode();
             let answer = inner
                 .socket_requests()
                 .request("POST", "/v1/dms".to_owned(), body.into(), Some(idem()))
