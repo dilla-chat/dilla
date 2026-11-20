@@ -432,8 +432,16 @@ impl Drop for MediaSession {
         let ended = std::thread::Builder::new()
             .name("dilla-call-end".into())
             .spawn(move || {
+                // The session's loop first, then every room a dropped call is still closing on this runtime (a
+                // join cancelled after its room connected drops its call): the shutdown below would cancel them.
                 if runtime
-                    .block_on(async { tokio::time::timeout(wait, task).await })
+                    .block_on(async {
+                        tokio::time::timeout(wait, async {
+                            let _ = task.await;
+                            dilla_media::room::rooms_closed().await;
+                        })
+                        .await
+                    })
                     .is_err()
                 {
                     log::warn!(
@@ -471,8 +479,8 @@ struct Ctx {
     closed: watch::Receiver<()>,
 }
 
-/// Whether a call's media is live in the session: from a successful join until the call's media ended (or the call's
-/// task went). A dropped session waits for it to clear, and only while it is set: a call that already ended (and is
+/// Whether a call's media is live in the session: from the start of a join until the call's media ended (or the join
+/// or the call's task went). A dropped session waits for it to clear, and only while it is set: a call that already ended (and is
 /// only closing its room) holds nothing up.
 #[derive(Default)]
 struct MediaLive {
@@ -1135,13 +1143,15 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// Share fix review I1: a dropped session waits only while a call's media is live. A call whose media already
     /// ended (and which is only closing its room) holds the drop up not at all; a live one holds it up until its media
     /// ends, however its task ends, and no longer than the bound.
     #[test]
     fn a_dropped_session_waits_only_while_a_call_s_media_is_live() {
         use std::time::{Duration, Instant};
-        let live = std::sync::Arc::new(super::MediaLive::default());
+        let live = Arc::new(MediaLive::default());
         // No call, or one that ended: at once, whatever the bound.
         let at = Instant::now();
         assert!(live.wait_ended(Duration::from_secs(3)));
@@ -1165,8 +1175,6 @@ mod tests {
         assert!(at.elapsed() < Duration::from_secs(1), "{:?}", at.elapsed());
         ender.join().unwrap();
     }
-
-    use super::*;
 
     fn epoch(n: u64, key: u8) -> dilla_client::calls::MediaEpoch {
         dilla_client::calls::MediaEpoch {

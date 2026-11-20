@@ -1594,11 +1594,33 @@ impl Drop for Call {
             t.abort();
         }
         if let Some(room) = self.room.take() {
-            self.runtime.spawn(async move {
+            let close = self.runtime.spawn(async move {
                 if let Err(e) = room.close().await {
                     log::warn!("dilla-media: room close: {e}");
                 }
             });
+            let mut closing = CLOSING.lock().unwrap_or_else(|p| p.into_inner());
+            closing.retain(|c| !c.is_finished());
+            closing.push(close);
+        }
+    }
+}
+
+/// The room closes that dropped calls handed to their runtimes ([`Drop for Call`](Call)), until they finish.
+static CLOSING: Mutex<Vec<tokio::task::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Waits until the room of every call dropped so far has closed (its close task ended). A runtime that is about to
+/// shut down awaits this first: a shutdown cancels a close still running, and a room that is never closed keeps its
+/// PeerConnection and frame transformers for the life of the process. Calls dropped while this waits are awaited too.
+/// The caller bounds it.
+pub async fn rooms_closed() {
+    loop {
+        let pending = std::mem::take(&mut *CLOSING.lock().unwrap_or_else(|p| p.into_inner()));
+        if pending.is_empty() {
+            return;
+        }
+        for close in pending {
+            let _ = close.await;
         }
     }
 }

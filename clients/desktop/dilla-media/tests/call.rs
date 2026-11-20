@@ -1000,3 +1000,37 @@ fn a_dropped_call_releases_every_frame_transformer() {
         panic!("{live} frame transformers still alive 5 s after the drop");
     }
 }
+
+/// A call dropped on a runtime that then shuts down, as a dropped desktop session's runtime does (its join cancelled
+/// after the room connected): the drop hands the room's close to the runtime, and the shutdown would cancel it. A
+/// runtime that awaits `dilla_media::room::rooms_closed` before it shuts down leaves no PeerConnection behind.
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn a_call_dropped_before_its_runtime_shuts_down_still_closes_its_room() {
+    let _s = serial();
+    // A current-thread runtime runs nothing between its `block_on`s: the drop's close cannot have started before the
+    // shutdown unless something awaits it (on a multi-thread runtime a worker usually starts it at once, which hid
+    // the leak).
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (call, _bob, _host) = seat_alice_with_bob(&rt);
+    assert!(live_transformers() > 0, "the call holds its transformers");
+    {
+        let _on = rt.enter();
+        drop(call);
+    }
+    let closed = rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), dilla_media::room::rooms_closed()).await
+    });
+    assert!(
+        closed.is_ok(),
+        "the dropped call's room did not close within 5 s"
+    );
+    // At once: nothing that runs on the runtime is waited for.
+    rt.shutdown_timeout(Duration::ZERO);
+    if let Err(live) = every_transformer_released() {
+        panic!("{live} frame transformers still alive 5 s after the runtime shut down");
+    }
+}
