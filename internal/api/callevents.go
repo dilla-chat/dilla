@@ -61,6 +61,11 @@ type CallEvents struct {
 	// read live before the end and handled after it records nobody in such a room (#37).
 	endedRooms map[string]time.Time
 	proposed   map[string]time.Time // room + "/" + device + "/" + session → the last Remove proposed for a leave
+	// departed is every LiveKit session (room + "/" + identity + "/" + sid) whose leave was handled
+	// within endedRoomMemory, with when. LiveKit emits a track's track_unpublished from the track's
+	// close, apart from participant_left, so a track event can come after its session's leave; such
+	// an event puts nobody back in the room.
+	departed map[string]time.Time
 	// self is the client-reported self-mute and self-deafen bits (voice_self's bits 0 and 1) per
 	// (call, device), stored by SetSelf for the voice snapshot (L-HTTP-100) and cleared when the
 	// device leaves the call, is evicted from it, or the call ends.
@@ -227,7 +232,7 @@ func NewCallEvents(repo store.Repository, res *Resolver, dsvc DS, sfu CallTokens
 		log = slog.New(slog.DiscardHandler)
 	}
 	c := &CallEvents{repo: repo, res: res, dsvc: dsvc, sfu: sfu, calls: calls, gw: gw, clk: clk, log: log,
-		rooms: map[string]*callRoom{}, proposed: map[string]time.Time{}}
+		rooms: map[string]*callRoom{}, proposed: map[string]time.Time{}, departed: map[string]time.Time{}}
 	calls.events, calls.dsvc = c, dsvc
 	return c
 }
@@ -274,7 +279,7 @@ func (c *CallEvents) Handle(ctx context.Context, ev *livekit.WebhookEvent) {
 	case webhook.EventParticipantLeft, webhook.EventParticipantConnectionAborted:
 		c.left(ctx, row, p.GetIdentity(), p.GetSid(), joinedAt(p))
 	case webhook.EventTrackPublished:
-		c.trackPublished(ctx, row, p.GetIdentity(), ev.GetTrack())
+		c.trackPublishedAs(ctx, row, p.GetIdentity(), p.GetSid(), ev.GetTrack())
 	case webhook.EventTrackUnpublished:
 		c.trackUnpublished(ctx, row, p.GetIdentity(), ev.GetTrack())
 	}
@@ -594,6 +599,15 @@ func (c *CallEvents) left(ctx context.Context, row store.VoiceSessionRow, identi
 		delete(c.self, announceKey{call: row.CallID, dev: dev})
 		delete(c.deferred, announceKey{call: row.CallID, dev: dev})
 	}
+	// The session is gone whatever else this leave decides: a later track event of it records nobody.
+	if sid != "" {
+		c.departed[key] = now
+	}
+	for k, at := range c.departed {
+		if now.Sub(at) >= endedRoomMemory {
+			delete(c.departed, k)
+		}
+	}
 	propose := !otherSession && now.Sub(c.proposed[key]) >= proposeWindow
 	if propose {
 		c.proposed[key] = now
@@ -672,6 +686,14 @@ func notDillaMedia(t *livekit.TrackInfo) bool {
 // its permission (reconcile, the token mint, the /rtc gate) honours the strike — and a repeat
 // removes it from the room. MutePublishedTrack is never used: a client can unmute itself.
 func (c *CallEvents) trackPublished(ctx context.Context, row store.VoiceSessionRow, identity string, t *livekit.TrackInfo) {
+	c.trackPublishedAs(ctx, row, identity, "", t)
+}
+
+// trackPublishedAs is trackPublished for the participant's session sid (LiveKit's
+// ParticipantInfo.Sid, or "" when the event names none). A track_published handled before its
+// session's participant_joined counts the device in the room; one handled after that session's
+// leave does not.
+func (c *CallEvents) trackPublishedAs(ctx context.Context, row store.VoiceSessionRow, identity, sid string, t *livekit.TrackInfo) {
 	dev, err := id.Parse(identity)
 	if err != nil || t == nil {
 		return
@@ -687,7 +709,7 @@ func (c *CallEvents) trackPublished(ctx context.Context, row store.VoiceSessionR
 		}
 		return
 	}
-	c.updateTracks(ctx, row, dev, func(d *callDevice) { d.tracks[t.GetSid()] = t.GetSource() })
+	c.updateTracks(ctx, row, dev, row.LivekitRoom+"/"+identity+"/"+sid, true, func(d *callDevice) { d.tracks[t.GetSid()] = t.GetSource() })
 }
 
 // trackUnpublished clears the track from the device's flags; when the device's last camera or screen
@@ -699,7 +721,7 @@ func (c *CallEvents) trackUnpublished(ctx context.Context, row store.VoiceSessio
 	if err != nil || t == nil {
 		return
 	}
-	stopped := c.updateTracks(ctx, row, dev, func(d *callDevice) { delete(d.tracks, t.GetSid()) })
+	stopped := c.updateTracks(ctx, row, dev, "", false, func(d *callDevice) { delete(d.tracks, t.GetSid()) })
 	if !stopped || !c.calls.leases.held(row.CallID, row.LivekitRoom, dev) {
 		return
 	}
@@ -709,8 +731,12 @@ func (c *CallEvents) trackUnpublished(ctx context.Context, row store.VoiceSessio
 }
 
 // updateTracks applies change to the device's published tracks, announces the new flags, and reports
-// whether the device stopped sharing with this change.
-func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow, dev id.ID, change func(*callDevice)) bool {
+// whether the device stopped sharing with this change. A device the room does not hold is added only
+// when create is set (a track_published that came before its participant_joined) and session (room
+// + "/" + identity + "/" + sid) is no session whose leave was handled. Otherwise nothing is recorded
+// or announced. A track event that comes after its session's participant_left would otherwise
+// bring the departed device back as in the call until the room ended.
+func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow, dev id.ID, session string, create bool, change func(*callDevice)) bool {
 	user, err := c.userOf(ctx, row.LivekitRoom, dev)
 	if err != nil {
 		c.log.WarnContext(ctx, "a publishing participant's device is unknown", "device_id", dev.String(), "err", err)
@@ -727,9 +753,15 @@ func (c *CallEvents) updateTracks(ctx context.Context, row store.VoiceSessionRow
 	if c.endedLocked(row.LivekitRoom) {
 		return false
 	}
-	r := c.roomLocked(row.LivekitRoom)
-	d := r.devices[dev]
+	var d *callDevice
+	if r := c.rooms[row.LivekitRoom]; r != nil {
+		d = r.devices[dev]
+	}
 	if d == nil {
+		if _, gone := c.departed[session]; !create || gone {
+			return false
+		}
+		r := c.roomLocked(row.LivekitRoom)
 		d = &callDevice{user: user, tracks: map[string]livekit.TrackSource{}}
 		r.devices[dev] = d
 	}

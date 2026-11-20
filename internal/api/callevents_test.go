@@ -287,6 +287,56 @@ func TestALeaveMidCallProposesOneRemoveAndAnnouncesZero(t *testing.T) {
 	}
 }
 
+// LiveKit emits a track's track_unpublished from the track's close, apart from the participant's
+// participant_left, so it can come after the leave (rejoin_waits_for_pending_remove, 1 run in 4). A
+// track event of a session whose leave was handled puts nobody back in the room: the call lists
+// nobody and no voice_state after the leave's flags 0 says the device is in the call.
+func TestATrackEventAfterTheLeaveLeavesNoGhost(t *testing.T) {
+	mic := func() *livekit.TrackInfo {
+		return &livekit.TrackInfo{Sid: "TR_mic", Type: livekit.TrackType_AUDIO, Source: livekit.TrackSource_MICROPHONE,
+			Encryption: livekit.Encryption_GCM}
+	}
+	for _, late := range []string{webhook.EventTrackUnpublished, webhook.EventTrackPublished} {
+		t.Run(late, func(t *testing.T) {
+			f := newEventsFixture(t, api.CallsConfig{})
+			f.sendAs(t, webhook.EventParticipantJoined, f.dev.String(), "PA_1", nil)
+			f.sendAs(t, webhook.EventTrackPublished, f.dev.String(), "PA_1", mic())
+			f.sendAs(t, webhook.EventParticipantLeft, f.dev.String(), "PA_1", nil)
+			if fr := f.gw.last(); fr.Device != f.dev || fr.Flags != 0 {
+				t.Fatalf("the leave's voice_state = %+v, want flags 0 for the device", fr)
+			}
+			after := len(f.gw.all())
+			f.sendAs(t, late, f.dev.String(), "PA_1", mic())
+			if got := f.events.Participants(f.callID); len(got) != 0 {
+				t.Fatalf("after a late %s the call lists %+v, want nobody", late, got)
+			}
+			for _, fr := range f.gw.all()[after:] {
+				if fr.Device == f.dev && fr.Flags != 0 {
+					t.Fatalf("a voice_state after the leave says the device is in the call: %+v", fr)
+				}
+			}
+		})
+	}
+}
+
+// A track_published handled before its session's participant_joined still counts the device in the
+// room, and the join that follows keeps it there.
+func TestATrackPublishedBeforeTheJoinCountsTheDevice(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	f.sendAs(t, webhook.EventTrackPublished, f.dev.String(), "PA_1", &livekit.TrackInfo{Sid: "TR_cam",
+		Type: livekit.TrackType_VIDEO, Source: livekit.TrackSource_CAMERA, Encryption: livekit.Encryption_CUSTOM})
+	if got := f.events.Participants(f.callID); len(got) != 1 || got[0].Device != f.dev || got[0].Flags != api.VoiceInCall|api.VoiceVideo {
+		t.Fatalf("after the early track_published the call lists %+v, want the device in the call with video", got)
+	}
+	f.sendAs(t, webhook.EventParticipantJoined, f.dev.String(), "PA_1", nil)
+	if got := f.events.Participants(f.callID); len(got) != 1 || got[0].Device != f.dev {
+		t.Fatalf("after the join the call lists %+v, want the device", got)
+	}
+	if fr := f.gw.last(); fr.Device != f.dev || fr.Flags&api.VoiceInCall == 0 {
+		t.Fatalf("the last voice_state = %+v, want the device in the call", fr)
+	}
+}
+
 // SP-21 row 8: a webhook can arrive ~45 s late. A participant_left for a session the device has
 // already replaced — it rejoined and took a sharing slot again — changes nothing: no Remove is
 // proposed, the slot stays held, no demotion is pushed and nobody is told the device left.
