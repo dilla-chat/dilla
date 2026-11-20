@@ -53,6 +53,8 @@ pub enum FixtureScreen {
     ShellHome { community: CommunityId },
     /// The shell on a DM's conversation (`/dm/{dm/<id>}`, lane G: the DM call box).
     ShellDm { dm: ChannelId },
+    /// The shell on Home with the DM tile selected and no DM open (`/dm`: the DM list, no conversation).
+    ShellDms,
     /// A device with no account (`/welcome`): the sign-up's first step, as the web draws it, or the pre-account screen
     /// the fixture names ([`pre_account::start`]).
     Welcome(pre_account::PreAccount),
@@ -196,6 +198,7 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             community: *community,
         }),
         (Route::Dm(dm), Phase::Ready) => Ok(FixtureScreen::ShellDm { dm: *dm }),
+        (Route::Dms, Phase::Ready) => Ok(FixtureScreen::ShellDms),
         (Route::Welcome { .. }, Phase::SignedOut) => {
             Ok(FixtureScreen::Welcome(pre_account::PreAccount::SignUp))
         }
@@ -335,7 +338,7 @@ pub fn build_state(
     attachments::apply(world, viewer, &mut state);
     devices::apply(world, viewer, &mut state);
     diagnostics::apply(world, viewer, &mut state);
-    dms::apply(world, viewer, ids, &mut state);
+    dms::apply(world, viewer, shift, ids, &mut state);
     // After the DMs: a DM's call is placed in the DM the dms facet made.
     calls::apply(world, viewer, ids, &mut state);
     members::apply(world, viewer, ids, fixture.clock + shift, &mut state);

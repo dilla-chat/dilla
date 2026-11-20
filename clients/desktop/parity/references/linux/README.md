@@ -11,6 +11,8 @@ side draws the same ids). A reference without a sidecar is drawn with the fixtur
 | `shell/channel-view` | the channel view, 1280x800, one server |
 | `shell/channel-view-b` | 1440x900, a second server selected, a category with a text and a voice channel, a long channel name (cut in the list, whole in the header), eleven members, a message that wraps over three lines |
 | `messages/log-earlier`, `messages/log-earlier-b` | 101 messages in `#general`: the first page of 100, scrolled to the top (Ctrl+Home), the ghost "load earlier" button centred above the first row instead of the welcome, and "viewing older messages" at the foot (`dilla-desktop::tests/messages::parity_messages_log_earlier{,_b}`) |
+| `dms/home`, `dms/home-b` | the DM list with no conversation open (`/dm`): the main column is empty, as Shell.tsx leaves it; two DMs, and for `-b` a group DM and a person whose long name is cut. The list is in the instance's order (channel id) and the group's sub line ends in "you". The web frame of `-b` carries one live-unread dot on "Sol" (the web's unread for a DM it does not show is nondeterministic, as in `native/unread-badge-b`); GPUI draws none (`dilla-desktop::tests/dms::parity_dms_home{,_b}`) |
+| `dms/conversation`, `dms/conversation-b` | a DM open over three messages, authors named from every server's members; `-b` is the group DM with a name that is cut in the list and whole in the header (`dilla-desktop::tests/dms::parity_dms_conversation{,_b}`) |
 
 Both are compared by `parity/tests/screen.rs` (`channel_view_two_fixtures`) under `../../tolerance.toml`, with no
 per-fixture setting. The two shell sidecars carry `"hand_migrated": true`: they were written by hand from the data of the shots of 2026-11-12 (Playwright 1.64.1

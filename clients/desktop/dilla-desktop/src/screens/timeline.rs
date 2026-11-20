@@ -287,6 +287,27 @@ pub fn day_label(ts: u64, clock: Clock) -> String {
     format::day_divider_in(ts, clock.now(), &zone, &format::date_locale())
 }
 
+/// The people a conversation names its authors from: a channel's server members; a DM's (a channel of no server) every
+/// server's members, a person's first row kept (Shell.tsx `allMembers`, which `nameBook` reads for a DM).
+fn log_members(state: &AppState, channel: &Channel) -> Vec<Member> {
+    if state.dms.get(channel.id).is_none() {
+        return state
+            .members
+            .get(&channel.community_id)
+            .cloned()
+            .unwrap_or_default();
+    }
+    let mut all: Vec<Member> = Vec::new();
+    for community in &state.communities {
+        for m in state.members.get(&community.id).into_iter().flatten() {
+            if !all.iter().any(|a| a.user_id == m.user_id) {
+                all.push(m.clone());
+            }
+        }
+    }
+    all
+}
+
 /// webhook.ts and shell-model.ts `authorName`: the member's display name, else the username, else the viewer's own,
 /// else the first eight digits of the id.
 fn author(state: &AppState, members: &[Member], item: &TimelineItem) -> String {
@@ -466,12 +487,8 @@ pub fn arrival(
         None => Some((key, None)),
         Some(_) if last.own || !readable(last) => Some((key, None)),
         Some(_) => {
-            let members = state
-                .members
-                .get(&channel.community_id)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            let text = spoken_item(state, members, channel.community_id, last, clock);
+            let members = log_members(state, channel);
+            let text = spoken_item(state, &members, channel.community_id, last, clock);
             Some((key, Some(text)))
         }
     }
@@ -1131,10 +1148,8 @@ pub fn render(
             cx,
         );
     }
-    let members: &[Member] = state
-        .members
-        .get(&channel.community_id)
-        .map_or(&[], Vec::as_slice);
+    let log_members = log_members(state, channel);
+    let members: &[Member] = &log_members;
     let items: Vec<&TimelineItem> = state
         .timelines
         .get(&channel.id)

@@ -1870,6 +1870,8 @@ impl Render for ShellView {
         let no_server = takeover.is_none() && channel.is_none() && no_server(&state);
         let main = match takeover {
             Some(stage) => main.child(div().flex_1().min_h_0().flex().flex_col().child(stage)),
+            // `/dm` with no conversation open: Shell.tsx leaves `main` null, so the column is empty (no header, no composer).
+            None if self.dm_view && channel.is_none() => main,
             None if no_server => main.child(div().flex_1().min_h_0().relative().child(log)),
             None => main
                 .child(header::render(

@@ -317,6 +317,21 @@ impl AppView {
                     this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
+                crate::fixture::FixtureScreen::ShellDms => {
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let shell = cx.new(|cx| {
+                        let mut shell =
+                            ShellView::new(Arc::new(fixture.state), None, None, clock, window, cx);
+                        shell.navigate(crate::router::Route::Dms, cx);
+                        shell
+                    });
+                    this.attach_shell(&shell, window, cx);
+                    this.focus_shell(&shell, window, cx);
+                    this.screen = Screen::Shell(shell);
+                }
                 crate::fixture::FixtureScreen::Boot { store_lost } => {
                     this.screen = Screen::FixtureBoot(if store_lost {
                         ClientError::Store("the database key is missing from the keychain".into())
