@@ -276,6 +276,15 @@ fn active_session_pids() -> Result<Vec<u32>, AppAudioError> {
     }
 }
 
+/// Every process's parent pid, one Toolhelp snapshot (empty when the snapshot fails): the shared window's lookup
+/// ([`super::sound_of_window`]).
+pub(super) fn parents() -> HashMap<u32, u32> {
+    processes()
+        .into_iter()
+        .map(|(pid, p)| (pid, p.parent))
+        .collect()
+}
+
 fn list(root: u32) -> Result<Vec<AppSource>, AppAudioError> {
     let _com = Com::init()?;
     let pids = active_session_pids()?;

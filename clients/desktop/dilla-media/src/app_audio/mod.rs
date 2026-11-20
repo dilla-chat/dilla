@@ -27,7 +27,7 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use frames::{PcmFrames, cap_sources, in_tree};
+pub use frames::{PcmFrames, app_of_window, cap_sources, in_tree};
 
 /// 48 kHz, stereo.
 pub const RATE: u32 = 48_000;
@@ -116,6 +116,44 @@ pub fn sources() -> Result<Vec<AppSource>, AppAudioError> {
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(AppAudioError::Unsupported)
+    }
+}
+
+/// The application whose sound a shared window plays: [`crate::sources::desktop::window_owner_pid`], then [`sources`],
+/// then [`app_of_window`] with this platform's parents:
+/// - Linux: `linux::parent`, `/proc`.
+/// - Windows: one `windows::parents()` snapshot.
+/// - macOS: `macos::parent`.
+///
+/// `None` on any failure. Blocking: off the UI thread.
+pub fn sound_of_window(source: &crate::sources::desktop::DesktopSource) -> Option<AppSource> {
+    // A screen, the portal and an unreadable owner cost no audio-server round trip.
+    let owner = crate::sources::desktop::window_owner_pid(source)?;
+    let listed = match sources() {
+        Ok(listed) => listed,
+        Err(e) => {
+            log::debug!("app audio: no application list for a shared window: {e}");
+            return None;
+        }
+    };
+    let own = std::process::id();
+    #[cfg(target_os = "linux")]
+    {
+        app_of_window(owner, own, &listed, linux::parent)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let parents = windows::parents();
+        app_of_window(owner, own, &listed, |pid| parents.get(&pid).copied())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        app_of_window(owner, own, &listed, macos::parent)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        let _ = (owner, own, listed);
+        None
     }
 }
 

@@ -149,6 +149,64 @@ pub(crate) fn exclude_tree_and_ancestors(
         .collect()
 }
 
+/// The playing application a window owned by `owner` brings (Task 44, D21). `own` is Dilla's pid and `sources` is the
+/// list [`super::sources`] gave, in its order. The match is:
+/// - `owner` itself, or else
+/// - the closest descendant of `owner` that plays (a browser's audio service, an Electron renderer), the earlier
+///   in `sources` on a tie (Linux: the lower serial, the first playing stream).
+///
+/// Never matched:
+/// - a parent or a sibling of the owner (a launcher's, a terminal's or Steam's own sound must not ride along);
+/// - anything when `owner` is 0 or 1, Dilla, in Dilla's tree, or one of Dilla's ancestors (the terminal or launcher
+///   that started Dilla: its descendants include Dilla's siblings);
+/// - a source in Dilla's tree (the lists already leave it out; checked again).
+///
+/// Walks at most 128 parents per pid and 64 of Dilla's ancestors, stopping at 0, 1, a missing parent or a repeat.
+pub fn app_of_window(
+    owner: u32,
+    own: u32,
+    sources: &[AppSource],
+    parent_of: impl Fn(u32) -> Option<u32>,
+) -> Option<AppSource> {
+    if owner <= 1 || in_tree(owner, own, &parent_of) {
+        return None;
+    }
+    let mut up = HashSet::new();
+    let mut pid = own;
+    for _ in 0..MAX_ANCESTORS {
+        match parent_of(pid) {
+            Some(parent) if parent > 1 && parent != own && up.insert(parent) => pid = parent,
+            _ => break,
+        }
+    }
+    if up.contains(&owner) {
+        return None;
+    }
+    sources
+        .iter()
+        .filter(|s| !in_tree(s.pid, own, &parent_of))
+        .filter_map(|s| depth_below(s.pid, owner, &parent_of).map(|depth| (depth, s)))
+        // The first of the closest: `min_by_key` keeps the earlier element on a tie.
+        .min_by_key(|(depth, _)| *depth)
+        .map(|(_, s)| s.clone())
+}
+
+/// How many parents up from `pid` `owner` is (0: `pid` is `owner`); `None` when `owner` is neither.
+fn depth_below(pid: u32, owner: u32, parent_of: &impl Fn(u32) -> Option<u32>) -> Option<usize> {
+    let mut seen = HashSet::new();
+    let mut pid = pid;
+    for depth in 0..128 {
+        if pid == owner {
+            return Some(depth);
+        }
+        if pid <= 1 || !seen.insert(pid) {
+            return None;
+        }
+        pid = parent_of(pid)?;
+    }
+    None
+}
+
 /// A source's label: at most [`MAX_LABEL`] characters, and a name for a source that gives none.
 pub(crate) fn cap_label(label: &str, pid: u32) -> String {
     if label.trim().is_empty() {
@@ -186,6 +244,57 @@ mod tests {
             pid,
             label: label.to_owned(),
         }
+    }
+
+    /// 1 -> 50 (session) -> 100 (Dilla) -> 110 (Dilla's helper); 50 -> 200 (a browser) -> 220 (audio service) and
+    /// 200 -> 230 (renderer) -> 231; 50 -> 300 (a music player, its own parent).
+    fn tree(pid: u32) -> Option<u32> {
+        match pid {
+            50 => Some(1),
+            100 | 200 => Some(50),
+            110 => Some(100),
+            220 | 230 => Some(200),
+            231 => Some(230),
+            300 => Some(300),
+            _ => None,
+        }
+    }
+
+    fn pick(owner: u32, list: &[(u32, u64)]) -> Option<u32> {
+        let sources: Vec<AppSource> = list.iter().map(|&(p, s)| source(s, p, "app")).collect();
+        app_of_window(owner, 100, &sources, tree).map(|a| a.pid)
+    }
+
+    #[test]
+    fn a_window_brings_its_owner_s_sound_or_its_closest_playing_descendant_s() {
+        assert_eq!(pick(200, &[(300, 5), (220, 9)]), Some(220));
+        // The owner wins over a lower serial.
+        assert_eq!(pick(200, &[(220, 9), (200, 12)]), Some(200));
+        // Depth 1 beats depth 2.
+        assert_eq!(pick(200, &[(231, 3), (220, 9)]), Some(220));
+        // The same depth: the earlier in the list.
+        assert_eq!(pick(200, &[(230, 7), (220, 9)]), Some(230));
+        assert_eq!(pick(200, &[(300, 5)]), None);
+    }
+
+    #[test]
+    fn a_window_of_dilla_its_tree_or_its_ancestors_brings_no_sound() {
+        for owner in [100, 110, 50] {
+            assert_eq!(pick(owner, &[(220, 9), (300, 5)]), None, "owner {owner}");
+        }
+        assert_eq!(pick(0, &[(220, 9)]), None);
+        assert_eq!(pick(1, &[(220, 9)]), None);
+        // A source in Dilla's tree is never returned.
+        assert_eq!(pick(50, &[(110, 1), (100, 2)]), None);
+        assert_eq!(pick(110, &[(110, 1)]), None);
+    }
+
+    #[test]
+    fn a_sibling_or_a_parent_of_the_owner_is_never_matched() {
+        assert_eq!(pick(220, &[(200, 1), (230, 2)]), None);
+        // A self-parent ends the walk.
+        assert_eq!(pick(300, &[(200, 1), (230, 2)]), None);
+        assert_eq!(pick(300, &[(300, 4)]), Some(300));
     }
 
     /// audio.test.ts / app-audio-lifetime.test.ts (beta.5 `PCMFrames`): frames are 960 samples, split chunks join, the

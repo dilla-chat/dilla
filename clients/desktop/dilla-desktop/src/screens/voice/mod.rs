@@ -193,6 +193,54 @@ mod m {
     pub const DIVIDER_INSET_X: f32 = 4.0;
 }
 
+/// What the screen share's sound is, and who chose it (Task 44, D21).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ShareSound {
+    /// Nothing chosen: a shared window brings its application's sound.
+    #[default]
+    Unset,
+    /// The person's choice in the sound section: an application, or switched off (`None`). A window never replaces it.
+    Person(Option<dilla_media::app_audio::AppSource>),
+    /// The shared window's application. It goes when that share ends or another share starts.
+    Window(dilla_media::app_audio::AppSource),
+}
+
+impl ShareSound {
+    /// The application whose sound the share carries, whoever chose it.
+    pub fn app(&self) -> Option<&dilla_media::app_audio::AppSource> {
+        match self {
+            ShareSound::Unset | ShareSound::Person(None) => None,
+            ShareSound::Person(Some(app)) | ShareSound::Window(app) => Some(app),
+        }
+    }
+
+    /// A share starts: `Window(_)` becomes `Unset`; everything else is kept.
+    pub fn on_share(self) -> ShareSound {
+        match self {
+            ShareSound::Window(_) => ShareSound::Unset,
+            other => other,
+        }
+    }
+
+    /// The window's application was looked up for the current share: `Unset` and `Some(a)` become `Window(a)`;
+    /// everything else is kept (`None`: no owner, or it is not playing).
+    pub fn found(self, app: Option<dilla_media::app_audio::AppSource>) -> ShareSound {
+        match (self, app) {
+            (ShareSound::Unset, Some(app)) => ShareSound::Window(app),
+            (other, _) => other,
+        }
+    }
+
+    /// The share ended: `Window(_)` and `Person(None)` become `Unset`. `Person(Some(_))` is kept, the remembered
+    /// choice for the next share.
+    pub fn ended(self) -> ShareSound {
+        match self {
+            ShareSound::Window(_) | ShareSound::Person(None) => ShareSound::Unset,
+            other => other,
+        }
+    }
+}
+
 /// What one window's voice hooks draw from: the newest state of its instance, its running client and that client's
 /// call media, and the stage's own view state (which tile is focused, which is selected). One per instance window
 /// ([`VoiceAreas`]): a call belongs to its instance, and another window's state never replaces it.
@@ -216,8 +264,10 @@ pub struct VoiceUi {
     pub share_menu: bool,
     /// The stream quality the next (or the running) screen share uses.
     pub share_options: ShareOptions,
-    /// The application whose sound the screen share carries (the sound section's choice), `None`: no sound.
-    pub share_app: Option<dilla_media::app_audio::AppSource>,
+    /// What the screen share's sound is, and who chose it: the sound section's choice, or the shared window's own.
+    pub share_sound: ShareSound,
+    /// Counts the shares that started (and ended): a window's sound that is found late is dropped when this moved.
+    share_seq: u64,
     video_seq: u64,
     /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
     told_in_call: Option<Option<String>>,
@@ -717,6 +767,11 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
         ui.selected = 0;
     }
     let live = state.voice.call.phase != CallPhase::Idle;
+    if ui.state.voice.share.screen && !state.voice.share.screen {
+        // The share ended: a window's sound goes with it, and a lookup still running is dropped.
+        ui.share_sound = std::mem::take(&mut ui.share_sound).ended();
+        ui.share_seq += 1;
+    }
     ui.state = state;
     if live && !ui.repainting {
         ui.repainting = true;
@@ -1294,6 +1349,12 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
         crate::screens::share_picker::open(options, window, cx);
         return;
     }
+    if kind == ShareKind::Screen {
+        // The system's own dialog chooses and Dilla never learns the window: nothing is looked up.
+        let ui = ui_mut(w, cx);
+        ui.share_seq += 1;
+        ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
+    }
     session.share(kind, true, options);
 }
 
@@ -1330,7 +1391,7 @@ pub fn set_share_app(
         ui.session.clone(),
         ui.state.voice.call.phase == CallPhase::In,
     );
-    ui_mut(window, cx).share_app = source.clone();
+    ui_mut(window, cx).share_sound = ShareSound::Person(source.clone());
     if live && let Some(s) = session {
         s.app_audio(source);
     }
@@ -1348,14 +1409,51 @@ pub fn share_source(
     if ui.state.voice.call.phase != CallPhase::In {
         return;
     }
-    let app = ui.share_app.clone();
-    if let Some(s) = ui.session.clone() {
-        s.share_source(source, options);
+    let session = ui.session.clone();
+    let ui = ui_mut(window, cx);
+    ui.share_seq += 1;
+    let seq = ui.share_seq;
+    ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
+    let person_app = match &ui.share_sound {
+        ShareSound::Person(app) => app.clone(),
+        _ => None,
+    };
+    let look_up = (source.kind == dilla_media::sources::desktop::SourceKind::Window
+        && ui.share_sound == ShareSound::Unset)
+        .then(|| crate::screens::share_picker::apps::window_sound(cx))
+        .flatten();
+    if let Some(s) = &session {
+        s.share_source(source.clone(), options);
         // The sound section's application comes with the share.
-        if app.is_some() {
-            s.app_audio(app);
+        if person_app.is_some() {
+            s.app_audio(person_app);
         }
     }
+    // A shared window brings its application's sound (D21): found off the UI thread, applied only to this share.
+    let Some(find) = look_up else { return };
+    cx.spawn(async move |cx| {
+        let found = cx
+            .background_executor()
+            .spawn(async move { find(&source) })
+            .await;
+        cx.update(|cx| {
+            let Some(ui) = ui_of(window, cx) else { return };
+            if ui.share_seq != seq
+                || ui.state.voice.call.phase != CallPhase::In
+                || ui.share_sound != ShareSound::Unset
+            {
+                return;
+            }
+            let session = ui.session.clone();
+            let ui = ui_mut(window, cx);
+            ui.share_sound = std::mem::take(&mut ui.share_sound).found(found.clone());
+            if let (Some(s), Some(app)) = (session, found) {
+                s.app_audio(Some(app));
+            }
+            crate::screens::share_picker::refresh(window, cx);
+        });
+    })
+    .detach();
 }
 
 // ---- the voice row's people ---------------------------------------------------------------------------------------
@@ -3798,8 +3896,8 @@ fn sound_row(ui: &VoiceUi) -> Option<AnyElement> {
     if !crate::screens::share_picker::apps::available_now() {
         return None;
     }
-    let on = ui.share_app.is_some();
-    let note = match &ui.share_app {
+    let on = ui.share_sound.app().is_some();
+    let note = match ui.share_sound.app() {
         Some(app) => tf("callStage.share.audioAppOf", &[("app", app.label.as_str())]),
         None => t("callStage.share.audioAppNote").to_owned(),
     };
@@ -3879,6 +3977,30 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_share_sound_follows_the_window_unless_the_person_chose() {
+        use super::ShareSound::{Person, Unset, Window};
+        use dilla_media::app_audio::AppSource;
+        let app = |pid: u32, label: &str| AppSource {
+            serial: u64::from(pid),
+            pid,
+            label: label.to_owned(),
+        };
+        let (a, m) = (app(1, "a"), app(2, "m"));
+        assert_eq!(Unset.on_share().found(Some(a.clone())), Window(a.clone()));
+        assert_eq!(
+            Person(Some(m.clone())).on_share().found(Some(a.clone())),
+            Person(Some(m.clone()))
+        );
+        // Off stays off.
+        assert_eq!(Person(None).on_share().found(Some(a.clone())), Person(None));
+        assert_eq!(Window(a.clone()).on_share(), Unset);
+        assert_eq!(Unset.found(None), Unset);
+        assert_eq!(Window(a).ended(), Unset);
+        assert_eq!(Person(None).ended(), Unset);
+        assert_eq!(Person(Some(m.clone())).ended(), Person(Some(m)));
+    }
+
     /// Wave 2 review I-G1, useCall.tsx `outgoingText` (VoiceView.wb2.test.tsx's cases): the ring's line before and after
     /// its 30 s, with and without someone else in the call, declined and not rung.
     #[test]

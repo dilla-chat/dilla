@@ -255,7 +255,7 @@ fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     (wrote == size).then_some(info)
 }
 
-fn parent(pid: u32) -> Option<u32> {
+pub(super) fn parent(pid: u32) -> Option<u32> {
     bsd_info(pid).map(|i| i.pbi_ppid)
 }
 
