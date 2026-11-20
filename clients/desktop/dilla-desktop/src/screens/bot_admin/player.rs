@@ -17,7 +17,10 @@ use dilla_desktop_ui::components::bot_admin::now_playing::{
     NowPlaying, NowPlayingLabels, NowPlayingVariant, PlayerTrack, QueueRow, up_next,
 };
 use dilla_desktop_ui::components::toast::show_toast_in;
-use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
+use gpui::{
+    AnyElement, App, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Window,
+    div, px,
+};
 
 use crate::slots::{Extra, SlotCx};
 use crate::strings::{t, tf};
@@ -194,9 +197,8 @@ fn follow_in(
 /// do the cards' reads.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
     crate::per_window::retain::<WindowCards>(cx, |_, c| {
-        !c.seen
+        !c.client
             .as_ref()
-            .and_then(|s| s.client.as_ref())
             .is_some_and(|w| std::ptr::eq(w.as_ptr(), Rc::as_ptr(client)))
     });
     crate::per_window::retain::<WindowMusic>(cx, |_, m| {
@@ -494,28 +496,19 @@ const CARD_MARGIN: f32 = 6.0;
 /// The card's width: NowPlaying.css's 440px inside its 1px edge.
 const CARD_WIDTH: f32 = 442.0;
 
-/// One window's cards: what the last draw of a "started music" row saw, and the players this window reads for the cards on
-/// its screen.
+/// One window's cards: the players this window reads for the cards on its screen.
 #[derive(Default)]
 struct WindowCards {
-    seen: Option<CardsSeen>,
+    /// The client the reads went to (weakly: a release never waits for it).
+    client: Option<std::rc::Weak<Client>>,
     /// The voice channels with a card on screen and the Bot in the room, as the last frame had them.
     reading: BTreeSet<ChannelId>,
     /// Each read channel's read again for the track's end.
     track_end: BTreeMap<ChannelId, TrackEnd>,
 }
 
-/// What a card's draw leaves for [`card_on_screen`], which the timeline calls after the frame's rows: the state they were
-/// drawn from, the client they act on and the clock the playhead runs on.
-#[derive(Clone)]
-struct CardsSeen {
-    state: Arc<AppState>,
-    client: Option<std::rc::Weak<Client>>,
-    now_ms: u64,
-}
-
 /// The device clock the playhead runs on: the shell's frozen one in a fixture.
-fn clock_ms(clock: crate::screens::shell::Clock) -> u64 {
+pub fn clock_ms(clock: crate::screens::shell::Clock) -> u64 {
     match clock {
         crate::screens::shell::Clock::Local => device_now_ms(),
         crate::screens::shell::Clock::Fixed { now, .. } => now * 1000,
@@ -542,12 +535,6 @@ pub fn music_card(
     let state = &ctx.state;
     let channel = marker.voice_channel;
     let now_ms = clock_ms(ctx.clock);
-    crate::per_window::get_mut::<WindowCards>(window.window_handle().window_id(), cx).seen =
-        Some(CardsSeen {
-            state: state.clone(),
-            client: ctx.client.as_ref().map(Rc::downgrade),
-            now_ms,
-        });
     let room = state
         .channels
         .iter()
@@ -627,14 +614,16 @@ pub fn music_card(
         player = player.volume(tf("music.volume", &[("n", &volume.to_string())]));
     }
     // The part's box starts under the attachments slot (and the grid's gap): the card's own margin less the slot.
+    let width = crate::screens::reactions::column_width(window, cx).min(CARD_WIDTH);
     let pad = CARD_MARGIN - crate::screens::timeline::attachments_slot(last);
     Some(Extra {
-        // A block, which takes the card's 442px whatever its text (the extras sit in an absolute box that shrinks to its
-        // content, so the width is set; a log narrower than that is not handled).
+        // A block: the message column's width up to the card's 442px (the extras sit in an absolute box that shrinks to its
+        // content, so the width is set). The head's text is ellipsised, so the height does not depend on it.
         element: div()
+            .debug_selector(|| "music-card-box".to_owned())
             .flex()
             .flex_col()
-            .w(px(CARD_WIDTH))
+            .w(px(width))
             .pt(px(pad))
             .child(player)
             .into_any_element(),
@@ -643,31 +632,35 @@ pub fn music_card(
 }
 
 /// Called once per frame by the timeline of `window` with the voice channels of the "started music" rows that intersect its
-/// viewport: the card reads the player only while the Bot is in that room and the card is on screen (Decision D10, as
-/// music.tsx's `botInRoom && visible`). A channel that has just come on screen is read; each one is read again a second
-/// after its track should end ([`refresh_after_ms`]); and the client is told which channels the windows watch, for the Bot's
-/// hints of them (`set_watched`, the union over this client's windows).
-pub fn card_on_screen(window: gpui::WindowId, channels: BTreeSet<ChannelId>, cx: &mut App) {
-    let Some(seen) = crate::per_window::get::<WindowCards>(window, cx).and_then(|c| c.seen.clone())
-    else {
-        return;
-    };
-    let Some(client) = seen.client.as_ref().and_then(std::rc::Weak::upgrade) else {
+/// viewport, the `state` they were drawn from, the `client` they act on and the clock `now_ms`: the card reads the player
+/// only while the Bot is in that room and the card is on screen (Decision D10, as music.tsx's `botInRoom && visible`). A
+/// channel that has just come on screen is read; each one is read again a second after its track should end
+/// ([`refresh_after_ms`]); and the client is told which channels the windows watch, for the Bot's hints of them
+/// (`set_watched`, the union over this client's windows). A frame with no card on screen passes an empty set; a frame with
+/// no log at all calls [`cards_off_screen`].
+pub fn card_on_screen(
+    window: gpui::WindowId,
+    channels: BTreeSet<ChannelId>,
+    state: &AppState,
+    client: Option<&Rc<Client>>,
+    now_ms: u64,
+    cx: &mut App,
+) {
+    let Some(client) = client else {
         return;
     };
     let reading: BTreeSet<ChannelId> = channels
         .into_iter()
-        .filter(|ch| bot_in_room(&seen.state, *ch).is_some())
+        .filter(|ch| bot_in_room(state, *ch).is_some())
         .collect();
-    let before = std::mem::replace(
-        &mut crate::per_window::get_mut::<WindowCards>(window, cx).reading,
-        reading.clone(),
-    );
+    let cards = crate::per_window::get_mut::<WindowCards>(window, cx);
+    cards.client = Some(Rc::downgrade(client));
+    let before = std::mem::replace(&mut cards.reading, reading.clone());
     for channel in reading.difference(&before) {
         drop(client.music().refresh(*channel));
     }
     for channel in &reading {
-        let snapshot = match seen.state.bot_admin.music.get(channel) {
+        let snapshot = match state.bot_admin.music.get(channel) {
             Some(MusicState::Available(s)) => Some(s),
             _ => None,
         };
@@ -679,10 +672,10 @@ pub fn card_on_screen(window: gpui::WindowId, channels: BTreeSet<ChannelId>, cx:
         if kept {
             continue;
         }
-        let weak = Rc::downgrade(&client);
+        let weak = Rc::downgrade(client);
         let channel = *channel;
         let timer = snapshot
-            .and_then(|s| refresh_after_ms(s, seen.now_ms))
+            .and_then(|s| refresh_after_ms(s, now_ms))
             .map(|ms| {
                 cx.spawn(async move |cx| {
                     cx.background_executor()
@@ -700,13 +693,32 @@ pub fn card_on_screen(window: gpui::WindowId, channels: BTreeSet<ChannelId>, cx:
     crate::per_window::get_mut::<WindowCards>(window, cx)
         .track_end
         .retain(|ch, _| reading.contains(ch));
+    publish_watched(client, cx);
+}
+
+/// `window` draws no message log (another screen, a voice stage in its place, no channel): none of its cards is on screen,
+/// so its reads, its track-end timers and its share of the watched channels go (Decision D10).
+pub fn cards_off_screen(window: gpui::WindowId, cx: &mut App) {
+    if crate::per_window::get::<WindowCards>(window, cx).is_none() {
+        return;
+    }
+    let cards = crate::per_window::get_mut::<WindowCards>(window, cx);
+    let client = cards.client.as_ref().and_then(std::rc::Weak::upgrade);
+    cards.reading.clear();
+    cards.track_end.clear();
+    if let Some(client) = client {
+        publish_watched(&client, cx);
+    }
+}
+
+/// Tells `client` which channels its windows' cards watch: the union over the windows that read through it.
+fn publish_watched(client: &Rc<Client>, cx: &mut App) {
     let mut watched = BTreeSet::new();
     crate::per_window::each_mut::<WindowCards>(cx, |_, cards| {
         let ours = cards
-            .seen
+            .client
             .as_ref()
-            .and_then(|s| s.client.as_ref())
-            .is_some_and(|c| std::ptr::eq(c.as_ptr(), Rc::as_ptr(&client)));
+            .is_some_and(|c| std::ptr::eq(c.as_ptr(), Rc::as_ptr(client)));
         if ours {
             watched.extend(cards.reading.iter().copied());
         }
@@ -1083,6 +1095,38 @@ mod tests {
             12_000,
         );
         assert_eq!(v.blocked, t("music.blocked.dj"));
+    }
+
+    /// Decision D10: a window that draws no log (another screen, a stage in its place) has none of its cards on screen, so
+    /// its reads and track-end timers go, and another window's stay.
+    #[gpui::test]
+    fn a_window_with_no_log_reads_no_player(cx: &mut gpui::TestAppContext) {
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let channel = ChannelId([8; 16]);
+        cx.update(|cx| {
+            for w in [a, b] {
+                let cards = crate::per_window::get_mut::<WindowCards>(w, cx);
+                cards.reading.insert(channel);
+                cards.track_end.insert(
+                    channel,
+                    TrackEnd {
+                        key: Some((channel, 1)),
+                        _timer: None,
+                    },
+                );
+            }
+            cards_off_screen(a, cx);
+            let a_cards = crate::per_window::get::<WindowCards>(a, cx).expect("A's cards");
+            assert!(a_cards.reading.is_empty() && a_cards.track_end.is_empty());
+            let b_cards = crate::per_window::get::<WindowCards>(b, cx).expect("B's cards");
+            assert_eq!(b_cards.reading.len(), 1);
+            assert_eq!(b_cards.track_end.len(), 1);
+        });
     }
 
     /// Decision D10: the card's Bot-in-room test is the dock's (a participant of the call is the pinned Bot user).

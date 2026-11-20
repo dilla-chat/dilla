@@ -284,6 +284,23 @@ impl ShellView {
         self.composer.read(cx).value(cx).to_string()
     }
 
+    /// Tests (the automation command `connection <status>`): the gateway's status as the shell draws it. `reconnecting` is
+    /// the link that dropped and is being made again (`ConnectionStatus::Offline`: the link banner's "Offline.
+    /// Reconnecting…", which the web draws when the browser loses its network); `connecting` and `online` are the others.
+    #[cfg(feature = "test-hooks")]
+    pub fn simulate_connection(&mut self, status: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        let status = match status {
+            "reconnecting" => ConnectionStatus::Offline,
+            "connecting" => ConnectionStatus::Connecting,
+            "online" => ConnectionStatus::Online,
+            other => return Err(format!("unknown connection status `{other}`")),
+        };
+        let mut state = (*self.state).clone();
+        state.connection.status = status;
+        self.set_state(Arc::new(state), cx);
+        Ok(())
+    }
+
     pub fn new(
         state: Arc<AppState>,
         client: Option<Rc<Client>>,
@@ -1675,7 +1692,17 @@ impl Render for ShellView {
         let log_width = window_width - f32::from(layout::RAIL) - panes.sidebar - aside_width;
         // The reaction bars wrap to the message column (10).
         crate::screens::reactions::set_log_width(window.window_handle().window_id(), log_width, cx);
+        // The log's "started music" cards read their players only while the log is on screen (Decision D10): a stage in its
+        // place, or no channel, shows none.
+        let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
+        if takeover.is_some() || channel.is_none() {
+            crate::screens::bot_admin::player::cards_off_screen(
+                window.window_handle().window_id(),
+                cx,
+            );
+        }
         let log = match channel {
+            Some(_) if takeover.is_some() => div().into_any_element(),
             Some(c) => {
                 let weak = shell.clone();
                 let scroll = self.log.clone();
@@ -1840,7 +1867,6 @@ impl Render for ShellView {
             }),
             cx,
         );
-        let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
         // A DM: the call's notice strip under the header while this device is not in its call. Its call is in the DM row's
         // menu (Ruling Z), not in the header.
         let dm_strip = channel

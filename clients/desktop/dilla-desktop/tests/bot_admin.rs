@@ -298,6 +298,33 @@ fn native(name: &str, golden: &str) {
     );
 }
 
+/// The card is the message column's width up to the web's 442px (NowPlaying.css `max-width` in a `minmax(0, 1fr)` column):
+/// in the 1280px window it takes 442, and in a compact 400px window it shrinks and stays inside the window.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_card_shrinks_with_the_log_and_stops_at_442(cx: &mut TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/bot-admin/music-card-live.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the card fixture");
+    cx.update(dilla_desktop::install);
+    let (_app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let width = |vcx: &mut VisualTestContext| {
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        vcx.debug_bounds("music-card-box").expect("the card")
+    };
+    assert_eq!(f32::from(width(vcx).size.width), 442.0);
+    vcx.simulate_resize(gpui::size(gpui::px(400.0), gpui::px(800.0)));
+    let narrow = width(vcx);
+    assert!(
+        f32::from(narrow.size.width) < 442.0 && f32::from(narrow.right()) <= 400.0,
+        "{narrow:?}"
+    );
+}
+
 // ---- integration 3, step 5: the pages' navigation inside the server settings host ----
 
 /// The Music page's "Open Bot settings" (BotSection.tsx `workspace.botSetup`) opens the Bot section in the same server

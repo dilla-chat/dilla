@@ -1612,6 +1612,9 @@ pub fn render(
     crate::screens::bot_admin::player::card_on_screen(
         window.window_handle().window_id(),
         cards_on_screen,
+        state,
+        ctx.client.as_ref(),
+        crate::screens::bot_admin::player::clock_ms(ctx.clock),
         cx,
     );
     let mut private_top = rows_bottom;

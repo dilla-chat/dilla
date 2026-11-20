@@ -1631,6 +1631,13 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Task 19b: this window's frame draws at its density's root line height.
         dilla_desktop_ui::metrics::Density::enter(window, cx);
+        // Any screen but the shell draws no message log: its "started music" cards are off screen (Decision D10).
+        if !matches!(self.screen, Screen::Shell(_)) {
+            crate::screens::bot_admin::player::cards_off_screen(
+                window.window_handle().window_id(),
+                cx,
+            );
+        }
         let body = match &self.screen {
             Screen::Starting => boot::loading(),
             Screen::Fatal(error, cfg) => {
