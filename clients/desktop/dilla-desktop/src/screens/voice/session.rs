@@ -871,8 +871,9 @@ async fn in_call(
                 }
                 Some(kind) = async { match ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
                     if kind == ShareKind::Screen {
-                        // No lookup or choice reaches an ended share.
-                        sound.stopped();
+                        // The share's sound ends with it (the media ends only its video), and no lookup or choice
+                        // reaches the ended share.
+                        perform(ctx, &call, sound.ended()).await;
                     }
                     let mut share = ctx.states.borrow().voice.share;
                     set_kind(&mut share, kind, false);
@@ -979,6 +980,8 @@ async fn in_call(
     drop(opens);
     ctx.videos.lock().unwrap_or_else(|p| p.into_inner()).clear();
     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
+    // The call's end stops every share and the application sound with them (`Call::end_media`): none is published.
+    *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
     ctx.voice.set_speaking(BTreeSet::new());
     feeder.abort();
     drop(ping);
@@ -1181,19 +1184,20 @@ impl AppSoundSlot {
         });
     }
 
-    /// `Command::AppAudio(source)`: the person's choice (`None`: no sound).
+    /// `Command::AppAudio(source)`: the person's choice (`None`: no sound). Switching off always unpublishes whatever is
+    /// published, with or without a share that is up.
     fn asked(&mut self, source: Option<dilla_media::app_audio::AppSource>) -> Act {
         if let Some(opening) = &mut self.opening {
             opening.sound = source.clone();
             opening.person = true;
         }
-        let Some(live) = &mut self.live else {
-            return Act::Nothing;
-        };
-        live.sound = source.clone();
-        live.person = true;
+        if let Some(live) = &mut self.live {
+            live.sound = source.clone();
+            live.person = true;
+        }
         match source {
-            Some(app) => Act::Publish(app),
+            Some(app) if self.live.is_some() => Act::Publish(app),
+            Some(_) => Act::Nothing,
             None => Act::Unpublish,
         }
     }
@@ -1255,6 +1259,12 @@ impl AppSoundSlot {
     fn down(&mut self, token: u64) -> Act {
         self.not_opened(token);
         self.live = None;
+        Act::Unpublish
+    }
+
+    /// The screen share's source ended by itself: the share is over, and its sound goes with it.
+    fn ended(&mut self) -> Act {
+        self.stopped();
         Act::Unpublish
     }
 
@@ -1476,6 +1486,15 @@ mod tests {
                     self.slot.down(token)
                 }
             };
+            self.run(act);
+        }
+
+        /// The share's source ends by itself (the loop's `ended` arm).
+        fn ended(&mut self) {
+            self.deliver();
+            self.live = false;
+            self.opening = None;
+            let act = self.slot.ended();
             self.run(act);
         }
 
@@ -1716,6 +1735,40 @@ mod tests {
         sim.found(1, Some(music()));
         sim.deliver();
         assert_eq!(sim.published, None, "a lookup after the stop is dropped");
+    }
+
+    /// Task 44 fix round 5: a screen share whose source ends by itself takes its application sound with it (what the
+    /// session publishes, and so the sound row, is none), and nothing found or chosen later reaches the ended share.
+    #[test]
+    fn a_share_that_ends_by_itself_takes_its_sound_with_it() {
+        let (a, x) = (app(10, "A"), app(30, "X"));
+        let mut sim = live_with(&a);
+        sim.ended();
+        assert_eq!(sim.published, None, "the ended share's sound goes");
+        // The row then reads the UI's sound, which the share's end clears too.
+        assert_eq!(ShareSound::Window(a.clone()).ended().app(), None);
+        sim.found(1, Some(a));
+        sim.ask(Some(x));
+        sim.deliver();
+        assert_eq!(sim.published, None, "nothing reaches the ended share");
+    }
+
+    /// Task 44 fix round 5: the person switching the sound off unpublishes whatever is published, with or without a
+    /// share that is up (a share still opening, or none at all).
+    #[test]
+    fn switching_the_sound_off_always_unpublishes() {
+        for opening in [false, true] {
+            let mut sim = Sim {
+                published: Some(app(10, "A")),
+                ..Sim::default()
+            };
+            if opening {
+                sim.start(1, &ShareSound::Unset);
+            }
+            sim.ask(None);
+            sim.deliver();
+            assert_eq!(sim.published, None, "opening: {opening}");
+        }
     }
 
     /// Share fix review I1: a dropped session waits only while a call's media is live. A call whose media already
