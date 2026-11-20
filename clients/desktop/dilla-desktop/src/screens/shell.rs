@@ -1692,53 +1692,6 @@ impl Render for ShellView {
         let log_width = window_width - f32::from(layout::RAIL) - panes.sidebar - aside_width;
         // The reaction bars wrap to the message column (10).
         crate::screens::reactions::set_log_width(window.window_handle().window_id(), log_width, cx);
-        // The log's "started music" cards read their players only while the log is on screen (Decision D10): a stage in its
-        // place, or no channel, shows none.
-        let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
-        if takeover.is_some() || channel.is_none() {
-            crate::screens::bot_admin::player::cards_off_screen(
-                window.window_handle().window_id(),
-                cx,
-            );
-        }
-        let log = match channel {
-            Some(_) if takeover.is_some() => div().into_any_element(),
-            Some(c) => {
-                let weak = shell.clone();
-                let scroll = self.log.clone();
-                let on_wheel: timeline::OnWheel = Rc::new(move |up, cx| {
-                    // Up leaves the end; reaching the end again follows it.
-                    let at_end = scroll.offset().y <= -scroll.max_offset().y + Pixels::from(1.0f32);
-                    let _ = weak.update(cx, |shell, cx| {
-                        shell.pinned = !up && at_end;
-                        cx.notify();
-                    });
-                });
-                let on_earlier = load_earlier(
-                    self.client.clone(),
-                    c.id,
-                    crate::screens::messages::ui::ui(window, cx),
-                    window.window_handle().window_id(),
-                );
-                timeline::render(
-                    &state,
-                    c,
-                    self.clock,
-                    log_width,
-                    &self.log,
-                    self.pinned,
-                    on_wheel,
-                    on_earlier,
-                    &ctx,
-                    window,
-                    cx,
-                )
-                .into_any_element()
-            }
-            // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
-            None if no_server(&state) => crate::screens::create::empty_view(&ctx, window, cx),
-            None => div().size_full().bg(color::BG).into_any_element(),
-        };
         let banners = slots::banners(&ctx, window, cx);
         // What the search palette (23) draws with, and how it opens a result.
         let host = cx.entity().downgrade();
@@ -1867,6 +1820,54 @@ impl Render for ShellView {
             }),
             cx,
         );
+        // Built after the stage's own setters above (`set_come_back`, `ring::provide`): the AFK stage reads them as it is made.
+        // The log's "started music" cards read their players only while the log is on screen (Decision D10): a stage in its
+        // place, or no channel, shows none.
+        let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
+        if takeover.is_some() || channel.is_none() {
+            crate::screens::bot_admin::player::cards_off_screen(
+                window.window_handle().window_id(),
+                cx,
+            );
+        }
+        let log = match channel {
+            Some(_) if takeover.is_some() => div().into_any_element(),
+            Some(c) => {
+                let weak = shell.clone();
+                let scroll = self.log.clone();
+                let on_wheel: timeline::OnWheel = Rc::new(move |up, cx| {
+                    // Up leaves the end; reaching the end again follows it.
+                    let at_end = scroll.offset().y <= -scroll.max_offset().y + Pixels::from(1.0f32);
+                    let _ = weak.update(cx, |shell, cx| {
+                        shell.pinned = !up && at_end;
+                        cx.notify();
+                    });
+                });
+                let on_earlier = load_earlier(
+                    self.client.clone(),
+                    c.id,
+                    crate::screens::messages::ui::ui(window, cx),
+                    window.window_handle().window_id(),
+                );
+                timeline::render(
+                    &state,
+                    c,
+                    self.clock,
+                    log_width,
+                    &self.log,
+                    self.pinned,
+                    on_wheel,
+                    on_earlier,
+                    &ctx,
+                    window,
+                    cx,
+                )
+                .into_any_element()
+            }
+            // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
+            None if no_server(&state) => crate::screens::create::empty_view(&ctx, window, cx),
+            None => div().size_full().bg(color::BG).into_any_element(),
+        };
         // A DM: the call's notice strip under the header while this device is not in its call. Its call is in the DM row's
         // menu (Ruling Z), not in the header.
         let dm_strip = channel
