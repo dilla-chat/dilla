@@ -13,7 +13,7 @@ use crate::components::avatar::initials_of;
 use crate::components::dialog::{Dialog, InitialFocus};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{line, line_height};
+use crate::text::{line, root_line_height};
 use crate::tokens::{color, font, radius, text};
 
 /// `.d-poll-dialog__close` (PollDialog.css:43) at the head's top right: the lead is the tile's box, so the button is placed
@@ -195,8 +195,8 @@ fn click(id: impl Into<ElementId>, f: Option<OnClick>) -> gpui::Stateful<gpui::D
 
 impl RenderOnce for PollDialog {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let xs = line_height(text::XS, 1.5);
-        let ui = line_height(text::UI, 1.5);
+        let xs = root_line_height(text::XS);
+        let ui = root_line_height(text::UI);
         let answer_count = self.answers.len();
         let question = div()
             .flex()
@@ -254,7 +254,7 @@ impl RenderOnce for PollDialog {
                             .child(div().w(px(18.0)).flex().justify_end().child(line(
                                 (i + 1).to_string(),
                                 text::META,
-                                line_height(text::META, 1.5),
+                                root_line_height(text::META),
                                 color::FG_FAINT,
                             )))
                             .child(div().flex_1().min_w_0().child(input))
@@ -329,7 +329,7 @@ impl RenderOnce for PollDialog {
                     .child(line(
                         label.clone(),
                         text::BTN,
-                        line_height(text::BTN, 1.5),
+                        root_line_height(text::BTN),
                         if on {
                             color::ACCENT_INK
                         } else {
@@ -408,7 +408,7 @@ impl RenderOnce for PollDialog {
                     .child(line(
                         e,
                         text::BTN,
-                        line_height(text::BTN, 1.5),
+                        root_line_height(text::BTN),
                         color::DANGER,
                     ))
             }));
@@ -423,7 +423,7 @@ impl RenderOnce for PollDialog {
                 line(
                     initials_of(&self.bot_name),
                     text::BADGE,
-                    line_height(text::BADGE, 1.5),
+                    root_line_height(text::BADGE),
                     color::BRAND_INK,
                 )
                 .weight(font::WEIGHT_DISPLAY),
@@ -446,7 +446,7 @@ impl RenderOnce for PollDialog {
         let footer_note = div().flex_1().min_w_0().child(crate::text::flow_paragraph(
             self.labels.footer.clone(),
             text::META,
-            line_height(text::META, 1.5),
+            root_line_height(text::META),
             color::FG_3,
         ));
         let cancel_button = click("poll-cancel", self.on_cancel.clone())

@@ -17,7 +17,7 @@ use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize};
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
 use dilla_desktop_ui::components::dialog::{Dialog, DialogKind, InitialFocus};
-use dilla_desktop_ui::text::{line, line_height, paragraph};
+use dilla_desktop_ui::text::{line, paragraph, root_line_height};
 use dilla_desktop_ui::tokens::{color, radius, text};
 
 use super::copy;
@@ -207,13 +207,13 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
         .child(line(
             handle(m),
             text::UI,
-            line_height(text::UI, 1.5),
+            root_line_height(text::UI),
             color::FG_3,
         ))
         .children(paragraph(
             &body,
             text::UI,
-            line_height(text::UI, 1.5),
+            root_line_height(text::UI),
             color::FG_2,
             440.0 - 36.0 - 54.0,
         ));
@@ -226,13 +226,13 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
             .child(div().w(px(CONFIRM_LABEL_W)).flex_none().child(line(
                 label.to_owned(),
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                root_line_height(text::BTN),
                 color::FG_3,
             )))
             .child(line(
                 value,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                root_line_height(text::BTN),
                 color::FG,
             ))
     };
