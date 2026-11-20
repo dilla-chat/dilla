@@ -15,18 +15,19 @@ use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, ConnectionS
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, Styled, Subscription, Window, div,
+    ScrollHandle, SharedString, Styled, Subscription, Window, div, px,
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
+use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::shell::panes::{
     ASIDE_DEFAULT_MEMBERS, ASIDE_DEFAULT_THREAD, COLUMN_FROM, SIDEBAR_DEFAULT, range,
 };
 use dilla_desktop_ui::components::shell::{
     Pane, PaneInput, Panes, Splitter, SplitterKey, clamp_panes,
 };
-use dilla_desktop_ui::tokens::{color, font, layout};
+use dilla_desktop_ui::tokens::{color, font, layout, text};
 
 pub mod keys;
 pub mod resize;
@@ -145,6 +146,13 @@ impl Clock {
 
 /// Whether the viewer may edit `community`'s channels (Shell.tsx `canManageChannels`): the access read once it landed,
 /// the owner's say until then.
+/// The safety code of the call this device is in at `channel` (Shell.tsx `callCodeOf`), once the call is joined.
+fn call_code_of(state: &AppState, channel: ChannelId) -> Option<String> {
+    crate::screens::voice::joined(state, channel)
+        .then(|| state.voice.call.code.clone())
+        .flatten()
+}
+
 fn can_manage_channels(state: &AppState, community: CommunityId) -> bool {
     let access = dilla_client::state::server_admin::access_in(state, community);
     if access.loaded {
@@ -249,6 +257,9 @@ pub struct ShellView {
     /// The channel edit dialog a row menu's Edit channel opened: the server settings' own channel body, drawn over the
     /// conversation (Shell.tsx `ChannelEditFlow`). Dropped when its dialog closes.
     channel_edit: Option<Entity<server_settings::body::Body>>,
+    /// The voice row whose call code is shown (Shell.tsx `codeFor`): the row menu's "call code" opens it, and it closes
+    /// with the call.
+    code_for: Option<ChannelId>,
     /// The window this shell is drawn in: the voice area keeps its state per window (one per instance).
     window_id: gpui::WindowId,
     _subscriptions: Vec<Subscription>,
@@ -328,6 +339,7 @@ impl ShellView {
             last_text: HashMap::new(),
             access_asked: HashSet::new(),
             channel_edit: None,
+            code_for: None,
             window_id: window.window_handle().window_id(),
             _subscriptions: vec![sent],
         };
@@ -912,6 +924,10 @@ impl ShellView {
     }
 
     fn open_menu(&mut self, channel: ChannelId, at: Point<Pixels>, cx: &mut Context<Self>) {
+        // A row with no items opens no menu (a voice row outside its call, the AFK row).
+        if self.menu_items(channel).is_empty() {
+            return;
+        }
         self.menu = Some(ChannelMenu { channel, at });
         cx.notify();
     }
@@ -940,6 +956,20 @@ impl ShellView {
                 ])
                 .chain(self.row_modes(channel))
                 .collect();
+        }
+        // Shell.tsx `rowMenu`: a voice row's menu holds the call code while this device is in its call, otherwise nothing
+        // (the stage has no code of its own); a category has none either.
+        let Some(kind) = self.state.channel(channel).map(|c| c.kind) else {
+            return Vec::new();
+        };
+        if kind == 1 {
+            return call_code_of(&self.state, channel)
+                .map(|_| MenuItem::new("code", t("voice.code")))
+                .into_iter()
+                .collect();
+        }
+        if kind != 0 {
+            return Vec::new();
         }
         // Shell.tsx `rowMenu`: pins, Mute, the four notify modes, then Edit channel for managers. Mark as read and copy
         // link are desktop only (Decision D6), after the web's items.
@@ -1039,6 +1069,8 @@ impl ShellView {
             }
             // Shell.tsx `edit`: ChannelEditFlow opens over the conversation.
             "edit" => self.open_channel_edit(channel, window, cx),
+            // Shell.tsx `code`: the call's code in a dialog.
+            "code" => self.code_for = Some(channel),
             "link" => {
                 if let Some(community) = self.state.channel(channel).map(|c| c.community_id) {
                     let route = Route::Channel {
@@ -1687,6 +1719,46 @@ impl Render for ShellView {
                 })
                 .into_any_element(),
             );
+        }
+        // The call code, from a voice row's menu; it goes with the call.
+        if let Some(channel) = self.code_for {
+            match call_code_of(&state, channel) {
+                Some(code) => {
+                    let close = shell.clone();
+                    overlays.push(
+                        Dialog::new("call-code-dialog", t("voice.code"), t("dialog.close"))
+                            .body(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.0))
+                                    .child(
+                                        dilla_desktop_ui::text::line(
+                                            crate::screens::voice::group_code(&code),
+                                            text::MD,
+                                            dilla_desktop_ui::text::line_height(text::MD, 1.3),
+                                            color::FG,
+                                        )
+                                        .tracking(dilla_desktop_ui::metrics::LABEL_TRACKING),
+                                    )
+                                    .child(dilla_desktop_ui::text::flow_paragraph(
+                                        t("voice.codeHelp"),
+                                        text::XS,
+                                        dilla_desktop_ui::text::line_height(text::XS, 1.3),
+                                        color::FG_2,
+                                    )),
+                            )
+                            .on_close(move |_, cx| {
+                                let _ = close.update(cx, |shell, cx| {
+                                    shell.code_for = None;
+                                    cx.notify();
+                                });
+                            })
+                            .into_any_element(),
+                    );
+                }
+                None => self.code_for = None,
+            }
         }
         // The channel edit dialog (and the private-channel question it can ask) sits over the shell until it closes.
         if let Some(body) = self.channel_edit.clone() {
@@ -2572,6 +2644,61 @@ mod tests {
             );
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Shell.tsx `rowMenu`: a voice row's menu holds only the call code while this device is in its call; outside it, and
+    /// on the AFK row, the row has no items and opens no menu. Choosing the code shows it until the call ends.
+    #[gpui::test]
+    fn a_voice_row_menu_is_the_call_code_while_in_the_call(cx: &mut gpui::TestAppContext) {
+        use dilla_client::calls::CallPhase;
+        cx.update(crate::install);
+        let (voice, afk) = (ChannelId([6; 16]), ChannelId([7; 16]));
+        let mut world = (*world()).clone();
+        for (n, name) in [(6, "lobby"), (7, "AFK")] {
+            world.channels.push(Channel {
+                kind: 1,
+                ..channel(n, name, 5)
+            });
+        }
+        let (shell, vcx) = cx.add_window_view({
+            let state = Arc::new(world.clone());
+            move |window, cx| {
+                ShellView::new(
+                    state,
+                    None,
+                    None,
+                    Clock::Fixed { now: 0, utc: true },
+                    window,
+                    cx,
+                )
+            }
+        });
+        shell.update_in(vcx, |s, window, cx| {
+            assert!(s.menu_items(voice).is_empty(), "no menu outside the call");
+            assert!(s.menu_items(afk).is_empty(), "the AFK row has none");
+            s.open_menu(voice, Point::default(), cx);
+            assert!(s.menu.is_none(), "an empty menu is not opened");
+            let mut joined = world.clone();
+            joined.voice.call.channel = Some(voice);
+            joined.voice.call.phase = CallPhase::In;
+            joined.voice.call.code = Some("0".repeat(30));
+            s.set_state(Arc::new(joined), cx);
+            let ids: Vec<_> = s
+                .menu_items(voice)
+                .iter()
+                .map(|i| i.id.to_string())
+                .collect();
+            assert_eq!(ids, ["code"]);
+            assert_eq!(s.menu_items(voice)[0].label.as_ref(), t("voice.code"));
+            assert!(
+                s.menu_items(afk).is_empty(),
+                "another voice row stays empty"
+            );
+            s.open_menu(voice, Point::default(), cx);
+            assert!(s.menu.is_some());
+            s.choose(voice, "code", window, cx);
+            assert_eq!(s.code_for, Some(voice));
+        });
     }
 
     /// A DM route (13) shows the DM list and the DM: a new state keeps it (a DM is no server channel), and a server route

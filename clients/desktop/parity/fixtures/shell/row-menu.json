@@ -94,7 +94,7 @@
   "steps": [
     {
       "do": "click",
-      "web": "css=.d-channel-list [data-channel-id] >> nth=0",
+      "web": "css=.d-channel-list [data-row]:has-text(\"general\")",
       "gpui": "channel-general"
     },
     {
