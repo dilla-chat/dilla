@@ -566,7 +566,7 @@ fn flow_lines(text: &str, size: Pixels, width: Option<f32>) -> Vec<String> {
 }
 
 /// A mono width of `chars` characters on Chromium's layout unit (as [`Line`]'s natural width).
-fn mono_width(chars: usize, size: Pixels) -> f32 {
+pub fn mono_width(chars: usize, size: Pixels) -> f32 {
     let w = chars as f32 * f32::from(size) * MONO_ADVANCE;
     (w * 64.0 - 1e-3).ceil() / 64.0
 }

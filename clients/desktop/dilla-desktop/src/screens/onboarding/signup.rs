@@ -1002,7 +1002,7 @@ impl Render for SignupView {
                 let mut f = OnboardingFrame::new("onboarding", t("onboarding.keys.title"))
                     .step(step_label(3))
                     .progress(3, TOTAL)
-                    .child(frame::body_paragraph(
+                    .child(frame::subtitle_paragraph(
                         t("onboarding.keys.body"),
                         color::FG_2,
                     ));

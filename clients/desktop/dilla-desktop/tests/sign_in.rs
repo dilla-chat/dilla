@@ -170,6 +170,28 @@ fn an_empty_invite_is_refused_under_its_field() {
     assert!(app.element("onboarding-username").is_none(), "still step 1");
 }
 
+/// The card's heading sits where the web puts it: the web's `h1.d-onboarding-frame__title` on the sign-in form (viewport
+/// 1280x800, shot by `shoot.mjs` with the form fixture) has its box at y 268.38 CSS px (the card's top at 202.38, its
+/// 28px padding and 1px edge, the 15px step row, its 2px margin and the card's 20px gap), 30px tall. The app snaps a box to
+/// a whole logical px, half up, as Chromium paints it, so the card's quarter-pixel top (202.375) puts the heading on 268.
+#[test]
+#[ignore = "launches the automation build (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn sign_in_card_heading_top() {
+    let mut app = Driver::launch_fixture(&fixture("sign-in/form"), None, &[]);
+    app.wait_for("sign-in-title", WAIT);
+    let title = app.element("sign-in-title").expect("the heading");
+    assert!(
+        (title.y - 268.38).abs() < 0.5,
+        "the heading's top is {}, the web's is 268.38 (painted at 268)",
+        title.y
+    );
+    assert!(
+        (title.height - 30.0).abs() < 0.01,
+        "the heading is {}px tall",
+        title.height
+    );
+}
+
 #[test]
 fn parity_sign_in_welcome() {
     parity("sign-in/welcome");

@@ -157,9 +157,12 @@ pub fn links_row(links: Vec<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-/// A paragraph of the body.
+/// A paragraph of the body (`.d-onboarding-frame__body > p`, 12.5px on an 18.75px line). The box is given its line's exact
+/// height: GPUI sizes a text box by a whole number of device px, so the 18.75px line came out 18.5px and the card, centred
+/// on its height, sat a quarter pixel (a whole pixel after snapping) lower than the web's 395.25px one.
 pub fn para(text_: impl Into<SharedString>) -> AnyElement {
     div()
+        .min_h(px(line_height(text::SM, 1.5)))
         .text_size(text::SM)
         .line_height(px(line_height(text::SM, 1.5)))
         .font_family(font::MONO)
@@ -328,7 +331,8 @@ impl AuthFrame {
         .gap(px(CARD_GAP))
         .children(head)
         // The step's `<h1>`: a heading node a reader jumps to.
-        .child(
+        .child(tracked_box(
+            "sign-in-title",
             div()
                 .id("auth-title")
                 .a11y(Role::Heading, self.title.clone())
@@ -343,7 +347,7 @@ impl AuthFrame {
                     .weight(font::WEIGHT_DISPLAY)
                     .tracking(-0.01),
                 ),
-        )
+        ))
         .child(
             div()
                 .flex()

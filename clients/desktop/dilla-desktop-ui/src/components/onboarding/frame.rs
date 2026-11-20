@@ -21,7 +21,7 @@ use gpui_component::input::{Input, InputState};
 
 use crate::a11y::{Accessible, Role};
 use crate::components::text_field::edge;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{columns, line, line_height, paragraph, wrap_mono};
 use crate::tokens::{color, font, radius, text};
 use crate::{Icon, IconName, metrics};
 
@@ -48,6 +48,38 @@ pub fn shadow_card() -> Vec<gpui::BoxShadow> {
 /// The body text's line height: `--text-sm` at the base 1.5.
 pub fn body_line() -> f32 {
     line_height(text::SM, 1.5)
+}
+
+/// A mono paragraph wrapped as Chromium's `text-wrap: pretty` wraps it (OnboardingFrame.css, "fix round 1": the body's
+/// first `<p>`, the subtitle): the greedy lines, except that a last line of a single word takes the word before it along,
+/// so a paragraph never ends on an orphan. The pulled word is kept only when the line it joins still fits `width`.
+fn pretty_lines(text_: &str, size: gpui::Pixels, width: f32) -> Vec<String> {
+    let cols = columns(size, width);
+    let mut lines = wrap_mono(text_, cols);
+    if let [.., prev, last] = lines.as_mut_slice()
+        && !last.is_empty()
+        && !last.contains(' ')
+        && let Some((head, word)) = prev.trim_end().rsplit_once(' ')
+        && word.chars().count() + 1 + last.chars().count() <= cols
+    {
+        *last = format!("{word} {last}");
+        *prev = head.trim_end().to_owned();
+    }
+    lines
+}
+
+/// The body's first paragraph (the subtitle under the title), `text-wrap: pretty` as the web sets it on
+/// `.d-onboarding-frame__body > p:first-child`.
+pub fn subtitle_paragraph(text_: &str, color_: gpui::Hsla) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .children(
+            pretty_lines(text_, text::SM, CARD_INNER_W)
+                .into_iter()
+                .map(|l| line(l, text::SM, body_line(), color_)),
+        )
+        .into_any_element()
 }
 
 /// A paragraph of the frame's body, wrapped to the card.
@@ -807,5 +839,32 @@ mod shadow_tests {
     #[test]
     fn the_card_shadow_blurs_as_css_does() {
         assert_eq!(super::shadow_card()[0].blur_radius, gpui::px(40.0));
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    /// The recovery key step's subtitle: greedy fits "Shown once. You need it to add another" on the first line and leaves
+    /// "device." alone; `text-wrap: pretty` (the web's wrap, 30 characters then 15) takes "another" down with it.
+    #[test]
+    fn a_pretty_paragraph_never_ends_on_one_word() {
+        let body = "Shown once. You need it to add another device.";
+        let greedy = wrap_mono(body, columns(text::SM, CARD_INNER_W));
+        assert_eq!(
+            greedy,
+            ["Shown once. You need it to add another", "device."]
+        );
+        assert_eq!(
+            pretty_lines(body, text::SM, CARD_INNER_W),
+            ["Shown once. You need it to add", "another device."]
+        );
+        // A paragraph that already ends on several words, or fits one line, is left as it is.
+        let two = "one two three four five six seven eight nine ten eleven twelve thirteen";
+        assert_eq!(
+            pretty_lines(two, text::SM, CARD_INNER_W),
+            wrap_mono(two, columns(text::SM, CARD_INNER_W))
+        );
     }
 }
