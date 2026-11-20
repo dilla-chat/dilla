@@ -16,6 +16,7 @@
 //! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
 use dilla_client::features::utilities::polls;
+use dilla_client::state::bot::PollCheck;
 use dilla_client::state::bot_admin::{MusicMarker, music_marker};
 use dilla_client::state::{
     AppState, Channel, ChannelId, CommunityId, Member, Timeline, TimelineItem, TimelineItemState,
@@ -473,6 +474,109 @@ pub fn announcement_in(
     announcement_marker(item, sender_kind(members, item))
 }
 
+/// What a poll post's body is (MessageItem.tsx `displayBody`): a Bot's post ending in the poll marker never reads as plain
+/// markdown until it is known whether its card verifies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PollBody {
+    /// Not a poll post: the body as it is.
+    NoMarker,
+    /// A verified poll: `poll.asked` naming the poll's creator (not the Bot).
+    Asked(String),
+    /// A post whose card is being verified: no text, the card's loading line stands for it.
+    Pending,
+    /// The post's own text with the marker line gone and its `<t:…>` tags as local times, before markdown.
+    Fallback(String),
+}
+
+/// [`PollBody`] of `item`. `live` is whether a client is running (the web's `p.client !== undefined`): only then can a
+/// card verify, so a fixture or a closed session shows the text at once. The sender must be a kind-1 member (a credential
+/// alone is a claim any client can make), as [`announcement_marker`] gates the music line.
+pub fn poll_body(
+    item: &TimelineItem,
+    state: &AppState,
+    community: Option<CommunityId>,
+    live: bool,
+    zone: &jiff::tz::TimeZone,
+) -> PollBody {
+    let members = community
+        .and_then(|c| state.members.get(&c))
+        .map_or(&[][..], Vec::as_slice);
+    if !item.bot
+        || sender_kind(members, item) != Some(1)
+        || polls::final_poll_marker(&item.body).is_none()
+    {
+        return PollBody::NoMarker;
+    }
+    let readable = !item.edited && item.state == TimelineItemState::Ok;
+    if readable && let Some(poll) = item.msg_id.and_then(|m| state.bot.polls.get(&m)) {
+        return PollBody::Asked(user_name(state, members, poll.creator));
+    }
+    // `Retry` is a given-up post being read again: it still shows as given up until the read succeeds.
+    let gave_up = item
+        .msg_id
+        .and_then(|m| state.bot.poll_checks.get(&m))
+        .is_some_and(|c| matches!(c, PollCheck::GaveUp(_) | PollCheck::Retry(_)));
+    if readable
+        && live
+        && community.is_some()
+        && state.account.user_id.is_some()
+        && item.sender_user.is_some()
+        && !gave_up
+    {
+        return PollBody::Pending;
+    }
+    PollBody::Fallback(poll_fallback(&item.body, zone))
+}
+
+/// MessageItem.tsx `fallback` of a poll post: the final marker line removed (with the newline before it), each
+/// `<t:seconds:style>` tag as the local time, or left as it is when that gives none.
+fn poll_fallback(body: &str, zone: &jiff::tz::TimeZone) -> String {
+    const MARKER: usize = "[dilla-poll:v1:".len() + 32 + 1;
+    let mut text = body;
+    if let Some(at) = text.len().checked_sub(MARKER)
+        && text.is_char_boundary(at)
+        && polls::final_poll_marker(&text[at..]).is_some()
+        && text[at..].starts_with('[')
+    {
+        text = text[..at].strip_suffix('\n').unwrap_or(&text[..at]);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("<t:") {
+        out.push_str(&rest[..open]);
+        let tag = &rest[open..];
+        let digits = tag[3..].bytes().take_while(u8::is_ascii_digit).count();
+        let close = 3 + digits;
+        let style = tag.as_bytes().get(close + 1);
+        let shaped = digits > 0
+            && tag.as_bytes().get(close) == Some(&b':')
+            && style.is_some_and(|s| b"tTdDfFR".contains(s))
+            && tag.as_bytes().get(close + 2) == Some(&b'>');
+        if !shaped {
+            out.push_str("<t:");
+            rest = &tag[3..];
+            continue;
+        }
+        let raw = &tag[..close + 3];
+        let when = tag[3..close]
+            .parse::<i64>()
+            .ok()
+            .and_then(|s| format::local_utility_time(s, zone));
+        out.push_str(when.as_deref().unwrap_or(raw));
+        rest = &tag[close + 3..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The zone times in the log are drawn in: UTC under a fixture's frozen clock, else the system's.
+fn zone_for(clock: Clock) -> jiff::tz::TimeZone {
+    match clock {
+        Clock::Fixed { utc: true, .. } => jiff::tz::TimeZone::UTC,
+        _ => jiff::tz::TimeZone::system(),
+    }
+}
+
 fn sender_kind(members: &[Member], item: &TimelineItem) -> Option<u8> {
     members
         .iter()
@@ -493,11 +597,27 @@ fn body_parts(
     members: &[Member],
     community: CommunityId,
     item: &TimelineItem,
+    live: bool,
+    zone: &jiff::tz::TimeZone,
 ) -> Vec<Body> {
     match item.state {
         TimelineItemState::CannotRead => vec![Body::Text(t("shell.message.cannotRead").to_owned())],
         TimelineItemState::Deleted => vec![Body::Text(t("shell.message.deleted").to_owned())],
         _ => {
+            // A poll post is read before anything else: its marker excludes a music announcement and a webhook.
+            let poll = poll_body(item, state, Some(community), live, zone);
+            match &poll {
+                PollBody::NoMarker => {}
+                PollBody::Asked(name) => {
+                    return vec![Body::Text(tf("poll.asked", &[("name", name.as_str())]))];
+                }
+                PollBody::Pending => return Vec::new(),
+                PollBody::Fallback(text) => {
+                    return markdown::parse_markdown(text, &|target| {
+                        mention_pill(state, members, target, item.mention)
+                    });
+                }
+            }
             // The announcement's text is the Bot's line, whoever the marker names (MessageItem.tsx `displayBody`).
             if let Some(marker) = announcement_marker(item, sender_kind(members, item)) {
                 let room = state
@@ -552,11 +672,12 @@ pub fn spoken_item(
     community: CommunityId,
     item: &TimelineItem,
     clock: Clock,
+    live: bool,
 ) -> String {
     let name = author(state, members, item);
     let zone = |secs: i64| zone_of(clock, secs);
     let time = format::time_in(item.ts, &zone);
-    let parts = body_parts(state, members, community, item);
+    let parts = body_parts(state, members, community, item, live, &zone_for(clock));
     spoken_row(&name, &time, &spoken_body(&parts))
 }
 
@@ -580,7 +701,8 @@ pub fn arrival(
         Some(_) if last.own || !readable(last) => Some((key, None)),
         Some(_) => {
             let members = log_members(state, channel);
-            let text = spoken_item(state, &members, channel.community_id, last, clock);
+            // Only the running shell announces arrivals, so a poll's card can verify.
+            let text = spoken_item(state, &members, channel.community_id, last, clock, true);
             Some((key, Some(text)))
         }
     }
@@ -860,6 +982,8 @@ struct RowCx<'a> {
     /// The timeline's community: its pinned Bot user is the only author of a webhook post.
     community: CommunityId,
     clock: Clock,
+    /// Whether a client is running: only then can a poll's card verify (`poll_body`).
+    live: bool,
     width: f32,
     /// Every row's key in the log's order: the arrow keys step through it (Conversation.tsx `rowKey`).
     order: std::rc::Rc<Vec<String>>,
@@ -1110,6 +1234,7 @@ fn draw_row(
         cx_row.community,
         item,
         cx_row.clock,
+        cx_row.live,
     );
     // The keyboard (Conversation.tsx `rowKey`, MessageRow.css): the active row is the log's one tab stop; Up and Down
     // step to the row above and below, Home and End to the first and the newest, Escape goes to the composer. A row
@@ -1338,7 +1463,14 @@ pub fn render(
                 }),
             }
         } else {
-            let parts = body_parts(state, members, channel.community_id, item);
+            let parts = body_parts(
+                state,
+                members,
+                channel.community_id,
+                item,
+                ctx.client.is_some(),
+                &zone_for(clock),
+            );
             // The height comes from the memo (by the parts and the width): a body is laid out once, not on every draw.
             let mut height = body::height_cached(&parts, body_width);
             // An empty body still keeps its line (the web's row holds the empty text node's line box).
@@ -1571,6 +1703,7 @@ pub fn render(
         members,
         community: channel.community_id,
         clock,
+        live: ctx.client.is_some(),
         width,
         order: order.clone(),
         active: active.clone(),
@@ -1976,19 +2109,26 @@ mod tests {
         let (s, community, i) = music_world();
         let members = s.members[&community].clone();
         assert_eq!(
-            body_parts(&s, &members, community, &i),
+            body_parts(&s, &members, community, &i, false, &UTC),
             [Body::Text("Ada started music in harbour".into())]
         );
         // A room this viewer cannot see is "a voice channel".
         let mut unseen = s.clone();
         unseen.channels.clear();
         assert_eq!(
-            body_parts(&unseen, &members, community, &i),
+            body_parts(&unseen, &members, community, &i, false, &UTC),
             [Body::Text("Ada started music in a voice channel".into())]
         );
         let verbatim = |item: &TimelineItem| {
-            body_parts(&s, &members, community, item)
-                == body_parts(&s, &members, community, &item_with_body(&item.body))
+            body_parts(&s, &members, community, item, false, &UTC)
+                == body_parts(
+                    &s,
+                    &members,
+                    community,
+                    &item_with_body(&item.body),
+                    false,
+                    &UTC,
+                )
         };
         let mut edited = i.clone();
         edited.edited = true;
@@ -2029,8 +2169,15 @@ mod tests {
         let mut kind0 = i.clone();
         kind0.sender_user = Some(UserId([1; 16]));
         assert_eq!(
-            body_parts(&s, &members, community, &kind0),
-            body_parts(&s, &members, community, &item_with_body(&kind0.body)),
+            body_parts(&s, &members, community, &kind0, false, &UTC),
+            body_parts(
+                &s,
+                &members,
+                community,
+                &item_with_body(&kind0.body),
+                false,
+                &UTC
+            ),
             "a kind-0 member's claim"
         );
         assert!(announcement_in(&s, community, &kind0).is_none());
@@ -2076,8 +2223,15 @@ mod tests {
             Some("via webhook CI bot")
         );
         assert_eq!(
-            body_parts(&s, &[], community, &i),
-            body_parts(&s, &[], community, &item_with_body("Deploy done")),
+            body_parts(&s, &[], community, &i, false, &UTC),
+            body_parts(
+                &s,
+                &[],
+                community,
+                &item_with_body("Deploy done"),
+                false,
+                &UTC
+            ),
             "the body is the text before the label"
         );
         let mut edited = i.clone();
@@ -2160,6 +2314,127 @@ mod tests {
             body_offset(true, true, Density::Regular),
             FOLLOW_PAD + meta_line(Density::Regular) + MAIN_GAP
         );
+    }
+
+    const UTC: jiff::tz::TimeZone = jiff::tz::TimeZone::UTC;
+
+    /// MessageItem.poll.test.tsx's world: the Bot (a kind-1 member) posts a poll of `bob`'s, the poll held or not.
+    fn poll_world(held: bool) -> (AppState, CommunityId, TimelineItem) {
+        let (mut s, community, mut i) = music_world();
+        s.members.get_mut(&community).unwrap().push(Member {
+            user_id: UserId([2; 16]),
+            username: "bob".into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        });
+        s.account.user_id = Some(UserId([1; 16]));
+        let id = dilla_client::state::MessageId([4; 16]);
+        i.msg_id = Some(id);
+        i.body = format!(
+            "Raid?\nBridge\nHarbour\nVote with /poll vote.\nCloses: <t:1800003600:R>\n[dilla-poll:v1:{}]",
+            "ab".repeat(16)
+        );
+        if held {
+            s.bot.polls.insert(
+                id,
+                dilla_client::state::bot::PollView {
+                    id: [0xab; 16],
+                    channel: ChannelId([8; 16]),
+                    thread: None,
+                    creator: UserId([2; 16]),
+                    question: "Raid?".into(),
+                    answers: vec!["Bridge".into(), "Harbour".into()],
+                    multi: false,
+                    created_at: 0,
+                    due_at: 0,
+                    closed: false,
+                    counts: vec![0, 0],
+                    my_choices: None,
+                    revision: 1,
+                    previews: vec![Vec::new(), Vec::new()],
+                    distinct: 0,
+                    capped: false,
+                },
+            );
+        }
+        (s, community, i)
+    }
+
+    fn poll_text(s: &AppState, community: CommunityId, i: &TimelineItem, live: bool) -> String {
+        let members = s.members[&community].clone();
+        spoken_body(&body_parts(s, &members, community, i, live, &UTC))
+    }
+
+    /// MessageItem.tsx:163-182: a verified poll post reads who asked, the poll's creator and not the Bot.
+    #[test]
+    fn a_verified_poll_post_reads_who_asked() {
+        let (s, community, i) = poll_world(true);
+        assert_eq!(poll_text(&s, community, &i, true), "bob asked:");
+    }
+
+    /// A post whose card is being verified shows no text: the card's loading line stands for it. A read the web gave up
+    /// (or is retrying after giving up) shows the text again.
+    #[test]
+    fn a_poll_post_being_verified_shows_no_text() {
+        let (mut s, community, i) = poll_world(false);
+        assert_eq!(poll_text(&s, community, &i, true), "");
+        let id = i.msg_id.unwrap();
+        s.bot.poll_checks.insert(id, PollCheck::Pending);
+        assert_eq!(poll_text(&s, community, &i, true), "");
+        for gave_up in [
+            PollCheck::GaveUp(ChannelId([8; 16])),
+            PollCheck::Retry(ChannelId([8; 16])),
+        ] {
+            s.bot.poll_checks.insert(id, gave_up);
+            assert!(poll_text(&s, community, &i, true).contains("Vote with /poll vote."));
+        }
+    }
+
+    #[test]
+    fn an_unverified_poll_post_shows_its_text_with_local_time() {
+        let (s, community, i) = poll_world(false);
+        let text = poll_text(&s, community, &i, false);
+        assert!(text.contains("Vote with /poll vote."), "{text}");
+        assert!(text.contains("Closes: Fri 15 Jan, 09:00 UTC"), "{text}");
+        assert!(
+            !text.contains("<t:") && !text.contains("[dilla-poll"),
+            "{text}"
+        );
+        // A poll post of a sender who is no Bot member is plain text, marker line and tag included.
+        let mut forged = i.clone();
+        forged.sender_user = Some(UserId([1; 16]));
+        forged.bot = false;
+        assert_eq!(
+            poll_body(&forged, &s, Some(community), true, &UTC),
+            PollBody::NoMarker
+        );
+        assert!(poll_text(&s, community, &forged, true).contains("[dilla-poll"));
+    }
+
+    #[test]
+    fn an_edited_poll_post_shows_its_text() {
+        let (s, community, mut i) = poll_world(true);
+        i.edited = true;
+        let text = poll_text(&s, community, &i, true);
+        assert!(text.contains("Vote with /poll vote."), "{text}");
+        assert!(!text.contains("bob asked:"), "{text}");
+    }
+
+    /// The fallback keeps a tag it cannot turn into a time, and only a final marker line is removed.
+    #[test]
+    fn the_poll_fallback_keeps_what_it_cannot_read() {
+        let marker = format!("[dilla-poll:v1:{}]", "ab".repeat(16));
+        let text = poll_fallback(
+            &format!("a <t:x:R> <t:99999999999999999999:R> <t:1:Z> <t:\n{marker}"),
+            &UTC,
+        );
+        assert_eq!(text, "a <t:x:R> <t:99999999999999999999:R> <t:1:Z> <t:");
+        let mid = format!("{marker}\nmore");
+        assert_eq!(poll_fallback(&mid, &UTC), mid);
+        assert_eq!(poll_fallback(&marker, &UTC), "");
     }
 
     fn item_with_body(body: &str) -> TimelineItem {

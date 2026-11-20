@@ -59,6 +59,39 @@ fn parity_polls_card_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/card-b.json")).unwrap();
 }
 
+/// The Bot's poll post with no poll held and no client: the web gives up at once (`botDefinitelyUnavailable`) and the row
+/// shows the post's own text, the marker line gone and the `<t:…>` tag as a local time, with no card.
+#[test]
+fn an_unverified_poll_post_shows_its_text_and_no_card() {
+    let mut app = Driver::launch_fixture(&fixture("polls/fallback.json"), None, &[]);
+    app.wait_for("composer", Duration::from_secs(20));
+    assert!(app.element("poll-card").is_none(), "no card without a poll");
+    let tree = app.a11y_tree();
+    let row = tree
+        .nodes
+        .iter()
+        .filter_map(|n| n.label.as_deref())
+        .find(|l| l.contains("Vote with /poll vote."))
+        .expect("the poll post's row reads its text");
+    assert!(row.contains("Closes: Fri 15 Jan, 09:00 UTC"), "{row}");
+    assert!(
+        !row.contains("<t:") && !row.contains("[dilla-poll"),
+        "{row}"
+    );
+}
+
+#[test]
+#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a Bot account yet (seed/members.rs refuses `bot: true` people; Task 40 adds it)"]
+fn parity_polls_fallback() {
+    dilla_parity::screen::assert_screen(&fixture("polls/fallback.json")).unwrap();
+}
+
+#[test]
+#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a Bot account yet (seed/members.rs refuses `bot: true` people; Task 40 adds it)"]
+fn parity_polls_fallback_b() {
+    dilla_parity::screen::assert_screen(&fixture("polls/fallback-b.json")).unwrap();
+}
+
 /// The reminders popover open under the bell (Signal §6.7), nothing kept: the Upcoming tab and its empty line.
 #[test]
 #[cfg_attr(

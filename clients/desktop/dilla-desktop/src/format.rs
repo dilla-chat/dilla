@@ -39,6 +39,45 @@ pub fn local_zone(secs: i64) -> Offset {
     Timestamp::from_second(secs).map_or(Offset::UTC, |t| TimeZone::system().to_offset(t))
 }
 
+/// utility-time.ts `localUtilityTime`: an instant as Intl `en-GB` draws it with `{weekday short, day, month short, hour and
+/// minute 2-digit, timeZoneName short}`, `Fri 15 Jan, 09:00 UTC`. The zone is its abbreviation (`CET`); a zone the tz
+/// database only names by its offset (`+03`) reads as Intl's `GMT+3`. `None` for an instant out of range, as the web's
+/// invalid date.
+pub fn local_utility_time(seconds: i64, zone: &TimeZone) -> Option<String> {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let at = Timestamp::from_second(seconds).ok()?;
+    let info = zone.to_offset_info(at);
+    let wall = info.offset().to_datetime(at);
+    let day = DAYS[usize::from(wall.date().weekday().to_monday_zero_offset().unsigned_abs())];
+    let month = MONTHS[usize::from(wall.month().unsigned_abs()) - 1];
+    let name = info.abbreviation();
+    let name = if name.starts_with(['+', '-']) {
+        gmt_offset(info.offset().seconds())
+    } else {
+        name.to_owned()
+    };
+    Some(format!(
+        "{day} {} {month}, {:02}:{:02} {name}",
+        wall.day(),
+        wall.hour(),
+        wall.minute()
+    ))
+}
+
+/// Intl's short name of a zone with no abbreviation: `GMT+3`, `GMT+5:30`, `GMT-3:30`, and `GMT` at the offset 0.
+fn gmt_offset(seconds: i32) -> String {
+    let sign = if seconds < 0 { '-' } else { '+' };
+    let minutes = seconds.unsigned_abs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => "GMT".to_owned(),
+        (h, 0) => format!("GMT{sign}{h}"),
+        (h, m) => format!("GMT{sign}{h}:{m:02}"),
+    }
+}
+
 /// An instant (unix seconds) as the wall clock `offset` gives; an instant out of range reads as the epoch.
 pub fn wall_clock(secs: i64, offset: Offset) -> DateTime {
     offset.to_datetime(Timestamp::from_second(secs).unwrap_or(Timestamp::UNIX_EPOCH))
@@ -249,6 +288,23 @@ mod tests {
     use super::*;
 
     const UTC: &dyn Fn(i64) -> Offset = &|_| Offset::UTC;
+
+    /// utility-time.ts: Intl `en-GB` with the zone's short name (values checked with node).
+    #[test]
+    fn utility_time_matches_intl_en_gb() {
+        assert_eq!(
+            local_utility_time(1_800_003_600, &TimeZone::UTC).as_deref(),
+            Some("Fri 15 Jan, 09:00 UTC")
+        );
+        let stockholm = TimeZone::get("Europe/Stockholm").expect("the tz database has Stockholm");
+        assert_eq!(
+            local_utility_time(1_800_003_600, &stockholm).as_deref(),
+            Some("Fri 15 Jan, 10:00 CET")
+        );
+        assert_eq!(gmt_offset(3 * 3600), "GMT+3");
+        assert_eq!(gmt_offset(-(3 * 3600 + 1800)), "GMT-3:30");
+        assert_eq!(local_utility_time(i64::MAX, &TimeZone::UTC), None);
+    }
 
     /// Unix seconds of a UTC wall-clock time.
     fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> u64 {
