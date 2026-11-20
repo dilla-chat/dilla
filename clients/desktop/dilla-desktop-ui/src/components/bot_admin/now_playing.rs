@@ -21,7 +21,7 @@ use crate::components::toast::show_toast_in;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::{line, line_height, root_line_height};
 use crate::tokens::{color, font, radius, text};
 
 /// What the player shows of the track playing.
@@ -56,6 +56,8 @@ pub struct NowPlayingLabels {
     pub stop: SharedString,
     /// The card's queue toggle, already filled: "Up next · 3".
     pub queue: SharedString,
+    /// The stage bar's count, already filled: "3 up next".
+    pub up_next: SharedString,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +66,8 @@ pub enum NowPlayingVariant {
     Card,
     /// The row inside the voice dock.
     Compact,
+    /// The bar on top of the voice stage (NowPlaying.css `.d-np--stage`).
+    Stage,
 }
 
 type Action = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -237,7 +241,11 @@ impl NowPlaying {
             .justify_center()
             .w(px(size.0))
             .h(px(size.1))
-            .rounded(if compact { radius::ROW } else { radius::MD })
+            .rounded(match self.variant {
+                NowPlayingVariant::Compact => radius::ROW,
+                NowPlayingVariant::Stage => radius::SEG,
+                NowPlayingVariant::Card => radius::MD,
+            })
             .bg(bg)
             .text_color(fg)
             .child(Icon::new(icon).size(px(glyph)).color(fg))
@@ -372,6 +380,141 @@ impl NowPlaying {
             .border_color(color::OK_DIVIDER)
             .child(row.child(text_col).child(toggle).child(skip))
             .child(self.bar(3.0))
+            .into_any_element()
+    }
+
+    /// The stage bar (NowPlaying.css `.d-np--stage`, NowPlaying.tsx's `stage` branch): 48px, the Bot's 28px square, the
+    /// equaliser bars while playing, the title and meta over a 3px bar with `pos / dur`, play/pause, skip, stop and "n up
+    /// next". Not drawn without a track. The phone's layout (no meta, no count) is not the desktop's.
+    fn stage(self) -> AnyElement {
+        let Some(track) = self.track.clone() else {
+            return div().into_any_element();
+        };
+        let position = self.position_s.clamp(0.0, track.duration_s.max(0.0));
+        let mut title_line = div().flex().items_baseline().gap(px(8.0)).min_w_0().child(
+            div().min_w_0().child(
+                line(
+                    track.title.clone(),
+                    text::UI,
+                    root_line_height(text::UI),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .ellipsis(),
+            ),
+        );
+        if let Some(meta) = &self.meta {
+            title_line = title_line.child(
+                div().min_w_0().child(
+                    line(
+                        meta.clone(),
+                        text::META,
+                        root_line_height(text::META),
+                        color::FG_3,
+                    )
+                    .ellipsis(),
+                ),
+            );
+        }
+        let bar_line = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .min_w_0()
+            .child(div().flex_1().child(self.bar(3.0)))
+            .child(line(
+                format!(
+                    "{} / {}",
+                    player_time(position),
+                    player_time(track.duration_s)
+                ),
+                text::MICRO,
+                root_line_height(text::MICRO),
+                color::FG_3,
+            ));
+        let text_col = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .gap(px(3.0))
+            .child(title_line)
+            .child(bar_line);
+        let mut row = div()
+            .id(self.id.clone())
+            .debug_selector(|| "now-playing-stage".to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(10.0))
+            .h(px(48.0))
+            .pl(px(10.0))
+            .pr(px(8.0))
+            .bg(color::SURFACE)
+            .border_1()
+            .border_color(color::HAIRLINE_2)
+            .rounded(radius::XL);
+        if let Some(bot) = &self.bot {
+            row = row.child(
+                Avatar::new((self.id.clone(), "bot"), bot.clone())
+                    .shape(AvatarShape::Bot)
+                    .size(AvatarSize::NpStage),
+            );
+        }
+        if self.playing {
+            // Three 2px bars, 1.5px apart, at rest height (nothing animates in the references).
+            row = row.child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_end()
+                    .gap(px(1.5))
+                    .h(px(11.0))
+                    .children((0..3).map(|_| div().w(px(2.0)).h_full().bg(color::OK))),
+            );
+        }
+        let toggle_icon = if self.playing {
+            IconName::Pause
+        } else {
+            IconName::Play
+        };
+        row.child(text_col)
+            .child(self.control(
+                (self.id.clone(), "toggle").into(),
+                toggle_icon,
+                14.0,
+                (32.0, 32.0),
+                self.on_toggle.clone(),
+                true,
+            ))
+            .child(self.control(
+                (self.id.clone(), "skip").into(),
+                IconName::SkipForward,
+                14.0,
+                (32.0, 32.0),
+                self.on_skip.clone(),
+                false,
+            ))
+            .child(self.control(
+                (self.id.clone(), "stop").into(),
+                IconName::Square,
+                13.0,
+                (32.0, 32.0),
+                self.on_stop.clone(),
+                false,
+            ))
+            .child(
+                div()
+                    .debug_selector(|| "now-playing-stage-up-next".to_owned())
+                    .flex_none()
+                    .px(px(6.0))
+                    .child(line(
+                        self.labels.up_next.clone(),
+                        text::META,
+                        root_line_height(text::META),
+                        color::FG_3,
+                    )),
+            )
             .into_any_element()
     }
 
@@ -690,6 +833,7 @@ impl RenderOnce for NowPlaying {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self.variant {
             NowPlayingVariant::Compact => self.compact(),
+            NowPlayingVariant::Stage => self.stage(),
             NowPlayingVariant::Card => self.card(window, cx),
         }
     }

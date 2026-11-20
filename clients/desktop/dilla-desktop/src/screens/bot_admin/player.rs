@@ -145,6 +145,20 @@ pub fn follow(window: gpui::WindowId, state: &Arc<AppState>, client: &Rc<Client>
     );
 }
 
+/// A fixture's feed: the shell of a fixture has no client to run [`follow`], so the window's feed is what [`feed_of`] makes of
+/// the fixture's call and the fixture's clock (a Bot's player in a joined call, drawn in the dock and on the stage).
+#[cfg(feature = "automation")]
+pub fn seed_fixture_feed(
+    window: gpui::WindowId,
+    state: &Arc<AppState>,
+    clock: crate::screens::shell::Clock,
+    cx: &mut App,
+) {
+    if let Some(feed) = feed_of(state, None, clock_ms(clock)) {
+        crate::per_window::get_mut::<WindowMusic>(window, cx).feed = Some(feed);
+    }
+}
+
 /// [`follow`] with the read it sends (`read`) and the clock it reads, so a test can count the reads.
 fn follow_in(
     window: gpui::WindowId,
@@ -307,6 +321,7 @@ pub fn labels(up_next_count: usize) -> NowPlayingLabels {
         skip: t("music.skip").into(),
         stop: t("music.stop").into(),
         queue: tf("music.queue", &[("n", &up_next_count.to_string())]).into(),
+        up_next: tf("music.upNext", &[("n", &up_next_count.to_string())]).into(),
     }
 }
 
@@ -425,6 +440,34 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         &feed,
         NowPlayingVariant::Compact,
         "now-playing",
+        false,
+        None,
+    )
+}
+
+/// Whether the stage of `channel` draws the now-playing bar (VoiceView.tsx:614 `joined && !dm && v.music?.track !== undefined`):
+/// the feed is the one of this device's call (phase In, the Bot in it) and it is this stage's own channel, and a track plays.
+/// A DM is not a voice channel, so it never has a feed.
+pub fn stage_shows(feed: Option<&MusicFeed>, channel: ChannelId, has_track: bool) -> bool {
+    has_track && feed.is_some_and(|f| f.channel == channel)
+}
+
+/// The bar on top of the voice stage of `channel` (CallStage.tsx:239-241: first in the stage body, `--d-stage-gap` above the
+/// tiles), drawn from the dock's own feed and so from the dock's own read and watch: it starts none of its own, and it goes
+/// with the call. `None` unless [`stage_shows`].
+pub fn stage_bar(channel: ChannelId, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let feed = feed(window.window_handle().window_id(), cx)?;
+    let has_track = matches!(
+        feed.state.bot_admin.music.get(&feed.channel),
+        Some(MusicState::Available(s)) if s.track.is_some()
+    );
+    if !stage_shows(Some(&feed), channel, has_track) {
+        return None;
+    }
+    element(
+        &feed,
+        NowPlayingVariant::Stage,
+        "now-playing-stage",
         false,
         None,
     )
@@ -845,6 +888,21 @@ mod tests {
 
     /// Integration 3, step 5: the shell provides the dock's feed exactly while this device is in a call with the
     /// community's pinned Bot in it: the call's channel, its name and the Bot's name.
+    #[test]
+    fn the_stage_bar_is_only_for_the_calls_own_channel() {
+        use dilla_client::calls::CallPhase;
+        let (s, a) = in_call(true, CallPhase::In);
+        let b = ChannelId([5; 16]);
+        let feed = feed_of(&Arc::new(s), None, 0).expect("a feed");
+        assert!(stage_shows(Some(&feed), a, true));
+        assert!(
+            !stage_shows(Some(&feed), b, true),
+            "another channel's stage"
+        );
+        assert!(!stage_shows(Some(&feed), a, false), "nothing playing");
+        assert!(!stage_shows(None, a, true), "not in a call with the Bot");
+    }
+
     #[test]
     fn the_feed_follows_a_call_with_the_bot_in_it() {
         use dilla_client::calls::CallPhase;

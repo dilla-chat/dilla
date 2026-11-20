@@ -276,16 +276,17 @@ impl AppView {
                         now: fixture.now,
                         utc: true,
                     };
+                    let state = Arc::new(fixture.state);
+                    // A fixture has no client and so no state loop: its dock and stage player read the feed seeded here.
+                    crate::screens::bot_admin::player::seed_fixture_feed(
+                        window.window_handle().window_id(),
+                        &state,
+                        clock,
+                        cx,
+                    );
                     let shell = cx.new(|cx| {
-                        ShellView::new(
-                            Arc::new(fixture.state),
-                            None,
-                            Some(channel),
-                            clock,
-                            window,
-                            cx,
-                        )
-                        .with_controls(crate::automation::fixture_window_controls())
+                        ShellView::new(state, None, Some(channel), clock, window, cx)
+                            .with_controls(crate::automation::fixture_window_controls())
                     });
                     this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);

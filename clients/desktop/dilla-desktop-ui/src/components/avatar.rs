@@ -89,6 +89,8 @@ pub enum AvatarSize {
     StageFocused,
     /// The not-joined preview's faces (CallStage.css `.d-call-stage__face .d-avatar`: 3rem, `--text-md`).
     StagePreview,
+    /// The stage now-playing bar's Bot (NowPlaying.css `.d-np--stage .d-avatar`: 28px, `--text-badge`, `--r-md`).
+    NpStage,
 }
 
 impl AvatarSize {
@@ -111,6 +113,7 @@ impl AvatarSize {
             Self::Stage => (px(64.0), text::TITLE),
             Self::StageFocused => (px(120.0), text::FACE),
             Self::StagePreview => (px(48.0), text::MD),
+            Self::NpStage => (px(28.0), text::BADGE),
         }
     }
 
@@ -120,6 +123,7 @@ impl AvatarSize {
             Self::Voice => radius::ROW,
             Self::Mini => radius::TAG,
             Self::Card => radius::XXL,
+            Self::NpStage => radius::MD,
             _ => radius::BOT,
         }
     }

@@ -76,6 +76,8 @@ mod m {
     /// edge), the focus layout's 188px film-strip tiles.
     pub const STAGE_PAD: f32 = 14.0;
     pub const TILE_GAP: f32 = 10.0;
+    /// The stage body's gap between the now-playing bar and the tiles (CallStage.css `--d-stage-gap`: 0.625rem).
+    pub const STAGE_GAP: f32 = 10.0;
     pub const GRID_PAD: f32 = 2.0;
     pub const FILM_TILE_W: f32 = 188.0;
     /// CallTile.css: the caption 8px from the corner, 6px between its parts; the edge 1px,
@@ -2643,7 +2645,16 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .min_h_0()
                 .flex()
                 .flex_col()
+                .gap(px(m::STAGE_GAP))
                 .p(px(m::STAGE_PAD))
+                // CallStage.tsx's body: the now-playing bar first (`{nowPlaying ?? null}{body}`), under the notice region.
+                .children(
+                    in_call
+                        .then(|| {
+                            crate::screens::bot_admin::player::stage_bar(channel.id, window, cx)
+                        })
+                        .flatten(),
+                )
                 .child(body),
         )
         .when(in_call, |d| d.child(call_bar(&state, channel, wide)))

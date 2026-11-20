@@ -57,6 +57,7 @@ fn labels() -> NowPlayingLabels {
         skip: "Skip".into(),
         stop: "Stop".into(),
         queue: "Up next · 2".into(),
+        up_next: "3 up next".into(),
     }
 }
 
@@ -66,6 +67,9 @@ struct Player {
     log: Rc<RefCell<Vec<&'static str>>>,
     can_control: bool,
     queue_open: bool,
+    /// Card (the default) or the stage bar; `track` false draws the variant with no track playing.
+    variant: NowPlayingVariant,
+    track: bool,
 }
 
 impl Render for Player {
@@ -86,8 +90,9 @@ impl Render for Player {
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .child(
-                NowPlaying::new("np", NowPlayingVariant::Card, labels())
-                    .track(Some(PlayerTrack {
+                NowPlaying::new("np", self.variant, labels())
+                    .bot("Mr. Kim")
+                    .track(self.track.then(|| PlayerTrack {
                         title: "Harbour Lights".into(),
                         duration_s: 214.0,
                     }))
@@ -117,12 +122,23 @@ fn player(
     cx: &mut TestAppContext,
     can_control: bool,
 ) -> (gpui::Entity<Player>, &mut VisualTestContext) {
+    player_of(cx, can_control, NowPlayingVariant::Card, true)
+}
+
+fn player_of(
+    cx: &mut TestAppContext,
+    can_control: bool,
+    variant: NowPlayingVariant,
+    track: bool,
+) -> (gpui::Entity<Player>, &mut VisualTestContext) {
     install(cx);
     let (host, cx) = cx.add_window_view(|_, cx| Player {
         root: cx.focus_handle(),
         log: Rc::default(),
         can_control,
         queue_open: false,
+        variant,
+        track,
     });
     let root = host.read_with(cx, |p, _| p.root.clone());
     cx.update(|window, cx| root.focus(window, cx));
@@ -158,6 +174,49 @@ fn keyboard_bot_admin_focus_order(cx: &mut TestAppContext) {
         Some("stop"),
         "Shift+Tab returns to Stop"
     );
+}
+
+/// Task 36: the stage bar's Tab stops are play/pause, skip and stop, in that order (it has no card stop of its own), and
+/// Enter on each runs it.
+#[gpui::test]
+fn keyboard_stage_bar_focus_order(cx: &mut TestAppContext) {
+    let (host, cx) = player_of(cx, true, NowPlayingVariant::Stage, true);
+    for expect in ["toggle", "skip", "stop"] {
+        cx.simulate_keystrokes("tab");
+        press(cx, "enter");
+        assert_eq!(log(&host, cx).last().copied(), Some(expect), "{expect}");
+    }
+    assert_eq!(log(&host, cx), ["toggle", "skip", "stop"]);
+}
+
+/// Task 36: the bar says how many tracks are up next (`music.upNext`, "{n} up next"): the player's own words for a queue of
+/// the track playing and three more, drawn at the bar's end.
+#[gpui::test]
+fn the_stage_bar_names_its_up_next_count(cx: &mut TestAppContext) {
+    use dilla_desktop::screens::bot_admin::player::labels as player_labels;
+    use dilla_desktop_ui::components::bot_admin::now_playing::up_next;
+    let row = |current| QueueRow {
+        title: "t".into(),
+        by: "b".into(),
+        duration_s: None,
+        current,
+    };
+    let queue = [row(true), row(false), row(false), row(false)];
+    assert_eq!(player_labels(up_next(&queue)).up_next.as_ref(), "3 up next");
+    let (_host, cx) = player_of(cx, true, NowPlayingVariant::Stage, true);
+    let bar = cx.debug_bounds("now-playing-stage").expect("the bar");
+    assert_eq!(f32::from(bar.size.height), 48.0);
+    let count = cx
+        .debug_bounds("now-playing-stage-up-next")
+        .expect("the up next count");
+    assert!(count.right() <= bar.right(), "{count:?} inside {bar:?}");
+}
+
+/// Task 36: a stage with no track draws nothing (NowPlaying.tsx returns null without one).
+#[gpui::test]
+fn the_stage_bar_is_not_drawn_without_a_track(cx: &mut TestAppContext) {
+    let (_host, cx) = player_of(cx, true, NowPlayingVariant::Stage, false);
+    assert!(cx.debug_bounds("now-playing-stage").is_none());
 }
 
 /// S6: Space on the card itself plays and pauses.

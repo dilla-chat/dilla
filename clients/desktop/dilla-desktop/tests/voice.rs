@@ -2826,3 +2826,16 @@ fn native_voice_tile_states() {
         ],
     );
 }
+
+/// Task 36 (Decision D9): the now-playing bar on top of the voice stage (`voice/music-stage-bar`: Ada in the Lounge with Glenn,
+/// the pinned Bot, whose player holds a playing track and two queued). The web's frame of it needs a Bot playing real audio
+/// in a real call, so the bar is checked here, by eye against NowPlaying.css `.d-np--stage`: 48px, the Bot's square, the
+/// bars, the title and meta over the 3px bar, the three controls and "2 up next", first in the body above the tiles.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_music_stage_bar() {
+    shoot_fixture("music-stage-bar", "music-stage-bar", &[]);
+}

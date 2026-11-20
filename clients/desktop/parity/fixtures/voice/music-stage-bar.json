@@ -1,0 +1,122 @@
+{
+  "name": "voice/music-stage-bar",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/lounge}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "glenn",
+        "display": "Glenn",
+        "bot": true
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "glenn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "Lounge"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ],
+        "bot": {
+          "capabilities": [
+            "music"
+          ],
+          "botChannels": [],
+          "music": {
+            "channel": "lounge",
+            "track": {
+              "id": "7c1e5a0b9d2f4e68a3b1c0d9e8f7a6b5",
+              "title": "Harbour Lights",
+              "artist": "Northern Tide",
+              "durationMs": 214000,
+              "requester": "ada"
+            },
+            "queue": [
+              {
+                "id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                "title": "Slow Ferry",
+                "artist": "Northern Tide",
+                "durationMs": 187000,
+                "requester": "mira"
+              },
+              {
+                "id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+                "title": "Low Tide Radio",
+                "artist": "Gull Choir",
+                "durationMs": 243000,
+                "requester": null
+              }
+            ],
+            "positionMs": 37000,
+            "volume": 75,
+            "paused": false,
+            "canControl": true
+          }
+        }
+      }
+    ],
+    "calls": [
+      {
+        "channel": "midgard/lounge",
+        "participants": [
+          {
+            "person": "ada"
+          },
+          {
+            "person": "glenn"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": ".d-call-stage__join",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}
