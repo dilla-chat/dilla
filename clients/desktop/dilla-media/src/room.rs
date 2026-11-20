@@ -106,6 +106,40 @@ pub struct CallOptions {
     /// Join muted: the microphone track is muted before it is published, so no frame of the person's voice is ever
     /// encoded before the mute (a muted or push-to-talk join).
     pub muted: bool,
+    /// Where the call's room close goes when the call is dropped without `leave` (see [`RoomCloses`]). The runtime the
+    /// call joins on awaits it before it shuts down; the default is a registry of this call's own.
+    pub room_closes: RoomCloses,
+}
+
+/// The room closes that dropped calls handed to their runtime, until they finish. A `Call` dropped without
+/// [`leave`](Call::leave) cannot wait for its room's close: it spawns it on the runtime it joined on and registers it
+/// here. Whoever shuts that runtime down awaits [`closed`](RoomCloses::closed) first, since a shutdown cancels a close
+/// still running, and a room that is never closed keeps its PeerConnection and frame transformers for the life of the
+/// process. One registry per runtime (a desktop media session's), so one window never waits on another window's
+/// close, and one window's wait never takes another window's closes.
+#[derive(Clone, Default)]
+pub struct RoomCloses(Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>);
+
+impl RoomCloses {
+    fn add(&self, close: tokio::task::JoinHandle<()>) {
+        let mut closes = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        closes.retain(|c| !c.is_finished());
+        closes.push(close);
+    }
+
+    /// Waits until every room registered here has closed (its close task ended), those registered while it waits
+    /// included. The caller bounds it.
+    pub async fn closed(&self) {
+        loop {
+            let pending = std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()));
+            if pending.is_empty() {
+                return;
+            }
+            for close in pending {
+                let _ = close.await;
+            }
+        }
+    }
 }
 
 impl Default for CallOptions {
@@ -119,6 +153,7 @@ impl Default for CallOptions {
             key_timeout: Duration::from_secs(10),
             apm_flags: ApmFlags::default(),
             muted: false,
+            room_closes: RoomCloses::default(),
         }
     }
 }
@@ -636,6 +671,8 @@ pub struct Call {
     room: Option<Room>,
     /// The runtime the call joined on, where a dropped call's room is closed.
     runtime: tokio::runtime::Handle,
+    /// Where that close is registered, for the runtime's owner to await.
+    room_closes: RoomCloses,
     router: Arc<Router>,
     media: Arc<CallMedia>,
     local: Option<LocalAudioTrack>,
@@ -869,6 +906,7 @@ impl Call {
         let mut call = Call {
             room: Some(room),
             runtime: tokio::runtime::Handle::current(),
+            room_closes: options.room_closes,
             router,
             media,
             local: None,
@@ -1599,28 +1637,7 @@ impl Drop for Call {
                     log::warn!("dilla-media: room close: {e}");
                 }
             });
-            let mut closing = CLOSING.lock().unwrap_or_else(|p| p.into_inner());
-            closing.retain(|c| !c.is_finished());
-            closing.push(close);
-        }
-    }
-}
-
-/// The room closes that dropped calls handed to their runtimes ([`Drop for Call`](Call)), until they finish.
-static CLOSING: Mutex<Vec<tokio::task::JoinHandle<()>>> = Mutex::new(Vec::new());
-
-/// Waits until the room of every call dropped so far has closed (its close task ended). A runtime that is about to
-/// shut down awaits this first: a shutdown cancels a close still running, and a room that is never closed keeps its
-/// PeerConnection and frame transformers for the life of the process. Calls dropped while this waits are awaited too.
-/// The caller bounds it.
-pub async fn rooms_closed() {
-    loop {
-        let pending = std::mem::take(&mut *CLOSING.lock().unwrap_or_else(|p| p.into_inner()));
-        if pending.is_empty() {
-            return;
-        }
-        for close in pending {
-            let _ = close.await;
+            self.room_closes.add(close);
         }
     }
 }

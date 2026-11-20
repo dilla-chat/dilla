@@ -198,6 +198,9 @@ pub struct MediaSession {
     closing: Option<watch::Sender<()>>,
     /// Whether a call's media is live in the session: what the drop waits on.
     live: Arc<MediaLive>,
+    /// The room closes of this session's dropped calls (`CallOptions::room_closes`): its end thread awaits them before
+    /// the runtime shuts down.
+    room_closes: dilla_media::RoomCloses,
     videos: Arc<Mutex<RemoteVideos>>,
     /// Bumped on every new remote video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
@@ -331,6 +334,7 @@ impl MediaSession {
             .build()?;
         let (commands, rx) = mpsc::unbounded_channel();
         let live = Arc::new(MediaLive::default());
+        let room_closes = dilla_media::RoomCloses::default();
         let (closing, closed) = watch::channel(());
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
@@ -345,6 +349,7 @@ impl MediaSession {
             sources,
             host,
             live: live.clone(),
+            room_closes: room_closes.clone(),
             closed,
         };
         let task = runtime.spawn(run(ctx, rx));
@@ -353,6 +358,7 @@ impl MediaSession {
             commands: Some(commands),
             closing: Some(closing),
             live,
+            room_closes,
             videos,
             video_seq,
             screen_sound,
@@ -429,16 +435,18 @@ impl Drop for MediaSession {
             );
         }
         let wait = end_wait();
+        let room_closes = self.room_closes.clone();
         let ended = std::thread::Builder::new()
             .name("dilla-call-end".into())
             .spawn(move || {
-                // The session's loop first, then every room a dropped call is still closing on this runtime (a
-                // join cancelled after its room connected drops its call): the shutdown below would cancel them.
+                // The session's loop first, then every room one of this session's dropped calls is still closing on
+                // this runtime (a join cancelled after its room connected drops its call): the shutdown below would
+                // cancel them. Only this session's: another window's slow close holds nothing up here.
                 if runtime
                     .block_on(async {
                         tokio::time::timeout(wait, async {
                             let _ = task.await;
-                            dilla_media::room::rooms_closed().await;
+                            room_closes.closed().await;
                         })
                         .await
                     })
@@ -475,6 +483,8 @@ struct Ctx {
     host: Arc<dyn AudioHost>,
     /// Set while a call's media is live ([`in_call`]); [`MediaSession`]'s drop waits for it to clear.
     live: Arc<MediaLive>,
+    /// This session's room closes, given to every call it joins.
+    room_closes: dilla_media::RoomCloses,
     /// Changes (closes) when the session is dropped.
     closed: watch::Receiver<()>,
 }
@@ -533,7 +543,10 @@ impl Ctx {
     /// The call's microphone from Settings -> Voice (integration 3: Task 19's values, so its echo and gain control and
     /// its noise choice reach the call mic): Automatic is the enhanced suppressor where it runs, Lightweight libwebrtc's.
     fn options(&self) -> CallOptions {
-        call_options(self.values())
+        CallOptions {
+            room_closes: self.room_closes.clone(),
+            ..call_options(self.values())
+        }
     }
 }
 

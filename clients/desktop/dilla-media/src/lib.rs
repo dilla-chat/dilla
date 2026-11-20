@@ -36,7 +36,7 @@ pub use capture_source::{
 pub use livekit::webrtc::peer_connection_factory::IceServer;
 pub use room::{
     AUDIBLE_RMS, AudioEdge, Call, CallOptions, LinkRead, LiveKitToken, Mic, RemoteFrame,
-    RemoteLevels, RemoteVideos, RoomEnd, StreamKey, gain_group, heard,
+    RemoteLevels, RemoteVideos, RoomCloses, RoomEnd, StreamKey, gain_group, heard,
 };
 
 /// Something the audio devices did that the user should see (never swallowed).
