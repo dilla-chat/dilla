@@ -177,10 +177,10 @@ type Pool struct {
 
 	callGuards CallGuards
 
-	// reserveMu serializes the pool's counter reservations (spare.go); spare is the next track's block, reserved while
-	// the current one plays (guarded by mu).
-	reserveMu sync.Mutex
-	spare     *spareBlock
+	// reserveSem admits one counter reservation of the pool at a time (spare.go, lockReserve); spare is the next
+	// track's block, reserved while the current one plays. Both guarded by mu.
+	reserveSem chan struct{}
+	spare      *spareBlock
 }
 
 // RTTStep is how far the room's RTT must move before it is reported again.
@@ -899,8 +899,11 @@ func (s *Session) followEpoch(ctx context.Context, guards CallGuards, group id.I
 	if err := s.sender.RekeyRange(current.BaseKey, uint16(current.OwnLeaf), current.Epoch, reserved.Start, reserved.End); err != nil { //nolint:gosec // G115: validateSenderEpoch bounds OwnLeaf to uint16
 		return failed("rekey", err)
 	}
-	// The spare reserved under the old epoch is stale: the next track's block is reserved under this one.
-	go s.pool.prepareSpare(client.WithBackground(ctx), state, group, current, s.generation)
+	// The spare reserved under the old epoch is stale: the next track's block is reserved under this one, for as long as
+	// the room lives (a rekey near a track's end must not cancel it).
+	if roomCtx := s.pool.roomContext(s.generation); roomCtx != nil {
+		go s.pool.prepareSpare(client.WithBackground(roomCtx), state, group, current, s.generation)
+	}
 	return current, nil
 }
 

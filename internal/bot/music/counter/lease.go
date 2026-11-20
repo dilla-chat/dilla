@@ -36,6 +36,13 @@ type State interface {
 // Reserve commits a fresh Mic/0 range for one call group, epoch and Bot leaf.
 // A lost mutation response cannot cause reuse: the caller must stop publishing,
 // and a later open reads the advanced cursor (skipping any unused range).
+//
+// Callers must serialize Reserve per (group, epoch, leaf) within a process. Two
+// calls that read the same cursor revision build the same transaction id and
+// changes, and the helper replays the first call's receipt to the second
+// instead of refusing it, so both return the same range: two senders with one
+// key and the same counters (AES-GCM nonce reuse). The helper's revision check
+// does not prevent this. livekit.Pool serializes its reservations (lockReserve).
 func Reserve(ctx context.Context, state State, group id.ID, epoch uint64, leaf uint16) (Range, error) {
 	if ctx == nil || state == nil || group.IsZero() || epoch > math.MaxInt64 {
 		return Range{}, ErrInvalid

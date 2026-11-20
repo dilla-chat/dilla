@@ -70,6 +70,8 @@ type Supervisor struct {
 	timings       []StartTiming
 	prefetch      *prefetchPlan
 	prefetchAfter func(time.Duration, func()) Timer
+	// noticeAfter schedules an advance's notice limit (advance_notice.go); nil is time.AfterFunc.
+	noticeAfter func(time.Duration, func()) Timer
 	// v0.1.0-bot2.2: the queue items loaded from storage when the supervisor was made (restored=true in the logs; at
 	// most QueueLimit), and the item of the playback now published.
 	restored    map[string]bool
@@ -952,8 +954,9 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 		next.Paused = true
 		next.PositionAtMS = 0
 	}
-	// The save's notice (DeferNotice) goes out once the next track has started: the listeners' reads it sets off would
-	// otherwise run on the Bot's helper between the start's own calls (advance_notice.go).
+	// The save's notice (DeferNotice) goes out once the next track's start returns, or after advanceNoticeLimit if that
+	// is sooner: the listeners' reads it sets off would otherwise run on the Bot's helper between the start's own calls
+	// (advance_notice.go).
 	saveCtx, flushNotices := withDeferredNotices(s.ctx)
 	defer flushNotices()
 	revision, saveErr := s.store.Save(saveCtx, s.channel, s.revision, next)
@@ -964,8 +967,15 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 	}
 	s.state, s.revision = next, revision
 	if !s.state.Paused && s.state.Current != nil {
+		after := s.noticeAfter
+		if after == nil {
+			after = func(d time.Duration, fn func()) Timer { return time.AfterFunc(d, fn) }
+		}
+		limit := after(advanceNoticeLimit, flushNotices)
 		var startErr error
 		skipped, startErr = s.startLocked(s.ctx, false, budget)
+		limit.Stop()
+		flushNotices()
 		if err := startErr; err != nil {
 			if s.onAutomaticPlaybackFailure != nil {
 				s.onAutomaticPlaybackFailure(s.ctx, err)
