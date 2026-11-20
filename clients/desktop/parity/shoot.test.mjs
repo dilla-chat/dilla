@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { playwrightChord, shotDir, typedText } from './shoot.mjs';
+import { playwrightChord, replayStep, shotDir, typedText, typingBodies } from './shoot.mjs';
 
 test('shotDir without --out is the committed references', () => {
   assert.equal(shotDir('/p', 'linux', 'shell/channel-view', null), join('/p', 'references', 'linux', 'shell'));
@@ -28,4 +28,26 @@ test('typedText fills the invite and the authenticator code from the world, and 
   assert.equal(await typedText('{totp:#key}', ctx), 'code for secret of #key');
   assert.equal(await typedText('ada', ctx), 'ada');
   assert.equal(await typedText('{inviter}', ctx), '{inviter}');
+});
+
+test('typingBodies makes one typing frame per person, to the viewer, ending holdS after now, with a device of its own', () => {
+  const fixture = { viewer: 'ada', world: { typing: [{ person: 'mira', channel: 'midgard/general' }, { person: 'bjorn', channel: 'dm/pair' }] } };
+  const ids = {
+    'person:ada': '01'.repeat(16), 'person:mira': '02'.repeat(16), 'person:bjorn': '03'.repeat(16),
+    'channel:midgard/general': '0a'.repeat(16), 'dm:pair': '0b'.repeat(16),
+  };
+  const [one, two] = typingBodies(fixture, ids, 1000);
+  const device = `${'02'.repeat(15)}${(0x02 ^ 0xd7).toString(16)}`;
+  assert.deepEqual(one, { to: ids['person:ada'], channel: ids['channel:midgard/general'], user: ids['person:mira'], device, expires: 1010 });
+  assert.equal(two.channel, ids['dm:pair']);
+  assert.notEqual(two.device, two.user);
+  assert.deepEqual(typingBodies({ viewer: 'ada', world: {} }, ids, 1000), []);
+});
+
+test('the offline step cuts the network of the browser context and then settles', async () => {
+  const calls = [];
+  const page = { evaluate: async () => calls.push('fonts'), waitForTimeout: async (ms) => calls.push(`wait ${ms}`) };
+  const context = { setOffline: async (on) => calls.push(`offline ${on}`) };
+  await replayStep(page, { do: 'offline' }, {}, context);
+  assert.deepEqual(calls, ['offline true', 'fonts', 'wait 500']);
 });

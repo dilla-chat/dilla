@@ -109,9 +109,12 @@ pub enum Step {
     },
     /// Waits until the screen is idle (no pending work, no animation, fonts loaded).
     Settle,
+    /// The device loses its network (the web shooter's `context.setOffline(true)`, then settle); the GPUI side's counterpart
+    /// is the automation command `connection reconnecting`. The screen then shows the link banner ("Offline. Reconnecting…").
+    Offline,
 }
 
-/// People, servers, channels, messages, DMs, roles and calls.
+/// People, servers, channels, messages, DMs, roles, calls and who is typing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldSpec {
@@ -127,6 +130,10 @@ pub struct WorldSpec {
     /// Who is in which voice channel or DM call.
     #[serde(default)]
     pub calls: Vec<CallSpec>,
+    /// Who is typing where when the frame is taken (Task 34). The web shooter sends each as the op 49 typing frame dillad
+    /// relays, just before the frame; the GPUI side holds a typing row that outlasts the frozen clock.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub typing: Vec<TypingSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -417,6 +424,15 @@ pub struct ParticipantSpec {
     pub deafened: bool,
     #[serde(default)]
     pub sharing: bool,
+}
+
+/// One person typing in a text channel (`<server>/<channel>`) or a DM (`dm/<id>`). Never the viewer: the indicator names
+/// the others ([`ScreenFixture::validate`]).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypingSpec {
+    pub person: String,
+    pub channel: String,
 }
 
 /// What seeding a fixture's world needs (`ScreenFixture::seed_plan`).
@@ -718,6 +734,12 @@ impl ScreenFixture {
                 self.clock
             ));
         }
+        if self.world.typing.iter().any(|t| t.person == self.viewer) {
+            return invalid(format!(
+                "typing: the viewer `{}` types for no one",
+                self.viewer
+            ));
+        }
         self.resolved_route()?;
         for (n, step) in self.steps.iter().enumerate() {
             let empty = |s: &str| s.trim().is_empty();
@@ -734,7 +756,7 @@ impl ScreenFixture {
                 }
                 Step::Key { chord } => validate_chord(chord)
                     .map_err(|e| SpecError::Invalid(format!("step {n}: {e}")))?,
-                Step::Settle => {}
+                Step::Settle | Step::Offline => {}
             }
         }
         Ok(())
@@ -1022,6 +1044,26 @@ impl WorldSpec {
                 self.person(&p.person, "call participant")?;
             }
         }
+        for t in &self.typing {
+            self.person(&t.person, "typing")?;
+            let members: Vec<&str> = if let Some(dm) = t.channel.strip_prefix("dm/") {
+                let Some(dm) = self.dms.iter().find(|d| d.id == dm) else {
+                    return invalid(format!("typing: no dm `{}`", t.channel));
+                };
+                dm.members.iter().map(String::as_str).collect()
+            } else {
+                let Some((server, channel)) = self.channel(&t.channel) else {
+                    return invalid(format!("typing: no channel `{}`", t.channel));
+                };
+                if channel.kind != ChannelKind::Text {
+                    return invalid(format!("typing: `{}` is not a text channel", t.channel));
+                }
+                server.members.iter().map(String::as_str).collect()
+            };
+            if !members.contains(&t.person.as_str()) {
+                return invalid(format!("typing: `{}` is not in `{}`", t.person, t.channel));
+            }
+        }
         Ok(())
     }
 }
@@ -1278,6 +1320,85 @@ mod tests {
         ] {
             assert!(validate_chord(bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    /// Task 34: who is typing where parses; an unknown person or channel, a channel the person is not in, a voice channel and
+    /// the viewer are refused with the usual error text.
+    #[test]
+    fn typing_parses_and_validates() {
+        let with = |typing: &str| {
+            MINIMAL.replacen(
+                r#""messages": ["#,
+                &format!(r#""typing": {typing}, "messages": ["#),
+                1,
+            )
+        };
+        let f = ScreenFixture::parse(&with(
+            r#"[{"person": "mira", "channel": "midgard/general"}]"#,
+        ))
+        .unwrap();
+        assert_eq!(f.world.typing.len(), 1);
+        assert_eq!(f.world.typing[0].person, "mira");
+        for (bad, why) in [
+            (
+                r#"[{"person": "zed", "channel": "midgard/general"}]"#,
+                "typing: `zed` is not a person of the world",
+            ),
+            (
+                r#"[{"person": "mira", "channel": "midgard/nope"}]"#,
+                "typing: no channel `midgard/nope`",
+            ),
+            (
+                r#"[{"person": "mira", "channel": "dm/none"}]"#,
+                "typing: no dm `dm/none`",
+            ),
+            (
+                r#"[{"person": "ada", "channel": "midgard/general"}]"#,
+                "typing: the viewer `ada` types for no one",
+            ),
+        ] {
+            let err = ScreenFixture::parse(&with(bad)).unwrap_err().to_string();
+            assert_eq!(err, why, "{bad}");
+        }
+        // A voice channel has no typing, and a person who is not in the server cannot type in it.
+        let voice = MINIMAL.replace(
+            r#"{"id": "general", "kind": "text", "name": "general"}]"#,
+            r#"{"id": "general", "kind": "text", "name": "general"}, {"id": "lounge", "kind": "voice", "name": "lounge"}]"#,
+        );
+        let voice = voice.replacen(
+            r#""messages": ["#,
+            r#""typing": [{"person": "mira", "channel": "midgard/lounge"}], "messages": ["#,
+            1,
+        );
+        assert_eq!(
+            ScreenFixture::parse(&voice).unwrap_err().to_string(),
+            "typing: `midgard/lounge` is not a text channel"
+        );
+        let outsider = MINIMAL
+            .replace(
+                r#"{"id": "mira", "display": "Mira"}]"#,
+                r#"{"id": "mira", "display": "Mira"}, {"id": "bjorn", "display": "Bjorn"}]"#,
+            )
+            .replacen(
+                r#""messages": ["#,
+                r#""typing": [{"person": "bjorn", "channel": "midgard/general"}], "messages": ["#,
+                1,
+            );
+        assert_eq!(
+            ScreenFixture::parse(&outsider).unwrap_err().to_string(),
+            "typing: `bjorn` is not in `midgard/general`"
+        );
+    }
+
+    /// Task 34: the `offline` step parses with no fields.
+    #[test]
+    fn the_offline_step_parses() {
+        let with = MINIMAL.replace(
+            r#""steps": [{"do": "key", "chord": "ctrl-k"}, {"do": "settle"}]"#,
+            r#""steps": [{"do": "offline"}, {"do": "settle"}]"#,
+        );
+        let f = ScreenFixture::parse(&with).unwrap();
+        assert_eq!(f.steps, [Step::Offline, Step::Settle]);
     }
 
     #[test]

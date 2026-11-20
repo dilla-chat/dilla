@@ -18,6 +18,10 @@ import (
 //
 //	POST /debug/parity/voice {"to":[user…],"channel":c,"call":k,"participants":[{"user":u,"device":d,"flags":f}…]}
 //	POST /debug/parity/ring  {"to":user,"call":k,"channel":c,"caller":u,"expires":unix}
+//	POST /debug/parity/typing {"to":user,"channel":c,"user":u,"device":d,"expires":unix}
+//
+// The typing route (Task 34) is op 49 typing with typing on: the signal dillad relays to the others in a channel while a
+// person types, which the browser shows as "{name} is typing…" until it expires (its own 10 s relay window).
 //
 // Ids are 32 lower-case hex digits. Both answer 204 once the frames are handed to the gateway, which delivers them to
 // live connections only (an offline user gets nothing, as from dillad).
@@ -48,6 +52,14 @@ type parityRing struct {
 	Expires uint64 `json:"expires"`
 }
 
+type parityTyping struct {
+	To      string `json:"to"`
+	Channel string `json:"channel"`
+	User    string `json:"user"`
+	Device  string `json:"device"`
+	Expires uint64 `json:"expires"`
+}
+
 // voiceFlagsMax is the five bits of a voice_state's flags (02 § voice_state).
 const voiceFlagsMax = 31
 
@@ -75,6 +87,20 @@ func parityCalls(gw func() parityDeliverer) http.Handler {
 	})
 	mux.HandleFunc("POST /debug/parity/ring", func(w http.ResponseWriter, r *http.Request) {
 		var req parityRing
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<12)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		to, f, err := req.frame()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gw().DeliverUser(to, f)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /debug/parity/typing", func(w http.ResponseWriter, r *http.Request) {
+		var req parityTyping
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<12)).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -130,6 +156,20 @@ func (v parityVoice) frames() ([]gateway.Frame, []id.ID, error) {
 			Scope: gateway.FrameScope{Channels: []id.ID{channel}}})
 	}
 	return frames, to, nil
+}
+
+// frame is the typing-on op 49 frame, scoped to its channel.
+func (t parityTyping) frame() (id.ID, gateway.Frame, error) {
+	ids, err := parseIDs(t.To, t.Channel, t.User, t.Device)
+	if err != nil {
+		return id.ID{}, gateway.Frame{}, err
+	}
+	payload, err := gateway.TypingPayload(ids[1], ids[2], ids[3], true, t.Expires)
+	if err != nil {
+		return id.ID{}, gateway.Frame{}, err
+	}
+	return ids[0], gateway.Frame{Op: gateway.OpTyping, Payload: payload,
+		Scope: gateway.FrameScope{Channels: []id.ID{ids[1]}}}, nil
 }
 
 // frame is the ring's state 1 (ringing) call_ring, scoped to its DM.

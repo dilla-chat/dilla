@@ -190,6 +190,9 @@ mod driven {
         parity_messages_log_earlier_b => "log-earlier-b";
         // Task 19b: the log at the compact density (`"density": "compact"`, the web shot with `data-density="compact"`).
         parity_messages_compact => "compact";
+        // Task 34: the composer foot's typing line, for one person and for several (`world.typing`).
+        parity_messages_typing => "typing";
+        parity_messages_typing_several => "typing-several";
     }
 
     fn launch(name: &str) -> Driver {

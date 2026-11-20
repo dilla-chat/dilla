@@ -345,7 +345,7 @@ pub fn build_state(
     // After the DMs: a DM's call is placed in the DM the dms facet made.
     calls::apply(world, viewer, ids, &mut state);
     members::apply(world, viewer, ids, fixture.clock + shift, &mut state);
-    messages::apply(world, viewer, &mut state);
+    messages::apply(world, viewer, ids, fixture.clock + shift, &mut state);
     music::apply(world, ids, &mut state);
     notify::apply(fixture, ids, &mut state);
     polls::apply(world, viewer, &mut state);

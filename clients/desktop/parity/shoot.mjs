@@ -187,8 +187,35 @@ export async function typedText(text, { state, page, codeFor }) {
   return text;
 }
 
-/** One step of the fixture, on the web side. */
-async function replayStep(page, step, state) {
+/** The typing frames a fixture's `world.typing` asks for, as the bodies of dilla-testhost's `POST /debug/parity/typing`
+ * (cmd/dilla-testhost/parity_calls.go): one per person, to the viewer, each ending `holdS` seconds after `nowS` (dillad's
+ * relay window is 10 s). The device is the person's account id with its last byte flipped, as the voice frames' are
+ * (`parity_world/seed/calls.rs`). `ids` are the real ids by `kind:local`. */
+export function typingBodies(fixture, ids, nowS, holdS = 10) {
+  return (fixture.world?.typing ?? []).map((t) => {
+    const user = ids[`person:${t.person}`];
+    const flipped = Buffer.from(user, 'hex');
+    flipped[15] ^= 0xd7;
+    const channel = t.channel.startsWith('dm/') ? ids[`dm:${t.channel.slice(3)}`] : ids[`channel:${t.channel}`];
+    return { to: ids[`person:${fixture.viewer}`], channel, user, device: flipped.toString('hex'), expires: nowS + holdS };
+  });
+}
+
+/** Sends the fixture's typing frames to the browser just before the frame (a typing row lives 10 s, so the host's clock
+ * is read now) and waits until the indicator is drawn. */
+async function sendTyping(page, fixture, state) {
+  const typing = fixture.world?.typing ?? [];
+  if (typing.length === 0) return;
+  const now = (await (await fetch(`${state.control}/debug/clock`)).json()).now;
+  for (const body of typingBodies(fixture, state.ids, now)) {
+    const res = await fetch(`${state.control}/debug/parity/typing`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`/debug/parity/typing: ${res.status}`);
+  }
+  await page.locator('.d-typing-indicator').first().waitFor();
+}
+
+/** One step of the fixture, on the web side. `context` is the browser context (the `offline` step cuts its network). */
+export async function replayStep(page, step, state, context) {
   const pick = (sel) => {
     if (sel === '-') return null;
     const optional = sel.startsWith('if:');
@@ -215,6 +242,13 @@ async function replayStep(page, step, state) {
       return;
     }
     case 'settle':
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForTimeout(500);
+      return;
+    case 'offline':
+      // The browser loses its network: the page's `offline` event makes the shell's link offline at once (Shell.tsx "Walk
+      // 7"), and its banner reads "Offline. Reconnecting…". Then settle, as a `settle` step does.
+      await context.setOffline(true);
       await page.evaluate(() => document.fonts.ready);
       await page.waitForTimeout(500);
       return;
@@ -320,7 +354,8 @@ async function shoot(args, fixture, text) {
     if (fixture.density !== undefined) {
       await page.evaluate((d) => { document.documentElement.dataset.density = d; }, fixture.density);
     }
-    for (const step of fixture.steps ?? []) await replayStep(page, step, state);
+    for (const step of fixture.steps ?? []) await replayStep(page, step, state, context);
+    await sendTyping(page, fixture, state);
     if (!(fixture.steps ?? []).some((s) => s.do === 'hover')) {
       await page.mouse.move(viewport.width - 2, viewport.height - 2);
       await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
