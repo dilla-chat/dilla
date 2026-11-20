@@ -827,25 +827,15 @@ pub fn media_hidden(state: &AppState, channel: ChannelId) -> bool {
 
 /// The stage notice of `channel` ([`stage_notice`]), drawn: on the stage, in the DM call box and as the DM's strip.
 pub fn ring_notice(state: &AppState, channel: &Channel) -> Option<AnyElement> {
-    let n = stage_notice(state, channel)?;
-    let record = n.compare.and_then(|u| {
-        state
-            .trust
-            .contacts
-            .iter()
-            .find(|r| r.user_id == u)
-            .cloned()
-    });
-    Some(notice_strip(n, record))
+    stage_notice(state, channel).map(notice_strip)
 }
 
 /// One stage notice (CallStage.tsx's notice region, `role="status"`): its glyph, its line, and the comparison it offers
-/// (`voice.pausedAction`) when it names a changed contact this device holds a trust record of.
-fn notice_strip(
-    n: StageNotice,
-    compare: Option<dilla_client::state::trust::TrustSummary>,
-) -> AnyElement {
-    let action = compare.map(|record| {
+/// (`voice.pausedAction`) whenever it names a changed contact, as the web's (VoiceView.tsx :283, :293). The web's action
+/// opens Privacy, which compares once the contact's trust record is there; here the record the window holds when the
+/// action is pressed opens the comparison in place.
+fn notice_strip(n: StageNotice) -> AnyElement {
+    let action = n.compare.map(|user| {
         let button = tracked_box(
             "voice-notice-compare",
             dilla_desktop_ui::components::Button::new(
@@ -853,8 +843,19 @@ fn notice_strip(
                 t("voice.pausedAction"),
             )
             .on_click(move |_, window, cx| {
-                let client = client_of(wid(window), cx);
-                crate::screens::dms::compare::open(wid(window), &record, client, cx);
+                let w = wid(window);
+                let record = ui_of(w, cx).and_then(|u| {
+                    u.state
+                        .trust
+                        .contacts
+                        .iter()
+                        .find(|r| r.user_id == user)
+                        .cloned()
+                });
+                if let Some(record) = record {
+                    let client = client_of(w, cx);
+                    crate::screens::dms::compare::open(w, &record, client, cx);
+                }
             }),
         );
         (button.into_any_element(), button_baseline())
@@ -2849,6 +2850,8 @@ fn tile(
         .flatten()
         .map(|(h, fps)| frame_stat(*h, *fps))
         .or_else(|| {
+            // VoiceView.tsx: no stats are read while the call is paused (`useTileStats(.., !paused)` gives `null`,
+            // tile-stats.ts :17), so `withTileStats` leaves even the own tile's codec off.
             (own && !k.screen
                 && !media_hidden(state, channel.id)
                 && state.voice.call.phase == CallPhase::In)

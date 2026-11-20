@@ -790,6 +790,11 @@ impl Voice {
                         if epochs.borrow().is_some() {
                             epochs.send_replace(None);
                         }
+                        // controller.ts `rekey`: the call is held (phase `paused`, the verdict's code, no changed
+                        // contact) while the leaves are read again, so the stage says `voice.held` and hides its media.
+                        let code = e.code.clone();
+                        this.inner
+                            .publish(move |s| hold_call(s, live.group_id, code, None));
                         let _ = tokio::time::timeout(
                             crate::calls::session::WAIT_LIST,
                             this.inner.engine().refresh_group_trust(live.group_id),
@@ -860,31 +865,30 @@ impl Voice {
                             let _ = this.leave_inner().await;
                             return Ok(());
                         }
-                        // controller.ts `rekey`: the pause names the changed contact among the call's own roster
-                        // (`changedUser`), read from the core's trust state once per refusal code.
-                        let snap = this.inner.snapshot();
-                        let call = &snap.voice.call;
-                        let changed = if code != "E_UMK_CHANGED" {
-                            None
-                        } else if call.error.as_deref() == Some(code.as_str()) {
-                            call.changed_user
-                        } else {
-                            let candidates: Vec<UserId> = call.roster.iter().map(|r| r.0).collect();
-                            crate::features::ring::changed_user(
-                                &crate::features::ring::changed_users(&this.inner).await,
-                                snap.account.user_id,
-                                &candidates,
-                                None,
+                        // controller.ts `rekey`: a changed identity's pause names the changed contact
+                        // (`changedUser`), read again at every refusal, as the web reads it at every rekey.
+                        let changed = if code == "E_UMK_CHANGED" {
+                            let roster: Vec<UserId> = this
+                                .inner
+                                .snapshot()
+                                .voice
+                                .call
+                                .roster
+                                .iter()
+                                .map(|r| r.0)
+                                .collect();
+                            crate::features::ring::pause_changed_user(
+                                &this.inner,
+                                live.group_id,
+                                live.channel,
+                                roster,
                             )
+                            .await
+                        } else {
+                            None
                         };
-                        // session.ts: the speaking detector stays off while the call is paused.
-                        this.inner.publish(move |s| {
-                            if s.voice.call.group_id == Some(live.group_id) {
-                                s.voice.call.error = Some(code);
-                                s.voice.call.changed_user = changed;
-                                s.voice.speaking.clear();
-                            }
-                        });
+                        this.inner
+                            .publish(move |s| hold_call(s, live.group_id, code, changed));
                     }
                 }
             }
@@ -1324,6 +1328,17 @@ pub fn hands_on(epoch: u64, last: u64, suspended: bool) -> bool {
     epoch > last || (suspended && epoch == last)
 }
 
+/// The call of `group` held (controller.ts `rekey`'s `phase: 'paused'`): the refusal's `code` stands as its error with the
+/// changed contact it names, and nobody is heard speaking (session.ts: the detector is off while paused). A newer call's
+/// state is left alone.
+fn hold_call(s: &mut AppState, group: [u8; 16], code: String, changed: Option<UserId>) {
+    if s.voice.call.group_id == Some(group) {
+        s.voice.call.error = Some(code);
+        s.voice.call.changed_user = changed;
+        s.voice.speaking.clear();
+    }
+}
+
 fn epoch_fields(m: &MediaEpoch) -> (u64, String, Vec<(UserId, DeviceId, u16)>) {
     (
         m.epoch,
@@ -1508,6 +1523,106 @@ mod tests {
         ] {
             assert!(!is_leaf_verdict(code), "{code}");
         }
+    }
+
+    fn leaf(group: u8, user: u8, reason: &str) -> crate::sync::trust::PendingLeaf {
+        crate::sync::trust::PendingLeaf {
+            group_id: [group; 16],
+            leaf_index: u32::from(user),
+            user_id: [user; 16],
+            cached_version: 1,
+            reason: reason.to_owned(),
+        }
+    }
+
+    /// controller.ts `changedUser`: a contact who changed identity and joins a running call is in the refused epoch, not
+    /// in the last keyed roster; the core's changed pending leaf of the call group names them first (never the own user,
+    /// never a leaf of another group or one pending for another reason).
+    #[test]
+    fn a_joiner_not_in_the_last_keyed_roster_is_named() {
+        use crate::features::ring::pause_names;
+        let (call, other) = ([7; 16], [8; 16]);
+        let own = Some(UserId([1; 16]));
+        let roster = [UserId([1; 16]), UserId([2; 16])];
+        let leaves = [
+            leaf(7, 1, "changed"),
+            leaf(8, 3, "changed"),
+            leaf(7, 4, "unknown"),
+            leaf(7, 5, "changed"),
+        ];
+        assert_eq!(
+            pause_names(&leaves, &[call], &[UserId([5; 16])], own, &roster),
+            Some(UserId([5; 16])),
+            "the joiner, through its pending leaf"
+        );
+        assert_eq!(
+            pause_names(&leaves, &[call, other], &[], own, &roster),
+            Some(UserId([3; 16])),
+            "the first by id over the call group and the DM's text group"
+        );
+        assert_eq!(
+            pause_names(&[], &[call], &[UserId([5; 16])], own, &roster),
+            None
+        );
+    }
+
+    /// controller.ts `changedUser`'s candidates for a DM call are the DM's members (`live.members`), so a DM peer the
+    /// trust state holds as changed is named even when no pending leaf and no keyed roster lists them.
+    #[test]
+    fn a_dm_call_names_the_dm_peer() {
+        use crate::features::ring::pause_names;
+        let (me, peer) = (UserId([1; 16]), UserId([2; 16]));
+        assert_eq!(
+            pause_names(&[], &[[7; 16]], &[peer], Some(me), &[me, peer]),
+            Some(peer)
+        );
+        assert_eq!(
+            pause_names(&[], &[[7; 16]], &[me], Some(me), &[me, peer]),
+            None
+        );
+    }
+
+    /// Every refusal publishes the contact read at that refusal (the web reads `changedUser` at every rekey): a pause
+    /// that named nobody names the contact on the next refusal once the core knows them, and a passed epoch's call is
+    /// left alone by an older group's hold.
+    #[test]
+    fn a_none_is_retried_on_the_next_refusal() {
+        let mut s = AppState::default();
+        s.voice.call.phase = CallPhase::In;
+        s.voice.call.group_id = Some([7; 16]);
+        s.voice.speaking.insert(DeviceId([3; 16]));
+        hold_call(&mut s, [7; 16], "E_UMK_CHANGED".into(), None);
+        assert!(s.voice.call.paused() && s.voice.speaking.is_empty());
+        assert_eq!(s.voice.call.changed_user, None);
+        hold_call(
+            &mut s,
+            [7; 16],
+            "E_UMK_CHANGED".into(),
+            Some(UserId([5; 16])),
+        );
+        assert_eq!(s.voice.call.changed_user, Some(UserId([5; 16])));
+        hold_call(&mut s, [9; 16], "E_UMK_CHANGED".into(), None);
+        assert_eq!(
+            s.voice.call.changed_user,
+            Some(UserId([5; 16])),
+            "another group's hold"
+        );
+    }
+
+    /// controller.ts `rekey`: a leaf verdict holds the call (phase `paused`, its code, no changed contact) while the
+    /// leaves are read again, so the stage says `voice.held`.
+    #[test]
+    fn a_leaf_verdict_s_reread_holds_the_call() {
+        let mut s = AppState::default();
+        s.voice.call.phase = CallPhase::In;
+        s.voice.call.group_id = Some([7; 16]);
+        s.voice.call.changed_user = Some(UserId([5; 16]));
+        hold_call(&mut s, [7; 16], "E_DEVICE_UNLISTED".into(), None);
+        assert!(s.voice.call.paused());
+        assert_eq!(
+            (s.voice.call.error.as_deref(), s.voice.call.changed_user),
+            (Some("E_DEVICE_UNLISTED"), None)
+        );
     }
 
     /// Ruling R24: a refusal, then the same epoch passing again, resumes; an older one never does.

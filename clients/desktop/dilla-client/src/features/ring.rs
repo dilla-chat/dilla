@@ -46,6 +46,7 @@ use crate::state::{AppState, ChannelId, CommunityId, UserId};
 use crate::sync::api::try_core;
 use crate::sync::requests::SocketHttp;
 use crate::sync::route::AreaFrames;
+use crate::sync::trust::{PendingLeaf, decode_pending_leaves};
 use crate::sync::value::{DecodeError, at_least, bin16, decode, u53};
 
 // ---- the ring book (ring.ts `Rings`) ----
@@ -1083,8 +1084,66 @@ async fn text_block(inner: &Arc<Inner>, channel: ChannelId) -> Option<String> {
     .unwrap_or_else(|_| Some("E_CORE".to_owned()))
 }
 
+/// controller.ts `changedUser` for a call paused by a changed identity: the core's pending leaves and trust state, with
+/// `channel`'s call group and (a DM's) text group, and as candidates the DM's members or else the call's last keyed
+/// `roster` ([`pause_names`]). `None` when nobody is known or the core cannot be read.
+pub(crate) async fn pause_changed_user(
+    inner: &Arc<Inner>,
+    call_group: [u8; 16],
+    channel: ChannelId,
+    roster: Vec<UserId>,
+) -> Option<UserId> {
+    let members = guard(&per_client(inner).dms)
+        .get(&channel)
+        .map(|d| d.members.clone());
+    let dm = members.is_some();
+    let own = inner.snapshot().account.user_id;
+    let core = inner.engine().core().clone();
+    let (leaves, groups, changed) = try_core(&core, move |c| {
+        let leaves = decode_pending_leaves(&c.pending_leaves().ok()?).ok()?;
+        let mut groups = vec![call_group];
+        if dm {
+            let raw = c.groups().ok()?;
+            let text = decode_groups(&raw)
+                .ok()?
+                .into_iter()
+                .find(|g| g.kind == 0 && g.state == 2 && g.target_id == channel.0);
+            groups.extend(text.map(|g| g.group_id));
+        }
+        let changed = decode_changed(&c.trust_state().ok()?).ok()?;
+        Some((leaves, groups, changed))
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let candidates = members.unwrap_or(roster);
+    pause_names(&leaves, &groups, &changed, own, &candidates)
+}
+
+/// controller.ts `changedUser` (:918-937): the first (by user id) changed pending leaf of `groups` that is not the own
+/// user, else the first of `candidates` the trust state holds as `changed` ([`changed_user`]).
+pub fn pause_names(
+    leaves: &[PendingLeaf],
+    groups: &[[u8; 16]],
+    changed: &[UserId],
+    own: Option<UserId>,
+    candidates: &[UserId],
+) -> Option<UserId> {
+    let mut named: Vec<UserId> = leaves
+        .iter()
+        .filter(|l| l.reason == "changed" && groups.contains(&l.group_id))
+        .map(|l| UserId(l.user_id))
+        .filter(|u| Some(*u) != own)
+        .collect();
+    named.sort();
+    named
+        .first()
+        .copied()
+        .or_else(|| changed_user(changed, own, candidates, None))
+}
+
 /// The users the core's trust state holds as changed (none when it cannot be read).
-pub(crate) async fn changed_users(inner: &Arc<Inner>) -> Vec<UserId> {
+async fn changed_users(inner: &Arc<Inner>) -> Vec<UserId> {
     let core = inner.engine().core().clone();
     try_core(&core, |c| c.trust_state().ok())
         .await
