@@ -27,6 +27,7 @@ use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
+use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{
     Face, Line, MONO_ADVANCE, chromium_baseline, line, line_height, paragraph,
 };
@@ -80,22 +81,36 @@ const WELCOME_TILE: f32 = 42.0;
 const WELCOME_TITLE_GAP: f32 = 10.0;
 const DIVIDER_PAD: f32 = 4.0;
 const DIVIDER_GAP: f32 = 10.0;
-/// MessageLog.css `.d-message-log__earlier`: the 32px button (Button.css `.d-btn`) and its `margin-bottom:
-/// var(--group-gap)` at the regular density.
+/// MessageLog.css `.d-message-log__earlier`: the 32px button (Button.css `.d-btn`); its `margin-bottom:
+/// var(--group-gap)` steps with the density ([`Density::group_gap`]).
 const EARLIER_HEIGHT: f32 = 32.0;
-const EARLIER_GAP: f32 = 14.0;
 
 fn body_line() -> f32 {
     body::body_line()
 }
-fn head_line() -> f32 {
-    line_height(text::SM, 1.5)
+
+// The head, its marks, the day divider and the welcome set no line height of their own (MessageRow.css, MessageLog.css):
+// they take the root's `--line-height`, which steps with the density (Task 19b). The gutter's time keeps its own 1.5 and
+// the body its 1.55, at every density.
+
+fn head_line(d: Density) -> f32 {
+    line_height(text::SM, d.line_height())
 }
-fn meta_line() -> f32 {
+fn meta_line(d: Density) -> f32 {
+    line_height(text::META, d.line_height())
+}
+/// `.d-message-row__gutter { line-height: 1.5 }`.
+fn gutter_line() -> f32 {
     line_height(text::META, 1.5)
 }
-fn divider_height() -> f32 {
-    2.0 * DIVIDER_PAD + line_height(text::MICRO, 1.5)
+fn divider_height(d: Density) -> f32 {
+    2.0 * DIVIDER_PAD + line_height(text::MICRO, d.line_height())
+}
+fn welcome_title_line(d: Density) -> f32 {
+    line_height(text::WELCOME, d.line_height())
+}
+fn welcome_body_line(d: Density) -> f32 {
+    line_height(text::UI, d.line_height())
 }
 
 /// The scroll handler of the log: whether the wheel moved up.
@@ -236,17 +251,32 @@ struct RowShape {
 }
 
 /// Each row's top, from `start`, and the end of the last row: a divider, then the row, one after another.
-fn row_tops(start: f32, rows: &[RowShape]) -> (Vec<f32>, f32) {
+fn row_tops(start: f32, rows: &[RowShape], d: Density) -> (Vec<f32>, f32) {
     let mut y = start;
     let mut tops = Vec::with_capacity(rows.len());
     for r in rows {
         if r.divider {
-            y += divider_height();
+            y += divider_height(d);
         }
         tops.push(y);
-        y += row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras);
+        y += r.height(d);
     }
     (tops, y)
+}
+
+impl RowShape {
+    /// The row's height at the density `d` ([`row_height`]).
+    fn height(&self, d: Density) -> f32 {
+        row_height(
+            self.grouped,
+            self.marks,
+            self.last,
+            self.before,
+            self.body,
+            self.extras,
+            d,
+        )
+    }
 }
 
 fn readable(i: &TimelineItem) -> bool {
@@ -503,13 +533,13 @@ fn marks_head(state: &AppState, community: CommunityId, item: &TimelineItem) -> 
 }
 
 /// Where a row's body starts, below the row's top: a follow-up's at its padding, under its marks' line when it keeps one.
-fn body_offset(grouped: bool, marks: bool) -> f32 {
+fn body_offset(grouped: bool, marks: bool, d: Density) -> f32 {
     match (grouped, marks) {
         (true, false) => FOLLOW_PAD,
         // The grouped head is a flex row whose only in-flow children are meta spans (the author is screen-reader only,
         // absolutely placed): a flex container has no strut, so it is one meta line high (MessageRow.css).
-        (true, true) => FOLLOW_PAD + meta_line() + MAIN_GAP,
-        (false, _) => ROW_TOP + head_line() + MAIN_GAP,
+        (true, true) => FOLLOW_PAD + meta_line(d) + MAIN_GAP,
+        (false, _) => ROW_TOP + head_line(d) + MAIN_GAP,
     }
 }
 
@@ -530,16 +560,24 @@ fn before_shift(height: f32) -> f32 {
 }
 
 /// The height Chromium gives a row with a body `body` px high, `extras` px of other areas' parts under the body and
-/// `before` px (a [`before_shift`]) above its head.
-fn row_height(grouped: bool, marks: bool, last: bool, before: f32, body: f32, extras: f32) -> f32 {
+/// `before` px (a [`before_shift`]) above its head, at the density `d` (its head line's).
+fn row_height(
+    grouped: bool,
+    marks: bool,
+    last: bool,
+    before: f32,
+    body: f32,
+    extras: f32,
+    d: Density,
+) -> f32 {
     let slot = attachments_slot(last);
     let body = before + body + extras;
     if grouped && marks {
-        FOLLOW_PAD + meta_line() + MAIN_GAP + body + slot + FOLLOW_PAD
+        FOLLOW_PAD + meta_line(d) + MAIN_GAP + body + slot + FOLLOW_PAD
     } else if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
     } else {
-        ROW_TOP + head_line() + MAIN_GAP + body + slot + ROW_BOTTOM
+        ROW_TOP + head_line(d) + MAIN_GAP + body + slot + ROW_BOTTOM
     }
 }
 
@@ -557,7 +595,7 @@ fn welcome_text(channel: &str, dm: bool) -> (String, String) {
     }
 }
 
-fn welcome_lines(channel: &str, dm: bool, width: f32) -> (Vec<Line>, Vec<Line>) {
+fn welcome_lines(channel: &str, dm: bool, width: f32, d: Density) -> (Vec<Line>, Vec<Line>) {
     let inner = width - 2.0 * WELCOME_X;
     let (title, body) = if dm {
         (channel.to_owned(), t("shell.log.welcomeDmBody").to_owned())
@@ -570,29 +608,23 @@ fn welcome_lines(channel: &str, dm: bool, width: f32) -> (Vec<Line>, Vec<Line>) 
     let title = paragraph(
         &title,
         text::WELCOME,
-        line_height(text::WELCOME, 1.5),
+        welcome_title_line(d),
         color::FG,
         inner,
     )
     .into_iter()
     .map(|l| l.weight(font::WEIGHT_DISPLAY))
     .collect();
-    let body = paragraph(
-        &body,
-        text::UI,
-        line_height(text::UI, 1.5),
-        color::FG_2,
-        inner,
-    );
+    let body = paragraph(&body, text::UI, welcome_body_line(d), color::FG_2, inner);
     (title, body)
 }
 
-fn welcome_height(title: usize, body: usize) -> f32 {
+fn welcome_height(title: usize, body: usize, d: Density) -> f32 {
     WELCOME_TOP
         + WELCOME_TILE
         + WELCOME_TITLE_GAP
-        + title as f32 * line_height(text::WELCOME, 1.5)
-        + body as f32 * line_height(text::UI, 1.5)
+        + title as f32 * welcome_title_line(d)
+        + body as f32 * welcome_body_line(d)
         + WELCOME_BOTTOM
 }
 
@@ -600,6 +632,8 @@ fn welcome_height(title: usize, body: usize) -> f32 {
 /// ([`Line::exact`]); boxes take the whole pixel Chromium paints them on (the position rounded).
 struct Placer {
     out: Vec<AnyElement>,
+    /// The window's density: the welcome's and the divider's line heights.
+    density: Density,
 }
 
 impl Placer {
@@ -653,12 +687,13 @@ impl Placer {
                 .justify_center()
                 .child(Icon::new(glyph).size(len(20.)).color(color::ACCENT)),
         );
-        let height = welcome_height(title.len(), body.len());
+        let d = self.density;
+        let height = welcome_height(title.len(), body.len(), d);
         let mut y = top + WELCOME_TOP + WELCOME_TILE + WELCOME_TITLE_GAP;
         // The heading and the paragraph a reader finds, over the lines they are painted as.
         let (title_h, body_h) = (
-            title.len() as f32 * line_height(text::WELCOME, 1.5),
-            body.len() as f32 * line_height(text::UI, 1.5),
+            title.len() as f32 * welcome_title_line(d),
+            body.len() as f32 * welcome_body_line(d),
         );
         let inner = (width - 2.0 * WELCOME_X).max(1.0);
         self.block(
@@ -673,11 +708,11 @@ impl Placer {
         );
         for l in title {
             self.line(l, WELCOME_X, y);
-            y += line_height(text::WELCOME, 1.5);
+            y += welcome_title_line(d);
         }
         for l in body {
             self.line(l, WELCOME_X, y);
-            y += line_height(text::UI, 1.5);
+            y += welcome_body_line(d);
         }
         height
     }
@@ -688,7 +723,7 @@ impl Placer {
         let size = text::MICRO;
         let label_width =
             label.chars().count() as f32 * f32::from(size) * (MONO_ADVANCE + LABEL_TRACKING_WIDE);
-        let lh = line_height(size, 1.5);
+        let lh = line_height(size, self.density.line_height());
         self.line(
             line(label, size, lh, color::FG_3)
                 .weight(font::WEIGHT_LABEL)
@@ -699,7 +734,7 @@ impl Placer {
         let rule_x = WELCOME_X + label_width + DIVIDER_GAP;
         self.block(
             rule_x,
-            top + divider_height() / 2.0 - 0.5,
+            top + divider_height(self.density) / 2.0 - 0.5,
             div()
                 .w(px((width - WELCOME_X - rule_x).max(0.0)))
                 .h(len(1.))
@@ -737,6 +772,8 @@ struct RowCx<'a> {
     order: std::rc::Rc<Vec<String>>,
     /// The active row's key: the log's one tab stop.
     active: Option<String>,
+    /// The window's density.
+    density: Density,
 }
 
 /// The shaped width of meta text (a webhook's name is the admin's: wide glyphs and emoji are measured, not counted;
@@ -770,9 +807,10 @@ fn draw_marks(
     meta_color: gpui::Hsla,
     window: &Window,
 ) {
+    let meta = meta_line(cx_row.density);
     if let Some(via) = via_mark(cx_row.state, cx_row.community, item) {
         let w = meta_width(window, &via);
-        placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
+        placer.line(line(via, text::META, meta, meta_color), x, meta_top);
         x += w + HEAD_GAP;
     }
     let marks = head_marks(item);
@@ -784,7 +822,7 @@ fn draw_marks(
         let tone = if failed { color::DANGER } else { meta_color };
         if failed {
             let em = f32::from(text::META);
-            let baseline = meta_top + chromium_baseline(Face::Mono, em, meta_line());
+            let baseline = meta_top + chromium_baseline(Face::Mono, em, meta);
             let glyph = 0.875 * em;
             placer.block_exact(
                 x,
@@ -794,7 +832,7 @@ fn draw_marks(
             x += glyph + 0.25 * em;
         }
         let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
-        placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
+        placer.line(line(mark, text::META, meta, tone), x, meta_top);
         x += w + HEAD_GAP;
     }
 }
@@ -820,11 +858,12 @@ fn draw_row(
     cx: &mut App,
 ) -> AnyElement {
     let item = shown.item;
+    let d = cx_row.density;
     let local = top - base;
     // The body's box sits on a whole pixel ([`snap_px`]); its lines keep the CSS position's fraction.
     let shift = before_shift(shown.before_height);
     let frac = {
-        let at = local + shift + body_offset(shown.grouped, shown.marks);
+        let at = local + shift + body_offset(shown.grouped, shown.marks, d);
         at - snap_px(at)
     };
     let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
@@ -835,8 +874,12 @@ fn draw_row(
         shift,
         laid.height,
         shown.extras_height,
+        d,
     );
-    let mut placer = Placer { out: Vec::new() };
+    let mut placer = Placer {
+        out: Vec::new(),
+        density: d,
+    };
     // The reply line (11) sits where the head would, and the head, the avatar and the gutter move down (`data-reply`).
     let avatar_shift = if shown.before.is_some() {
         REPLY_AVATAR_SHIFT
@@ -861,7 +904,7 @@ fn draw_row(
         // The time is right-aligned in the gutter, by its advance.
         let time_width = time.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
         placer.line(
-            line(time, text::META, meta_line(), color::FG_QUIET),
+            line(time, text::META, gutter_line(), color::FG_QUIET),
             GUTTER - time_width,
             row_top + GUTTER_TOP,
         );
@@ -903,12 +946,12 @@ fn draw_row(
                 .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1);
         let name_color = if bot { color::ACCENT_2 } else { color::FG };
         placer.line(
-            line(name, text::SM, head_line(), name_color).weight(font::WEIGHT_DISPLAY),
+            line(name, text::SM, head_line(d), name_color).weight(font::WEIGHT_DISPLAY),
             CONTENT_X,
             head,
         );
         // The head is a baseline-aligned row of the name, the tag and the marks, 8px apart.
-        let baseline = head + chromium_baseline(Face::Mono, f32::from(text::SM), head_line());
+        let baseline = head + chromium_baseline(Face::Mono, f32::from(text::SM), head_line(d));
         let mut x = CONTENT_X + name_width + HEAD_GAP;
         if bot {
             let l = look(TagKind::Bot);
@@ -927,7 +970,8 @@ fn draw_row(
             );
             x += tag_w + HEAD_GAP;
         }
-        let meta_top = baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line());
+        let meta_top =
+            baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line(d));
         draw_marks(&mut placer, cx_row, item, x, meta_top, meta_color, window);
     } else if shown.marks {
         // A follow-up that shows a mark keeps a head line of only its marks (the name and the tag are for a screen
@@ -944,7 +988,7 @@ fn draw_row(
             window,
         );
     }
-    let body_top = local + shift + body_offset(shown.grouped, shown.marks);
+    let body_top = local + shift + body_offset(shown.grouped, shown.marks, d);
     let content_w = cx_row.width - CONTENT_X - ROW_RIGHT;
     let body_end = body_top + laid.height;
     placer.out.push(
@@ -1134,6 +1178,7 @@ pub fn render(
     cx: &mut App,
 ) -> impl IntoElement + use<> {
     let ui = ui::ui(window, cx);
+    let density = Density::of(window, cx);
     ui.update(cx, |u, _| u.ctx = Some(ctx.clone()));
     // Release lets go of this window's message state's client at once (review M5), not when the window next draws.
     if let Some(client) = &ctx.client {
@@ -1231,15 +1276,17 @@ pub fn render(
     }
     // A DM's log: its channel record is the DM's (Shell.tsx: the at-sign and the DM's name).
     let dm = state.dms.get(channel.id).is_some();
-    let (title, body_lines) = welcome_lines(&channel.name, dm, width);
+    let (title, body_lines) = welcome_lines(&channel.name, dm, width, density);
     // Conversation.tsx:396-399: the "load earlier" button in the welcome's place while the history has more.
     let head = log_head(state.timelines.get(&channel.id));
     let head_height = match head {
-        LogHead::Earlier => EARLIER_HEIGHT + EARLIER_GAP,
-        LogHead::Welcome | LogHead::Loading => welcome_height(title.len(), body_lines.len()),
+        LogHead::Earlier => EARLIER_HEIGHT + f32::from(density.group_gap()),
+        LogHead::Welcome | LogHead::Loading => {
+            welcome_height(title.len(), body_lines.len(), density)
+        }
     };
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
-    let (_, rows_end) = row_tops(0.0, &shapes);
+    let (_, rows_end) = row_tops(0.0, &shapes, density);
     let privates_height: f32 = privates.iter().map(|(_, h)| *h).sum();
     let content = LOG_TOP + head_height + LOG_BOTTOM + rows_end + privates_height;
     // Chromium's scroll range is whole pixels: the content's height rounds, and at the end that rounding sits below the
@@ -1252,7 +1299,10 @@ pub fn render(
     // The scrolled box: the viewport exactly for a shorter log (no sub-pixel scroll range from `content`'s rounding),
     // else the rounded content (T28 parity review m1).
     let inner = if lift > 0.0 { viewport } else { height };
-    let mut placer = Placer { out: Vec::new() };
+    let mut placer = Placer {
+        out: Vec::new(),
+        density,
+    };
     let mut y = lift + LOG_TOP;
     if head == LogHead::Earlier {
         // The button keeps to the log's top (`align-self: center`); the rows below it take the free room
@@ -1277,7 +1327,7 @@ pub fn render(
             width,
         );
     }
-    let (tops, rows_bottom) = row_tops(y, &shapes);
+    let (tops, rows_bottom) = row_tops(y, &shapes, density);
     // What the log was last drawn with, to keep the reader's place when earlier rows come in front.
     let first_key = items.first().map(|i| i.key.clone());
     let (prev_first, prev_height) = {
@@ -1318,10 +1368,7 @@ pub fn render(
     let revealed = reveal.as_deref().and_then(|key| {
         let i = shown.iter().position(|s| s.item.key == key)?;
         let r = &shapes[i];
-        let (top, bottom) = (
-            tops[i],
-            tops[i] + row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras),
-        );
+        let (top, bottom) = (tops[i], tops[i] + r.height(density));
         let now = -f32::from(scroll.offset().y);
         let max = (inner - viewport).max(0.0);
         let to = if top < now {
@@ -1348,8 +1395,7 @@ pub fn render(
         let r = &shapes[at];
         let centre = ui.update(cx, |u, _| std::mem::take(&mut u.centre));
         let target = if centre {
-            let row = row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras);
-            centred_offset(tops[at], row, viewport, inner)
+            centred_offset(tops[at], r.height(density), viewport, inner)
         } else {
             (tops[at] - 48.0).max(0.0)
         };
@@ -1402,6 +1448,7 @@ pub fn render(
         width,
         order: order.clone(),
         active: active.clone(),
+        density,
     };
     // Only the rows near the viewport are drawn (a screen above and below it): the rest keep their height from the memo.
     let at = if jumped.is_some() || revealed.is_some() {
@@ -1414,17 +1461,9 @@ pub fn render(
     let (from, to) = (at - viewport, at + 2.0 * viewport);
     for (s, top) in shown.into_iter().zip(tops) {
         if let Some(label) = s.divider.clone() {
-            placer.divider(top - divider_height(), width, label);
+            placer.divider(top - divider_height(density), width, label);
         }
-        let bottom = top
-            + row_height(
-                s.grouped,
-                s.marks,
-                s.last,
-                before_shift(s.before_height),
-                s.body.height(),
-                s.extras_height,
-            );
+        let bottom = top + s.shape().height(density);
         let editing = matches!(s.body, Plan::Editor(_));
         // The active row is always drawn: it is the log's tab stop wherever the log is scrolled.
         let keyed = active.as_deref() == Some(s.item.key.as_str());
@@ -1651,11 +1690,47 @@ mod tests {
     fn heights_come_from_the_css() {
         // The reference's DOM: 54.89 for a row, 49.89 for the log's last row, 75.03 for two lines; 131 for the welcome.
         let lh = body_line();
-        assert!((row_height(false, false, false, 0.0, lh, 0.0) - 54.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, true, 0.0, lh, 0.0) - 49.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, false, 0.0, 2.0 * lh, 0.0) - 75.031_25).abs() < 1e-4);
-        assert_eq!(welcome_height(1, 1), 131.0);
-        assert_eq!(divider_height(), 23.0);
+        assert!(
+            (row_height(false, false, false, 0.0, lh, 0.0, Density::Regular) - 54.890_625).abs()
+                < 1e-4
+        );
+        assert!(
+            (row_height(false, false, true, 0.0, lh, 0.0, Density::Regular) - 49.890_625).abs()
+                < 1e-4
+        );
+        assert!(
+            (row_height(false, false, false, 0.0, 2.0 * lh, 0.0, Density::Regular) - 75.031_25)
+                .abs()
+                < 1e-4
+        );
+        assert_eq!(welcome_height(1, 1, Density::Regular), 131.0);
+        assert_eq!(divider_height(Density::Regular), 23.0);
+    }
+
+    /// Task 19b: the head, the marks' line, the divider and the welcome take the density's `--line-height`; the body
+    /// keeps its 1.55 and the gutter's time its 1.5, so a row moves only by its head line.
+    #[test]
+    fn the_density_steps_the_lines_that_take_the_root_line_height() {
+        let lh = body_line();
+        let (c, r) = (Density::Compact, Density::Regular);
+        assert_eq!(head_line(c), line_height(text::SM, 1.4));
+        assert_eq!(meta_line(c), line_height(text::META, 1.4));
+        assert_eq!(gutter_line(), line_height(text::META, 1.5));
+        let compact = row_height(false, false, false, 0.0, lh, 0.0, c);
+        let regular = row_height(false, false, false, 0.0, lh, 0.0, r);
+        assert!(compact < regular);
+        assert!((regular - compact - (head_line(r) - head_line(c))).abs() < 1e-4);
+        // A plain follow-up has no head line: the same at every density.
+        assert_eq!(
+            row_height(true, false, false, 0.0, lh, 0.0, c),
+            row_height(true, false, false, 0.0, lh, 0.0, r)
+        );
+        assert_eq!(
+            divider_height(c),
+            2.0 * DIVIDER_PAD + line_height(text::MICRO, 1.4)
+        );
+        assert!(welcome_height(1, 1, c) < welcome_height(1, 1, r));
+        assert!(welcome_height(1, 1, Density::Cozy) > welcome_height(1, 1, r));
     }
 
     #[test]
@@ -1824,11 +1899,16 @@ mod tests {
         );
         let lh = body_line();
         assert!(
-            row_height(true, true, false, 0.0, lh, 0.0)
-                > row_height(true, false, false, 0.0, lh, 0.0)
+            row_height(true, true, false, 0.0, lh, 0.0, Density::Regular)
+                > row_height(true, false, false, 0.0, lh, 0.0, Density::Regular)
         );
-        assert!(body_offset(true, true) > body_offset(true, false));
-        assert_eq!(body_offset(true, true), FOLLOW_PAD + meta_line() + MAIN_GAP);
+        assert!(
+            body_offset(true, true, Density::Regular) > body_offset(true, false, Density::Regular)
+        );
+        assert_eq!(
+            body_offset(true, true, Density::Regular),
+            FOLLOW_PAD + meta_line(Density::Regular) + MAIN_GAP
+        );
     }
 
     fn item_with_body(body: &str) -> TimelineItem {
@@ -1870,8 +1950,16 @@ mod tests {
             extras: 0.0,
             divider: true,
         };
-        let (plain, plain_end) = row_tops(12.0, &[row(0.0, false), row(0.0, false), follow]);
-        let (with, with_end) = row_tops(12.0, &[row(0.0, false), row(26.5, false), follow]);
+        let (plain, plain_end) = row_tops(
+            12.0,
+            &[row(0.0, false), row(0.0, false), follow],
+            Density::Regular,
+        );
+        let (with, with_end) = row_tops(
+            12.0,
+            &[row(0.0, false), row(26.5, false), follow],
+            Density::Regular,
+        );
         assert_eq!(with[0], plain[0]);
         assert_eq!(with[1], plain[1], "the row with extras starts where it did");
         assert!(
@@ -1898,8 +1986,8 @@ mod tests {
             body: lh + 70.0,
             ..one
         };
-        let (a, _) = row_tops(0.0, &[one, one]);
-        let (b, _) = row_tops(0.0, &[tall, one]);
+        let (a, _) = row_tops(0.0, &[one, one], Density::Regular);
+        let (b, _) = row_tops(0.0, &[tall, one], Density::Regular);
         assert!((b[1] - a[1] - 70.0).abs() < 1e-4);
     }
 

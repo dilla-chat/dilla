@@ -17,7 +17,7 @@ use crate::a11y::{Accessible, Role};
 use crate::components::avatar::{Avatar, AvatarShape, AvatarSize, Presence, colour_of};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::metrics::{LABEL_TRACKING, LABEL_TRACKING_WIDE, OPACITY_MUTED};
+use crate::metrics::{Density, LABEL_TRACKING, LABEL_TRACKING_WIDE, OPACITY_MUTED};
 use crate::roving::{Roving, opens_context_menu};
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, layout, radius, text};
@@ -502,7 +502,8 @@ impl RenderOnce for MemberList {
                     line(
                         format!("{} — {}", g.title, g.members.len()).to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        // MemberList.css sets the heading no line height: the root's `--line-height`.
+                        line_height(text::MICRO, Density::of(window, cx).line_height()),
                         tint.unwrap_or(color::FG_3),
                     )
                     .weight(font::WEIGHT_LABEL)

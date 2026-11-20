@@ -179,7 +179,9 @@ pub fn glyph_of(kind: RowKind) -> Option<IconName> {
 }
 
 impl RenderOnce for Row {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // The name and the occupant count set no line height of their own (ChannelRow.css): the root's `--line-height`.
+        let lh = crate::metrics::Density::of(window, cx).line_height();
         // A muted channel hides its unread count; its mention count still shows.
         let unread = if self.muted { 0 } else { self.unread };
         if let Some(person) = self.person.clone() {
@@ -231,7 +233,7 @@ impl RenderOnce for Row {
                 line(
                     self.name,
                     text::INPUT,
-                    line_height(text::INPUT, 1.5),
+                    line_height(text::INPUT, lh),
                     name_colour,
                 )
                 .weight(if bright {
@@ -270,7 +272,7 @@ impl RenderOnce for Row {
             row = row.child(div().flex_none().child(line(
                 self.voice_count.to_string(),
                 text::META,
-                line_height(text::META, 1.5),
+                line_height(text::META, lh),
                 if self.active {
                     color::FG_2
                 } else {

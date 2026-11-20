@@ -540,6 +540,7 @@ fn category(
     stop: usize,
     can_add: bool,
     handlers: &ListHandlers,
+    lh: f32,
 ) -> gpui::AnyElement {
     let id = c.id;
     let (on_toggle, on_key_toggle, on_add) = (
@@ -585,7 +586,7 @@ fn category(
             line(
                 c.name.to_uppercase(),
                 text::MICRO,
-                line_height(text::MICRO, 1.5),
+                line_height(text::MICRO, lh),
                 color::FG_3,
             )
             .weight(font::WEIGHT_LABEL)
@@ -668,6 +669,9 @@ pub fn render(
         .community
         .and_then(|id| state.communities.iter().find(|c| c.id == id));
     let title = community.map_or_else(String::new, |c| c.name.clone());
+    // The stats and the category labels set no line height of their own (ChannelList.css; the title keeps its 1.5): the
+    // root's `--line-height`, the window's density.
+    let lh = dilla_desktop_ui::metrics::Density::of(window, cx).line_height();
     let on_add = handlers.on_add.clone();
     let on_server_settings = handlers.on_server_settings.clone();
     let on_server_menu_open = handlers.on_server_menu_open.clone();
@@ -757,7 +761,7 @@ pub fn render(
                     }
                 }),
         ));
-    let meta = |s: String| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
+    let meta = |s: String| line(s, text::META, line_height(text::META, lh), color::FG_3);
     let stats = div()
         .flex_none()
         .flex()
@@ -812,6 +816,7 @@ pub fn render(
                 stop,
                 model.can_add_in_category,
                 handlers,
+                lh,
             ),
             Item::Channel(ch) => row(
                 ch,

@@ -36,9 +36,6 @@ const COMPOSER_BOTTOM: f32 = 12.0;
 const ROW_GAP: f32 = 8.0;
 const ROW_LEFT: f32 = 10.0;
 const ROW_PAD: f32 = 4.0;
-/// MessageLog.css `.d-message-log__earlier`: the "load earlier" button's `margin-bottom: var(--group-gap)` at the regular
-/// density, the same as the channel log's.
-const EARLIER_GAP: f32 = 14.0;
 /// The hover toolbar's gap between its buttons (MessageRow.css `__toolbar` gap 2px).
 const TOOL_GAP: f32 = 2.0;
 
@@ -419,6 +416,8 @@ impl Render for PaneView {
             1 => Some(t("thread.summary.one").to_owned()),
             n => Some(tf("thread.summary.other", &[("count", &n.to_string())])),
         };
+        // MessageLog.css `.d-message-log__earlier`: the button's `margin-bottom: var(--group-gap)`, the window's density.
+        let earlier_gap = dilla_desktop_ui::metrics::Density::of(window, cx).group_gap();
         let earlier = earlier_shown(data, self.loading_earlier).map(|enabled| {
             let this = cx.entity();
             let window_id = self.window;
@@ -427,7 +426,7 @@ impl Render for PaneView {
                 .w_full()
                 .flex()
                 .justify_center()
-                .pb(px(EARLIER_GAP))
+                .pb(earlier_gap)
                 .child(tracked_box(
                     "thread-earlier",
                     Button::new("thread-earlier", t("shell.log.earlier"))

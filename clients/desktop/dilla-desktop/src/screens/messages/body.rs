@@ -622,6 +622,11 @@ pub fn forget_cached() {
 }
 
 /// [`layout`]'s height, remembered by (parts, width): a draw of a body already laid out in this width costs one lookup.
+///
+/// The density is not part of the key (Task 19b): a body's height never depends on it. MessageRow.css gives the body its
+/// own `line-height: 1.55` and CodeBlock.css its card fixed lengths, so no part of a body takes the root's
+/// `--line-height`; what the density moves in a row (its head line) is added outside the memo, in `timeline::row_height`.
+/// `tests::a_body_is_as_tall_at_every_density` holds the memo to that.
 pub fn height_cached(parts: &[Body], width: f32) -> f32 {
     let mut key = format!("{:x}|", width.to_bits());
     content_key(parts, &mut key);
@@ -852,6 +857,25 @@ mod tests {
             .len();
         assert_eq!(link, plain + 1);
         assert_eq!(strike, plain + 1);
+    }
+
+    /// Task 19b: a body takes no part of the density. Its lines are MessageRow.css's own 1.55, which is none of the
+    /// densities' `--line-height` but cozy's by coincidence and is never replaced by it, so the one memo entry per (body,
+    /// width) is right at every density: what the memo answers is what the layout makes.
+    #[test]
+    fn a_body_is_as_tall_at_every_density() {
+        use dilla_desktop_ui::metrics::Density;
+        assert_eq!(body_line(), line_height(text::INPUT, 1.55));
+        for d in [Density::Compact, Density::Regular] {
+            assert_ne!(
+                body_line(),
+                line_height(text::INPUT, d.line_height()),
+                "{d:?}"
+            );
+        }
+        let body = parts("> a quote\nsome text\n```rust\nfn main() {}\n```");
+        let laid = layout(&body, 420.0, color::FG_BODY).height;
+        assert_eq!(height_cached(&body, 420.0), laid);
     }
 
     #[test]

@@ -27,7 +27,7 @@ use dilla_desktop_ui::components::attachments::video::{
     MenuView, PipMode, VideoView, video_fullscreen,
 };
 use dilla_desktop_ui::components::attachments::{
-    OnClick, ROW_GAP, drop_overlay, gif_picker, lightbox, tray as tray_view,
+    OnClick, drop_overlay, gif_picker, lightbox, tray as tray_view,
 };
 use dilla_desktop_ui::tokens::{color, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
@@ -80,17 +80,17 @@ struct Card {
     height: Option<f32>,
 }
 
-/// Lays `cards` out as app.css `.dw-attachments` does (a wrapping row, `--row-gap` both ways) in `width`: answers the
-/// lines' elements and the total height.
-fn wrap(cards: Vec<Card>, width: f32) -> (AnyElement, f32) {
+/// Lays `cards` out as app.css `.dw-attachments` does (a wrapping row, `--row-gap` both ways: `gap`, the window's
+/// density) in `width`: answers the lines' elements and the total height.
+fn wrap(cards: Vec<Card>, width: f32, gap: f32) -> (AnyElement, f32) {
     let mut lines: Vec<Vec<Card>> = Vec::new();
     let mut used = 0.0;
     for c in cards {
         let fits = lines
             .last()
-            .is_some_and(|l| !l.is_empty() && used + ROW_GAP + c.width <= width);
+            .is_some_and(|l| !l.is_empty() && used + gap + c.width <= width);
         if fits {
-            used += ROW_GAP + c.width;
+            used += gap + c.width;
             lines.last_mut().expect("a line").push(c);
         } else {
             used = c.width;
@@ -98,17 +98,17 @@ fn wrap(cards: Vec<Card>, width: f32) -> (AnyElement, f32) {
         }
     }
     let mut total = 0.0;
-    let mut column = div().flex().flex_col().gap(px(ROW_GAP));
+    let mut column = div().flex().flex_col().gap(px(gap));
     for (i, line) in lines.into_iter().enumerate() {
         let h = line
             .iter()
             .map(|c| c.height.unwrap_or_else(file_card_height))
             .fold(0.0, f32::max);
-        total += h + if i > 0 { ROW_GAP } else { 0.0 };
+        total += h + if i > 0 { gap } else { 0.0 };
         column = column.child(
             div()
                 .flex()
-                .gap(px(ROW_GAP))
+                .gap(px(gap))
                 .h(px(h))
                 .children(line.into_iter().map(|c| (c.element)(h))),
         );
@@ -426,7 +426,8 @@ pub fn attachment_cards(
             }
         }
     }
-    let (element, height) = wrap(cards, body_width(window));
+    let gap = f32::from(dilla_desktop_ui::metrics::Density::of(window, cx).row_gap());
+    let (element, height) = wrap(cards, body_width(window), gap);
     Some(Extra { element, height })
 }
 
@@ -1109,6 +1110,9 @@ mod tests {
         }
     }
 
+    /// The regular density's `--row-gap`.
+    const GAP: f32 = 2.0;
+
     #[test]
     fn cards_wrap_like_a_flex_row_with_the_row_gap() {
         // An image and a file card fit one 870px line; the file card stretches to the image's 210px.
@@ -1122,11 +1126,20 @@ mod tests {
                 },
             ],
             870.0,
+            GAP,
         );
         assert_eq!(h, 210.0);
         // Nine images at 870px: three a line (3 * 280 + 2 * 2 = 844), three lines.
-        let (_, h) = wrap((0..9).map(|_| fixed(IMAGE_W, 210.0)).collect(), 870.0);
-        assert_eq!(h, 3.0 * 210.0 + 2.0 * ROW_GAP);
+        let (_, h) = wrap((0..9).map(|_| fixed(IMAGE_W, 210.0)).collect(), 870.0, GAP);
+        assert_eq!(h, 3.0 * 210.0 + 2.0 * GAP);
+        // Task 19b: the compact density's `--row-gap` is 0, so the lines touch.
+        let compact = f32::from(dilla_desktop_ui::metrics::Density::Compact.row_gap());
+        let (_, h) = wrap(
+            (0..9).map(|_| fixed(IMAGE_W, 210.0)).collect(),
+            870.0,
+            compact,
+        );
+        assert_eq!(h, 3.0 * 210.0);
         // A file card alone is its own height.
         let (_, h) = wrap(
             vec![Card {
@@ -1135,6 +1148,7 @@ mod tests {
                 height: None,
             }],
             870.0,
+            GAP,
         );
         assert_eq!(h, file_card_height());
     }
