@@ -1678,6 +1678,10 @@ impl AreaFrames for Bot {
                 let Ok(frame) = frames::bot_state_changed_of(f) else {
                     return;
                 };
+                // PollCard.tsx: a pushed channel hint reads a given-up poll again.
+                if frame.scope_kind == 1 {
+                    crate::features::utilities::release_gave_up(inner);
+                }
                 let runtime = inner.clone();
                 let spawn =
                     move |wait: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>| {

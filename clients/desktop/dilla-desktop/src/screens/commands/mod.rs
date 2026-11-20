@@ -21,10 +21,10 @@ pub mod reminders;
 
 use dilla_client::features::bot::{self, Plan, run};
 use dilla_client::features::utilities::{poll_claim, polls};
-use dilla_client::state::TimelineItem;
 use dilla_client::state::bot::{
     Conversation, PollCheck, PollView, PrivateResult, ResultProvider, ResultStatus,
 };
+use dilla_client::state::{TimelineItem, TimelineItemState};
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
 };
@@ -165,6 +165,23 @@ pub fn poll_card(
     poll_card_in(item, ctx, None, window, cx)
 }
 
+/// How long a post may go undrawn before its next draw counts as the card coming back into view.
+const AWAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Notes that `message` is drawn now; whether it was away (not drawn for [`AWAY`]) before.
+fn seen_again(message: dilla_client::state::MessageId) -> bool {
+    thread_local! {
+        static DRAWN: std::cell::RefCell<std::collections::BTreeMap<dilla_client::state::MessageId, std::time::Instant>> =
+            const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    }
+    let now = std::time::Instant::now();
+    DRAWN.with(|d| {
+        let mut d = d.borrow_mut();
+        let was = d.insert(message, now);
+        was.is_some_and(|at| now.duration_since(at) > AWAY)
+    })
+}
+
 /// The loading line of a poll that is being read from the Bot (PollCard.tsx `poll.loading`): one line of the row's body
 /// text, announced as a status.
 fn poll_loading() -> Extra {
@@ -197,14 +214,23 @@ pub fn poll_card_in(
     _cx: &mut App,
 ) -> Option<Extra> {
     // PollCard.tsx: only a Bot's unedited post whose verified record this device holds.
-    if !item.bot || item.edited {
+    // A post deleted while its read was under way draws nothing either (`poll_claim`'s gate).
+    if !item.bot || item.edited || item.state != TimelineItemState::Ok {
         return None;
     }
     let message = item.msg_id?;
+    // A card that left the viewport and comes back reads again if it had given up (PollCard.tsx's IntersectionObserver):
+    // rows are only drawn near the viewport, so a gap in a post's draws is it being away.
+    let back = seen_again(message);
     let Some(poll) = ctx.state.bot.polls.get(&message) else {
         return match ctx.state.bot.poll_checks.get(&message) {
             Some(PollCheck::Pending) => Some(poll_loading()),
-            Some(PollCheck::GaveUp) => None,
+            Some(PollCheck::GaveUp) => {
+                if back && let Some(client) = &ctx.client {
+                    client.utilities().release_gave_up_of(message);
+                }
+                None
+            }
             None => {
                 let (client, community, channel) =
                     (ctx.client.as_ref()?, ctx.community?, ctx.channel?);
@@ -861,6 +887,19 @@ mod tests {
         bot.polls
             .insert(message, poll(vec![0, 0], false, false, 86_400));
         assert!(draw(bot, vcx).is_some_and(|e| e.height > 0.0));
+        // A post deleted while its read was under way stops showing "Loading poll…".
+        let mut deleted = bot_post(7);
+        deleted.state = dilla_client::state::TimelineItemState::Deleted;
+        let mut pending = dilla_client::state::bot::BotState::default();
+        pending.poll_checks.insert(message, PollCheck::Pending);
+        let ctx = SlotCx {
+            state: std::sync::Arc::new(dilla_client::state::AppState {
+                bot: pending,
+                ..Default::default()
+            }),
+            ..SlotCx::default()
+        };
+        assert!(vcx.update(|window, cx| poll_card(&deleted, &ctx, window, cx).is_none()));
     }
 
     /// Integration 3, final review M4: each window's composer has its own `/` list: a draft typed in window A opens

@@ -68,7 +68,7 @@ impl Utilities {
         }
         // The snapshot lags the publish below by a moment, and a view draws again in between: one read at a time per
         // message, which the guard frees when the read ends or its runtime stops.
-        let Some(guard) = ReadingGuard::enter(message) else {
+        let Some(guard) = ReadingGuard::enter(&self.inner, message) else {
             return;
         };
         self.inner.publish(move |s| {
@@ -80,7 +80,8 @@ impl Utilities {
         let this = self.clone();
         // The answer is only the check's state in the snapshot, so the receiver is not awaited.
         drop(self.inner.spawn(async move {
-            let _guard = guard;
+            // The whole guard moves into the task (a field assignment alone would capture only the flag).
+            let mut guard = guard;
             let mut failures = 0;
             loop {
                 let end = match this.read_poll(community, channel, thread, &item).await {
@@ -103,9 +104,25 @@ impl Utilities {
                         s.bot.poll_checks.remove(&message);
                     }
                 });
+                guard.finished = true;
                 return Ok(());
             }
         }));
+    }
+
+    /// Lets the posts whose read was given up be read again (PollCard.tsx: a pushed hint, or the card coming back into
+    /// view, tries again, and a success clears the give-up). The next draw of each starts its read.
+    pub fn release_gave_up(&self) {
+        release_gave_up(&self.inner);
+    }
+
+    /// [`Utilities::release_gave_up`] for the one post `message`.
+    pub fn release_gave_up_of(&self, message: MessageId) {
+        self.inner.publish(move |s| {
+            if s.bot.poll_checks.get(&message) == Some(&PollCheck::GaveUp) {
+                s.bot.poll_checks.remove(&message);
+            }
+        });
     }
 
     /// This member's reminders in `community`, soonest first.
@@ -214,28 +231,53 @@ pub fn retry_after(failures: usize) -> Option<Duration> {
     [2, 5, 10].get(failures).map(|s| Duration::from_secs(*s))
 }
 
-/// A failure that retrying cannot mend (PollCard.tsx): the post is no poll this device may show, the record is for another
-/// channel or thread (`Invalid`), or no Bot is ready (`botDefinitelyUnavailable`). A Bot that is busy, stopped or
-/// unreachable (`E_UNAVAILABLE`, `E_STOPPED`) is transient.
+/// A failure that retrying cannot mend, as PollCard.tsx has it: the post is no poll this device may show (the author is
+/// not the pinned Bot), or the Bot refused the read (`botDefinitelyUnavailable`: every refusal of an operation but op 3,
+/// which includes status 5 on the poll read). Everything else is retried 2, 5 and 10 s: a read that got no answer in time
+/// (`E_BOT_TIMEOUT`), a Bot status, a record for another channel or thread, an answer that cannot be read (`Invalid`,
+/// `Payload`), and a client that is stopping (`E_STOPPED`).
 pub fn definitive(e: &UtilityError) -> bool {
     match e {
-        UtilityError::NotAPoll | UtilityError::Invalid => true,
-        UtilityError::Unavailable(code) => code != "E_UNAVAILABLE" && code != "E_STOPPED",
+        UtilityError::NotAPoll => true,
+        UtilityError::Unavailable(code) => code != "E_BOT_TIMEOUT" && code != "E_STOPPED",
         _ => false,
     }
 }
 
-/// The messages whose poll is being read right now ([`Utilities::verify_poll`]).
-static READING: std::sync::Mutex<std::collections::BTreeSet<MessageId>> =
+/// [`Utilities::release_gave_up`] for the client `inner`, which the Bot's hint handler holds.
+pub(crate) fn release_gave_up(inner: &Arc<Inner>) {
+    inner.publish(|s| {
+        s.bot
+            .poll_checks
+            .retain(|_, check| *check != PollCheck::GaveUp)
+    });
+}
+
+/// The poll reads under way: one per client and message ([`Utilities::verify_poll`]). A client is told apart by its
+/// `Inner`'s address, as `HINTS` in bot.rs tells them apart.
+static READING: std::sync::Mutex<std::collections::BTreeSet<(usize, MessageId)>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
-/// Holds one message's place in [`READING`] until dropped.
-struct ReadingGuard(MessageId);
+/// One message's read under way: it holds its place in [`READING`] and, when dropped before the read finished (the task
+/// panicked, or the runtime shut down), takes its `Pending` check back so the card is not left loading for good.
+struct ReadingGuard {
+    inner: Arc<Inner>,
+    message: MessageId,
+    finished: bool,
+}
 
 impl ReadingGuard {
-    fn enter(message: MessageId) -> Option<Self> {
+    fn key(inner: &Arc<Inner>, message: MessageId) -> (usize, MessageId) {
+        (Arc::as_ptr(inner) as usize, message)
+    }
+
+    fn enter(inner: &Arc<Inner>, message: MessageId) -> Option<Self> {
         let mut reading = READING.lock().unwrap_or_else(|e| e.into_inner());
-        reading.insert(message).then_some(Self(message))
+        reading.insert(Self::key(inner, message)).then(|| Self {
+            inner: inner.clone(),
+            message,
+            finished: false,
+        })
     }
 }
 
@@ -244,7 +286,15 @@ impl Drop for ReadingGuard {
         READING
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.0);
+            .remove(&Self::key(&self.inner, self.message));
+        if !self.finished {
+            let message = self.message;
+            self.inner.publish(move |s| {
+                if s.bot.poll_checks.get(&message) == Some(&PollCheck::Pending) {
+                    s.bot.poll_checks.remove(&message);
+                }
+            });
+        }
     }
 }
 
@@ -567,18 +617,34 @@ mod tests {
         assert_eq!(retry_after(3), None);
     }
 
-    /// A post that is no poll, a record for another place and a Bot that is not ready give up at once; a busy, stopped
-    /// or unreadable Bot is tried again.
+    /// PollCard.tsx: a post that is no poll, a refusal and status 5 on the poll read (`botDefinitelyUnavailable`) give up at
+    /// once. A Bot status is tried again.
     #[test]
     fn definitive_failures_give_up_at_once() {
         assert!(definitive(&UtilityError::NotAPoll));
-        assert!(definitive(&UtilityError::Invalid));
         assert!(definitive(&UtilityError::Unavailable("E_NO_BOT".into())));
-        assert!(!definitive(&UtilityError::Unavailable(
+        // Status 5 on a read is the Bot's `provider-unavailable` (`send_over`): the web gives up at once.
+        assert!(definitive(&UtilityError::Unavailable(
             "E_UNAVAILABLE".into()
         )));
-        assert!(!definitive(&UtilityError::Unavailable("E_STOPPED".into())));
         assert!(!definitive(&UtilityError::Status(3)));
+    }
+
+    /// A read that got no answer in time is retried, not given up (`BotOperationUncertainError` is rethrown by the web).
+    #[test]
+    fn a_read_timeout_is_retried() {
+        assert!(!definitive(&UtilityError::Unavailable(
+            "E_BOT_TIMEOUT".into()
+        )));
+        assert!(!definitive(&UtilityError::Unavailable("E_STOPPED".into())));
+    }
+
+    /// A record for another channel or thread, and an answer that cannot be decoded, are plain failures in the web, so
+    /// they are retried 2, 5 and 10 s.
+    #[test]
+    fn another_place_and_an_unreadable_answer_are_retried() {
+        assert!(!definitive(&UtilityError::Invalid));
+        assert!(!definitive(&UtilityError::Payload));
     }
 
     /// slash-commands.spec.ts "reject forged markers": a member reposting the Bot's `[dilla-poll:v1:aaaa…]` line gets no
