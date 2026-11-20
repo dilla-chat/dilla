@@ -3,6 +3,7 @@ package livekit
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,18 +69,35 @@ func TestSenderForEpochAcceptsInitialEpochZero(t *testing.T) {
 	}
 }
 
-type counterStateStub struct{ value native.StateValue }
+// counterStateStub is one durable counter cursor; transactions counts its commits (each a disk sync on the helper).
+// The pool reserves a spare block from its own goroutine, so it is locked.
+type counterStateStub struct {
+	mu           sync.Mutex
+	value        native.StateValue
+	transactions int
+}
 
 func (s *counterStateStub) StateGet(_ context.Context, _ uint64, _ []byte) (native.StateValue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.value, nil
 }
 
 func (s *counterStateStub) StateTransaction(_ context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if tx.IsZero() || len(changes) != 1 || changes[0].ExpectedRevision != s.value.Revision {
 		return nil, errors.New("counter state revision conflict")
 	}
+	s.transactions++
 	s.value = native.StateValue{Revision: s.value.Revision + 1, Value: append([]byte(nil), changes[0].Value...)}
 	return []uint64{s.value.Revision}, nil
+}
+
+func (s *counterStateStub) commits() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transactions
 }
 
 func TestReservedSenderUsesDisjointCountersAcrossPublisherRestart(t *testing.T) {
