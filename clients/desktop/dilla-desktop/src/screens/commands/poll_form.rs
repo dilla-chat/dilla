@@ -6,8 +6,8 @@
 //!   the command's row says why (Failed). The `question`, `answers` (split at the commas), `multiple` and `duration`
 //!   arguments prefill the fields ([`opening`]).
 //! - Post ([`submit`]): the fields are checked in the web's order ([`validate`]); a good form takes its one request id
-//!   ([`PollForm::begin_post`]), shows the command's pending row and sends. Post and Enter both go through the same
-//!   gate, so a second press while the first is out sends nothing, and the id never changes while the form is open.
+//!   ([`PollForm::begin_post`]), shows the command's pending row and sends; the form closes as it sends, as the web's
+//!   dialog does. Only Post sends (the web's fields have no Enter handler).
 //! - The answer ([`settled`]): posted, the toast and the row say so and the form closes; an answer that may or may not
 //!   have taken effect closes the form too (the row says to check the conversation); any definitive refusal keeps the
 //!   form open with the reason, and a second Post sends the same request.
@@ -24,7 +24,7 @@ use dilla_client::features::utilities::{UtilityError, polls};
 use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
 use dilla_client::state::bot_admin::sealed_operation;
 use dilla_client::state::threads::SEND_MESSAGES;
-use dilla_client::state::{AppState, ChannelId, CommunityId};
+use dilla_client::state::{AppState, ChannelId, CommunityId, UserId};
 use gpui::{
     AnyElement, App, AppContext, Entity, Focusable, IntoElement, ParentElement, Styled,
     Subscription, Window, WindowId, div, px,
@@ -233,6 +233,9 @@ pub struct PollForm {
     pub community: CommunityId,
     /// `None` in a fixture: its Post does nothing.
     pub client: Option<Rc<Client>>,
+    /// The Bot user the community's catalog named when the form opened (adopted when it first resolves): another one
+    /// closes the form (UtilityCommandProvider.tsx:322-329).
+    pub bot_user: Option<UserId>,
     /// The question's subscription first, then each answer's.
     subs: Vec<Subscription>,
     /// The post is over and the form is to go (the answer closed it).
@@ -257,7 +260,7 @@ impl std::fmt::Debug for PollForm {
 }
 
 impl PollForm {
-    /// A Post asks to go: the form's one request id when none is out, else `None` (Post and Enter both ask here).
+    /// A Post asks to go: the form's request id when none is out, else `None` (a second press while one is out).
     pub fn begin_post(&mut self) -> Option<[u8; 16]> {
         if self.busy {
             return None;
@@ -266,10 +269,15 @@ impl PollForm {
         Some(self.request)
     }
 
-    /// The post is answered: Post is enabled again. `keep_open` is false when the answer closed the form.
+    /// The post is answered: Post is enabled again. `keep_open` is false when the answer closed the form. The id is kept
+    /// only by an answer that may have taken effect (the form then closes, and a resend settles that request): after any
+    /// definitive answer the next Post is a new request, as CommandHost.tsx:301-303 mints a fresh id (the id is bound to
+    /// the body, and a stored refusal would be answered again).
     pub fn end_post(&mut self, keep_open: bool) {
         self.busy = false;
-        if !keep_open {
+        if keep_open {
+            self.request = dilla_client::features::roles::request_id();
+        } else {
             self.done = true;
         }
     }
@@ -282,6 +290,7 @@ struct Wanted {
     community: CommunityId,
     client: Option<Rc<Client>>,
     request: [u8; 16],
+    bot_user: Option<UserId>,
 }
 
 #[derive(Default)]
@@ -351,13 +360,19 @@ pub fn open(ctx: &SlotCx, args: &Args, window: WindowId, cx: &mut App) {
                 community,
                 client: ctx.client.clone(),
                 request: dilla_client::features::roles::request_id(),
+                bot_user: ctx
+                    .state
+                    .bot
+                    .catalogs
+                    .get(&community)
+                    .and_then(|c| c.bot_user),
             });
         }
     }
     cx.refresh_windows();
 }
 
-/// One of the form's inputs: a change clears the form's refusal, Enter posts.
+/// One of the form's inputs: a change clears the form's refusal.
 fn input_of(
     w: WindowId,
     placeholder: &str,
@@ -377,8 +392,8 @@ fn input_of(
             }
             cx.refresh_windows();
         }
-        InputEvent::PressEnter { .. } => submit(w, cx),
-        InputEvent::Focus | InputEvent::Blur => {}
+        // The web's fields have no Enter handler (PollDialog.tsx): only Post sends.
+        InputEvent::PressEnter { .. } | InputEvent::Focus | InputEvent::Blur => {}
     });
     (input, sub)
 }
@@ -419,6 +434,7 @@ fn make(w: WindowId, wanted: Wanted, window: &mut Window, cx: &mut App) -> PollF
         conversation: wanted.conversation,
         community: wanted.community,
         client: wanted.client,
+        bot_user: wanted.bot_user,
         subs,
         done: false,
     }
@@ -491,6 +507,8 @@ pub fn submit(w: WindowId, cx: &mut App) {
         ResultProvider::Builtin,
     );
     form.row = Some(row);
+    // The web closes the dialog as it submits (the row carries the rest): the form goes on the next frame.
+    form.done = true;
     let job = client
         .utilities()
         .run(move |u| async move { u.create_poll(community, input, request).await });
@@ -579,7 +597,8 @@ fn labels(channel: &str, count: usize) -> poll_dialog::Labels {
 }
 
 /// An input in PollDialog's frame (`.d-poll-dialog input`): `--surface-2`, a field edge, 7px corners; over its limit its
-/// text is `--danger`. The question's focus is a 3px ring.
+/// edge is `--danger` (the text stays `--fg`), and a focused field's edge is `--accent` (PollDialog.css `input:focus`);
+/// the question's focus also has a 3px ring.
 fn framed(
     input: &Entity<InputState>,
     label: String,
@@ -589,7 +608,7 @@ fn framed(
     window: &Window,
     cx: &App,
 ) -> impl IntoElement {
-    let focused = ring && input.focus_handle(cx).contains_focused(window, cx);
+    let focused = input.focus_handle(cx).contains_focused(window, cx);
     let frame = div()
         .flex()
         .items_center()
@@ -598,11 +617,15 @@ fn framed(
         .px(px(pad_x))
         .bg(color::SURFACE_2)
         .border_1()
-        .border_color(text_field::edge(false, false, false))
+        .border_color(if over {
+            color::DANGER
+        } else {
+            text_field::edge(false, focused, false)
+        })
         .rounded(radius::SEG)
         .text_size(text::INPUT)
         .font_family(font::MONO)
-        .text_color(if over { color::DANGER } else { color::FG })
+        .text_color(color::FG)
         .child(
             Input::new(input)
                 .aria_label(label)
@@ -611,7 +634,7 @@ fn framed(
                 .px_0()
                 .py_0(),
         );
-    if focused {
+    if ring && focused {
         frame.shadow(spread_ring(color::ACCENT_RING, QUESTION_RING))
     } else {
         frame
@@ -636,14 +659,29 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
         slot(w, cx).form = None;
         return None;
     }
-    // The Bot stopped offering polls while the form was open (:376): the form goes, and the row says so. A post already
-    // out is answered on its own.
-    if !form.busy && !offers_polls(&ctx.state, form.community) {
+    // The Bot stopped offering polls, or is another Bot, while the form was open (:322-329, :376): the form goes, and the
+    // row says so. A post already out is answered on its own.
+    let held_user = ctx
+        .state
+        .bot
+        .catalogs
+        .get(&form.community)
+        .and_then(|c| c.bot_user);
+    // A pin unknown at open is adopted when it first resolves; only a change from a known user closes the form.
+    let changed = form.bot_user.is_some() && held_user.is_some() && held_user != form.bot_user;
+    if !form.busy && (changed || !offers_polls(&ctx.state, form.community)) {
         let conversation = form.conversation;
         slot(w, cx).form = None;
         fail(ctx, w, conversation, copy::POLL_STOPPED_OFFERING, cx);
         return None;
     }
+    if form.bot_user.is_none() && held_user.is_some() {
+        let adopted = held_user;
+        if let Some(f) = slot(w, cx).form.as_mut() {
+            f.bot_user = adopted;
+        }
+    }
+    let form = slot(w, cx).form.as_ref()?;
     let (question, answers) = (form.question.clone(), form.answers.clone());
     let (duration, multi, busy, error) = (form.duration, form.multi, form.busy, form.error.clone());
     let question_text = question.read(cx).value().to_string();
@@ -672,7 +710,7 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
                 &question,
                 t("poll.question").to_owned(),
                 (QUESTION_H, QUESTION_PAD_X),
-                count > QUESTION_MAX,
+                false,
                 true,
                 window,
                 cx,
@@ -867,6 +905,7 @@ mod tests {
                     community: CommunityId([1; 16]),
                     client: None,
                     request: [9; 16],
+                    bot_user: None,
                 },
                 window,
                 cx,
@@ -874,8 +913,8 @@ mod tests {
         })
     }
 
-    /// Review focus 2: Post and Enter both ask [`PollForm::begin_post`]; while one post is out a second sends nothing, and
-    /// after a definitive refusal the form is open again with the same id, never a fresh one.
+    /// While one post is out a second sends nothing; after a definitive refusal the next Post is a new request (the web
+    /// mints a fresh id), and only an answer that closes the form (uncertain) keeps its id.
     #[gpui::test]
     fn a_second_post_while_busy_sends_nothing(cx: &mut gpui::TestAppContext) {
         let mut form = form(cx);
@@ -884,9 +923,11 @@ mod tests {
         assert_eq!(form.begin_post(), None, "a second press while it is out");
         form.end_post(true);
         assert!(!form.busy && !form.done);
-        assert_eq!(form.begin_post(), Some([9; 16]), "the same id, again");
+        let fresh = form.begin_post().expect("idle again");
+        assert_ne!(fresh, [9; 16], "a new request after a refusal");
         form.end_post(false);
         assert!(form.done, "an answer that closes the form");
+        assert_eq!(form.request, fresh, "an uncertain post keeps its id");
     }
 
     /// R20/R21: the form holds decrypted content; its Debug and the opening's say how much, never what.
@@ -1046,6 +1087,37 @@ mod tests {
         });
         window.update(|_, cx| {
             assert_eq!(held_rows(w, cx).len(), 0, "Cancel leaves nothing");
+        });
+    }
+
+    /// UtilityCommandProvider.tsx:322-329: a catalog naming another Bot user closes the form like a withdrawn one (a pin
+    /// unknown at open is adopted, not a change).
+    #[gpui::test]
+    fn the_form_closes_when_the_catalog_names_another_bot(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        let w = window.update(|w, _| w.window_handle().window_id());
+        let with_bot = |user: Option<u8>| {
+            let mut state = world(true, true);
+            state.bot.catalogs.get_mut(&COMMUNITY).unwrap().bot_user =
+                user.map(|b| UserId([b; 16]));
+            ctx(state, CHANNEL)
+        };
+        window.update(|window, cx| {
+            // Unknown at open, then resolved: adopted, the form stays.
+            super::super::on_send(&with_bot(None), "/poll create", &|t| t.to_owned(), w, cx);
+            assert!(overlay(&with_bot(None), window, cx).is_some());
+            assert!(overlay(&with_bot(Some(1)), window, cx).is_some());
+            assert!(overlay(&with_bot(Some(1)), window, cx).is_some());
+            // Another Bot: the form goes, and the row says the Bot stopped offering polls.
+            assert!(overlay(&with_bot(Some(2)), window, cx).is_none());
+            assert!(!is_open(w, cx));
+            assert_eq!(
+                held_rows(w, cx),
+                [(
+                    ResultStatus::Failed,
+                    "The Bot stopped offering polls. Try again.".to_owned()
+                )]
+            );
         });
     }
 

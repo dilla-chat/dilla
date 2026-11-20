@@ -172,7 +172,7 @@ async fn send_over(ops: &BotOperations, request: BotRequest) -> Result<BotResult
 
 /// `pollCreate` (utilities.ts:649-653): operation 70 at revision 0 in the poll's channel, with the one canonical payload.
 /// The Bot answers the new poll; its id is the request id, it is for the form's channel and thread, and no vote is on it
-/// (`decodePollCreate`: `my_choices` must be the empty list), else the answer is not the poll that was asked for.
+/// (`decodePollCreate`: `my_choices` must be the empty list), else the mutation is uncertain.
 async fn create_poll_over(
     ops: &BotOperations,
     input: &polls::PollCreate,
@@ -190,6 +190,8 @@ async fn create_poll_over(
         },
     )
     .await?;
+    // An accepted answer that cannot be read as the new poll leaves the mutation uncertain (`decodeAcceptedMutation`): the
+    // poll may exist, so a resend with this id settles it.
     let poll = wire::decode_poll(&result.data, request, None)
         .ok()
         .filter(|p| {
@@ -197,7 +199,9 @@ async fn create_poll_over(
                 && p.my_choices.as_deref() == Some(&[])
                 && result.revision == Some(p.revision)
         })
-        .ok_or(UtilityError::Invalid)?;
+        .ok_or(UtilityError::Uncertain {
+            request_id: request,
+        })?;
     Ok(poll)
 }
 
@@ -620,7 +624,9 @@ mod tests {
         for mine in [Some(vec![0]), None] {
             assert_eq!(
                 sent_with(created(mine.clone())).0,
-                Err(UtilityError::Invalid),
+                Err(UtilityError::Uncertain {
+                    request_id: [1; 16]
+                }),
                 "{mine:?}"
             );
         }
