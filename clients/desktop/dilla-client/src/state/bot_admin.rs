@@ -234,13 +234,24 @@ pub fn decode_bot_webhooks(body: &[u8]) -> Result<Vec<BotWebhook>, DecodeError> 
         .collect()
 }
 
-/// The label line a webhook post ends in, and the text before it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The label line a webhook post ends in, and the text before it. Its Debug gives the post text's length only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub struct WebhookLabel {
     pub text: String,
     pub webhook_id: String,
     pub name: String,
     pub avatar_id: Option<String>,
+}
+
+impl std::fmt::Debug for WebhookLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookLabel")
+            .field("text", &super::Redacted(&self.text))
+            .field("webhook_id", &self.webhook_id)
+            .field("name", &self.name)
+            .field("avatar_id", &self.avatar_id)
+            .finish()
+    }
 }
 
 fn lower_hex(s: &str, len: usize) -> bool {

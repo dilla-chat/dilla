@@ -242,13 +242,26 @@ fn publication_community(publication: &[u8]) -> Option<[u8; 16]> {
     a[1].as_bytes()?.try_into().ok()
 }
 
-/// One answer of the Bot (`BotAnswer`), opened.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One answer of the Bot (`BotAnswer`), opened. Its Debug gives the opened body's length only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Answer {
     pub seq: u32,
     pub status: u16,
     pub body: Vec<u8>,
     pub final_: bool,
+}
+
+impl std::fmt::Debug for Answer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Answer({}, {}, {} bytes, final: {})",
+            self.seq,
+            self.status,
+            self.body.len(),
+            self.final_
+        )
+    }
 }
 
 /// `decodeBotAnswer`: the sealed plaintext `[status ≤ 65535, body, final 0|1]`.

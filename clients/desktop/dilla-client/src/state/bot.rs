@@ -154,7 +154,7 @@ pub struct Conversation {
 }
 
 /// A poll as the Bot's durable record says (utilities.ts `PollSummary`), with the voters a card shows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PollView {
     /// The poll's id (its post's final `[dilla-poll:v1:<id>]` line).
     pub id: [u8; 16],
@@ -190,7 +190,7 @@ pub enum ReminderStatus {
 }
 
 /// utilities.ts `ReminderSummary`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReminderView {
     pub id: [u8; 16],
     pub text: String,
@@ -201,6 +201,36 @@ pub struct ReminderView {
     pub source_thread: Option<MessageId>,
     pub state: ReminderStatus,
     pub revision: u64,
+}
+
+// R21: a poll's question and answers and a reminder's text are decrypted posts; Debug gives their lengths only.
+
+impl std::fmt::Debug for PollView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PollView")
+            .field("id", &self.id)
+            .field("channel", &self.channel)
+            .field("thread", &self.thread)
+            .field("question", &super::Redacted(&self.question))
+            .field("answers", &super::RedactedList(&self.answers))
+            .field("multi", &self.multi)
+            .field("closed", &self.closed)
+            .field("counts", &self.counts)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ReminderView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReminderView")
+            .field("id", &self.id)
+            .field("text", &super::Redacted(&self.text))
+            .field("due", &self.due)
+            .field("state", &self.state)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The bot area's slice.

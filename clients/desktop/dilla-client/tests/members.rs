@@ -1739,8 +1739,9 @@ mod removal {
     }
 
     fn body_nowhere(s: &AppState, who: &str) {
+        // R21 keeps decrypted texts out of the state's Debug output: they are read directly.
         assert!(
-            !format!("{s:?}").contains(BODY),
+            !dilla_client::testing::holds_text(s, BODY),
             "the removed body is still in {who}'s state"
         );
     }

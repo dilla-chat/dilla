@@ -44,8 +44,8 @@ fn valid_text(s: &str, max: usize) -> bool {
     !s.trim().is_empty() && s.chars().count() <= max
 }
 
-/// The form's input (`PollCreatePayloadInput`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The form's input (`PollCreatePayloadInput`). Its Debug gives the question's and answers' lengths only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub struct PollCreate {
     pub channel: [u8; 16],
     pub thread: Option<[u8; 16]>,
@@ -53,6 +53,17 @@ pub struct PollCreate {
     pub answers: Vec<String>,
     pub multi: bool,
     pub duration: u64,
+}
+
+impl std::fmt::Debug for PollCreate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PollCreate")
+            .field("question", &crate::state::Redacted(&self.question))
+            .field("answers", &crate::state::RedactedList(&self.answers))
+            .field("multi", &self.multi)
+            .field("duration", &self.duration)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `encodePollCreatePayload`: `[1, channel, thread | null, question, answers, multi, duration]`, at most 1800 bytes.
@@ -108,8 +119,8 @@ pub fn encode_poll_selection(selection: &[usize]) -> Result<Vec<u8>, PollError> 
     Ok(Value::Array(selection.iter().map(|&s| Value::Uint(s as u64)).collect()).encode())
 }
 
-/// One answer row of a card (`PollCardOption`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One answer row of a card (`PollCardOption`). Its Debug gives the answer's length only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub struct CardOption {
     pub text: String,
     /// Whole percent of all votes.
@@ -118,6 +129,18 @@ pub struct CardOption {
     /// The most votes; drawn as the winner once the poll is closed.
     pub winner: bool,
     pub voters: Vec<String>,
+}
+
+impl std::fmt::Debug for CardOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CardOption")
+            .field("text", &crate::state::Redacted(&self.text))
+            .field("pct", &self.pct)
+            .field("mine", &self.mine)
+            .field("winner", &self.winner)
+            .field("voters", &self.voters.len())
+            .finish()
+    }
 }
 
 /// Each answer's share of the votes, whole percent (rounded), and whether it has the most votes.

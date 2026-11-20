@@ -87,8 +87,8 @@ impl Bot {
     }
 }
 
-/// What running a draft did.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What running a draft did. Its Debug is redacted like [`Plan`]'s.
+#[derive(Clone, PartialEq, Eq)]
 pub enum RunOutcome {
     /// Post this text in the conversation (a literal draft, or a built-in that posts); the draft is cleared.
     Post(String),
@@ -310,7 +310,7 @@ pub fn mutation_error(e: &crate::sync::api::ApiError) -> String {
 }
 
 /// What a draft does ([`plan`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Plan {
     Post(String),
     Private(ResultStatus, String, ResultProvider),
@@ -328,6 +328,54 @@ pub enum Plan {
         confirm: Option<Ask>,
     },
     Incomplete,
+}
+
+/// R21: a post is a message body, a private row's text may quote a sealed answer, and a Bot command's argument values
+/// are sealed: Debug gives their lengths and the argument names only.
+impl std::fmt::Debug for Plan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Post(text) => write!(f, "Post({:?})", crate::state::Redacted(text)),
+            Self::Private(status, text, provider) => write!(
+                f,
+                "Private({status:?}, {:?}, {provider:?})",
+                crate::state::Redacted(text)
+            ),
+            Self::Bot { definition, args } => f
+                .debug_struct("Bot")
+                .field("command", &definition.id)
+                .field("args", &registry::ArgNames(args))
+                .finish(),
+            Self::Moderate(m) => f.debug_tuple("Moderate").field(m).finish(),
+            Self::Builtin { run, confirm } => f
+                .debug_struct("Builtin")
+                .field("run", run)
+                .field("confirm", confirm)
+                .finish(),
+            Self::Incomplete => write!(f, "Incomplete"),
+        }
+    }
+}
+
+impl std::fmt::Debug for RunOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Post(text) => write!(f, "Post({:?})", crate::state::Redacted(text)),
+            Self::Private(id) => write!(f, "Private({id})"),
+            Self::Incomplete => write!(f, "Incomplete"),
+            Self::Bot { definition, args } => f
+                .debug_struct("Bot")
+                .field("command", &definition.id)
+                .field("args", &registry::ArgNames(args))
+                .finish(),
+            Self::Moderate(m) => f.debug_tuple("Moderate").field(m).finish(),
+            Self::Builtin { run, confirm } => f
+                .debug_struct("Builtin")
+                .field("run", run)
+                .field("confirm", confirm)
+                .finish(),
+        }
+    }
 }
 
 /// The question a built-in asks before it runs: the dialog's title and body (`ConfirmDialog`). Its `Debug` gives only
@@ -2110,6 +2158,119 @@ mod tests {
         };
         let shown = format!("{target:?}");
         assert!(!shown.contains(&id) && !shown.to_lowercase().contains("bjornsson"));
+    }
+
+    /// R21: posts, private rows, sealed Bot arguments and answers, polls, search hits and notifications print no decrypted
+    /// text in Debug output (one value per redacted type).
+    #[test]
+    fn decrypted_texts_of_commands_and_notices_stay_out_of_debug() {
+        const SECRET: &str = "zebra-body-7";
+        let mut args = registry::Args::new();
+        args.insert("text".into(), SECRET.into());
+        let definition = registry::commands()[0].clone();
+        let (channel, user) = (ChannelId([9; 16]), crate::state::UserId([2; 16]));
+        let shown = [
+            format!("{:?}", Plan::Post(SECRET.into())),
+            format!(
+                "{:?}",
+                Plan::Private(ResultStatus::Success, SECRET.into(), ResultProvider::Bot)
+            ),
+            format!(
+                "{:#?}",
+                Plan::Bot {
+                    definition: definition.clone(),
+                    args: args.clone(),
+                }
+            ),
+            format!("{:?}", RunOutcome::Post(SECRET.into())),
+            format!("{:#?}", RunOutcome::Bot { definition, args }),
+            format!(
+                "{:?}",
+                private::Patch {
+                    status: None,
+                    text: Some(SECRET.into()),
+                    hold: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                sealed::Answer {
+                    seq: 1,
+                    status: 200,
+                    body: SECRET.as_bytes().to_vec(),
+                    final_: true,
+                }
+            ),
+            format!(
+                "{:?}",
+                vec![
+                    crate::features::bot_admin::BotArg::Text(SECRET.into()),
+                    crate::features::bot_admin::BotArg::Bytes(SECRET.as_bytes().to_vec()),
+                ]
+            ),
+            format!(
+                "{:?}",
+                crate::features::bot_admin::SealedAnswer {
+                    status: 200,
+                    body: SECRET.as_bytes().to_vec(),
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::utilities::polls::PollCreate {
+                    channel: [9; 16],
+                    thread: None,
+                    question: SECRET.into(),
+                    answers: vec![SECRET.into()],
+                    multi: false,
+                    duration: 60,
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::utilities::polls::CardOption {
+                    text: SECRET.into(),
+                    pct: 0,
+                    mine: false,
+                    winner: false,
+                    voters: Vec::new(),
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::search::RawHit {
+                    group: [9; 16],
+                    seq: 1,
+                    snippet: SECRET.into(),
+                    thread_root: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::notify::Notice {
+                    channel,
+                    community: None,
+                    kind: crate::features::notify::NoticeKind::Dm,
+                    sender_user: Some(user),
+                    sender_name: "Ada".into(),
+                    body: SECRET.into(),
+                    ts: 1,
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::notify::Notification {
+                    kind: crate::features::notify::NotificationKind::Dm,
+                    title: "Ada".into(),
+                    body: SECRET.into(),
+                    tag: "dilla:x".into(),
+                    channel: Some(channel),
+                }
+            ),
+        ];
+        for s in shown {
+            assert!(!s.contains("zebra"), "a decrypted text: {} bytes", s.len());
+        }
     }
 
     /// R20: a checked kick or ban, its private row's copy and the row itself name neither the member nor the reason.

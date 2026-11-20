@@ -47,13 +47,24 @@ impl Client {
     }
 }
 
-/// A hit as the core answers it, before it is resolved to a channel.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A hit as the core answers it, before it is resolved to a channel. Its Debug gives the snippet's length only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub struct RawHit {
     pub group: [u8; 16],
     pub seq: u64,
     pub snippet: String,
     pub thread_root: Option<[u8; 16]>,
+}
+
+impl std::fmt::Debug for RawHit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawHit")
+            .field("group", &self.group)
+            .field("seq", &self.seq)
+            .field("snippet", &crate::state::Redacted(&self.snippet))
+            .field("thread_root", &self.thread_root)
+            .finish()
+    }
 }
 
 /// `decodeSearchHits`: `[[group, seq, snippet, rank, thread_root?]]`, at most 50 rows; rank is 0 and a snippet at most 160

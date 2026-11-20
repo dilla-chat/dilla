@@ -481,7 +481,8 @@ pub enum IssueCode {
     Duplicate,
 }
 
-/// `ArgumentIssue`. Its Debug gives the message's length: "Unexpected argument: …" quotes what was typed.
+/// `ArgumentIssue`. Its Debug gives the name's and message's lengths: "Unexpected argument: …" quotes what was typed,
+/// and an unknown or repeated named argument's name is the key as typed.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ArgumentIssue {
     pub code: IssueCode,
@@ -493,7 +494,8 @@ impl std::fmt::Debug for ArgumentIssue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ArgumentIssue")
             .field("code", &self.code)
-            .field("name", &self.name)
+            // An unknown or repeated named argument's name is the key as typed.
+            .field("name_len", &self.name.len())
             .field("message_len", &self.message.len())
             .finish()
     }
@@ -530,7 +532,7 @@ impl std::fmt::Debug for Validation {
 }
 
 /// [`Args`] in Debug output: the names only.
-struct ArgNames<'a>(&'a Args);
+pub(crate) struct ArgNames<'a>(pub(crate) &'a Args);
 
 impl std::fmt::Debug for ArgNames<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1689,6 +1691,16 @@ mod tests {
             subcommands: Vec::new(),
         };
         let literal = builtin("secret-reason for Bjornsson");
+        // An unknown and a repeated named argument: the issue's name is the key as typed.
+        let unknown_key = builtin("/ban user:x secretkey:1");
+        let repeated = builtin("/ban user:Bjornsson user:Bjornsson");
+        assert!(
+            matches!(unknown_key, Parsed::Invalid { .. }),
+            "{unknown_key:?}"
+        );
+        for shown in [format!("{unknown_key:?}"), format!("{repeated:?}")] {
+            assert!(!shown.contains("secretkey") && !shown.contains("Bjornsson"));
+        }
         for shown in [
             format!("{done:?}"),
             format!("{done:#?}"),

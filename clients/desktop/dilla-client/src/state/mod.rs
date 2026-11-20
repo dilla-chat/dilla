@@ -76,6 +76,26 @@ id16!(
     MessageId,
 );
 
+/// A decrypted text (a message body, an excerpt, a draft, a sealed Bot argument) in Debug output: its length only, so
+/// end-to-end-encrypted content never reaches a log, a panic message or test output through `{:?}`.
+pub struct Redacted<'a>(pub &'a str);
+
+impl fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes>", self.0.len())
+    }
+}
+
+/// [`Redacted`] for a list of texts: their count and total length.
+pub struct RedactedList<'a>(pub &'a [String]);
+
+impl fmt::Debug for RedactedList<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes: usize = self.0.iter().map(String::len).sum();
+        write!(f, "<{} texts, {bytes} bytes>", self.0.len())
+    }
+}
+
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use fmt::Write;
     let mut out = String::with_capacity(bytes.len() * 2);

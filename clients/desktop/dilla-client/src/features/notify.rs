@@ -284,8 +284,9 @@ pub enum NoticeKind {
     Dm,
 }
 
-/// types.ts `Notice`: a new message from another user that arrived live.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// types.ts `Notice`: a new message from another user that arrived live. Its Debug gives the body's length only (R21:
+/// it is a decrypted message).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Notice {
     pub channel: ChannelId,
     /// `None` for a DM.
@@ -295,6 +296,19 @@ pub struct Notice {
     pub sender_name: String,
     pub body: String,
     pub ts: u64,
+}
+
+impl std::fmt::Debug for Notice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Notice")
+            .field("channel", &self.channel)
+            .field("community", &self.community)
+            .field("kind", &self.kind)
+            .field("sender_user", &self.sender_user)
+            .field("body", &crate::state::Redacted(&self.body))
+            .field("ts", &self.ts)
+            .finish_non_exhaustive()
+    }
 }
 
 /// badges.ts `NOTICE_BODY_MAX`: code points.
@@ -377,8 +391,9 @@ pub fn should_notify(
 pub type Text = Arc<dyn Fn(&str, &[(&str, &str)]) -> String + Send + Sync>;
 
 /// What an OS notification says. Task 22 owns this type and may add fields; Task 18 (ring) delivers through it.
-/// Build one with [`Notification::new`]: the type grows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Build one with [`Notification::new`]: the type grows. Its Debug gives the body's length only (R21: a message
+/// notification's body is a decrypted excerpt).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Notification {
     pub kind: NotificationKind,
     pub title: String,
@@ -387,6 +402,18 @@ pub struct Notification {
     pub tag: String,
     /// What a click opens.
     pub channel: Option<ChannelId>,
+}
+
+impl std::fmt::Debug for Notification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Notification")
+            .field("kind", &self.kind)
+            .field("title", &self.title)
+            .field("body", &crate::state::Redacted(&self.body))
+            .field("tag", &self.tag)
+            .field("channel", &self.channel)
+            .finish()
+    }
 }
 
 impl Notification {

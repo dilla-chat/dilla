@@ -14,8 +14,9 @@ use std::sync::{Arc, OnceLock};
 use super::cache::{Lru, Shared};
 use super::mentions::{Part, split_mentions};
 
-/// A parsed body before mentions are resolved to pills (the web's `Tree`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A parsed body before mentions are resolved to pills (the web's `Tree`). Its Debug keeps the shape and gives each text
+/// by its length (R21: a decrypted body); a mention's target (an id or `everyone`/`here`) shows.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Tree {
     Text(String),
     /// A mention token's target: `everyone`, `here` or 32 hex digits.
@@ -35,6 +36,31 @@ pub enum Tree {
     },
 }
 
+impl std::fmt::Debug for Tree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use dilla_client::state::Redacted;
+        match self {
+            Self::Text(t) => write!(f, "Text({:?})", Redacted(t)),
+            Self::Ref(r) => f.debug_tuple("Ref").field(r).finish(),
+            Self::Strong(c) => f.debug_tuple("Strong").field(c).finish(),
+            Self::Em(c) => f.debug_tuple("Em").field(c).finish(),
+            Self::Strike(c) => f.debug_tuple("Strike").field(c).finish(),
+            Self::Quote(c) => f.debug_tuple("Quote").field(c).finish(),
+            Self::Code(t) => write!(f, "Code({:?})", Redacted(t)),
+            Self::CodeBlock { text, lang } => f
+                .debug_struct("CodeBlock")
+                .field("text", &Redacted(text))
+                .field("lang", lang)
+                .finish(),
+            Self::Link { href, text } => f
+                .debug_struct("Link")
+                .field("href", &Redacted(href))
+                .field("text", &Redacted(text))
+                .finish(),
+        }
+    }
+}
+
 /// The parse and whether it holds a link (a body with a link has its bidi controls removed).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Parsed {
@@ -42,8 +68,8 @@ pub struct Parsed {
     pub links: bool,
 }
 
-/// One character, or one mention token (kept whole so code can give its literal form back).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One character, or one mention token (kept whole so code can give its literal form back). No Debug: it is the body.
+#[derive(Clone, PartialEq, Eq)]
 enum Item {
     C(char),
     M(String),
@@ -658,8 +684,9 @@ pub fn cache_size() -> (usize, usize) {
     (trees().len(), trees().used_chars())
 }
 
-/// A body part as the row draws it: the tree with each mention resolved to its pill.
-#[derive(Clone, Debug, PartialEq)]
+/// A body part as the row draws it: the tree with each mention resolved to its pill. Its Debug is redacted like
+/// [`Tree`]'s (R21).
+#[derive(Clone, PartialEq)]
 pub enum Body {
     Text(String),
     Mention(Pill),
@@ -670,6 +697,30 @@ pub enum Body {
     Code(String),
     CodeBlock { text: String, lang: Option<String> },
     Link { href: String },
+}
+
+impl std::fmt::Debug for Body {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use dilla_client::state::Redacted;
+        match self {
+            Self::Text(t) => write!(f, "Text({:?})", Redacted(t)),
+            Self::Mention(p) => f.debug_tuple("Mention").field(p).finish(),
+            Self::Strong(c) => f.debug_tuple("Strong").field(c).finish(),
+            Self::Em(c) => f.debug_tuple("Em").field(c).finish(),
+            Self::Strike(c) => f.debug_tuple("Strike").field(c).finish(),
+            Self::Quote(c) => f.debug_tuple("Quote").field(c).finish(),
+            Self::Code(t) => write!(f, "Code({:?})", Redacted(t)),
+            Self::CodeBlock { text, lang } => f
+                .debug_struct("CodeBlock")
+                .field("text", &Redacted(text))
+                .field("lang", lang)
+                .finish(),
+            Self::Link { href } => f
+                .debug_struct("Link")
+                .field("href", &Redacted(href))
+                .finish(),
+        }
+    }
 }
 
 /// A mention pill: `me` is the viewer, `broadcast` is @everyone and @here.
@@ -718,6 +769,34 @@ fn resolve_tree(tree: &[Tree], resolve: &dyn Fn(&str) -> Pill, links: bool) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R21: a parsed body (the tree and the resolved parts), and a highlighted code block, print no decrypted text in
+    /// Debug output.
+    #[test]
+    fn a_parsed_body_stays_out_of_debug() {
+        let body = "zebra **zebra** _zebra_ ~~zebra~~ `zebra` [zebra](https://zebra.test) <@everyone>\n> zebra\n```rust\nlet zebra = 1;\n```";
+        let parsed = parse(body);
+        let parts = parse_markdown(body, &|_| Pill {
+            label: "everyone".into(),
+            me: false,
+            broadcast: true,
+            user: None,
+        });
+        let tokens = super::super::highlight::highlight(Some("rust"), "let zebra = 1;");
+        for shown in [
+            format!("{parsed:?}"),
+            format!("{parsed:#?}"),
+            format!("{parts:?}"),
+            format!("{tokens:?}"),
+        ] {
+            assert!(
+                !shown.contains("zebra"),
+                "a decrypted text: {} bytes",
+                shown.len()
+            );
+        }
+        assert!(format!("{parts:?}").contains("Mention"), "the shape shows");
+    }
 
     /// Final review sweep: a release forgets the parse memo (its keys are decrypted bodies), the heights and the code
     /// cards with it; a parse after it fills it again.

@@ -37,13 +37,24 @@ use crate::sync::value::{self as v, bin16};
 
 // ---- the sealed command seam (operations.ts) ----
 
-/// One argument of a sealed command.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One argument of a sealed command. Its Debug gives a text's or bytes' length only (R21: the arguments are sealed).
+#[derive(Clone, PartialEq, Eq)]
 pub enum BotArg {
     Uint(u64),
     Text(String),
     Bytes(Vec<u8>),
     Null,
+}
+
+impl std::fmt::Debug for BotArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uint(n) => write!(f, "Uint({n})"),
+            Self::Text(t) => write!(f, "Text({:?})", crate::state::Redacted(t)),
+            Self::Bytes(b) => write!(f, "Bytes(<{} bytes>)", b.len()),
+            Self::Null => write!(f, "Null"),
+        }
+    }
 }
 
 /// Review A M1: an argument's text and bytes (a removal's reason and excerpt, a music search, a poll's choice) are wiped
@@ -93,10 +104,22 @@ impl SealedCommand {
 }
 
 /// The Bot's final answer: `200 [revision|null, data, extra?]`, or a bare refusal code as the body of another status.
-#[derive(Clone, Debug)]
+/// Its Debug gives the opened body's length only (R21).
+#[derive(Clone)]
 pub struct SealedAnswer {
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for SealedAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SealedAnswer({}, {} bytes)",
+            self.status,
+            self.body.len()
+        )
+    }
 }
 
 /// Why a command did not get an answer.
