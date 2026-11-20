@@ -1210,3 +1210,286 @@ fn a_release_clears_the_windows_command_draft_and_reminders(cx: &mut gpui::TestA
     assert_eq!(Rc::strong_count(&client), 1);
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
 }
+
+/// builtin.ts `selfrole list`, `selfrole add` and `selfrole remove` (:267-271, :405-413), sent as the composer sends
+/// (`on_send`) by a member of a community whose owner offers "Crew" as a self role: the list shows it unchecked, `add`
+/// picks it, the list then shows it checked, `remove` drops it, and asking to drop it again changes nothing. Each row's
+/// text is read from the client's private results.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn selfrole_commands_list_add_and_remove(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::server_admin::hex_id;
+    use dilla_client::state::CommunityId;
+    use dilla_client::state::bot::{Conversation, ResultStatus};
+    use dilla_desktop::screens::commands::{self, SendDecision};
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t25-selfrole", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t25-selfrole"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t25-selfrole"));
+    let c = CommunityId(world::community(&host, &ada, "Midgard", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let within = Duration::from_secs(30);
+    // Ada, the owner, makes "Crew" and offers it as a self role.
+    let owner = rt.block_on(world::start(&ada));
+    let crew = rt.block_on(async {
+        world::wait_for(&owner, within, "Midgard", |s| {
+            s.communities.iter().any(|x| x.id == c)
+        })
+        .await;
+        owner.roles().load_access(c).await.unwrap();
+        let crew = owner
+            .roles()
+            .create_role(c, "Crew", 0, false, false, 0)
+            .await
+            .expect("ada makes Crew");
+        owner
+            .roles()
+            .configure_self_roles(c, &[crew])
+            .await
+            .expect("ada offers Crew");
+        crew
+    });
+    owner.stop();
+
+    let client = Rc::new(rt.block_on(world::start(&bea)));
+    let general = rt
+        .block_on(world::wait_for(&client, within, "#general", |s| {
+            s.channel_named(c, "general").is_some()
+        }))
+        .channel_named(c, "general")
+        .unwrap()
+        .id;
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    let ctx = SlotCx {
+        state: client.state().borrow().clone(),
+        client: Some(client.clone()),
+        community: Some(c),
+        channel: Some(general),
+        ..SlotCx::default()
+    };
+    let conversation = Conversation {
+        channel: general,
+        thread: None,
+    };
+    // Sends `draft` and answers its row once it settled (each command adds one row; none asks first).
+    let mut sent = 0;
+    let mut run = |cx: &mut gpui::VisualTestContext, draft: &str| -> (ResultStatus, String) {
+        assert_eq!(
+            cx.update(|_, cx| commands::on_send(&ctx, draft, &|t| t.to_owned(), window, cx)),
+            SendDecision::Handled
+        );
+        sent += 1;
+        for _ in 0..600 {
+            cx.run_until_parked();
+            let last = client
+                .state()
+                .borrow()
+                .bot
+                .results(&conversation)
+                .last()
+                .filter(|_| client.state().borrow().bot.results(&conversation).len() == sent)
+                .map(|r| (r.status, r.text.clone()));
+            if let Some(last) = last.filter(|(s, _)| *s != ResultStatus::Pending) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("{draft}: the row never settled");
+    };
+    let done = |text: &str| (ResultStatus::Success, text.to_owned());
+    let role = hex_id(&crew);
+
+    assert_eq!(run(vcx, "/selfrole list"), done("[ ] Crew"));
+    assert_eq!(
+        run(vcx, &format!("/selfrole add role:{role}")),
+        done("Crew added.")
+    );
+    assert_eq!(run(vcx, "/selfrole list"), done("[x] Crew"));
+    assert_eq!(
+        run(vcx, &format!("/selfrole remove role:{role}")),
+        done("Crew removed.")
+    );
+    assert_eq!(
+        run(vcx, &format!("/selfrole remove role:{role}")),
+        done("You do not have Crew.")
+    );
+    assert_eq!(
+        run(vcx, &format!("/selfrole add role:{}", hex_id(&[0xee; 16]))),
+        (
+            ResultStatus::Failed,
+            "That role is not currently self-assignable.".to_owned()
+        )
+    );
+    drop(ctx);
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
+
+/// builtin.ts `updateMemberRole` (:395-404) as the owner sends it: `/role add` of "Crew" to Bea asks nothing and grants
+/// it; `/role remove` asks first, and run as its confirmation runs it, revokes it; the same removal run once more is
+/// checked again against the live state and refused, as Bea no longer holds the role.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+fn role_commands_grant_then_ask_and_revoke(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::{self, Plan};
+    use dilla_client::features::server_admin::hex_id;
+    use dilla_client::state::bot::{Conversation, ResultProvider, ResultStatus};
+    use dilla_client::state::{AppState, CommunityId, UserId};
+    use dilla_desktop::screens::commands::{self, SendDecision, builtins, confirm};
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t25-role", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t25-role"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t25-role"));
+    let c = CommunityId(world::community(&host, &ada, "Midgard", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let within = Duration::from_secs(30);
+    let bea_id = UserId(bea.user_id);
+    let client = Rc::new(rt.block_on(world::start(&ada)));
+    let crew = rt.block_on(async {
+        world::wait_for(&client, within, "both members", |s| {
+            s.members.get(&c).is_some_and(|m| m.len() == 2)
+        })
+        .await;
+        client.roles().load_access(c).await.unwrap();
+        client
+            .roles()
+            .create_role(c, "Crew", 0, false, false, 0)
+            .await
+            .expect("ada makes Crew")
+    });
+    // Bea holds Crew (`held`) in Ada's view, the roles and Ada's access loaded: the state the frame reads.
+    let holds = |held: bool| -> std::sync::Arc<AppState> {
+        rt.block_on(world::wait_for(&client, within, "Bea's roles", |s| {
+            s.roles.access_of(c).loaded
+                && s.roles.roles_of(c).iter().any(|r| r.id == crew)
+                && s.members.get(&c).is_some_and(|m| {
+                    m.iter()
+                        .any(|m| m.user_id == bea_id && m.role_ids.contains(&crew) == held)
+                })
+        }))
+    };
+    let general = holds(false).channel_named(c, "general").unwrap().id;
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    let conversation = Conversation {
+        channel: general,
+        thread: None,
+    };
+    let ctx_of = |state| SlotCx {
+        state,
+        client: Some(client.clone()),
+        community: Some(c),
+        channel: Some(general),
+        ..SlotCx::default()
+    };
+    // The last row once it settled (a row is published a moment after it is added or finished).
+    let settled = |cx: &mut gpui::VisualTestContext| -> (ResultStatus, String) {
+        for _ in 0..600 {
+            cx.run_until_parked();
+            let last = client
+                .state()
+                .borrow()
+                .bot
+                .results(&conversation)
+                .last()
+                .map(|r| (r.status, r.text.clone()));
+            if let Some(last) = last.filter(|(s, _)| *s != ResultStatus::Pending) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the row never settled");
+    };
+    let (bea_hex, crew_hex) = (bea_id.hex(), hex_id(&crew));
+
+    let ctx = ctx_of(client.state().borrow().clone());
+    let add = format!("/role add user:{bea_hex} role:{crew_hex}");
+    assert_eq!(
+        vcx.update(|_, cx| commands::on_send(&ctx, &add, &|t| t.to_owned(), window, cx)),
+        SendDecision::Handled
+    );
+    assert!(
+        !vcx.update(|_, cx| confirm::is_open(window, cx)),
+        "adding asks nothing"
+    );
+    assert_eq!(
+        settled(vcx),
+        (ResultStatus::Success, "Crew added to Bea.".to_owned())
+    );
+    drop(ctx);
+    let ctx = ctx_of(holds(true));
+
+    let remove = format!("/role remove user:{bea_hex} role:{crew_hex}");
+    assert_eq!(
+        vcx.update(|_, cx| commands::on_send(&ctx, &remove, &|t| t.to_owned(), window, cx)),
+        SendDecision::Handled
+    );
+    assert!(
+        vcx.update(|_, cx| confirm::is_open(window, cx)),
+        "removing asks"
+    );
+    vcx.update(|_, cx| confirm::answer_builtin(window, None, cx));
+    // The question is answered by its dialog, which this window does not draw: its run is what a confirmation runs.
+    let Plan::Builtin { run, .. } = bot::plan_in(&ctx.state, Some(c), Some(general), &remove)
+    else {
+        panic!("/role remove plans a built-in");
+    };
+    let revoke = |cx: &mut gpui::VisualTestContext| {
+        let row = client.bot().add_result(
+            conversation,
+            ResultStatus::Pending,
+            "/role remove…".into(),
+            ResultProvider::Builtin,
+        );
+        let run = run.clone();
+        cx.update(|window, cx| {
+            builtins::run(
+                run,
+                row,
+                conversation,
+                &ctx,
+                window.window_handle().window_id(),
+                cx,
+            )
+        });
+        settled(cx)
+    };
+    assert_eq!(
+        revoke(vcx),
+        (ResultStatus::Success, "Crew removed from Bea.".to_owned())
+    );
+    holds(false);
+    assert_eq!(
+        revoke(vcx),
+        (
+            ResultStatus::Failed,
+            "Your permissions or role rank changed.".to_owned()
+        )
+    );
+    drop(ctx);
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}

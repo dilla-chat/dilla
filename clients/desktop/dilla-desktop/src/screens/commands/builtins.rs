@@ -9,14 +9,19 @@
 //!
 //! Task 11: the member moderation commands, `/timeout /untimeout /warn /unban` (builtin.ts:168-182, :204-264). Each
 //! checks the member (or Ban Members) again as it runs; `/untimeout` asks its question only once the timeout was read.
+//!
+//! Task 25: the role commands, `/role add|remove` and `/selfrole list|add|remove` (builtin.ts:265-271, :395-413). A
+//! role grant or revocation checks the role and the member again as it runs; a self role is picked only from the roles
+//! read as the command runs. The server stays the authority on both.
 
 use std::rc::Rc;
 
 use dilla_client::features::bot::{self, Ask, Builtin, GateAction, RemovalStep};
 use dilla_client::features::moderation::{self, Evidence, Moderation, Removal, RemovalOutcome};
 use dilla_client::features::roles::{perm, request_id, viewer_channel_bits};
-use dilla_client::features::server_admin::Parent;
+use dilla_client::features::server_admin::{Parent, hex_id};
 use dilla_client::state::bot::{Conversation, ResultStatus};
+use dilla_client::state::roles::SelfRole;
 use dilla_client::state::{AppState, ChannelId, CommunityId, MessageId, UserId};
 use dilla_client::sync::api::ApiError;
 use dilla_client::{Client, ClientError};
@@ -246,7 +251,97 @@ pub fn run(
                 })
                 .detach();
         }
+        Builtin::Role {
+            community,
+            user,
+            role,
+            add,
+            ..
+        } => {
+            // builtin.ts:398-401: the role and the member are checked again against the live state (the question may
+            // have been open a while), and the row names them as they are now.
+            let Some((role, member)) = bot::assignable_role(
+                &client.state().borrow(),
+                community,
+                &user.hex(),
+                &hex_id(&role),
+                add,
+            ) else {
+                return finish(failed("Your permissions or role rank changed."));
+            };
+            let (user, id) = (member.user, role.id);
+            let job = client.roles().run(move |r| async move {
+                if add {
+                    r.grant_role(community, user, id).await
+                } else {
+                    r.revoke_role(community, user, id).await
+                }
+            });
+            let ok = if add {
+                format!("{} added to {}.", role.name, member.name)
+            } else {
+                format!("{} removed from {}.", role.name, member.name)
+            };
+            moderated(job, ok, finish, cx);
+        }
+        Builtin::SelfRoleList { community } => {
+            let job = client
+                .roles()
+                .run(move |r| async move { r.load_self_roles(community).await });
+            cx.background_executor()
+                .spawn(async move {
+                    finish(match job.await {
+                        Ok(rows) => (ResultStatus::Success, self_role_rows(&rows)),
+                        Err(e) => failed(&bot::mutation_error(&e)),
+                    });
+                })
+                .detach();
+        }
+        Builtin::SelfRole {
+            community,
+            role,
+            add,
+        } => {
+            // builtin.ts `selfRole` (:405-413): the offered roles are read first; only one of them is picked or
+            // dropped, and one already in the asked state is not sent again.
+            let job = client.roles().run(move |r| async move {
+                let rows = r.load_self_roles(community).await?;
+                let Some(row) = rows.into_iter().find(|row| hex_id(&row.id) == role) else {
+                    return Ok(failed("That role is not currently self-assignable."));
+                };
+                if row.self_selected == add {
+                    let text = if add {
+                        format!("You already have {}.", row.name)
+                    } else {
+                        format!("You do not have {}.", row.name)
+                    };
+                    return Ok((ResultStatus::Success, text));
+                }
+                r.select_self_role(community, row.id, add).await?;
+                let verb = if add { "added" } else { "removed" };
+                Ok((ResultStatus::Success, format!("{} {verb}.", row.name)))
+            });
+            cx.background_executor()
+                .spawn(async move {
+                    finish(
+                        job.await
+                            .unwrap_or_else(|e| failed(&bot::mutation_error(&e))),
+                    );
+                })
+                .detach();
+        }
     }
+}
+
+/// builtin.ts `selfrole list` (:267-271): each offered role as `[x] {name}` (held) or `[ ] {name}`, in the order read.
+fn self_role_rows(rows: &[SelfRole]) -> String {
+    if rows.is_empty() {
+        return "No self-assignable roles are available.".to_owned();
+    }
+    rows.iter()
+        .map(|r| format!("{} {}", if r.self_selected { "[x]" } else { "[ ]" }, r.name))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// builtin.ts: a member's moderation re-checked as it runs (`moderationTarget`) fails with this.
@@ -562,6 +657,25 @@ pub(super) mod tests {
         let (_, excerpt) = remove(&long);
         assert_eq!(excerpt.chars().count(), 120);
         assert!(excerpt.len() <= EXCERPT_MAX_BYTES);
+    }
+
+    /// builtin.ts:267-271: the self roles are listed held or not, in the order read, or the row says there are none.
+    #[test]
+    fn self_roles_are_listed_with_their_check() {
+        let row = |n: u8, name: &str, self_selected| SelfRole {
+            id: [n; 16],
+            name: name.into(),
+            position: 1,
+            self_selected,
+        };
+        assert_eq!(
+            self_role_rows(&[]),
+            "No self-assignable roles are available."
+        );
+        assert_eq!(
+            self_role_rows(&[row(1, "Crew", false), row(2, "Night owls", true)]),
+            "[ ] Crew · [x] Night owls"
+        );
     }
 
     /// builtin.ts:52-59: a send that definitely did not leave names its code; any other failure may have sent it.

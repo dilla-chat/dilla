@@ -224,6 +224,8 @@ pub fn plan_in(
                 "reply" | "edit" | "delete" | "pin" | "unpin" | "topic" => {
                     message_plan(state, community, channel, &command_id, &args)
                 }
+                "role add" | "role remove" | "selfrole list" | "selfrole add"
+                | "selfrole remove" => role_plan(state, community, &command_id, &args),
                 "code" => {
                     let language = arg("language").unwrap_or_default().trim().to_owned();
                     let text = arg("text").unwrap_or_default();
@@ -247,8 +249,10 @@ pub fn plan_in(
                         Plan::Post(format!("```{language}\n{text}\n```"))
                     }
                 }
-                // The other built-ins act on another area (voice, members, search, ...): those areas move onto
-                // [`Plan::Builtin`] one by one, and until then they answer "unavailable".
+                // Left here: the navigation, UI-opening and voice built-ins (`/giphy /dm /invite /search /thread
+                // /join /leave /mute /unmute /deafen /undeafen /modlog`), which answer "unavailable" until their areas
+                // move onto [`Plan::Builtin`]; `every_builtin_has_a_handler` lists them exactly, and this arm goes
+                // with the last of them (`registry::commands()` is closed, so no other id reaches it).
                 _ => Plan::Private(
                     ResultStatus::Failed,
                     UNAVAILABLE.to_owned(),
@@ -454,6 +458,25 @@ pub enum Builtin {
         user: crate::state::UserId,
         name: String,
     },
+    /// `/role add` (`add`) and `/role remove`: grants or revokes `role` of `user`, checked again as it runs
+    /// ([`assignable_role`]). `role_name` and `member_name` are what its question shows.
+    Role {
+        community: CommunityId,
+        user: crate::state::UserId,
+        role: crate::state::roles::RoleId,
+        add: bool,
+        role_name: String,
+        member_name: String,
+    },
+    /// `/selfrole list`: reads the self-assignable roles and lists them.
+    SelfRoleList { community: CommunityId },
+    /// `/selfrole add` (`add`) and `/selfrole remove` of the self-assignable role whose id is `role` (hex, as typed):
+    /// the roles are read first, and only one that is offered is picked or dropped.
+    SelfRole {
+        community: CommunityId,
+        role: String,
+        add: bool,
+    },
 }
 
 impl std::fmt::Debug for Builtin {
@@ -480,6 +503,10 @@ impl std::fmt::Debug for Builtin {
                 community, reason, ..
             } => write!(f, "Warn({community:?}, {} bytes)", reason.len()),
             Self::Unban { community, .. } => write!(f, "Unban({community:?})"),
+            // Who gains or loses which role is a role action's content: neither the member nor the role shows.
+            Self::Role { community, add, .. } => write!(f, "Role({community:?}, {add})"),
+            Self::SelfRoleList { community } => write!(f, "SelfRoleList({community:?})"),
+            Self::SelfRole { community, add, .. } => write!(f, "SelfRole({community:?}, {add})"),
         }
     }
 }
@@ -498,6 +525,11 @@ impl Builtin {
             Self::Untimeout { .. } | Self::UntimeoutConfirmed { .. } => "untimeout",
             Self::Warn { .. } => "warn",
             Self::Unban { .. } => "unban",
+            Self::Role { add: true, .. } => "role add",
+            Self::Role { add: false, .. } => "role remove",
+            Self::SelfRoleList { .. } => "selfrole list",
+            Self::SelfRole { add: true, .. } => "selfrole add",
+            Self::SelfRole { add: false, .. } => "selfrole remove",
         }
     }
 
@@ -507,7 +539,8 @@ impl Builtin {
     pub fn dismissed_on_cancel(&self) -> bool {
         match self {
             // CommandHost's `moderation` is `/kick` and `/ban` only (:233): a cancelled `/delete`, even of another
-            // person's message, and a cancelled `/timeout`, `/untimeout`, `/warn` or `/unban` leave no row.
+            // person's message, and a cancelled `/timeout`, `/untimeout`, `/warn`, `/unban` or `/role remove` leave no
+            // row.
             Self::Reply { .. }
             | Self::Edit { .. }
             | Self::DeleteOwn { .. }
@@ -518,7 +551,10 @@ impl Builtin {
             | Self::Untimeout { .. }
             | Self::UntimeoutConfirmed { .. }
             | Self::Warn { .. }
-            | Self::Unban { .. } => true,
+            | Self::Unban { .. }
+            | Self::Role { .. }
+            | Self::SelfRoleList { .. }
+            | Self::SelfRole { .. } => true,
         }
     }
 }
@@ -1127,6 +1163,65 @@ fn member_builtin_plan(
                     reason: reason.to_owned(),
                 },
                 Some(ask),
+            )
+        }
+    }
+}
+
+/// builtin.ts `role add`, `role remove` (`updateMemberRole`, :395-404) and the `selfrole` commands (:267-271, :405-413):
+/// a role is granted or revoked only where [`assignable_role`] allows it, and removing one asks first. The self roles
+/// are read as the command runs, so planning one checks only that it is typed in a community.
+fn role_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let Some(community) = community else {
+        return failed("This command needs a community channel.");
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let run = |run: Builtin, confirm: Option<Ask>| Plan::Builtin { run, confirm };
+    match command_id {
+        "selfrole list" => run(Builtin::SelfRoleList { community }, None),
+        "selfrole add" | "selfrole remove" => run(
+            Builtin::SelfRole {
+                community,
+                role: arg("role").trim().to_owned(),
+                add: command_id == "selfrole add",
+            },
+            None,
+        ),
+        _ => {
+            let add = command_id == "role add";
+            let Some((role, member)) =
+                assignable_role(state, community, arg("user"), arg("role"), add)
+            else {
+                return failed(
+                    "This member or role is not assignable with your current permissions and rank.",
+                );
+            };
+            let confirm = (!add).then(|| Ask {
+                title: format!("Remove {} from {}?", role.name, member.name),
+                body: "This changes the member’s roles.".to_owned(),
+            });
+            run(
+                Builtin::Role {
+                    community,
+                    user: member.user,
+                    role: role.id,
+                    add,
+                    role_name: role.name,
+                    member_name: member.name,
+                },
+                confirm,
             )
         }
     }
@@ -2947,5 +3042,252 @@ mod tests {
                 ResultProvider::Builtin
             )
         );
+    }
+
+    /// builtin.test.ts:501 (`has a real handler registered for every built-in catalog entry`): in a state where this
+    /// account may do anything (the community's owner, every permission loaded), each built-in of the registry, given
+    /// valid arguments, parses and is answered by its own arm, never by the "unavailable" catch-all. `PENDING` lists the
+    /// built-ins that still answer it (the navigation, UI-opening and voice commands, whose areas land next); the list is
+    /// exact, so giving one of them its arm fails here until it leaves the list, and the catch-all goes with the last.
+    #[test]
+    fn every_builtin_has_a_handler() {
+        use super::registry::ArgKind;
+        use crate::state::MessageId;
+        const PENDING: [&str; 12] = [
+            "giphy", "dm", "invite", "search", "thread", "join", "leave", "mute", "unmute",
+            "deafen", "undeafen", "modlog",
+        ];
+        let (mut s, c, ch) = message_world(u32::MAX);
+        let ada = s.account.user_id.unwrap();
+        s.communities[0].owner = ada;
+        s.roles.access.insert(
+            c,
+            crate::state::roles::CommunityAccess {
+                top: u32::MAX,
+                owner: true,
+                administrator: true,
+                manage_community: true,
+                view_audit_log: true,
+                manage_channels: true,
+                kick_members: true,
+                ban_members: true,
+                moderate_members: true,
+                manage_messages: true,
+                create_invite: true,
+                manage_roles: true,
+                loaded: true,
+                everyone_id: Some([3; 16]),
+            },
+        );
+        let bea = crate::state::UserId([6; 16]).hex();
+        let mut unavailable = Vec::new();
+        for command in registry::commands() {
+            let mut draft = format!("/{}", command.id);
+            for option in command.options.iter().filter(|o| o.required) {
+                let value = match (option.kind, option.name.as_str()) {
+                    (ArgKind::User, _) => bea.clone(),
+                    (ArgKind::Role, _) => crate::features::server_admin::hex_id(&[3; 16]),
+                    (ArgKind::Message, _) => MessageId([0xb; 16]).hex(),
+                    (ArgKind::Channel, _) => ch.hex(),
+                    (ArgKind::Duration, _) => "1h".to_owned(),
+                    (_, "language") => "rust".to_owned(),
+                    _ => "x".to_owned(),
+                };
+                draft.push_str(&format!(" {}:{value}", option.name));
+            }
+            match plan_in(&s, Some(c), Some(ch), &draft) {
+                Plan::Incomplete => panic!("{draft} does not parse"),
+                Plan::Private(_, text, _) if text == UNAVAILABLE => {
+                    unavailable.push(command.id.as_str());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(unavailable, PENDING);
+    }
+
+    /// builtin.ts `updateMemberRole` (:395-404): a role is granted or revoked only where [`assignable_role`] allows it;
+    /// removing one asks first, adding one does not.
+    #[test]
+    fn role_builtins_check_before_running() {
+        use crate::state::members::Member;
+        use crate::state::roles::{CommunityAccess, RoleSummary};
+        use crate::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let (me, bea) = (UserId([1; 16]), UserId([2; 16]));
+        let (everyone, mine, crew, guest) = ([9; 16], [10; 16], [13; 16], [14; 16]);
+        let role = |id: [u8; 16], name: &str, position: u32| RoleSummary {
+            id,
+            name: name.into(),
+            color: 0,
+            position,
+            hoist: false,
+            mentionable: false,
+            allow: 0,
+            deny: 0,
+            members: 0,
+        };
+        let member = |user_id, username: &str, role_ids: Vec<[u8; 16]>| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids,
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: UserId([3; 16]),
+            policy_version: 1,
+        });
+        s.members.insert(
+            c,
+            vec![
+                member(me, "ada", vec![mine]),
+                member(bea, "bea", vec![crew]),
+            ],
+        );
+        s.roles.roles.insert(
+            c,
+            vec![
+                role(everyone, "@everyone", 0),
+                role(mine, "Mods", 5),
+                role(crew, "Crew", 2),
+                role(guest, "Guest", 1),
+            ],
+        );
+        s.roles.access.insert(
+            c,
+            CommunityAccess {
+                top: 5,
+                manage_roles: true,
+                loaded: true,
+                everyone_id: Some(everyone),
+                ..CommunityAccess::default()
+            },
+        );
+        let hex = crate::features::server_admin::hex_id;
+        let draft =
+            |verb: &str, r: &[u8; 16]| format!("/role {verb} user:{} role:{}", bea.hex(), hex(r));
+        let refused = Plan::Private(
+            ResultStatus::Failed,
+            "This member or role is not assignable with your current permissions and rank.".into(),
+            ResultProvider::Builtin,
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("add", &everyone)),
+            refused,
+            "@everyone"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("add", &crew)),
+            refused,
+            "already held"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("remove", &guest)),
+            refused,
+            "not held"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("remove", &crew)),
+            Plan::Builtin {
+                run: Builtin::Role {
+                    community: c,
+                    user: bea,
+                    role: crew,
+                    add: false,
+                    role_name: "Crew".into(),
+                    member_name: "bea".into(),
+                },
+                confirm: Some(Ask {
+                    title: "Remove Crew from bea?".into(),
+                    body: "This changes the member’s roles.".into(),
+                }),
+            }
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("add", &guest)),
+            Plan::Builtin {
+                run: Builtin::Role {
+                    community: c,
+                    user: bea,
+                    role: guest,
+                    add: true,
+                    role_name: "Guest".into(),
+                    member_name: "bea".into(),
+                },
+                confirm: None,
+            }
+        );
+        // The self roles are read as the command runs: planning checks nothing but the community.
+        assert_eq!(
+            plan(&s, Some(c), "/selfrole list"),
+            Plan::Builtin {
+                run: Builtin::SelfRoleList { community: c },
+                confirm: None,
+            }
+        );
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/selfrole remove role:{}", hex(&crew))
+            ),
+            Plan::Builtin {
+                run: Builtin::SelfRole {
+                    community: c,
+                    role: hex(&crew),
+                    add: false,
+                },
+                confirm: None,
+            }
+        );
+    }
+
+    /// R20/R21: a role command names neither the member nor the role it acts on in its Debug, nor do the self-role
+    /// commands name their role (one case per variant).
+    #[test]
+    fn role_builtins_keep_the_member_and_role_out_of_debug() {
+        let (community, user) = (CommunityId([7; 16]), crate::state::UserId([2; 16]));
+        let role = [0xab; 16];
+        let cases = [
+            (
+                "Role",
+                Builtin::Role {
+                    community,
+                    user,
+                    role,
+                    add: true,
+                    role_name: "Crewmates".into(),
+                    member_name: "Bjornsson".into(),
+                },
+            ),
+            (
+                "SelfRole",
+                Builtin::SelfRole {
+                    community,
+                    role: crate::features::server_admin::hex_id(&role),
+                    add: true,
+                },
+            ),
+            ("SelfRoleList", Builtin::SelfRoleList { community }),
+        ];
+        let id = format!("{user:?}");
+        for (variant, b) in cases {
+            for shown in [format!("{b:?}"), format!("{b:#?}")] {
+                assert!(shown.starts_with(variant), "{variant}: the variant shows");
+                assert!(!shown.contains(&id), "{variant}: the member's id");
+                assert!(!shown.contains("Bjornsson"), "{variant}: the member's name");
+                assert!(!shown.contains("Crewmates"), "{variant}: the role's name");
+                assert!(!shown.contains("ab"), "{variant}: the role's id");
+                assert!(!shown.contains("171"), "{variant}: the role's id bytes");
+            }
+            assert!(b.dismissed_on_cancel(), "{variant}");
+        }
     }
 }
