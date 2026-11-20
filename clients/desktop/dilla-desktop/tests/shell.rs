@@ -52,6 +52,8 @@ parity! {
     parity_shell_panes_resized_b => "shell/panes-resized-b",
     parity_shell_header_tooltip => "shell/header-tooltip",
     parity_shell_header_tooltip_b => "shell/header-tooltip-b",
+    // Task 34: the `offline` step: the link banner "Offline. Reconnecting…" over the log.
+    parity_shell_reconnecting => "shell/reconnecting",
 }
 
 /// A GPUI-only reference (`native/row-menu`): the channel row's menu with the web's items (pins, Mute, the four notify

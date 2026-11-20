@@ -28,6 +28,9 @@
 //!                                                                the first call switches accessibility on, as a reader does)
 //! log                     -> ok [<entry>[;<entry>]...]          (the harness view's received events; see `--harness`)
 //! screenshot <path>       -> ok <width> <height>                (PNG of the rendered frame, device pixels)
+//! connection <status>     -> ok | err <why>                     (a fixture's shell takes the gateway status `reconnecting` (the
+//!                                                                link dropped: the banner "Offline. Reconnecting…"),
+//!                                                                `connecting` or `online`: the `offline` step's GPUI side)
 //! quit-dialog <state>     -> ok <dialog> | err <why>            (asks to quit with one guard in `active-call`,
 //!                                                                `unsent-draft` or `not-responding`: the quit dialog
 //!                                                                over the screen, `native::quit::show_state`)
@@ -905,6 +908,27 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
                         pattern,
                         cx,
                     )
+                });
+            session.frame();
+            match done {
+                Ok(Ok(())) => "ok".to_owned(),
+                Ok(Err(why)) => format!("err {why}"),
+                Err(e) => format!("err {e}"),
+            }
+        }
+        (Some("connection"), Some(status), None) => {
+            let window = session.window();
+            let done = session
+                .cx
+                .update_window(window, |root, _: &mut Window, cx: &mut App| {
+                    let app = root
+                        .downcast::<crate::app::AppView>()
+                        .map_err(|_| "the window is not the app's".to_owned())?;
+                    let shell = app
+                        .read(cx)
+                        .shell()
+                        .ok_or_else(|| "the window shows no shell".to_owned())?;
+                    shell.update(cx, |shell, cx| shell.simulate_connection(status, cx))
                 });
             session.frame();
             match done {

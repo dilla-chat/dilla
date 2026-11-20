@@ -115,6 +115,11 @@ pub fn replay(driver: &mut Driver, step: &Step) {
         Step::Settle => {
             driver.wait_idle();
         }
+        // The web shooter takes the browser offline; the link banner then says the connection is being re-established.
+        Step::Offline => {
+            let reply = driver.request("connection reconnecting");
+            assert_eq!(reply, "ok", "connection reconnecting: {reply}");
+        }
     }
 }
 

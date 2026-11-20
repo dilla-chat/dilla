@@ -288,7 +288,11 @@ impl ShellView {
     /// the link that dropped and is being made again (`ConnectionStatus::Offline`: the link banner's "Offline.
     /// Reconnecting…", which the web draws when the browser loses its network); `connecting` and `online` are the others.
     #[cfg(feature = "test-hooks")]
-    pub fn simulate_connection(&mut self, status: &str, cx: &mut Context<Self>) -> Result<(), String> {
+    pub fn simulate_connection(
+        &mut self,
+        status: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let status = match status {
             "reconnecting" => ConnectionStatus::Offline,
             "connecting" => ConnectionStatus::Connecting,
