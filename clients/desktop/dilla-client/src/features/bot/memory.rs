@@ -250,14 +250,24 @@ impl Publications {
 }
 
 /// A `/timeout` that was sent (builtin.ts:229-231): its member, the expiry it asked for, its length, and whether its
-/// answer was confirmed. The timeout endpoint does not deduplicate request ids, so a sent one is never sent again.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// answer was confirmed. The timeout endpoint does not deduplicate request ids, so a sent one is never sent again. Its
+/// Debug names no member (a moderation target) and no instant: the length and whether it settled.
+#[derive(Clone, PartialEq, Eq)]
 pub struct TimeoutAttempt {
     pub community: CommunityId,
     pub user: UserId,
     pub expires: u64,
     pub seconds: u64,
     pub settled: bool,
+}
+
+impl std::fmt::Debug for TimeoutAttempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TimeoutAttempt")
+            .field("seconds", &self.seconds)
+            .field("settled", &self.settled)
+            .finish_non_exhaustive()
+    }
 }
 
 /// builtin.ts `timeoutAttempts`, by request id.
@@ -335,12 +345,23 @@ pub struct AnnouncementAttempt {
     pub sent: bool,
 }
 
-/// A role panel publication (bot-handlers.ts:466-540): its channel and roles, and whether it went out.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A role panel publication (bot-handlers.ts:466-540): its channel and roles, and whether it went out. Its Debug gives the
+/// number of roles only, never their names or emoji.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RolePanelAttempt {
     pub channel: ChannelId,
     pub options: Vec<PanelOption>,
     pub sent: bool,
+}
+
+impl std::fmt::Debug for RolePanelAttempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RolePanelAttempt")
+            .field("channel", &self.channel)
+            .field("options", &self.options.len())
+            .field("sent", &self.sent)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -513,13 +534,68 @@ mod tests {
                 duration: 3600,
             },
         };
+        let panel = RolePanelAttempt {
+            channel: ChannelId([3; 16]),
+            options: vec![PanelOption {
+                emoji: "🔒secret".into(),
+                role: [4; 16],
+                name: "secret-role".into(),
+            }],
+            sent: true,
+        };
+        let bea = UserId([0xbe; 16]);
+        let timeout = TimeoutAttempt {
+            community: CommunityId([1; 16]),
+            user: bea,
+            expires: 1_999_999_999,
+            seconds: 600,
+            settled: false,
+        };
         for shown in [
             format!("{m:?}"),
             format!("{saved:?}"),
             format!("{attempt:?}"),
             format!("{poll:?}"),
+            format!("{panel:?}"),
+            format!("{panel:#?}"),
+            format!("{timeout:?}"),
         ] {
             assert!(!shown.contains("secret"), "{shown}");
+            assert!(!shown.contains("🔒"), "{shown}");
+            assert!(!shown.contains(&format!("{bea:?}")), "{shown}");
+            assert!(!shown.contains("1999999999"), "{shown}");
         }
+        assert!(format!("{panel:?}").contains("options: 1"));
+        assert!(format!("{timeout:?}").contains("seconds: 600"));
+    }
+
+    /// Sign-out and revocation (`Sealed::forget_all`): the remembered drafts, their ids and every attempt go.
+    #[test]
+    fn sign_out_empties_the_memory() {
+        let sealed = crate::features::bot::sealed::Sealed::new(std::sync::Arc::new(
+            crate::features::bot::sealed::tests::Fake::default(),
+        ));
+        let memory = sealed.memory();
+        {
+            let mut m = memory.lock().unwrap();
+            m.uncertain(at(1), "/warn user:x reason:y", [1; 16], "warn");
+            m.publications.insert("k".into());
+            m.keep_announcement(
+                ([1; 16], CommunityId([1; 16])),
+                AnnouncementAttempt {
+                    operation: 51,
+                    request: [1; 16],
+                    args: Vec::new(),
+                    revision: 1,
+                    sent: true,
+                },
+            );
+        }
+        sealed.forget_all();
+        let mut m = memory.lock().unwrap();
+        assert_eq!(m.take_reopen(at(1)), None);
+        assert!(!m.publications.contains("k"));
+        assert!(m.announcements.is_empty());
+        assert_ne!(m.attempt(at(1), "warn", "/warn user:x reason:y"), [1; 16]);
     }
 }

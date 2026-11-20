@@ -429,12 +429,15 @@ async fn mutate(
     attempt.sent = true;
     attempts.with(|m| m.keep_announcement((parent, attempts.community), attempt.clone()));
     resend(ops, &attempt).await.map_err(|e| match e {
-        // Refused before the Bot took it, or never sent: nothing happened, and the attempt goes.
-        OpError::Refused { .. } | OpError::Invalid => {
+        // Refused before the Bot took it: nothing happened, and the attempt goes (only a `BotOperationRefusedError`
+        // deletes it, bot-handlers.ts:132-135).
+        OpError::Refused { .. } => {
             attempts.drop(parent);
             Failure::failed(&e.to_string())
         }
-        OpError::Uncertain { .. } => Failure::unsure(MAY_HAVE_BEEN_SENT),
+        // No answer, an accepted answer that cannot be read (R30), or any other throw: the attempt is sent and stays,
+        // as the web's handler answers uncertain for a sent attempt (:452-457).
+        OpError::Uncertain { .. } | OpError::Invalid => Failure::unsure(MAY_HAVE_BEEN_SENT),
     })
 }
 
@@ -954,6 +957,45 @@ mod tests {
         let ops = BotOperations::new(COMMUNITY, refused);
         run(delete_over(&ops, attempts(&memory), [5; 16], &row, 7)).unwrap_err();
         assert!(!sent_attempt(&memory, [5; 16], COMMUNITY));
+    }
+
+    /// Task 30 fix round 1 (R30): a first save the Bot accepted with an answer that cannot be read is uncertain: the
+    /// attempt stays sent, and the next run of the same command resends it under the same request instead of a new one.
+    #[test]
+    fn an_unreadable_first_answer_keeps_the_attempt() {
+        let empty = Value::Array(vec![]).encode();
+        let script = Script::new(vec![
+            Ok(SealedAnswer {
+                status: 200,
+                body: vec![0xff],
+            }),
+            Ok(answer(Some(8), empty)),
+        ]);
+        let ops = BotOperations::new(COMMUNITY, script.clone());
+        let memory = Mutex::default();
+        let first = run(save_over(
+            &ops,
+            attempts(&memory),
+            [4; 16],
+            None,
+            &schedule(),
+            7,
+        ))
+        .unwrap_err();
+        assert!(first.uncertain(), "{first:?}");
+        assert!(
+            first
+                .text
+                .starts_with("This schedule mutation may have been sent.")
+        );
+        assert!(sent_attempt(&memory, [4; 16], COMMUNITY), "kept, sent");
+        assert_eq!(
+            run(reconcile_over(&ops, attempts(&memory), [4; 16])),
+            Some(Ok("Announcement scheduled.".to_owned()))
+        );
+        let sent = script.sent.lock().unwrap();
+        assert_eq!(sent[0].request_id, sent[1].request_id);
+        assert_eq!(sent[0].args, sent[1].args);
     }
 
     fn listed() -> ScheduleRow {

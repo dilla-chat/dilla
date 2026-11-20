@@ -617,6 +617,13 @@ pub fn run(
         channel,
         thread: None,
     };
+    // The web has one path for an uncertain attempt: its dialog closes and the reopened draft reconciles it. Here the
+    // editor stays open and locked on it, so the reopened draft sent again is that editor's Save: its own row, one
+    // reconcile at a time, never a second row for the same request.
+    if routes_to_editor(window, &attempt, cx) {
+        submit(window, cx);
+        return;
+    }
     let pending = copy::pending(command.id());
     let row = match &ctx.client {
         Some(client) => client.bot().add_result(
@@ -694,6 +701,12 @@ pub fn run(
         cx.update(|cx| after_list(window, &client, started, listed, cx));
     })
     .detach();
+}
+
+/// Whether `attempt` is the request of `window`'s open editor while that editor is locked on a sent attempt: the run is
+/// then the editor's Save (a Save already out sends nothing more).
+fn routes_to_editor(window: WindowId, attempt: &Attempt, cx: &App) -> bool {
+    form_of(window, cx).is_some_and(|f| f.parent == attempt.request && f.locked())
 }
 
 /// The sent schedule mutation of the command `parent`, reconciled (`Bot::reconcile_announcement`).
@@ -2000,6 +2013,32 @@ mod tests {
             "{text}"
         );
         assert!(!held.done && !held.busy && held.locked());
+    }
+
+    /// Task 30 fix round 1 (b): while the window's editor is locked on a sent attempt, the reopened draft sent again is
+    /// that editor's Save: it adds no second row. Another request, or an editor no longer locked, runs as a command.
+    #[gpui::test]
+    fn a_resend_of_a_locked_editors_draft_is_its_save(cx: &mut gpui::TestAppContext) {
+        let editor = form(cx);
+        let window = cx.add_empty_window();
+        let w = window.update(|w, _| w.window_handle().window_id());
+        let ctx = ctx(state(true, true));
+        let same = editor.attempt();
+        let other = Attempt {
+            request: [8; 16],
+            ..same.clone()
+        };
+        hold_sent(&editor);
+        window.update(|_, cx| {
+            slot(w, cx).form = Some(editor);
+            assert!(routes_to_editor(w, &same, cx));
+            assert!(!routes_to_editor(w, &other, cx), "another request");
+            let args = Args::new();
+            run(&ctx, Command::Create, &args, same.clone(), w, cx);
+            assert!(held_rows(w, cx).is_empty(), "no second row");
+            release_sent(form_of(w, cx).unwrap());
+            assert!(!routes_to_editor(w, &same, cx), "no longer locked");
+        });
     }
 
     /// N3 (CommandHost's held row): Cancel ends the row Failed only when nothing may have taken effect; over an unsure

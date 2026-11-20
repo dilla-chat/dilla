@@ -613,28 +613,34 @@ pub fn submit(w: WindowId, cx: &mut App) {
     let Some(client) = form.client.clone() else {
         return;
     };
+    let community = form.community;
+    // :384-386: the attempt is kept just before the create, so a run of the same request reconciles it. It is bound to
+    // the Bot user the community pins (the web's `installationId`); with none pinned nothing could be sealed to the Bot,
+    // and no poll goes out unguarded.
+    let Some(bot_user) = form
+        .bot_user
+        .or_else(|| client.utilities().bot_identity(community).map(|b| b.user))
+    else {
+        form.error = Some(copy::POLL_BOT_UNAVAILABLE.to_owned());
+        cx.refresh_windows();
+        return;
+    };
     let Some(request) = form.begin_post() else {
         return;
     };
-    let (conversation, community) = (form.conversation, form.community);
+    let conversation = form.conversation;
     let attempt = Attempt {
         request,
         invocation: form.invocation.clone(),
         text: form.draft.clone(),
     };
-    // :384-386: the attempt is kept just before the create, so a run of the same request reconciles it.
-    let bot_user = form
-        .bot_user
-        .or_else(|| client.utilities().bot_identity(community).map(|b| b.user));
-    if let Some(bot_user) = bot_user {
-        let kept = PollAttempt {
-            at: conversation,
-            community,
-            bot_user,
-            value: input.clone(),
-        };
-        super::with_memory(&client, |m| m.keep_poll(request, kept));
-    }
+    let kept = PollAttempt {
+        at: conversation,
+        community,
+        bot_user,
+        value: input.clone(),
+    };
+    super::with_memory(&client, |m| m.keep_poll(request, kept));
     // The row is pending from the post (`startResult`, :379); a second Post after a refusal makes a second row.
     let row = client.bot().add_result(
         conversation,

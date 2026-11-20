@@ -209,26 +209,27 @@ fn status_of_code(code: &str) -> Option<u8> {
     })
 }
 
-/// `appOperationAnswer`: 200 `[revision, data, extra?]`, or a refusal's v1 status.
+/// `appOperationAnswer`: 200 `[revision, data, extra?]`, or a refusal's v1 status. A 200 whose body cannot be read is
+/// uncertain (Task 30, R30): the Bot took the request and may have acted, so a mutation keeps its attempt and request id
+/// for the resend, as the web's decode throw is no `BotOperationRefusedError` (operations.ts:64-145). A read that gets
+/// it is retried as one that got no answer.
 fn app_answer(request_id: [u8; 16], answer: &SealedAnswer) -> Result<BotResult, OpError> {
     let refused = |code: &str| OpError::Refused {
         code: code.to_owned(),
         request_id,
     };
     if answer.status == 200 {
-        let value = Value::decode(&answer.body).map_err(|_| refused("E_BOT_ANSWER"))?;
-        let f = value.as_array().ok_or_else(|| refused("E_BOT_ANSWER"))?;
+        let unreadable = || OpError::Uncertain { request_id };
+        let value = Value::decode(&answer.body).map_err(|_| unreadable())?;
+        let f = value.as_array().ok_or_else(unreadable)?;
         if !(2..=3).contains(&f.len()) {
-            return Err(refused("E_BOT_ANSWER"));
+            return Err(unreadable());
         }
         let revision = match &f[0] {
             Value::Null => None,
-            other => Some(v::u53(other).map_err(|_| refused("E_BOT_ANSWER"))?),
+            other => Some(v::u53(other).map_err(|_| unreadable())?),
         };
-        let data = f[1]
-            .as_bytes()
-            .ok_or_else(|| refused("E_BOT_ANSWER"))?
-            .to_vec();
+        let data = f[1].as_bytes().ok_or_else(unreadable)?.to_vec();
         return Ok(BotResult {
             request_id,
             status: 0,
@@ -1772,6 +1773,37 @@ mod tests {
         assert_eq!(sent[0], sent[1]);
         // A request this page never sent is not read.
         assert_eq!(run(ops.read([1; 16], 16)).unwrap(), None);
+    }
+
+    /// Task 30 (R30): a 200 whose body cannot be read is uncertain, never a refusal: the Bot may have acted, so the
+    /// caller keeps its request id for the resend. A refusal stays a refusal.
+    #[test]
+    fn an_accepted_answer_that_cannot_be_read_is_uncertain() {
+        let id = [3u8; 16];
+        let short = Value::Array(vec![Value::Null]).encode();
+        let not_bytes = Value::Array(vec![Value::Null, Value::Uint(1)]).encode();
+        let bad_revision =
+            Value::Array(vec![Value::Text("x".into()), Value::Bytes(vec![])]).encode();
+        for body in [
+            vec![0xff],
+            Value::Uint(1).encode(),
+            short,
+            not_bytes,
+            bad_revision,
+        ] {
+            assert_eq!(
+                app_answer(id, &SealedAnswer { status: 200, body }),
+                Err(OpError::Uncertain { request_id: id })
+            );
+        }
+        let refused = SealedAnswer {
+            status: 409,
+            body: b"E_NOPE".to_vec(),
+        };
+        assert!(matches!(
+            app_answer(id, &refused),
+            Err(OpError::Refused { .. })
+        ));
     }
 
     #[test]

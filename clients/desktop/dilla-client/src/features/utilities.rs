@@ -896,4 +896,53 @@ mod tests {
         );
         assert!(fake.sent.lock().unwrap().is_empty(), "nothing was sent");
     }
+
+    /// An answer envelope the Bot sent with status 200 and that cannot be read.
+    struct Unreadable;
+
+    #[async_trait::async_trait]
+    impl crate::features::bot_admin::SealedBot for Unreadable {
+        async fn send(
+            &self,
+            _: CommunityId,
+            _: crate::features::bot_admin::SealedCommand,
+        ) -> Result<crate::features::bot_admin::SealedAnswer, crate::features::bot_admin::SendError>
+        {
+            Ok(crate::features::bot_admin::SealedAnswer {
+                status: 200,
+                body: vec![0xff],
+            })
+        }
+    }
+
+    /// Task 30 fix round 1 (R30): a create the Bot took whose answer envelope cannot be read is uncertain, so the poll form
+    /// keeps its attempt and request id; a read that gets one is retried, as before.
+    #[test]
+    fn an_unreadable_create_answer_is_uncertain() {
+        let input = polls::PollCreate {
+            channel: [2; 16],
+            thread: None,
+            question: "Raid?".into(),
+            answers: vec!["the bridge".into(), "the harbour".into()],
+            multi: false,
+            duration: 86_400,
+        };
+        let ops = BotOperations::new(CommunityId([9; 16]), Arc::new(Unreadable));
+        assert_eq!(
+            run(create_poll_over(&ops, &input, [1; 16])),
+            Err(UtilityError::Uncertain {
+                request_id: [1; 16]
+            })
+        );
+        let read = run(send_over(
+            &ops,
+            BotRequest {
+                operation: 71,
+                args: vec![BotArg::Text(hex16(&[1; 16]))],
+                ..BotRequest::default()
+            },
+        ))
+        .unwrap_err();
+        assert!(!definitive(&read), "{read:?}");
+    }
 }
