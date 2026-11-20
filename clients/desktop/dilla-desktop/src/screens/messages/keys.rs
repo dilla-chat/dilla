@@ -13,6 +13,10 @@ pub fn bind(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("pageup", PageUp, Some("MessageLog")),
         KeyBinding::new("pagedown", PageDown, Some("MessageLog")),
+        // The web's log is a focused `tabIndex=0` scroller (MessageLog.tsx:131) whose key handler leaves Ctrl+Home alone
+        // (:118-124, and Conversation.tsx `rowKey` returns on Ctrl), so Chromium scrolls it to its top; GPUI has no native
+        // scrolling by key. Plain Home is not native there: `rowKey` (Conversation.tsx:348-354) moves to the first row,
+        // which the rows' own handler does here.
         KeyBinding::new("ctrl-home", LogTop, Some("MessageLog")),
     ]);
 }

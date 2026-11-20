@@ -1435,7 +1435,7 @@ pub fn render(
     } else {
         log
     };
-    let to_top = (scroll.clone(), on_wheel.clone());
+    let to_top = (scroll.clone(), on_wheel.clone(), focus.clone(), ui.clone());
     log.key_context("MessageLog")
         .track_focus(&focus)
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
@@ -1484,10 +1484,17 @@ pub fn render(
             let pager = scroll.clone();
             move |_: &PageDown, _, _| page(&pager, 1.0)
         })
-        // Ctrl+Home scrolls the log to its top, as the browser scrolls the web's focused log, where "load earlier" sits;
-        // the log leaves the end.
-        .on_action(move |_: &LogTop, _, cx| {
-            let (scroll, leave_end) = &to_top;
+        // Ctrl+Home scrolls the log to its top, as the browser scrolls the web's focused log (Ruling R16), where "load
+        // earlier" sits; the log leaves the end. Only the log or a row holding the focus takes it: in a field inside the
+        // log (the inline editor) it is the field's, as a textarea keeps it on the web.
+        .on_action(move |_: &LogTop, window, cx| {
+            let (scroll, leave_end, log, ui) = &to_top;
+            let ours = log.is_focused(window)
+                || ui.read(cx).row_focus.values().any(|h| h.is_focused(window));
+            if !ours {
+                cx.propagate();
+                return;
+            }
             scroll.set_offset(gpui::point(len(0.), len(0.)));
             leave_end(true, cx);
         })

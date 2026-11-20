@@ -429,7 +429,7 @@ impl ShellView {
                     .find(|c| c.is_text())
                     .map(|c| c.id)
             });
-            self.channel = None;
+            self.show(None);
             if let Some(first) = first {
                 self.focus_channel(first, cx);
             }
@@ -498,13 +498,13 @@ impl ShellView {
         match route {
             Route::Dm(dm) => self.focus_dm(*dm, cx),
             Route::Dms => {
-                self.channel = None;
+                self.show(None);
                 self.settle_selection(cx);
             }
             Route::Channel { community, channel } => {
                 if self.community != Some(*community) {
                     self.community = Some(*community);
-                    self.channel = None;
+                    self.show(None);
                 }
                 match channel {
                     Some(c) => self.focus_channel(*c, cx),
@@ -535,12 +535,29 @@ impl ShellView {
         Some(route)
     }
 
+    /// The conversation this shell shows becomes `next` (Shell.tsx:855-860): the one it showed is closed and `next` is
+    /// opened, so its page starts at one page again (Task 12).
+    fn show(&mut self, next: Option<ChannelId>) {
+        if self.channel == next {
+            return;
+        }
+        if let Some(client) = &self.client {
+            if let Some(prev) = self.channel {
+                client.close_page(prev);
+            }
+            if let Some(next) = next {
+                client.open_page(next);
+            }
+        }
+        self.channel = next;
+    }
+
     /// Shows `channel`: its group is opened (joined) so its timeline is kept, and it is marked read while shown.
     fn focus_channel(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
         if self.channel == Some(channel) {
             return;
         }
-        self.channel = Some(channel);
+        self.show(Some(channel));
         self.pinned = true;
         if let Some(c) = self.state.channel(channel).filter(|c| c.is_text()) {
             self.last_text.insert(c.community_id, channel);
@@ -564,7 +581,7 @@ impl ShellView {
         if self.channel == Some(dm) {
             return;
         }
-        self.channel = Some(dm);
+        self.show(Some(dm));
         self.pinned = true;
         // The composer's slots and its "Message {name}".
         self.settle_selection(cx);
@@ -671,7 +688,7 @@ impl ShellView {
         }
         self.dm_view = false;
         self.community = Some(community);
-        self.channel = None;
+        self.show(None);
         self.settle_selection(cx);
         self.history.push(self.current_route());
         cx.notify();
