@@ -165,23 +165,6 @@ pub fn poll_card(
     poll_card_in(item, ctx, None, window, cx)
 }
 
-/// How long a post may go undrawn before its next draw counts as the card coming back into view.
-const AWAY: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Notes that `message` is drawn now; whether it was away (not drawn for [`AWAY`]) before.
-fn seen_again(message: dilla_client::state::MessageId) -> bool {
-    thread_local! {
-        static DRAWN: std::cell::RefCell<std::collections::BTreeMap<dilla_client::state::MessageId, std::time::Instant>> =
-            const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-    }
-    let now = std::time::Instant::now();
-    DRAWN.with(|d| {
-        let mut d = d.borrow_mut();
-        let was = d.insert(message, now);
-        was.is_some_and(|at| now.duration_since(at) > AWAY)
-    })
-}
-
 /// The loading line of a poll that is being read from the Bot (PollCard.tsx `poll.loading`): one line of the row's body
 /// text, announced as a status.
 fn poll_loading() -> Extra {
@@ -219,15 +202,19 @@ pub fn poll_card_in(
         return None;
     }
     let message = item.msg_id?;
-    // A card that left the viewport and comes back reads again if it had given up (PollCard.tsx's IntersectionObserver):
-    // rows are only drawn near the viewport, so a gap in a post's draws is it being away.
-    let back = seen_again(message);
     let Some(poll) = ctx.state.bot.polls.get(&message) else {
         return match ctx.state.bot.poll_checks.get(&message) {
             Some(PollCheck::Pending) => Some(poll_loading()),
-            Some(PollCheck::GaveUp) => {
-                if back && let Some(client) = &ctx.client {
-                    client.utilities().release_gave_up_of(message);
+            // Given up: nothing shows. After a hint of the post's channel (`Retry`) the read runs again quietly, and the
+            // card stays given up until it succeeds.
+            Some(PollCheck::GaveUp(_)) => None,
+            Some(PollCheck::Retry(_)) => {
+                if let (Some(client), Some(community), Some(channel)) =
+                    (&ctx.client, ctx.community, ctx.channel)
+                {
+                    client
+                        .utilities()
+                        .verify_poll(community, channel, thread, item.clone());
                 }
                 None
             }
@@ -882,7 +869,12 @@ mod tests {
         assert!(draw(bot.clone(), vcx).is_none(), "nothing reads it here");
         bot.poll_checks.insert(message, PollCheck::Pending);
         assert!(draw(bot.clone(), vcx).is_some_and(|e| e.height > 0.0));
-        bot.poll_checks.insert(message, PollCheck::GaveUp);
+        bot.poll_checks
+            .insert(message, PollCheck::GaveUp(ChannelId([4; 16])));
+        assert!(draw(bot.clone(), vcx).is_none());
+        // A hint of its channel reads it again quietly: it still shows as given up (no loading line) until it succeeds.
+        bot.poll_checks
+            .insert(message, PollCheck::Retry(ChannelId([4; 16])));
         assert!(draw(bot.clone(), vcx).is_none());
         bot.polls
             .insert(message, poll(vec![0, 0], false, false, 86_400));

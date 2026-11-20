@@ -238,8 +238,12 @@ impl std::fmt::Debug for ReminderView {
 pub enum PollCheck {
     /// Being read, or waiting to read again: the card says it is loading.
     Pending,
-    /// The Bot said no for good, or the retries ran out: the post's own text shows and no card is drawn.
-    GaveUp,
+    /// The Bot said no for good, or the retries ran out, for a post in this channel: the post's own text shows and no card
+    /// is drawn, until a read of it succeeds (PollCard.tsx's `gaveUp`).
+    GaveUp(crate::state::ChannelId),
+    /// A given-up post being read again, as a pushed hint of its channel asks: it still shows as given up while it reads,
+    /// and goes back to `GaveUp` if the read fails again.
+    Retry(crate::state::ChannelId),
 }
 
 /// The bot area's slice.

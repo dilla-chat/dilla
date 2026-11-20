@@ -50,8 +50,9 @@ impl Utilities {
     /// Starts reading the record of the poll the post `item` claims, once. Nothing happens when a check is under way or
     /// given up, or the poll is held. Otherwise the check is `Pending` and [`Utilities::read_poll`] runs on the client's
     /// runtime: success holds the poll and removes the check; a [`definitive`] failure or the last retry ([`retry_after`])
-    /// gives up; any other failure waits and reads again. Only `read_poll` decides a post is a verified poll, so a forged
-    /// or unreadable one never gets a card.
+    /// gives up; any other failure waits and reads again. A given-up post whose channel had a hint (`Retry`, see
+    /// [`retry_gave_up_in`]) is read once more without leaving the given-up state: success removes the check, failure
+    /// gives up again. Only `read_poll` decides a post is a verified poll, so a forged or unreadable one never gets a card.
     pub fn verify_poll(
         &self,
         community: CommunityId,
@@ -61,9 +62,12 @@ impl Utilities {
     ) {
         let Some(message) = item.msg_id else { return };
         let snapshot = self.inner.snapshot();
-        if snapshot.bot.poll_checks.contains_key(&message)
-            || snapshot.bot.polls.contains_key(&message)
-        {
+        let again = match snapshot.bot.poll_checks.get(&message) {
+            None => false,
+            Some(PollCheck::Retry(_)) => true,
+            Some(_) => return,
+        };
+        if snapshot.bot.polls.contains_key(&message) {
             return;
         }
         // The snapshot lags the publish below by a moment, and a view draws again in between: one read at a time per
@@ -71,12 +75,14 @@ impl Utilities {
         let Some(guard) = ReadingGuard::enter(&self.inner, message) else {
             return;
         };
-        self.inner.publish(move |s| {
-            s.bot
-                .poll_checks
-                .entry(message)
-                .or_insert(PollCheck::Pending);
-        });
+        if !again {
+            self.inner.publish(move |s| {
+                s.bot
+                    .poll_checks
+                    .entry(message)
+                    .or_insert(PollCheck::Pending);
+            });
+        }
         let this = self.clone();
         // The answer is only the check's state in the snapshot, so the receiver is not awaited.
         drop(self.inner.spawn(async move {
@@ -86,14 +92,14 @@ impl Utilities {
             loop {
                 let end = match this.read_poll(community, channel, thread, &item).await {
                     Ok(_) => None,
-                    Err(e) if definitive(&e) => Some(PollCheck::GaveUp),
+                    Err(e) if definitive(&e) || again => Some(PollCheck::GaveUp(channel)),
                     Err(_) => match retry_after(failures) {
                         Some(wait) => {
                             failures += 1;
                             tokio::time::sleep(wait).await;
                             continue;
                         }
-                        None => Some(PollCheck::GaveUp),
+                        None => Some(PollCheck::GaveUp(channel)),
                     },
                 };
                 this.inner.publish(move |s| match end {
@@ -108,21 +114,6 @@ impl Utilities {
                 return Ok(());
             }
         }));
-    }
-
-    /// Lets the posts whose read was given up be read again (PollCard.tsx: a pushed hint, or the card coming back into
-    /// view, tries again, and a success clears the give-up). The next draw of each starts its read.
-    pub fn release_gave_up(&self) {
-        release_gave_up(&self.inner);
-    }
-
-    /// [`Utilities::release_gave_up`] for the one post `message`.
-    pub fn release_gave_up_of(&self, message: MessageId) {
-        self.inner.publish(move |s| {
-            if s.bot.poll_checks.get(&message) == Some(&PollCheck::GaveUp) {
-                s.bot.poll_checks.remove(&message);
-            }
-        });
     }
 
     /// This member's reminders in `community`, soonest first.
@@ -235,22 +226,34 @@ pub fn retry_after(failures: usize) -> Option<Duration> {
 /// not the pinned Bot), or the Bot refused the read (`botDefinitelyUnavailable`: every refusal of an operation but op 3,
 /// which includes status 5 on the poll read). Everything else is retried 2, 5 and 10 s: a read that got no answer in time
 /// (`E_BOT_TIMEOUT`), a Bot status, a record for another channel or thread, an answer that cannot be read (`Invalid`,
-/// `Payload`), and a client that is stopping (`E_STOPPED`).
+/// `Payload`, an answer envelope that cannot be read: `E_BOT_ANSWER`), and a client that is stopping (`E_STOPPED`).
 pub fn definitive(e: &UtilityError) -> bool {
     match e {
         UtilityError::NotAPoll => true,
-        UtilityError::Unavailable(code) => code != "E_BOT_TIMEOUT" && code != "E_STOPPED",
+        UtilityError::Unavailable(code) => !matches!(
+            code.as_str(),
+            "E_BOT_TIMEOUT" | "E_BOT_ANSWER" | "E_STOPPED"
+        ),
         _ => false,
     }
 }
 
-/// [`Utilities::release_gave_up`] for the client `inner`, which the Bot's hint handler holds.
-pub(crate) fn release_gave_up(inner: &Arc<Inner>) {
-    inner.publish(|s| {
-        s.bot
-            .poll_checks
-            .retain(|_, check| *check != PollCheck::GaveUp)
-    });
+/// PollCard.tsx: a pushed hint of `channel` reads its given-up polls again. Each becomes `Retry`, which the next draw of
+/// its post turns into one read that leaves the card given up (nothing shows) until it succeeds. Other channels' are
+/// untouched.
+pub(crate) fn retry_gave_up_in(inner: &Arc<Inner>, channel: ChannelId) {
+    inner.publish(move |s| retry_checks_in(&mut s.bot.poll_checks, channel));
+}
+
+fn retry_checks_in(
+    checks: &mut std::collections::BTreeMap<MessageId, PollCheck>,
+    channel: ChannelId,
+) {
+    for check in checks.values_mut() {
+        if *check == PollCheck::GaveUp(channel) {
+            *check = PollCheck::Retry(channel);
+        }
+    }
 }
 
 /// The poll reads under way: one per client and message ([`Utilities::verify_poll`]). A client is told apart by its
@@ -289,11 +292,18 @@ impl Drop for ReadingGuard {
             .remove(&Self::key(&self.inner, self.message));
         if !self.finished {
             let message = self.message;
-            self.inner.publish(move |s| {
-                if s.bot.poll_checks.get(&message) == Some(&PollCheck::Pending) {
-                    s.bot.poll_checks.remove(&message);
-                }
-            });
+            self.inner
+                .publish(move |s| match s.bot.poll_checks.get(&message) {
+                    Some(PollCheck::Pending) => {
+                        s.bot.poll_checks.remove(&message);
+                    }
+                    Some(&PollCheck::Retry(channel)) => {
+                        s.bot
+                            .poll_checks
+                            .insert(message, PollCheck::GaveUp(channel));
+                    }
+                    _ => {}
+                });
         }
     }
 }
@@ -637,6 +647,31 @@ mod tests {
             "E_BOT_TIMEOUT".into()
         )));
         assert!(!definitive(&UtilityError::Unavailable("E_STOPPED".into())));
+    }
+
+    /// PollCard.tsx: a hint of one channel reads that channel's given-up posts again, and only those: the others stay given
+    /// up, and a post still loading is not touched.
+    #[test]
+    fn a_hint_retries_only_its_channels_given_up_posts() {
+        let (here, there) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let id = |n: u8| MessageId([n; 16]);
+        let mut checks = std::collections::BTreeMap::from([
+            (id(1), PollCheck::GaveUp(here)),
+            (id(2), PollCheck::GaveUp(there)),
+            (id(3), PollCheck::Pending),
+        ]);
+        retry_checks_in(&mut checks, here);
+        assert_eq!(checks[&id(1)], PollCheck::Retry(here));
+        assert_eq!(checks[&id(2)], PollCheck::GaveUp(there));
+        assert_eq!(checks[&id(3)], PollCheck::Pending);
+    }
+
+    /// An answer envelope the transport cannot decode is a plain failure in the web: retried.
+    #[test]
+    fn an_unreadable_answer_envelope_is_retried() {
+        assert!(!definitive(&UtilityError::Unavailable(
+            "E_BOT_ANSWER".into()
+        )));
     }
 
     /// A record for another channel or thread, and an answer that cannot be decoded, are plain failures in the web, so
