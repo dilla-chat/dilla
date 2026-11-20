@@ -577,6 +577,78 @@ fn the_join_roles_page_saves_the_role_the_bot_gives_on_join() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// e2e/web/slash-commands.spec.ts "polls publish in channels": in the window, `/poll create` opens the poll form (no row
+/// yet: a cancelled form leaves nothing). The question and two answers are typed, Post sends one `create` to the Bot, and
+/// the command's row ends as success. Task 27 adds the card's `poll-card` assertion once posts are verified.
+#[test]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+fn a_poll_posted_from_the_form_shows_its_card() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_bot_host("t26-poll", "127.0.0.1:0");
+    let invite = host.invites.last().unwrap().clone();
+    let mut ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t26-poll"));
+    let community = world::community(&host, &ada, "Polls", &[]);
+    world::clear_session(&ada);
+    let first = rt.block_on(world::start(&ada));
+    rt.block_on(world::bot::enable_bot(
+        &first,
+        community,
+        world::bot::cap::POLLS,
+    ));
+    // `poll create` posts into a Bot channel (the catalog's `needs_bot_channel`): #general is made one.
+    let community_id = dilla_client::state::CommunityId(community);
+    let general = first
+        .state()
+        .borrow()
+        .channel_named(community_id, "general")
+        .map(|c| c.id)
+        .expect("the community's #general");
+    rt.block_on(first.bot_admin().mark_bot_channel(community_id, general))
+        .expect("an answer")
+        .expect("#general is marked a Bot channel");
+
+    let root = scratch_dir("t26-poll-app");
+    let mut app = Driver::launch(&root);
+    sign_in_app(&mut app, &host, &mut ada);
+    app.type_text("composer", "/poll create");
+    app.wait_for("command-picker", Duration::from_secs(10));
+    // The new device reads the Bot's catalog on its first ready; until its key checks, the command is greyed.
+    app.wait_for("command-active-ready", Duration::from_secs(60));
+    app.press("tab");
+    app.wait_for("command-chips", Duration::from_secs(5));
+    app.press("enter");
+    app.wait_for("poll-question", Duration::from_secs(10));
+    assert!(
+        app.element("bot-result-pending").is_none(),
+        "the form is no row until Post"
+    );
+    assert_eq!(
+        app.focused().as_deref(),
+        Some("poll-question"),
+        "the form opens on its question"
+    );
+    app.type_focused("What should we raid on Friday?");
+    app.click("poll-answer-0");
+    app.type_focused("the bridge");
+    app.click("poll-answer-1");
+    app.type_focused("the harbour");
+    app.wait_idle();
+    app.click("poll-post");
+    app.wait_for("bot-result-success", Duration::from_secs(60));
+    assert!(
+        app.element("poll-question").is_none(),
+        "the form closed on the answer"
+    );
+    assert!(app.element("bot-result-failed").is_none(), "no row failed");
+    drop(app);
+    first.stop();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Picks `/kick` from the list in the window, names `who` in its user chip and runs it (slash-commands.spec.ts
 /// `runKickFromPicker`).
 fn run_kick(app: &mut Driver, who: &str) {

@@ -108,3 +108,14 @@ pub const LOGGED_NOTE: &str = "modlog · visible to moderators";
 pub const CONTINUE: &str = "Continue";
 pub const WORKING: &str = "Working…";
 pub const CANCEL: &str = "Cancel";
+
+/// UtilityCommandProvider.tsx literal results for `poll create` (the web keeps them outside its string tables).
+pub const POLL_NOT_HERE: &str = "Create a poll in a community channel.";
+pub const POLL_NOT_OFFERED: &str = "The Bot cannot create polls in this channel.";
+pub const POLL_STOPPED_OFFERING: &str = "The Bot stopped offering polls. Try again.";
+/// `caught`: how a refused create reads, by what the Bot answered.
+pub const POLL_BOT_UNAVAILABLE: &str = "The Bot is unavailable in this community.";
+pub const POLL_RECORD_CHANGED: &str = "The record changed. Refresh it and try again.";
+pub const POLL_NO_LONGER_AVAILABLE: &str = "This action is no longer available.";
+pub const POLL_TOO_LARGE: &str = "The answers use too much space. Shorten them and try again.";
+pub const POLL_CHECK_FIELDS: &str = "Check the fields and try again.";

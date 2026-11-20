@@ -6,6 +6,7 @@
 //! - [`picker`] (`slots::composer_popup`): the `/` list over the composer, from the draft the composer reports through
 //!   [`draft_changed`]; ↑↓, Tab, Enter and Escape reach it through [`keys`].
 //! - [`poll_card`] (`slots::message_extras`): a verified poll under the Bot's post.
+//! - [`poll_form`] (`slots::overlays`): `/poll create` opens the form, and Post sends the poll through the Bot.
 //! - [`private_results`]: the rows only this device shows, for the log of their conversation; [`on_send`] decides what
 //!   a sent draft does (post it, or answer privately).
 
@@ -15,6 +16,7 @@ pub mod confirm;
 pub mod copy;
 pub mod keys;
 pub mod picker;
+pub mod poll_form;
 pub mod reminders;
 
 use dilla_client::features::bot::{self, Plan, run};
@@ -119,6 +121,7 @@ pub fn release_windows(windows: &[gpui::WindowId], cx: &mut App) {
     for &window in windows {
         crate::per_window::set::<PickerState>(window, None, cx);
         reminders::forget_window(window, cx);
+        poll_form::forget_window(window, cx);
     }
 }
 
@@ -353,10 +356,17 @@ pub fn on_send(
     let Some(channel) = ctx.channel else {
         return SendDecision::Post(draft.to_owned());
     };
-    let decision = match (
-        &ctx.client,
-        bot::plan_in(&ctx.state, ctx.community, Some(channel), draft),
-    ) {
+    let plan = bot::plan_in(&ctx.state, ctx.community, Some(channel), draft);
+    // The web runs `poll create` through its own handler, not as a typed Bot command: the form opens over the
+    // conversation (UtilityCommandProvider.tsx `handlers['poll create']`), with or without a client.
+    if let Plan::Bot { definition, args } = &plan
+        && definition.id == "poll create"
+    {
+        poll_form::open(ctx, args, window, cx);
+        draft_changed(window, "", cx);
+        return SendDecision::Handled;
+    }
+    let decision = match (&ctx.client, plan) {
         (_, Plan::Post(text)) => SendDecision::Post(text),
         (_, Plan::Incomplete) => SendDecision::Keep,
         (Some(client), Plan::Private(status, text, provider)) => {

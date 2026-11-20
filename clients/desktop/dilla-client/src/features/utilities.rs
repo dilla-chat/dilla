@@ -149,6 +149,58 @@ pub fn poll_in_place(poll: &PollView, channel: ChannelId, thread: Option<Message
 /// The v1 operations that change something: an answer that cannot be read leaves them uncertain.
 const MUTATIONS: [u64; 6] = [70, 73, 74, 80, 82, 83];
 
+/// Sends `request` over `ops` and reads the Bot's status: a mutation that cannot be read is uncertain.
+async fn send_over(ops: &BotOperations, request: BotRequest) -> Result<BotResult, UtilityError> {
+    let operation = request.operation;
+    let result = ops.request(request).await.map_err(|e| match e {
+        OpError::Uncertain { request_id } if MUTATIONS.contains(&operation) => {
+            UtilityError::Uncertain { request_id }
+        }
+        OpError::Uncertain { .. } => UtilityError::Unavailable("E_BOT_TIMEOUT".into()),
+        OpError::Refused { code, .. } => UtilityError::Unavailable(code),
+        OpError::Invalid => UtilityError::Payload,
+    })?;
+    match result.status {
+        0 => Ok(result),
+        5 if MUTATIONS.contains(&operation) => Err(UtilityError::Uncertain {
+            request_id: result.request_id,
+        }),
+        5 => Err(UtilityError::Unavailable("E_UNAVAILABLE".into())),
+        s => Err(UtilityError::Status(s)),
+    }
+}
+
+/// `pollCreate` (utilities.ts:649-653): operation 70 at revision 0 in the poll's channel, with the one canonical payload.
+/// The Bot answers the new poll; its id is the request id, it is for the form's channel and thread, and no vote is on it
+/// (`decodePollCreate`: `my_choices` must be the empty list), else the answer is not the poll that was asked for.
+async fn create_poll_over(
+    ops: &BotOperations,
+    input: &polls::PollCreate,
+    request: [u8; 16],
+) -> Result<PollView, UtilityError> {
+    let payload = polls::encode_poll_create(input).map_err(|_| UtilityError::Payload)?;
+    let result = send_over(
+        ops,
+        BotRequest {
+            operation: 70,
+            channel: Some(ChannelId(input.channel)),
+            args: vec![BotArg::Bytes(payload)],
+            revision: Some(0),
+            request_id: Some(request),
+        },
+    )
+    .await?;
+    let poll = wire::decode_poll(&result.data, request, None)
+        .ok()
+        .filter(|p| {
+            poll_in_place(p, ChannelId(input.channel), input.thread.map(MessageId))
+                && p.my_choices.as_deref() == Some(&[])
+                && result.revision == Some(p.revision)
+        })
+        .ok_or(UtilityError::Invalid)?;
+    Ok(poll)
+}
+
 fn hex16(b: &[u8; 16]) -> String {
     crate::state::hex(b)
 }
@@ -164,27 +216,7 @@ impl Utilities {
         community: CommunityId,
         request: BotRequest,
     ) -> Result<BotResult, UtilityError> {
-        let operation = request.operation;
-        let result = self
-            .operations(community)
-            .request(request)
-            .await
-            .map_err(|e| match e {
-                OpError::Uncertain { request_id } if MUTATIONS.contains(&operation) => {
-                    UtilityError::Uncertain { request_id }
-                }
-                OpError::Uncertain { .. } => UtilityError::Unavailable("E_BOT_TIMEOUT".into()),
-                OpError::Refused { code, .. } => UtilityError::Unavailable(code),
-                OpError::Invalid => UtilityError::Payload,
-            })?;
-        match result.status {
-            0 => Ok(result),
-            5 if MUTATIONS.contains(&operation) => Err(UtilityError::Uncertain {
-                request_id: result.request_id,
-            }),
-            5 => Err(UtilityError::Unavailable("E_UNAVAILABLE".into())),
-            s => Err(UtilityError::Status(s)),
-        }
+        send_over(&self.operations(community), request).await
     }
 
     /// Reads the poll the post `item` (in `channel`, `thread`) claims to carry from the Bot (71) and holds it. Nothing is
@@ -217,6 +249,18 @@ impl Utilities {
             .ok_or(UtilityError::Invalid)?;
         self.hold_poll(message, poll.clone());
         Ok(poll)
+    }
+
+    /// Creates the poll of `input` in `community`'s Bot (70) under `request`: the form's one id, so a send that is
+    /// repeated after an unanswered one settles the same poll instead of making a second. The poll is held under no
+    /// message until its post is seen.
+    pub async fn create_poll(
+        &self,
+        community: CommunityId,
+        input: polls::PollCreate,
+        request: [u8; 16],
+    ) -> Result<PollView, UtilityError> {
+        create_poll_over(&self.operations(community), &input, request).await
     }
 
     /// Votes on the held poll of `message` (73): `choices` replace this member's; an empty set withdraws the vote.
@@ -490,5 +534,107 @@ mod tests {
         let (upcoming, due) = split_reminders(&all, 100);
         assert_eq!(upcoming.iter().map(|r| r.id[0]).collect::<Vec<_>>(), [2]);
         assert_eq!(due.iter().map(|r| r.id[0]).collect::<Vec<_>>(), [1, 3]);
+    }
+
+    /// A transport that answers from a closure and records every command it was sent (bot_admin.rs's test transport).
+    struct Fake {
+        sent: std::sync::Mutex<Vec<crate::features::bot_admin::SealedCommand>>,
+        data: Vec<u8>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::features::bot_admin::SealedBot for Fake {
+        async fn send(
+            &self,
+            _: CommunityId,
+            c: crate::features::bot_admin::SealedCommand,
+        ) -> Result<crate::features::bot_admin::SealedAnswer, crate::features::bot_admin::SendError>
+        {
+            self.sent.lock().unwrap().push(c);
+            let body = crate::gateway::frames::Value::Array(vec![
+                crate::gateway::frames::Value::Uint(4),
+                crate::gateway::frames::Value::Bytes(self.data.clone()),
+            ])
+            .encode();
+            Ok(crate::features::bot_admin::SealedAnswer { status: 200, body })
+        }
+    }
+
+    /// The Bot's answer to a create: the poll `[1; 16]` with `mine` as the vote it carries.
+    fn created(mine: Option<Vec<u64>>) -> Vec<u8> {
+        crate::gateway::frames::Value::Array(vec![
+            crate::gateway::frames::Value::Uint(1),
+            wire::tests::poll_value([1; 16], [0, 0], mine, false),
+        ])
+        .encode()
+    }
+
+    fn run<T>(f: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// utilities.ts:649-653: the form's poll goes as operation 70 at revision 0 with the one canonical payload, under the
+    /// form's request id; an answer that already carries a vote is no fresh poll (`decodePollCreate`).
+    #[test]
+    fn create_poll_sends_operation_70_at_revision_0() {
+        let input = polls::PollCreate {
+            channel: [2; 16],
+            thread: None,
+            question: "Raid?".into(),
+            answers: vec!["the bridge".into(), "the harbour".into()],
+            multi: false,
+            duration: 86_400,
+        };
+        let community = CommunityId([9; 16]);
+        let sent_with = |data: Vec<u8>| {
+            let fake = Arc::new(Fake {
+                sent: std::sync::Mutex::default(),
+                data,
+            });
+            let ops = BotOperations::new(community, fake.clone());
+            let answer = run(create_poll_over(&ops, &input, [1; 16]));
+            (answer, fake.sent.lock().unwrap().clone())
+        };
+        let (answer, sent) = sent_with(created(Some(vec![])));
+        let poll = answer.expect("a fresh poll");
+        assert_eq!(poll.id, [1; 16]);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].operation,
+            crate::state::bot_admin::sealed_operation(70)
+        );
+        assert_eq!(sent[0].channel, Some(ChannelId([2; 16])));
+        assert_eq!(sent[0].request_id, [1; 16]);
+        assert_eq!(
+            sent[0].args,
+            [
+                BotArg::Uint(0),
+                BotArg::Bytes(polls::encode_poll_create(&input).unwrap())
+            ],
+            "revision 0, then the one payload"
+        );
+        for mine in [Some(vec![0]), None] {
+            assert_eq!(
+                sent_with(created(mine.clone())).0,
+                Err(UtilityError::Invalid),
+                "{mine:?}"
+            );
+        }
+        let mut long = input.clone();
+        long.question = "q".repeat(301);
+        let fake = Arc::new(Fake {
+            sent: std::sync::Mutex::default(),
+            data: created(Some(vec![])),
+        });
+        let ops = BotOperations::new(community, fake.clone());
+        assert_eq!(
+            run(create_poll_over(&ops, &long, [1; 16])),
+            Err(UtilityError::Payload)
+        );
+        assert!(fake.sent.lock().unwrap().is_empty(), "nothing was sent");
     }
 }

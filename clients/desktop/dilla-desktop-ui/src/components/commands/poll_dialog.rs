@@ -10,11 +10,18 @@ use gpui::{
 };
 
 use crate::components::avatar::initials_of;
-use crate::components::dialog::Dialog;
+use crate::components::dialog::{Dialog, InitialFocus};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
+
+/// `.d-poll-dialog__close` (PollDialog.css:43) at the head's top right: the lead is the tile's box, so the button is placed
+/// from it: the form dialog's 520px panel, its head's 16px side padding (and 14px top) and the button's 28px at 14px/16px (the lead starts 14px down, so its top is 0).
+const PANEL_W: f32 = 520.0;
+const HEAD_PAD: f32 = 16.0;
+const CLOSE_RIGHT: f32 = 16.0;
+const CLOSE_SIZE: f32 = 28.0;
 
 /// The durations, in the form's order.
 pub const DURATIONS: [&str; 6] = ["1h", "4h", "8h", "24h", "3d", "7d"];
@@ -58,6 +65,9 @@ pub struct PollDialog {
     on_remove: Option<OnIndex>,
     on_duration: Option<OnIndex>,
     on_multi: Option<OnClick>,
+    on_backdrop: Option<OnClick>,
+    initial_focus: InitialFocus,
+    post_wrap: Option<Box<dyn FnOnce(AnyElement) -> AnyElement>>,
 }
 
 impl PollDialog {
@@ -84,6 +94,9 @@ impl PollDialog {
             on_remove: None,
             on_duration: None,
             on_multi: None,
+            on_backdrop: None,
+            initial_focus: InitialFocus::default(),
+            post_wrap: None,
         }
     }
 
@@ -147,6 +160,24 @@ impl PollDialog {
 
     pub fn on_multi(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_multi = Some(Rc::new(f));
+        self
+    }
+
+    /// A press on the backdrop (the web's `onClose`, which the form answers as it does Cancel).
+    pub fn on_backdrop(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_backdrop = Some(Rc::new(f));
+        self
+    }
+
+    /// What holds the focus when the dialog opens (the question's field: `data-autofocus`).
+    pub fn initial_focus(mut self, focus: InitialFocus) -> Self {
+        self.initial_focus = focus;
+        self
+    }
+
+    /// Puts the Post button inside `wrap`'s element (the app's automation box, so a test's pointer can find it).
+    pub fn post_wrap(mut self, wrap: impl FnOnce(AnyElement) -> AnyElement + 'static) -> Self {
+        self.post_wrap = Some(Box::new(wrap));
         self
     }
 }
@@ -381,7 +412,7 @@ impl RenderOnce for PollDialog {
                         color::DANGER,
                     ))
             }));
-        let lead = div()
+        let tile = div()
             .size(px(26.0))
             .rounded(radius::MD)
             .bg(color::BRAND)
@@ -397,8 +428,22 @@ impl RenderOnce for PollDialog {
                 )
                 .weight(font::WEIGHT_DISPLAY),
             );
+        // `.d-poll-dialog__close`: the head's own close button (the dialog's default one is off), 28px at the head's
+        // top right.
+        let x = click("poll-dismiss", self.on_cancel.clone())
+            .absolute()
+            .top(px(0.0))
+            .left(px(PANEL_W - CLOSE_RIGHT - CLOSE_SIZE - HEAD_PAD))
+            .size(px(CLOSE_SIZE))
+            .rounded(radius::MD)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(Icon::new(IconName::X).size(px(15.0)).color(color::FG_2));
+        let lead = div().relative().child(tile).child(x);
         let cancel = self.on_cancel.clone();
-        let footer_note = div().flex_1().child(line(
+        // `.d-poll-dialog__footer { flex: 1 }`: the note wraps in the room the buttons leave.
+        let footer_note = div().flex_1().min_w_0().child(crate::text::flow_paragraph(
             self.labels.footer.clone(),
             text::META,
             line_height(text::META, 1.5),
@@ -440,21 +485,33 @@ impl RenderOnce for PollDialog {
                 )
                 .weight(font::WEIGHT_DISPLAY),
             );
-        Dialog::new(
+        let post = match self.post_wrap {
+            Some(wrap) => wrap(post.into_any_element()),
+            None => post.into_any_element(),
+        };
+        let backdrop = self.on_backdrop.clone();
+        let dialog = Dialog::new(
             self.id,
             self.labels.title.clone(),
             self.labels.close.clone(),
         )
         .lead(lead)
+        .show_default_close(false)
         .body(body)
         .footer(footer_note)
         .footer(cancel_button)
         .footer(post)
+        .initial_focus(self.initial_focus)
         .on_close(move |window, cx| {
             if let Some(f) = &cancel {
                 f(window, cx);
             }
-        })
+        });
+        // Without its own handler a press on the backdrop closes the dialog as its close button does.
+        match backdrop {
+            Some(f) => dialog.on_backdrop(move |window, cx| f(window, cx)),
+            None => dialog,
+        }
     }
 }
 
