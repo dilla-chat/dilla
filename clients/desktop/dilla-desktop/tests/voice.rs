@@ -74,6 +74,10 @@ fn state(n: u8) -> Arc<AppState> {
         channel: Some(VOICE),
         community: Some(COMMUNITY),
         call_id: Some(VOICE.0),
+        // Everyone's media is there: a stage tile is a device of the call group (VoiceView.tsx `callTiles`).
+        roster: (0..n)
+            .map(|i| (UserId([i; 16]), DeviceId([100 + i; 16]), u16::from(i)))
+            .collect(),
         ..OwnCall::default()
     };
     Arc::new(s)
@@ -125,22 +129,19 @@ fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     let cx = host(cx, state(3));
     let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
     assert_eq!(tiles.len(), 4, "three people and one screen");
-    assert!(tiles[3].screen);
+    assert!(tiles[0].screen, "the shared screen leads (callTiles)");
     let focus = stage_focus(cx);
     cx.update(|window, cx| focus.focus(window, cx));
-    for _ in 0..3 {
-        press(cx, "right");
-    }
-    assert_eq!(area(cx, |ui| ui.selected), 3);
+    assert_eq!(area(cx, |ui| ui.selected), 0);
     press(cx, "enter");
     let focused = area(cx, |ui| ui.focused.clone());
     assert_eq!(
         focused,
-        Some(tiles[3].clone()),
+        Some(tiles[0].clone()),
         "the screen share is focused"
     );
-    press(cx, "left");
-    assert_eq!(area(cx, |ui| ui.selected), 2);
+    press(cx, "right");
+    assert_eq!(area(cx, |ui| ui.selected), 1);
     press(cx, "escape");
     assert_eq!(area(cx, |ui| ui.focused.clone()), None);
 }
@@ -157,7 +158,11 @@ fn the_tile_menu_opens_with_the_person_s_items(cx: &mut TestAppContext) {
     s.channels.push(other);
     let cx = host(cx, Arc::new(s));
     let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
-    let bounds = area(cx, |ui| ui.menu.bounds.borrow().get(&tiles[1]).copied())
+    let person1 = tiles
+        .iter()
+        .find(|k| !k.screen && k.device == DeviceId([101; 16]))
+        .expect("person 1's tile");
+    let bounds = area(cx, |ui| ui.menu.bounds.borrow().get(person1).copied())
         .expect("person 1's tile was laid out");
     cx.simulate_event(gpui::MouseDownEvent {
         button: gpui::MouseButton::Right,
@@ -187,7 +192,13 @@ fn the_tile_menu_opens_with_the_person_s_items(cx: &mut TestAppContext) {
     let focus = stage_focus(cx);
     cx.update(|window, cx| focus.focus(window, cx));
     cx.run_until_parked();
-    assert_eq!(area(cx, |ui| ui.selected), 0);
+    assert_eq!(area(cx, |ui| ui.selected), 0, "the shared screen leads");
+    press(cx, "right");
+    assert_eq!(
+        tiles[area(cx, |ui| ui.selected)].device,
+        DeviceId([100; 16]),
+        "the next tile is this device's own"
+    );
     press(cx, "shift-f10");
     assert!(cx.update(|window, cx| voice::menu::is_open(voice::wid(window), cx)));
     let upstairs: &'static str = format!("menu-item-move:{}", ChannelId([10; 16]).hex()).leak();
@@ -593,6 +604,8 @@ fn dm_state() -> Arc<AppState> {
         channel: Some(DM),
         community: None,
         call_id: Some(DM.0),
+        // Bob's media is there (a stage tile is a device of the call group).
+        roster: vec![(UserId([1; 16]), DeviceId([101; 16]), 1)],
         ..OwnCall::default()
     };
     Arc::new(s)
@@ -2566,7 +2579,102 @@ macro_rules! parity {
 parity! {
     parity_voice_stage => "stage",
     parity_voice_stage_b => "stage-b",
+    parity_voice_stage_group => "stage-group",
+    parity_voice_stage_group_b => "stage-group-b",
     parity_voice_dm_call => "dm-call",
     parity_voice_stage_focused => "stage-focused",
     parity_voice_person_menu => "person-menu",
+}
+
+/// VoiceChannelRow.css: a voice row's `margin: var(--list-gap) 0` stays inside its `flow-root` item, so the people list
+/// starts `--list-gap` (1px) below the row, as the web's sidebar draws it (the stage-group references hold the same
+/// rule); the list takes that pixel back at its end, so the next row sits where it did.
+#[gpui::test]
+fn the_people_list_starts_a_list_gap_under_the_row(cx: &mut TestAppContext) {
+    struct Item;
+    impl Render for Item {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .child(div().h(gpui::px(28.)).debug_selector(|| "row".to_owned()))
+                .children(voice::channel_people(&channel(), window, cx))
+                .child(div().h(gpui::px(28.)).debug_selector(|| "next".to_owned()))
+        }
+    }
+    cx.update(dilla_desktop::install);
+    let (_, cx) = cx.add_window_view(|_, _| Item);
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), state(3), None, cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    let row = cx.debug_bounds("row").expect("the row");
+    let people = cx.debug_bounds("voice-people").expect("the people");
+    let next = cx.debug_bounds("next").expect("the next row");
+    assert_eq!(
+        f32::from(people.origin.y - row.bottom()),
+        1.0,
+        "the people start one list gap under the row"
+    );
+    assert_eq!(
+        f32::from(next.origin.y - people.bottom()),
+        -1.0,
+        "the list takes the pixel back at its end (the item's own 1px bottom padding then restores it)"
+    );
+}
+
+// ---- parity: the group call's GPUI-only golden shots (parity/references/linux/native/) ---------------------------------
+//
+// Speaking rings, camera tiles and shared-screen pixels need media, which a web reference cannot hold still (the parity
+// world seeds the others of a call as `voice_state` frames only). These references are the app's own frame of
+// `voice/stage-group` with `voice-sim` giving a person media, looked at by eye against the Signal design's CallTile
+// (`packages/ui/src/CallTile` and the VoiceStage stories) when they were made. Remake them with `DILLA_PARITY_BLESS=1`
+// after a deliberate change, and look at them again (parity/references/linux/README.md, "GPUI-only references").
+
+/// Everybody else of the group call has media (the tiles the web shows once their streams connect).
+const ALL_MEDIA: &[&str] = &["media mira", "media bjorn", "media lin", "media sam"];
+
+fn shoot_group(golden: &str, sims: &[&str]) {
+    dilla_parity::screen::assert_native_screen(&parity_fixture("stage-group"), golden, |driver| {
+        for sim in sims {
+            let reply = driver.request(&format!("voice-sim {sim}"));
+            assert_eq!(reply, "ok", "voice-sim {sim}: {reply}");
+        }
+    })
+    .unwrap_or_else(|e| panic!("native/{golden} differs from its golden shot: {e}"));
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_speaking() {
+    // Mira is heard speaking; Björn's and Lin's tiles keep their muted and deafened marks.
+    shoot_group("voice-speaking", &[ALL_MEDIA, &["speaking mira"]].concat());
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_camera_tile() {
+    shoot_group(
+        "voice-camera-tile",
+        &[ALL_MEDIA, &["camera mira test-pattern"]].concat(),
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_screen_tile() {
+    shoot_group(
+        "voice-screen-tile",
+        &[ALL_MEDIA, &["screen sam test-pattern"]].concat(),
+    );
 }

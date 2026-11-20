@@ -52,6 +52,9 @@ mod m {
     /// VoiceChannelRow.css `__people`: indented 30px under the row, 8px off the right.
     pub const PEOPLE_INDENT: f32 = 30.0;
     pub const PEOPLE_END: f32 = 8.0;
+    /// The row's bottom margin (`--list-gap`, 1px): it stays inside the `flow-root` item, so the people start that far
+    /// below the row, and the item's own bottom padding is that margin's (the list takes it back, [`channel_people`]).
+    pub const PEOPLE_TOP: f32 = 1.0;
     /// A person's row gap.
     pub const PERSON_GAP: f32 = 8.0;
     /// The speaking ring: 2px of the sidebar between the avatar and the 1.5px `--ok` ring.
@@ -292,6 +295,44 @@ pub struct VoiceUi {
     /// A test's remote frames, drawn while there is no media session (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     test_frames: HashMap<StreamKey, Arc<RenderImage>>,
+    /// What `voice-sim` made up over the state: devices whose media "is there" and who is heard speaking, applied on top
+    /// of every state the shell syncs (feature `test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    sim: Sim,
+}
+
+/// A simulated call's media (the automation command `voice-sim`): the GPUI-only references of speaking, camera and screen
+/// tiles need media the web reference cannot hold still.
+#[cfg(feature = "test-hooks")]
+#[derive(Default)]
+struct Sim {
+    media: std::collections::BTreeSet<DeviceId>,
+    speaking: std::collections::BTreeSet<DeviceId>,
+}
+
+#[cfg(feature = "test-hooks")]
+impl Sim {
+    /// `state` with the simulated media in the call's roster and the simulated voices in its speaking set.
+    fn over(&self, state: Arc<AppState>) -> Arc<AppState> {
+        if self.media.is_empty() && self.speaking.is_empty() {
+            return state;
+        }
+        let mut s = (*state).clone();
+        let people: Vec<(UserId, DeviceId)> = s
+            .voice
+            .calls
+            .values()
+            .flat_map(|c| c.participants.iter().map(|p| (p.user_id, p.device_id)))
+            .collect();
+        for (user, device) in people {
+            if self.media.contains(&device) && !s.voice.call.roster.iter().any(|r| r.1 == device) {
+                let leaf = s.voice.call.roster.len() as u16;
+                s.voice.call.roster.push((user, device, leaf));
+            }
+        }
+        s.voice.speaking.extend(self.speaking.iter().copied());
+        Arc::new(s)
+    }
 }
 
 /// Every instance window's voice area, by window. A window that closes is let go at once (`windows::on_closed`: its
@@ -700,6 +741,88 @@ impl VoiceUi {
     }
 }
 
+/// The colour bars of `voice-sim`'s test pattern: eight vertical bars over a grey ramp, 320x180, as a frame gpui draws.
+#[cfg(feature = "test-hooks")]
+fn test_pattern_image() -> Arc<RenderImage> {
+    const BARS: [[u8; 3]; 8] = [
+        [235, 235, 235],
+        [235, 235, 16],
+        [16, 235, 235],
+        [16, 235, 16],
+        [235, 16, 235],
+        [235, 16, 16],
+        [16, 16, 235],
+        [16, 16, 16],
+    ];
+    let (w, h) = (320u32, 180u32);
+    let buf = image::RgbaImage::from_fn(w, h, |x, y| {
+        if y >= h * 3 / 4 {
+            let g = (x * 255 / (w - 1)) as u8;
+            return image::Rgba([g, g, g, 255]);
+        }
+        let [r, g, b] = BARS[(x * 8 / w) as usize];
+        // gpui draws BGRA.
+        image::Rgba([b, g, r, 255])
+    });
+    Arc::new(RenderImage::new(vec![image::Frame::new(buf)]))
+}
+
+/// The automation command `voice-sim media <person>`, `speaking <person>`, `camera <person> test-pattern` or `screen <person>
+/// test-pattern`: `person` (a name or username in the stage's call) gets simulated media, so a tile of theirs shows, and
+/// is heard speaking, shows a static camera frame, or shows a static screen frame. The simulation is kept over every later
+/// state (feature `test-hooks`; the GPUI-only references of `voice/stage-group` are made with it).
+#[cfg(feature = "test-hooks")]
+pub fn simulate(
+    window: WindowId,
+    what: &str,
+    person: &str,
+    pattern: Option<&str>,
+    cx: &mut App,
+) -> Result<(), String> {
+    let ui = ui_mut(window, cx);
+    let state = ui.state.clone();
+    let found = state
+        .voice
+        .calls
+        .iter()
+        .flat_map(|(ch, c)| c.participants.iter().map(move |p| (*ch, p)))
+        .find(|(ch, p)| {
+            let name = name_of(&state, state.channel(*ch), p.user_id);
+            name.eq_ignore_ascii_case(person)
+                || state
+                    .members
+                    .values()
+                    .flatten()
+                    .any(|m| m.user_id == p.user_id && m.username.eq_ignore_ascii_case(person))
+        })
+        .map(|(_, p)| p.device_id)
+        .ok_or_else(|| format!("nobody called `{person}` is in a call"))?;
+    ui.sim.media.insert(found);
+    match (what, pattern) {
+        ("media", None) => {}
+        ("speaking", None) => {
+            ui.sim.speaking.insert(found);
+        }
+        ("camera" | "screen", Some("test-pattern")) => {
+            let kind = if what == "screen" {
+                ShareKind::Screen
+            } else {
+                ShareKind::Camera
+            };
+            ui.test_frames.insert(
+                StreamKey {
+                    device: found.hex(),
+                    kind,
+                },
+                test_pattern_image(),
+            );
+        }
+        _ => return Err(format!("unknown voice-sim `{what}`")),
+    }
+    ui.state = ui.sim.over(ui.state.clone());
+    Ok(())
+}
+
 /// One stage tile: a person (their camera when it is on), or a person's screen share.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TileKey {
@@ -770,6 +893,8 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
         ui.share_sound = std::mem::take(&mut ui.share_sound).ended();
         ui.share_seq += 1;
     }
+    #[cfg(feature = "test-hooks")]
+    let state = ui.sim.over(state);
     ui.state = state;
     if live && !ui.repainting {
         ui.repainting = true;
@@ -1470,8 +1595,11 @@ pub fn channel_people(channel: &Channel, window: &mut Window, cx: &mut App) -> O
         div()
             .flex()
             .flex_col()
+            .mt(px(m::PEOPLE_TOP))
+            .mb(px(-m::PEOPLE_TOP))
             .pl(px(m::PEOPLE_INDENT))
             .pr(px(m::PEOPLE_END))
+            .debug_selector(|| "voice-people".to_owned())
             .children(rows)
             .into_any_element(),
     )
@@ -1899,25 +2027,46 @@ pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
 
 // ---- the stage ----------------------------------------------------------------------------------------------------
 
-/// The tiles of `channel`'s stage: each device's person tile, then a screen tile for each device that shares.
+/// The tiles of `channel`'s stage (VoiceView.tsx `callTiles`): this device's own person tile always, a remote device's
+/// only once its media is there (a device of this call's roster, `call.state.tiles` on the web; somebody who is only in
+/// `voice_state` shows in the sidebar list alone). A device that shares also has a screen tile. The shared screens come
+/// first, then the people in the room's own order, a device the room does not list yet after them.
 pub fn tiles(state: &AppState, channel: ChannelId) -> Vec<TileKey> {
-    let mut out = Vec::new();
+    let call = &state.voice.call;
+    let in_this_call = call.channel == Some(channel);
+    let own_device = state.account.device_id;
+    let is_own = |p: &VoiceParticipant| p.own || Some(p.device_id) == own_device;
+    let has_media = |p: &VoiceParticipant| {
+        is_own(p) || (in_this_call && call.roster.iter().any(|r| r.1 == p.device_id))
+    };
+    let mut people: Vec<(UserId, DeviceId, bool)> = Vec::new();
     for p in state.voice.participants(channel) {
-        out.push(TileKey {
-            user: p.user_id,
-            device: p.device_id,
-            screen: false,
-        });
-    }
-    for p in state.voice.participants(channel) {
-        if p.screen() {
-            out.push(TileKey {
-                user: p.user_id,
-                device: p.device_id,
-                screen: true,
-            });
+        if has_media(p) {
+            let shares = if is_own(p) {
+                p.screen() || state.voice.share.screen
+            } else {
+                p.screen()
+            };
+            people.push((p.user_id, p.device_id, shares));
         }
     }
+    if in_this_call
+        && let (Some(user), Some(device)) = (state.account.user_id, own_device)
+        && !people.iter().any(|(_, d, _)| *d == device)
+    {
+        people.push((user, device, state.voice.share.screen));
+    }
+    let key = |(user, device, _): &(UserId, DeviceId, bool), screen| TileKey {
+        user: *user,
+        device: *device,
+        screen,
+    };
+    let mut out: Vec<TileKey> = people
+        .iter()
+        .filter(|p| p.2)
+        .map(|p| key(p, true))
+        .collect();
+    out.extend(people.iter().map(|p| key(p, false)));
     out
 }
 
@@ -4174,15 +4323,64 @@ mod tests {
         assert_eq!(count(&s, ch.id), 2);
     }
 
+    /// `state_with`'s call as this device's own: `me` is the viewer's device, `media` the devices whose media is there.
+    fn in_call(s: &mut AppState, ch: &Channel, me: u8, media: &[u8]) {
+        s.account.device_id = Some(DeviceId([me; 16]));
+        s.account.user_id = Some(UserId([me; 16]));
+        s.voice.call.channel = Some(ch.id);
+        s.voice.call.roster = media
+            .iter()
+            .map(|d| (UserId([*d; 16]), DeviceId([*d; 16]), 0))
+            .collect();
+    }
+
     #[test]
-    fn the_stage_has_a_tile_per_device_and_one_per_screen_share() {
-        let (s, ch) = state_with(&[
+    fn the_stage_has_a_tile_per_device_with_media_and_one_per_screen_share() {
+        let (mut s, ch) = state_with(&[
             (1, 1, flags::IN_CALL | flags::SCREEN),
             (2, 2, flags::IN_CALL | flags::VIDEO),
         ]);
+        in_call(&mut s, &ch, 2, &[1, 2]);
         let t = tiles(&s, ch.id);
         assert_eq!(t.len(), 3);
-        assert!(t[2].screen && t[2].device == DeviceId([1; 16]));
+        assert!(
+            t[0].screen && t[0].device == DeviceId([1; 16]),
+            "the share leads"
+        );
+        assert!(!t[1].screen && t[1].device == DeviceId([1; 16]));
+    }
+
+    /// VoiceView.tsx `callTiles`: a remote person has a tile once their media connects; one only in `voice_state` is in
+    /// the sidebar list alone, and the own tile is always there (the stage-group parity fixtures hold exactly this).
+    #[test]
+    fn a_remote_person_without_media_has_no_tile_and_the_own_tile_always_shows() {
+        let (mut s, ch) = state_with(&[
+            (1, 1, flags::IN_CALL),
+            (2, 2, flags::IN_CALL | flags::SELF_MUTE),
+            (3, 3, flags::IN_CALL | flags::SCREEN),
+        ]);
+        in_call(&mut s, &ch, 1, &[]);
+        let t = tiles(&s, ch.id);
+        assert_eq!(t.len(), 1, "only the own tile: nobody's media is there");
+        assert_eq!(t[0].device, DeviceId([1; 16]));
+        // The own device is in the call even when the instance's list has not placed it yet.
+        let (mut s, ch) = state_with(&[(2, 2, flags::IN_CALL)]);
+        in_call(&mut s, &ch, 1, &[2]);
+        let t = tiles(&s, ch.id);
+        assert_eq!(
+            t.iter().map(|k| k.device).collect::<Vec<_>>(),
+            vec![DeviceId([2; 16]), DeviceId([1; 16])],
+            "a device the room does not list yet comes after the listed ones"
+        );
+        // Media arrives: the person and their screen get tiles, the share first.
+        let (mut s, ch) = state_with(&[
+            (1, 1, flags::IN_CALL),
+            (3, 3, flags::IN_CALL | flags::SCREEN),
+        ]);
+        in_call(&mut s, &ch, 1, &[3]);
+        let t = tiles(&s, ch.id);
+        assert_eq!(t.len(), 3);
+        assert!(t[0].screen && t[0].device == DeviceId([3; 16]));
     }
 
     #[test]

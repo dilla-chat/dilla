@@ -892,6 +892,27 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
                 Err(why) => format!("err {why}"),
             }
         }
+        (Some("voice-sim"), Some(what), Some(person)) => {
+            let pattern = parts.next();
+            let window = session.window();
+            let done = session
+                .cx
+                .update_window(window, |_, window: &mut Window, cx: &mut App| {
+                    crate::screens::voice::simulate(
+                        crate::screens::voice::wid(window),
+                        what,
+                        person,
+                        pattern,
+                        cx,
+                    )
+                });
+            session.frame();
+            match done {
+                Ok(Ok(())) => "ok".to_owned(),
+                Ok(Err(why)) => format!("err {why}"),
+                Err(e) => format!("err {e}"),
+            }
+        }
         (Some("rest"), None, None) => {
             session.rest();
             "ok".to_owned()
