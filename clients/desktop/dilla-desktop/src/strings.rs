@@ -1794,7 +1794,7 @@ pub static STRINGS: [(&str, &str); 2221] = [
     ("shell.lightbox.previous", "Previous image"),
     ("shell.lightbox.save", "Save"),
     ("shell.log.earlier", "load earlier"),
-    ("shell.log.empty", "nothing here yet. Messages sent before this browser joined are not shown."),
+    ("shell.log.empty", "nothing here yet. Messages sent before this device joined are not shown."),
     ("shell.log.emptyMade", "nothing here yet."),
     ("shell.log.label", "messages in #{channel}"),
     ("shell.log.loading", "loading messages…"),
@@ -2304,6 +2304,14 @@ mod tests {
         // The web's t() replaces only a brace pair around letters: a brace around anything else is text.
         assert_eq!(tf("activity.newCount", &[("n", "3"), ("x", "y")]), "3 new");
         assert_eq!(tf("activity.mentionOne", &[]), "1 mention");
+    }
+
+    #[test]
+    fn the_empty_log_says_device() {
+        assert_eq!(
+            t("shell.log.empty"),
+            "nothing here yet. Messages sent before this device joined are not shown."
+        );
     }
 
     #[test]

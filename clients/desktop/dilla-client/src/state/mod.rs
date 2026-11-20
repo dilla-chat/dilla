@@ -4,7 +4,7 @@
 //! (here one list with the community on each channel), `members:<id>`, `timeline:<id>` and `badges` (here `unread`).
 //! Nothing here holds key material: message bodies are plaintext the core already decrypted and stored.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 pub mod attachments;
@@ -221,6 +221,9 @@ pub struct AppState {
     /// Task 15: the servers the community list dropped without this account leaving them, newest last (at most
     /// [`removed::REMOVALS_MAX`]); the shell shows each as a dismissible banner.
     pub removal_notices: Vec<removed::RemovalNotice>,
+    /// Task 32 (Create.tsx `rememberMade`): the channels this client made in this session, a new server's starters
+    /// among them. An empty one says "nothing here yet" instead of "older messages are not shown".
+    pub made_channels: BTreeSet<ChannelId>,
 }
 
 impl AppState {

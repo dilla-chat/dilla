@@ -619,6 +619,39 @@ fn welcome_lines(channel: &str, dm: bool, width: f32, d: Density) -> (Vec<Line>,
     (title, body)
 }
 
+/// Conversation.tsx:394-395: the note under the welcome of a community channel whose loaded log is empty. `shell.log.emptyMade`
+/// when this client made the channel in this session (`madeHere`), else `shell.log.empty`; a DM, a log with rows and one
+/// still loading have none.
+pub fn empty_note(
+    state: &AppState,
+    channel: ChannelId,
+    dm: bool,
+    items: usize,
+    loaded: bool,
+) -> Option<&'static str> {
+    if dm || items > 0 || !loaded {
+        return None;
+    }
+    Some(if state.made_channels.contains(&channel) {
+        "shell.log.emptyMade"
+    } else {
+        "shell.log.empty"
+    })
+}
+
+/// `.d-message-log__welcome + .d-message-log__empty { padding: 0 1.25rem 0.5rem }`: the note's bottom padding. Its sides are
+/// the welcome's ([`WELCOME_X`]).
+const EMPTY_NOTE_BOTTOM: f32 = 8.0;
+
+/// The note's lines (`font-size: var(--text-sm); color: var(--fg-3)`, no line height of its own, so the root's) and its
+/// height with the bottom padding.
+fn empty_note_lines(key: &str, width: f32) -> (Vec<Line>, f32) {
+    let lh = dilla_desktop_ui::text::root_line_height(text::SM);
+    let lines = paragraph(t(key), text::SM, lh, color::FG_3, width - 2.0 * WELCOME_X);
+    let height = lines.len() as f32 * lh + EMPTY_NOTE_BOTTOM;
+    (lines, height)
+}
+
 fn welcome_height(title: usize, body: usize, d: Density) -> f32 {
     WELCOME_TOP
         + WELCOME_TILE
@@ -1285,6 +1318,20 @@ pub fn render(
             welcome_height(title.len(), body_lines.len(), density)
         }
     };
+    // Conversation.tsx:394-395: the note under the welcome when the loaded log is empty.
+    let note = (head == LogHead::Welcome)
+        .then(|| {
+            empty_note(
+                state,
+                channel.id,
+                dm,
+                shown.len() + privates.len(),
+                state.timelines.contains_key(&channel.id),
+            )
+        })
+        .flatten()
+        .map(|key| (key, empty_note_lines(key, width)));
+    let head_height = head_height + note.as_ref().map_or(0.0, |(_, (_, h))| *h);
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
     let (_, rows_end) = row_tops(0.0, &shapes, density);
     let privates_height: f32 = privates.iter().map(|(_, h)| *h).sum();
@@ -1326,6 +1373,24 @@ pub fn render(
             welcome_text(&channel.name, dm),
             width,
         );
+        if let Some((key, (lines, height))) = note {
+            let lh = dilla_desktop_ui::text::root_line_height(text::SM);
+            let text_height = height - EMPTY_NOTE_BOTTOM;
+            let inner_width = (width - 2.0 * WELCOME_X).max(1.0);
+            placer.block(
+                WELCOME_X,
+                y,
+                dilla_desktop_ui::a11y::paragraph(
+                    t(key).to_owned(),
+                    div().w(px(inner_width)).h(px(text_height)),
+                ),
+            );
+            for l in lines {
+                placer.line(l, WELCOME_X, y);
+                y += lh;
+            }
+            y += EMPTY_NOTE_BOTTOM;
+        }
     }
     let (tops, rows_bottom) = row_tops(y, &shapes, density);
     // What the log was last drawn with, to keep the reader's place when earlier rows come in front.
@@ -2004,6 +2069,23 @@ mod tests {
         assert_eq!(log_head(None), LogHead::Loading);
         assert_eq!(log_head(Some(&timeline(true))), LogHead::Earlier);
         assert_eq!(log_head(Some(&timeline(false))), LogHead::Welcome);
+    }
+
+    /// Conversation.tsx:394-395: the note under the welcome, `emptyMade` for a channel this client made, none in a DM, with
+    /// rows or while the log loads.
+    #[test]
+    fn an_empty_channel_says_older_messages_are_not_shown() {
+        let mut s = AppState::default();
+        let ch = ChannelId([1; 16]);
+        assert_eq!(empty_note(&s, ch, false, 0, true), Some("shell.log.empty"));
+        s.made_channels.insert(ch);
+        assert_eq!(
+            empty_note(&s, ch, false, 0, true),
+            Some("shell.log.emptyMade")
+        );
+        assert_eq!(empty_note(&s, ch, true, 0, true), None);
+        assert_eq!(empty_note(&s, ch, false, 1, true), None);
+        assert_eq!(empty_note(&s, ch, false, 0, false), None);
     }
 
     /// MessageLog.tsx:103-114: rows put in front move the offset by the added height, so the rows in view stay put.

@@ -54,6 +54,7 @@ export const desktopOverrides = {
   // The app, its window and the system in place of the page, the tab and the browser.
   'shell.banner.clientTooOld': 'This server needs a newer client. Update the app.',
   'shell.banner.commandError': 'That did not work ({code}). Try again.',
+  'shell.log.empty': 'nothing here yet. Messages sent before this device joined are not shown.',
   'shell.attachment.tooLarge': 'too large to open here',
   'shell.tray.overLimitToast': 'Files over 25 MB can’t be sent',
   'media.error': 'dilla cannot play this file.',
