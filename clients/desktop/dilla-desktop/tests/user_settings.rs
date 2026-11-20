@@ -111,10 +111,7 @@ parity! {
     parity_user_settings_keyboard_b => "keyboard-b";
     // Task 19b: Appearance at the compact density (`"density": "compact"` on the window, the setting left regular, as the
     // web shooter's `data-density` leaves it).
-    parity_user_settings_appearance_compact => "appearance-compact",
-        "parked (R22), measured 2026-11-20: chrome 0.2562 % (allowed 0.2 %). The web paints the three Segmented groups one \
-         device pixel higher at compact than at regular although its layout (shoot.mjs layout.json) puts them at the same \
-         y (101, 157.5, 213.5) at both densities; GPUI draws them where the regular reference has them";
+    parity_user_settings_appearance_compact => "appearance-compact";
 }
 
 /// A window with the Profile section in it and Tab bound to the next focus, as the app's root does.

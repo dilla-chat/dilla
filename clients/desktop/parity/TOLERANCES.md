@@ -81,7 +81,8 @@ Windows parity is measured with a real window later.
 
 ## Linux per-screen
 
-Five screens carry their own Linux limits in `[linux_screens."<fixture>"]` (Jonas 2026-11-19: "fix crop, tolerate emoji"),
+Six screens carry their own Linux limits in `[linux_screens."<fixture>"]` (Jonas 2026-11-19: "fix crop, tolerate emoji"; for
+`user-settings/appearance-compact` Jonas 2026-11-20: "design, not pixels", a limit just over its score),
 each 2x its honest score, the way the macOS ones are. Scores are the `DILLA_PARITY_MEASURE` lines of the Linux run.
 
 | screen | gate | before the crop fix | after | limit | reason |
@@ -93,6 +94,7 @@ each 2x its honest score, the way the macOS ones are. Scores are the `DILLA_PARI
 | `reactions/many-wrapping` | chrome / colour | 0.2392 / 0.2719 | unchanged | 0.48 / 0.54 | colour emoji bitmap scaled to 15 px otherwise than Skia's (raster) |
 | `reactions/many-wrapping-b` | chrome / colour | 0.2331 / 0.2545 | unchanged | 0.47 / 0.51 | as many-wrapping |
 | `reactions/emoji-grid` | chrome / colour | 0.2812 / 0.4397 | unchanged | 0.57 / 0.88 | the picker grid's colour emoji, as many-wrapping |
+| `user-settings/appearance-compact` | chrome (shared 0.2) | — | 0.2562 | 0.26 | Jonas 2026-11-20, "design, not pixels" (Task 19b): a browser-rendering artefact, accepted. Chromium places `.d-segmented`'s inline-flex group from its line's rounded baseline: laid out at y 213.5, the group's baseline is 213.5 + 19.95 = 233.45 at compact, rounded to 233, so the group paints at 213 (at regular 233.875 rounds to 234 and it paints at 214). GPUI's layout rounds the row's 1.5 px centring to whole px first (214 at both densities), so the three Segmented groups sit 1 px low at compact only. The label takes the root line height as the web's does |
 
 All of it is raster resampling, invisible to the eye at the screen's size: the trip crops (reference, GPUI, difference > 24)
 show the same pictures, the same rounded 8 px corners and the same chip and cell positions.

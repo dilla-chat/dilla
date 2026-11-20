@@ -74,3 +74,7 @@ colour_max_pct = 0.51
 [linux_screens."reactions/emoji-grid"]
 chrome_max_pct = 0.57
 colour_max_pct = 0.88
+# Task 19b (Jonas 2026-11-20, "design, not pixels"): Chromium's baseline rounding puts the Segmented groups 1 px higher at
+# compact than GPUI's whole-px layout does (TOLERANCES.md "Linux per-screen"); the limit just covers the measured score.
+[linux_screens."user-settings/appearance-compact"]
+chrome_max_pct = 0.26

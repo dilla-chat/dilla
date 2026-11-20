@@ -149,7 +149,7 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             body = body.child(line(
                 t("callStage.share.appNone"),
                 text::UI,
-                line_height(text::UI, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::UI),
                 color::FG_2,
             ));
         }
@@ -158,7 +158,7 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
                 .child(line(
                     t("callStage.share.appChoose"),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG,
                 ))
                 .child(line(
