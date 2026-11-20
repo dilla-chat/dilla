@@ -524,8 +524,10 @@ impl Builtin {
 }
 
 /// What the `/delete` of another person's message does next, after its one `remove_message` (builtin.ts:355-379). The
-/// removal is never sent again, so no step would.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// removal is never sent again, so no step would. Its Debug gives the row's text by length, as [`PrivateResult`]'s does.
+///
+/// [`PrivateResult`]: crate::state::bot::PrivateResult
+#[derive(Clone, PartialEq, Eq)]
 pub enum RemovalStep {
     /// The removal may have landed: settle the same proof (`Moderation::resolve_removal`).
     Resolve([u8; 16]),
@@ -537,6 +539,25 @@ pub enum RemovalStep {
         text: String,
         uncertain: bool,
     },
+}
+
+impl std::fmt::Debug for RemovalStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolve(p) => f.debug_tuple("Resolve").field(p).finish(),
+            Self::SendEvidence(p) => f.debug_tuple("SendEvidence").field(p).finish(),
+            Self::Done {
+                status,
+                text,
+                uncertain,
+            } => f
+                .debug_struct("Done")
+                .field("status", status)
+                .field("text", &crate::state::Redacted(text))
+                .field("uncertain", uncertain)
+                .finish(),
+        }
+    }
 }
 
 /// The next [`RemovalStep`] for `o`, the outcome so far: `resolved` once it was resolved (`o` is then the resolved
@@ -2200,6 +2221,30 @@ mod tests {
                     body: SECRET.as_bytes().to_vec(),
                     final_: true,
                 }
+            ),
+            format!(
+                "{:?}",
+                crate::state::bot_admin::WebhookLabel {
+                    text: SECRET.into(),
+                    webhook_id: "w".repeat(32),
+                    name: "CI".into(),
+                    avatar_id: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                RemovalStep::Done {
+                    status: ResultStatus::Failed,
+                    text: SECRET.into(),
+                    uncertain: true,
+                }
+            ),
+            format!(
+                "{:?}",
+                vec![
+                    crate::gateway::frames::Value::Text(SECRET.into()),
+                    crate::gateway::frames::Value::Bytes(SECRET.as_bytes().to_vec()),
+                ]
             ),
             format!(
                 "{:?}",

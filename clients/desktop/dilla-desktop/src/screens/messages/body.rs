@@ -614,8 +614,46 @@ pub fn forget_cached() {
 
 /// [`layout`]'s height, remembered by (parts, width): a draw of a body already laid out in this width costs one lookup.
 pub fn height_cached(parts: &[Body], width: f32) -> f32 {
-    let key = format!("{:x}|{parts:?}", width.to_bits());
+    let mut key = format!("{:x}|", width.to_bits());
+    content_key(parts, &mut key);
     *heights().memo(&key, || layout(parts, width, color::FG_BODY).height)
+}
+
+/// The memo's key for `parts`: their whole structure and every text in it, each text length-prefixed so no two different
+/// bodies share a key. It is built from the content itself, never from `Body`'s Debug (which R21 reduces to shape and
+/// lengths); it stays in memory and is never logged.
+fn content_key(parts: &[Body], out: &mut String) {
+    use std::fmt::Write as _;
+    let text = |tag: char, s: &str, out: &mut String| {
+        let _ = write!(out, "{tag}{}:{s}", s.len());
+    };
+    for p in parts {
+        match p {
+            Body::Text(t) => text('t', t, out),
+            Body::Mention(pill) => {
+                text('m', &pill.label, out);
+                let _ = write!(out, "{}{}", u8::from(pill.me), u8::from(pill.broadcast));
+                text('u', pill.user.as_deref().unwrap_or(""), out);
+            }
+            Body::Strong(c) | Body::Em(c) | Body::Strike(c) | Body::Quote(c) => {
+                let tag = match p {
+                    Body::Strong(_) => 'S',
+                    Body::Em(_) => 'E',
+                    Body::Strike(_) => 'K',
+                    _ => 'Q',
+                };
+                let _ = write!(out, "{tag}{}(", c.len());
+                content_key(c, out);
+                out.push(')');
+            }
+            Body::Code(t) => text('c', t, out),
+            Body::CodeBlock { text: t, lang } => {
+                text('b', t, out);
+                text('l', lang.as_deref().unwrap_or(""), out);
+            }
+            Body::Link { href } => text('h', href, out),
+        }
+    }
 }
 
 /// The body `parts` laid out in `width` px, in the colour `fg`.
@@ -763,6 +801,33 @@ mod tests {
         // A different width is a different entry.
         let p = parts("one two three four five six seven");
         assert_ne!(height_cached(&p, 60.0), height_cached(&p, 400.0));
+    }
+
+    /// R21 round 1 (C1): two bodies of the same shape and text lengths are different entries. The key is the content,
+    /// not `Body`'s redacted Debug, so a one-line body never takes a two-line body's height (or the reverse).
+    #[test]
+    fn equal_shape_bodies_keep_their_own_heights() {
+        let (two, one) = (
+            vec![Body::Text("a\nb".into())],
+            vec![Body::Text("a b".into())],
+        );
+        assert_eq!(
+            format!("{two:?}"),
+            format!("{one:?}"),
+            "Debug alone cannot tell them apart"
+        );
+        let (h2, h1) = (
+            layout(&two, 400.0, color::FG_BODY).height,
+            layout(&one, 400.0, color::FG_BODY).height,
+        );
+        assert!(h2 > h1, "the line break takes a line");
+        assert_eq!(height_cached(&two, 400.0), h2);
+        assert_eq!(height_cached(&one, 400.0), h1);
+        let mut a = String::new();
+        let mut b = String::new();
+        content_key(&[Body::Text("ab".into()), Body::Text("c".into())], &mut a);
+        content_key(&[Body::Text("a".into()), Body::Text("bc".into())], &mut b);
+        assert_ne!(a, b, "the texts' boundaries are part of the key");
     }
 
     /// Underlines and strikes are placed from the CSS offset and the font's ascent, not from fixed guesses: a link and a

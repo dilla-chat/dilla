@@ -14,9 +14,12 @@ pub mod host;
 use crate::state::{AppState, TimelineItem};
 
 /// Every decrypted text `state` holds: the timelines' and threads' bodies, reply excerpts and attachment names, the
-/// pins' and the reply bar's excerpts, the search's query and snippets, the tray's file names, the polls and reminders.
-/// R21 keeps all of them out of `AppState`'s Debug output, so a test that asks "is this plaintext still anywhere in the
-/// state?" reads them here rather than searching `{:?}`.
+/// pins' and the reply bar's excerpts, the search's query and snippets, the tray's file names, the polls, reminders and
+/// private result rows. R21 keeps all of them out of `AppState`'s Debug output, so a test that asks "is this plaintext
+/// still anywhere in the state?" reads them here rather than searching `{:?}`.
+///
+/// Out of scope: the moderation log's cases (a removed message's sealed evidence excerpt and reason). They are not held
+/// in `AppState`: the desktop keeps each window's log itself (`screens::members::modlog`), read on demand.
 pub fn decrypted_texts(state: &AppState) -> Vec<&str> {
     fn item<'a>(i: &'a TimelineItem, out: &mut Vec<&'a str>) {
         out.push(&i.body);

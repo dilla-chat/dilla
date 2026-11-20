@@ -42,13 +42,29 @@ impl Op {
 }
 
 /// One CBOR item of the dilla subset: uint, bstr, tstr, null and arrays (no maps, tags, floats or negatives).
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Its Debug gives a text's or bytes' length only (R21): besides wire metadata, a `Value` holds decrypted plaintext
+/// while it is decoded: an opened Bot answer (`sealed::decode_answer`), the sealed poll and reminder records, and the
+/// core's decrypted timeline rows (`sync::value::Rows`). The structure, numbers and nulls still show.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Value {
     Uint(u64),
     Bytes(Vec<u8>),
     Text(String),
     Null,
     Array(Vec<Value>),
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uint(n) => write!(f, "Uint({n})"),
+            Self::Bytes(b) => write!(f, "Bytes(<{} bytes>)", b.len()),
+            Self::Text(t) => write!(f, "Text({:?})", crate::state::Redacted(t)),
+            Self::Null => write!(f, "Null"),
+            Self::Array(items) => f.debug_tuple("Array").field(items).finish(),
+        }
+    }
 }
 
 impl Value {

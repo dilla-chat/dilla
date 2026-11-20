@@ -16,14 +16,27 @@ use crate::metrics::LABEL_TRACKING;
 use crate::text::{line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
-/// One answer (`PollCardOption`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One answer (`PollCardOption`). Its Debug gives the answer's length and the voters' count only: the answer is a
+/// decrypted post.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Option_ {
     pub text: SharedString,
     pub pct: u32,
     pub mine: bool,
     pub winner: bool,
     pub voters: Vec<SharedString>,
+}
+
+impl std::fmt::Debug for Option_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Option_")
+            .field("text_len", &self.text.len())
+            .field("pct", &self.pct)
+            .field("mine", &self.mine)
+            .field("winner", &self.winner)
+            .field("voters", &self.voters.len())
+            .finish()
+    }
 }
 
 /// The card's copy.

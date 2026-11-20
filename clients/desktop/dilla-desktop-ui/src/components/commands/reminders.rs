@@ -34,8 +34,8 @@ const ACTION_PAD_X: f32 = 8.0;
 /// `.d-reminders__text`'s line height.
 const TEXT_LINE: f32 = 1.35;
 
-/// One reminder (`ReminderItem`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One reminder (`ReminderItem`). Its Debug gives the reminder text's length only: it is a decrypted Bot record.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Item {
     pub id: SharedString,
     pub text: SharedString,
@@ -43,6 +43,19 @@ pub struct Item {
     pub place: SharedString,
     pub due: bool,
     pub busy: bool,
+}
+
+impl std::fmt::Debug for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Item")
+            .field("id", &self.id)
+            .field("text_len", &self.text.len())
+            .field("when", &self.when)
+            .field("place", &self.place)
+            .field("due", &self.due)
+            .field("busy", &self.busy)
+            .finish()
+    }
 }
 
 /// Which tab is shown.
@@ -431,6 +444,29 @@ impl When for gpui::Stateful<gpui::Div> {
 #[cfg(test)]
 mod tests {
     use super::Tab;
+
+    /// R21: a reminder row and a poll answer print no decrypted text in Debug output.
+    #[test]
+    fn reminder_and_poll_texts_stay_out_of_debug() {
+        let item = super::Item {
+            id: "r1".into(),
+            text: "zebra reminder".into(),
+            when: "in 1h".into(),
+            place: "#general".into(),
+            due: false,
+            busy: false,
+        };
+        let answer = super::super::poll_card::Option_ {
+            text: "zebra answer".into(),
+            pct: 50,
+            mine: true,
+            winner: false,
+            voters: vec!["zebra voter".into()],
+        };
+        for shown in [format!("{item:?}"), format!("{answer:#?}")] {
+            assert!(!shown.contains("zebra"), "{} bytes", shown.len());
+        }
+    }
 
     /// `onTabKey`: the arrows flip between the two tabs, Home and End go to the first and the last; other keys pass.
     #[test]

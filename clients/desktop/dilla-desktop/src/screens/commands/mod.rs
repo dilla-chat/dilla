@@ -317,8 +317,8 @@ pub fn picker(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElem
     )
 }
 
-/// What a sent draft does (the composer asks before it posts).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a sent draft does (the composer asks before it posts). Its Debug gives the post's length only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub enum SendDecision {
     /// Post this text (a literal draft, `//x` as `/x`, or a built-in that posts).
     Post(String),
@@ -326,6 +326,16 @@ pub enum SendDecision {
     Handled,
     /// Not complete: keep the draft (the picker says why).
     Keep,
+}
+
+impl std::fmt::Debug for SendDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Post(t) => write!(f, "Post({:?})", dilla_client::state::Redacted(t)),
+            Self::Handled => write!(f, "Handled"),
+            Self::Keep => write!(f, "Keep"),
+        }
+    }
 }
 
 /// Decides what sending `draft` in the conversation of `ctx` does, and runs a private answer. A private answer is
@@ -685,6 +695,11 @@ mod tests {
             format!("{picker:?}"),
             format!("{picker:#?}"),
             format!("{offered:?}").to_lowercase(),
+            // R21 round 1: the draft a send posts.
+            format!(
+                "{:?}",
+                SendDecision::Post("Bjornsson secret-reason".to_owned())
+            ),
         ] {
             assert!(!shown.contains("Bjornsson"), "a name");
             assert!(!shown.contains("secret"), "a reason");

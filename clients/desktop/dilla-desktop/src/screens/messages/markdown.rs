@@ -47,10 +47,11 @@ impl std::fmt::Debug for Tree {
             Self::Strike(c) => f.debug_tuple("Strike").field(c).finish(),
             Self::Quote(c) => f.debug_tuple("Quote").field(c).finish(),
             Self::Code(t) => write!(f, "Code({:?})", Redacted(t)),
+            // The fence's language is typed by the sender too: only whether there is one shows.
             Self::CodeBlock { text, lang } => f
                 .debug_struct("CodeBlock")
                 .field("text", &Redacted(text))
-                .field("lang", lang)
+                .field("lang", &lang.is_some())
                 .finish(),
             Self::Link { href, text } => f
                 .debug_struct("Link")
@@ -713,7 +714,7 @@ impl std::fmt::Debug for Body {
             Self::CodeBlock { text, lang } => f
                 .debug_struct("CodeBlock")
                 .field("text", &Redacted(text))
-                .field("lang", lang)
+                .field("lang", &lang.is_some())
                 .finish(),
             Self::Link { href } => f
                 .debug_struct("Link")
@@ -774,8 +775,17 @@ mod tests {
     /// Debug output.
     #[test]
     fn a_parsed_body_stays_out_of_debug() {
-        let body = "zebra **zebra** _zebra_ ~~zebra~~ `zebra` [zebra](https://zebra.test) <@everyone>\n> zebra\n```rust\nlet zebra = 1;\n```";
+        // The second fence's language is the sender's own word (R21 round 1, M1).
+        let body = "zebra **zebra** _zebra_ ~~zebra~~ `zebra` [zebra](https://zebra.test) <@everyone>\n> zebra\n```rust\nlet zebra = 1;\n```\n```zebra2\nx\n```";
         let parsed = parse(body);
+        assert!(
+            parsed
+                .tree
+                .iter()
+                .any(|t| matches!(t, Tree::CodeBlock { lang: Some(l), .. } if l == "zebra2")),
+            "the typed language is held"
+        );
+        let split = super::super::mentions::split_mentions("zebra <@everyone> zebra");
         let parts = parse_markdown(body, &|_| Pill {
             label: "everyone".into(),
             me: false,
@@ -788,6 +798,7 @@ mod tests {
             format!("{parsed:#?}"),
             format!("{parts:?}"),
             format!("{tokens:?}"),
+            format!("{split:?}"),
         ] {
             assert!(
                 !shown.contains("zebra"),

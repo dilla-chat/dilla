@@ -646,6 +646,21 @@ mod tests {
                 revision: 1,
             }],
         );
+        state.bot.private_results.insert(
+            crate::state::bot::Conversation {
+                channel: ch,
+                thread: None,
+            },
+            vec![crate::state::bot::PrivateResult {
+                id: 1,
+                at: 0,
+                status: crate::state::bot::ResultStatus::Success,
+                text: format!("{SECRET} private"),
+                provider: crate::state::bot::ResultProvider::Bot,
+                hold: false,
+                settled_at: None,
+            }],
+        );
         for shown in [
             format!("{row:?}"),
             format!("{out:?}"),
@@ -664,7 +679,7 @@ mod tests {
         let texts = crate::testing::decrypted_texts(&state);
         for kind in [
             "stored", "excerpt", ".png", "outbox", "pinned", "replying", "snippet", ".txt",
-            "question", "answer", "reminder",
+            "question", "answer", "reminder", "private",
         ] {
             assert!(
                 texts.iter().any(|t| t.contains(SECRET) && t.contains(kind)),
