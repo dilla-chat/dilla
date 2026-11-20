@@ -156,7 +156,7 @@ pub struct ServerSpec {
 
 /// One ban of a server: `user` banned by `by` (a member who may ban them), for `hours` from the frame's clock, or for
 /// ever without them.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BanSpec {
     pub user: String,
@@ -164,6 +164,15 @@ pub struct BanSpec {
     pub reason: String,
     #[serde(default)]
     pub hours: Option<u32>,
+}
+
+/// Moderation content never reaches Debug output: who banned whom, and why, are left out.
+impl std::fmt::Debug for BanSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BanSpec")
+            .field("hours", &self.hours)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -756,11 +765,12 @@ impl WorldSpec {
                     }
                 }
             }
-            for b in &s.bans {
+            // The message names the ban by its place only: who banned whom is moderation content.
+            for (i, b) in s.bans.iter().enumerate() {
                 if !s.members.contains(&b.user) || !s.members.contains(&b.by) || b.user == s.owner {
                     return invalid(format!(
-                        "server {} ban: `{}` and `{}` must be members, and the owner cannot be banned",
-                        s.id, b.user, b.by
+                        "server {} ban {i}: both people must be members, and the owner cannot be banned",
+                        s.id
                     ));
                 }
             }
@@ -929,6 +939,38 @@ mod tests {
             Err(SpecError::Invalid(why)) => why,
             other => panic!("expected an invalid fixture, got {other:?}"),
         }
+    }
+
+    /// A ban is moderation content: neither its Debug output (nor a whole fixture's) nor the refusal of a bad one names who
+    /// banned whom, or why.
+    #[test]
+    fn a_ban_never_names_its_people_or_reason_in_debug_or_refusals() {
+        let banned = |user: &str| {
+            MINIMAL.replace(
+                "\"channels\": [{\"id\": \"general\", \"kind\": \"text\", \"name\": \"general\"}]}]",
+                &format!(
+                    "\"channels\": [{{\"id\": \"general\", \"kind\": \"text\", \"name\": \"general\"}}], \
+                     \"bans\": [{{\"user\": \"{user}\", \"by\": \"ada\", \"reason\": \"secret-reason\", \"hours\": 24}}]}}]"
+                ),
+            )
+        };
+        let f = ScreenFixture::parse(&banned("mira")).unwrap();
+        let ban = &f.world.servers[0].bans[0];
+        assert_eq!((ban.user.as_str(), ban.by.as_str()), ("mira", "ada"));
+        for shown in [format!("{ban:?}"), format!("{:?}", f.world.servers[0])] {
+            let bans = &shown[shown.find("BanSpec").expect("the ban is listed")..];
+            assert!(
+                !bans.contains("mira") && !bans.contains("ada") && !bans.contains("secret-reason"),
+                "the ban's Debug names no one and no reason"
+            );
+        }
+        // The owner cannot be banned; the refusal names neither the person nor the banner.
+        let why = refused(|_| banned("ada"));
+        assert!(why.contains("ban 0"), "{why}");
+        assert!(
+            !why.contains("ada") && !why.contains("secret-reason"),
+            "{why}"
+        );
     }
 
     #[test]

@@ -53,7 +53,7 @@ use dilla_desktop_ui::components::select::Select;
 use dilla_desktop_ui::components::server_settings::layout as settings_layout;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toast::show_toast_in;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::{flow_paragraph, line, line_height};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
 use crate::router::{Route, ServerSection};
@@ -266,19 +266,42 @@ fn ensure_loaded(
     cx.spawn(async move |cx| {
         if let Err(e) = job.await {
             cx.update(|cx| {
-                let u = ui(w, cx);
-                if what == "bans" {
-                    // The Bans section says the failure and offers a retry, which clears both.
-                    u.bans_error.insert(community, e.code);
+                if read_failed(ui(w, cx), what, community, e.code) {
                     cx.refresh_windows();
-                } else {
-                    // Read again on the next draw.
-                    u.asked.remove(&(what, community));
                 }
             });
         }
     })
     .detach();
+}
+
+/// A section's read failed. A failed ban-list read is said in the Bans section (BansSection.tsx `loadError`): it keeps its
+/// `asked` entry, so the section does not read again on every draw, and records the code until [`retry_bans`]. Any other
+/// read is asked again on the next draw. Answers whether the view must be drawn again to show the failure.
+fn read_failed(
+    u: &mut MembersUi,
+    what: &'static str,
+    community: CommunityId,
+    code: String,
+) -> bool {
+    if what == "bans" {
+        u.bans_error.insert(community, code);
+        true
+    } else {
+        u.asked.remove(&(what, community));
+        false
+    }
+}
+
+/// The Bans section's retry: forgets the failure and the read, so the next draw reads the ban list once more.
+fn retry_bans(u: &mut MembersUi, community: CommunityId) {
+    u.bans_error.remove(&community);
+    u.asked.remove(&("bans", community));
+}
+
+/// The Bans section's alert for a failed read (`admin.bans.error.load`).
+fn bans_error_text(code: &str) -> String {
+    tf("admin.bans.error.load", &[("code", code)])
 }
 
 /// The list's groups for `community` (MemberPane.tsx): the client's grouping, the status line (a custom status, else
@@ -1151,7 +1174,6 @@ fn bans_section(
         .iter()
         .find(|c| c.id == community)
         .map_or_else(String::new, |c| c.name.clone());
-    let access = state.roles.access_of(community);
     let members = state.members.get(&community).map(Vec::as_slice);
     let clock = ctx.clock;
     let now = clock.now();
@@ -1168,23 +1190,24 @@ fn bans_section(
             root = root.child(
                 div()
                     .id("bans-error")
+                    .debug_selector(|| "bans-error".to_owned())
                     .flex()
                     .flex_col()
                     .items_start()
                     .gap(space::S6)
                     .child(line(
-                        tf("admin.bans.error.load", &[("code", &code)]),
+                        bans_error_text(&code),
                         text::UI,
                         line_height(text::UI, 1.5),
                         color::DANGER,
                     ))
-                    .child(Button::new("bans-retry", t("admin.bans.retry")).on_click(
-                        move |_, _w, cx| {
-                            let u = ui(w, cx);
-                            u.bans_error.remove(&community);
-                            u.asked.remove(&("bans", community));
-                            cx.refresh_windows();
-                        },
+                    .child(div().debug_selector(|| "bans-retry".to_owned()).child(
+                        Button::new("bans-retry", t("admin.bans.retry")).on_click(
+                            move |_, _w, cx| {
+                                retry_bans(ui(w, cx), community);
+                                cx.refresh_windows();
+                            },
+                        ),
                     )),
             );
         }
@@ -1211,20 +1234,27 @@ fn bans_section(
                 } else {
                     b.name.clone()
                 };
+                // `.d-manage-list__title` and `__detail` wrap anywhere (`overflow-wrap: anywhere`) inside the text
+                // column, which takes what the Unban button leaves: a long name or reason wraps, never runs under it.
+                let hex = b.user_id.hex();
                 let mut text_col = div()
+                    .debug_selector({
+                        let hex = hex.clone();
+                        move || format!("ban-text-{hex}")
+                    })
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .child(line(
+                    .child(flow_paragraph(
                         name.clone(),
                         text::UI,
                         line_height(text::UI, 1.4),
                         color::FG,
                     ));
                 for detail in ban_details_in(b, members, now, &|s| clock.offset(s)) {
-                    text_col = text_col.child(line(
+                    text_col = text_col.child(flow_paragraph(
                         detail,
                         text::XS,
                         line_height(text::XS, 1.4),
@@ -1232,21 +1262,17 @@ fn bans_section(
                     ));
                 }
                 let (user, name2, server2) = (b.user_id, name.clone(), server.clone());
-                let mut row = div()
-                    .id(SharedString::from(format!("ban-{}", b.user_id.hex())))
-                    .min_h(settings_layout::LIST_ROW_H)
-                    .px(settings_layout::LIST_PAD_X)
-                    .py(settings_layout::ROW_GAP)
-                    .flex()
-                    .items_center()
-                    .gap(settings_layout::FIELD_GAP)
-                    .border_color(color::HAIRLINE)
-                    .when(i > 0, |r| r.border_t_1())
-                    .child(text_col);
-                if access.loaded && access.ban_members {
-                    row = row.child(
+                // BansSection.tsx offers Unban on every row: the section is only reachable with the ban right, and the
+                // instance decides the request again.
+                let unban = div()
+                    .debug_selector({
+                        let hex = hex.clone();
+                        move || format!("ban-unban-{hex}")
+                    })
+                    .flex_none()
+                    .child(
                         Button::new(
-                            SharedString::from(format!("unban-{}", b.user_id.hex())),
+                            SharedString::from(format!("unban-{hex}")),
                             t("admin.bans.unban"),
                         )
                         .size(ButtonSize::Row)
@@ -1266,7 +1292,18 @@ fn bans_section(
                             cx.refresh_windows();
                         }),
                     );
-                }
+                let row = div()
+                    .id(SharedString::from(format!("ban-{hex}")))
+                    .min_h(settings_layout::LIST_ROW_H)
+                    .px(settings_layout::LIST_PAD_X)
+                    .py(settings_layout::ROW_GAP)
+                    .flex()
+                    .items_center()
+                    .gap(settings_layout::FIELD_GAP)
+                    .border_color(color::HAIRLINE)
+                    .when(i > 0, |r| r.border_t_1())
+                    .child(text_col)
+                    .child(unban);
                 card = card.child(row);
             }
             root = root.child(card);
@@ -1906,6 +1943,137 @@ mod tests {
         assert_eq!(
             ban_details(&ban(None), None, now)[0],
             t("admin.bans.forever")
+        );
+    }
+
+    /// BansSection.tsx `loadError`: a failed ban-list read keeps its `asked` entry (no read on every draw) and records its
+    /// code; the retry clears both. Any other section's failed read is simply asked again.
+    #[test]
+    fn a_failed_ban_read_waits_for_the_retry() {
+        let c = CommunityId([7; 16]);
+        let mut u = MembersUi::default();
+        u.asked.insert(("bans", c));
+        u.asked.insert(("people", c));
+        assert!(read_failed(&mut u, "bans", c, "E_FORBIDDEN".to_owned()));
+        assert!(
+            u.asked.contains(&("bans", c)),
+            "the read is not asked again"
+        );
+        assert_eq!(
+            u.bans_error.get(&c).map(String::as_str),
+            Some("E_FORBIDDEN")
+        );
+        assert!(!read_failed(&mut u, "people", c, "E_NET".to_owned()));
+        assert!(!u.asked.contains(&("people", c)), "read on the next draw");
+        assert_eq!(u.bans_error.len(), 1, "only the ban read records a failure");
+        retry_bans(&mut u, c);
+        assert!(u.bans_error.is_empty() && !u.asked.contains(&("bans", c)));
+        assert_eq!(
+            bans_error_text("E_FORBIDDEN"),
+            tf("admin.bans.error.load", &[("code", "E_FORBIDDEN")])
+        );
+    }
+
+    /// The Bans section drawn in a window: `community`'s state, in a column `width` wide.
+    struct BansHost {
+        ctx: SlotCx,
+        community: CommunityId,
+    }
+
+    impl gpui::Render for BansHost {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div()
+                .w(px(640.0))
+                .child(bans_section(&self.ctx, self.community, window, cx))
+        }
+    }
+
+    fn host(state: AppState, community: CommunityId) -> BansHost {
+        BansHost {
+            ctx: SlotCx {
+                state: std::sync::Arc::new(state),
+                community: Some(community),
+                clock: crate::screens::shell::Clock::Fixed {
+                    now: T + 60,
+                    utc: true,
+                },
+                ..SlotCx::default()
+            },
+            community,
+        }
+    }
+
+    /// ManageList.css `overflow-wrap: anywhere`: a reason far longer than the row (here one unbroken run) wraps inside
+    /// the text column, which ends where the Unban button begins; it never runs under the button.
+    #[gpui::test]
+    fn a_long_ban_reason_wraps_left_of_unban(cx: &mut gpui::TestAppContext) {
+        let c = CommunityId([7; 16]);
+        let mut state = AppState::default();
+        state.members.insert(c, vec![ada()]);
+        let mut long = ban(Some(T + 3600));
+        long.reason = "x".repeat(400);
+        let hex = long.user_id.hex();
+        state.people.bans.insert(c, vec![long]);
+        let (_view, vcx) = cx.add_window_view(move |_, _| host(state, c));
+        vcx.run_until_parked();
+        let text = vcx
+            .debug_bounds(Box::leak(format!("ban-text-{hex}").into_boxed_str()))
+            .expect("the row's text is drawn");
+        let unban = vcx
+            .debug_bounds(Box::leak(format!("ban-unban-{hex}").into_boxed_str()))
+            .expect("Unban is offered on every row");
+        assert!(text.right() <= unban.left(), "the text ends left of Unban");
+        // The title and two short details take one line each; the reason takes several.
+        let one_line = |size| px(line_height(size, 1.4));
+        let unwrapped = one_line(text::UI) + one_line(text::XS) * 3.0 + px(2.0) * 3.0;
+        assert!(
+            text.size.height > unwrapped + one_line(text::XS),
+            "the reason wraps"
+        );
+    }
+
+    /// BansSection.tsx: a failed read shows `admin.bans.error.load` and a retry instead of the list; the retry clears the
+    /// failure and the read, so the next draw reads the list once more.
+    #[gpui::test]
+    fn a_failed_ban_read_shows_the_alert_and_the_retry_clears_it(cx: &mut gpui::TestAppContext) {
+        let c = CommunityId([7; 16]);
+        let mut state = AppState::default();
+        state.people.bans.insert(c, vec![ban(None)]);
+        let (_view, vcx) = cx.add_window_view(move |_, _| host(state, c));
+        let w = vcx.update(|window, _| window.window_handle().window_id());
+        vcx.update(|_, cx| {
+            let u = ui(w, cx);
+            u.asked.insert(("bans", c));
+            read_failed(u, "bans", c, "E_FORBIDDEN".to_owned());
+        });
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("bans-error").is_some(), "the alert shows");
+        let hex = UserId([2; 16]).hex();
+        assert!(
+            vcx.debug_bounds(Box::leak(format!("ban-text-{hex}").into_boxed_str()))
+                .is_none(),
+            "the alert takes the list's place"
+        );
+        let retry = vcx.debug_bounds("bans-retry").expect("the retry shows");
+        vcx.simulate_click(retry.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let u = ui(w, cx);
+            assert!(u.bans_error.is_empty(), "the failure is forgotten");
+            assert!(!u.asked.contains(&("bans", c)), "the list is read again");
+        });
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("bans-error").is_none());
+        assert!(
+            vcx.debug_bounds(Box::leak(format!("ban-text-{hex}").into_boxed_str()))
+                .is_some(),
+            "the list is back"
         );
     }
 }

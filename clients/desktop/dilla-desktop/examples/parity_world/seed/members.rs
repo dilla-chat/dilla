@@ -68,7 +68,8 @@ pub(super) async fn at_frame(
 ) {
     let person = |id: &str| &people.iter().find(|(p, _)| p == id).expect("validated").1;
     for server in &f.world.servers {
-        for b in &server.bans {
+        // A failure names the ban by its place in the spec only, never its people or reason.
+        for (i, b) in server.bans.iter().enumerate() {
             let running = clients.iter().find(|(id, _)| *id == b.by).map(|(_, c)| c);
             let started = match running {
                 Some(_) => None,
@@ -92,9 +93,8 @@ pub(super) async fn at_frame(
             for attempt in 0.. {
                 assert!(
                     attempt < 3,
-                    "ban {}/{}: the expiry did not hold",
-                    server.id,
-                    b.user
+                    "server {} ban {i}: the expiry did not hold",
+                    server.id
                 );
                 let seconds = expires.map(|at| at - now_s());
                 let reason = b.reason.clone();
@@ -102,7 +102,7 @@ pub(super) async fn at_frame(
                     .moderation()
                     .run(move |m| async move { m.ban(community, user, &reason, seconds).await })
                     .await
-                    .unwrap_or_else(|e| panic!("ban {}/{}: {}", server.id, b.user, e.code));
+                    .unwrap_or_else(|e| panic!("server {} ban {i}: {}", server.id, e.code));
                 let bans = client
                     .moderation()
                     .run(move |m| async move { m.load_bans(community).await })
