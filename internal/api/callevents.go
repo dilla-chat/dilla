@@ -451,6 +451,12 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 		c.mu.Unlock()
 		return
 	}
+	// A join handled after its own session's leave (webhooks of one session can be handled out of
+	// order) is of a session that is gone: no entry, no ring stop, no takeover and no announcement.
+	if _, gone := c.departed[row.LivekitRoom+"/"+identity+"/"+sid]; sid != "" && gone {
+		c.mu.Unlock()
+		return
+	}
 	r := c.roomLocked(row.LivekitRoom)
 	r.devices[dev] = &callDevice{user: d.UserID, sid: sid, tracks: map[string]livekit.TrackSource{}, member: member}
 	delete(c.deferred, announceKey{call: row.CallID, dev: dev}) // the newer session came: no leave is pending

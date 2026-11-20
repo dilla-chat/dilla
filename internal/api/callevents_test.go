@@ -319,8 +319,33 @@ func TestATrackEventAfterTheLeaveLeavesNoGhost(t *testing.T) {
 	}
 }
 
-// A track_published handled before its session's participant_joined still counts the device in the
-// room, and the join that follows keeps it there.
+// A participant_joined handled after its own session's participant_left (webhooks of one session
+// can be handled out of order) brings nobody back: the call lists nobody, no voice_state follows
+// the leave's flags 0, and no voice takeover cuts anything from the SFU.
+func TestALateJoinOfASessionThatLeftBringsNobodyBack(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	f.sendAs(t, webhook.EventParticipantJoined, f.dev.String(), "PA_1", nil)
+	f.sendAs(t, webhook.EventParticipantLeft, f.dev.String(), "PA_1", nil)
+	if fr := f.gw.last(); fr.Device != f.dev || fr.Flags != 0 {
+		t.Fatalf("the leave's voice_state = %+v, want flags 0 for the device", fr)
+	}
+	frames, cuts := len(f.gw.all()), len(deviceRemovals(f.stub))
+	f.sendAs(t, webhook.EventParticipantJoined, f.dev.String(), "PA_1", nil)
+	if got := f.events.Participants(f.callID); len(got) != 0 {
+		t.Fatalf("after a late participant_joined the call lists %+v, want nobody", got)
+	}
+	if got := f.gw.all()[frames:]; len(got) != 0 {
+		t.Fatalf("a late participant_joined announced %+v, want nothing", got)
+	}
+	if got := deviceRemovals(f.stub); len(got) != cuts {
+		t.Fatalf("a late participant_joined cut %v from the SFU, want nothing", got[cuts:])
+	}
+}
+
+// A track_published handled before its session's participant_joined counts the device in the room,
+// and the device stays counted after the join. The join replaces the entry and drops the tracks
+// the early event recorded; this test proves only that the device is counted, not that the tracks
+// survive the join.
 func TestATrackPublishedBeforeTheJoinCountsTheDevice(t *testing.T) {
 	f := newEventsFixture(t, api.CallsConfig{})
 	f.sendAs(t, webhook.EventTrackPublished, f.dev.String(), "PA_1", &livekit.TrackInfo{Sid: "TR_cam",
