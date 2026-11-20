@@ -596,3 +596,75 @@ async fn two_people_thread_in_a_dm() {
         "still out of the timeline with the pane open"
     );
 }
+
+/// Task 17: a thread of 201 replies opens on its newest 200; "load earlier" prepends the rest, and a later refresh keeps it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn load_earlier_pages_a_long_thread() {
+    let (_host, pa, pb, c) = two_people("thread-earlier").await;
+    let alice = start(&pa).await;
+    let bob = start(&pb).await;
+    let ch = channel_named(&alice, c, "general").await;
+    channel_named(&bob, c, "general").await;
+    both_in(&alice, &bob, ch).await;
+    let root = root_by(&alice, &bob, ch, "plan").await;
+    alice.threads().track(ch);
+    alice
+        .threads()
+        .open(ch, root)
+        .await
+        .unwrap()
+        .expect("opens");
+    for n in 0..201 {
+        alice
+            .threads()
+            .send_in_thread(ch, root, format!("r{n}"))
+            .await
+            .unwrap()
+            .expect("queued");
+    }
+    // Bob reads the thread only once every reply is stored and has reached him.
+    wait_for(&alice, WAIT, "all 201 replies stored", |s| {
+        s.threads
+            .threads
+            .get(&root)
+            .is_some_and(|d| d.replies.len() == 201 && d.replies.iter().all(|r| r.seq.is_some()))
+    })
+    .await;
+    bob.threads().track(ch);
+    wait_for(&bob, WAIT, "Bob to hold the 201 replies", |s| {
+        count_of(s, ch, root) == 201
+    })
+    .await;
+    bob.threads().open(ch, root).await.unwrap().expect("opens");
+    wait_for(&bob, WAIT, "the newest page", |s| {
+        s.threads.threads.get(&root).is_some_and(|d| {
+            d.replies.len() == 200
+                && d.has_earlier
+                && d.replies.first().is_some_and(|r| r.body == "r1")
+        })
+    })
+    .await;
+    assert!(matches!(bob.threads().load_earlier().await, Ok(Ok(()))));
+    wait_for(&bob, WAIT, "the earlier page", |s| {
+        s.threads.threads.get(&root).is_some_and(|d| {
+            d.replies.len() == 201
+                && !d.has_earlier
+                && d.replies.first().is_some_and(|r| r.body == "r0")
+        })
+    })
+    .await;
+    alice
+        .threads()
+        .send_in_thread(ch, root, "r201".into())
+        .await
+        .unwrap()
+        .expect("queued");
+    wait_for(&bob, WAIT, "the refresh keeps the earlier page", |s| {
+        s.threads
+            .threads
+            .get(&root)
+            .is_some_and(|d| d.replies.len() == 202)
+    })
+    .await;
+}

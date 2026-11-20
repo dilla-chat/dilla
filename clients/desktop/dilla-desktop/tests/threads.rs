@@ -45,6 +45,27 @@ parity! {
     parity_threads_count_b => "count-b",
 }
 
+/// A GPUI-only reference (the web never draws a "load earlier" in a thread): `pane-open`'s world with 201 replies, so the
+/// open thread holds its newest 200 and "load earlier" sits over the first of them (Task 17).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_thread_earlier() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("thread-earlier"),
+        "thread-earlier",
+        |app| {
+            app.click("thread-chip");
+            app.wait_for("thread-close", SOON);
+            // The pane's `has_earlier` before the shot: the button is its only trace.
+            app.wait_for("thread-earlier", SOON);
+        },
+    )
+    .unwrap_or_else(|e| panic!("threads/thread-earlier differs from its golden shot: {e}"));
+}
+
 const SOON: Duration = Duration::from_secs(5);
 
 /// A reply shows its reply line, naming the original (e2e/web/conversation.spec.ts: the reply line is a button).

@@ -5,8 +5,10 @@
 
 use std::rc::Rc;
 
+use dilla_client::state::threads::ThreadData;
 use dilla_client::state::{MessageId, TimelineItem, TimelineItemState};
 use dilla_desktop_ui::IconName;
+use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::icon_button::{IconButton, IconButtonSize};
 use dilla_desktop_ui::components::threads::{
     PaneParts, ThreadRow, ThreadRowKind, pane, thread_row,
@@ -22,7 +24,7 @@ use gpui_component::input::{Enter, InputEvent, Textarea, TextareaState};
 
 use super::{close_thread, current, name_of, open_of, time_of};
 use crate::strings::{t, tf};
-use crate::tracked_focus;
+use crate::{tracked_box, tracked_focus};
 
 /// The thread composer's field: the CSS's `.d-composer__input` lines (20px) in a 30px minimum, at most 13.75rem.
 const FIELD_LINE: f32 = 20.0;
@@ -34,11 +36,20 @@ const COMPOSER_BOTTOM: f32 = 12.0;
 const ROW_GAP: f32 = 8.0;
 const ROW_LEFT: f32 = 10.0;
 const ROW_PAD: f32 = 4.0;
+/// MessageLog.css `.d-message-log__earlier`: the "load earlier" button's `margin-bottom: var(--group-gap)` at the regular
+/// density, the same as the channel log's.
+const EARLIER_GAP: f32 = 14.0;
 /// The hover toolbar's gap between its buttons (MessageRow.css `__toolbar` gap 2px).
 const TOOL_GAP: f32 = 2.0;
 
 fn max_rows() -> usize {
     ((FIELD_MAX - 2.0 * FIELD_PAD) / FIELD_LINE).floor() as usize
+}
+
+/// Whether the pane draws its "load earlier" button, and whether it can be pressed: `None` without one (no thread read, or
+/// no older replies), `Some(enabled)` otherwise; it is disabled while an older page is being read.
+pub fn earlier_shown(data: Option<&ThreadData>, loading: bool) -> Option<bool> {
+    data.filter(|d| d.has_earlier).map(|_| !loading)
 }
 
 /// Task 28 item 12 (ThreadView.tsx's MessageItem rows): what a thread message offers: Edit and Delete for the own message
@@ -107,6 +118,8 @@ pub struct PaneView {
     in_flight: bool,
     /// The root whose draft the field currently holds.
     shown: Option<MessageId>,
+    /// The "load earlier" press is in flight (ThreadView's pages read apart from the open thread's own read).
+    loading_earlier: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -128,6 +141,7 @@ impl PaneView {
             close_focus: cx.focus_handle().tab_stop(true),
             in_flight: false,
             shown: None,
+            loading_earlier: false,
             _subscriptions: vec![sub],
         }
     }
@@ -405,6 +419,56 @@ impl Render for PaneView {
             1 => Some(t("thread.summary.one").to_owned()),
             n => Some(tf("thread.summary.other", &[("count", &n.to_string())])),
         };
+        let earlier = earlier_shown(data, self.loading_earlier).map(|enabled| {
+            let this = cx.entity();
+            let window_id = self.window;
+            let client = ctx.client.clone();
+            div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .pb(px(EARLIER_GAP))
+                .child(tracked_box(
+                    "thread-earlier",
+                    Button::new("thread-earlier", t("shell.log.earlier"))
+                        .variant(ButtonVariant::Ghost)
+                        .disabled(!enabled)
+                        .on_click(move |_, _, cx| {
+                            let Some(client) = client.clone() else {
+                                return;
+                            };
+                            this.update(cx, |this, cx| {
+                                this.loading_earlier = true;
+                                cx.notify();
+                            });
+                            let answer = client.threads().load_earlier();
+                            let this = this.clone();
+                            cx.spawn(async move |cx| {
+                                let failed = match answer.await {
+                                    Ok(Ok(())) => None,
+                                    Ok(Err(dilla_client::ClientError::Sync(code))) => Some(code),
+                                    Ok(Err(_)) => Some("E_NETWORK".to_owned()),
+                                    Err(_) => Some("E_STOPPED".to_owned()),
+                                };
+                                cx.update(|cx| {
+                                    this.update(cx, |this, cx| {
+                                        this.loading_earlier = false;
+                                        cx.notify();
+                                    });
+                                    if let Some(code) = failed {
+                                        dilla_desktop_ui::components::toast::show_toast_in(
+                                            Some(window_id),
+                                            tf("shell.banner.commandError", &[("code", &code)]),
+                                            cx,
+                                        );
+                                    }
+                                });
+                            })
+                            .detach();
+                        }),
+                ))
+                .into_any_element()
+        });
         let empty = data
             .is_some_and(|d| d.replies.is_empty())
             .then(|| t("thread.noReplies"));
@@ -521,6 +585,8 @@ impl Render for PaneView {
             root,
             rule: rule.map(Into::into),
             replies,
+            earlier,
+            busy: self.loading_earlier,
             empty: empty.map(Into::into),
             composer,
         };
@@ -532,5 +598,30 @@ impl Render for PaneView {
             .h_full()
             .child(pane(parts))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dilla_client::state::ChannelId;
+
+    fn data(has_earlier: bool) -> ThreadData {
+        ThreadData {
+            channel: ChannelId([0; 16]),
+            root: None,
+            replies: Vec::new(),
+            has_earlier,
+            count: 0,
+        }
+    }
+
+    /// The button follows `has_earlier` and is disabled while a page is being read.
+    #[test]
+    fn the_earlier_button_follows_has_earlier() {
+        assert_eq!(earlier_shown(None, false), None);
+        assert_eq!(earlier_shown(Some(&data(false)), false), None);
+        assert_eq!(earlier_shown(Some(&data(true)), false), Some(true));
+        assert_eq!(earlier_shown(Some(&data(true)), true), Some(false));
     }
 }

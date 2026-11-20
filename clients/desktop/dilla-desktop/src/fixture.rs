@@ -286,10 +286,20 @@ pub fn build_state(
             let path = format!("{}/{}", server.id, c.id);
             // The client's first page (messages.ts `buildTimeline`): the newest `TIMELINE_PAGE` rows, with more before
             // them once the read filled the page.
-            let mut items = items_of(world, &path, viewer, shift, ids);
+            let items = items_of(world, &path, viewer, shift, ids);
+            // A thread reply is not a row of the channel (`threads::apply` moves it into its thread), so the page counts
+            // the other rows only.
             let page = dilla_client::state::TIMELINE_PAGE as usize;
+            let (replies, mut items): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| {
+                world
+                    .messages
+                    .iter()
+                    .any(|m| m.key == i.key && m.thread_of.is_some())
+            });
             let has_earlier = items.len() >= page;
             items.drain(..items.len().saturating_sub(page));
+            items.extend(replies);
+            items.sort_by_key(|i| i.ts);
             timelines.insert(
                 ids.channel(&path),
                 Timeline {

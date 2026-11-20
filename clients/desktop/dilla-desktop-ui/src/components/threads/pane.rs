@@ -63,6 +63,10 @@ pub struct PaneParts {
     /// "3 replies", drawn uppercase; `None` draws no rule.
     pub rule: Option<SharedString>,
     pub replies: Vec<AnyElement>,
+    /// The "load earlier" button over the first reply, while the thread has older replies unread.
+    pub earlier: Option<AnyElement>,
+    /// An older page is being read: the reply list is busy (`aria-busy`).
+    pub busy: bool,
     /// A note over an empty reply list ("No replies yet.").
     pub empty: Option<SharedString>,
     pub composer: AnyElement,
@@ -175,7 +179,14 @@ pub fn pane(parts: PaneParts) -> impl IntoElement {
         .overflow_y_scroll()
         .px(px(SIDE))
         .pt(px(REPLIES_TOP))
-        .pb(px(REPLIES_BOTTOM))
+        .pb(px(REPLIES_BOTTOM));
+    let replies = if parts.busy {
+        replies.node_props(|n| n.set_busy())
+    } else {
+        replies
+    };
+    let replies = replies
+        .children(parts.earlier)
         .children(
             parts
                 .empty
