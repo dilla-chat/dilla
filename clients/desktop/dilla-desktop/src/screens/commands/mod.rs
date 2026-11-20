@@ -64,8 +64,9 @@ pub const ROW_IDS: [&str; 25] = [
 
 /// The picker's state for one window's composer (final review M4: per window, so a draft in one window never opens or
 /// closes another's list): the draft it reported, the highlighted row, the draft the list was closed on (Escape keeps
-/// the draft and hides the list until the draft changes), and what the last frame showed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// the draft and hides the list until the draft changes), and what the last frame showed. Its Debug gives the drafts'
+/// lengths only: a draft is a message body, or a moderation command with its member and reason.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct PickerState {
     pub draft: String,
     pub selected: usize,
@@ -79,6 +80,19 @@ pub struct PickerState {
     /// The field of the composer that reported the draft (t28-bot-review I1): the list's and the chips' keys are
     /// taken only while it holds the focus.
     pub composer: Option<gpui::WeakFocusHandle>,
+}
+
+impl std::fmt::Debug for PickerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PickerState")
+            .field("draft_len", &self.draft.len())
+            .field("selected", &self.selected)
+            .field("closed_for_len", &self.closed_for.as_ref().map(String::len))
+            .field("rows", &self.rows.as_ref().map(Vec::len))
+            .field("picked", &self.picked)
+            .field("chips", &self.chips)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The composer whose field is `focus` reports a draft in `window`: the list and chips belong to it.
@@ -636,6 +650,33 @@ fn result_row(
 mod tests {
     use super::*;
     use dilla_client::state::{ChannelId, UserId};
+
+    /// R20: a moderation command being typed (its draft and its chips) prints neither the member nor the reason.
+    #[test]
+    fn a_moderation_draft_keeps_the_member_and_reason_out_of_debug() {
+        let mut chips = chips::Chips::new("warn".to_owned());
+        chips.values = vec!["Bjornsson".to_owned(), "secret-reason".to_owned()];
+        chips.shown = vec!["Bjornsson".to_owned()];
+        chips.labels = vec!["Bjornsson".to_owned()];
+        chips.picked = vec![Some("Bjornsson".to_owned()), None];
+        chips.sug_for = "Bjornsson".to_owned();
+        let picker = PickerState {
+            draft: "/warn Bjornsson secret-reason".to_owned(),
+            closed_for: Some("/warn Bjornsson secret-reason".to_owned()),
+            rows: Some(vec!["Bjornsson".to_owned()]),
+            picked: Some("warn".to_owned()),
+            chips: Some(chips.clone()),
+            ..PickerState::default()
+        };
+        for shown in [
+            format!("{chips:?}"),
+            format!("{picker:?}"),
+            format!("{picker:#?}"),
+        ] {
+            assert!(!shown.contains("Bjornsson"), "a name");
+            assert!(!shown.contains("secret"), "a reason");
+        }
+    }
 
     fn poll(counts: Vec<u64>, closed: bool, multi: bool, seconds: u64) -> PollView {
         PollView {

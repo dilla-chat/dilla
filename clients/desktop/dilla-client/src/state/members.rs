@@ -84,8 +84,9 @@ impl Presence {
     }
 }
 
-/// types.ts `BanSummary`: one ban of a community, as `GET .../bans` lists it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// types.ts `BanSummary`: one ban of a community, as `GET .../bans` lists it. Its Debug output is redacted: who was
+/// banned, by whom and why are moderation content.
+#[derive(Clone, PartialEq, Eq)]
 pub struct BanSummary {
     pub user_id: UserId,
     /// The banned account's display name, else its username ('' from an older instance).
@@ -98,9 +99,20 @@ pub struct BanSummary {
     pub expires: Option<u64>,
 }
 
+impl std::fmt::Debug for BanSummary {
+    /// No person and no reason: only whether the ban ends, and the reason's length.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BanSummary")
+            .field("expires", &self.expires.is_some())
+            .field("reason_len", &self.reason.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Task 14's slice of [`super::AppState`]: presence, bans and timeouts (the member lists stay in `AppState::members`, the
-/// sync engine's). [`Default`] is the empty slice.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// sync engine's). [`Default`] is the empty slice. Its Debug output counts the bans and timeouts per community rather than
+/// listing who was banned or timed out.
+#[derive(Clone, Default, PartialEq)]
 pub struct PeopleState {
     /// Each community's presence snapshot, kept current by op 48. Absent: not read yet (the pane says loading).
     pub presence: HashMap<CommunityId, HashMap<UserId, Presence>>,
@@ -108,6 +120,27 @@ pub struct PeopleState {
     pub bans: HashMap<CommunityId, Vec<BanSummary>>,
     /// The timeouts this device has read or set, by community and member: the expiry in Unix seconds.
     pub timeouts: HashMap<CommunityId, HashMap<UserId, u64>>,
+}
+
+impl std::fmt::Debug for PeopleState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let counts = |m: &HashMap<CommunityId, usize>| {
+            let mut v: Vec<_> = m.iter().map(|(c, n)| (*c, *n)).collect();
+            v.sort();
+            v
+        };
+        f.debug_struct("PeopleState")
+            .field("presence", &self.presence)
+            .field(
+                "bans",
+                &counts(&self.bans.iter().map(|(c, b)| (*c, b.len())).collect()),
+            )
+            .field(
+                "timeouts",
+                &counts(&self.timeouts.iter().map(|(c, t)| (*c, t.len())).collect()),
+            )
+            .finish()
+    }
 }
 
 impl PeopleState {
@@ -156,5 +189,43 @@ mod tests {
         assert_eq!(members[0].display, "Ada");
         assert_eq!(members[1].display, "");
         assert_eq!(members[1].username, "bo");
+    }
+
+    /// R20: a ban, the people slice and the whole state print no banned person and no reason (moderation content).
+    #[test]
+    fn a_ban_keeps_its_person_and_reason_out_of_debug() {
+        let c = CommunityId([7; 16]);
+        let ban = BanSummary {
+            user_id: UserId([2; 16]),
+            name: "Bjornsson".to_owned(),
+            reason: "secret-reason".to_owned(),
+            by_user: UserId([1; 16]),
+            created: 1,
+            expires: Some(2),
+        };
+        let mut people = PeopleState::default();
+        people.bans.insert(c, vec![ban.clone()]);
+        people
+            .timeouts
+            .insert(c, HashMap::from([(UserId([3; 16]), 9)]));
+        let state = crate::state::AppState {
+            people: people.clone(),
+            ..crate::state::AppState::default()
+        };
+        let banned = format!("{:?}", UserId([2; 16]));
+        let timed_out = format!("{:?}", UserId([3; 16]));
+        for shown in [
+            format!("{ban:?}"),
+            format!("{ban:#?}"),
+            format!("{people:?}"),
+            format!("{state:?}"),
+        ] {
+            assert!(!shown.contains("Bjornsson"), "a name");
+            assert!(!shown.contains("secret-reason"), "a reason");
+            assert!(
+                !shown.contains(&banned) && !shown.contains(&timed_out),
+                "a person's id"
+            );
+        }
     }
 }

@@ -70,8 +70,9 @@ pub enum ModKind {
     Unban,
 }
 
-/// The dialog in flight: its target, and the warning's request id (stable across a retry of the same warning).
-#[derive(Clone, Debug)]
+/// The dialog in flight: its target, and the warning's request id (stable across a retry of the same warning). Its Debug
+/// names only the kind and the community: the member it acts on is moderation content.
+#[derive(Clone)]
 pub struct ModDialog {
     pub kind: ModKind,
     pub community: CommunityId,
@@ -79,6 +80,15 @@ pub struct ModDialog {
     pub name: String,
     pub server: String,
     request: [u8; 16],
+}
+
+impl std::fmt::Debug for ModDialog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModDialog")
+            .field("kind", &self.kind)
+            .field("community", &self.community)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The members area's view state (one per app).
@@ -1944,6 +1954,25 @@ mod tests {
             ban_details(&ban(None), None, now)[0],
             t("admin.bans.forever")
         );
+    }
+
+    /// R20: a moderation dialog in flight prints its kind and community, never the member it acts on.
+    #[test]
+    fn a_moderation_dialog_keeps_its_member_out_of_debug() {
+        let dialog = ModDialog {
+            kind: ModKind::Ban,
+            community: CommunityId([7; 16]),
+            target: UserId([2; 16]),
+            name: "Bjornsson".to_owned(),
+            server: "Midgard".to_owned(),
+            request: [9; 16],
+        };
+        let user = format!("{:?}", UserId([2; 16]));
+        for shown in [format!("{dialog:?}"), format!("{dialog:#?}")] {
+            assert!(shown.contains("Ban"), "the kind shows");
+            assert!(!shown.contains("Bjornsson"), "a name");
+            assert!(!shown.contains(&user), "the member's id");
+        }
     }
 
     /// BansSection.tsx `loadError`: a failed ban-list read keeps its `asked` entry (no read on every draw) and records its

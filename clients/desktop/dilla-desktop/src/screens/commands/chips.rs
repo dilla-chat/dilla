@@ -50,8 +50,9 @@ pub const FIELD_IDS: [&str; 8] = [
     "command-field-7",
 ];
 
-/// The chips of a picked command, per window (in [`super::PickerState`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The chips of a picked command, per window (in [`super::PickerState`]). Its Debug gives the command and the counts
+/// only: a moderation command's fields hold the member it acts on and its reason (`/warn`, `/ban`).
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Chips {
     /// The picked command's id.
     pub command: String,
@@ -77,6 +78,19 @@ pub struct Chips {
     pub member: bool,
     /// Each field's picked member id (CommandPicker.tsx `field.selected`), until its text changes.
     pub picked: Vec<Option<String>>,
+}
+
+impl std::fmt::Debug for Chips {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Chips")
+            .field("command", &self.command)
+            .field("values", &self.values.len())
+            .field("active", &self.active)
+            .field("fields", &self.fields)
+            .field("shown", &self.shown.len())
+            .field("member", &self.member)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Chips {

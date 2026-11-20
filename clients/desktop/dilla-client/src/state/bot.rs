@@ -106,8 +106,9 @@ pub enum ResultProvider {
     Bot,
 }
 
-/// One private result row (private-results.ts `PrivateResult`): shown only on this device, in its conversation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One private result row (private-results.ts `PrivateResult`): shown only on this device, in its conversation. Its Debug
+/// gives the text's length only: a moderation command's row names the member it acted on ("{name} was banned.").
+#[derive(Clone, PartialEq, Eq)]
 pub struct PrivateResult {
     pub id: u64,
     /// When it was added, unix milliseconds (the rows' order).
@@ -119,6 +120,20 @@ pub struct PrivateResult {
     pub hold: bool,
     /// When it last finished (unix ms), while it is finished and not held: it goes away [`PRIVATE_RESULT_TTL_MS`] later.
     pub settled_at: Option<u64>,
+}
+
+impl std::fmt::Debug for PrivateResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrivateResult")
+            .field("id", &self.id)
+            .field("at", &self.at)
+            .field("status", &self.status)
+            .field("text_len", &self.text.len())
+            .field("provider", &self.provider)
+            .field("hold", &self.hold)
+            .field("settled_at", &self.settled_at)
+            .finish()
+    }
 }
 
 /// private-results.ts `PRIVATE_RESULT_TTL_MS`: a finished private reply goes away this long after it finished.

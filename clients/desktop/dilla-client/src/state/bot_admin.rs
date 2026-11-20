@@ -483,7 +483,9 @@ pub const PROVIDER_STALE_S: u64 = 60;
 
 // ---- the moderation log (operations 60 and 64) ----
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One case of the moderation log. Its Debug output is redacted: the reason and excerpt (sealed evidence) and the actor
+/// are moderation content, so only the case key, its action and the lengths show.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ModerationCase {
     pub key: String,
     pub channel_id: String,
@@ -494,6 +496,17 @@ pub struct ModerationCase {
     pub action: String,
     pub excerpt: String,
     pub received_at: String,
+}
+
+impl std::fmt::Debug for ModerationCase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModerationCase")
+            .field("key", &self.key)
+            .field("action", &self.action)
+            .field("reason_len", &self.reason.len())
+            .field("excerpt_len", &self.excerpt.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// One page: its rows, and the cursor of the next (hex) when there is one.

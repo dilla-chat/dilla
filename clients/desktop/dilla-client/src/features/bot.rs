@@ -260,11 +260,25 @@ pub fn plan_in(
 }
 
 /// The copy of a moderation command's private row (copy.ts `privateResultCopy`, `mod.*.done`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Its Debug gives only lengths: the copy names the member acted on ("{name} was banned.").
+#[derive(Clone, PartialEq, Eq)]
 pub struct ModerationTexts {
     pub cancelled: String,
     pub pending: String,
     pub done: String,
+}
+
+impl std::fmt::Debug for ModerationTexts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ModerationTexts({}, {}, {} bytes)",
+            self.cancelled.len(),
+            self.pending.len(),
+            self.done.len()
+        )
+    }
 }
 
 /// builtin.ts `mutationError`: a definitive refusal names its code; anything else is an uncertain outcome.
@@ -316,8 +330,9 @@ pub enum Plan {
     Incomplete,
 }
 
-/// The question a built-in asks before it runs: the dialog's title and body (`ConfirmDialog`). Its `Debug` leaves the
-/// body out: it may carry a moderation reason ("…Reason: {reason}").
+/// The question a built-in asks before it runs: the dialog's title and body (`ConfirmDialog`). Its `Debug` gives only
+/// their lengths: the body may carry a moderation reason ("…Reason: {reason}") and the title the member it acts on
+/// ("Unban {name}?").
 #[derive(Clone, PartialEq, Eq)]
 pub struct Ask {
     pub title: String,
@@ -326,7 +341,12 @@ pub struct Ask {
 
 impl std::fmt::Debug for Ask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Ask({:?}, {} bytes)", self.title, self.body.len())
+        write!(
+            f,
+            "Ask({} bytes, {} bytes)",
+            self.title.len(),
+            self.body.len()
+        )
     }
 }
 
@@ -390,7 +410,8 @@ pub enum Builtin {
 
 impl std::fmt::Debug for Builtin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Only the ids and the lengths: the texts are message bodies, reasons and excerpts.
+        // Only the ids and the lengths: the texts are message bodies, reasons and excerpts. A moderation command names no
+        // member (neither id nor name): who it acts on is moderation content.
         match self {
             Self::Reply { to, text } => write!(f, "Reply({to:?}, {} bytes)", text.len()),
             Self::Edit { msg, text } => write!(f, "Edit({msg:?}, {} bytes)", text.len()),
@@ -401,26 +422,16 @@ impl std::fmt::Debug for Builtin {
                 write!(f, "Topic({channel:?}, {} bytes)", text.len())
             }
             Self::Timeout {
-                community,
-                user,
-                seconds,
-                ..
-            } => write!(f, "Timeout({community:?}, {user:?}, {seconds})"),
-            Self::Untimeout {
-                community, user, ..
-            } => write!(f, "Untimeout({community:?}, {user:?})"),
-            Self::UntimeoutConfirmed {
-                community, user, ..
-            } => write!(f, "UntimeoutConfirmed({community:?}, {user:?})"),
+                community, seconds, ..
+            } => write!(f, "Timeout({community:?}, {seconds})"),
+            Self::Untimeout { community, .. } => write!(f, "Untimeout({community:?})"),
+            Self::UntimeoutConfirmed { community, .. } => {
+                write!(f, "UntimeoutConfirmed({community:?})")
+            }
             Self::Warn {
-                community,
-                user,
-                reason,
-                ..
-            } => write!(f, "Warn({community:?}, {user:?}, {} bytes)", reason.len()),
-            Self::Unban {
-                community, user, ..
-            } => write!(f, "Unban({community:?}, {user:?})"),
+                community, reason, ..
+            } => write!(f, "Warn({community:?}, {} bytes)", reason.len()),
+            Self::Unban { community, .. } => write!(f, "Unban({community:?})"),
         }
     }
 }
@@ -577,8 +588,8 @@ pub fn mutation_error_of(e: &crate::ClientError) -> String {
 }
 
 /// A checked moderation command (builtin.ts `kick`, `ban`): its member, the name and `@username` the dialog shows, and
-/// what it does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// what it does. Its Debug names no member and no reason (moderation content): only the community and the action.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Moderation {
     pub community: CommunityId,
     pub user: crate::state::UserId,
@@ -587,8 +598,14 @@ pub struct Moderation {
     pub action: ModAction,
 }
 
-/// What a [`Moderation`] does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl std::fmt::Debug for Moderation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Moderation({:?}, {:?})", self.community, self.action)
+    }
+}
+
+/// What a [`Moderation`] does. Its Debug gives a ban's length, never its reason.
+#[derive(Clone, PartialEq, Eq)]
 pub enum ModAction {
     Kick,
     /// `seconds` is `None` for a permanent ban; `duration` is the length as typed (`1d`, `permanent`).
@@ -597,6 +614,17 @@ pub enum ModAction {
         duration: String,
         reason: String,
     },
+}
+
+impl std::fmt::Debug for ModAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kick => write!(f, "Kick"),
+            Self::Ban {
+                seconds, reason, ..
+            } => write!(f, "Ban({seconds:?}, {} bytes)", reason.len()),
+        }
+    }
 }
 
 impl ModAction {
@@ -2002,8 +2030,52 @@ mod tests {
             ),
         ] {
             assert!(!shown.contains("secret"), "{}", shown.len());
+            // R20: nor the member a moderation command acts on.
+            assert!(!shown.contains("bea"), "{}", shown.len());
         }
-        assert!(format!("{plan:?}").contains("Delete this message?"));
+        // The question is still listed, by its lengths ("Delete this message?" is 20 bytes).
+        assert!(format!("{plan:?}").contains("Ask(20 bytes"));
+    }
+
+    /// R20: a checked kick or ban, its private row's copy and the row itself name neither the member nor the reason.
+    #[test]
+    fn moderation_rows_keep_the_member_and_reason_out_of_debug() {
+        let ban = Moderation {
+            community: CommunityId([7; 16]),
+            user: crate::state::UserId([2; 16]),
+            name: "Bjornsson".into(),
+            username: "bjornsson".into(),
+            action: ModAction::Ban {
+                seconds: Some(3600),
+                duration: "1h".into(),
+                reason: "secret-reason".into(),
+            },
+        };
+        let texts = ModerationTexts {
+            cancelled: "Ban of Bjornsson cancelled.".into(),
+            pending: "Banning Bjornsson…".into(),
+            done: "Bjornsson was banned.".into(),
+        };
+        let row = crate::state::bot::PrivateResult {
+            id: 1,
+            at: 0,
+            status: ResultStatus::Success,
+            text: "Bjornsson was banned. secret-reason".into(),
+            provider: ResultProvider::Builtin,
+            hold: false,
+            settled_at: None,
+        };
+        let user = format!("{:?}", crate::state::UserId([2; 16]));
+        for shown in [
+            format!("{ban:?}"),
+            format!("{ban:#?}"),
+            format!("{texts:?}"),
+            format!("{row:?}"),
+        ] {
+            assert!(!shown.to_lowercase().contains("bjornsson"), "a name");
+            assert!(!shown.contains("secret"), "a reason");
+            assert!(!shown.contains(&user), "the member's id");
+        }
     }
 
     /// builtin.ts `eligibleAssignableRole` (:384-393): a role is assignable when this account manages roles and ranks

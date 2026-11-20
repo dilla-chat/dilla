@@ -2,6 +2,31 @@
 //! playhead cases of `voice/music.test.ts`: the same inputs, the same outputs.
 use super::*;
 
+/// R20: a moderation-log case prints neither its reason, its excerpt (sealed evidence) nor its actor.
+#[test]
+fn a_moderation_case_keeps_its_reason_excerpt_and_actor_out_of_debug() {
+    let case = ModerationCase {
+        key: "k1".into(),
+        channel_id: "c".repeat(32),
+        actor_id: "a".repeat(32),
+        message_id: "m".repeat(32),
+        revision: "1".into(),
+        reason: "secret-reason".into(),
+        action: "warn".into(),
+        excerpt: "secret-excerpt".into(),
+        received_at: "0".into(),
+    };
+    let page = ModerationPage {
+        status: 1,
+        cases: vec![case.clone()],
+        next_cursor: None,
+    };
+    for shown in [format!("{case:?}"), format!("{page:#?}")] {
+        assert!(!shown.contains("secret"), "reason or excerpt");
+        assert!(!shown.contains(&"a".repeat(32)), "the actor");
+    }
+}
+
 fn b(n: u8) -> Value {
     Value::Bytes(vec![n; 16])
 }
