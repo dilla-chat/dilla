@@ -1566,3 +1566,287 @@ fn role_commands_grant_then_ask_and_revoke(cx: &mut gpui::TestAppContext) {
     drop(ctx);
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
 }
+
+/// Task 28: scheduled announcements against a real dillad and its Bot (bot-handlers.ts `announcementHandler`). The owner
+/// schedules a daily announcement from the editor (the fields as typed, the repeat chosen), the Bot answers "Announcement
+/// scheduled."; `/announcement list` lists it as `{id}: {text} — daily, UTC 09:00`; `/announcement delete` of it asks
+/// first and, confirmed, answers "Scheduled announcement deleted."; the list is empty again.
+#[gpui::test]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+fn an_announcement_scheduled_from_the_editor_is_listed(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::announcements::ScheduleKind;
+    use dilla_client::features::roles::viewer_channel_bits;
+    use dilla_client::state::CommunityId;
+    use dilla_client::state::bot::{Conversation, ResultStatus};
+    use dilla_client::state::bot_admin::sealed_operation;
+    use dilla_desktop::screens::commands::{self, announcement_form};
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_bot_host("t28-announce", "127.0.0.1:0");
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t28-announce"));
+    let c = CommunityId(world::community(&host, &ada, "Announcements", &[]));
+    world::clear_session(&ada);
+    let client = Rc::new(rt.block_on(world::start(&ada)));
+    rt.block_on(world::bot::enable_bot(
+        &client,
+        c.0,
+        world::bot::cap::ANNOUNCEMENTS,
+    ));
+    let general = rt
+        .block_on(world::wait_for(
+            &client,
+            Duration::from_secs(30),
+            "#general",
+            |s| s.channel_named(c, "general").is_some(),
+        ))
+        .channel_named(c, "general")
+        .unwrap()
+        .id;
+    // A schedule posts into a Bot channel: #general is made one.
+    rt.block_on(client.bot_admin().mark_bot_channel(c, general))
+        .expect("an answer")
+        .expect("#general is marked a Bot channel");
+    // The Bot's catalog lists its announcement operations (the real catalog has no typed `/announcement` commands, so the
+    // commands run through the handler directly, as the picker would hand them over).
+    let ready = |state: &dilla_client::state::AppState| {
+        state.bot.catalogs.get(&c).is_some_and(|v| {
+            v.fingerprint.is_some()
+                && v.commands
+                    .iter()
+                    .any(|x| u64::from(x.operation) == sealed_operation(50))
+        })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while !ready(&client.state().borrow()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Bot's catalog never offered announcements: {:?} {:?}",
+            host.bot_refusals(),
+            client.state().borrow().bot.catalogs.get(&c).map(|v| v
+                .commands
+                .iter()
+                .map(|x| (x.name.clone(), x.operation))
+                .collect::<Vec<_>>())
+        );
+        let _ = rt.block_on(client.bot().sync_catalog(c));
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // The shell hands the open channel's resolved bits to the threads area; the owner holds everything.
+    client.threads().set_channel_bits(
+        general,
+        viewer_channel_bits(&client.state().borrow(), general),
+    );
+
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    let ctx = SlotCx {
+        state: client.state().borrow().clone(),
+        client: Some(client.clone()),
+        community: Some(c),
+        channel: Some(general),
+        ..SlotCx::default()
+    };
+    let conversation = Conversation {
+        channel: general,
+        thread: None,
+    };
+    // Sends `draft`; `drive` runs on every pass while its row is pending (it draws the overlays, answers the question or
+    // fills the editor); answers the row once it settled.
+    let mut sent = 0;
+    let mut run = |cx: &mut gpui::VisualTestContext,
+                   draft: &str,
+                   drive: &mut dyn FnMut(&mut gpui::VisualTestContext)|
+     -> (ResultStatus, String) {
+        let (name, argument) = match draft.split_once(" announcement:") {
+            Some((name, id)) => (name, Some(id)),
+            None => (draft, None),
+        };
+        let command =
+            announcement_form::Command::of(name.trim_start_matches('/')).expect("a command");
+        let mut args = dilla_client::features::bot::registry::Args::new();
+        if let Some(id) = argument {
+            args.insert("announcement".to_owned(), id.to_owned());
+        }
+        cx.update(|_, cx| announcement_form::run(&ctx, command, &args, window, cx));
+        sent += 1;
+        for _ in 0..600 {
+            cx.run_until_parked();
+            drive(cx);
+            let last = client
+                .state()
+                .borrow()
+                .bot
+                .results(&conversation)
+                .last()
+                .filter(|_| client.state().borrow().bot.results(&conversation).len() == sent)
+                .map(|r| (r.status, r.text.clone()));
+            if let Some(last) = last.filter(|(s, _)| *s != ResultStatus::Pending) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("{draft}: the row never settled");
+    };
+    let none = &mut |_: &mut gpui::VisualTestContext| {};
+
+    // The editor: drawn once the Bot's list was read, then filled as a person would (the message, daily at 09:00 UTC).
+    let mut filled = false;
+    let created = run(vcx, "/announcement create", &mut |cx| {
+        cx.update(|window, cx| {
+            commands::announcement_form::overlay(&ctx, window, cx);
+            let Some(form) = announcement_form::form_of(window.window_handle().window_id(), cx)
+            else {
+                return;
+            };
+            if filled {
+                return;
+            }
+            filled = true;
+            let (message, hour, minute, zone) = (
+                form.message.clone(),
+                form.hour.clone(),
+                form.minute.clone(),
+                form.timezone.clone(),
+            );
+            message.update(cx, |s, cx| {
+                s.set_value("Stand-up in the harbour", window, cx)
+            });
+            hour.update(cx, |s, cx| s.set_value("09", window, cx));
+            minute.update(cx, |s, cx| s.set_value("00", window, cx));
+            zone.update(cx, |s, cx| s.set_value("UTC", window, cx));
+            announcement_form::choose_kind(
+                window.window_handle().window_id(),
+                ScheduleKind::Daily,
+                cx,
+            );
+            announcement_form::submit(window.window_handle().window_id(), cx);
+        });
+    });
+    assert_eq!(
+        created,
+        (ResultStatus::Success, "Announcement scheduled.".to_owned()),
+        "{:?}",
+        host.bot_refusals()
+    );
+
+    let (status, listed) = run(vcx, "/announcement list", none);
+    assert_eq!(status, ResultStatus::Success, "{listed}");
+    let (id, summary) = listed.split_once(": ").expect("{id}: {summary}");
+    assert_eq!(summary, "Stand-up in the harbour — daily, UTC 09:00");
+    assert_eq!(id.len(), 32);
+    let id = id.to_owned();
+    assert_eq!(
+        client
+            .state()
+            .borrow()
+            .bot
+            .announcements
+            .get(&c)
+            .map(Vec::len),
+        Some(1),
+        "the chips hold what the list read"
+    );
+
+    // Deleting asks first; confirmed, it deletes.
+    let deleted = run(
+        vcx,
+        &format!("/announcement delete announcement:{id}"),
+        &mut |cx| {
+            cx.update(|window, cx| {
+                commands::announcement_form::overlay(&ctx, window, cx);
+                announcement_form::answer_delete(
+                    window.window_handle().window_id(),
+                    Some(true),
+                    cx,
+                );
+            });
+        },
+    );
+    assert_eq!(
+        deleted,
+        (
+            ResultStatus::Success,
+            "Scheduled announcement deleted.".to_owned()
+        ),
+        "{:?}",
+        host.bot_refusals()
+    );
+    assert_eq!(
+        run(vcx, "/announcement list", none),
+        (
+            ResultStatus::Success,
+            "No scheduled announcements.".to_owned()
+        )
+    );
+    drop(ctx);
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
+
+/// A GPUI-only reference (`native/announcement-editor`, Decision D2): `/announcement create` opens the editor, drawn with
+/// the Signal `Dialog`, `Select` and `TextField` where the web's `BotCommandDialogs` uses browser widgets (a native
+/// `<select>`, `<input type="date">`, `<input type="number">`). The fields are the web's, in its order and with its
+/// labels: Destination channel, Message, Repeat, Date, Hour, Minute, Time zone, then Close, Cancel and Save. The values
+/// are the opening's: the first text channel, once, a minute after the frame's clock (2026-11-12 11:09 UTC).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_announcement_editor() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("commands/announcement-editor.json"),
+        "announcement-editor",
+        |app| {
+            // The fixture's steps are not replayed for a native frame: the same ones, by hand.
+            app.type_text("composer", "/announcement create");
+            app.wait_for("command-picker", Duration::from_secs(10));
+            app.press("tab");
+            app.wait_for("command-chips", Duration::from_secs(5));
+            app.press("enter");
+            app.wait_for("announcement-message", Duration::from_secs(10));
+        },
+    )
+    .unwrap_or_else(|e| panic!("commands/announcement-editor differs from its golden shot: {e}"));
+}
+
+/// `/announcement create` typed in the composer and sent from its chips opens the editor on the server whose Bot offers
+/// announcements, its row pending under the log; Cancel closes it and the row says the editing was cancelled; Save with an
+/// empty message names the refusal in the editor and keeps it open.
+#[test]
+fn the_composer_opens_the_announcement_editor() {
+    let mut app = Driver::launch_fixture(&fixture("commands/announcement-editor.json"), None, &[]);
+    app.type_text("composer", "/announcement create");
+    app.wait_for("command-picker", Duration::from_secs(10));
+    app.press("tab");
+    app.wait_for("command-chips", Duration::from_secs(5));
+    app.press("enter");
+    app.wait_for("announcement-message", Duration::from_secs(10));
+    assert!(app.element("announcement-recurrence").is_some());
+    assert!(
+        app.element("announcement-date").is_some(),
+        "a one-off has its date"
+    );
+    app.click("announcement-save");
+    app.wait_for("announcement-error", Duration::from_secs(5));
+    assert!(
+        app.element("announcement-message").is_some(),
+        "Save kept it open"
+    );
+    app.click("announcement-cancel");
+    app.wait_idle();
+    assert!(
+        app.element("announcement-message").is_none(),
+        "Cancel closed it"
+    );
+    app.wait_for("bot-result-failed", Duration::from_secs(5));
+}

@@ -26,6 +26,7 @@ use dilla_client::testing::spec::{self, ChannelKind, Phase, ScreenFixture, Shot,
 
 use crate::router::Route;
 
+mod announcements;
 pub mod appearance;
 mod attachments;
 mod calls;
@@ -350,6 +351,8 @@ pub fn build_state(
     roles::apply(world, viewer, &mut state);
     server_admin::apply(world, viewer, &mut state);
     server_admin::apply_bot(world, ids, &mut state);
+    // After the roles: the viewer's bits in the Bot's channels are resolved from them.
+    announcements::apply(world, ids, &mut state);
     gifs::apply(&fixture.name, &mut state);
     invites::apply(&fixture.name, fixture.clock + shift, &mut state);
     threads::apply(world, viewer, &mut state);

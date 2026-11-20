@@ -18,9 +18,13 @@
 //! assignable to the member picked) and `/dm`'s peers; `/timeout`, `/untimeout` and `/warn` list the members Moderate
 //! Members reaches and `/role add` and `/role remove` those a role is assignable to.
 //!
-//! Not ported yet: what the Bot or the instance looks up (queue items, polls, announcements, reminders, search results)
+//! Task 28: an `announcement` chip lists the schedules the Bot last listed ([`provided_suggestions`]), and reads them
+//! once when none are held.
+//!
+//! Not ported yet: what the Bot or the instance looks up (queue items, polls, reminders, search results)
 //! and a DST fold's two `when` candidates.
 
+use dilla_client::features::bot::announcements;
 use dilla_client::features::bot::registry::{ArgKind, Args, CommandDefinition, CommandOption};
 use dilla_client::features::bot::{assignable_role, room};
 use dilla_client::features::server_admin::hex_id;
@@ -504,6 +508,24 @@ pub fn provided_suggestions(
                 .map(|(u, name)| named(u.hex(), name, "", true))
                 .collect()
         }
+        // CommandHost.tsx `suggest` for an `announcement` option (bot-handlers.ts:571-575): the schedules the Bot last
+        // listed whose id is the query or whose summary holds it, at most 25, labelled with the text's first 100
+        // characters.
+        (ArgKind::Announcement, Some(c)) => state
+            .bot
+            .announcements
+            .get(&c)
+            .into_iter()
+            .flatten()
+            .filter(|r| {
+                hex_id(&r.id) == query || announcements::summary(r).to_lowercase().contains(&needle)
+            })
+            .take(25)
+            .map(|r| {
+                let label: String = r.text.chars().take(100).collect();
+                named(hex_id(&r.id), &label, &announcements::summary(r), false)
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -968,6 +990,7 @@ fn read_bans(ctx: &SlotCx) {
 pub fn release(client: &std::rc::Rc<dilla_client::Client>) {
     bans_asked().forget(client.serial());
     self_roles_asked().forget(client.serial());
+    announcements_asked().forget(client.serial());
 }
 
 /// How long after a failed bans read the next offer reads again.
@@ -1007,6 +1030,15 @@ impl BansAsked {
 
 /// The process's marks of the self roles asked for, as [`bans_asked`].
 fn self_roles_asked() -> std::sync::MutexGuard<'static, BansAsked> {
+    static ASKED: std::sync::LazyLock<std::sync::Mutex<BansAsked>> =
+        std::sync::LazyLock::new(Default::default);
+    ASKED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The process's marks of the announcements asked for, as [`bans_asked`].
+fn announcements_asked() -> std::sync::MutexGuard<'static, BansAsked> {
     static ASKED: std::sync::LazyLock<std::sync::Mutex<BansAsked>> =
         std::sync::LazyLock::new(Default::default);
     ASKED
@@ -1080,6 +1112,9 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         if definition.id.starts_with("selfrole ") {
             read_self_roles(ctx);
         }
+        if definition.id.starts_with("announcement ") {
+            read_announcements(ctx);
+        }
         // The other fields' values, a pick as its id (`/role add`'s role needs the member picked).
         let values: Args = definition
             .options
@@ -1150,6 +1185,33 @@ fn read_self_roles(ctx: &SlotCx) {
         }
         read
     }));
+}
+
+/// CommandHost.tsx `suggest` for an `announcement` chip: the schedules are read from the Bot once per client and
+/// community when the chip is first offered and none are held yet (the field is offered on every frame, so the mark keeps
+/// the read to one; a failed read is tried again [`BANS_RETRY`] later, as the bans'). The read's answer is published as
+/// `BotState::announcements`.
+fn read_announcements(ctx: &SlotCx) {
+    let (Some(client), Some(community)) = (&ctx.client, ctx.community) else {
+        return;
+    };
+    let serial = client.serial();
+    if ctx.state.bot.announcements.contains_key(&community)
+        || !announcements_asked().ask(serial, community, std::time::Instant::now())
+    {
+        return;
+    }
+    client.bot().read_announcements(
+        community,
+        dilla_client::features::roles::request_id(),
+        move || announcements_asked().failed(serial, community, std::time::Instant::now()),
+    );
+}
+
+/// A save or a deletion of `client` may have changed the Bot's schedules: the next offer of an `announcement` chip reads
+/// them again.
+pub fn announcements_changed(client: &std::rc::Rc<dilla_client::Client>) {
+    announcements_asked().forget(client.serial());
 }
 
 /// The first member field of `chips` that names nobody: typed, no member picked, and not a user id or `@username`

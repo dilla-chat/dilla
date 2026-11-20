@@ -260,6 +260,12 @@ pub struct BotState {
     pub poll_checks: BTreeMap<MessageId, PollCheck>,
     /// This member's reminders, by community, soonest first.
     pub reminders: BTreeMap<CommunityId, Vec<ReminderView>>,
+    /// The scheduled announcements the Bot last listed, by community (Task 28; the chips' suggestions). A community with
+    /// no entry was not listed yet.
+    pub announcements: BTreeMap<
+        CommunityId,
+        Vec<crate::features::bot::announcements::ScheduleRow>,
+    >,
 }
 
 impl BotState {

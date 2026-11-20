@@ -7,9 +7,12 @@
 //!   [`draft_changed`]; ↑↓, Tab, Enter and Escape reach it through [`keys`].
 //! - [`poll_card`] (`slots::message_extras`): a verified poll under the Bot's post.
 //! - [`poll_form`] (`slots::overlays`): `/poll create` opens the form, and Post sends the poll through the Bot.
+//! - [`announcement_form`] (`slots::overlays`): `/announcement list|create|edit|delete` read, save and delete the Bot's
+//!   scheduled announcements; `create` and `edit` open the editor.
 //! - [`private_results`]: the rows only this device shows, for the log of their conversation; [`on_send`] decides what
 //!   a sent draft does (post it, or answer privately).
 
+pub mod announcement_form;
 pub mod builtins;
 pub mod chips;
 pub mod confirm;
@@ -127,6 +130,7 @@ pub fn release_windows(windows: &[gpui::WindowId], cx: &mut App) {
         crate::per_window::set::<PickerState>(window, None, cx);
         reminders::forget_window(window, cx);
         poll_form::forget_window(window, cx);
+        announcement_form::forget_window(window, cx);
     }
 }
 
@@ -431,6 +435,15 @@ pub fn on_send(
         && definition.id == "poll create"
     {
         poll_form::open(ctx, args, window, cx);
+        draft_changed(window, "", cx);
+        return SendDecision::Handled;
+    }
+    // The four announcement commands run through their own handler as well (bot-handlers.ts `announcementHandler`): the
+    // Bot reads a schedule, not a typed command.
+    if let Plan::Bot { definition, args } = &plan
+        && let Some(command) = announcement_form::Command::of(&definition.id)
+    {
+        announcement_form::run(ctx, command, args, window, cx);
         draft_changed(window, "", cx);
         return SendDecision::Handled;
     }

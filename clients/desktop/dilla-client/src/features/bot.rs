@@ -11,6 +11,7 @@
 //! - Private results ([`private`]) live only in [`BotState::private_results`]: no store, no transport, no timeline. A
 //!   finished row goes away [`crate::state::bot::PRIVATE_RESULT_TTL_MS`] after it finished; the area sweeps itself on a timer.
 
+pub mod announcements;
 pub mod catalog;
 pub mod hints;
 mod io;
