@@ -476,7 +476,7 @@ pub fn announcement_in(
 
 /// What a poll post's body is (MessageItem.tsx `displayBody`): a Bot's post ending in the poll marker never reads as plain
 /// markdown until it is known whether its card verifies.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum PollBody {
     /// Not a poll post: the body as it is.
     NoMarker,
@@ -486,6 +486,18 @@ pub enum PollBody {
     Pending,
     /// The post's own text with the marker line gone and its `<t:…>` tags as local times, before markdown.
     Fallback(String),
+}
+
+/// The variant and the lengths only: `Asked` and `Fallback` hold decrypted text, which never goes in Debug.
+impl std::fmt::Debug for PollBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoMarker => f.write_str("NoMarker"),
+            Self::Asked(n) => write!(f, "Asked(<{} bytes>)", n.len()),
+            Self::Pending => f.write_str("Pending"),
+            Self::Fallback(t) => write!(f, "Fallback(<{} bytes>)", t.len()),
+        }
+    }
 }
 
 /// [`PollBody`] of `item`. `live` is whether a client is running (the web's `p.client !== undefined`): only then can a
@@ -677,7 +689,13 @@ pub fn spoken_item(
     let name = author(state, members, item);
     let zone = |secs: i64| zone_of(clock, secs);
     let time = format::time_in(item.ts, &zone);
-    let parts = body_parts(state, members, community, item, live, &zone_for(clock));
+    let zone = zone_for(clock);
+    // A post whose card is being verified has no text; the card's `poll.loading` status is what the web's log announces
+    // with it (PollCard.tsx), so that is its body here.
+    if poll_body(item, state, Some(community), live, &zone) == PollBody::Pending {
+        return spoken_row(&name, &time, t("poll.loading"));
+    }
+    let parts = body_parts(state, members, community, item, live, &zone);
     spoken_row(&name, &time, &spoken_body(&parts))
 }
 
@@ -692,7 +710,21 @@ pub fn arrival(
 ) -> Option<((ChannelId, String), Option<String>)> {
     let items = &state.timelines.get(&channel.id)?.items;
     let last = items.last()?;
-    let key = (channel.id, last.key.clone());
+    // A poll post that has resolved (verified, or given up) is a new addition to the web's polite log (its text and card
+    // appear), so it is announced again under a key of its own.
+    let zone = zone_for(clock);
+    let resolved = !matches!(
+        poll_body(last, state, Some(channel.community_id), true, &zone),
+        PollBody::NoMarker | PollBody::Pending
+    );
+    let key = (
+        channel.id,
+        if resolved {
+            format!("{}#resolved", last.key)
+        } else {
+            last.key.clone()
+        },
+    );
     match seen {
         Some(s) if *s == key => None,
         // Another log (or the first look at this one): its tail is what was already there.
@@ -2412,6 +2444,49 @@ mod tests {
             PollBody::NoMarker
         );
         assert!(poll_text(&s, community, &forged, true).contains("[dilla-poll"));
+    }
+
+    /// Decrypted text never goes in Debug: only the variant and the lengths do.
+    #[test]
+    fn a_poll_body_debug_redacts_its_text() {
+        for body in [
+            PollBody::Asked("secret-name".into()),
+            PollBody::Fallback("secret text".into()),
+        ] {
+            let shown = format!("{body:?}");
+            assert!(!shown.contains("secret"), "{shown}");
+        }
+        assert_eq!(format!("{:?}", PollBody::Pending), "Pending");
+    }
+
+    /// MessageLog.tsx's polite log: a pending poll is announced with the card's loading line, and again, with "{name}
+    /// asked:", once it verifies.
+    #[test]
+    fn a_pending_poll_is_announced_loading_and_again_when_verified() {
+        let (mut s, _, i) = poll_world(false);
+        let channel = s.channels[0].clone();
+        let mut earlier = item(1, 1);
+        earlier.key = "first".into();
+        let id = i.msg_id.unwrap();
+        let tl = Timeline {
+            channel_id: channel.id,
+            group: Default::default(),
+            items: vec![earlier, i.clone()],
+            has_earlier: false,
+        };
+        s.timelines.insert(channel.id, tl);
+        let clock = Clock::Fixed { now: 0, utc: true };
+        let seen = Some((channel.id, "first".to_owned()));
+        let (key, text) = arrival(&s, &channel, clock, seen.as_ref()).expect("a new row");
+        let text = text.expect("announced");
+        assert!(text.ends_with(": Loading poll…"), "{text}");
+        // The same state again says nothing.
+        assert!(arrival(&s, &channel, clock, Some(&key)).is_none());
+        // The poll verifies: the row's new text is announced.
+        let held = poll_world(true).0.bot.polls[&id].clone();
+        s.bot.polls.insert(id, held);
+        let (_, text) = arrival(&s, &channel, clock, Some(&key)).expect("a change");
+        assert!(text.expect("announced").ends_with(": bob asked:"));
     }
 
     #[test]
