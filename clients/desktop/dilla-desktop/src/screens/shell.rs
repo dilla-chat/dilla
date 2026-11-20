@@ -93,7 +93,7 @@ pub type PickServer = Rc<dyn Fn(CommunityId, &mut Window, &mut gpui::App)>;
 use crate::router::{History, Route, UserSection};
 use crate::screens::composer::{Composer, Sent};
 use crate::screens::header::{self, AsideKind};
-use crate::screens::search::{self, Navigate, SearchEnv};
+use crate::screens::search::{self, NavOutcome, Navigate, SearchEnv};
 use crate::screens::{
     FocusNext, FocusPrevious, channel_list, dms, rail, server_settings, timeline, titlebar,
     user_panel,
@@ -652,9 +652,15 @@ impl ShellView {
         }
     }
 
-    /// Opens what a search result names (Task 23). `false` when it is gone, or is a screen the shell does not draw yet
-    /// (the settings, the direct messages and the voice mute arrive with their areas, which add their arms here).
-    fn open_search_result(&mut self, target: Navigate, cx: &mut Context<Self>) -> bool {
+    /// Opens what a search result names (Task 23). [`NavOutcome::Gone`] when it is gone, or is a screen the shell does not
+    /// draw yet (the voice mute arrives with its area, which adds its arm here). A hit on a message is looked for in its
+    /// conversation ([`Client::find_loaded`]) and answers later: `ui` is the log the row is brought into view in.
+    fn open_search_result(
+        &mut self,
+        target: Navigate,
+        ui: Option<gpui::Entity<crate::screens::messages::ui::MessageUi>>,
+        cx: &mut Context<Self>,
+    ) -> NavOutcome {
         let open = |this: &mut Self,
                     community: CommunityId,
                     channel: ChannelId,
@@ -670,34 +676,67 @@ impl ShellView {
             this.select(channel, cx);
             true
         };
+        let done = |opened: bool| {
+            if opened {
+                NavOutcome::Done
+            } else {
+                NavOutcome::Gone
+            }
+        };
         match target {
-            Navigate::Channel { community, channel } => open(self, community, channel, cx),
-            Navigate::Message(hit) => match hit.community {
-                Some(community) => {
-                    if !open(self, community, hit.channel, cx) {
-                        return false;
+            Navigate::Channel { community, channel } => done(open(self, community, channel, cx)),
+            Navigate::Message(hit) => {
+                // The target must be known: a channel in the rail, or a DM in the DM list (Shell.tsx:1746-1748).
+                let known = match hit.community {
+                    Some(community) => open(self, community, hit.channel, cx),
+                    None if self.state.dms.get(hit.channel).is_some() => {
+                        self.navigate(Route::Dm(hit.channel), cx);
+                        true
                     }
-                    // A reply is no row of the channel: its hit opens its thread (Shell.tsx, threads.spec.ts test 4).
-                    if let Some(root) = hit.thread_root {
-                        crate::screens::threads::open_thread(
-                            hit.channel,
-                            root,
-                            &self.slot_cx(),
-                            cx,
-                        );
-                    }
-                    true
+                    None => false,
+                };
+                if !known {
+                    return NavOutcome::Gone;
                 }
-                None => false,
-            },
+                // A reply is no row of the channel: its hit opens its thread (Shell.tsx, threads.spec.ts test 4).
+                if let Some(root) = hit.thread_root {
+                    crate::screens::threads::open_thread(hit.channel, root, &self.slot_cx(), cx);
+                    return NavOutcome::Done;
+                }
+                // A shell without a client (a fixture) has no log to load.
+                let Some(client) = self.client.clone() else {
+                    return NavOutcome::Done;
+                };
+                let found = client.find_loaded(hit.channel, hit.seq);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let channel = hit.channel;
+                cx.spawn(async move |this, cx| {
+                    let focused = match (found.await.ok().flatten(), ui) {
+                        (Some(key), Some(ui)) => this
+                            .update(cx, |shell, cx| {
+                                // The reader moved on while the pages loaded: nothing to scroll.
+                                let here = shell.channel == Some(channel);
+                                if here {
+                                    ui.update(cx, |u, cx| u.focus_row(key, cx));
+                                }
+                                here
+                            })
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    let _ = tx.send(focused);
+                })
+                .detach();
+                NavOutcome::Later(rx)
+            }
             // A setting's result opens its section (search-settings.spec.ts): the app's settings host over the shell.
             Navigate::Settings(section) => {
                 self.navigate(Route::Settings(Some(section)), cx);
-                true
+                NavOutcome::Done
             }
             Navigate::ServerSettings { community, section } => {
                 if !self.state.communities.iter().any(|c| c.id == community) {
-                    return false;
+                    return NavOutcome::Gone;
                 }
                 self.navigate(
                     Route::ServerSettings {
@@ -706,9 +745,9 @@ impl ShellView {
                     },
                     cx,
                 );
-                true
+                NavOutcome::Done
             }
-            _ => false,
+            _ => NavOutcome::Gone,
         }
     }
 
@@ -1680,9 +1719,10 @@ impl Render for ShellView {
             window.window_handle().window_id(),
             SearchEnv {
                 ctx: ctx.clone(),
-                navigate: Rc::new(move |target, _, cx| {
-                    host.update(cx, |shell, cx| shell.open_search_result(target, cx))
-                        .unwrap_or(false)
+                navigate: Rc::new(move |target, window, cx| {
+                    let ui = crate::screens::messages::ui::handle(window, cx);
+                    host.update(cx, |shell, cx| shell.open_search_result(target, ui, cx))
+                        .unwrap_or(NavOutcome::Gone)
                 }),
             },
             cx,

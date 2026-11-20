@@ -561,6 +561,76 @@ async fn load_earlier_grows_the_channel_page_by_one_hundred() {
     .await;
 }
 
+/// Task 16, Shell.tsx:1760-1785: a search hit's jump finds an old message by loading earlier pages until it is in the
+/// timeline, and answers `None` once a load publishes nothing new. No body is printed (E2EE content).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+async fn find_loaded_reaches_an_old_message() {
+    let tag = "msg-find-loaded";
+    let host = tokio::task::spawn_blocking(move || start_host(tag, "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let pa = sign_up(&host, &invite, "alice", "alice", tag).await;
+    let pb = sign_up(&host, &invite, "bob", "bob", tag).await;
+    let (_host, pa, _pb, c) = tokio::task::spawn_blocking(move || {
+        let c = community_with(&host, &pa, "gpui", &[&pb], &[(0, "random", None)]);
+        clear_session(&pa);
+        clear_session(&pb);
+        (host, pa, pb, c)
+    })
+    .await
+    .unwrap();
+    let alice = start(&pa).await;
+    let s = wait_for(&alice, SHORT, "the channel list", |s| {
+        s.channel_named(CommunityId(c), "general").is_some()
+    })
+    .await;
+    let ch = s.channel_named(CommunityId(c), "general").unwrap().id;
+    alice.open_channel(ch).await.unwrap().expect("alice opens");
+    alice.open_page(ch);
+    alice.focus(Some(ch));
+    for n in 0..=150 {
+        alice
+            .send_text(ch, format!("m{n}"))
+            .await
+            .unwrap()
+            .expect("alice sends");
+    }
+    wait_for(&alice, SHORT, "the first page of 100", |s| {
+        s.timelines
+            .get(&ch)
+            .is_some_and(|t| t.items.len() == 100 && t.has_earlier)
+    })
+    .await;
+    // Everything loaded once, to learn m0's seq and key; then back to one page, where m0 is not in the timeline.
+    assert!(matches!(alice.load_earlier(ch).await, Ok(Ok(()))));
+    let s = wait_for(&alice, SHORT, "all 151 rows", |s| {
+        s.timelines.get(&ch).is_some_and(|t| t.items.len() == 151)
+    })
+    .await;
+    let m0 = s.timelines[&ch]
+        .items
+        .iter()
+        .find(|i| i.body == "m0")
+        .unwrap();
+    let (seq0, key0) = (m0.seq.unwrap(), m0.key.clone());
+    alice.close_page(ch);
+    alice.open_page(ch);
+    wait_for(&alice, SHORT, "one page again", |s| {
+        s.timelines.get(&ch).is_some_and(|t| t.items.len() == 100)
+    })
+    .await;
+    let found = alice.find_loaded(ch, seq0).await.unwrap();
+    assert_eq!(found, Some(key0), "the key of the row holding m0");
+    let s = alice.state().borrow().clone();
+    let t = &s.timelines[&ch];
+    assert_eq!(t.items.len(), 151);
+    assert!(t.items.iter().any(|i| i.body == "m0"));
+    // A seq no row has: the page grows until it stops, then the answer is `None`.
+    assert_eq!(alice.find_loaded(ch, 999_999).await.unwrap(), None);
+}
+
 type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 /// The recording proxy, started once for the process; every client of this file reaches the instance (127.0.0.1) around

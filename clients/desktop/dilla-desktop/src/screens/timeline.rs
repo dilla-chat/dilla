@@ -141,6 +141,12 @@ pub fn anchored_offset(
     (offset + height - prev_height).max(0.0)
 }
 
+/// Shell.tsx:1788-1793 `scrollIntoView({ block: 'center' })`: the scroll offset that puts a row of `height` at `top` in the
+/// middle of a viewport of `viewport` over content of `inner`, kept within the log.
+pub fn centred_offset(top: f32, height: f32, viewport: f32, inner: f32) -> f32 {
+    (top + height / 2.0 - viewport / 2.0).clamp(0.0, (inner - viewport).max(0.0))
+}
+
 /// What the log draws for one item.
 struct Shown<'a> {
     item: &'a TimelineItem,
@@ -1321,9 +1327,27 @@ pub fn render(
     if revealed.is_some() {
         // The keyboard's row set the offset above; the end is not re-pinned under it.
     } else if let Some(at) = jumped {
-        let target = (tops[at] - 48.0).max(0.0);
         let max = (inner - viewport).max(0.0);
+        let r = &shapes[at];
+        let centre = ui.update(cx, |u, _| std::mem::take(&mut u.centre));
+        let target = if centre {
+            let row = row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras);
+            centred_offset(tops[at], row, viewport, inner)
+        } else {
+            (tops[at] - 48.0).max(0.0)
+        };
         scroll.set_offset(gpui::point(len(0.), px(-target.min(max))));
+        if centre {
+            // The search hit's row takes the focus (its handle is made here when the row has not been drawn yet).
+            let key = shown[at].item.key.clone();
+            let handle = ui.update(cx, |u, cx| {
+                u.row_focus
+                    .entry(key)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            });
+            window.focus(&handle, cx);
+        }
         // The log leaves the end. Its host (the shell) is drawing this log right now, so it hears of it once the frame is
         // done: an update of it from here would be a re-entrant update (a panic).
         let leave_end = on_wheel.clone();
@@ -1539,6 +1563,14 @@ mod tests {
             mention: false,
             actions: Vec::new(),
         }
+    }
+
+    /// Shell.tsx:1788-1793: a search hit's row goes to the middle of the viewport, within the log's ends.
+    #[test]
+    fn a_search_hit_is_centred() {
+        assert_eq!(centred_offset(1000.0, 40.0, 600.0, 3000.0), 720.0);
+        assert_eq!(centred_offset(100.0, 40.0, 600.0, 3000.0), 0.0);
+        assert_eq!(centred_offset(2950.0, 40.0, 600.0, 3000.0), 2400.0);
     }
 
     #[test]

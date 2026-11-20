@@ -27,7 +27,7 @@ use crate::state::channels::{
     channel_group, channel_group_state, decode_channels, decode_communities,
 };
 use crate::state::members::decode_members;
-use crate::state::messages::TimelineUnavailable;
+use crate::state::messages::{TimelineItemState, TimelineUnavailable};
 use crate::state::messages::{build_timeline, decode_outbox, decode_timeline};
 use crate::state::removed::{REMOVALS_MAX, SelfRemoved, notices};
 use crate::state::unread::{build_badges, decode_activity};
@@ -713,6 +713,25 @@ impl Client {
         rx
     }
 
+    /// Shell.tsx:1745-1806, the search hit's jump: the key of `channel`'s row with stored `seq` that reads as a message,
+    /// loading earlier pages ([`Client::load_earlier`]) until it is in the timeline. The timeline is waited for at most
+    /// 1000 ms when it is not published yet. `None` when it never appears: no timeline, no such row (or one that is
+    /// not readable), or a load that publishes nothing new. The conversation must be open ([`Client::open_page`]),
+    /// or its page cannot grow.
+    pub fn find_loaded(&self, channel: ChannelId, seq: u64) -> oneshot::Receiver<Option<String>> {
+        let (tx, rx) = oneshot::channel();
+        let Some(rt) = &self.runtime else {
+            let _ = tx.send(None);
+            return rx;
+        };
+        let mut state = self.inner.state.clone();
+        let updates = self.inner.updates.clone();
+        rt.spawn(async move {
+            let _ = tx.send(find_loaded(&mut state, &updates, channel, seq).await);
+        });
+        rx
+    }
+
     /// Reads the communities, channels and members again.
     pub fn refresh(&self) {
         let _ = self.inner.updates.send(Update::Structure);
@@ -1288,6 +1307,43 @@ enum Renewal {
     SignedOut,
     /// Renewed, and the account owes a second factor (the factor read after the renewal).
     FactorOwed,
+}
+
+/// How long a search hit's jump waits for a conversation's timeline that is not published yet (Shell.tsx:1765-1777).
+const FIND_WAIT: Duration = Duration::from_millis(1000);
+
+/// [`Client::find_loaded`]'s loop (Shell.tsx:1760-1785): the row is there when `seq` is a readable item of the timeline;
+/// while it is not and the timeline has earlier rows, one more page is loaded, and a load that changes nothing ends it.
+async fn find_loaded(
+    state: &mut watch::Receiver<Arc<AppState>>,
+    updates: &mpsc::UnboundedSender<Update>,
+    channel: ChannelId,
+    seq: u64,
+) -> Option<String> {
+    let published = state.wait_for(|s| s.timelines.contains_key(&channel));
+    tokio::time::timeout(FIND_WAIT, published)
+        .await
+        .ok()?
+        .ok()?;
+    loop {
+        let before = state.borrow().timelines.get(&channel)?.clone();
+        if let Some(item) = before
+            .items
+            .iter()
+            .find(|i| i.seq == Some(seq) && i.state == TimelineItemState::Ok)
+        {
+            return Some(item.key.clone());
+        }
+        if !before.has_earlier {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        updates.send(Update::LoadEarlier(channel, tx)).ok()?;
+        rx.await.ok()?.ok()?;
+        if state.borrow().timelines.get(&channel) == Some(&before) {
+            return None;
+        }
+    }
 }
 
 /// The wait before the `n`th retry of a re-establishment that did not reach a verdict: 1 s doubling to 30 s.

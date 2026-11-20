@@ -79,9 +79,19 @@ pub enum Navigate {
     StartDm,
 }
 
-/// Answers whether the target was opened: `false` when it is gone (a hit whose conversation was left), which the palette
-/// says and stays open for.
-pub type OnNavigate = Rc<dyn Fn(Navigate, &mut Window, &mut App) -> bool>;
+/// What opening a result came to.
+pub enum NavOutcome {
+    /// Opened: the palette closes.
+    Done,
+    /// Gone (a hit whose conversation was left): the palette says so and stays open.
+    Gone,
+    /// Still running (a hit on a message loads earlier pages until it is there, Shell.tsx:1760-1785): the palette stays
+    /// open, and then acts on the answer, `true` for [`NavOutcome::Done`] and `false` for [`NavOutcome::Gone`].
+    Later(tokio::sync::oneshot::Receiver<bool>),
+}
+
+/// Opens the target and tells how that went.
+pub type OnNavigate = Rc<dyn Fn(Navigate, &mut Window, &mut App) -> NavOutcome>;
 
 /// What the host (the shell) tells the palette: what it shows, and how a result is opened.
 #[derive(Clone)]
@@ -320,14 +330,38 @@ fn pick(palette: &Entity<Palette>, id: &SharedString, window: &mut Window, cx: &
     let (Some(target), Some(env)) = (target, env) else {
         return;
     };
-    if (env.navigate)(target, window, cx) {
-        close(palette, true, window, cx);
-    } else {
-        palette.update(cx, |p, _| p.unavailable = true);
-        let input = palette.read(cx).input.clone();
-        window.focus(&input.read(cx).focus_handle(cx), cx);
-        window.refresh();
+    match (env.navigate)(target, window, cx) {
+        NavOutcome::Done => close(palette, true, window, cx),
+        NavOutcome::Gone => unavailable(palette, window, cx),
+        NavOutcome::Later(answer) => {
+            // The palette stays open while the result is looked for (Search.tsx:47 awaits `run()`); a palette closed
+            // meanwhile (Escape) has nothing left to say.
+            let palette = palette.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let opened = answer.await.unwrap_or(false);
+                    let _ = cx.update(|window, cx| {
+                        if !palette.read(cx).open {
+                            return;
+                        }
+                        if opened {
+                            close(&palette, true, window, cx);
+                        } else {
+                            unavailable(&palette, window, cx);
+                        }
+                    });
+                })
+                .detach();
+        }
     }
+}
+
+/// The palette says the result is no longer available, and the textbox takes the focus back (Search.tsx:44-49).
+fn unavailable(palette: &Entity<Palette>, window: &mut Window, cx: &mut App) {
+    palette.update(cx, |p, _| p.unavailable = true);
+    let input = palette.read(cx).input.clone();
+    window.focus(&input.read(cx).focus_handle(cx), cx);
+    window.refresh();
 }
 
 /// The names `tracked` gives the result rows: a row's automation id is `search-option-<n>`.
@@ -749,7 +783,7 @@ mod tests {
                 community: Some(dilla_client::state::CommunityId([community; 16])),
                 ..SlotCx::default()
             },
-            navigate: std::rc::Rc::new(|_, _, _| true),
+            navigate: std::rc::Rc::new(|_, _, _| NavOutcome::Done),
         };
         cx.update(|cx| {
             provide(a, env(1), cx);
