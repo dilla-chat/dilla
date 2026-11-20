@@ -40,6 +40,9 @@ export const desktopOverrides = {
   'factorSettings.removeBody': 'You can no longer sign in on a new device with it. Devices that are already set up keep working.',
   'settings.password.bodyChange': 'Signing in on a new device will ask for the new password. Devices that are already set up do not ask again.',
   'settings.password.bodySet': 'With a password you can sign in on a new device with it and your second factor.',
+  // The passkey prompt is the system's, and the app on this computer is the device (Jonas, "Desktop wording").
+  'factor.passkey.body': 'Your system asks where to keep the passkey: on this computer, your phone or a security key. Keep it on this computer only if no one else uses it.',
+  'factorSignin.passkey.unusable': 'This device cannot use passkeys here. Use a backup code instead, or sign in from a device that can.',
   'onboarding.done.note': 'Messages sent before another device joins are not shown there.',
   'onboarding.error.network': 'The connection dropped while creating your account. Try again to finish.',
   'onboarding.error.reload': 'Try again',

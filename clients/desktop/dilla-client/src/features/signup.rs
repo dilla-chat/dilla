@@ -1519,7 +1519,6 @@ fn decode_invite(raw: &[u8]) -> Option<MadeInvite> {
     })
 }
 
-/// [`AreaFrames`](crate::sync::route::AreaFrames)-free: the onboarding area handles no gateway op.
 /// Create.tsx `rememberMade`: this session made `channel`.
 fn remember_made(state: &mut crate::state::AppState, channel: ChannelId) {
     state.made_channels.insert(channel);

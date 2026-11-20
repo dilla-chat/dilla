@@ -171,8 +171,8 @@ mod tests {
  * by it). Task 32 found the second group; reviewing their wording for the desktop is a follow-up. */
 export const browserMeansBrowser = [
   'devices.platform.browser', 'devices.platform.browserUnknown', 'devices.renameSuggestion',
-  'factor.passkey.body', 'factor.error.desktopUnsupported', 'factorSignin.oidc.working', 'factorSignin.oidc.unsupported',
-  'factorSignin.passkey.body', 'factorSignin.passkey.unsupported', 'factorSignin.passkey.unusable',
+  'factor.error.desktopUnsupported', 'factorSignin.oidc.working', 'factorSignin.oidc.unsupported',
+  'factorSignin.passkey.body', 'factorSignin.passkey.unsupported',
   'factorSettings.stepUp.passkeyUnsupported',
 ];
 
@@ -190,9 +190,14 @@ export async function browserLeaks() {
     }
   };
   walk(join(dirname(OUT)));
-  const text = src.join('\n');
+  return leaks(en, desktopOverrides, src.join('\n'));
+}
+
+/** The pure rule: a key whose copy matches /browser/i, that the Rust source quotes, and that has neither an override nor
+ * a place in `allowed`. */
+export function leaks(en, overrides, text, allowed = browserMeansBrowser) {
   return Object.entries(en)
-    .filter(([k, v]) => typeof v === 'string' && /browser/i.test(v) && !(k in desktopOverrides) && !browserMeansBrowser.includes(k))
+    .filter(([k, v]) => typeof v === 'string' && /browser/i.test(v) && !(k in overrides) && !allowed.includes(k))
     .map(([k]) => k)
     .filter((k) => text.includes(`"${k}"`));
 }
