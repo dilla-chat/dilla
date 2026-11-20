@@ -197,6 +197,47 @@ pub struct BotSpec {
     pub capabilities: Vec<String>,
     /// Ids of the server's text channels.
     pub bot_channels: Vec<String>,
+    /// The Bot's music player in one of the server's voice channels, as a GPUI fixture holds it (Task 35): the web has no
+    /// reference of it, so a world with one is a GPUI-only fixture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music: Option<MusicSpec>,
+}
+
+/// One player snapshot of a GPUI-only fixture: the voice channel it is read from and what it holds. Its clock is stopped,
+/// so the playhead stays at `position_ms`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MusicSpec {
+    /// A voice channel of the server.
+    pub channel: String,
+    /// The track playing; none for an idle player.
+    #[serde(default)]
+    pub track: Option<TrackSpec>,
+    /// The tracks up next.
+    #[serde(default)]
+    pub queue: Vec<TrackSpec>,
+    #[serde(default)]
+    pub position_ms: u64,
+    pub volume: u8,
+    #[serde(default)]
+    pub paused: bool,
+    /// The viewer may control playback.
+    #[serde(default)]
+    pub can_control: bool,
+}
+
+/// A track of a [`MusicSpec`].
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TrackSpec {
+    /// The queue item's id, 32 lower-case hex digits (what a "started music" message's marker names).
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub duration_ms: u64,
+    /// The person who asked for it.
+    #[serde(default)]
+    pub requester: Option<String>,
 }
 
 impl BotSpec {
@@ -841,6 +882,35 @@ impl WorldSpec {
                         ));
                     }
                 }
+                if let Some(music) = &bot.music {
+                    let voice = s
+                        .channels
+                        .iter()
+                        .any(|c| c.id == music.channel && c.kind == ChannelKind::Voice);
+                    if !voice {
+                        return invalid(format!(
+                            "server {}: music channel `{}` is not a voice channel of the server",
+                            s.id, music.channel
+                        ));
+                    }
+                    for track in music.track.iter().chain(&music.queue) {
+                        let hex = track.id.len() == 32
+                            && track
+                                .id
+                                .bytes()
+                                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+                        let known = track
+                            .requester
+                            .as_ref()
+                            .is_none_or(|r| s.members.contains(r));
+                        if !hex || !known {
+                            return invalid(format!(
+                                "server {}: music track `{}` needs a 32-digit lower-case hex id and a member as requester",
+                                s.id, track.title
+                            ));
+                        }
+                    }
+                }
             }
             // The message names the ban by its place only: who banned whom is moderation content.
             for (i, b) in s.bans.iter().enumerate() {
@@ -1018,6 +1088,56 @@ mod tests {
                 r#"{"capabilities": [], "botChannels": [], "extra": 1}"#
             ))
             .is_err()
+        );
+    }
+
+    /// Task 35: a Bot's player belongs to a voice channel of the server, and its tracks carry hex ids and member requesters.
+    #[test]
+    fn a_bot_music_player_names_a_voice_channel_and_hex_tracks() {
+        let with = |music: &str| {
+            MINIMAL
+                .replacen(
+                    r#""members": ["ada", "mira"],"#,
+                    &format!(
+                        r#""members": ["ada", "mira"], "bot": {{"capabilities": ["music"], "botChannels": [], "music": {music}}},"#
+                    ),
+                    1,
+                )
+                .replacen(
+                    r#""name": "general"}]"#,
+                    r#""name": "general"}, {"id": "lounge", "kind": "voice", "name": "Lounge"}]"#,
+                    1,
+                )
+        };
+        let track = |id: &str, by: &str| {
+            format!(
+                r#"{{"id": "{id}", "title": "T", "artist": "A", "durationMs": 1000, "requester": "{by}"}}"#
+            )
+        };
+        let hex = "0a".repeat(16);
+        let ok = ScreenFixture::parse(&with(&format!(
+            r#"{{"channel": "lounge", "track": {}, "volume": 50}}"#,
+            track(&hex, "ada")
+        )));
+        assert!(ok.is_ok(), "{ok:?}");
+        let refused = |music: String| ScreenFixture::parse(&with(&music)).unwrap_err().to_string();
+        assert!(
+            refused(r#"{"channel": "general", "volume": 50}"#.into())
+                .contains("music channel `general` is not a voice channel")
+        );
+        assert!(
+            refused(format!(
+                r#"{{"channel": "lounge", "track": {}, "volume": 50}}"#,
+                track("xyz", "ada")
+            ))
+            .contains("music track `T`")
+        );
+        assert!(
+            refused(format!(
+                r#"{{"channel": "lounge", "track": {}, "volume": 50}}"#,
+                track(&hex, "nobody")
+            ))
+            .contains("music track `T`")
         );
     }
 

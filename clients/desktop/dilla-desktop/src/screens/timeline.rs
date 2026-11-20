@@ -15,8 +15,11 @@
 //! Each row is a box of its own at its CSS position: it takes the hover fill and bar (`--bg-3`, 2px `--accent`), the
 //! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
+use dilla_client::features::utilities::polls;
+use dilla_client::state::bot_admin::{MusicMarker, music_marker};
 use dilla_client::state::{
     AppState, Channel, ChannelId, CommunityId, Member, Timeline, TimelineItem, TimelineItemState,
+    UserId,
 };
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
@@ -350,6 +353,12 @@ fn author(state: &AppState, members: &[Member], item: &TimelineItem) -> String {
             &[("id", &device[..device.len().min(8)])],
         );
     };
+    user_name(state, members, user)
+}
+
+/// [`author`] of a user with no message of their own to name: the requester a "started music" line names (the web's
+/// `authorName` with `senderDevice: null`).
+pub fn user_name(state: &AppState, members: &[Member], user: UserId) -> String {
     if let Some(m) = members.iter().find(|m| m.user_id == user) {
         if !m.display.is_empty() {
             return m.display.clone();
@@ -430,7 +439,45 @@ fn webhook_of(
     if !item.bot || item.edited || item.sender_user != Some(pinned) {
         return None;
     }
+    // MessageItem.tsx: a poll post or a music announcement is read as that, never as a webhook (`marker === null && music
+    // === null`).
+    if polls::final_poll_marker(&item.body).is_some() || music_marker(&item.body).is_some() {
+        return None;
+    }
     dilla_client::state::bot_admin::decode_webhook_label(&item.body)
+}
+
+/// A Bot's "started music" message (MessageItem.tsx:114-120): the unedited, non-poll message of a sender whose member row
+/// is of account kind 1 (`sender_kind`; `None` when they are no member) and whose credential claims a Bot, ending in the
+/// player marker. The credential alone is a claim any modified client can make, so a forged marker stays text. The row's
+/// text ([`body_parts`]) and its card ([`crate::screens::bot_admin::player::music_card`]) both read this gate, so they
+/// can never disagree.
+pub fn announcement_marker(item: &TimelineItem, sender_kind: Option<u8>) -> Option<MusicMarker> {
+    if !item.bot
+        || sender_kind != Some(1)
+        || item.edited
+        || polls::final_poll_marker(&item.body).is_some()
+    {
+        return None;
+    }
+    music_marker(&item.body)
+}
+
+/// [`announcement_marker`] of `item` in `community`, its sender's kind read from the community's member rows.
+pub fn announcement_in(
+    state: &AppState,
+    community: CommunityId,
+    item: &TimelineItem,
+) -> Option<MusicMarker> {
+    let members = state.members.get(&community).map_or(&[][..], Vec::as_slice);
+    announcement_marker(item, sender_kind(members, item))
+}
+
+fn sender_kind(members: &[Member], item: &TimelineItem) -> Option<u8> {
+    members
+        .iter()
+        .find(|m| Some(m.user_id) == item.sender_user)
+        .map(|m| m.kind)
 }
 
 /// The head's "via webhook <name>" after the tag, for a webhook post ([`webhook_of`]).
@@ -451,6 +498,19 @@ fn body_parts(
         TimelineItemState::CannotRead => vec![Body::Text(t("shell.message.cannotRead").to_owned())],
         TimelineItemState::Deleted => vec![Body::Text(t("shell.message.deleted").to_owned())],
         _ => {
+            // The announcement's text is the Bot's line, whoever the marker names (MessageItem.tsx `displayBody`).
+            if let Some(marker) = announcement_marker(item, sender_kind(members, item)) {
+                let room = state
+                    .channels
+                    .iter()
+                    .find(|c| c.id == marker.voice_channel && c.community_id == community)
+                    .map_or_else(|| t("music.someRoom").to_owned(), |c| c.name.clone());
+                let name = user_name(state, members, marker.requester);
+                return vec![Body::Text(tf(
+                    "music.started",
+                    &[("name", name.as_str()), ("room", room.as_str())],
+                ))];
+            }
             let webhook = webhook_of(state, community, item);
             let text = webhook
                 .as_ref()
@@ -545,7 +605,7 @@ fn body_offset(grouped: bool, marks: bool, d: Density) -> f32 {
 
 /// The attachments slot's height (the grid's 1px gap and its 4px margin) between the body and the other areas' parts:
 /// none in the log's last row when it is empty (MessageLog.css `:last-child .d-message-row__attachments:empty`).
-fn attachments_slot(last: bool) -> f32 {
+pub(crate) fn attachments_slot(last: bool) -> f32 {
     if last {
         0.0
     } else {
@@ -1251,7 +1311,9 @@ pub fn render(
             TimelineItemState::Failed => color::FG_BODY,
             _ => color::FG_3,
         };
-        let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
+        // Only an empty attachments slot is hidden in the last row; one with cards keeps its gap and margin.
+        let last = n + 1 == items.len() && item.attachments.is_empty() && privates.is_empty();
+        let (extras, extras_height) = slots::message_extras(item, ctx, last, window, cx);
         let (before, before_height) = slots::message_before_head(item, ctx, window, cx)
             .map_or((None, 0.0), |b| (Some(b.element), b.height));
         let editing = editing_key.as_deref() == Some(item.key.as_str());
@@ -1295,8 +1357,7 @@ pub fn render(
             grouped,
             marks: grouped && marks_head(state, channel.community_id, item),
             divider: starts_day(prev, item, clock).then(|| day_label(item.ts, clock)),
-            // Only an empty attachments slot is hidden in the last row; one with cards keeps its gap and margin.
-            last: n + 1 == items.len() && item.attachments.is_empty() && privates.is_empty(),
+            last,
             body: laid,
             extras: Some(extras),
             extras_height,
@@ -1524,6 +1585,9 @@ pub fn render(
         -f32::from(scroll.offset().y)
     };
     let (from, to) = (at - viewport, at + 2.0 * viewport);
+    // The voice channels of the "started music" cards that intersect the viewport (not the screen above and below it,
+    // which is only drawn): the player is read for these while the Bot is in the room (Decision D10).
+    let mut cards_on_screen = std::collections::BTreeSet::new();
     for (s, top) in shown.into_iter().zip(tops) {
         if let Some(label) = s.divider.clone() {
             placer.divider(top - divider_height(density), width, label);
@@ -1535,10 +1599,21 @@ pub fn render(
         if viewport > 0.0 && !editing && !keyed && (bottom < from || top > to) {
             continue;
         }
+        if (viewport <= 0.0 || (bottom >= at && top <= at + viewport))
+            && readable(s.item)
+            && let Some(marker) = announcement_in(state, channel.community_id, s.item)
+        {
+            cards_on_screen.insert(marker.voice_channel);
+        }
         let base = snap_px(top);
         let el = draw_row(&row_cx, s, top, base, &ui, ctx, window, cx);
         placer.out.push(el);
     }
+    crate::screens::bot_admin::player::card_on_screen(
+        window.window_handle().window_id(),
+        cards_on_screen,
+        cx,
+    );
     let mut private_top = rows_bottom;
     for (n, (el, h)) in privates.into_iter().enumerate() {
         let id: &'static str = PRIVATE_RESULT_IDS
@@ -1849,6 +1924,114 @@ mod tests {
         assert!(me.me && me.label == "@me");
         let unknown = mention_pill(&s, &[], &UserId([4; 16]).hex(), true);
         assert!(!unknown.me && unknown.user.is_none());
+    }
+
+    /// A community "harbour" voice channel, the Bot "Glenn" (kind 1) and Ada (kind 0), and a Bot's announcement for a track
+    /// Ada asked for in it.
+    fn music_world() -> (AppState, CommunityId, TimelineItem) {
+        let community = CommunityId([7; 16]);
+        let mut s = AppState::default();
+        s.channels.push(Channel {
+            id: ChannelId([8; 16]),
+            community_id: community,
+            kind: 1,
+            mode: 0,
+            name: "harbour".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: Default::default(),
+        });
+        let member = |user: u8, name: &str, kind: u8| Member {
+            user_id: UserId([user; 16]),
+            username: name.to_lowercase(),
+            display: name.to_owned(),
+            kind,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        s.members
+            .insert(community, vec![member(1, "Ada", 0), member(9, "Glenn", 1)]);
+        let mut i = item(9, 5);
+        i.bot = true;
+        i.body = format!(
+            "Now playing\n[dilla-music:v1:{}:{}:{}]",
+            "08".repeat(16),
+            "01".repeat(16),
+            "0a".repeat(16)
+        );
+        (s, community, i)
+    }
+
+    /// MessageItem.tsx:180-181: the Bot's announcement reads "{name} started music in {room}", whatever text it carries; the
+    /// same body edited, or from a member of kind 0, is text.
+    #[test]
+    fn a_bot_music_announcement_reads_started_music() {
+        let (s, community, i) = music_world();
+        let members = s.members[&community].clone();
+        assert_eq!(
+            body_parts(&s, &members, community, &i),
+            [Body::Text("Ada started music in harbour".into())]
+        );
+        // A room this viewer cannot see is "a voice channel".
+        let mut unseen = s.clone();
+        unseen.channels.clear();
+        assert_eq!(
+            body_parts(&unseen, &members, community, &i),
+            [Body::Text("Ada started music in a voice channel".into())]
+        );
+        let verbatim = |item: &TimelineItem| {
+            body_parts(&s, &members, community, item)
+                == body_parts(&s, &members, community, &item_with_body(&item.body))
+        };
+        let mut edited = i.clone();
+        edited.edited = true;
+        assert!(verbatim(&edited), "an edited post stays text");
+        let mut member = i.clone();
+        member.sender_user = Some(UserId([1; 16]));
+        member.bot = false;
+        assert!(verbatim(&member), "a member's post stays text");
+    }
+
+    /// Review Focus 4: the announcement is the Bot's alone. A forged marker (a member's post, a credential that claims a Bot
+    /// with no Bot member row, an edit, a poll post) is no announcement and keeps its body, marker line included.
+    #[test]
+    fn a_forged_music_marker_stays_text() {
+        let (s, community, i) = music_world();
+        let members = s.members[&community].clone();
+        assert!(
+            announcement_marker(&i, Some(1)).is_some(),
+            "the Bot's own post"
+        );
+        let mut member_post = i.clone();
+        member_post.bot = false;
+        let mut edited = i.clone();
+        edited.edited = true;
+        let mut poll = i.clone();
+        poll.body = format!("{}\n[dilla-poll:v1:{}]", i.body, "ab".repeat(16));
+        let forged = [
+            ("a member's post", member_post, Some(1)),
+            ("the claim of a member of kind 0", i.clone(), Some(0)),
+            ("the claim of no member", i.clone(), None),
+            ("an edited post", edited, Some(1)),
+            ("a poll post", poll, Some(1)),
+        ];
+        for (what, item, kind) in forged {
+            assert!(announcement_marker(&item, kind).is_none(), "{what}");
+        }
+        // The row's text agrees: it shows the body as it is.
+        let mut kind0 = i.clone();
+        kind0.sender_user = Some(UserId([1; 16]));
+        assert_eq!(
+            body_parts(&s, &members, community, &kind0),
+            body_parts(&s, &members, community, &item_with_body(&kind0.body)),
+            "a kind-0 member's claim"
+        );
+        assert!(announcement_in(&s, community, &kind0).is_none());
+        assert!(announcement_in(&s, community, &i).is_some());
     }
 
     /// Integration 3, step 5 (Task 21's `decode_webhook_label` in Task 9's row): a webhook post is the community's pinned

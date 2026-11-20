@@ -263,6 +263,41 @@ fn parity_bot_admin_music_b() {
     parity("bot-admin/music-b.json");
 }
 
+/// A GPUI-only reference (`native/music-card-live`, Task 35): the Bot's "started music" message in `#general` reads "Ada
+/// started music in harbour" with the live now-playing card under it (the track playing, a queue of two, Ada may control).
+/// Native because the web's frame needs a Bot playing real audio in a real call; checked by eye.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_music_card_live() {
+    native("bot-admin/music-card-live", "music-card-live");
+}
+
+/// `native/music-card-ended`: the same message when the announced track no longer plays (another does): the card says
+/// "Glenn played this in harbour" over "Finished", with no track and no queue.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_music_card_ended() {
+    native("bot-admin/music-card-ended", "music-card-ended");
+}
+
+fn native(name: &str, golden: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures")
+        .join(format!("{name}.json"));
+    let report = dilla_parity::screen::assert_native_screen(&path, golden, |_| {})
+        .unwrap_or_else(|e| panic!("{name} differs from its golden shot: {e}"));
+    println!(
+        "SCREEN native/{golden}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
 // ---- integration 3, step 5: the pages' navigation inside the server settings host ----
 
 /// The Music page's "Open Bot settings" (BotSection.tsx `workspace.botSetup`) opens the Bot section in the same server

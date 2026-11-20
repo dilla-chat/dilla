@@ -37,6 +37,7 @@ mod gifs;
 mod invites;
 mod members;
 mod messages;
+mod music;
 mod notify;
 mod polls;
 pub mod pre_account;
@@ -345,6 +346,7 @@ pub fn build_state(
     calls::apply(world, viewer, ids, &mut state);
     members::apply(world, viewer, ids, fixture.clock + shift, &mut state);
     messages::apply(world, viewer, &mut state);
+    music::apply(world, ids, &mut state);
     notify::apply(fixture, ids, &mut state);
     polls::apply(world, viewer, &mut state);
     reactions::apply(world, viewer, &mut state);

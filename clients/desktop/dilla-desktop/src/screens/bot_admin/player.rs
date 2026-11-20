@@ -4,8 +4,9 @@
 //! from the Bot's own stamp (Ruling AI; an older Bot's snapshot stays static).
 //!
 //! [`view_of`] is the pure part (tested); [`dock`] draws the compact row in the shell's dock slot from a [`MusicFeed`] the
-//! shell provides, and [`card`] draws the card variant.
+//! shell provides, and [`music_card`] draws the card variant under the Bot's "started music" message.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -16,8 +17,9 @@ use dilla_desktop_ui::components::bot_admin::now_playing::{
     NowPlaying, NowPlayingLabels, NowPlayingVariant, PlayerTrack, QueueRow, up_next,
 };
 use dilla_desktop_ui::components::toast::show_toast_in;
-use gpui::{AnyElement, App, IntoElement, SharedString, Window};
+use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
 
+use crate::slots::{Extra, SlotCx};
 use crate::strings::{t, tf};
 
 /// What the dock needs to draw the player, which the shell's state loop keeps for its window ([`follow`]) whenever this
@@ -64,15 +66,8 @@ pub fn feed_of(
     }
     let channel = call.channel?;
     let room = state.channel(channel)?;
-    let community = room.community_id;
-    let catalog = state.bot.catalogs.get(&community)?;
-    let bot_user = catalog.bot_user?;
-    let bot_in = state
-        .voice
-        .calls
-        .get(&channel)
-        .is_some_and(|c| c.participants.iter().any(|p| p.user_id == bot_user));
-    bot_in.then(|| MusicFeed {
+    let (community, bot_user) = bot_in_room(state, channel)?;
+    Some(MusicFeed {
         state: state.clone(),
         client,
         community,
@@ -81,6 +76,21 @@ pub fn feed_of(
         bot: member_name(state, community, bot_user),
         now_ms,
     })
+}
+
+/// The community and the pinned Bot user when that Bot is in the voice channel's call (the web's `botInRoom`: a participant
+/// of the call is the catalog's `bot_user`).
+fn bot_in_room(state: &AppState, channel: ChannelId) -> Option<(CommunityId, UserId)> {
+    let community = state.channel(channel)?.community_id;
+    let bot_user = state.bot.catalogs.get(&community)?.bot_user?;
+    state
+        .voice
+        .calls
+        .get(&channel)?
+        .participants
+        .iter()
+        .any(|p| p.user_id == bot_user)
+        .then_some((community, bot_user))
 }
 
 /// When the player is read again for the playing track's end: a second after it should end (music.tsx), `None` while
@@ -180,8 +190,15 @@ fn follow_in(
         TrackEnd { key, _timer: timer };
 }
 
-/// The release path (integration 3, step 0 item 1): every window's feed of `client` goes, with its track-end read.
+/// The release path (integration 3, step 0 item 1): every window's feed of `client` goes, with its track-end read, and so
+/// do the cards' reads.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
+    crate::per_window::retain::<WindowCards>(cx, |_, c| {
+        !c.seen
+            .as_ref()
+            .and_then(|s| s.client.as_ref())
+            .is_some_and(|w| std::ptr::eq(w.as_ptr(), Rc::as_ptr(client)))
+    });
     crate::per_window::retain::<WindowMusic>(cx, |_, m| {
         !m.feed
             .as_ref()
@@ -307,10 +324,11 @@ fn member_name(state: &AppState, community: CommunityId, user: UserId) -> String
         .unwrap_or_default()
 }
 
-/// The controls of the player of `feed`: each runs the operation on the Bot and, when it is refused, says why in the
+/// The controls of the player of `channel`: each runs the operation on the Bot and, when it is refused, says why in the
 /// toast (`MusicPlayer`'s catch).
 fn control(
-    feed: &MusicFeed,
+    client: Option<std::rc::Weak<Client>>,
+    channel: ChannelId,
     run: impl Fn(
         &Music,
         ChannelId,
@@ -320,7 +338,6 @@ fn control(
     > + 'static,
     paused_now: bool,
 ) -> impl Fn(&mut Window, &mut App) + 'static {
-    let (client, channel) = (feed.client.clone(), feed.channel);
     move |window: &mut Window, cx: &mut App| {
         let Some(client) = client.as_ref().and_then(std::rc::Weak::upgrade) else {
             return;
@@ -372,12 +389,23 @@ fn element(
         .can_control(view.can_control, view.blocked.clone())
         .queue(view.queue.clone(), queue_open)
         .on_toggle(control(
-            feed,
+            feed.client.clone(),
+            feed.channel,
             |m, ch, paused| m.pause(ch, !paused, None),
             paused,
         ))
-        .on_skip(control(feed, |m, ch, _| m.skip(ch, None), paused))
-        .on_stop(control(feed, |m, ch, _| m.stop(ch, None), paused));
+        .on_skip(control(
+            feed.client.clone(),
+            feed.channel,
+            |m, ch, _| m.skip(ch, None),
+            paused,
+        ))
+        .on_stop(control(
+            feed.client.clone(),
+            feed.channel,
+            |m, ch, _| m.stop(ch, None),
+            paused,
+        ));
     if let Some(volume) = view.volume {
         player = player.volume(tf("music.volume", &[("n", &volume.to_string())]));
     }
@@ -400,28 +428,291 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     )
 }
 
-/// The card variant of the same player (the message Glenn posts where `/play` ran).
-pub fn card(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let feed = feed(window.window_handle().window_id(), cx)?;
-    let open = window.use_keyed_state("now-playing-card-queue", cx, |_, _| false);
-    let shown = *open.read(cx);
-    let handle = open.clone();
-    element(
-        &feed,
-        NowPlayingVariant::Card,
-        "now-playing-card",
-        shown,
-        Some(Rc::new(move |next, _, cx| {
-            handle.update(cx, |o, cx| {
-                *o = next;
-                cx.notify();
-            })
-        })),
-    )
+/// What the card shows of one player, as `useMusicCard` tells them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardPhase {
+    /// The Bot is not in that voice channel's call (or its player cannot be read): "{bot} left voice".
+    Left,
+    /// The Bot is in the room but no snapshot has been read yet: neutral, never "left voice" for a moment.
+    Neutral,
+    /// The announced track is no longer the one playing.
+    Ended,
+    /// The announced track is the one playing: the live player.
+    Live,
 }
 
-#[allow(dead_code)]
-fn _shared(_: SharedString) {}
+/// `useMusicCard`: the card's phase and view for the announcement of queue item `item`, in `room`. `state` is what the
+/// client holds of the player of that voice channel (`None`: nothing read yet).
+#[allow(clippy::too_many_arguments)]
+pub fn card_view_of(
+    bot_in_room: bool,
+    state: Option<&MusicState>,
+    item: &str,
+    room: &str,
+    bot: &str,
+    name_of: NameOf<'_>,
+    in_call: bool,
+    now_ms: u64,
+) -> (CardPhase, PlayerView) {
+    let quiet = |meta: String, blocked: String| PlayerView {
+        track: None,
+        position_s: 0.0,
+        playing: false,
+        meta,
+        volume: None,
+        can_control: false,
+        blocked,
+        queue: Vec::new(),
+    };
+    if !bot_in_room {
+        return (
+            CardPhase::Left,
+            view_of(None, room, bot, name_of, in_call, now_ms),
+        );
+    }
+    match state {
+        None => (CardPhase::Neutral, quiet(room.to_owned(), String::new())),
+        // `musicView` with a status that is not `available`.
+        Some(MusicState::Unavailable) => (
+            CardPhase::Left,
+            view_of(None, room, bot, name_of, in_call, now_ms),
+        ),
+        Some(MusicState::Available(s)) if s.track.as_ref().is_none_or(|t| t.id != item) => {
+            let ended = tf("music.ended", &[("bot", bot), ("room", room)]);
+            (CardPhase::Ended, quiet(ended.clone(), ended))
+        }
+        Some(MusicState::Available(s)) => (
+            CardPhase::Live,
+            view_of(Some(s), room, bot, name_of, in_call, now_ms),
+        ),
+    }
+}
+
+/// The card's gap above it (MessageRow.css `.d-message-row__card`'s `margin-top`).
+const CARD_MARGIN: f32 = 6.0;
+
+/// The card's width: NowPlaying.css's 440px inside its 1px edge.
+const CARD_WIDTH: f32 = 442.0;
+
+/// One window's cards: what the last draw of a "started music" row saw, and the players this window reads for the cards on
+/// its screen.
+#[derive(Default)]
+struct WindowCards {
+    seen: Option<CardsSeen>,
+    /// The voice channels with a card on screen and the Bot in the room, as the last frame had them.
+    reading: BTreeSet<ChannelId>,
+    /// Each read channel's read again for the track's end.
+    track_end: BTreeMap<ChannelId, TrackEnd>,
+}
+
+/// What a card's draw leaves for [`card_on_screen`], which the timeline calls after the frame's rows: the state they were
+/// drawn from, the client they act on and the clock the playhead runs on.
+#[derive(Clone)]
+struct CardsSeen {
+    state: Arc<AppState>,
+    client: Option<std::rc::Weak<Client>>,
+    now_ms: u64,
+}
+
+/// The device clock the playhead runs on: the shell's frozen one in a fixture.
+fn clock_ms(clock: crate::screens::shell::Clock) -> u64 {
+    match clock {
+        crate::screens::shell::Clock::Local => device_now_ms(),
+        crate::screens::shell::Clock::Fixed { now, .. } => now * 1000,
+    }
+}
+
+/// The card under the Bot's "started music" message (MessageItem.tsx `MusicMessageCard`): `None` for any other message or
+/// one that is not shown (the card shows for a readable row only). `last` is whether the row is the log's last, which hides
+/// its empty attachments slot: the web's card is a grid item with the grid's gap and its own 6px margin in front of that
+/// slot, so the card sits where it does whichever the row is.
+pub fn music_card(
+    item: &dilla_client::state::TimelineItem,
+    ctx: &SlotCx,
+    last: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    use dilla_client::state::TimelineItemState as S;
+    if !matches!(item.state, S::Ok | S::Pending | S::Failed) {
+        return None;
+    }
+    let community = ctx.community?;
+    let marker = crate::screens::timeline::announcement_in(&ctx.state, community, item)?;
+    let state = &ctx.state;
+    let channel = marker.voice_channel;
+    let now_ms = clock_ms(ctx.clock);
+    crate::per_window::get_mut::<WindowCards>(window.window_handle().window_id(), cx).seen =
+        Some(CardsSeen {
+            state: state.clone(),
+            client: ctx.client.as_ref().map(Rc::downgrade),
+            now_ms,
+        });
+    let room = state
+        .channels
+        .iter()
+        .find(|c| c.id == channel && c.community_id == community)
+        .map_or_else(|| t("music.someRoom").to_owned(), |c| c.name.clone());
+    let members = state.members.get(&community).map_or(&[][..], Vec::as_slice);
+    let bot = item
+        .sender_user
+        .map(|u| crate::screens::timeline::user_name(state, members, u))
+        .unwrap_or_default();
+    let name_of = |user: UserId| member_name(state, community, user);
+    let call = &state.voice.call;
+    let in_call =
+        call.phase != dilla_client::calls::CallPhase::Idle && call.channel == Some(channel);
+    let (phase, view) = card_view_of(
+        bot_in_room(state, channel).is_some(),
+        state.bot_admin.music.get(&channel),
+        &marker.item,
+        &room,
+        &bot,
+        &name_of,
+        in_call,
+        now_ms,
+    );
+    let key = SharedString::from(item.key.clone());
+    let open = window.use_keyed_state(
+        (gpui::ElementId::from("now-playing-card-queue"), key.clone()),
+        cx,
+        |_, _| false,
+    );
+    let queue_open = *open.read(cx);
+    let mut card_labels = labels(up_next(&view.queue));
+    match phase {
+        CardPhase::Neutral => card_labels.idle = t("music.region").into(),
+        CardPhase::Ended => card_labels.idle = t("music.finished").into(),
+        CardPhase::Left | CardPhase::Live => {}
+    }
+    let paused = !view.playing;
+    let client = ctx.client.as_ref().map(Rc::downgrade);
+    let mut player = NowPlaying::new(
+        (gpui::ElementId::from("music-card"), key),
+        NowPlayingVariant::Card,
+        card_labels,
+    )
+    .track(view.track.clone())
+    .position(view.position_s)
+    .playing(view.playing)
+    .meta(view.meta.clone())
+    .bot(bot)
+    .can_control(view.can_control, view.blocked.clone())
+    .queue(view.queue.clone(), queue_open)
+    .on_toggle(control(
+        client.clone(),
+        channel,
+        |m, ch, paused| m.pause(ch, !paused, None),
+        paused,
+    ))
+    .on_skip(control(
+        client.clone(),
+        channel,
+        |m, ch, _| m.skip(ch, None),
+        paused,
+    ))
+    .on_stop(control(
+        client,
+        channel,
+        |m, ch, _| m.stop(ch, None),
+        paused,
+    ))
+    .on_queue_toggle(move |next, _, cx| {
+        open.update(cx, |o, cx| {
+            *o = next;
+            cx.notify();
+        })
+    });
+    if let Some(volume) = view.volume {
+        player = player.volume(tf("music.volume", &[("n", &volume.to_string())]));
+    }
+    // The part's box starts under the attachments slot (and the grid's gap): the card's own margin less the slot.
+    let pad = CARD_MARGIN - crate::screens::timeline::attachments_slot(last);
+    Some(Extra {
+        // A block, which takes the card's 442px whatever its text (the extras sit in an absolute box that shrinks to its
+        // content, so the width is set; a log narrower than that is not handled).
+        element: div()
+            .flex()
+            .flex_col()
+            .w(px(CARD_WIDTH))
+            .pt(px(pad))
+            .child(player)
+            .into_any_element(),
+        height: CARD_MARGIN + NowPlaying::card_height(view.queue.len(), queue_open),
+    })
+}
+
+/// Called once per frame by the timeline of `window` with the voice channels of the "started music" rows that intersect its
+/// viewport: the card reads the player only while the Bot is in that room and the card is on screen (Decision D10, as
+/// music.tsx's `botInRoom && visible`). A channel that has just come on screen is read; each one is read again a second
+/// after its track should end ([`refresh_after_ms`]); and the client is told which channels the windows watch, for the Bot's
+/// hints of them (`set_watched`, the union over this client's windows).
+pub fn card_on_screen(window: gpui::WindowId, channels: BTreeSet<ChannelId>, cx: &mut App) {
+    let Some(seen) = crate::per_window::get::<WindowCards>(window, cx).and_then(|c| c.seen.clone())
+    else {
+        return;
+    };
+    let Some(client) = seen.client.as_ref().and_then(std::rc::Weak::upgrade) else {
+        return;
+    };
+    let reading: BTreeSet<ChannelId> = channels
+        .into_iter()
+        .filter(|ch| bot_in_room(&seen.state, *ch).is_some())
+        .collect();
+    let before = std::mem::replace(
+        &mut crate::per_window::get_mut::<WindowCards>(window, cx).reading,
+        reading.clone(),
+    );
+    for channel in reading.difference(&before) {
+        drop(client.music().refresh(*channel));
+    }
+    for channel in &reading {
+        let snapshot = match seen.state.bot_admin.music.get(channel) {
+            Some(MusicState::Available(s)) => Some(s),
+            _ => None,
+        };
+        let key = snapshot.map(|s| (*channel, s.revision));
+        let kept = crate::per_window::get_mut::<WindowCards>(window, cx)
+            .track_end
+            .get(channel)
+            .is_some_and(|t| t.key == key);
+        if kept {
+            continue;
+        }
+        let weak = Rc::downgrade(&client);
+        let channel = *channel;
+        let timer = snapshot
+            .and_then(|s| refresh_after_ms(s, seen.now_ms))
+            .map(|ms| {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(ms))
+                        .await;
+                    if let Some(client) = weak.upgrade() {
+                        drop(client.music().refresh(channel));
+                    }
+                })
+            });
+        crate::per_window::get_mut::<WindowCards>(window, cx)
+            .track_end
+            .insert(channel, TrackEnd { key, _timer: timer });
+    }
+    crate::per_window::get_mut::<WindowCards>(window, cx)
+        .track_end
+        .retain(|ch, _| reading.contains(ch));
+    let mut watched = BTreeSet::new();
+    crate::per_window::each_mut::<WindowCards>(cx, |_, cards| {
+        let ours = cards
+            .seen
+            .as_ref()
+            .and_then(|s| s.client.as_ref())
+            .is_some_and(|c| std::ptr::eq(c.as_ptr(), Rc::as_ptr(&client)));
+        if ours {
+            watched.extend(cards.reading.iter().copied());
+        }
+    });
+    client.music().set_watched(watched);
+}
 
 #[cfg(test)]
 mod tests {
@@ -700,5 +991,110 @@ mod tests {
     #[test]
     fn the_queue_toggle_counts_what_is_up_next() {
         assert_eq!(labels(3).queue.as_ref(), "Up next · 3");
+    }
+
+    /// The card of a Bot that is not in the voice channel's call: "{bot} left voice", no control.
+    #[test]
+    fn the_card_says_the_bot_left_when_it_is_not_in_the_room() {
+        let (phase, v) = card_view_of(false, None, "i1", "harbour", "Glenn", &names, false, 0);
+        assert_eq!(phase, CardPhase::Left);
+        assert_eq!(v.meta, "Glenn left voice");
+        assert!(!v.can_control);
+        // A player that cannot be read while the Bot is in the room counts as the same (`status !== 'available'`).
+        let unreadable = MusicState::Unavailable;
+        let (phase, v) = card_view_of(
+            true,
+            Some(&unreadable),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            false,
+            0,
+        );
+        assert_eq!(
+            (phase, v.meta.as_str()),
+            (CardPhase::Left, "Glenn left voice")
+        );
+    }
+
+    #[test]
+    fn the_card_is_neutral_before_the_first_read() {
+        let (phase, v) = card_view_of(true, None, "i1", "harbour", "Glenn", &names, false, 0);
+        assert_eq!(phase, CardPhase::Neutral);
+        assert_eq!(v.meta, "harbour");
+        assert!(v.track.is_none() && v.queue.is_empty() && !v.can_control);
+    }
+
+    #[test]
+    fn a_card_whose_track_no_longer_plays_says_it_ended() {
+        let mut s = snapshot();
+        s.track = Some(track("i2", "Another", None));
+        let other = MusicState::Available(s);
+        let (phase, v) = card_view_of(
+            true,
+            Some(&other),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            true,
+            0,
+        );
+        assert_eq!(phase, CardPhase::Ended);
+        assert_eq!(v.meta, "Glenn played this in harbour");
+        assert_eq!(v.blocked, v.meta);
+        assert!(v.queue.is_empty() && v.track.is_none());
+        let mut s = snapshot();
+        s.track = None;
+        let none = MusicState::Available(s);
+        let (phase, v) = card_view_of(true, Some(&none), "i1", "harbour", "Glenn", &names, true, 0);
+        assert_eq!(phase, CardPhase::Ended);
+        assert_eq!(v.meta, "Glenn played this in harbour");
+    }
+
+    #[test]
+    fn the_announced_track_playing_is_live_and_gated_by_dj() {
+        let mut s = snapshot();
+        s.track = Some(track("i1", "Harbour Lights", Some(UserId([1; 16]))));
+        s.can_control = false;
+        let playing = MusicState::Available(s);
+        let (phase, v) = card_view_of(
+            true,
+            Some(&playing),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            false,
+            12_000,
+        );
+        assert_eq!(phase, CardPhase::Live);
+        assert_eq!(v.blocked, "Join harbour to control playback");
+        assert!(!v.can_control && v.track.is_some());
+        let (_, v) = card_view_of(
+            true,
+            Some(&playing),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            true,
+            12_000,
+        );
+        assert_eq!(v.blocked, t("music.blocked.dj"));
+    }
+
+    /// Decision D10: the card's Bot-in-room test is the dock's (a participant of the call is the pinned Bot user).
+    #[test]
+    fn the_bot_is_in_the_room_when_the_pinned_bot_is_in_its_call() {
+        use dilla_client::calls::CallPhase;
+        let (s, channel) = in_call(true, CallPhase::In);
+        assert_eq!(
+            bot_in_room(&s, channel),
+            Some((CommunityId([7; 16]), UserId([9; 16])))
+        );
+        let (s, channel) = in_call(false, CallPhase::In);
+        assert_eq!(bot_in_room(&s, channel), None);
     }
 }

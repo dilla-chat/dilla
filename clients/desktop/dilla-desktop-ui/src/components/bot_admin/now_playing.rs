@@ -375,6 +375,24 @@ impl NowPlaying {
             .into_any_element()
     }
 
+    /// The height the card variant takes in a row (NowPlaying.css), in layout px: the 1px edge twice; the head (12px above
+    /// the 52px art, 10px below); the progress block (the 4px bar, 4px, the times' micro line); the controls (6px, 30px
+    /// buttons, 8px). With the queue open and rows in it: its 1px rule, 4px above, 30px a row and 6px below. The log
+    /// lays its rows out from heights, so the card says its own (R21).
+    pub fn card_height(queue_rows: usize, queue_open: bool) -> f32 {
+        let edge = 2.0;
+        let head = 12.0 + 52.0 + 10.0;
+        let progress = 4.0 + 4.0 + line_height(text::MICRO, 1.4);
+        let controls = 6.0 + 30.0 + 8.0;
+        // `card` draws the list only for a queue with rows in it.
+        let queue = if queue_open && queue_rows > 0 {
+            1.0 + 4.0 + 30.0 * queue_rows as f32 + 6.0
+        } else {
+            0.0
+        };
+        edge + head + progress + controls + queue
+    }
+
     fn card(self, window: &mut Window, cx: &mut App) -> AnyElement {
         let focus = window.use_keyed_state((self.id.clone(), "focus"), cx, |_, cx| {
             cx.focus_handle().tab_stop(true)
@@ -697,6 +715,21 @@ mod tests {
         assert_eq!(progress(500.0, 200.0), 1.0);
         assert_eq!(progress(-5.0, 200.0), 0.0);
         assert_eq!(progress(10.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn the_card_height_follows_the_css() {
+        // 2 (edge) + 74 (head) + 4 + 4 + 14 (the micro line) + 44 (controls).
+        assert_eq!(NowPlaying::card_height(0, false), 2.0 + 74.0 + 22.0 + 44.0);
+        assert_eq!(
+            NowPlaying::card_height(3, true) - NowPlaying::card_height(3, false),
+            1.0 + 4.0 + 90.0 + 6.0
+        );
+        // An open queue with no rows draws no list.
+        assert_eq!(
+            NowPlaying::card_height(0, true),
+            NowPlaying::card_height(0, false)
+        );
     }
 
     #[test]

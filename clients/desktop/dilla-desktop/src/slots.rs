@@ -107,7 +107,9 @@ pub struct Extra {
     pub height: f32,
 }
 
-/// Under a message's body (after its attachments slot): the attachments (12), the poll card (20), the reactions (10),
+/// Under a message's body (after its attachments slot): the Bot's now-playing card (35, which is a card of the row's grid
+/// in front of the attachments, so it needs to know whether the row is the log's `last`: [`bot_admin::player::music_card`]),
+/// the attachments (12), the poll card (20), the reactions (10),
 /// the thread count (11), a failed send's or an unreadable row's state (Package 10a), in this order, each [`EXTRA_GAP`] below what is above it, but the attachments, which are the
 /// slot's content (MessageRow.tsx `.d-message-row__attachments`: the timeline's slot already holds its grid gap and
 /// margin). Answers the stack and its height (the sum of the parts'; 0 when every guest has nothing), which the timeline
@@ -115,11 +117,13 @@ pub struct Extra {
 pub fn message_extras(
     item: &TimelineItem,
     ctx: &SlotCx,
+    last: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> (AnyElement, f32) {
     let slot = attachments::attachment_cards(item, ctx, window, cx);
     let parts = [
+        bot_admin::player::music_card(item, ctx, last, window, cx),
         commands::poll_card(item, ctx, window, cx),
         reactions::reaction_bar(item, ctx, window, cx),
         threads::thread_count(item, ctx, window, cx),
