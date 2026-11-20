@@ -15,7 +15,7 @@ use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::{Badge, BadgeKind};
 use dilla_desktop_ui::metrics::focus_ring;
 use dilla_desktop_ui::roving::{Roving, focus_handles};
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::{line, line_height, mono_width};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
@@ -83,6 +83,24 @@ fn selected_ring() -> [(Pixels, BoxShadow); 2] {
             },
         )
     })
+}
+
+/// Where `letters` characters of initials start in the 38px tile: centred by their width on the layout unit.
+fn initials_x(letters: usize) -> f32 {
+    (f32::from(layout::RAIL_TILE) - mono_width(letters, text::XS)) / 2.0
+}
+
+/// A server's initials in its tile (`.d-community-rail__item`: 11px/700 on `line-height: 1`, the tile an inline flex box
+/// centring them): the 11px line box is centred in the 38px tile, and the text in it by its width on Chromium's layout
+/// unit. The glyphs start where that centring puts them, at a fraction of a pixel (12.4px for two letters), which a
+/// flex box of GPUI would snap to a whole one: the line is placed from the fractions instead ([`Line::exact`]).
+fn initials_line(initials: &str, colour: gpui::Hsla) -> gpui::AnyElement {
+    let tile = f32::from(layout::RAIL_TILE);
+    let height = line_height(text::XS, 1.0);
+    let x = initials_x(initials.chars().count());
+    line(initials.to_owned(), text::XS, height, colour)
+        .weight(font::WEIGHT_DISPLAY)
+        .exact(x, (tile - height) / 2.0)
 }
 
 /// A tile in its slot of the rail: the slot is the tile's 38px box, and a selected tile has its ring's two layers drawn
@@ -251,9 +269,6 @@ pub fn render(
             // CommunityRail.css: a server is a round tile in `--hover`; the selected one a rounded square in the accent.
             .rounded(if picked { radius::XL } else { radius::PILL })
             .bg(if picked { color::ACCENT } else { color::HOVER })
-            .flex()
-            .items_center()
-            .justify_center()
             .cursor_pointer()
             .focus_visible(|s| s.shadow(focus_ring()))
             .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
@@ -262,19 +277,14 @@ pub fn render(
             ))
             .on_click(move |_: &ClickEvent, window, cx| on_pick(id, window, cx))
             .on_key_down(key_handler(stops.clone(), i + 1, press))
-            .child(
-                line(
-                    initials,
-                    text::XS,
-                    line_height(text::XS, 1.0),
-                    if picked {
-                        color::ACCENT_INK
-                    } else {
-                        color::FG_2
-                    },
-                )
-                .weight(font::WEIGHT_DISPLAY),
-            );
+            .child(initials_line(
+                &initials,
+                if picked {
+                    color::ACCENT_INK
+                } else {
+                    color::FG_2
+                },
+            ));
         #[cfg(feature = "automation")]
         let tile = tile.child(crate::automation::focus_probe(
             crate::screens::channel_list::probe_id("rail-server", &c.name),
@@ -434,6 +444,15 @@ mod tests {
             ring.iter()
                 .all(|(_, s)| f32::from(s.blur_radius) == 0.0 && !s.inset)
         );
+    }
+
+    /// Two letters of 11px mono are 13.2px (13.203125 on the layout unit) in the 38px `.d-community-rail__item`, so the web's
+    /// flex centring starts them at 12.4px: measured from the shot's `*.layout.json` of shell/conversation (a fraction a
+    /// flex box of GPUI would snap to 12).
+    #[test]
+    fn initials_start_where_the_web_centres_them() {
+        assert!((initials_x(2) - 12.4).abs() < 0.01, "{}", initials_x(2));
+        assert!((initials_x(1) - 15.7).abs() < 0.01, "{}", initials_x(1));
     }
 
     #[test]

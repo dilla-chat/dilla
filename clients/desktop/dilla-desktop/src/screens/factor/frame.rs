@@ -6,6 +6,7 @@
 //!
 //! Every size is the stylesheet's (OnboardingFrame.css), named below; positions come from layout.
 
+use dilla_desktop_ui::components::onboarding::frame::{BodyParagraph, Part};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, ClickEvent, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -159,8 +160,13 @@ pub fn links_row(links: Vec<AnyElement>) -> AnyElement {
 
 /// A paragraph of the body (`.d-onboarding-frame__body > p`, 12.5px on an 18.75px line). The box is given its line's exact
 /// height: GPUI sizes a text box by a whole number of device px, so the 18.75px line came out 18.5px and the card, centred
-/// on its height, sat a quarter pixel (a whole pixel after snapping) lower than the web's 395.25px one.
+/// on its height, sat a quarter pixel (a whole pixel after snapping) lower than the web's 395.25px one. Its wrap is
+/// GPUI's, wherever the text sits (a dialog too): [`body_para`] is the card's own, which the frame wraps.
 pub fn para(text_: impl Into<SharedString>) -> AnyElement {
+    para_box(text_).into_any_element()
+}
+
+fn para_box(text_: impl Into<SharedString>) -> gpui::Div {
     div()
         .min_h(px(line_height(text::SM, 1.5)))
         .text_size(text::SM)
@@ -168,7 +174,12 @@ pub fn para(text_: impl Into<SharedString>) -> AnyElement {
         .font_family(font::MONO)
         .text_color(color::FG_2)
         .child(text_.into())
-        .into_any_element()
+}
+
+/// A paragraph of an authentication card's body: the frame wraps it, as `text-wrap: pretty` when it is the first one
+/// (`.d-onboarding-frame__body > p:first-child`), and flows it in the desktop authentication window.
+pub fn body_para(text_: impl Into<SharedString>) -> BodyParagraph {
+    BodyParagraph::new(text_, color::FG_2).flowing()
 }
 
 /// The code's or a field's error under it (`.d-onboarding-frame__error`).
@@ -200,7 +211,7 @@ pub struct AuthFrame {
     step: Option<SharedString>,
     progress: Option<(u8, u8)>,
     banner: Option<(BannerTone, SharedString)>,
-    body: Vec<AnyElement>,
+    body: Vec<Part>,
     action: Option<Action>,
     below: Vec<AnyElement>,
 }
@@ -231,8 +242,8 @@ impl AuthFrame {
         self
     }
 
-    pub fn child(mut self, child: impl IntoElement) -> Self {
-        self.body.push(child.into_any_element());
+    pub fn child(mut self, child: impl IntoElement + 'static) -> Self {
+        self.body.push(Part::of(child));
         self
     }
 
@@ -364,6 +375,7 @@ impl AuthFrame {
                 // `.d-onboarding-frame__body > p:first-child`: a banner drawn first in the body takes the place
                 // of the first child, and the paragraph after it keeps no 6px.
                 .children(self.body.into_iter().enumerate().map(|(i, part)| {
+                    let part = part.render(i == 0 && !has_banner);
                     if i == 0 && !has_banner {
                         div().mb(px(FIRST_PARA_GAP)).child(part).into_any_element()
                     } else {
