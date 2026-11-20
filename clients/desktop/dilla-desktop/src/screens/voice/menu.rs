@@ -316,6 +316,8 @@ pub fn person_menu(w: WindowId, channel: &Channel, cx: &mut App) -> Option<AnyEl
                 .px(px(m::VOLUME_PAD_X))
                 .pt(px(m::VOLUME_PAD_T))
                 .pb(px(m::VOLUME_PAD_B))
+                // The web portals this menu to `<body>` (CallTile.tsx:248, VoiceChannelRow.tsx:104), outside `.d-root`: its
+                // text never takes the root's `--line-height`, so it stays put at every density (Task 19b).
                 .child(
                     div()
                         .flex()

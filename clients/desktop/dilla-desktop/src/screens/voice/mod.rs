@@ -44,9 +44,7 @@ use session::MediaSession;
 /// What this client's microphone sends (`dilla_media`'s Opus encoder at 48 kHz): the own tile's codec stat.
 const OWN_CODEC: (&str, &str) = ("opus", "48");
 
-/// The regular density's line height (`--line-height`, 1.5).
-const LINE: f32 = 1.5;
-/// `.d-call-stage__where`'s line height.
+/// `.d-call-stage__where`'s line height (CallStage.css:102 `line-height: 1.3`): fixed, at every density.
 const BAR_LINE: f32 = 1.3;
 
 /// The area's sizes, logical px, named after the packages/ui CSS they come from (R21: no literal `px(..)` in screens).
@@ -608,7 +606,7 @@ fn stage_title(channel: &Channel, glyph: IconName, topic: String) -> Div {
                     line(
                         channel.name.clone(),
                         text::BASE,
-                        dilla_desktop_ui::text::line_height(text::BASE, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::BASE),
                         color::FG,
                     )
                     .weight(font::WEIGHT_DISPLAY)
@@ -620,7 +618,7 @@ fn stage_title(channel: &Channel, glyph: IconName, topic: String) -> Div {
                 line(
                     topic,
                     text::UI,
-                    dilla_desktop_ui::text::line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG_2,
                 )
                 .ellipsis(),
@@ -2419,7 +2417,7 @@ fn tile(
             line(
                 title,
                 caption_text,
-                line_height(caption_text, LINE),
+                dilla_desktop_ui::text::root_line_height(caption_text),
                 color::FG,
             )
             .weight(font::WEIGHT_LABEL),
@@ -2532,7 +2530,12 @@ fn tile(
                     .right(px(m::STAT_RIGHT - edge))
             };
             let size = if is_focused { text::MICRO } else { text::CHIP };
-            d.child(at.child(line(stat, size, line_height(size, LINE), color::FG_3)))
+            d.child(at.child(line(
+                stat,
+                size,
+                dilla_desktop_ui::text::root_line_height(size),
+                color::FG_3,
+            )))
         })
         .when(is_focused, |d| d.child(tile_tools(edge, k.clone(), full)))
         .children(probe)
@@ -2590,7 +2593,7 @@ fn tile_tools(edge: f32, key: TileKey, full: bool) -> AnyElement {
                 .child(line(
                     t("callStage.grid"),
                     text::XS,
-                    line_height(text::XS, LINE),
+                    dilla_desktop_ui::text::root_line_height(text::XS),
                     color::FG_STRONG,
                 )),
         )
@@ -3367,7 +3370,7 @@ fn preview(state: &AppState, channel: &Channel) -> AnyElement {
             line(
                 channel.name.clone(),
                 text::PREVIEW,
-                line_height(text::PREVIEW, LINE),
+                dilla_desktop_ui::text::root_line_height(text::PREVIEW),
                 color::FG,
             )
             .weight(font::WEIGHT_DISPLAY),
@@ -3375,7 +3378,7 @@ fn preview(state: &AppState, channel: &Channel) -> AnyElement {
         .child(line(
             who,
             text::UI,
-            line_height(text::UI, LINE),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::FG_2,
         ));
     let id = channel.id;
@@ -3404,7 +3407,7 @@ fn preview(state: &AppState, channel: &Channel) -> AnyElement {
                     line(
                         t("callStage.preview.join"),
                         text::SM,
-                        line_height(text::SM, LINE),
+                        dilla_desktop_ui::text::root_line_height(text::SM),
                         color::OK_INK,
                     )
                     .weight(font::WEIGHT_DISPLAY),
@@ -3521,19 +3524,23 @@ fn bar_control(
         .child(Icon::new(glyph).size(px(m::BAR_GLYPH)).color(fg))
         .when(words, |d| {
             d.child(
-                line(word.to_owned(), text::BTN, line_height(text::BTN, LINE), fg).weight(
-                    if leave {
-                        font::WEIGHT_DISPLAY
-                    } else {
-                        font::WEIGHT_BTN
-                    },
-                ),
+                line(
+                    word.to_owned(),
+                    text::BTN,
+                    dilla_desktop_ui::text::root_line_height(text::BTN),
+                    fg,
+                )
+                .weight(if leave {
+                    font::WEIGHT_DISPLAY
+                } else {
+                    font::WEIGHT_BTN
+                }),
             )
         })
         .when_some(keycap.filter(|_| words), |d, keycap| {
             // The web's JetBrains Mono has no ⇧: Chromium draws it in DejaVu Sans (`Face::Symbol`), the rest in the mono.
             let ink = fg.opacity(m::KEYCAP_OPACITY);
-            let lh = line_height(text::MICRO, LINE);
+            let lh = dilla_desktop_ui::text::root_line_height(text::MICRO);
             d.child(div().flex().children(keycap_runs(keycap).into_iter().map(
                 move |(run, symbol)| {
                     let l = line(run.to_owned(), text::MICRO, lh, ink);
