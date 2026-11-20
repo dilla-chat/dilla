@@ -214,6 +214,15 @@ impl ShareSound {
         }
     }
 
+    /// The application the person chose, the only one a share carries before its window is looked up: `Window(_)`
+    /// and `Unset` are none.
+    pub fn chosen(&self) -> Option<&dilla_media::app_audio::AppSource> {
+        match self {
+            ShareSound::Person(app) => app.as_ref(),
+            _ => None,
+        }
+    }
+
     /// A share starts: `Window(_)` becomes `Unset`; everything else is kept.
     pub fn on_share(self) -> ShareSound {
         match self {
@@ -1354,6 +1363,8 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
         let ui = ui_mut(w, cx);
         ui.share_seq += 1;
         ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
+        // The sound the share starts with is the person's choice or none, never one left waiting by an earlier share.
+        session.app_audio(ui.share_sound.chosen().cloned());
     }
     session.share(kind, true, options);
 }
@@ -1414,15 +1425,17 @@ pub fn share_source(
     ui.share_seq += 1;
     let seq = ui.share_seq;
     ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
-    let person_app = match &ui.share_sound {
-        ShareSound::Person(app) => app.clone(),
-        _ => None,
-    };
+    let person_app = ui.share_sound.chosen().cloned();
     let look_up = (source.kind == dilla_media::sources::desktop::SourceKind::Window
         && ui.share_sound == ShareSound::Unset)
         .then(|| crate::screens::share_picker::apps::window_sound(cx))
         .flatten();
     if let Some(s) = &session {
+        // Nothing but the person's choice (or the window's, once found) is published: an application left waiting by an
+        // earlier share that never came up is dropped (what the sound row says is what the share carries).
+        if person_app.is_none() {
+            s.app_audio(None);
+        }
         s.share_source(source.clone(), options);
         // The sound section's application comes with the share.
         if person_app.is_some() {
@@ -3996,6 +4009,11 @@ mod tests {
         assert_eq!(Person(None).on_share().found(Some(a.clone())), Person(None));
         assert_eq!(Window(a.clone()).on_share(), Unset);
         assert_eq!(Unset.found(None), Unset);
+        // Only the person's choice goes out before the window's application is found.
+        assert_eq!(Window(a.clone()).chosen(), None);
+        assert_eq!(Unset.chosen(), None);
+        assert_eq!(Person(None).chosen(), None);
+        assert_eq!(Person(Some(m.clone())).chosen(), Some(&m));
         assert_eq!(Window(a).ended(), Unset);
         assert_eq!(Person(None).ended(), Unset);
         assert_eq!(Person(Some(m.clone())).ended(), Person(Some(m)));

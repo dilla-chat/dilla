@@ -835,7 +835,12 @@ async fn in_call(
                 // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
                 cmd = commands.recv() => match cmd {
                     None => break,
-                    Some(Command::Share(kind, false, _)) => stop_share(ctx, &call, &mut opens, kind).await,
+                    Some(Command::Share(kind, false, _)) => {
+                        if kind == ShareKind::Screen {
+                            pending_app = None;
+                        }
+                        stop_share(ctx, &call, &mut opens, kind).await;
+                    }
                     Some(Command::Share(kind, true, options)) => opens.start(ctx, &opened_tx, kind, None, options),
                     Some(Command::ShareSource(source, options)) => {
                         opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
@@ -859,11 +864,11 @@ async fn in_call(
                 Some(done) = opened.recv() => {
                     if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
                         publish_share(ctx, &call, done.kind, result, done.options).await;
-                        if done.kind == ShareKind::Screen
-                            && ctx.states.borrow().voice.share.screen
-                            && let Some(source) = pending_app.take()
-                        {
-                            app_audio(ctx, &call, Some(source)).await;
+                        if done.kind == ShareKind::Screen {
+                            let sharing = ctx.states.borrow().voice.share.screen;
+                            if let Some(source) = parked_app_for(pending_app.take(), sharing) {
+                                app_audio(ctx, &call, Some(source)).await;
+                            }
                         }
                     }
                 }
@@ -1057,6 +1062,15 @@ impl Opens {
     }
 }
 
+/// The application sound that waited for a screen share's start: it starts with the share. A share that did not come up
+/// (its source failed or was withdrawn) drops it, so it never rides along on a later share (Task 44 fix round 1).
+fn parked_app_for(
+    parked: Option<dilla_media::app_audio::AppSource>,
+    sharing: bool,
+) -> Option<dilla_media::app_audio::AppSource> {
+    parked.filter(|_| sharing)
+}
+
 /// Starts or stops the screen share's application sound (parity plan Package 3). Only with a running screen share; the
 /// instance's sharing slot says whether the share carries sound. A capture that cannot start leaves the share silent and
 /// says so.
@@ -1159,6 +1173,20 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 44 fix round 1 (C1): a parked application sound starts with a share that came up and is dropped with one
+    /// that did not, so it never rides along on a later share.
+    #[test]
+    fn a_parked_application_sound_dies_with_a_share_that_did_not_come_up() {
+        let app = dilla_media::app_audio::AppSource {
+            serial: 1,
+            pid: 2,
+            label: "Music".to_owned(),
+        };
+        assert_eq!(parked_app_for(Some(app.clone()), true), Some(app.clone()));
+        assert_eq!(parked_app_for(Some(app), false), None);
+        assert_eq!(parked_app_for(None, true), None);
+    }
 
     /// Share fix review I1: a dropped session waits only while a call's media is live. A call whose media already
     /// ended (and which is only closing its room) holds the drop up not at all; a live one holds it up until its media

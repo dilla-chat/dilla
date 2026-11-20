@@ -207,6 +207,23 @@ fn depth_below(pid: u32, owner: u32, parent_of: &impl Fn(u32) -> Option<u32>) ->
     None
 }
 
+/// `links` (pid to parent pid) without the stale ones: Windows never updates a process's recorded parent when that
+/// parent exits and reuses pids, so a link is kept only when both creation times (`created`) are known and the parent
+/// was created no later than the child. A reused pid is always newer than the orphans it would otherwise adopt.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn keep_fresh_links(
+    links: HashMap<u32, u32>,
+    created: impl Fn(u32) -> Option<u64>,
+) -> HashMap<u32, u32> {
+    links
+        .into_iter()
+        .filter(|&(pid, parent)| match (created(parent), created(pid)) {
+            (Some(parent), Some(child)) => parent <= child,
+            _ => false,
+        })
+        .collect()
+}
+
 /// A source's label: at most [`MAX_LABEL`] characters, and a name for a source that gives none.
 pub(crate) fn cap_label(label: &str, pid: u32) -> String {
     if label.trim().is_empty() {
@@ -287,6 +304,23 @@ mod tests {
         // A source in Dilla's tree is never returned.
         assert_eq!(pick(50, &[(110, 1), (100, 2)]), None);
         assert_eq!(pick(110, &[(110, 1)]), None);
+    }
+
+    #[test]
+    fn a_link_to_a_parent_created_after_its_child_is_stale() {
+        // 200's recorded parent 50 was created after it (the pid was reused), 220's parent 200 before it, 230 has no
+        // known creation time.
+        let created = |pid: u32| match pid {
+            50 => Some(900),
+            200 => Some(100),
+            220 => Some(300),
+            _ => None,
+        };
+        let links = HashMap::from([(200, 50), (220, 200), (230, 200)]);
+        assert_eq!(
+            keep_fresh_links(links, created),
+            HashMap::from([(220, 200)])
+        );
     }
 
     #[test]
