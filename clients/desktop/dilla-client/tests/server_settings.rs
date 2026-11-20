@@ -171,6 +171,10 @@ async fn server_rename_channel_edit_leave_hand_over_delete() {
         s.communities.iter().all(|x| x.id != c) && !s.roles.access.contains_key(&c)
     })
     .await;
+    // A leave this account made is no removal: a list read after it (given a moment to land) tells nothing.
+    a.refresh();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(a.state().borrow().removal_notices.is_empty());
 
     // The new owner deletes it.
     b.server_admin()

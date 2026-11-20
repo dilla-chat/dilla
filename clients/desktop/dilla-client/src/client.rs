@@ -29,6 +29,7 @@ use crate::state::channels::{
 use crate::state::members::decode_members;
 use crate::state::messages::TimelineUnavailable;
 use crate::state::messages::{build_timeline, decode_outbox, decode_timeline};
+use crate::state::removed::{REMOVALS_MAX, SelfRemoved, notices};
 use crate::state::unread::{build_badges, decode_activity};
 use crate::state::{
     AccountPhase, AppState, Channel, ChannelId, CommunityId, ConnectionStatus, DeviceId, GroupId,
@@ -281,6 +282,8 @@ pub(crate) struct Inner {
     runtime: tokio::runtime::Handle,
     prefs: Prefs,
     upkeep: Arc<Upkeep>,
+    /// The servers this account left or deleted itself (Task 15): a list read missing one is no removal notice.
+    self_removed: Arc<Mutex<SelfRemoved>>,
     #[cfg_attr(
         not(feature = "testing"),
         allow(
@@ -464,6 +467,7 @@ impl Client {
             user_id,
             device_id,
         );
+        let self_removed = Arc::new(Mutex::new(SelfRemoved::default()));
         let initial = AppState {
             account: crate::state::AccountState {
                 phase: if owed {
@@ -500,6 +504,7 @@ impl Client {
             runtime: runtime.handle().clone(),
             prefs: Prefs::instance(&cfg.data_dir),
             upkeep: upkeep.clone(),
+            self_removed: self_removed.clone(),
             taps: taps.clone(),
         });
         let _ = area_inner.set(Arc::downgrade(&inner));
@@ -541,6 +546,8 @@ impl Client {
             not_member: HashSet::new(),
             resyncing: HashSet::new(),
             listed: None,
+            self_removed,
+            removal_seq: 0,
             renew: RenewGate::default(),
             upkeep,
             inner: area_inner,
@@ -933,6 +940,13 @@ impl Inner {
     }
 
     /// The account's upkeep (key packages, backups: [`crate::account`]).
+    /// The servers this account left or deleted itself, locked (a poisoned lock keeps its marks).
+    pub(crate) fn self_removed(&self) -> std::sync::MutexGuard<'_, SelfRemoved> {
+        self.self_removed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(crate) fn upkeep(&self) -> &Arc<Upkeep> {
         &self.upkeep
     }
@@ -1322,9 +1336,14 @@ struct Publisher {
     pages: HashMap<ChannelId, OpenPage>,
     not_member: HashSet<GroupId>,
     resyncing: HashSet<GroupId>,
-    /// The communities the last structure load listed (`None` before the first): one listed again after a load left
-    /// it out (a kick, a lifted ban or a leave, then a join) is the engine's [`Engine::rejoined`].
-    listed: Option<HashSet<CommunityId>>,
+    /// The communities the last structure load listed, with their names (`None` before the first): one listed again
+    /// after a load left it out (a kick, a lifted ban or a leave, then a join) is the engine's [`Engine::rejoined`],
+    /// and one a load leaves out that this account did not leave is a removal notice.
+    listed: Option<HashMap<CommunityId, String>>,
+    /// Shared with [`Inner::self_removed`].
+    self_removed: Arc<Mutex<SelfRemoved>>,
+    /// The last removal notice's id.
+    removal_seq: u64,
     /// The renewals of refused sessions (one per ready, one at a time).
     renew: RenewGate,
     /// The account's upkeep, started on every ready.
@@ -1667,6 +1686,8 @@ impl Publisher {
         self.link.disconnect();
         self.state.connection.status = ConnectionStatus::Offline;
         self.state.account.phase = AccountPhase::Revoked;
+        // controller.ts 4343: the notices go with the session.
+        self.state.removal_notices.clear();
     }
 
     /// Answers whether the structure is to be read again.
@@ -1736,15 +1757,21 @@ impl Publisher {
             }
             ConnectionEvent::Refused(Refusal::UpgradeRequired, _) => {
                 self.state.connection.status = ConnectionStatus::Offline;
-                self.state.account.phase = AccountPhase::VersionRefused { upgrade: true };
+                self.state.account.phase = AccountPhase::VersionRefused {
+                    upgrade: true,
+                    instance: false,
+                };
                 false
             }
             ConnectionEvent::Refused(
-                Refusal::InstanceOutdated | Refusal::VersionUnsupported,
+                refusal @ (Refusal::InstanceOutdated | Refusal::VersionUnsupported),
                 _,
             ) => {
                 self.state.connection.status = ConnectionStatus::Offline;
-                self.state.account.phase = AccountPhase::VersionRefused { upgrade: false };
+                self.state.account.phase = AccountPhase::VersionRefused {
+                    upgrade: false,
+                    instance: refusal == Refusal::InstanceOutdated,
+                };
                 false
             }
         }
@@ -1932,8 +1959,41 @@ impl Publisher {
             self.state.timelines.remove(id);
             self.state.messages.unavailable.remove(id);
         }
-        if let Some(before) = self.listed.replace(now.clone()) {
-            let rejoined: Vec<CommunityId> = now.difference(&before).copied().collect();
+        let names: HashMap<CommunityId, String> = loaded
+            .communities
+            .iter()
+            .map(|c| (c.id, c.name.clone()))
+            .collect();
+        if let Some(before) = self.listed.replace(names) {
+            // controller.ts 3073-3100: a server the previous read listed and this one does not, that this account did
+            // not leave or delete, is a removal. A server listed again drops its notice (a superset of the web's
+            // join-only drop: a join made elsewhere shows up in the list alone).
+            let fresh = {
+                let mut mine = self
+                    .self_removed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let fresh = notices(&before, &now, &mine, &mut self.removal_seq);
+                for c in &now {
+                    mine.listed(*c);
+                }
+                fresh
+            };
+            self.state
+                .removal_notices
+                .retain(|n| !now.contains(&n.community));
+            self.state.removal_notices.extend(fresh);
+            let over = self
+                .state
+                .removal_notices
+                .len()
+                .saturating_sub(REMOVALS_MAX);
+            self.state.removal_notices.drain(..over);
+            let rejoined: Vec<CommunityId> = now
+                .iter()
+                .filter(|c| !before.contains_key(c))
+                .copied()
+                .collect();
             if !rejoined.is_empty() {
                 // Jonas (2026-11-13), stricter than the web: a server joined again keeps its history hidden until each
                 // text group's removal feed is read (a moderator may have removed a message while the account was

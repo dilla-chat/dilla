@@ -1093,7 +1093,11 @@ impl Onboarding {
                 .map_err(|()| FlowError::local("E_DECODE"))?
                 .ok_or_else(|| FlowError::local("E_INVITE_NOT_COMMUNITY"))?;
             join_path(&api, community, &code).await?;
-            Ok(CommunityId(community))
+            // controller.ts 3155-3165: a server joined is no longer self-removed, and its notice goes.
+            let joined = CommunityId(community);
+            inner.self_removed().joined(joined);
+            inner.publish(move |s| s.removal_notices.retain(|n| n.community != joined));
+            Ok(joined)
         });
         flatten(rx.await)
     }

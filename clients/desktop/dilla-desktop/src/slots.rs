@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, TimelineItem};
 use dilla_client::{Area, Client};
-use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
+use gpui::{
+    AnyElement, App, FocusHandle, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
+};
 
 use dilla_desktop_ui::IconName;
 
@@ -35,6 +37,9 @@ pub struct SlotCx {
     /// The dirty-draft guard of the settings host that draws a settings section; `None` elsewhere. A section's hook
     /// attaches and publishes through it (the host fills it per render).
     pub workspace: Option<SettingsWorkspace>,
+    /// The shell's composer field, so a banner's action can hand the focus back to it (Shell.tsx `dismissRemoved`);
+    /// `None` outside the shell.
+    pub composer: Option<FocusHandle>,
 }
 
 impl Default for SlotCx {
@@ -46,6 +51,7 @@ impl Default for SlotCx {
             channel: None,
             clock: Clock::Local,
             workspace: None,
+            composer: None,
         }
     }
 }

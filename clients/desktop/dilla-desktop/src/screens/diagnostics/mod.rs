@@ -3,13 +3,15 @@
 //! Every file under `screens/diagnostics/` is Task 24's. The hooks below are where `crate::slots` draws this area inside
 //! another area's view; their signatures are Task 1's.
 //!
-//! - [`banners`]: the link line and the version refusals (`banner.rs`), over the shell.
+//! - [`banners`]: the link line and the version refusals (`banner.rs`), then the removal notices (`removed.rs`), over
+//!   the shell.
 //! - [`settings_section`]: the Diagnostics section (`section.rs`), in the settings frame.
 //!
 //! The boot splash and the fatal screen are `crate::screens::boot`.
 
 pub mod banner;
 pub mod keys;
+pub mod removed;
 pub mod section;
 
 use crate::slots::{SectionId, SlotCx};
@@ -17,7 +19,10 @@ use gpui::{AnyElement, App, Window};
 
 /// The banners over the main column (`slots::banners`): the offline link and the version refusal.
 pub fn banners(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
-    banner::banners(ctx, window, cx)
+    let mut out = banner::banners(ctx, window, cx);
+    // Shell.tsx 1845-1866: the version banners, then the removal notices.
+    out.extend(removed::banners(ctx, window, cx));
+    out
 }
 
 /// Draws one of this area's settings sections (`slots::settings_sections` points here).

@@ -6,12 +6,10 @@
 //! - `VersionRefused { upgrade: true }` (the instance speaks only newer wires, or said E_UPGRADE_REQUIRED): "Update dilla to
 //!   continue" with the Update button. The app never reloads or reconnects by itself: an open composer, a half-written edit
 //!   and the route all stay where they are, which is what `e2e/web/version-reload.spec.ts` asserts for the desktop app.
-//! - `VersionRefused { upgrade: false }` (a plain 4006 `E_VERSION`): "This server needs a newer client", with Reload, which
-//!   here reconnects (a native window has no page to reload, and nothing the person typed is touched).
-//!
-//! Which refusal an `upgrade: false` was (the client is too old for this instance, or the instance is older than the
-//! client, web's `reason: 'instance'`) is not told apart by `AccountPhase`; `shell.banner.instanceTooOld` waits for a
-//! variant for it (Task 2 owns `client.rs`).
+//! - `VersionRefused { upgrade: false, instance: false }` (a plain 4006 `E_VERSION`): "This server needs a newer client",
+//!   with Reload, which here reconnects (a native window has no page to reload, and nothing the person typed is touched).
+//! - `VersionRefused { upgrade: false, instance: true }` (the instance is the older side, web's `reason: 'instance'`):
+//!   "This server needs an update before this app can connect. Ask its admin." with no action: a reload cannot help.
 
 use dilla_client::state::{AccountPhase, AppState, ConnectionStatus};
 use gpui::{AnyElement, App, Global, IntoElement, Window};
@@ -94,14 +92,25 @@ pub enum BannerPlan {
     UpdateRequired(UpdateMessage),
     /// "This server needs a newer client", with Reload.
     ClientTooOld,
+    /// "This server needs an update before this app can connect. Ask its admin.", with no action.
+    InstanceTooOld,
 }
 
 /// The banner a state shows, if any. An online link, and any phase the shell is not drawn in, show none: an empty slot
 /// takes no room.
 pub fn plan(state: &AppState, update: UpdateMessage) -> Option<BannerPlan> {
     match state.account.phase {
-        AccountPhase::VersionRefused { upgrade: true } => Some(BannerPlan::UpdateRequired(update)),
-        AccountPhase::VersionRefused { upgrade: false } => Some(BannerPlan::ClientTooOld),
+        AccountPhase::VersionRefused { upgrade: true, .. } => {
+            Some(BannerPlan::UpdateRequired(update))
+        }
+        AccountPhase::VersionRefused {
+            upgrade: false,
+            instance: true,
+        } => Some(BannerPlan::InstanceTooOld),
+        AccountPhase::VersionRefused {
+            upgrade: false,
+            instance: false,
+        } => Some(BannerPlan::ClientTooOld),
         AccountPhase::Ready => {
             let status = match state.connection.status {
                 ConnectionStatus::Online => return None,
@@ -163,6 +172,15 @@ pub fn banners(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Vec<AnyEleme
             }),
         )
         .into_any_element(),
+        BannerPlan::InstanceTooOld => tracked_box(
+            "banner-instance-too-old",
+            Banner::new(
+                "banner-instance-too-old-line",
+                BannerTone::Warn,
+                t("shell.banner.instanceTooOld"),
+            ),
+        )
+        .into_any_element(),
     }]
 }
 
@@ -208,7 +226,10 @@ mod tests {
     #[test]
     fn a_refusal_replaces_the_link_line() {
         let upgrade = state(
-            AccountPhase::VersionRefused { upgrade: true },
+            AccountPhase::VersionRefused {
+                upgrade: true,
+                instance: false,
+            },
             ConnectionStatus::Offline,
         );
         assert_eq!(
@@ -216,11 +237,40 @@ mod tests {
             Some(BannerPlan::UpdateRequired(UpdateMessage::Unavailable))
         );
         let plain = state(
-            AccountPhase::VersionRefused { upgrade: false },
+            AccountPhase::VersionRefused {
+                upgrade: false,
+                instance: false,
+            },
             ConnectionStatus::Offline,
         );
         assert_eq!(
             plan(&plain, UpdateMessage::Required),
+            Some(BannerPlan::ClientTooOld)
+        );
+    }
+
+    #[test]
+    fn an_older_instance_says_so_without_reload() {
+        let older = state(
+            AccountPhase::VersionRefused {
+                upgrade: false,
+                instance: true,
+            },
+            ConnectionStatus::Offline,
+        );
+        assert_eq!(
+            plan(&older, UpdateMessage::Required),
+            Some(BannerPlan::InstanceTooOld)
+        );
+        let newer_client_needed = state(
+            AccountPhase::VersionRefused {
+                upgrade: false,
+                instance: false,
+            },
+            ConnectionStatus::Offline,
+        );
+        assert_eq!(
+            plan(&newer_client_needed, UpdateMessage::Required),
             Some(BannerPlan::ClientTooOld)
         );
     }

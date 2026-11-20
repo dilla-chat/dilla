@@ -606,7 +606,10 @@ async fn older_client_refused_banner_no_reconnect_keeps_draft() {
     .await;
     assert_eq!(
         refused.account.phase,
-        AccountPhase::VersionRefused { upgrade: true }
+        AccountPhase::VersionRefused {
+            upgrade: true,
+            instance: false
+        }
     );
     assert_eq!(refused.connection.status, ConnectionStatus::Offline);
     assert_eq!(

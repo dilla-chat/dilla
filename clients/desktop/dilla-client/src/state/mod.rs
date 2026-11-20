@@ -19,6 +19,7 @@ pub mod messages;
 pub mod onboarding;
 pub mod profile;
 pub mod reactions;
+pub mod removed;
 pub mod ring;
 pub mod roles;
 pub mod search;
@@ -140,8 +141,9 @@ pub enum AccountPhase {
     /// The device was revoked: a refused session (close 4004 or 4003, an upgrade 401) could not be established again
     /// from the device key (the instance no longer answers its challenge). Sign in again.
     Revoked,
-    /// The instance refused this client's version (close 4006): `upgrade` when this client must update.
-    VersionRefused { upgrade: bool },
+    /// The instance refused this client's version (close 4006): `upgrade` when this client must update; `instance` when
+    /// the instance is the older side (controller.ts `reason: 'instance'`).
+    VersionRefused { upgrade: bool, instance: bool },
     /// The local store's core panicked mid-call (its lock is poisoned): it may be inconsistent, so the client stopped
     /// syncing. Restart the client (the store reopens from disk).
     Failed,
@@ -216,6 +218,9 @@ pub struct AppState {
     pub onboarding: onboarding::OnboardingState,
     /// Task 26.
     pub factors: factors::FactorState,
+    /// Task 15: the servers the community list dropped without this account leaving them, newest last (at most
+    /// [`removed::REMOVALS_MAX`]); the shell shows each as a dismissible banner.
+    pub removal_notices: Vec<removed::RemovalNotice>,
 }
 
 impl AppState {

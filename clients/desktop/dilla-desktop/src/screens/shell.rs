@@ -490,6 +490,7 @@ impl ShellView {
             channel: self.channel,
             clock: self.clock,
             workspace: None,
+            composer: None,
         }
     }
 
@@ -1344,7 +1345,9 @@ impl Render for ShellView {
                 dilla_desktop_ui::a11y::announce(text, window, cx);
             }
         }
-        let ctx = self.slot_cx();
+        let mut ctx = self.slot_cx();
+        // A banner's action (a dismissed removal notice) gives the focus back to the composer.
+        ctx.composer = Some(gpui::Focusable::focus_handle(self.composer.read(cx), cx));
         // The threads area reads this shell's view (its pane, the header's toggle, the reply keys), and the Threads button
         // is pressed while a thread is open (11).
         crate::screens::threads::sync(&ctx, window, cx);

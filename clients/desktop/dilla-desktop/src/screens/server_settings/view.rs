@@ -549,6 +549,7 @@ impl Render for ServerSettingsView {
                     clock: self.clock,
                     // The server settings keep their own guard (Overview's draft); a slot section has none here.
                     workspace: None,
+                    composer: None,
                 };
                 let view = crate::slots::settings_sections()
                     .into_iter()
