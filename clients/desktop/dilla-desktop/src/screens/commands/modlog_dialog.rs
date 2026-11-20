@@ -30,6 +30,7 @@ pub fn open(window: WindowId, community: CommunityId, conversation: Conversation
 /// Closes `window`'s history.
 pub fn close(window: WindowId, cx: &mut App) {
     crate::per_window::set::<OpenModlog>(window, None, cx);
+    forget_loaded(window, cx);
     cx.refresh_windows();
 }
 
@@ -38,10 +39,17 @@ pub fn open_of(window: WindowId, cx: &App) -> Option<(CommunityId, Conversation)
     crate::per_window::get::<OpenModlog>(window, cx).and_then(|o| o.0)
 }
 
+/// The web's `ModerationLog` keeps its rows in component state, so closing the dialog drops them (the settings page's
+/// own log, which shares this window's store, starts over the next time it shows).
+fn forget_loaded(window: WindowId, cx: &mut App) {
+    crate::screens::members::modlog::with_log(window, cx, |log| log.clear());
+}
+
 /// Lets go of `windows`' histories (`commands::release_windows`: Forget, sign-out, an instance's Remove).
 pub fn release_windows(windows: &[WindowId], cx: &mut App) {
     for &window in windows {
         crate::per_window::set::<OpenModlog>(window, None, cx);
+        forget_loaded(window, cx);
     }
 }
 
@@ -51,7 +59,7 @@ pub fn overlay(ctx: &SlotCx, window: &mut gpui::Window, cx: &mut App) -> Option<
     let (community, conversation) = open_of(w, cx)?;
     // The window left the conversation the command was typed in: the dialog goes (CommandHost.tsx:130).
     if ctx.channel != Some(conversation.channel) {
-        crate::per_window::set::<OpenModlog>(w, None, cx);
+        close(w, cx);
         return None;
     }
     let body = crate::screens::members::moderation_log_section(ctx, community, true, window, cx);

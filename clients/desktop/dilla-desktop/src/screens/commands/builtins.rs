@@ -41,6 +41,9 @@ use crate::slots::SlotCx;
 /// builtin.ts `waitForVoiceJoin`: how long `/join` waits for the call before its row says the join is still pending.
 const JOIN_ANSWER_WAIT: Duration = Duration::from_secs(35);
 
+/// How often `/join` looks at the call and the conversation (builtin.ts:309).
+const JOIN_POLL: Duration = Duration::from_millis(50);
+
 /// The row's answer once the join is neither done nor failed (builtin.ts:304; also a join cancelled without a notice).
 const JOIN_PENDING: &str = "Voice join is still pending. Check the call before trying again.";
 
@@ -354,6 +357,11 @@ pub fn run(
                     "GIF search is available only in a community channel.",
                 ));
             };
+            // CommandHost.tsx:186 lists `/giphy` only where GIFs are on, so a typed one elsewhere is no command at all.
+            let on = crate::screens::attachments::ui::gif_on(&client, community, cx);
+            if let Err(row) = giphy_gate(on) {
+                return finish(row);
+            }
             crate::screens::attachments::ui::open_gifs(
                 client.clone(),
                 window,
@@ -398,7 +406,7 @@ pub fn run(
                 "Moderation history opened.".to_owned(),
             ));
         }
-        Builtin::Join { channel: target } => join(&client, target, window, finish, cx),
+        Builtin::Join { channel: target } => join(&client, target, (window, channel), finish, cx),
         Builtin::Leave => {
             crate::screens::voice::leave(window, cx);
             finish((ResultStatus::Success, "Left voice.".to_owned()));
@@ -406,6 +414,15 @@ pub fn run(
         Builtin::Voice { muted, deafened } => {
             finish(set_voice(&client, muted, deafened));
         }
+    }
+}
+
+/// `/giphy` runs only where the community's GIFs are on; elsewhere the row says it is not a command here.
+fn giphy_gate(gifs_on: bool) -> Result<(), (ResultStatus, String)> {
+    if gifs_on {
+        Ok(())
+    } else {
+        Err(failed(&bot::not_a_command("giphy")))
     }
 }
 
@@ -467,53 +484,110 @@ fn open_dm(
     .detach();
 }
 
+/// A row's way out that is taken once: the first answer ends it, a later one finds it gone.
+#[derive(Clone)]
+struct OnceRow(Rc<RefCell<Option<RowEnd>>>);
+
+/// What ends a row, given how it ended.
+type RowEnd = Box<dyn FnOnce((ResultStatus, String))>;
+
+impl OnceRow {
+    fn new(finish: impl FnOnce((ResultStatus, String)) + 'static) -> Self {
+        Self(Rc::new(RefCell::new(Some(Box::new(finish)))))
+    }
+
+    fn open(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+
+    fn end(&self, answer: (ResultStatus, String)) {
+        if let Some(finish) = self.0.borrow_mut().take() {
+            finish(answer);
+        }
+    }
+}
+
+/// builtin.ts `waitForVoiceJoin` (:296-300): what a look at the call decides. The conversation changing comes first (the
+/// join goes on, but the row can no longer say how it ended), then a call that is joined.
+fn join_poll(conversation_moved: bool, joined: bool) -> Option<(ResultStatus, String)> {
+    if conversation_moved {
+        Some(failed(
+            "Voice join is still running after this conversation changed.",
+        ))
+    } else if joined {
+        Some((ResultStatus::Success, "Joined voice.".to_owned()))
+    } else {
+        None
+    }
+}
+
+/// What a join's own answer says (builtin.ts:301): the notice's key when it has one. A join with no notice (cancelled,
+/// or a trust refusal, which the web sets no join notice for either: `joinFailureKey` is `None`) waits out the web's 35
+/// seconds, so its row is the pending sentence.
+fn join_answer(answer: Result<(), dilla_client::ClientError>) -> (ResultStatus, String) {
+    match answer {
+        Ok(()) => (ResultStatus::Success, "Joined voice.".to_owned()),
+        Err(e) => match crate::screens::voice::join_failure_key(&e) {
+            Some(key) => failed(&format!("Could not join voice ({key}).")),
+            None => failed(JOIN_PENDING),
+        },
+    }
+}
+
 /// builtin.ts `join` and `waitForVoiceJoin` (:128-130, :294-307): joins `target` and answers once the call is joined, the
-/// join failed (with the notice's key) or [`JOIN_ANSWER_WAIT`] passed. A call already in `target` is joined.
+/// join failed (with the notice's key), the conversation changed, or [`JOIN_ANSWER_WAIT`] passed. A call already in
+/// `target` is joined; one still on its way in is waited for, not started again.
 fn join(
     client: &Rc<Client>,
     target: ChannelId,
-    window: gpui::WindowId,
+    (window, channel): (gpui::WindowId, ChannelId),
     finish: impl FnOnce((ResultStatus, String)) + Send + 'static,
     cx: &mut App,
 ) {
-    let joined = (ResultStatus::Success, "Joined voice.".to_owned());
-    {
+    let (joined, joining) = {
         let state = client.state();
         let state = state.borrow();
-        if state.voice.call.channel == Some(target) && state.voice.phase() == CallPhase::In {
-            return finish(joined);
-        }
-    }
-    // The join's answer and the wait race for the row: the first one ends it.
-    type Row = Rc<RefCell<Option<Box<dyn FnOnce((ResultStatus, String))>>>>;
-    let row: Row = Rc::new(RefCell::new(Some(Box::new(finish))));
-    let end = {
-        let row = row.clone();
-        move |answer: (ResultStatus, String)| {
-            if let Some(finish) = row.borrow_mut().take() {
-                finish(answer);
-            }
-        }
+        let here = state.voice.call.channel == Some(target);
+        (
+            here && state.voice.phase() == CallPhase::In,
+            here && state.voice.in_call(),
+        )
     };
-    let on_join = end.clone();
-    crate::screens::voice::join_then(
-        target,
-        window,
-        Box::new(move |joined_or_not, _| {
-            on_join(match joined_or_not {
-                Ok(()) => joined,
-                Err(e) => match crate::screens::voice::join_failure_key(&e) {
-                    Some(key) => failed(&format!("Could not join voice ({key}).")),
-                    // A join someone cancelled says nothing, and neither does one a trust refusal explains elsewhere.
-                    None => failed(JOIN_PENDING),
-                },
-            });
-        }),
-        cx,
-    );
+    if joined {
+        return finish(join_poll(false, true).expect("joined"));
+    }
+    let row = OnceRow::new(finish);
+    if !joining {
+        let on_join = row.clone();
+        crate::screens::voice::join_then(
+            target,
+            window,
+            Box::new(move |answer, _| on_join.end(join_answer(answer))),
+            cx,
+        );
+    }
+    // The web looks every 50 ms (a join that ends in the call state, a conversation that changed) and stops at 35 s.
+    let client = Rc::downgrade(client);
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(JOIN_ANSWER_WAIT).await;
-        end(failed(JOIN_PENDING));
+        let mut waited = Duration::ZERO;
+        while row.open() && waited < JOIN_ANSWER_WAIT {
+            let look = cx.update(|cx| {
+                let joined = client.upgrade().is_some_and(|c| {
+                    let state = c.state();
+                    let state = state.borrow();
+                    state.voice.call.channel == Some(target) && state.voice.phase() == CallPhase::In
+                });
+                let moved = crate::screens::threads::channel_of(window, cx) != Some(channel);
+                join_poll(moved, joined)
+            });
+            if let Some(answer) = look {
+                row.end(answer);
+                return;
+            }
+            cx.background_executor().timer(JOIN_POLL).await;
+            waited += JOIN_POLL;
+        }
+        row.end(failed(JOIN_PENDING));
     })
     .detach();
 }
@@ -535,13 +609,27 @@ fn set_voice(client: &Rc<Client>, muted: bool, deafened: bool) -> (ResultStatus,
         return failed("Join a voice call first.");
     }
     let voice = client.voice();
-    if self_deaf != deafened {
+    let (deafen, mute) = voice_steps((self_mute, self_deaf), (muted, deafened));
+    if let Some(deafened) = deafen {
         voice.set_deafened(deafened);
     }
-    if (self_mute || deafened) != muted {
+    if let Some(muted) = mute {
         voice.set_muted(muted);
     }
     (ResultStatus::Success, "Voice settings updated.".to_owned())
+}
+
+/// The calls `/mute`, `/unmute`, `/deafen` and `/undeafen` make to end as `(muted, deafened)` from the call's
+/// `(self_mute, self_deaf)` (builtin.ts:446-448): the deafen first and only if it differs, then the mute only where the
+/// device, now deafened or not, still differs. A deafened device is muted too, so deafening needs no mute call, and
+/// unmuting one is the call that undeafens it (`Voice::set_muted`).
+fn voice_steps(
+    (self_mute, self_deaf): (bool, bool),
+    (muted, deafened): (bool, bool),
+) -> (Option<bool>, Option<bool>) {
+    let deafen = (self_deaf != deafened).then_some(deafened);
+    let mute = ((self_mute || deafened) != muted).then_some(muted);
+    (deafen, mute)
 }
 
 /// builtin.ts `selfrole list` (:267-271): each offered role as `[x] {name}` (held) or `[ ] {name}`, in the order read.
@@ -868,6 +956,85 @@ pub(super) mod tests {
         let (_, excerpt) = remove(&long);
         assert_eq!(excerpt.chars().count(), 120);
         assert!(excerpt.len() <= EXCERPT_MAX_BYTES);
+    }
+
+    /// CommandHost.tsx:186: `/giphy` is no command where GIFs are off, so a typed one answers as an unknown command does.
+    #[test]
+    fn a_typed_giphy_is_refused_where_gifs_are_off() {
+        assert_eq!(giphy_gate(true), Ok(()));
+        assert_eq!(
+            giphy_gate(false),
+            Err(failed(
+                "/giphy isn’t a command here. To post it as text, start with //."
+            ))
+        );
+    }
+
+    /// builtin.ts `setVoice` (:442-450): the deafen goes first and only if it differs; the mute only where the device
+    /// then still differs, counting a deafened device as muted.
+    #[test]
+    fn the_voice_commands_call_only_what_differs() {
+        // (self_mute, self_deaf) -> (muted, deafened): (deafen call, mute call)
+        let cases = [
+            // /mute, /unmute on a plain device
+            ((false, false), (true, false), (None, Some(true))),
+            ((true, false), (false, false), (None, Some(false))),
+            ((true, false), (true, false), (None, None)),
+            // /deafen: muted by it, so no mute call
+            ((false, false), (true, true), (Some(true), None)),
+            ((true, false), (true, true), (Some(true), None)),
+            ((false, true), (true, true), (None, None)),
+            // /undeafen keeps the mute it had; one that was not muted needs no mute call
+            ((false, true), (false, false), (Some(false), None)),
+            ((true, true), (true, false), (Some(false), None)),
+            // /unmute while deafened: the one call is the mute's, which undeafens
+            ((false, true), (false, true), (None, Some(false))),
+        ];
+        for (call, want, calls) in cases {
+            assert_eq!(voice_steps(call, want), calls, "{call:?} to {want:?}");
+        }
+    }
+
+    /// builtin.ts:296-300: a changed conversation ends the wait before a joined call does; neither leaves it running.
+    #[test]
+    fn a_join_poll_names_a_moved_conversation_before_a_joined_call() {
+        assert_eq!(join_poll(false, false), None);
+        assert_eq!(
+            join_poll(false, true),
+            Some((ResultStatus::Success, "Joined voice.".to_owned()))
+        );
+        let moved = failed("Voice join is still running after this conversation changed.");
+        assert_eq!(join_poll(true, false), Some(moved.clone()));
+        assert_eq!(join_poll(true, true), Some(moved));
+    }
+
+    /// builtin.ts:301: a refused join names its notice's key; a cancelled one or a trust refusal has none and so waits out
+    /// the web's 35 seconds; the first answer ends the row and a second finds it gone.
+    #[test]
+    fn a_join_answers_with_its_notice_key_once() {
+        let sync = |code: &str| Err(ClientError::Sync(code.into()));
+        assert_eq!(join_answer(Ok(())).1, "Joined voice.");
+        assert_eq!(
+            join_answer(sync("E_CALL_FULL")).1,
+            "Could not join voice (voice.full)."
+        );
+        assert_eq!(
+            join_answer(Err(ClientError::Network("x".into()))).1,
+            "Could not join voice (voice.failed)."
+        );
+        for none in ["E_CANCELLED", "E_UMK_CHANGED", "E_DEVICE_REVOKED"] {
+            assert_eq!(join_answer(sync(none)).1, JOIN_PENDING, "{none}");
+        }
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let row = {
+            let seen = seen.clone();
+            OnceRow::new(move |a| seen.borrow_mut().push(a.1))
+        };
+        assert!(row.open());
+        row.end(failed("first"));
+        row.end(failed("second"));
+        assert!(!row.open());
+        assert_eq!(*seen.borrow(), ["first"]);
     }
 
     /// builtin.ts:267-271: the self roles are listed held or not, in the order read, or the row says there are none.

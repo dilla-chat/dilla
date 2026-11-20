@@ -913,7 +913,7 @@ impl CreateFlows {
     }
 
     /// Answers the `/invite` waiting on this dialog, once: `true` as its link shows, `false` as it closes without one.
-    fn settle_invite(&mut self, created: bool, cx: &mut Context<Self>) {
+    pub(super) fn settle_invite(&mut self, created: bool, cx: &mut Context<Self>) {
         if let Some(done) = self.invite_done.take() {
             done(created, cx);
         }

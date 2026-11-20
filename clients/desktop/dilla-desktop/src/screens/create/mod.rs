@@ -359,6 +359,51 @@ mod tests {
         }
     }
 
+    /// CommandHost.tsx `openInvite`: a `/invite`'s row ends `true` once the dialog shows its link and `false` when it closes
+    /// first; a second `/invite` while the first dialog is open ends the first row as a closed dialog does.
+    #[gpui::test]
+    fn an_invite_command_ends_with_its_link_or_its_close(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+        let a = cx.add_window(|_, _| Blank);
+        let community = CommunityId([1; 16]);
+        let ends: Rc<RefCell<Vec<(u8, bool)>>> = Rc::default();
+        let ask = |n: u8, cx: &mut gpui::TestAppContext| {
+            let ends = ends.clone();
+            a.update(cx, |_, window, cx| {
+                open_invite_then(
+                    window.window_handle().window_id(),
+                    community,
+                    Box::new(move |created, _| ends.borrow_mut().push((n, created))),
+                    cx,
+                );
+                // The shell draws its overlays each frame: the pending open reaches the flows.
+                drop(overlay(&Default::default(), window, cx));
+            })
+            .unwrap();
+        };
+        // The link shows: true, once.
+        ask(1, cx);
+        let flows = cx.update(|cx| windows(cx).flows.values().next().cloned().unwrap());
+        a.update(cx, |_, _, cx| {
+            flows.update(cx, |f, cx| {
+                f.settle_invite(true, cx);
+                f.settle_invite(false, cx);
+            })
+        })
+        .unwrap();
+        assert_eq!(*ends.borrow(), [(1, true)], "the first answer stands");
+        // A second /invite over an open dialog: the first row ends closed, the second waits.
+        ask(2, cx);
+        ask(3, cx);
+        assert_eq!(*ends.borrow(), [(1, true), (2, false)]);
+        // The dialog closes without a link: the waiting row ends closed.
+        a.update(cx, |_, window, cx| {
+            flows.update(cx, |f, cx| f.close(window, cx))
+        })
+        .unwrap();
+        assert_eq!(*ends.borrow(), [(1, true), (2, false), (3, false)]);
+    }
+
     /// Review M3: an invite a window was opened with opens its join dialog in that window, not in the active one.
     #[gpui::test]
     fn an_invite_opens_its_join_in_its_own_window(cx: &mut gpui::TestAppContext) {

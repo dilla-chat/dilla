@@ -1306,7 +1306,7 @@ fn navigation_plan(
             }
         }
         // mute, unmute, deafen, undeafen: the setting each leaves alone keeps what this device has now.
-        _ if !in_call => failed("Join a voice call first."),
+        "mute" | "unmute" | "deafen" | "undeafen" if !in_call => failed("Join a voice call first."),
         "mute" => run(Builtin::Voice {
             muted: true,
             deafened: call.self_deaf,
@@ -1319,10 +1319,12 @@ fn navigation_plan(
             muted: true,
             deafened: true,
         }),
-        _ => run(Builtin::Voice {
+        "undeafen" => run(Builtin::Voice {
             muted: call.self_mute,
             deafened: false,
         }),
+        // `plan_in` sends only the ids above; a new one fails `every_builtin_has_a_handler` rather than being read as one.
+        _ => Plan::Incomplete,
     }
 }
 
