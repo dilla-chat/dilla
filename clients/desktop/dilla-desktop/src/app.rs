@@ -1629,6 +1629,8 @@ pub fn card_window_height(card: f32) -> f32 {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Task 19b: this window's frame draws at its density's root line height.
+        dilla_desktop_ui::metrics::Density::enter(window, cx);
         let body = match &self.screen {
             Screen::Starting => boot::loading(),
             Screen::Fatal(error, cfg) => {

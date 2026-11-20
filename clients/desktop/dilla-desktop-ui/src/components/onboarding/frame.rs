@@ -47,7 +47,7 @@ pub fn shadow_card() -> Vec<gpui::BoxShadow> {
 
 /// The body text's line height: `--text-sm` at the base 1.5.
 pub fn body_line() -> f32 {
-    line_height(text::SM, 1.5)
+    crate::text::root_line_height(text::SM)
 }
 
 /// A mono paragraph wrapped as Chromium's `text-wrap: pretty` wraps it (OnboardingFrame.css, "fix round 1": the body's
@@ -213,9 +213,14 @@ impl RenderOnce for BrandMark {
                     ),
             )
             .child(
-                line("DILLA", text::XS, line_height(text::XS, 1.5), color::FG)
-                    .weight(font::WEIGHT_DISPLAY)
-                    .tracking(metrics::LABEL_TRACKING_WIDE),
+                line(
+                    "DILLA",
+                    text::XS,
+                    crate::text::root_line_height(text::XS),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .tracking(metrics::LABEL_TRACKING_WIDE),
             )
             .child(div().w(px(6.0)).h(px(12.0)).flex_none().bg(color::BRAND))
     }
@@ -335,7 +340,7 @@ impl RenderOnce for OnboardingFrame {
                         Some(step) => line(
                             step.to_uppercase(),
                             text::MICRO,
-                            line_height(text::MICRO, 1.5),
+                            crate::text::root_line_height(text::MICRO),
                             color::FG_3,
                         )
                         .weight(font::WEIGHT_LABEL)
@@ -701,8 +706,13 @@ impl RenderOnce for PrimaryAction {
             .justify_center()
             .gap(px(8.0))
             .child(
-                line(self.label, text::INPUT, line_height(text::INPUT, 1.5), ink)
-                    .weight(font::WEIGHT_DISPLAY),
+                line(
+                    self.label,
+                    text::INPUT,
+                    crate::text::root_line_height(text::INPUT),
+                    ink,
+                )
+                .weight(font::WEIGHT_DISPLAY),
             )
             .when(self.arrow, |d| {
                 d.child(Icon::new(IconName::ArrowRight).size(px(15.0)).color(ink))
@@ -767,7 +777,7 @@ impl RenderOnce for NavLink {
             .child(line(
                 self.label,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                crate::text::root_line_height(text::BTN),
                 ink,
             ));
         pressable(base, self.focus.as_ref(), self.on_click)
@@ -852,7 +862,7 @@ impl RenderOnce for OnboardingField {
             .child(line(
                 self.label,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 color::FG_2,
             ))
             .child(frame)
@@ -860,7 +870,7 @@ impl RenderOnce for OnboardingField {
                 d.child(line(
                     hint,
                     text::BTN,
-                    line_height(text::BTN, 1.5),
+                    crate::text::root_line_height(text::BTN),
                     color::FG_3,
                 ))
             })
@@ -920,7 +930,7 @@ impl RenderOnce for ReadyPanel {
             .child(line(
                 self.text,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::OK_PANEL_TEXT,
             ))
     }

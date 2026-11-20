@@ -11,7 +11,7 @@ use gpui::{
 use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 
 /// `height: 1.5rem`, `margin-top: 0.25rem`, padding 0 0.5rem, gap 0.375rem, the glyph 12px.
@@ -69,7 +69,7 @@ impl ThreadChip {
 impl RenderOnce for ThreadChip {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let size = text::XS;
-        let lh = line_height(size, 1.5);
+        let lh = crate::text::root_line_height(size);
         // Named by what it shows: "2 replies", then the last reply's time.
         let name = match &self.last {
             Some(last) => format!("{}, {last}", self.label),

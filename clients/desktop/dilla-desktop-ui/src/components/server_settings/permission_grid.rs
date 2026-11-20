@@ -116,13 +116,13 @@ impl RenderOnce for PermissionGrid {
                                 .child(line(
                                     row.label,
                                     text::SM,
-                                    line_height(text::SM, 1.5),
+                                    crate::text::root_line_height(text::SM),
                                     color::FG,
                                 ))
                                 .child(line(
                                     row.hint,
                                     text::XS,
-                                    line_height(text::XS, 1.5),
+                                    crate::text::root_line_height(text::XS),
                                     color::FG_2,
                                 )),
                         )

@@ -752,7 +752,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
                 line(
                     t("shell.composer.mentionsTitle").to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
@@ -883,9 +883,14 @@ impl Render for Composer {
             .items_center()
             .child(
                 // JetBrains Mono has no ↵: Chromium draws it from fontconfig's fallback face, DejaVu Sans (0.838em).
-                line("send ↵", text::BTN, line_height(text::BTN, 1.5), send_fg)
-                    .weight(font::WEIGHT_DISPLAY)
-                    .fallback(SYMBOL_FALLBACK),
+                line(
+                    "send ↵",
+                    text::BTN,
+                    dilla_desktop_ui::text::root_line_height(text::BTN),
+                    send_fg,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .fallback(SYMBOL_FALLBACK),
             )
             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)));
         let row = div()
@@ -897,8 +902,13 @@ impl Render for Composer {
             .pb(len(4.))
             .pl(len(12.))
             .child(
-                line("›", text::BASE, line_height(text::BASE, 1.5), color::ACCENT)
-                    .weight(font::WEIGHT_DISPLAY),
+                line(
+                    "›",
+                    text::BASE,
+                    dilla_desktop_ui::text::root_line_height(text::BASE),
+                    color::ACCENT,
+                )
+                .weight(font::WEIGHT_DISPLAY),
             )
             .child(match chips {
                 // The textarea stays in the tree, empty-sized: it keeps the focus and its Enter sends the chips.
@@ -942,7 +952,7 @@ impl Render for Composer {
                 line(
                     who.clone(),
                     text::META,
-                    line_height(text::META, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::META),
                     color::ACCENT,
                 )
                 .ellipsis(),
@@ -953,7 +963,7 @@ impl Render for Composer {
                 line(
                     t("shell.composer.newLine"),
                     text::META,
-                    line_height(text::META, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::META),
                     color::FG_3,
                 )
                 .fallback(SYMBOL_FALLBACK),
@@ -1045,7 +1055,7 @@ impl Render for Composer {
                 div().mb(len(4.)).children(paragraph(
                     &n,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_2,
                     (width - 32.0).max(1.0),
                 ))
@@ -1055,7 +1065,7 @@ impl Render for Composer {
                 div().mt(len(4.)).children(paragraph(
                     &r,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_2,
                     (width - 32.0).max(1.0),
                 ))
@@ -1069,7 +1079,7 @@ impl Render for Composer {
                 div().mt(len(4.)).flex().justify_end().child(line(
                     label,
                     text::XS,
-                    line_height(text::XS, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::XS),
                     if remaining < 0 {
                         color::DANGER
                     } else {

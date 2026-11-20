@@ -4,7 +4,7 @@
 
 use gpui::{InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
 
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, text};
 
 /// `data-tone` of a state line.
@@ -18,12 +18,12 @@ pub enum TrustTone {
 
 /// A state line (`p.dw-trust-state`).
 pub fn trust_state(text_: impl Into<SharedString>, tone: TrustTone) -> gpui::Div {
-    let lh = line_height(text::SM, 1.5);
+    let lh = crate::text::root_line_height(text::SM);
     match tone {
         TrustTone::Label => div().child(line(
             text_,
             text::XS,
-            line_height(text::XS, 1.5),
+            crate::text::root_line_height(text::XS),
             color::FG_2,
         )),
         TrustTone::Warn | TrustTone::Danger => {
@@ -51,7 +51,7 @@ pub fn trust_state(text_: impl Into<SharedString>, tone: TrustTone) -> gpui::Div
 pub fn body_text(text_: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(text::SM)
-        .line_height(px(line_height(text::SM, 1.5)))
+        .line_height(px(crate::text::root_line_height(text::SM)))
         .text_color(color::FG)
         .child(text_.into())
 }
@@ -61,7 +61,7 @@ pub fn trust_key(key: impl Into<SharedString>) -> impl IntoElement {
     div()
         .id("trust-key")
         .text_size(text::XS)
-        .line_height(px(line_height(text::XS, 1.5)))
+        .line_height(px(crate::text::root_line_height(text::XS)))
         .text_color(color::FG)
         .child(key.into())
 }

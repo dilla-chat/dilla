@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::metrics::LABEL_TRACKING;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 
 #[derive(IntoElement)]
@@ -55,7 +55,12 @@ impl RenderOnce for KeyHint {
                     .border_b_2()
                     .border_color(color::CONTROL_EDGE_KEY)
                     .rounded(radius::SM)
-                    .child(line(key, text::XS, line_height(text::XS, 1.5), color::FG)),
+                    .child(line(
+                        key,
+                        text::XS,
+                        crate::text::root_line_height(text::XS),
+                        color::FG,
+                    )),
             );
         }
         if let Some(label) = self.label {
@@ -63,7 +68,7 @@ impl RenderOnce for KeyHint {
                 line(
                     label.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .tracking(LABEL_TRACKING),

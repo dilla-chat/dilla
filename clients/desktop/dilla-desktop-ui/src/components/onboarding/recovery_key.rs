@@ -18,7 +18,7 @@ use gpui::{
 
 use super::frame::{CARD_INNER_W, Click, pressable, pressable_quiet};
 use crate::a11y::{Accessible, Role};
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 use crate::{Icon, IconName, metrics};
 
@@ -41,7 +41,7 @@ impl KeyGroups {
 
 impl RenderOnce for KeyGroups {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let group_h = line_height(text::INPUT, 1.5);
+        let group_h = crate::text::root_line_height(text::INPUT);
         let rows = self.groups.chunks(COLUMNS).map(|row| {
             let mut cells: Vec<AnyElement> = row
                 .iter()
@@ -130,7 +130,7 @@ impl RenderOnce for KeyAction {
             .child(line(
                 self.label,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::FG,
             ));
         pressable(base, self.focus.as_ref(), self.on_click)
@@ -207,7 +207,7 @@ impl RenderOnce for KeyAck {
             .child(line(
                 self.label,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::FG_STRONG,
             ));
         pressable_quiet(base, self.focus.as_ref(), self.on_click)

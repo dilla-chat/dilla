@@ -143,13 +143,13 @@ impl UserSettings {
             .child(flow_paragraph(
                 t("profile.footnote"),
                 text::XS,
-                line_height(text::XS, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::XS),
                 color::FG_3,
             ))
             .child(div().pt(px(NOTE_PAD)).child(line(
                 saved_line,
                 text::XS,
-                line_height(text::XS, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::XS),
                 color::FG_3,
             )));
 
@@ -189,7 +189,7 @@ impl UserSettings {
                     flow_paragraph(
                         name.clone(),
                         text::MD,
-                        line_height(text::MD, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::MD),
                         color::FG,
                     )
                     .weight(font::WEIGHT_DISPLAY),
@@ -198,14 +198,14 @@ impl UserSettings {
             .child(flow_paragraph(
                 handle_line,
                 text::XS,
-                line_height(text::XS, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::XS),
                 color::FG_2,
             ));
         if !preview.bio.is_empty() {
             body = body.child(div().mt(px(NAME_GAP)).children(paragraph(
                 &preview.bio,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BTN),
                 color::FG_STRONG,
                 PREVIEW_WIDTH - 2.0 * (EDGE + BODY_PAD),
             )));

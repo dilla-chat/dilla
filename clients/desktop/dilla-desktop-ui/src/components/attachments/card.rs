@@ -8,7 +8,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, StyledImage, div, img, px,
 };
 
-use super::{LEADING, OnClick};
+use super::OnClick;
 use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
@@ -286,7 +286,7 @@ pub fn too_large_image(
     size: impl Into<SharedString>,
 ) -> (AnyElement, f32) {
     let h = tile_height(IMAGE_W);
-    let meta_h = line_height(text::SM, LEADING);
+    let meta_h = crate::text::root_line_height(text::SM);
     let el = div()
         .flex()
         .flex_col()
@@ -314,7 +314,7 @@ pub fn too_large_image(
 
 /// The height of a state line (`.d-attachment-card__state`, 11px).
 pub fn state_line_height() -> f32 {
-    line_height(text::XS, LEADING)
+    crate::text::root_line_height(text::XS)
 }
 
 /// The line under a card: opening, could not open (the danger tone and a mark, never colour alone), too large.

@@ -314,7 +314,7 @@ impl RenderOnce for RoleEditor {
                         line(
                             role.name.clone(),
                             text::SM,
-                            line_height(text::SM, 1.5),
+                            crate::text::root_line_height(text::SM),
                             color::FG,
                         )
                         .ellipsis(),
@@ -323,7 +323,7 @@ impl RenderOnce for RoleEditor {
                 .child(line(
                     role.count.to_string(),
                     text::META,
-                    line_height(text::META, 1.5),
+                    crate::text::root_line_height(text::META),
                     color::FG_3,
                 ));
             if selected {
@@ -395,7 +395,7 @@ impl RenderOnce for RoleEditor {
                 .child(line(
                     self.labels.new_role.clone(),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::ACCENT,
                 ))
                 .relative()
@@ -474,7 +474,7 @@ impl RenderOnce for RoleEditor {
                     .child(line(
                         self.labels.color.clone(),
                         text::XS,
-                        line_height(text::XS, 1.5),
+                        crate::text::root_line_height(text::XS),
                         color::FG_2,
                     ))
                     .child(group),
@@ -500,7 +500,7 @@ impl RenderOnce for RoleEditor {
                     line(
                         group.title.to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        crate::text::root_line_height(text::MICRO),
                         color::FG_3,
                     )
                     .weight(font::WEIGHT_LABEL)
@@ -534,7 +534,7 @@ impl RenderOnce for RoleEditor {
             editor = editor.child(line(
                 status,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 if alert { color::DANGER } else { color::FG_2 },
             ));
         }
@@ -645,7 +645,7 @@ fn perm_row(
         out = out.child(div().w_full().child(flow_paragraph(
             reason,
             text::META,
-            line_height(text::META, 1.5),
+            crate::text::root_line_height(text::META),
             color::FG_2,
         )));
     }

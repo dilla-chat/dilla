@@ -18,7 +18,7 @@ use crate::components::qr_code::QrCode;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, text};
 
 type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -133,14 +133,14 @@ impl SafetyCompareBody {
 fn para(text_: SharedString, colour: gpui::Hsla) -> gpui::Div {
     div()
         .text_size(text::SM)
-        .line_height(px(line_height(text::SM, 1.5)))
+        .line_height(px(crate::text::root_line_height(text::SM)))
         .text_color(colour)
         .child(text_)
 }
 
 impl RenderOnce for SafetyCompareBody {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let lh = line_height(text::SM, 1.5);
+        let lh = crate::text::root_line_height(text::SM);
         let mut body = div()
             .id("safety-compare")
             .flex()

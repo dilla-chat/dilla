@@ -159,7 +159,7 @@ pub fn row_badge(text: SharedString) -> impl IntoElement {
             line(
                 text.to_uppercase(),
                 text::MICRO,
-                line_height(text::MICRO, 1.5),
+                crate::text::root_line_height(text::MICRO),
                 color::FG_2,
             )
             .weight(font::WEIGHT_LABEL)

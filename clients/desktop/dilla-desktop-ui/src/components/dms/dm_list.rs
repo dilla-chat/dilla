@@ -142,7 +142,14 @@ impl RenderOnce for DmList {
                     .on_click(move |e, w, cx| on_new(e, w, cx)),
             )
             .children(self.menu);
-        let meta = |s: SharedString| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
+        let meta = |s: SharedString| {
+            line(
+                s,
+                text::META,
+                crate::text::root_line_height(text::META),
+                color::FG_3,
+            )
+        };
         let mut stats = div()
             .flex_none()
             .flex()
@@ -177,7 +184,7 @@ impl RenderOnce for DmList {
                 line(
                     self.section.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)

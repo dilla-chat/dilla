@@ -25,7 +25,7 @@ use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::GroupPosition;
 use dilla_desktop_ui::components::text_field::{Frame, TextField};
 use dilla_desktop_ui::components::toast::show_toast_in;
-use dilla_desktop_ui::text::{flow_paragraph, line, line_height};
+use dilla_desktop_ui::text::{flow_paragraph, line};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::device_row::DeviceRow;
@@ -700,13 +700,13 @@ impl UserSettings {
             .child(line(
                 format!("{name} "),
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BASE),
                 color::FG,
             ))
             .child(line(
                 id8,
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BASE),
                 color::FG_3,
             ))
             .into_any_element()
@@ -798,8 +798,14 @@ impl UserSettings {
         if let Some(e) = self.key_entry.field_error {
             key_field = key_field.error(t(e));
         }
-        let body_line =
-            |s: String| flow_paragraph(s, text::UI, line_height(text::UI, 1.5), color::FG_2);
+        let body_line = |s: String| {
+            flow_paragraph(
+                s,
+                text::UI,
+                dilla_desktop_ui::text::root_line_height(text::UI),
+                color::FG_2,
+            )
+        };
         let mut fields = div()
             .flex()
             .flex_col()

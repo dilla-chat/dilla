@@ -7,7 +7,7 @@ use gpui::{
     SharedString, Styled, Window, div, px,
 };
 
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, text};
 
 #[derive(IntoElement)]
@@ -50,11 +50,17 @@ impl RenderOnce for SettingsFooter {
             .gap_y(px(8.0))
             .w_full()
             .child(
-                div().flex_1().min_w(px(192.0)).children(
-                    self.status.map(|status| {
-                        line(status, text::SM, line_height(text::SM, 1.5), color::FG_3)
-                    }),
-                ),
+                div()
+                    .flex_1()
+                    .min_w(px(192.0))
+                    .children(self.status.map(|status| {
+                        line(
+                            status,
+                            text::SM,
+                            crate::text::root_line_height(text::SM),
+                            color::FG_3,
+                        )
+                    })),
             )
             .child(
                 div()

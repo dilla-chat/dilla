@@ -391,7 +391,7 @@ impl RenderOnce for ActionMenu {
                 None => div().child(line(
                     "⋯",
                     text::BASE,
-                    line_height(text::BASE, 1.5),
+                    crate::text::root_line_height(text::BASE),
                     if open { color::FG } else { color::FG_2 },
                 )),
             };
@@ -648,17 +648,22 @@ fn menu_row(
         );
     }
     row = row.child(
-        div()
-            .flex_1()
-            .min_w_0()
-            .child(line(item.label.clone(), text::UI, line_height(text::UI, 1.5), fg).ellipsis()),
+        div().flex_1().min_w_0().child(
+            line(
+                item.label.clone(),
+                text::UI,
+                crate::text::root_line_height(text::UI),
+                fg,
+            )
+            .ellipsis(),
+        ),
     );
     if let Some(hint) = &item.hint {
         let size = if item.room { text::META } else { text::MICRO };
         row = row.child(div().flex_none().child(line(
             hint.clone(),
             size,
-            line_height(size, 1.5),
+            crate::text::root_line_height(size),
             color::FG_FAINT,
         )));
     }

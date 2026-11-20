@@ -1098,7 +1098,7 @@ fn section_head(title: &str, body: Option<String>) -> gpui::Div {
         head = head.child(line(
             body,
             text::UI,
-            line_height(text::UI, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::FG_2,
         ));
     }
@@ -1106,7 +1106,13 @@ fn section_head(title: &str, body: Option<String>) -> gpui::Div {
 }
 
 fn note(s: impl Into<SharedString>) -> AnyElement {
-    line(s.into(), text::UI, line_height(text::UI, 1.5), color::FG_3).into_any_element()
+    line(
+        s.into(),
+        text::UI,
+        dilla_desktop_ui::text::root_line_height(text::UI),
+        color::FG_3,
+    )
+    .into_any_element()
 }
 
 fn sorted_roles(state: &AppState, community: CommunityId) -> Vec<RoleSummary> {
@@ -1208,7 +1214,7 @@ fn bans_section(
                     .child(line(
                         bans_error_text(&code),
                         text::UI,
-                        line_height(text::UI, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::UI),
                         color::DANGER,
                     ))
                     .child(div().debug_selector(|| "bans-retry".to_owned()).child(
@@ -1868,7 +1874,7 @@ fn assign_dialog(w: WindowId, ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> 
         body = body.child(line(
             problem,
             text::UI,
-            line_height(text::UI, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::DANGER,
         ));
     }

@@ -16,7 +16,7 @@ use dilla_desktop_ui::components::segmented::Segmented;
 use dilla_desktop_ui::components::settings::frame::{Section, section_header};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
 use dilla_desktop_ui::icon_names::IconName;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::section::UserSettings;
@@ -142,7 +142,7 @@ impl UserSettings {
             section = section.paragraph(line(
                 t("workspace.preference.pending"),
                 text::UI,
-                line_height(text::UI, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::UI),
                 color::FG_2,
             ));
         }

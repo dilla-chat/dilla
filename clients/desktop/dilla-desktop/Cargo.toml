@@ -119,6 +119,10 @@ name = "video_player_shot"
 harness = false
 required-features = ["automation"]
 
+[[test]]
+name = "density"
+required-features = ["automation"]
+
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
 # The slice test and the parity world (tests/support/world.rs) run a real dillad and headless clients, made the way

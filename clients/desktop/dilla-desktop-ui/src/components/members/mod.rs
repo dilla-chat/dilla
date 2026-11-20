@@ -434,9 +434,14 @@ impl RenderOnce for MemberList {
                 .border_color(color::HAIRLINE)
                 .child(
                     div().flex_1().min_w_0().flex().child(
-                        line(label, text::UI, line_height(text::UI, 1.5), color::FG)
-                            .weight(font::WEIGHT_DISPLAY)
-                            .ellipsis(),
+                        line(
+                            label,
+                            text::UI,
+                            crate::text::root_line_height(text::UI),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY)
+                        .ellipsis(),
                     ),
                 );
             if let (Some(close_label), Some(on_close)) = (self.close_label, self.on_close.clone()) {
@@ -466,7 +471,7 @@ impl RenderOnce for MemberList {
             div().px(px(8.)).py(px(10.)).child(line(
                 s,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::FG_3,
             ))
         };
@@ -564,7 +569,7 @@ pub fn role_chip(name: impl Into<SharedString>, colour: u32) -> AnyElement {
         .child(line(
             name,
             text::META,
-            line_height(text::META, 1.5),
+            crate::text::root_line_height(text::META),
             color::FG_CHIP,
         ))
         .into_any_element()
@@ -749,7 +754,7 @@ impl RenderOnce for ProfileCard {
             .child(line(
                 self.sub,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 color::FG_2,
             ));
         if !self.bio.is_empty() {
@@ -757,7 +762,7 @@ impl RenderOnce for ProfileCard {
                 line(
                     l.to_owned(),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::FG_STRONG,
                 )
             })));
@@ -797,7 +802,7 @@ impl RenderOnce for ProfileCard {
                         line(
                             label,
                             text::UI,
-                            line_height(text::UI, 1.5),
+                            crate::text::root_line_height(text::UI),
                             color::ACCENT_INK,
                         )
                         .weight(font::WEIGHT_DISPLAY),

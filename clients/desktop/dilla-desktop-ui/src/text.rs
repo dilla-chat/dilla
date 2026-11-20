@@ -104,6 +104,29 @@ pub fn line_height(size: Pixels, ratio: f32) -> f32 {
     layout_unit(f32::from(size) * ratio)
 }
 
+thread_local! {
+    /// The root's `--line-height` of the window being drawn ([`set_root_leading`]).
+    static ROOT_LEADING: std::cell::Cell<f32> = const { std::cell::Cell::new(1.5) };
+}
+
+/// Sets the root's `--line-height` (base.css:18 `.d-root { line-height: var(--line-height) }`) for the window about to be
+/// drawn: every window's root view calls it first in its render (`metrics::Density::enter`), so the text drawn in that
+/// window's frame takes its density. Regular's 1.5 until a window sets one.
+pub fn set_root_leading(ratio: f32) {
+    ROOT_LEADING.with(|l| l.set(ratio));
+}
+
+/// The root's `--line-height` of the window being drawn.
+pub fn root_leading() -> f32 {
+    ROOT_LEADING.with(std::cell::Cell::get)
+}
+
+/// The line height of text whose web rule sets none of its own: it inherits the root's `--line-height`, which steps with
+/// the density (Task 19b). A rule that fixes its own (`line-height: 1.5` and the like) keeps [`line_height`].
+pub fn root_line_height(size: Pixels) -> f32 {
+    line_height(size, root_leading())
+}
+
 /// The font's ascent and descent at `size`, each rounded to a whole pixel as Chromium's `SimpleFontData` does: the box an
 /// inline span's background and border cover (a code span, a mention pill), and what text decorations are measured from.
 pub fn ascent_descent(face: Face, size: f32) -> (f32, f32) {

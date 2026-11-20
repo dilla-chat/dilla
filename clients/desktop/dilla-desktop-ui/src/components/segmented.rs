@@ -13,7 +13,7 @@ use gpui::{
 use crate::a11y::{Accessible, Role};
 use crate::metrics::{OPACITY_MUTED, focus_ring};
 use crate::roving::Roving;
-use crate::text::{line, line_height};
+use crate::text::{line, root_line_height};
 use crate::tokens::{color, radius, text};
 
 type PickHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
@@ -175,7 +175,7 @@ impl RenderOnce for Segmented {
                 .child(line(
                     label.clone(),
                     text::BTN,
-                    line_height(text::BTN, 1.5),
+                    root_line_height(text::BTN),
                     fg,
                 ))
                 .children(self.option_child.as_ref().and_then(|f| f(value)))

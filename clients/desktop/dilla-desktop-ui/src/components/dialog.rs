@@ -23,7 +23,6 @@ use gpui::{
 use super::button::{Button, ButtonSize, ButtonVariant};
 use crate::a11y::Accessible;
 use crate::metrics::shadow_3;
-use crate::text::line_height;
 use crate::tokens::{color, font, radius, text};
 
 actions!(
@@ -411,7 +410,7 @@ impl RenderOnce for Dialog {
                     crate::text::flow_paragraph(
                         self.title.clone(),
                         title_size,
-                        line_height(title_size, 1.5),
+                        crate::text::root_line_height(title_size),
                         color::FG,
                     )
                     .weight(font::WEIGHT_DISPLAY),

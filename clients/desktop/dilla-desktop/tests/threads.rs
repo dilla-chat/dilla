@@ -43,6 +43,9 @@ parity! {
     parity_threads_pane_open_b => "pane-open-b",
     parity_threads_count => "count",
     parity_threads_count_b => "count-b",
+    // Task 19b: replies in the log and the open thread pane at the compact density (`"density": "compact"`).
+    parity_threads_reply_compact => "reply-compact",
+    parity_threads_pane_compact => "pane-compact",
 }
 
 /// A GPUI-only reference (the web never draws a "load earlier" in a thread): `pane-open`'s world with 201 replies, so the

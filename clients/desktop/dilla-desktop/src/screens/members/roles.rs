@@ -28,7 +28,7 @@ use dilla_desktop_ui::components::members::role_editor::{
     EditorLabels, EditorRole, PermGroup, PermToggle, RoleEditor,
 };
 use dilla_desktop_ui::components::settings::frame::section_header_full;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, text};
 
 use crate::slots::SlotCx;
@@ -611,7 +611,7 @@ pub fn section(
             .child(line(
                 t("roles.loading"),
                 text::UI,
-                line_height(text::UI, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::UI),
                 color::FG_2,
             ))
             .into_any_element();

@@ -11,12 +11,12 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, px, relative,
 };
 
-use super::{LEADING, OnClick};
+use super::OnClick;
 use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 
 /// `.d-attachment-card__media`: at most 31.5rem wide.
@@ -82,17 +82,17 @@ pub fn clock(d: Duration) -> String {
 }
 
 fn meta_h() -> f32 {
-    line_height(text::SM, LEADING)
+    crate::text::root_line_height(text::SM)
 }
 
 fn player_h(video: bool, state: PlayerState) -> f32 {
-    let error_h = line_height(text::UI, LEADING) + GAP;
+    let error_h = crate::text::root_line_height(text::UI) + GAP;
     match (video, state) {
         (true, PlayerState::Idle | PlayerState::Loading | PlayerState::Ready { .. }) => {
             VIDEO_W * 9.0 / 16.0
         }
         (_, PlayerState::Idle) => CONTROL_H,
-        (_, PlayerState::Loading) => line_height(text::UI, LEADING),
+        (_, PlayerState::Loading) => crate::text::root_line_height(text::UI),
         (_, PlayerState::Ready { .. }) => BAR_H,
         (_, PlayerState::Error) => error_h + CONTROL_H,
     }
@@ -181,8 +181,16 @@ fn control_button(id: SharedString, label: SharedString, glyph: bool, f: OnClick
             ),
         );
     }
-    b.child(line(label, text::BTN, line_height(text::BTN, LEADING), color::FG).ellipsis())
-        .into_any_element()
+    b.child(
+        line(
+            label,
+            text::BTN,
+            crate::text::root_line_height(text::BTN),
+            color::FG,
+        )
+        .ellipsis(),
+    )
+    .into_any_element()
 }
 
 fn audio_bar(
@@ -231,7 +239,7 @@ fn audio_bar(
         .child(line(
             format!("{} / {}", clock(position), clock(total)),
             text::BASE,
-            line_height(text::BASE, LEADING),
+            crate::text::root_line_height(text::BASE),
             color::FG,
         ))
         .child(
@@ -255,7 +263,7 @@ fn audio_bar(
 pub fn media_card(mut p: MediaCardProps) -> (AnyElement, f32) {
     let h = media_card_height(p.video, p.state, p.on_save.is_some());
     let w = media_card_width(&p);
-    let ui_h = line_height(text::UI, LEADING);
+    let ui_h = crate::text::root_line_height(text::UI);
     let view = p.video_view.take();
     let player: AnyElement = match (p.video, p.state) {
         (true, PlayerState::Ready { .. }) if view.is_some() => {

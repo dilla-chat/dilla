@@ -9,9 +9,9 @@ use gpui::{
     SharedString, Styled, StyledImage, div, img, px,
 };
 
-use super::{LEADING, OnClick};
+use super::OnClick;
 use crate::components::button::{Button, ButtonVariant};
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 
 /// `.d-lightbox__stage { padding: 1rem }`.
@@ -102,7 +102,7 @@ pub fn lightbox(p: LightboxProps) -> AnyElement {
                         line(
                             p.label,
                             text::UI,
-                            line_height(text::UI, LEADING),
+                            crate::text::root_line_height(text::UI),
                             color::FG_2,
                         )
                         .ellipsis(),

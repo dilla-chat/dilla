@@ -91,6 +91,12 @@ impl Density {
         Self::of_id(window.window_handle().window_id(), cx)
     }
 
+    /// Starts drawing `window`: the text drawn in its frame takes its density's root line height
+    /// ([`crate::text::root_line_height`]). Every window's root view calls this first in its render.
+    pub fn enter(window: &Window, cx: &App) {
+        crate::text::set_root_leading(Self::of(window, cx).line_height());
+    }
+
     /// [`Self::of`] by the window's id.
     pub fn of_id(window: WindowId, cx: &App) -> Self {
         cx.try_global::<WindowDensities>()

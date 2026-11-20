@@ -8,9 +8,7 @@ use gpui_component::input::Textarea;
 
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::components::dialog::{Dialog, DialogKind};
-use dilla_desktop_ui::text::{
-    Face, chromium_baseline, columns, line, line_height, paragraph, wrap_mono,
-};
+use dilla_desktop_ui::text::{Face, chromium_baseline, columns, line, paragraph, wrap_mono};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::css::len;
@@ -75,14 +73,14 @@ fn para(text: &str, width: f32) -> gpui::Div {
     div().flex().flex_col().children(paragraph(
         text,
         text::UI,
-        line_height(text::UI, 1.5),
+        dilla_desktop_ui::text::root_line_height(text::UI),
         color::FG_2,
         width,
     ))
 }
 
 fn body(m: &Moderating, width: f32) -> AnyElement {
-    let lh = line_height(text::UI, 1.5);
+    let lh = dilla_desktop_ui::text::root_line_height(text::UI);
     match m.phase {
         ModPhase::Confirm => {
             // `<p>` margins are 1em of the body's 12px; the first and last child lose their outer ones.
@@ -106,7 +104,7 @@ fn body(m: &Moderating, width: f32) -> AnyElement {
 /// depth below its baseline (`line_height - chromium_baseline`).
 fn reason_label(m: &Moderating) -> AnyElement {
     use textarea::*;
-    let lh = line_height(text::UI, 1.5);
+    let lh = dilla_desktop_ui::text::root_line_height(text::UI);
     let depth = lh - chromium_baseline(Face::Mono, f32::from(text::UI), lh);
     div()
         .flex()
@@ -239,7 +237,7 @@ pub fn status_line(ui: &Entity<MessageUi>, cx: &App) -> Option<AnyElement> {
             .child(div().my(text::UI).child(line(
                 t(m.result_key()),
                 text::UI,
-                line_height(text::UI, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::UI),
                 color::FG_2,
             )))
             .child(div().flex().child(action))

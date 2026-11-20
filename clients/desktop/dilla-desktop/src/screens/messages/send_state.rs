@@ -18,7 +18,7 @@ use gpui::{
 };
 
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
-use dilla_desktop_ui::text::{line, line_height, paragraph};
+use dilla_desktop_ui::text::{line, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
@@ -120,7 +120,7 @@ pub fn offers_retry(item: &TimelineItem) -> bool {
 /// The pending line's height: a row of 2rem buttons, or one `--text-xs` line.
 pub fn pending_height(line: &PendingLine) -> f32 {
     if line.actions.is_empty() {
-        line_height(text::XS, 1.5)
+        dilla_desktop_ui::text::root_line_height(text::XS)
     } else {
         BUTTON_HEIGHT
     }
@@ -153,7 +153,7 @@ fn outbox_button(id: String, action: LineAction, ctx: &SlotCx) -> Button {
 
 /// The detail chip's lines in a column `column` wide, and the chip's height.
 pub fn detail_lines(detail: &str, column: f32) -> (Vec<dilla_desktop_ui::text::Line>, f32) {
-    let lh = line_height(text::XS, 1.5);
+    let lh = dilla_desktop_ui::text::root_line_height(text::XS);
     let lines = paragraph(
         detail,
         text::XS,
@@ -207,7 +207,12 @@ pub fn send_state(
                     .child(Icon::new(IconName::X).size(px(GLYPH_SIZE * em)).color(tone)),
             );
         }
-        label = label.child(line(p.label, text::XS, line_height(text::XS, 1.5), tone));
+        label = label.child(line(
+            p.label,
+            text::XS,
+            dilla_desktop_ui::text::root_line_height(text::XS),
+            tone,
+        ));
         col = col.child(
             div()
                 .id(SharedString::from(format!("msg-pending-{}", item.key)))
@@ -279,6 +284,7 @@ pub fn send_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dilla_desktop_ui::text::line_height;
 
     fn item(state: TimelineItemState, reason: &str) -> TimelineItem {
         TimelineItem {

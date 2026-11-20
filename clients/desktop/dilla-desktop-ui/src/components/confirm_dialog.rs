@@ -16,7 +16,7 @@ use super::dialog::{Dialog, DialogKind, InitialFocus};
 use crate::a11y::{Accessible, Live, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{line, paragraph};
 use crate::tokens::{color, text};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -214,7 +214,7 @@ impl RenderOnce for ConfirmDialog {
         let description = div().flex().flex_col().children(paragraph(
             &self.body,
             text::UI,
-            line_height(text::UI, 1.5),
+            crate::text::root_line_height(text::UI),
             color::FG_2,
             measure,
         ));
@@ -268,7 +268,7 @@ impl RenderOnce for ConfirmDialog {
                         .child(line(
                             error,
                             text::BTN,
-                            line_height(text::BTN, 1.5),
+                            crate::text::root_line_height(text::BTN),
                             color::DANGER,
                         )),
                 );

@@ -127,7 +127,12 @@ pub fn link(
             .items_center()
             .cursor_pointer()
             .on_click(on_click)
-            .child(line(label, text::BTN, line_height(text::BTN, 1.5), ink)),
+            .child(line(
+                label,
+                text::BTN,
+                dilla_desktop_ui::text::root_line_height(text::BTN),
+                ink,
+            )),
     )
     .into_any_element()
 }
@@ -168,9 +173,9 @@ pub fn para(text_: impl Into<SharedString>) -> AnyElement {
 
 fn para_box(text_: impl Into<SharedString>) -> gpui::Div {
     div()
-        .min_h(px(line_height(text::SM, 1.5)))
+        .min_h(px(dilla_desktop_ui::text::root_line_height(text::SM)))
         .text_size(text::SM)
-        .line_height(px(line_height(text::SM, 1.5)))
+        .line_height(px(dilla_desktop_ui::text::root_line_height(text::SM)))
         .font_family(font::MONO)
         .text_color(color::FG_2)
         .child(text_.into())
@@ -186,7 +191,7 @@ pub fn body_para(text_: impl Into<SharedString>) -> BodyParagraph {
 pub fn error_line(text_: impl Into<SharedString>) -> AnyElement {
     div()
         .text_size(text::SM)
-        .line_height(px(line_height(text::SM, 1.5)))
+        .line_height(px(dilla_desktop_ui::text::root_line_height(text::SM)))
         .font_family(font::MONO)
         .text_color(color::DANGER)
         .child(text_.into())
@@ -197,7 +202,7 @@ pub fn error_line(text_: impl Into<SharedString>) -> AnyElement {
 pub fn note(text_: impl Into<SharedString>) -> AnyElement {
     div()
         .text_size(text::BTN)
-        .line_height(px(line_height(text::BTN, 1.5)))
+        .line_height(px(dilla_desktop_ui::text::root_line_height(text::BTN)))
         .font_family(font::MONO)
         .text_color(color::FG_3)
         .child(text_.into())
@@ -282,7 +287,7 @@ impl AuthFrame {
                     Some(step) => line(
                         step.to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::MICRO),
                         color::FG_3,
                     )
                     .weight(font::WEIGHT_LABEL)
@@ -332,8 +337,13 @@ impl AuthFrame {
                     .cursor_pointer()
                     .on_click(a.on_click)
                     .child(
-                        line(a.label, text::INPUT, line_height(text::INPUT, 1.5), ink)
-                            .weight(font::WEIGHT_DISPLAY),
+                        line(
+                            a.label,
+                            text::INPUT,
+                            dilla_desktop_ui::text::root_line_height(text::INPUT),
+                            ink,
+                        )
+                        .weight(font::WEIGHT_DISPLAY),
                     )
                     .child(Icon::new(IconName::ArrowRight).size(px(ARROW)).color(ink)),
             )

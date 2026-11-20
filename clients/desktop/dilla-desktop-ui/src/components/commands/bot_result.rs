@@ -141,7 +141,7 @@ impl BotResult {
         .len()
         .max(1);
         ROW_TOP
-            + line_height(text::SM, 1.5)
+            + crate::text::root_line_height(text::SM)
             + 1.0
             + lines as f32 * line_height(text::INPUT, 1.55)
             + 3.0
@@ -153,7 +153,7 @@ impl BotResult {
 impl RenderOnce for BotResult {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let (chip_bg, chip_fg) = self.status.chip();
-        let meta_lh = line_height(text::META, 1.5);
+        let meta_lh = crate::text::root_line_height(text::META);
         let avatar = match &self.author {
             Author::Bot { name } => Avatar::new("bot-result-avatar", name.clone())
                 .size(AvatarSize::Msg)
@@ -167,8 +167,13 @@ impl RenderOnce for BotResult {
                 .items_center()
                 .justify_center()
                 .child(
-                    line("D", text::SM, line_height(text::SM, 1.5), color::BRAND_INK)
-                        .weight(font::WEIGHT_DISPLAY),
+                    line(
+                        "D",
+                        text::SM,
+                        crate::text::root_line_height(text::SM),
+                        color::BRAND_INK,
+                    )
+                    .weight(font::WEIGHT_DISPLAY),
                 )
                 .into_any_element(),
         };
@@ -219,8 +224,13 @@ impl RenderOnce for BotResult {
                             .items_center()
                             .gap(px(8.0))
                             .child(
-                                line(name, text::SM, line_height(text::SM, 1.5), color::ACCENT_2)
-                                    .weight(font::WEIGHT_DISPLAY),
+                                line(
+                                    name,
+                                    text::SM,
+                                    crate::text::root_line_height(text::SM),
+                                    color::ACCENT_2,
+                                )
+                                .weight(font::WEIGHT_DISPLAY),
                             )
                             .child(Tag::new("bot-result-tag", TagKind::Bot)),
                     )

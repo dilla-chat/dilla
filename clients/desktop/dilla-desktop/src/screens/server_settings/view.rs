@@ -527,9 +527,8 @@ impl Render for ServerSettingsView {
                         .child(dilla_desktop_ui::text::line(
                             t("admin.loading"),
                             dilla_desktop_ui::tokens::text::SM,
-                            dilla_desktop_ui::text::line_height(
+                            dilla_desktop_ui::text::root_line_height(
                                 dilla_desktop_ui::tokens::text::SM,
-                                1.5,
                             ),
                             dilla_desktop_ui::tokens::color::FG_3,
                         ))

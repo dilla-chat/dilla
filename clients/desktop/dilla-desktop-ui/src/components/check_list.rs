@@ -13,7 +13,7 @@ use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, OPACITY_MUTED, focus_ring};
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -188,7 +188,7 @@ impl RenderOnce for CheckList {
                 line(
                     self.label.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
@@ -199,7 +199,7 @@ impl RenderOnce for CheckList {
             return root.child(line(
                 self.empty_label,
                 text::SM,
-                line_height(text::SM, 1.5),
+                crate::text::root_line_height(text::SM),
                 color::FG_3,
             ));
         }
@@ -219,7 +219,7 @@ impl RenderOnce for CheckList {
             label = label.child(line(
                 item.label.clone(),
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                crate::text::root_line_height(text::BASE),
                 if item.disabled {
                     color::FG_2
                 } else {
@@ -253,7 +253,7 @@ impl RenderOnce for CheckList {
                 row = row.child(div().w_full().pl(px(32.0)).pb(px(4.0)).child(line(
                     detail,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    crate::text::root_line_height(text::SM),
                     color::FG_3,
                 )));
             }

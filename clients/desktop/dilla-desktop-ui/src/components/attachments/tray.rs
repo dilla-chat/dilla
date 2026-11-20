@@ -108,7 +108,7 @@ fn card(e: TrayEntry) -> AnyElement {
                     line(
                         e.name.to_uppercase(),
                         text::BADGE,
-                        line_height(text::BADGE, 1.5),
+                        crate::text::root_line_height(text::BADGE),
                         color::FG_CHIP,
                     )
                     .tracking(TRACKING_TAG)

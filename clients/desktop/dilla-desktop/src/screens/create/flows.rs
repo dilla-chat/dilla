@@ -34,7 +34,7 @@ use dilla_desktop_ui::components::segmented::Segmented;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toggle::Toggle;
 use dilla_desktop_ui::components::{Button, ButtonSize, ButtonVariant};
-use dilla_desktop_ui::text::{line, line_height, paragraph};
+use dilla_desktop_ui::text::{line, paragraph};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::{Navigate, OnNavigate, Open};
@@ -694,7 +694,7 @@ impl CreateFlows {
                 .children(paragraph(
                     text_,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_3,
                     width,
                 ))
@@ -932,7 +932,7 @@ fn body_text(text_: &str, width: f32) -> impl IntoElement {
     div().flex().flex_col().children(paragraph(
         text_,
         text::UI,
-        line_height(text::UI, 1.5),
+        dilla_desktop_ui::text::root_line_height(text::UI),
         color::FG_2,
         width,
     ))
@@ -1172,7 +1172,7 @@ impl Render for CreateFlows {
                             .child(line(
                                 t("invite.link"),
                                 text::XS,
-                                line_height(text::XS, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::XS),
                                 color::FG_2,
                             ))
                             .child(tracked_box(
@@ -1180,7 +1180,7 @@ impl Render for CreateFlows {
                                 line(
                                     url.clone(),
                                     text::INPUT,
-                                    line_height(text::INPUT, 1.5),
+                                    dilla_desktop_ui::text::root_line_height(text::INPUT),
                                     color::FG,
                                 )
                                 .ellipsis(),
@@ -1200,7 +1200,7 @@ impl Render for CreateFlows {
                             body = body.child(line(
                                 status,
                                 text::SM,
-                                line_height(text::SM, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::SM),
                                 color::FG_3,
                             ));
                         }

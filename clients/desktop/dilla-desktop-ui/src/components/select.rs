@@ -14,7 +14,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_MUTED, focus_ring, shadow_menu};
 use crate::roving::menu_next;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 use gpui::prelude::FluentBuilder as _;
 
@@ -176,7 +176,15 @@ impl RenderOnce for Select {
             .border_color(edge)
             .hover(|s| s.border_color(color::FG_3))
             .focus_visible(|s| s.border_color(color::ACCENT))
-            .child(line(current, text::SM, line_height(text::SM, 1.5), color::FG).ellipsis())
+            .child(
+                line(
+                    current,
+                    text::SM,
+                    crate::text::root_line_height(text::SM),
+                    color::FG,
+                )
+                .ellipsis(),
+            )
             // The web's field is a native <select>: Chromium draws its arrow in the text colour, 9 x 5.5px with its right
             // tip 5px in from the outer edge, past the 10px padding. A 16px chevron-down (whose path spans 6..18 of 24)
             // reaching 10px into that padding draws the same.
@@ -266,7 +274,7 @@ impl RenderOnce for Select {
                         .child(line(
                             label.clone(),
                             text::SM,
-                            line_height(text::SM, 1.5),
+                            crate::text::root_line_height(text::SM),
                             if *value == self.value {
                                 color::ACCENT
                             } else {
@@ -295,7 +303,7 @@ impl RenderOnce for Select {
             root = root.child(line(
                 self.label,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 color::FG_2,
             ));
         }

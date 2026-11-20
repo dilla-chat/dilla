@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::metrics::Density;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 /// The Signal prototype's avatar colours (`AVATAR_PALETTE` in Avatar.tsx): hue in degrees, saturation and lightness in percent.
@@ -250,7 +250,7 @@ impl RenderOnce for Avatar {
                 line(
                     initials,
                     initials_size,
-                    line_height(initials_size, 1.5),
+                    crate::text::root_line_height(initials_size),
                     color::BRAND_INK,
                 )
                 .weight(font::WEIGHT_DISPLAY),

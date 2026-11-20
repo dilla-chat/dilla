@@ -87,7 +87,7 @@ fn dim(text_: impl Into<SharedString>) -> AnyElement {
         .child(line(
             text_,
             text::UI,
-            line_height(text::UI, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::FG_2,
         ))
         .into_any_element()
@@ -98,7 +98,7 @@ fn alert(text_: impl Into<SharedString>) -> AnyElement {
         .child(line(
             text_,
             text::SM,
-            line_height(text::SM, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::SM),
             color::DANGER,
         ))
         .into_any_element()
@@ -349,7 +349,7 @@ impl Body {
                         line(
                             head_name,
                             text::BASE,
-                            line_height(text::BASE, 1.5),
+                            dilla_desktop_ui::text::root_line_height(text::BASE),
                             color::FG,
                         )
                         .weight(font::WEIGHT_DISPLAY)
@@ -392,7 +392,7 @@ impl Body {
                             line(
                                 model::shown(c),
                                 text::BASE,
-                                line_height(text::BASE, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::BASE),
                                 color::FG,
                             )
                             .ellipsis(),
@@ -671,14 +671,20 @@ impl Body {
         // the section's 12px, bold.
         let heading = || {
             let size = px(f32::from(text::UI) * UA_H3_EM);
-            line(t("chperm.title"), size, line_height(size, 1.5), color::FG)
-                .weight(font::WEIGHT_DISPLAY)
+            line(
+                t("chperm.title"),
+                size,
+                dilla_desktop_ui::text::root_line_height(size),
+                color::FG,
+            )
+            .weight(font::WEIGHT_DISPLAY)
         };
         let (Some(everyone), true) = (access.everyone, access.overwrites_loaded) else {
+            // The unread state is the same `.dw-settings-section` (ChannelPermissions.tsx:200): `--group-gap`.
             return div()
                 .flex()
                 .flex_col()
-                .gap(layout::ROW_GAP)
+                .gap(density.group_gap())
                 .child(heading())
                 .child(alert(t("chperm.error.unread")))
                 .into_any_element();
@@ -758,7 +764,7 @@ impl Body {
                 line(
                     t("chperm.who"),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG,
                 )
                 .weight(font::WEIGHT_DISPLAY),
@@ -901,7 +907,8 @@ impl Body {
                 div()
                     .flex()
                     .items_end()
-                    .gap(layout::ROW_GAP)
+                    // `.dw-admin-row` (ChannelPermissions.tsx:248): `--row-gap`.
+                    .gap(density.row_gap())
                     .child(
                         Select::new("perm-add", t("chperm.addLabel"), &pairs, current).on_change(
                             act_value(cx, |this, value, _w, cx| {
@@ -1140,7 +1147,7 @@ impl Body {
         inner = inner.child(line(
             t("gif.settings.getKey"),
             text::BASE,
-            line_height(text::BASE, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::BASE),
             color::FG_LINK,
         ));
         match gifs {
@@ -1158,7 +1165,7 @@ impl Body {
                             .child(div().mr(layout::ROW_GAP).child(line(
                                 t("gif.settings.maskedLabel"),
                                 text::BASE,
-                                line_height(text::BASE, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::BASE),
                                 color::FG,
                             )))
                             .child(
@@ -1315,7 +1322,7 @@ impl Body {
                 .child(line(
                     label.to_owned(),
                     text::XS,
-                    line_height(text::XS, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::XS),
                     color::FG_2,
                 ))
                 .child(control)
@@ -1395,7 +1402,7 @@ impl Body {
                                     line(
                                         made.url.clone(),
                                         text::SM,
-                                        line_height(text::SM, 1.5),
+                                        dilla_desktop_ui::text::root_line_height(text::SM),
                                         color::FG,
                                     )
                                     .ellipsis(),
@@ -1438,7 +1445,7 @@ impl Body {
                         )
                         .to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::MICRO),
                         color::FG_3,
                     )
                     .weight(font::WEIGHT_LABEL)
@@ -1490,21 +1497,21 @@ impl Body {
                             .child(line(
                                 texts.code,
                                 text::UI,
-                                line_height(text::UI, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::UI),
                                 color::FG,
                             )),
                     )
                     .child(div().w(meta_width).child(line(
                         texts.uses,
                         text::XS,
-                        line_height(text::XS, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::XS),
                         color::FG_2,
                     )))
                     .child(div().w(meta_width).flex().flex_col().children(
                         dilla_desktop_ui::text::paragraph(
                             &texts.expires,
                             text::XS,
-                            line_height(text::XS, 1.5),
+                            dilla_desktop_ui::text::root_line_height(text::XS),
                             color::FG_2,
                             f32::from(meta_width),
                         ),
@@ -1585,7 +1592,7 @@ impl Body {
                 line(
                     t(key),
                     text::BASE,
-                    line_height(text::BASE, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::BASE),
                     color::FG_2,
                 )
             };
@@ -1597,7 +1604,7 @@ impl Body {
                         line(
                             title,
                             text::PREVIEW,
-                            line_height(text::PREVIEW, 1.5),
+                            dilla_desktop_ui::text::root_line_height(text::PREVIEW),
                             color::FG,
                         )
                         .weight(font::WEIGHT_DISPLAY),
@@ -1628,7 +1635,7 @@ impl Body {
             line(
                 t(key),
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BASE),
                 color::FG_2,
             )
         };
@@ -1640,7 +1647,7 @@ impl Body {
                 line(
                     t("admin.bot.joinRole.title"),
                     size,
-                    line_height(size, 1.5),
+                    dilla_desktop_ui::text::root_line_height(size),
                     color::FG,
                 )
                 .weight(font::WEIGHT_DISPLAY),

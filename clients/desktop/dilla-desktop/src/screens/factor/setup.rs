@@ -34,7 +34,7 @@ use dilla_desktop_ui::components::onboarding::frame::{BodyParagraph, Part};
 use dilla_desktop_ui::components::qr_code::QrCode;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::metrics::Density;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::code::{CodeEvent, CodeField};
@@ -890,7 +890,7 @@ impl FactorSetupView {
                                         .child(line(
                                             t("factor.totp.key"),
                                             text::XS,
-                                            line_height(text::XS, 1.5),
+                                            dilla_desktop_ui::text::root_line_height(text::XS),
                                             color::FG_2,
                                         ))
                                         // The setup key is never in the accessibility tree; "Read aloud" (a Tab
@@ -1137,7 +1137,12 @@ fn check_row(id: &'static str, label: &'static str, checked: bool) -> gpui::Stat
             checked,
             false,
         ))
-        .child(line(label, text::SM, line_height(text::SM, 1.5), color::FG))
+        .child(line(
+            label,
+            text::SM,
+            dilla_desktop_ui::text::root_line_height(text::SM),
+            color::FG,
+        ))
 }
 
 impl Drop for FactorSetupView {

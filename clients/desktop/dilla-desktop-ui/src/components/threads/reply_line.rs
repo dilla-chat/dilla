@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::components::{Avatar, AvatarSize};
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, text};
 
 /// What the reply points at.
@@ -37,7 +37,7 @@ const CURVE_RADIUS: f32 = 6.0;
 
 /// The line's own height: the text's line (`--text-btn` at the row's 1.5) or the 14px avatar, whichever is taller.
 pub fn line_box() -> f32 {
-    line_height(text::BTN, 1.5).max(f32::from(AvatarSize::Mini.metrics().0))
+    crate::text::root_line_height(text::BTN).max(f32::from(AvatarSize::Mini.metrics().0))
 }
 
 /// What the reply line takes in a row: its box and its bottom margin. The row's avatar and gutter move down by the same
@@ -84,7 +84,7 @@ impl ReplyLine {
 impl RenderOnce for ReplyLine {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let size = text::BTN;
-        let lh = line_height(size, 1.5);
+        let lh = crate::text::root_line_height(size);
         let curve = div()
             .absolute()
             .left(px(CURVE_LEFT))

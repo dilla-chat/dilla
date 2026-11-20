@@ -386,7 +386,7 @@ pub fn status_error() -> impl IntoElement {
         .child(line(
             t("presence.error"),
             text::XS,
-            line_height(text::XS, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::XS),
             color::DANGER,
         ))
 }

@@ -3,8 +3,7 @@
 
 use gpui::{AnyElement, IntoElement, ParentElement, SharedString, Styled, div, px};
 
-use super::LEADING;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 /// `.d-drop-overlay::before { inset: 0.5rem }`.
@@ -45,13 +44,18 @@ pub fn drop_overlay(title: impl Into<SharedString>, body: impl Into<SharedString
                 .border_color(color::LINE_STRONG)
                 .rounded(radius::XL)
                 .child(
-                    line(title, text::MD, line_height(text::MD, LEADING), color::FG)
-                        .weight(font::WEIGHT_DISPLAY),
+                    line(
+                        title,
+                        text::MD,
+                        crate::text::root_line_height(text::MD),
+                        color::FG,
+                    )
+                    .weight(font::WEIGHT_DISPLAY),
                 )
                 .child(line(
                     body,
                     text::SM,
-                    line_height(text::SM, LEADING),
+                    crate::text::root_line_height(text::SM),
                     color::FG_2,
                 )),
         )

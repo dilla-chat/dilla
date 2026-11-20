@@ -10,7 +10,7 @@ use gpui::{
 use gpui_component::input::{Enter, Textarea, TextareaState};
 
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
 use super::ui::{EDIT_MAX, MessageUi};
@@ -133,7 +133,7 @@ pub fn editor(
         .child(line(
             t("shell.edit.hint"),
             text::META,
-            line_height(text::META, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::META),
             color::FG_3,
         ));
     if counter_visible(remaining) {
@@ -147,7 +147,12 @@ pub fn editor(
         } else {
             color::FG_3
         };
-        foot = foot.child(line(label, text::XS, line_height(text::XS, 1.5), tone));
+        foot = foot.child(line(
+            label,
+            text::XS,
+            dilla_desktop_ui::text::root_line_height(text::XS),
+            tone,
+        ));
     }
     let cancel = ui.clone();
     let save = ui.clone();

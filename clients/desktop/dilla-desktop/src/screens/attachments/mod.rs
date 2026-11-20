@@ -813,6 +813,8 @@ pub struct PipView {
 
 impl gpui::Render for PipView {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        // A window of its own: regular, whatever the last drawn window had (no account draws in it).
+        dilla_desktop_ui::metrics::Density::enter(window, cx);
         let key = self.key;
         let size = window.viewport_size();
         let view = match ui::ui(cx).players.get(&key) {

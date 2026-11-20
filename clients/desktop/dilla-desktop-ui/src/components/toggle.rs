@@ -9,7 +9,7 @@ use gpui::{
 
 use crate::a11y::{Accessible, Role};
 use crate::metrics::{OPACITY_MUTED, focus_ring, shadow_knob};
-use crate::text::{flow_paragraph, line_height};
+use crate::text::flow_paragraph;
 use crate::tokens::{color, radius, text};
 use gpui::prelude::FluentBuilder as _;
 
@@ -165,7 +165,7 @@ impl RenderOnce for Toggle {
             root = root.child(flow_paragraph(
                 self.label,
                 text::SM,
-                line_height(text::SM, 1.5),
+                crate::text::root_line_height(text::SM),
                 color::FG_2,
             ));
         }
@@ -174,7 +174,7 @@ impl RenderOnce for Toggle {
             root = root.child(flow_paragraph(
                 hint,
                 text::SM,
-                line_height(text::SM, 1.5),
+                crate::text::root_line_height(text::SM),
                 color::FG_3,
             ));
         }

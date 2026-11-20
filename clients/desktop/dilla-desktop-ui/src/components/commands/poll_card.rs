@@ -13,7 +13,7 @@ use crate::components::avatar::{colour_of, initials_of};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::LABEL_TRACKING;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{line, paragraph};
 use crate::tokens::{color, font, radius, text};
 
 /// One answer (`PollCardOption`). Its Debug gives the answer's length and the voters' count only: the answer is a
@@ -131,7 +131,7 @@ impl PollCard {
         paragraph(
             question,
             text::INPUT,
-            line_height(text::INPUT, 1.5),
+            crate::text::root_line_height(text::INPUT),
             color::FG,
             Self::inner(width) - 22.0,
         )
@@ -141,7 +141,8 @@ impl PollCard {
 
     /// The card's height under a message, its 6px top margin included (R21: from the content and the tokens).
     pub fn height(question: &str, answers: usize, width: f32) -> f32 {
-        let head = Self::question_lines(question, width) as f32 * line_height(text::INPUT, 1.5);
+        let head = Self::question_lines(question, width) as f32
+            * crate::text::root_line_height(text::INPUT);
         let rows = answers as f32 * (ROW + 2.0);
         let meta = 26.0;
         TOP_MARGIN + 2.0 + 2.0 * PAD + head + rows + meta + GAP * (answers as f32 + 1.0)
@@ -150,12 +151,12 @@ impl PollCard {
 
 impl RenderOnce for PollCard {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let ui_lh = line_height(text::UI, 1.5);
+        let ui_lh = crate::text::root_line_height(text::UI);
         let inner = Self::inner(self.width);
         let question = paragraph(
             &self.question,
             text::INPUT,
-            line_height(text::INPUT, 1.5),
+            crate::text::root_line_height(text::INPUT),
             color::FG,
             inner - 22.0,
         )
@@ -291,7 +292,7 @@ impl RenderOnce for PollCard {
             .child(div().flex_1().child(line(
                 self.meta.clone(),
                 text::META,
-                line_height(text::META, 1.5),
+                crate::text::root_line_height(text::META),
                 color::FG_3,
             )))
             .children((self.can_close && !self.closed).then(|| {
@@ -313,7 +314,7 @@ impl RenderOnce for PollCard {
                     .child(line(
                         self.labels.close.clone(),
                         text::META,
-                        line_height(text::META, 1.5),
+                        crate::text::root_line_height(text::META),
                         color::FG,
                     ))
             }));
@@ -358,7 +359,7 @@ fn voter(id: impl Into<ElementId>, name: &str) -> impl IntoElement {
             line(
                 initials_of(name),
                 text::POLL_VOTER,
-                line_height(text::POLL_VOTER, 1.5),
+                crate::text::root_line_height(text::POLL_VOTER),
                 color::BRAND_INK,
             )
             .weight(font::WEIGHT_DISPLAY),

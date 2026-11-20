@@ -182,7 +182,7 @@ impl RemindersPopover {
 
 impl RenderOnce for RemindersPopover {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let xs = line_height(text::XS, 1.5);
+        let xs = crate::text::root_line_height(text::XS);
         let due_count = self.items.iter().filter(|i| i.due).count();
         let upcoming_count = self.items.len() - due_count;
         let probe = self.probe.clone();
@@ -252,7 +252,7 @@ impl RenderOnce for RemindersPopover {
                         line(
                             initials,
                             text::NANO,
-                            line_height(text::NANO, 1.5),
+                            crate::text::root_line_height(text::NANO),
                             color::BRAND_INK,
                         )
                         .weight(font::WEIGHT_DISPLAY),
@@ -263,7 +263,7 @@ impl RenderOnce for RemindersPopover {
                     line(
                         self.labels.title.clone(),
                         text::SM,
-                        line_height(text::SM, 1.5),
+                        crate::text::root_line_height(text::SM),
                         color::FG,
                     )
                     .weight(font::WEIGHT_DISPLAY),
@@ -297,7 +297,7 @@ impl RenderOnce for RemindersPopover {
         };
         let sm = line_height(text::SM, TEXT_LINE);
         let meta = line_height(text::META, TEXT_LINE);
-        let action_line = line_height(text::META, 1.5);
+        let action_line = crate::text::root_line_height(text::META);
         let rows = shown.iter().map(|&(index, item)| {
             let act = self.on_action.clone();
             let label = if item.due {
@@ -381,7 +381,7 @@ impl RenderOnce for RemindersPopover {
                 .child(action)
                 .children(probed(&row_id))
         });
-        let ui = line_height(text::UI, 1.5);
+        let ui = crate::text::root_line_height(text::UI);
         let body = div()
             .id("reminders-body")
             .max_h(px(300.0))
@@ -424,7 +424,7 @@ impl RenderOnce for RemindersPopover {
                     .child(flow_paragraph(
                         self.labels.footer.clone(),
                         text::META,
-                        line_height(text::META, 1.5),
+                        crate::text::root_line_height(text::META),
                         color::FG_3,
                     )),
             )

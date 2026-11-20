@@ -103,7 +103,7 @@ pub mod layout {
     /// How far up a text field is drawn so its label is out of sight: `.dw-overview-field` hides the label (it stays the
     /// accessible name), which on the web takes no room.
     pub fn hidden_label_offset() -> Pixels {
-        px(-(crate::text::line_height(crate::tokens::text::XS, 1.5) + LABEL_GAP_PX))
+        px(-(crate::text::root_line_height(crate::tokens::text::XS) + LABEL_GAP_PX))
     }
 
     /// The web font's average and widest glyph, per em (the fontsource `JetBrains Mono Variable` the web loads: OS/2

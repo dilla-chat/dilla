@@ -12,7 +12,7 @@ use std::rc::Rc;
 use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, layout, radius, text};
 
 use super::thread_row::SIDE;
@@ -93,16 +93,24 @@ pub fn pane(parts: PaneParts) -> impl IntoElement {
         )
         .child(
             div().flex_1().min_w_0().flex().child(
-                line(parts.title, ui, line_height(ui, 1.5), color::FG)
-                    .weight(font::WEIGHT_DISPLAY)
-                    .ellipsis(),
+                line(
+                    parts.title,
+                    ui,
+                    crate::text::root_line_height(ui),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .ellipsis(),
             ),
         )
-        .children(
-            parts
-                .sub
-                .map(|sub| line(sub, text::META, line_height(text::META, 1.5), color::FG_3)),
-        )
+        .children(parts.sub.map(|sub| {
+            line(
+                sub,
+                text::META,
+                crate::text::root_line_height(text::META),
+                color::FG_3,
+            )
+        }))
         .child({
             let on_close = parts.on_close.clone();
             let mut close = div()
@@ -164,7 +172,7 @@ pub fn pane(parts: PaneParts) -> impl IntoElement {
                 line(
                     label.to_uppercase(),
                     size,
-                    line_height(size, 1.5),
+                    crate::text::root_line_height(size),
                     color::FG_3,
                 )
                 .tracking(crate::metrics::LABEL_TRACKING_WIDE),
@@ -187,11 +195,14 @@ pub fn pane(parts: PaneParts) -> impl IntoElement {
     };
     let replies = replies
         .children(parts.earlier)
-        .children(
-            parts
-                .empty
-                .map(|note| line(note, text::SM, line_height(text::SM, 1.5), color::FG_3)),
-        )
+        .children(parts.empty.map(|note| {
+            line(
+                note,
+                text::SM,
+                crate::text::root_line_height(text::SM),
+                color::FG_3,
+            )
+        }))
         .children(parts.replies);
     div()
         .id("thread-pane")

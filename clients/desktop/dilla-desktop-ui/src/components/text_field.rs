@@ -13,7 +13,7 @@ use crate::a11y::{Accessible, Live, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::OPACITY_MUTED;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 /// The state of the control inside the frame.
@@ -269,7 +269,7 @@ impl RenderOnce for TextField {
             .child(line(
                 self.label,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 color::FG_2,
             ))
             .child(frame);
@@ -290,7 +290,7 @@ impl RenderOnce for TextField {
                     .child(line(
                         error,
                         text::SM,
-                        line_height(text::SM, 1.5),
+                        crate::text::root_line_height(text::SM),
                         color::DANGER,
                     )),
             );
@@ -301,7 +301,7 @@ impl RenderOnce for TextField {
 
 /// A field's hint (12.5px `--fg-3`): wrapped at `width` when given, else one line.
 pub(crate) fn hint_lines(hint: SharedString, width: Option<f32>) -> gpui::AnyElement {
-    let lh = line_height(text::SM, 1.5);
+    let lh = crate::text::root_line_height(text::SM);
     // The hint is the field's `<p>`: a node a reader's cursor reads.
     let painted = match width {
         Some(w) => div()

@@ -15,6 +15,3 @@ use gpui::{App, ClickEvent, Window};
 
 /// A click handler of these components.
 pub type OnClick = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
-
-/// The body line height of a component's text (`body { line-height: 1.5 }`).
-pub const LEADING: f32 = 1.5;

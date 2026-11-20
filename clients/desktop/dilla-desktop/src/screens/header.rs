@@ -11,7 +11,7 @@ use gpui::{
 
 use dilla_desktop_ui::components::shell::BarButton;
 use dilla_desktop_ui::components::tooltip::WithTooltip;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, font, layout, text};
 use dilla_desktop_ui::{Icon, IconName};
 
@@ -114,9 +114,14 @@ pub fn render(model: &HeaderModel<'_>, on_toggle: &OnToggle) -> gpui::AnyElement
                     dilla_desktop_ui::a11y::heading(
                         1,
                         name.clone(),
-                        line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
-                            .weight(font::WEIGHT_DISPLAY)
-                            .ellipsis(),
+                        line(
+                            name,
+                            text::BASE,
+                            dilla_desktop_ui::text::root_line_height(text::BASE),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY)
+                        .ellipsis(),
                     )
                     .flex()
                     .min_w_0(),
@@ -180,19 +185,29 @@ fn dm_bar(name: String, topic: Option<String>) -> impl IntoElement {
                     dilla_desktop_ui::a11y::heading(
                         1,
                         name.clone(),
-                        line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
-                            .weight(font::WEIGHT_DISPLAY)
-                            .ellipsis(),
+                        line(
+                            name,
+                            text::BASE,
+                            dilla_desktop_ui::text::root_line_height(text::BASE),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY)
+                        .ellipsis(),
                     )
                     .flex()
                     .min_w_0(),
                 ),
         )
         .children(topic.map(|topic| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(line(topic, text::UI, line_height(text::UI, 1.5), color::FG_2).ellipsis())
+            div().flex_1().min_w_0().child(
+                line(
+                    topic,
+                    text::UI,
+                    dilla_desktop_ui::text::root_line_height(text::UI),
+                    color::FG_2,
+                )
+                .ellipsis(),
+            )
         }));
     #[cfg(feature = "automation")]
     let bar = bar.child(crate::automation::bounds_probe("shell-header"));
