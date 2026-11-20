@@ -71,6 +71,39 @@ fn parity_shell_row_menu() {
     .unwrap_or_else(|e| panic!("shell/row-menu differs from its golden shot: {e}"));
 }
 
+/// The row menu opened from the keyboard sits under its row, 8px in from the row's left (the web's anchor), wherever the
+/// pointer is; a right-click opens it at the pointer. The menu's first item is inset by its 1px edge and 4px padding.
+#[gpui::test]
+fn a_row_menu_opened_by_the_keyboard_sits_under_its_row(cx: &mut TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let loaded = dilla_desktop::fixture::Fixture::load(&fixture("shell/row-menu"), None)
+        .expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (_app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let row = vcx.debug_bounds("channel-row-general").expect("the row");
+    // The row takes the focus; the pointer then rests far from it.
+    vcx.simulate_click(row.center(), gpui::Modifiers::none());
+    vcx.simulate_mouse_move(
+        gpui::point(gpui::px(900.0), gpui::px(700.0)),
+        None,
+        gpui::Modifiers::none(),
+    );
+    vcx.simulate_keystrokes("shift-f10");
+    vcx.run_until_parked();
+    let item = vcx.debug_bounds("menu-item-pins").expect("the open menu");
+    let edge = 5.0;
+    let (dx, dy) = (
+        f32::from(item.origin.x) - (f32::from(row.origin.x) + 8.0 + edge),
+        f32::from(item.origin.y) - (f32::from(row.bottom()) + edge),
+    );
+    assert!(
+        dx.abs() <= 1.0 && dy.abs() <= 1.0,
+        "the menu sits under the row, 8px in: off by ({dx}, {dy})"
+    );
+}
+
 fn rect(app: &mut Driver, id: &str) -> dilla_parity::ElementInfo {
     app.element(id)
         .unwrap_or_else(|| panic!("`{id}` is not on screen"))

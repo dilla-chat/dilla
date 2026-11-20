@@ -3,14 +3,15 @@
 //! channel last. The rows are Task 6's `Row`. One tab stop with roving focus over the rows and the category heads; a row
 //! has a context menu (right click, the Menu key, Shift+F10).
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
 use dilla_client::features::notify::{self, SettingsSource};
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId};
 use gpui::{
-    App, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    App, Bounds, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
@@ -280,6 +281,12 @@ pub fn row_badge_keys(state: &AppState, c: &Channel) -> Vec<&'static str> {
     keys
 }
 
+/// Where a row's menu opens from the keyboard (Shift+F10, the menu key): at the row's left edge plus 8px and its bottom, as
+/// the web's does (measured: the row's box at x 64, y 126.25, 28px tall, its menu at x 72, y 154.25).
+pub fn keyboard_menu_at(row: Bounds<Pixels>) -> Point<Pixels> {
+    gpui::point(row.origin.x + Pixels::from(8.0), row.bottom())
+}
+
 /// The element id of a channel's row: `channel-<name>`.
 pub fn row_id(name: &str) -> SharedString {
     format!("channel-{name}").into()
@@ -408,8 +415,15 @@ fn row(
     let focus = roves.handles[index].clone().tab_stop(index == stop);
     let (on_menu, on_menu_key) = (handlers.on_menu.clone(), handlers.on_menu.clone());
     let roves = roves.clone();
+    // The row's painted bounds, for the menu its keyboard opens (the pointer may be anywhere).
+    let laid_out: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+    let record = laid_out.clone();
     let wrapper = div()
         .id(SharedString::from(format!("channel-focus-{}", c.id.hex())))
+        .debug_selector({
+            let selector = format!("channel-row-{}", c.name);
+            move || selector.clone()
+        })
         .a11y(
             Role::Link,
             row_label(&named, badge.0, badge.1, muted, voice.1),
@@ -430,11 +444,24 @@ fn row(
         .on_key_down(move |event, window, cx| {
             match roves.key(index, event, window, cx) {
                 Key::Press => on_select(id, window, cx),
-                // The keyboard asks for the menu where the pointer last was (the row's own box is not known here).
-                Key::Menu => on_menu_key(id, window.mouse_position(), window, cx),
+                // The keyboard opens the menu under the row (ChannelList.tsx anchors it to the row's box), else where the
+                // pointer last was.
+                Key::Menu => {
+                    let at = laid_out
+                        .get()
+                        .map_or_else(|| window.mouse_position(), keyboard_menu_at);
+                    on_menu_key(id, at, window, cx)
+                }
                 Key::Moved | Key::None => {}
             }
         })
+        .child(
+            gpui::canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+        )
         .child(row);
     #[cfg(feature = "automation")]
     let wrapper = wrapper.child(crate::automation::focus_probe(
@@ -833,6 +860,17 @@ mod tests {
     use dilla_client::state::{BadgeState, ChannelGroupState, Community};
 
     use super::*;
+
+    /// The web's keyboard anchor, measured in its row-menu shot: the row at (64, 126.25) 227x28, the menu at (72, 154.25).
+    #[test]
+    fn a_keyboard_opened_row_menu_sits_under_the_row_8px_in() {
+        let row = Bounds {
+            origin: gpui::point(Pixels::from(64.0), Pixels::from(126.25)),
+            size: gpui::size(Pixels::from(227.0), Pixels::from(28.0)),
+        };
+        let at = keyboard_menu_at(row);
+        assert_eq!((f32::from(at.x), f32::from(at.y)), (72.0, 154.25));
+    }
 
     fn ch(n: u8, kind: u8, name: &str, parent: Option<u8>, position: u32) -> Channel {
         Channel {
