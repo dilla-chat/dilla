@@ -99,8 +99,12 @@ async fn main() {
     );
     // A fixture whose viewer joins a call in the browser needs the host's LiveKit (seed/calls.rs).
     let sfu = seed::needs_sfu(&f);
+    // A fixture whose server carries a Bot runs on the host that supervises dilla's (seed/bot.rs).
+    let bot = seed::needs_bot(&f);
     let host = tokio::task::spawn_blocking(move || {
-        if sfu {
+        if bot {
+            world::start_bot_host_with_web("parity", "127.0.0.1:0", &web)
+        } else if sfu {
             world::start_host_with_sfu("parity", Some(&web))
         } else {
             world::start_host("parity", "127.0.0.1:0", Some(&web))

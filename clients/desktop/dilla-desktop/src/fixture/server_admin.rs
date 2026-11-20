@@ -7,8 +7,53 @@
 
 use dilla_client::features::server_admin::{AFK_BUILTIN_POSITION, AFK_DEFAULT_TIMEOUT};
 use dilla_client::state::AppState;
+use dilla_client::state::bot_admin::{BotCatalog, CatalogState, Installation};
 use dilla_client::state::server_admin::{AdminRole, AfkSettings};
 use dilla_client::testing::spec::WorldSpec;
+
+use super::Ids;
+
+/// The Bot of each server that carries one (decision D9): a ready installation with the spec's capabilities, and the catalog
+/// listing the spec's Bot channels, as the web client reads them once the Bot is enabled and its channels are marked. A
+/// server without one has neither, as before.
+pub(super) fn apply_bot(world: &WorldSpec, ids: Ids<'_>, state: &mut AppState) {
+    for server in &world.servers {
+        let Some(bot) = &server.bot else {
+            continue;
+        };
+        let community = ids.community(&server.id);
+        state.bot_admin.installation.insert(
+            community,
+            Installation {
+                id: dilla_client::testing::spec::derive_id("installation", &server.id),
+                state: 3,
+                revision: 1,
+                user_id: None,
+                capabilities: bot.capability_bits(),
+                updated_at: 0,
+                restart_requested: 0,
+                restart_handled: 0,
+                version: None,
+                music_volume: 50,
+                music_idle_minutes: 15,
+            },
+        );
+        state.bot_admin.catalog.insert(
+            community,
+            BotCatalog {
+                state: CatalogState::Ready,
+                since: None,
+                fingerprint: None,
+                bot_channels: Some(
+                    bot.bot_channels
+                        .iter()
+                        .map(|c| ids.channel(&format!("{}/{c}", server.id)))
+                        .collect(),
+                ),
+            },
+        );
+    }
+}
 
 /// Maps the facet into `state`.
 pub(super) fn apply(_world: &WorldSpec, _viewer: &str, state: &mut AppState) {

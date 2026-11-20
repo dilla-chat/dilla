@@ -85,6 +85,14 @@ pub fn start_bot_host(tag: &str, listen: &str) -> Host {
     host
 }
 
+/// [`start_bot_host`] that also serves the built web client, as the parity world's host does ([`start_host`]): a fixture whose
+/// server carries a Bot (`ServerSpec::bot`) is shot against it. Blocking.
+pub fn start_bot_host_with_web(tag: &str, listen: &str, web_root: &Path) -> Host {
+    let host = launch(tag, listen, Some(web_root), true);
+    host.start_bot();
+    host
+}
+
 /// Task 28 wave 2 (lane C): [`start_bot_host`] whose Bot plays music into calls, as e2e/voice/bot-music.spec.ts starts
 /// its host (`botRuntime`, `advanceClockWithWall`, an SFU with a 90 s departure timeout): dilla-testhost's in-process
 /// LiveKit SFU, reached by the Bot and by each device's media on the host's own listener (`ws://<listen>`, the `-web-root`

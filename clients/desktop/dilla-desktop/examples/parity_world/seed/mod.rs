@@ -7,6 +7,7 @@ use dilla_client::testing::spec::ScreenFixture;
 
 mod attachments;
 mod boot;
+mod bot;
 mod calls;
 mod diagnostics;
 mod dms;
@@ -40,6 +41,7 @@ pub async fn post(
 pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
     let mut out = Vec::new();
     attachments::unseedable(f, &mut out);
+    bot::unseedable(f, &mut out);
     calls::unseedable(f, &mut out);
     diagnostics::unseedable(f, &mut out);
     dms::unseedable(f, &mut out);
@@ -52,6 +54,11 @@ pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
     roles::unseedable(f, &mut out);
     threads::unseedable(f, &mut out);
     out
+}
+
+/// Whether the host must supervise dilla's Bot: a server of the fixture carries one (bot).
+pub fn needs_bot(f: &ScreenFixture) -> bool {
+    bot::needs_bot(f)
 }
 
 /// Seeds what the browser reads when it signs in (profiles, roles and the access they give), once the servers are made.
@@ -90,6 +97,7 @@ pub async fn seed(
 ) {
     attachments::seed(f, people).await;
     boot::seed(f, people, clients).await;
+    bot::seed(f, clients, ids).await;
     calls::seed(f, host, ids).await;
     diagnostics::seed(f, people).await;
     dms::seed(f, people).await;

@@ -56,7 +56,7 @@ fn track_id(id: String) -> &'static str {
 type GifKeyRow<'a> = Option<(&'a str, &'a [&'a str])>;
 
 /// A handler of the settings' own entity, for the components that take a plain closure.
-fn act(
+pub(in crate::screens::server_settings) fn act(
     cx: &Context<Body>,
     f: impl Fn(&mut Body, &mut Window, &mut Context<Body>) + 'static,
 ) -> impl Fn(&mut Window, &mut App) + 'static {
@@ -67,7 +67,7 @@ fn act(
 }
 
 /// [`act`] for a click.
-fn act_click(
+pub(in crate::screens::server_settings) fn act_click(
     cx: &Context<Body>,
     f: impl Fn(&mut Body, &mut Window, &mut Context<Body>) + 'static,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
@@ -93,7 +93,7 @@ fn dim(text_: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
-fn alert(text_: impl Into<SharedString>) -> AnyElement {
+pub(in crate::screens::server_settings) fn alert(text_: impl Into<SharedString>) -> AnyElement {
     div()
         .child(line(
             text_,
@@ -1542,6 +1542,7 @@ impl Body {
     pub(super) fn bot_page(
         &mut self,
         section: ServerSection,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let title = if section == ServerSection::Welcome {
@@ -1586,40 +1587,7 @@ impl Body {
             );
         }
         if section == ServerSection::Welcome {
-            // The panel until the bot installation (Task 21) fills it: its heading and help, why it cannot be used, and
-            // its disabled load button.
-            let para = |key: &str| {
-                line(
-                    t(key),
-                    text::BASE,
-                    dilla_desktop_ui::text::root_line_height(text::BASE),
-                    color::FG_2,
-                )
-            };
-            out.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        line(
-                            title,
-                            text::PREVIEW,
-                            dilla_desktop_ui::text::root_line_height(text::PREVIEW),
-                            color::FG,
-                        )
-                        .weight(font::WEIGHT_DISPLAY),
-                    )
-                    .child(para("admin.bot.welcomeSettings.help"))
-                    .child(para("admin.bot.welcomeSettings.requiresCapability"))
-                    .child(para("admin.bot.welcomeSettings.noChannels"))
-                    .child(
-                        div().flex().child(
-                            Button::new("welcome-load", t("admin.bot.welcomeSettings.load"))
-                                .disabled(true),
-                        ),
-                    )
-                    .into_any_element(),
-            );
+            out.push(self.welcome_panel(window, cx));
         } else {
             out.push(self.join_role_panel(cx));
         }
@@ -1917,12 +1885,12 @@ fn hex_id(id: &[u8; 16]) -> String {
 }
 
 /// A select's value as a role id (`""`, "No role", is none).
-fn parse_id(value: &str) -> Option<[u8; 16]> {
+pub(in crate::screens::server_settings) fn parse_id(value: &str) -> Option<[u8; 16]> {
     dilla_client::features::server_admin::unhex_id(value)
 }
 
 /// A `Select`'s or `Segmented`'s change handler on the settings' own entity.
-fn act_value(
+pub(in crate::screens::server_settings) fn act_value(
     cx: &Context<Body>,
     f: impl Fn(&mut Body, &str, &mut Window, &mut Context<Body>) + 'static,
 ) -> impl Fn(&str, &mut Window, &mut App) + 'static {

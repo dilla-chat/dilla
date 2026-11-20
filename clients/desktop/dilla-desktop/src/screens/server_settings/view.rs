@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dilla_client::Client;
-use dilla_client::state::{AppState, CommunityId};
+use dilla_client::state::{AppState, ChannelId, CommunityId};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window, div,
@@ -25,6 +25,7 @@ use dilla_desktop_ui::components::settings::nav::{NavItem, SettingsNav};
 
 use super::body::{Body, BodyEvent, JoinRoleDraft, OverviewDraft};
 use super::model;
+use super::welcome::{WelcomeDraft, WelcomeInputs, welcome_inputs};
 use crate::edit_state::{Flags, Nav, Section, Workspace};
 use crate::router::{ServerSection, UserSection};
 use crate::screens::shell::Clock;
@@ -80,6 +81,24 @@ impl Section for JoinRoleSection {
     }
 }
 
+/// The Welcome page's draft as the workspace's section (WelcomeSettingsPanel.tsx `editState`): Save marks the request;
+/// Reset puts the saved settings back, with the first Bot channel as the fallback pick (kept current by every frame).
+struct WelcomeSection {
+    draft: Rc<RefCell<WelcomeDraft>>,
+    fallback: Rc<std::cell::Cell<Option<ChannelId>>>,
+}
+
+impl Section for WelcomeSection {
+    fn save(&mut self) -> bool {
+        self.draft.borrow_mut().save_requested = true;
+        true
+    }
+
+    fn reset(&mut self) {
+        self.draft.borrow_mut().reset(self.fallback.get());
+    }
+}
+
 pub struct ServerSettingsView {
     community: CommunityId,
     state: Arc<AppState>,
@@ -90,6 +109,8 @@ pub struct ServerSettingsView {
     workspace: Workspace<Leave>,
     /// The section whose draft is attached to the workspace.
     attached: Option<ServerSection>,
+    /// The first Bot channel, for the Welcome page's reset.
+    welcome_fallback: Rc<std::cell::Cell<Option<ChannelId>>>,
     /// The settings' root: it holds the focus when they open, so Tab and Escape reach them.
     focus: gpui::FocusHandle,
     /// The section on show at the last state (ServerSettings.tsx `previousActive`), and the requested section whose loss
@@ -212,6 +233,7 @@ impl ServerSettingsView {
             body,
             workspace: Workspace::new(),
             attached: None,
+            welcome_fallback: Rc::default(),
             focus: cx.focus_handle(),
             last_active,
             announced_loss: None,
@@ -499,6 +521,31 @@ impl Render for ServerSettingsView {
                     dirty: d.dirty(),
                     busy: d.busy,
                     can_save: d.can_save(),
+                });
+            }
+            Some(ServerSection::Welcome) => {
+                let draft = self.body.read(cx).welcome.clone();
+                let (enabled, can_manage, channels, name) =
+                    welcome_inputs(&self.state, self.community);
+                self.welcome_fallback.set(channels.first().map(|c| c.0));
+                if self.attached.is_none() {
+                    self.workspace.attach(Box::new(WelcomeSection {
+                        draft: draft.clone(),
+                        fallback: self.welcome_fallback.clone(),
+                    }));
+                    self.attached = active;
+                }
+                let inputs = WelcomeInputs {
+                    enabled,
+                    can_manage,
+                    channels: &channels,
+                    server_name: &name,
+                };
+                let d = draft.borrow();
+                self.workspace.publish(Flags {
+                    dirty: d.dirty(&name),
+                    busy: d.pending.is_some(),
+                    can_save: d.can_save(&inputs),
                 });
             }
             _ => {}

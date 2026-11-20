@@ -45,6 +45,12 @@ pub mod layout {
     pub const BAN_TEXT_GAP: Pixels = px(2.0);
     /// The width the ban-row wrapping test lays a row out in: the test's own chosen width, with no web source.
     pub const BAN_TEST_W: Pixels = px(640.0);
+    /// The Bot pages' text areas (`.dw-bot-settings .d-settings-row__control > textarea`): `min(100%, 32rem)` wide, 8rem
+    /// tall at least, 0.5rem over and under the text and 0.625rem at its sides.
+    pub const TEXTAREA_MAX_W: Pixels = px(512.0);
+    pub const TEXTAREA_MIN_H: Pixels = px(128.0);
+    pub const TEXTAREA_PAD_X: Pixels = px(10.0);
+    pub const TEXTAREA_PAD_Y: Pixels = px(8.0);
     /// The gap between the blocks of the GIF settings (1.5rem).
     pub const GIFS_GAP: Pixels = px(24.0);
 

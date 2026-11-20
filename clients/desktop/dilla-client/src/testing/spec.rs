@@ -167,6 +167,46 @@ pub struct ServerSpec {
     /// The server's bans, each made once the members have joined (the banned person leaves the member list).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bans: Vec<BanSpec>,
+    /// The server's managed Bot: enabled with these capabilities, and its Bot channels. A world with one needs the
+    /// host's Bot (the web shooter's), and a GPUI fixture draws the installation as ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotSpec>,
+}
+
+/// The capability names a [`BotSpec`] may list and the bits they set (`host::bot::cap`, internal/api/bot_installations.go
+/// `botCap*`).
+pub const BOT_CAPABILITIES: [(&str, u64); 10] = [
+    ("music", 1),
+    ("welcome", 1 << 1),
+    ("roles", 1 << 2),
+    ("announcements", 1 << 3),
+    ("warnings", 1 << 4),
+    ("removal", 1 << 5),
+    ("kick", 1 << 6),
+    ("ban", 1 << 7),
+    ("polls", 1 << 8),
+    ("reminders", 1 << 9),
+];
+
+/// A server's Bot (decision D9): the installation is ready with `capabilities`, and each of `bot_channels` is marked a Bot
+/// channel.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BotSpec {
+    /// Names of [`BOT_CAPABILITIES`].
+    pub capabilities: Vec<String>,
+    /// Ids of the server's text channels.
+    pub bot_channels: Vec<String>,
+}
+
+impl BotSpec {
+    /// The capability bits the names set (an unknown name adds none: [`WorldSpec::validate`] refuses it).
+    pub fn capability_bits(&self) -> u64 {
+        self.capabilities
+            .iter()
+            .filter_map(|n| BOT_CAPABILITIES.iter().find(|(name, _)| name == n))
+            .fold(0, |bits, (_, bit)| bits | bit)
+    }
 }
 
 /// One ban of a server: `user` banned by `by` (a member who may ban them), for `hours` from the frame's clock, or for
@@ -780,6 +820,28 @@ impl WorldSpec {
                     }
                 }
             }
+            if let Some(bot) = &s.bot {
+                for name in &bot.capabilities {
+                    if !BOT_CAPABILITIES.iter().any(|(n, _)| n == name) {
+                        return invalid(format!(
+                            "server {}: bot capability `{name}` is unknown",
+                            s.id
+                        ));
+                    }
+                }
+                for id in &bot.bot_channels {
+                    let text = s
+                        .channels
+                        .iter()
+                        .any(|c| c.id == *id && c.kind == ChannelKind::Text);
+                    if !text {
+                        return invalid(format!(
+                            "server {}: bot channel `{id}` is not a text channel of the server",
+                            s.id
+                        ));
+                    }
+                }
+            }
             // The message names the ban by its place only: who banned whom is moderation content.
             for (i, b) in s.bans.iter().enumerate() {
                 if !s.members.contains(&b.user) || !s.members.contains(&b.by) || b.user == s.owner {
@@ -921,6 +983,42 @@ mod tests {
         assert!(route.starts_with("/c/"), "{route}");
         assert_eq!(route.len(), "/c/".len() + 32 + 1 + 32);
         assert_eq!(f.steps.len(), 2);
+    }
+
+    /// Decision D9: a server may carry a Bot, whose capabilities are known names and whose Bot channels are text channels
+    /// of the server; anything else is refused with the usual error text.
+    #[test]
+    fn a_bot_extension_parses_and_validates() {
+        let with = |bot: &str| {
+            MINIMAL.replacen(
+                r#""members": ["ada", "mira"],"#,
+                &format!(r#""members": ["ada", "mira"], "bot": {bot},"#),
+                1,
+            )
+        };
+        let f = ScreenFixture::parse(&with(
+            r#"{"capabilities": ["welcome", "polls"], "botChannels": ["general"]}"#,
+        ))
+        .unwrap();
+        let bot = f.world.servers[0].bot.as_ref().expect("a bot");
+        assert_eq!(bot.capability_bits(), (1 << 1) | (1 << 8));
+        assert_eq!(bot.bot_channels, ["general"]);
+        assert_eq!(fixture().world.servers[0].bot, None);
+        let refused = |bot: &str| ScreenFixture::parse(&with(bot)).unwrap_err().to_string();
+        assert!(
+            refused(r#"{"capabilities": ["welcom"], "botChannels": []}"#)
+                .contains("capability `welcom` is unknown")
+        );
+        assert!(
+            refused(r#"{"capabilities": [], "botChannels": ["lounge"]}"#)
+                .contains("bot channel `lounge` is not a text channel")
+        );
+        assert!(
+            ScreenFixture::parse(&with(
+                r#"{"capabilities": [], "botChannels": [], "extra": 1}"#
+            ))
+            .is_err()
+        );
     }
 
     /// Task 19b: a fixture names its density, regular when it names none, and an unknown one is refused.

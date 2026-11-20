@@ -76,6 +76,37 @@ fn the_join_roles_page_without_a_bot_offers_its_setup_and_no_select() {
     assert!(driver.element("settings-save").is_none());
 }
 
+/// WelcomeSettingsPanel.tsx with no Bot (a fixture is an instance with none): the page says why it cannot be used by the
+/// panel's conditions (a Bot without the capability, no Bot channel), not the three lines it once always drew; the viewer
+/// is the owner, so there is no read-only line; and Load is there and disabled.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the headless renderer is Linux only here"
+)]
+fn the_welcome_page_without_a_bot_shows_why_and_a_disabled_load() {
+    use dilla_desktop::strings::t;
+    let mut driver = dilla_parity::Driver::launch_fixture(&fixture("welcome"), None, &[]);
+    driver.wait_idle();
+    let tree = driver.a11y_tree();
+    let has = |key: &str| {
+        tree.nodes
+            .iter()
+            .any(|n| n.label.as_deref().is_some_and(|l| l.contains(t(key))))
+    };
+    assert!(has("admin.bot.welcomeSettings.requiresCapability"));
+    assert!(has("admin.bot.welcomeSettings.noChannels"));
+    assert!(!has("admin.bot.welcomeSettings.readOnly"));
+    let load = tree
+        .nodes
+        .iter()
+        .find(|n| {
+            n.role == "Button" && n.label.as_deref() == Some(t("admin.bot.welcomeSettings.load"))
+        })
+        .expect("the Load button");
+    assert!(load.disabled, "Load is disabled without a Bot");
+}
+
 // ---- keyboard (S6) ----
 
 /// The nav is one tab stop whose arrows move between the sections the permissions allow, in the registry's order.

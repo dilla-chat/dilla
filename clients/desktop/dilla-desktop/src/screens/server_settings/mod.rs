@@ -15,6 +15,7 @@ pub mod body;
 pub mod keys;
 pub mod model;
 mod view;
+pub mod welcome;
 
 pub use body::{Body, BodyEvent};
 pub use view::{AccessChange, ServerSettingsView, SettingsEvent, access_change, open_section};
