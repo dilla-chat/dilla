@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dilla_client::calls::CallPhase;
-use dilla_client::state::voice::{OwnCall, VoiceParticipant, flags};
+use dilla_client::state::voice::{OwnCall, SfuRemote, VoiceParticipant, flags};
 use dilla_client::state::{
     AppState, Channel, ChannelGroupState, ChannelId, CommunityId, DeviceId, Member, UserId,
 };
@@ -81,8 +81,10 @@ fn state(n: u8) -> Arc<AppState> {
     s.voice.call.roster = (1..n)
         .map(|i| (UserId([i; 16]), DeviceId([100 + i; 16]), u16::from(i)))
         .collect();
-    s.voice.sfu_remotes = (1..n).map(|i| DeviceId([100 + i; 16])).collect();
-    s.voice.verified_peers = s.voice.sfu_remotes.clone();
+    s.voice.sfu_remotes = (1..n)
+        .map(|i| SfuRemote::Device(DeviceId([100 + i; 16])))
+        .collect();
+    s.voice.verified_peers = (1..n).map(|i| DeviceId([100 + i; 16])).collect();
     s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
@@ -612,8 +614,8 @@ fn dm_state() -> Arc<AppState> {
     };
     // Bob is in the call group, the room and heard, with his screen (a stage tile is a device of the call).
     s.voice.call.roster = vec![(UserId([1; 16]), DeviceId([101; 16]), 1)];
-    s.voice.sfu_remotes = [DeviceId([101; 16])].into_iter().collect();
-    s.voice.verified_peers = s.voice.sfu_remotes.clone();
+    s.voice.sfu_remotes = vec![SfuRemote::Device(DeviceId([101; 16]))];
+    s.voice.verified_peers = [DeviceId([101; 16])].into_iter().collect();
     s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
@@ -2723,7 +2725,7 @@ fn a_tile_that_is_not_heard_says_why(cx: &mut TestAppContext) {
     let mut s = (*state(5)).clone();
     // Person 1: ok. 2: connecting (roster only). 3: not heard (room and roster). 4: unverified (room only).
     let dev = |i: u8| DeviceId([100 + i; 16]);
-    s.voice.sfu_remotes = [1, 3, 4].map(dev).into_iter().collect();
+    s.voice.sfu_remotes = [1, 3, 4].map(|i| SfuRemote::Device(dev(i))).to_vec();
     s.voice.verified_peers = [1].map(dev).into_iter().collect();
     s.voice.call.roster = [1, 2, 3]
         .map(|i| (UserId([i; 16]), dev(i), u16::from(i)))
@@ -2737,6 +2739,49 @@ fn a_tile_that_is_not_heard_says_why(cx: &mut TestAppContext) {
     assert!(word(cx, 2), "connecting");
     assert!(word(cx, 3), "not heard yet");
     assert!(word(cx, 4), "unverified stream");
+}
+
+/// `silentByChoice`: a person who says they are muted and sends no camera or screen is not expected to send a frame, so
+/// their not-heard tile shows the muted glyph alone; an unverified stream keeps its word whoever the person is; a stranger's
+/// stream (an identity that is no device id) has a tile with the unverified word and no name.
+#[gpui::test]
+fn a_muted_person_who_is_not_heard_says_nothing_and_a_stranger_is_unverified(
+    cx: &mut TestAppContext,
+) {
+    let mut s = (*state(4)).clone();
+    let dev = |i: u8| DeviceId([100 + i; 16]);
+    s.voice.place(
+        VOICE,
+        Some(VOICE.0),
+        (0..4u8)
+            .map(|i| VoiceParticipant {
+                user_id: UserId([i; 16]),
+                device_id: dev(i),
+                flags: flags::IN_CALL | if i == 2 { flags::SELF_MUTE } else { 0 },
+                own: i == 0,
+            })
+            .collect(),
+    );
+    // 1: not heard, unmuted. 2: not heard, muted. 3: in the room only (unverified), unmuted.
+    s.voice.sfu_remotes = [1, 2, 3].map(|i| SfuRemote::Device(dev(i))).to_vec();
+    s.voice
+        .sfu_remotes
+        .push(SfuRemote::Other("guest-7".to_owned()));
+    s.voice.verified_peers.clear();
+    s.voice.screen_streams.clear();
+    s.voice.call.roster = [1, 2]
+        .map(|i| (UserId([i; 16]), dev(i), u16::from(i)))
+        .to_vec();
+    let stranger = SfuRemote::Other("guest-7".to_owned()).device();
+    let cx = host(cx, Arc::new(s));
+    let word = |cx: &mut VisualTestContext, d: DeviceId| {
+        cx.debug_bounds(selector(format!("voice-tile-state-{}", d.hex())))
+            .is_some()
+    };
+    assert!(word(cx, dev(1)), "not heard yet");
+    assert!(!word(cx, dev(2)), "muted and not heard: the glyph alone");
+    assert!(word(cx, dev(3)), "unverified stream");
+    assert!(word(cx, stranger), "a stranger's stream is unverified too");
 }
 
 #[test]

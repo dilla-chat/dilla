@@ -16,7 +16,7 @@ use dilla_client::features::voice::{CallStatsReport, MediaLink, Voice};
 use dilla_client::features::voice_prefs::speaking::SpeakingDetector;
 use dilla_client::features::voice_prefs::values::{InputMode, NoisePreference, VoiceValues};
 use dilla_client::features::voice_prefs::volume::{GainState, gain_of};
-use dilla_client::state::voice::{LocalShare, VoiceNotice};
+use dilla_client::state::voice::{LocalShare, SfuRemote, VoiceNotice};
 use dilla_client::state::{AppState, DeviceId};
 use dilla_media::apm::ApmFlags;
 use dilla_media::devices::AudioHost;
@@ -798,7 +798,7 @@ async fn in_call(
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
     // The remote devices with a verified audio track, and those with a video stream: the media peers the stage's tiles are.
-    let mut sfu_peers: BTreeSet<DeviceId> = BTreeSet::new();
+    let mut sfu_peers: Vec<SfuRemote> = Vec::new();
     let mut audio_peers: BTreeSet<DeviceId> = BTreeSet::new();
     let mut video_peers: BTreeSet<DeviceId> = BTreeSet::new();
     let mut screen_peers: BTreeSet<DeviceId> = BTreeSet::new();
@@ -870,11 +870,16 @@ async fn in_call(
                 }
                 r = remotes.changed() => {
                     if r.is_ok() {
+                        // Every remote of the room, in its order: an identity that is not a device id is a stranger's
+                        // stream, which the stage shows as unverified.
                         sfu_peers = remotes
                             .borrow_and_update()
                             .iter()
-                            .filter_map(|h| unhex(h).map(DeviceId))
-                            .filter(|d| Some(*d) != own)
+                            .map(|h| match unhex(h) {
+                                Some(d) => SfuRemote::Device(DeviceId(d)),
+                                None => SfuRemote::Other(h.clone()),
+                            })
+                            .filter(|r| !matches!(r, SfuRemote::Device(d) if Some(*d) == own))
                             .collect();
                         publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
                     }
@@ -1050,14 +1055,19 @@ async fn superseded(mut links: watch::Receiver<Option<Arc<MediaLink>>>, call_id:
 /// video stream) and which send a screen: the stage's tiles (`voice::tiles`).
 fn publish_peers(
     ctx: &Ctx,
-    sfu: &BTreeSet<DeviceId>,
+    sfu: &[SfuRemote],
     audio: &BTreeSet<DeviceId>,
     video: &BTreeSet<DeviceId>,
     screens: &BTreeSet<DeviceId>,
 ) {
     // A device with an authenticated stream is in the room whatever the participant list said first.
     let verified: BTreeSet<DeviceId> = audio.union(video).copied().collect();
-    let remotes: BTreeSet<DeviceId> = sfu.union(&verified).copied().collect();
+    let mut remotes: Vec<SfuRemote> = sfu.to_vec();
+    for d in &verified {
+        if !remotes.contains(&SfuRemote::Device(*d)) {
+            remotes.push(SfuRemote::Device(*d));
+        }
+    }
     ctx.voice
         .set_media_peers(remotes, verified, screens.clone());
 }

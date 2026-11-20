@@ -1098,7 +1098,7 @@ impl Voice {
     /// the web's `call.state.tiles` lists).
     pub fn set_media_peers(
         &self,
-        remotes: std::collections::BTreeSet<DeviceId>,
+        remotes: Vec<crate::state::voice::SfuRemote>,
         verified: std::collections::BTreeSet<DeviceId>,
         screens: std::collections::BTreeSet<DeviceId>,
     ) {
@@ -1362,7 +1362,9 @@ mod tests {
             ..OwnCall::default()
         };
         s.voice.share.camera = true;
-        s.voice.sfu_remotes.insert(DeviceId([3; 16]));
+        s.voice
+            .sfu_remotes
+            .push(crate::state::voice::SfuRemote::Device(DeviceId([3; 16])));
         s.voice.verified_peers.insert(DeviceId([3; 16]));
         s.voice.screen_streams.insert(DeviceId([3; 16]));
         ended_removed(&mut s, ch, Some(own));

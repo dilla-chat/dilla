@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use dilla_client::Client;
 use dilla_client::calls::CallPhase;
-use dilla_client::state::voice::{VoiceNotice, VoiceParticipant};
+use dilla_client::state::voice::{STRANGER_USER, SfuRemote, VoiceNotice, VoiceParticipant};
 use dilla_client::state::{AppState, Channel, ChannelId, DeviceId, UserId};
 use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
 use gpui::{
@@ -310,8 +310,8 @@ pub struct VoiceUi {
 struct Sim {
     /// In the call group's roster.
     roster: std::collections::BTreeSet<DeviceId>,
-    /// In the SFU room.
-    remotes: std::collections::BTreeSet<DeviceId>,
+    /// In the SFU room, in order.
+    remotes: Vec<SfuRemote>,
     /// Frames authenticated.
     verified: std::collections::BTreeSet<DeviceId>,
     screens: std::collections::BTreeSet<DeviceId>,
@@ -343,7 +343,11 @@ impl Sim {
                 s.voice.call.roster.push((user, device, leaf));
             }
         }
-        s.voice.sfu_remotes.extend(self.remotes.iter().copied());
+        for r in &self.remotes {
+            if !s.voice.sfu_remotes.contains(r) {
+                s.voice.sfu_remotes.push(r.clone());
+            }
+        }
         s.voice.verified_peers.extend(self.verified.iter().copied());
         s.voice.screen_streams.extend(self.screens.iter().copied());
         s.voice.speaking.extend(self.speaking.iter().copied());
@@ -796,6 +800,12 @@ pub fn simulate(
     cx: &mut App,
 ) -> Result<(), String> {
     let ui = ui_mut(window, cx);
+    if what == "stranger" {
+        // A stream in the room whose identity is no device of the call: `voice-sim stranger <identity>`.
+        ui.sim.remotes.push(SfuRemote::Other(person.to_owned()));
+        ui.state = ui.sim.over(ui.state.clone());
+        return Ok(());
+    }
     let state = ui.state.clone();
     let found = state
         .voice
@@ -824,12 +834,14 @@ pub fn simulate(
     };
     for (on, set) in [
         (roster, &mut ui.sim.roster),
-        (remote, &mut ui.sim.remotes),
         (verified, &mut ui.sim.verified),
     ] {
         if on {
             set.insert(found);
         }
+    }
+    if remote {
+        ui.sim.remotes.push(SfuRemote::Device(found));
     }
     match (what, pattern) {
         ("media" | "connecting" | "unverified" | "not-heard", None) => {}
@@ -1104,6 +1116,10 @@ fn voice(window: WindowId, cx: &App) -> Option<dilla_client::features::voice::Vo
 
 /// The name a person shows in voice: the member's display name, else the username, else the short id.
 pub fn name_of(state: &AppState, channel: Option<&Channel>, user: UserId) -> String {
+    // The web's `userName('')` of a stranger's stream is the empty id's first eight characters: nothing.
+    if user == STRANGER_USER {
+        return String::new();
+    }
     channel
         .and_then(|c| state.members.get(&c.community_id))
         .and_then(|m| m.iter().find(|m| m.user_id == user))
@@ -2140,10 +2156,11 @@ pub enum TileState {
     Ok,
 }
 
-/// The remote devices that have a tile, in the web's build order (session.ts `tiles()`): each SFU remote with its state
-/// (`unverified` when the call group's roster does not list it, `ok` when its frames authenticated, else `not-heard`),
-/// then each roster member not in the room yet, `connecting`. The device's user comes from the roster, else from the
-/// room's voice list; a device with neither has no name to show and no tile.
+/// The remote devices that have a tile, in the web's build order (session.ts `tiles()`): each SFU remote, in the room's
+/// own participant order, with its state (`unverified` when the call group's roster does not list it, `ok` when its
+/// frames authenticated, else `not-heard`), then each roster member not in the room yet, `connecting`. The device's user
+/// comes from the roster, else from the room's voice list, else it is [`STRANGER_USER`] (the web's `userId ''`: a
+/// stranger's stream, or a remote whose identity is no device id, is shown as an unverified stream with no name).
 fn remote_tiles(state: &AppState, channel: ChannelId) -> Vec<(UserId, DeviceId, TileState)> {
     let call = &state.voice.call;
     if call.channel != Some(channel) {
@@ -2156,27 +2173,29 @@ fn remote_tiles(state: &AppState, channel: ChannelId) -> Vec<(UserId, DeviceId, 
         .map(|p| p.device_id)
         .or(state.account.device_id);
     let mut out = Vec::new();
-    for device in &state.voice.sfu_remotes {
-        if Some(*device) == own {
+    for remote in &state.voice.sfu_remotes {
+        let device = remote.device();
+        if Some(device) == own {
             continue;
         }
-        let rostered = call.roster.iter().find(|r| r.1 == *device);
+        let rostered = call.roster.iter().find(|r| r.1 == device);
         let tile_state = match rostered {
             None => TileState::Unverified,
-            Some(_) if state.voice.verified_peers.contains(device) => TileState::Ok,
+            Some(_) if state.voice.verified_peers.contains(&device) => TileState::Ok,
             Some(_) => TileState::NotHeard,
         };
-        let user = rostered.map(|r| r.0).or_else(|| {
-            room.iter()
-                .find(|p| p.device_id == *device)
-                .map(|p| p.user_id)
-        });
-        if let Some(user) = user {
-            out.push((user, *device, tile_state));
-        }
+        let user = rostered
+            .map(|r| r.0)
+            .or_else(|| {
+                room.iter()
+                    .find(|p| p.device_id == device)
+                    .map(|p| p.user_id)
+            })
+            .unwrap_or(STRANGER_USER);
+        out.push((user, device, tile_state));
     }
     for (user, device, _) in &call.roster {
-        if Some(*device) != own && !state.voice.sfu_remotes.contains(device) {
+        if Some(*device) != own && !state.voice.in_room(*device) {
             out.push((*user, *device, TileState::Connecting));
         }
     }
@@ -2581,6 +2600,21 @@ type TileBounds = Rc<std::cell::RefCell<HashMap<TileKey, gpui::Bounds<gpui::Pixe
 /// a "?", "unverified stream" with a "!". A person who says they are muted or deafened and sends no camera or screen is
 /// not expected to send a frame, so a not-heard tile of theirs shows the muted glyph alone (`silentByChoice`). `None`
 /// for an `ok` tile.
+/// What the stream state says, as `(glyph, copy key)`: `None` for no word (an `ok` tile, or a not-heard one whose person is
+/// silent by choice); the glyph `None` is the dashed pending dot.
+fn state_word_text(
+    tile_state: TileState,
+    silent_by_choice: bool,
+) -> Option<(Option<&'static str>, &'static str)> {
+    match tile_state {
+        TileState::Ok => None,
+        TileState::Connecting => Some((None, "voice.state.connecting")),
+        TileState::NotHeard if silent_by_choice => None,
+        TileState::NotHeard => Some((Some("?"), "voice.state.notHeard")),
+        TileState::Unverified => Some((Some("!"), "voice.state.unverified")),
+    }
+}
+
 fn state_word(
     id: String,
     tile_state: TileState,
@@ -2588,12 +2622,11 @@ fn state_word(
     size: gpui::Pixels,
     height: f32,
 ) -> Option<AnyElement> {
-    let (glyph, text_key, tone) = match tile_state {
-        TileState::Ok => return None,
-        TileState::Connecting => (None, "voice.state.connecting", color::FG_2),
-        TileState::NotHeard if silent_by_choice => return None,
-        TileState::NotHeard => (Some("?"), "voice.state.notHeard", color::FG_2),
-        TileState::Unverified => (Some("!"), "voice.state.unverified", color::WARN),
+    let (glyph, text_key) = state_word_text(tile_state, silent_by_choice)?;
+    let tone = if tile_state == TileState::Unverified {
+        color::WARN
+    } else {
+        color::FG_2
     };
     let glyph = match glyph {
         Some(g) => line(g.to_owned(), size, height, tone).into_any_element(),
@@ -3008,6 +3041,9 @@ fn tile_tools(edge: f32, key: TileKey, full: bool) -> AnyElement {
 /// The name a person shows in a DM call (VoiceView.tsx `userName`): their display name in any server this device
 /// knows, else the account's own name, else the short id.
 fn dm_name_of(state: &AppState, user: UserId) -> String {
+    if user == STRANGER_USER {
+        return String::new();
+    }
     state
         .members
         .values()
@@ -4581,7 +4617,7 @@ mod tests {
             .iter()
             .map(|d| (UserId([*d; 16]), dev(d), u16::from(*d)))
             .collect();
-        s.voice.sfu_remotes = room.iter().map(dev).collect();
+        s.voice.sfu_remotes = room.iter().map(|d| SfuRemote::Device(dev(d))).collect();
         s.voice.verified_peers = verified.iter().map(dev).collect();
         s.voice.screen_streams = screens.iter().map(dev).collect();
     }
@@ -4662,6 +4698,76 @@ mod tests {
 
     /// A remote screen tile needs a real screen stream of an `ok` device; the voice list's `screen` flag alone gives none,
     /// and a stream of a device that is not heard gives none either (media is shown only when `ok`).
+    /// The web draws a tile for every SFU remote, a stranger's stream included: a remote in neither the roster nor the voice
+    /// list, and one whose identity is no device id at all, is an unverified stream of `userId ''` with no name.
+    #[test]
+    fn a_stranger_s_stream_is_an_unverified_tile_with_no_name() {
+        let (mut s, ch) = state_with(&[(2, 2, flags::IN_CALL)]);
+        in_call(&mut s, &ch, 1, (&[], &[2, 9], &[], &[]));
+        s.voice
+            .sfu_remotes
+            .push(SfuRemote::Other("guest-7".to_owned()));
+        let other = SfuRemote::Other("guest-7".to_owned()).device();
+        let t = tiles(&s, ch.id);
+        assert_eq!(
+            t.len(),
+            4,
+            "own, device 2, device 9 and the stranger: {t:?}"
+        );
+        let of = |device: DeviceId| t.iter().find(|k| k.device == device).expect("a tile");
+        assert_eq!(of(DeviceId([9; 16])).user, STRANGER_USER);
+        assert_eq!(of(other).user, STRANGER_USER);
+        for device in [DeviceId([9; 16]), other, DeviceId([2; 16])] {
+            assert_eq!(tile_state(&s, ch.id, device), TileState::Unverified);
+        }
+        assert_eq!(
+            name_of(&s, Some(&ch), STRANGER_USER),
+            "",
+            "userName('') is nothing"
+        );
+        assert_ne!(
+            other,
+            SfuRemote::Other("guest-8".to_owned()).device(),
+            "each identity has its own tile key"
+        );
+    }
+
+    /// The SFU's participant order, not the device ids', orders the devices the voice list does not list.
+    #[test]
+    fn unlisted_remotes_follow_the_room_s_participant_order() {
+        let (mut s, ch) = state_with(&[]);
+        in_call(&mut s, &ch, 1, (&[9, 5], &[9, 5], &[9, 5], &[]));
+        assert_eq!(
+            devices(&tiles(&s, ch.id)),
+            vec![(1, false), (9, false), (5, false)],
+            "joined 9 then 5: that is the order, not the ids'"
+        );
+    }
+
+    /// What each state says (CallTile `voiceStateWords`): the words and glyphs, and when a muted person's not-heard tile
+    /// says nothing.
+    #[test]
+    fn each_tile_state_says_its_word() {
+        assert_eq!(state_word_text(TileState::Ok, false), None);
+        assert_eq!(
+            state_word_text(TileState::Connecting, false),
+            Some((None, "voice.state.connecting"))
+        );
+        assert_eq!(
+            state_word_text(TileState::NotHeard, false),
+            Some((Some("?"), "voice.state.notHeard"))
+        );
+        assert_eq!(state_word_text(TileState::NotHeard, true), None);
+        assert_eq!(
+            state_word_text(TileState::Unverified, true),
+            Some((Some("!"), "voice.state.unverified")),
+            "an unverified stream keeps its word whoever the person is"
+        );
+        assert_eq!(t("voice.state.connecting"), "connecting");
+        assert_eq!(t("voice.state.notHeard"), "not heard yet");
+        assert_eq!(t("voice.state.unverified"), "unverified stream");
+    }
+
     #[test]
     fn a_remote_screen_tile_needs_a_stream_of_an_ok_device() {
         let (mut s, ch) = state_with(&[

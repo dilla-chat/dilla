@@ -715,7 +715,7 @@ pub struct Call {
     events: Mutex<Option<mpsc::UnboundedReceiver<MediaEvent>>>,
     levels: watch::Receiver<RemoteLevels>,
     /// The identities of the room's remote participants, verified or not (session.ts `remotes()`).
-    remotes: watch::Receiver<BTreeSet<String>>,
+    remotes: watch::Receiver<Vec<String>>,
     tails: Tails,
     screen_sound: ScreenSound,
     muted: Arc<AtomicBool>,
@@ -922,12 +922,15 @@ impl Call {
             })?;
 
         let (levels_tx, levels) = watch::channel(RemoteLevels::new());
-        let (remotes_tx, remotes) = watch::channel(
-            room.remote_participants()
-                .keys()
-                .map(|i| i.as_str().to_owned())
-                .collect::<BTreeSet<String>>(),
-        );
+        // The room's remotes in the order they joined (livekit-client's `remoteParticipants` is a Map in that order).
+        let (remotes_tx, remotes) = watch::channel({
+            let mut present: Vec<_> = room.remote_participants().into_values().collect();
+            present.sort_by_key(|p| p.joined_at());
+            present
+                .iter()
+                .map(|p| p.identity().as_str().to_owned())
+                .collect::<Vec<String>>()
+        });
         let (videos_tx, videos) = watch::channel(RemoteVideos::new());
         let (shares_ended, shares_ended_rx) = mpsc::unbounded_channel();
         let (app_audio_ended, app_audio_ended_rx) = mpsc::unbounded_channel();
@@ -1146,7 +1149,7 @@ impl Call {
 
     /// The identities of the room's remote participants, whether their frames verified or not: the web's SFU remotes,
     /// each of which has a tile (an unverified one says so).
-    pub fn remote_participants(&self) -> watch::Receiver<BTreeSet<String>> {
+    pub fn remote_participants(&self) -> watch::Receiver<Vec<String>> {
         self.remotes.clone()
     }
 
@@ -1789,11 +1792,20 @@ pub fn gain_group(device: &str, stream: bool) -> String {
     format!("{device}:{}", if stream { "stream" } else { "voice" })
 }
 
+/// Adds `identity` to the room's remotes in joining order, once; whether the list changed.
+fn join_remote(list: &mut Vec<String>, identity: &str) -> bool {
+    if list.iter().any(|i| i == identity) {
+        return false;
+    }
+    list.push(identity.to_owned());
+    true
+}
+
 async fn remote_tracks(
     mut events: mpsc::UnboundedReceiver<RoomEvent>,
     media: Arc<CallMedia>,
     (levels, videos): (watch::Sender<RemoteLevels>, watch::Sender<RemoteVideos>),
-    remotes: watch::Sender<BTreeSet<String>>,
+    remotes: watch::Sender<Vec<String>>,
     (tails, screen_sound): (Tails, ScreenSound),
     playout: Option<PlayoutSink>,
     ended: watch::Sender<Option<RoomEnd>>,
@@ -1808,7 +1820,7 @@ async fn remote_tracks(
                 participant,
             } => {
                 let identity = participant.identity().as_str().to_owned();
-                remotes.send_if_modified(|set| set.insert(identity.clone()));
+                remotes.send_if_modified(|list| join_remote(list, &identity));
                 // An unverified stream (identity not 32 lowercase hex), a source without a slot or a
                 // NONE-flagged publication is never bound: its frames are held, then dropped.
                 let (Some(device), Some(slot)) =
@@ -1926,11 +1938,15 @@ async fn remote_tracks(
             }
             RoomEvent::ParticipantConnected(participant) => {
                 let identity = participant.identity().as_str().to_owned();
-                remotes.send_if_modified(|set| set.insert(identity));
+                remotes.send_if_modified(|list| join_remote(list, &identity));
             }
             RoomEvent::ParticipantDisconnected(participant) => {
                 let identity = participant.identity().as_str().to_owned();
-                remotes.send_if_modified(|set| set.remove(&identity));
+                remotes.send_if_modified(|list| {
+                    let before = list.len();
+                    list.retain(|i| *i != identity);
+                    list.len() != before
+                });
             }
             RoomEvent::Disconnected { reason } => {
                 why = Some(RoomEnd::of(reason));

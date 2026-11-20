@@ -110,6 +110,38 @@ pub struct LocalShare {
     pub screen_audio: bool,
 }
 
+/// The user a tile of an unidentified stream carries (the web's `userId ''`): nobody known, no name.
+pub const STRANGER_USER: UserId = UserId([0xff; 16]);
+
+/// One remote of the call's SFU room: a device (its identity is the device id in hex), or a stream whose identity is not a
+/// device id at all, which the stage shows as an unverified stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SfuRemote {
+    Device(DeviceId),
+    /// The raw identity the room reported.
+    Other(String),
+}
+
+impl SfuRemote {
+    /// The key the stage's tiles use for it: the device itself, or a stand-in made from the identity (stable within a
+    /// run) for a stream that has no device id.
+    pub fn device(&self) -> DeviceId {
+        match self {
+            SfuRemote::Device(d) => *d,
+            SfuRemote::Other(identity) => {
+                use std::hash::{Hash, Hasher};
+                let mut out = [0u8; 16];
+                for (i, half) in out.chunks_mut(8).enumerate() {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    (i, identity).hash(&mut h);
+                    half.copy_from_slice(&h.finish().to_le_bytes());
+                }
+                DeviceId(out)
+            }
+        }
+    }
+}
+
 /// The voice slice.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VoiceState {
@@ -125,9 +157,10 @@ pub struct VoiceState {
     pub ptt_held: bool,
     /// The devices heard speaking now (this device's own included while its microphone is live).
     pub speaking: BTreeSet<DeviceId>,
-    /// The remote devices in the call's SFU room, whether verified or not (session.ts `remotes()`): the stage draws a tile
-    /// for each of them. Not the call group's roster, and not the instance's voice list.
-    pub sfu_remotes: BTreeSet<DeviceId>,
+    /// The remotes in the call's SFU room, in the room's participant order, whether verified or not (session.ts
+    /// `remotes()`): the stage draws a tile for each of them. Not the call group's roster, and not the instance's voice
+    /// list.
+    pub sfu_remotes: Vec<SfuRemote>,
     /// The SFU remotes whose frames authenticated (session.ts `verified`): their tile is `ok`, the others' `not-heard`
     /// (in the roster) or `unverified` (not in it).
     pub verified_peers: BTreeSet<DeviceId>,
@@ -152,6 +185,11 @@ impl VoiceState {
     /// The flags this device asks the instance to show for it (`voice_self`: bit 0 mute, bit 1 deafen).
     pub fn self_flags(&self) -> u8 {
         u8::from(self.self_mute || self.self_deaf) | (u8::from(self.self_deaf) << 1)
+    }
+
+    /// Whether `device` is among the call's SFU remotes.
+    pub fn in_room(&self, device: DeviceId) -> bool {
+        self.sfu_remotes.iter().any(|r| r.device() == device)
     }
 
     /// The people of a channel's call.
