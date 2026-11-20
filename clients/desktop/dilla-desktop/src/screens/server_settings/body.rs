@@ -339,9 +339,15 @@ impl Body {
             subscriptions.push(cx.subscribe_in(
                 &name,
                 window,
-                move |this: &mut Self, input, event: &InputEvent, _window, cx| {
+                move |this: &mut Self, input, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
-                        let value = input.read(cx).value().to_string();
+                        let mut value = input.read(cx).value().to_string();
+                        // `maxLength`: typing (or a paste) past the limit is cut.
+                        if let Some(kept) = super::welcome::capped_typing(&value) {
+                            value = kept.to_owned();
+                            let again = value.clone();
+                            input.update(cx, |s, cx| s.set_value(again, window, cx));
+                        }
                         let mut d = draft.borrow_mut();
                         if d.name != value {
                             d.name = value;

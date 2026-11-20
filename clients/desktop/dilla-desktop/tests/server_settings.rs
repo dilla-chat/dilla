@@ -107,6 +107,84 @@ fn the_welcome_page_without_a_bot_shows_why_and_a_disabled_load() {
     assert!(load.disabled, "Load is disabled without a Bot");
 }
 
+/// The loaded Welcome form (Task 38 fix round 1): the fixture's server has a ready Bot with the welcome capability and
+/// `general` marked; Load is enabled, and pressing it (a fixture has no Bot: it answers as one that never configured
+/// Welcome) shows the channel select, the template field with the default and Reload, and no Load button.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the headless renderer is Linux only here"
+)]
+fn the_loaded_welcome_page_offers_the_channel_the_template_and_reload() {
+    use dilla_desktop::strings::t;
+    let mut driver = dilla_parity::Driver::launch_fixture(&fixture("welcome-loaded"), None, &[]);
+    driver.wait_idle();
+    let tree = driver.a11y_tree();
+    let named = |role: &str, key: &str| {
+        tree.nodes
+            .iter()
+            .any(|n| n.role == role && n.label.as_deref() == Some(t(key)))
+    };
+    // A Bot with the capability and a Bot channel: no reason is given, and Load is enabled before the click.
+    let notes = |key: &str| {
+        tree.nodes
+            .iter()
+            .any(|n| n.label.as_deref().is_some_and(|l| l.contains(t(key))))
+    };
+    assert!(!notes("admin.bot.welcomeSettings.requiresCapability"));
+    assert!(!notes("admin.bot.welcomeSettings.noChannels"));
+    assert!(named("Button", "admin.bot.welcomeSettings.load"));
+    driver.click("welcome-load");
+    driver.wait_idle();
+    let tree = driver.a11y_tree();
+    let has = |role: &str, key: &str| {
+        tree.nodes
+            .iter()
+            .any(|n| n.role == role && n.label.as_deref() == Some(t(key)))
+    };
+    assert!(
+        !has("Button", "admin.bot.welcomeSettings.load"),
+        "the form replaces Load"
+    );
+    assert!(
+        has("ComboBox", "admin.bot.welcomeSettings.channel"),
+        "the channel select"
+    );
+    assert!(
+        has("MultilineTextInput", "admin.bot.welcomeSettings.template"),
+        "the template field"
+    );
+    assert!(has("Button", "admin.bot.welcomeSettings.reload"), "Reload");
+    // Read of a server with no configuration: the default template and the first Bot channel are the draft, so it is a
+    // change to save, and no "configured" line.
+    assert!(
+        !tree
+            .nodes
+            .iter()
+            .any(|n| n.label.as_deref() == Some(t("admin.bot.welcomeSettings.configured"))),
+        "nothing is configured yet"
+    );
+}
+
+/// The loaded form as the app draws it (a GPUI-only reference: Jonas's "design, not pixels", ruling R34; the web's frame
+/// of this state needs a Bot whose clock agrees with the shooter's frozen one).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_server_settings_welcome_loaded() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("welcome-loaded"),
+        "server-settings-welcome-loaded",
+        |app| {
+            app.click("welcome-load");
+            app.wait_idle();
+        },
+    )
+    .unwrap_or_else(|e| panic!("welcome-loaded differs from its golden shot: {e}"));
+}
+
 // ---- keyboard (S6) ----
 
 /// The nav is one tab stop whose arrows move between the sections the permissions allow, in the registry's order.

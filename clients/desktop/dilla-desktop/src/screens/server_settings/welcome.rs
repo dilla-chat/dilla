@@ -31,6 +31,22 @@ pub const DEFAULT_TEMPLATE: &str = "Welcome {member} to {server}!";
 /// The longest template the Bot takes, in UTF-8 bytes.
 pub const TEMPLATE_MAX_BYTES: usize = 2000;
 
+/// The most the template field takes while typing: the web's `maxLength={2000}`, which counts UTF-16 code units (the Save
+/// guard counts [`TEMPLATE_MAX_BYTES`] UTF-8 bytes, so a template of wide characters can still be refused there).
+pub const TEMPLATE_MAX_UNITS: usize = 2000;
+
+/// `value` cut to [`TEMPLATE_MAX_UNITS`] UTF-16 code units (never inside a character), or `None` when it fits.
+pub fn capped_typing(value: &str) -> Option<&str> {
+    let mut units = 0;
+    for (at, c) in value.char_indices() {
+        units += c.len_utf16();
+        if units > TEMPLATE_MAX_UNITS {
+            return Some(&value[..at]);
+        }
+    }
+    None
+}
+
 const REQUIRES_CAPABILITY: &str = "admin.bot.welcomeSettings.requiresCapability";
 const INVALID: &str = "admin.bot.welcomeSettings.invalid";
 
@@ -65,6 +81,9 @@ pub struct WelcomeDraft {
     pub uncertain: Option<([u8; 16], u64)>,
     /// What the save in flight, or the last uncertain one, sent: the settings a `Saved` answer lands.
     pub saving: Option<WelcomeSettings>,
+    /// What the save that went unanswered sent: a Retry lands this, whatever a later Save sent meanwhile
+    /// (`pending.saved` of the web's request).
+    pub uncertain_saved: Option<WelcomeSettings>,
     pub error: Option<&'static str>,
     pub notice: Option<&'static str>,
     /// Set by the workspace's save; [`Body::flush_welcome`] sends it.
@@ -133,15 +152,6 @@ impl WelcomeDraft {
         self.ticket
     }
 
-    /// Whether the draft differs from what a read would give it (`dirtyRef`): a read keeps such a draft.
-    fn edited(&self) -> bool {
-        self.loaded
-            && self
-                .config
-                .as_ref()
-                .is_none_or(|c| Some(c.channel) != self.channel || c.template != self.template)
-    }
-
     /// The channel and template a reset or a read of `config` gives the draft.
     fn fill(&mut self, fallback: Option<ChannelId>) {
         self.channel = self.config.as_ref().map(|c| c.channel).or(fallback);
@@ -151,7 +161,8 @@ impl WelcomeDraft {
             .map_or_else(|| DEFAULT_TEMPLATE.to_owned(), |c| c.template.clone());
     }
 
-    /// The answer of request `ticket` (operation `op`; `retried`: it was a Retry). `fallback` is the first Bot channel.
+    /// The answer of request `ticket` (operation `op`; `retried`: it was a Retry). `fallback` is the first Bot channel and
+    /// `server_name` the server's current name.
     pub fn answer(
         &mut self,
         ticket: u64,
@@ -159,6 +170,7 @@ impl WelcomeDraft {
         result: Result<WelcomeAnswer, String>,
         fallback: Option<ChannelId>,
         retried: bool,
+        server_name: &str,
     ) {
         if ticket < self.ticket {
             return;
@@ -171,7 +183,8 @@ impl WelcomeDraft {
         }
         match result {
             Ok(WelcomeAnswer::Read { config, revision }) => {
-                let keep = self.edited();
+                // `dirtyRef`: a read keeps a draft that is dirty, the server's name included.
+                let keep = self.dirty(server_name);
                 self.config = config;
                 if !keep {
                     self.fill(fallback);
@@ -182,7 +195,7 @@ impl WelcomeDraft {
                 self.notice = None;
                 self.error = None;
             }
-            Ok(WelcomeAnswer::Saved { revision }) => match self.saving.take() {
+            Ok(WelcomeAnswer::Saved { revision }) => match self.saved_value(retried) {
                 Some(saved) => {
                     self.config = Some(saved);
                     self.revision = Some(revision);
@@ -202,6 +215,9 @@ impl WelcomeDraft {
             }
             Ok(WelcomeAnswer::Uncertain { request_id }) => {
                 self.uncertain = Some((request_id, op));
+                if op == 2 && !retried {
+                    self.uncertain_saved = self.saving.clone();
+                }
                 self.notice = Some("admin.bot.welcomeSettings.uploadUncertain");
                 if retried {
                     self.error = Some("admin.bot.welcomeSettings.readFailed");
@@ -209,6 +225,24 @@ impl WelcomeDraft {
             }
             Err(_) => self.error = Some("admin.bot.welcomeSettings.uploadFailed"),
         }
+    }
+
+    /// The value a `Saved` answer lands: a Retry's is the unanswered save's, any other the newest save's.
+    fn saved_value(&mut self, retried: bool) -> Option<WelcomeSettings> {
+        if retried {
+            self.uncertain_saved.take().or_else(|| self.saving.take())
+        } else {
+            self.saving.take()
+        }
+    }
+
+    /// The Retry the page offers: the unanswered request's own id and operation.
+    pub fn retry_op(&self) -> Option<WelcomeOp> {
+        self.uncertain
+            .map(|(request_id, operation)| WelcomeOp::Retry {
+                request_id,
+                operation,
+            })
     }
 
     /// `reset`: the saved settings again (the defaults without any, and the Load button back).
@@ -256,6 +290,21 @@ pub fn welcome_inputs(
     )
 }
 
+/// A button the automation build can find by `id` (the build's bounds probe laid over it).
+fn probed(button: Button, id: &'static str) -> gpui::AnyElement {
+    #[cfg(feature = "automation")]
+    return div()
+        .relative()
+        .child(button)
+        .child(crate::automation::bounds_probe(id))
+        .into_any_element();
+    #[cfg(not(feature = "automation"))]
+    {
+        let _ = id;
+        button.into_any_element()
+    }
+}
+
 impl Body {
     /// The page's inputs now.
     fn welcome_now(&self) -> (bool, bool, Vec<(ChannelId, String)>, String) {
@@ -274,14 +323,15 @@ impl Body {
             // A fixture has no client and no Bot to ask: its Load is answered as a Bot that never configured Welcome
             // answers (what the shooter's world has), so the page can be drawn loaded.
             if operation == 1 {
-                let fallback = self.welcome_now().2.first().map(|c| c.0);
+                let (_, _, channels, name) = self.welcome_now();
+                let fallback = channels.first().map(|c| c.0);
                 let mut d = self.welcome.borrow_mut();
                 let ticket = d.begin(1);
                 let answer = WelcomeAnswer::Read {
                     config: None,
                     revision: 1,
                 };
-                d.answer(ticket, 1, Ok(answer), fallback, false);
+                d.answer(ticket, 1, Ok(answer), fallback, false, &name);
                 drop(d);
                 cx.notify();
             }
@@ -295,10 +345,11 @@ impl Body {
                 Err(_) => Err("canceled".to_owned()),
             };
             let _ = this.update(cx, |this, cx| {
-                let fallback = this.welcome_now().2.first().map(|c| c.0);
+                let (_, _, channels, name) = this.welcome_now();
+                let fallback = channels.first().map(|c| c.0);
                 this.welcome
                     .borrow_mut()
-                    .answer(ticket, operation, result, fallback, retried);
+                    .answer(ticket, operation, result, fallback, retried, &name);
                 cx.notify();
             });
         })
@@ -398,16 +449,16 @@ impl Body {
             } else {
                 t("admin.bot.welcomeSettings.load")
             };
-            panel =
-                panel.child(
-                    div()
-                        .flex()
-                        .child(Button::new("welcome-load", label).disabled(busy).on_click(
-                            act_click(cx, |this, _, cx| {
-                                this.welcome_request(WelcomeOp::Read, cx);
-                            }),
-                        )),
-                );
+            panel = panel.child(
+                div().flex().child(probed(
+                    Button::new("welcome-load", label)
+                        .disabled(busy)
+                        .on_click(act_click(cx, |this, _, cx| {
+                            this.welcome_request(WelcomeOp::Read, cx);
+                        })),
+                    "welcome-load",
+                )),
+            );
         } else {
             let mut options: Vec<(String, String)> = vec![(
                 String::new(),
@@ -450,6 +501,7 @@ impl Body {
                 .border_1()
                 .border_color(color::CONTROL_EDGE_FIELD)
                 .text_size(text::BASE)
+                .font_family(font::MONO)
                 .text_color(color::FG)
                 .when(busy, |d| d.opacity(OPACITY_MUTED).cursor_not_allowed())
                 .child(
@@ -470,13 +522,14 @@ impl Body {
                 .child(para("admin.bot.welcomeSettings.tokens")),
             );
             panel = panel.child(
-                div().flex().child(
+                div().flex().child(probed(
                     Button::new("welcome-reload", t("admin.bot.welcomeSettings.reload"))
                         .disabled(d.pending.is_some())
                         .on_click(act_click(cx, |this, _, cx| {
                             this.welcome_request(WelcomeOp::Read, cx);
                         })),
-                ),
+                    "welcome-reload",
+                )),
             );
         }
         // The status line: waiting, an unanswered request, or the last notice.
@@ -490,20 +543,15 @@ impl Body {
         if let Some(key) = status {
             panel = panel.child(para(key));
         }
-        if let (Some((request_id, operation)), None) = (d.uncertain, d.pending) {
-            panel = panel.child(div().flex().child(
+        if let (Some(retry), None) = (d.retry_op(), d.pending) {
+            panel = panel.child(div().flex().child(probed(
                 Button::new("welcome-retry", t("admin.bot.welcomeSettings.retry")).on_click(
                     act_click(cx, move |this, _, cx| {
-                        this.welcome_request(
-                            WelcomeOp::Retry {
-                                request_id,
-                                operation,
-                            },
-                            cx,
-                        );
+                        this.welcome_request(retry.clone(), cx);
                     }),
                 ),
-            ));
+                "welcome-retry",
+            )));
         }
         if let Some(key) = d.error {
             panel = panel.child(alert(t(key)));
@@ -545,7 +593,7 @@ mod tests {
 
     fn answer(d: &mut WelcomeDraft, op: u64, result: Result<WelcomeAnswer, String>, retried: bool) {
         let ticket = d.begin(op);
-        d.answer(ticket, op, result, Some(G), retried);
+        d.answer(ticket, op, result, Some(G), retried, "Midgard");
     }
 
     #[test]
@@ -700,11 +748,19 @@ mod tests {
             }),
             Some(G),
             false,
+            "Midgard",
         );
         // Reload while the save is unanswered.
         let cfg9 = config(H, "Nine", "Midgard");
         let t2 = d.begin(1);
-        d.answer(t2, 1, read(Some(cfg9.clone()), 9), Some(G), false);
+        d.answer(
+            t2,
+            1,
+            read(Some(cfg9.clone()), 9),
+            Some(G),
+            false,
+            "Midgard",
+        );
         assert_eq!(d.revision, Some(9));
         assert_eq!(d.uncertain, Some(([1; 16], 2)), "Retry is still offered");
         // The save's late answer is older than the read.
@@ -714,6 +770,7 @@ mod tests {
             Ok(WelcomeAnswer::Saved { revision: 8 }),
             Some(G),
             false,
+            "Midgard",
         );
         assert_eq!(d.revision, Some(9));
         assert_eq!(d.config, Some(cfg9));
@@ -725,6 +782,7 @@ mod tests {
             Ok(WelcomeAnswer::Saved { revision: 10 }),
             Some(G),
             true,
+            "Midgard",
         );
         assert_eq!(d.revision, Some(10));
         assert_eq!(d.uncertain, None);
@@ -732,5 +790,166 @@ mod tests {
             d.config.as_ref().map(|c| c.server_name.as_str()),
             Some("Midgard")
         );
+    }
+
+    #[test]
+    fn a_read_after_a_rename_keeps_the_draft_as_the_web_does() {
+        let mut d = WelcomeDraft::default();
+        answer(&mut d, 1, read(Some(config(G, "Hi", "Midgard")), 1), false);
+        // The server was renamed: the saved draft is dirty, and a read with another config keeps it.
+        let t = d.begin(1);
+        let other = config(H, "Other", "Midgard Crew");
+        d.answer(
+            t,
+            1,
+            read(Some(other.clone()), 2),
+            Some(G),
+            false,
+            "Midgard Crew",
+        );
+        assert_eq!((d.channel, d.template.as_str()), (Some(G), "Hi"));
+        assert_eq!(d.config, Some(other));
+    }
+
+    #[test]
+    fn a_retry_lands_the_save_that_went_unanswered_not_a_newer_one() {
+        let channels = [(G, "general".to_owned())];
+        let i = inputs(&channels, "Midgard");
+        let mut d = WelcomeDraft::default();
+        answer(&mut d, 1, read(None, 1), false);
+        d.template = "First".to_owned();
+        d.to_save(&i).expect("valid");
+        answer(
+            &mut d,
+            2,
+            Ok(WelcomeAnswer::Uncertain {
+                request_id: [3; 16],
+            }),
+            false,
+        );
+        // A second Save is refused on the way (the old request is still unanswered, so Retry stays).
+        d.template = "Second".to_owned();
+        d.to_save(&i).expect("valid");
+        answer(&mut d, 2, Err("refused".to_owned()), false);
+        assert_eq!(d.error, Some("admin.bot.welcomeSettings.uploadFailed"));
+        // The Retry carries the first request's id and lands the first value, as the web's request does.
+        assert_eq!(
+            d.retry_op(),
+            Some(WelcomeOp::Retry {
+                request_id: [3; 16],
+                operation: 2
+            })
+        );
+        answer(&mut d, 2, Ok(WelcomeAnswer::Saved { revision: 3 }), true);
+        assert_eq!(
+            d.config.as_ref().map(|c| c.template.as_str()),
+            Some("First")
+        );
+        assert_eq!(d.retry_op(), None);
+    }
+
+    #[test]
+    fn typing_is_capped_at_2000_utf16_units_never_inside_a_character() {
+        assert_eq!(capped_typing(&"a".repeat(2000)), None);
+        assert_eq!(capped_typing(&"a".repeat(2001)).map(str::len), Some(2000));
+        // 1999 units, then a 2-unit emoji: the emoji goes whole.
+        let s = format!("{}\u{1F600}", "a".repeat(1999));
+        assert_eq!(capped_typing(&s).map(str::len), Some(1999));
+        // 1000 two-byte characters are 1000 units: typing allows them though Save (2000 bytes) still does.
+        assert_eq!(capped_typing(&"\u{e9}".repeat(1001)), None);
+    }
+
+    fn world(
+        installation: Option<(u8, u64)>,
+        marked: &[ChannelId],
+        access_loaded: bool,
+    ) -> (AppState, CommunityId) {
+        use dilla_client::state::bot_admin::{BotCatalog, CatalogState, Installation};
+        use dilla_client::state::{Channel, ChannelGroupState, Community, UserId};
+        let community = CommunityId([1; 16]);
+        let channel = |id: ChannelId, kind: u8, name: &str| Channel {
+            id,
+            community_id: community,
+            kind,
+            mode: 0,
+            name: name.to_owned(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::default(),
+        };
+        let mut state = AppState {
+            communities: vec![Community {
+                id: community,
+                name: "Midgard".to_owned(),
+                owner: UserId([2; 16]),
+                policy_version: 0,
+            }],
+            channels: vec![
+                channel(G, 0, "general"),
+                channel(H, 0, "random"),
+                channel(ChannelId([9; 16]), 1, "voice"),
+            ],
+            ..AppState::default()
+        };
+        if let Some((st, capabilities)) = installation {
+            state.bot_admin.installation.insert(
+                community,
+                Installation {
+                    id: [4; 16],
+                    state: st,
+                    revision: 1,
+                    user_id: None,
+                    capabilities,
+                    updated_at: 0,
+                    restart_requested: 0,
+                    restart_handled: 0,
+                    version: None,
+                    music_volume: 50,
+                    music_idle_minutes: 15,
+                },
+            );
+        }
+        state.bot_admin.catalog.insert(
+            community,
+            BotCatalog {
+                state: CatalogState::Ready,
+                since: None,
+                fingerprint: None,
+                bot_channels: Some(marked.to_vec()),
+            },
+        );
+        if access_loaded {
+            state.roles.access.insert(
+                community,
+                dilla_client::features::roles::rank::access_of(0, 0, true),
+            );
+        }
+        (state, community)
+    }
+
+    #[test]
+    fn the_inputs_follow_the_installation_the_catalog_and_the_access() {
+        // Ready with the welcome capability, owner, both text channels marked (the voice one too, which is not text).
+        let (state, c) = world(Some((3, 1 << 1)), &[H, G, ChannelId([9; 16])], true);
+        let (enabled, can_manage, channels, name) = welcome_inputs(&state, c);
+        assert!(enabled && can_manage);
+        // Channel-list order, text only.
+        assert_eq!(
+            channels,
+            [(G, "general".to_owned()), (H, "random".to_owned())]
+        );
+        assert_eq!(name, "Midgard");
+        // Only the marked ones.
+        let (state, c) = world(Some((3, 1 << 1)), &[H], true);
+        assert_eq!(welcome_inputs(&state, c).2, [(H, "random".to_owned())]);
+        // Not ready, or without the welcome bit, is not enabled.
+        assert!(!welcome_inputs(&world(Some((2, 1 << 1)), &[G], true).0, c).0);
+        assert!(!welcome_inputs(&world(Some((3, 1)), &[G], true).0, c).0);
+        assert!(!welcome_inputs(&world(None, &[G], true).0, c).0);
+        // The access not read yet is not "may manage".
+        assert!(!welcome_inputs(&world(Some((3, 1 << 1)), &[G], false).0, c).1);
     }
 }
