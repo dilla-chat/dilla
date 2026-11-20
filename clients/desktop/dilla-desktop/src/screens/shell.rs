@@ -15,7 +15,7 @@ use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, ConnectionS
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, Styled, Subscription, Window, div, px,
+    ScrollHandle, SharedString, Styled, Subscription, Window, div,
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
@@ -1731,7 +1731,7 @@ impl Render for ShellView {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(8.0))
+                                    .gap(layout::DIALOG_BODY_GAP)
                                     .child(
                                         dilla_desktop_ui::text::line(
                                             crate::screens::voice::group_code(&code),

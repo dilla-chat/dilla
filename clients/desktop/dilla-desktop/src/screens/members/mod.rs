@@ -35,7 +35,7 @@ use dilla_client::sync::api::ApiError;
 use gpui::{
     AnyElement, App, AppContext, Entity, InteractiveElement, IntoElement, ParentElement, Pixels,
     Point, SharedString, Styled, Window, WindowId, anchored, deferred, div, point,
-    prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::InputState;
 
@@ -1256,7 +1256,7 @@ fn bans_section(
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
+                    .gap(settings_layout::BAN_TEXT_GAP)
                     .child(flow_paragraph(
                         name.clone(),
                         text::UI,
@@ -2017,9 +2017,12 @@ mod tests {
             window: &mut Window,
             cx: &mut gpui::Context<Self>,
         ) -> impl IntoElement {
-            div()
-                .w(px(640.0))
-                .child(bans_section(&self.ctx, self.community, window, cx))
+            div().w(settings_layout::BAN_TEST_W).child(bans_section(
+                &self.ctx,
+                self.community,
+                window,
+                cx,
+            ))
         }
     }
 
@@ -2059,8 +2062,9 @@ mod tests {
             .expect("Unban is offered on every row");
         assert!(text.right() <= unban.left(), "the text ends left of Unban");
         // The title and two short details take one line each; the reason takes several.
-        let one_line = |size| px(line_height(size, 1.4));
-        let unwrapped = one_line(text::UI) + one_line(text::XS) * 3.0 + px(2.0) * 3.0;
+        let one_line = |size| gpui::px(line_height(size, 1.4));
+        let unwrapped =
+            one_line(text::UI) + one_line(text::XS) * 3.0 + settings_layout::BAN_TEXT_GAP * 3.0;
         assert!(
             text.size.height > unwrapped + one_line(text::XS),
             "the reason wraps"
