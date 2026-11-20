@@ -20,11 +20,11 @@ use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::components::confirm_dialog::{ConfirmDialog, Tone};
 use dilla_desktop_ui::components::dialog::{Dialog, InitialFocus};
+use dilla_desktop_ui::components::settings::frame::SECTION_GAP;
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::GroupPosition;
 use dilla_desktop_ui::components::text_field::{Frame, TextField};
 use dilla_desktop_ui::components::toast::show_toast_in;
-use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{flow_paragraph, line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
 
@@ -283,13 +283,6 @@ impl UserSettings {
                 .detach();
             }
             _ => {}
-        }
-    }
-
-    pub(super) fn density(&self) -> Density {
-        match self.local_density.unwrap_or(self.ctx.state.profile.density) {
-            dilla_client::state::profile::DensitySetting::Compact => Density::Compact,
-            dilla_client::state::profile::DensitySetting::Regular => Density::Regular,
         }
     }
 
@@ -602,7 +595,6 @@ impl UserSettings {
 
     fn devices_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let now = self.ctx.clock.now();
-        let density = self.density();
         let rows = self.rows();
         let n = rows.len();
         let this = cx.entity();
@@ -679,7 +671,8 @@ impl UserSettings {
             .w_full()
             .child(section_header(t("devices.title"), Some(t("devices.body"))));
         if let Some(code) = &self.load_error {
-            col = col.child(div().pb(density.group_gap()).child(Banner::new(
+            // The frame steps a section's blocks a fixed 14px apart (`> * + *`), at every density.
+            col = col.child(div().pb(gpui::px(SECTION_GAP)).child(Banner::new(
                 "devices-load-error",
                 BannerTone::Danger,
                 tf("settings.error.other", &[("code", code)]),

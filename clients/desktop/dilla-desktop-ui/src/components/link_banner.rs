@@ -24,7 +24,8 @@ pub struct LinkBanner {
     status: LinkStatus,
     offline: SharedString,
     connecting: SharedString,
-    density: Density,
+    /// The density to step by; the window's ([`Density::of`]) when none is given.
+    density: Option<Density>,
 }
 
 impl LinkBanner {
@@ -40,18 +41,19 @@ impl LinkBanner {
             status,
             offline: offline.into(),
             connecting: connecting.into(),
-            density: Density::Regular,
+            density: None,
         }
     }
 
     pub fn density(mut self, density: Density) -> Self {
-        self.density = density;
+        self.density = Some(density);
         self
     }
 }
 
 impl RenderOnce for LinkBanner {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let density = self.density.unwrap_or_else(|| Density::of(window, cx));
         let root = div().id(self.id.clone());
         let (tone, label, rule, fg) = match self.status {
             LinkStatus::Online => return root.size_0(),
@@ -68,16 +70,22 @@ impl RenderOnce for LinkBanner {
             .gap(px(8.0))
             .min_w_0()
             .w_full()
-            .px(self.density.row_pad_x())
+            .px(density.row_pad_x())
             .py(px(6.0))
             .bg(color::SURFACE_2)
             .border_b_1()
             .border_color(rule)
             .child(StateDot::new((self.id, "dot"), tone))
             .child(
-                div()
-                    .min_w_0()
-                    .child(line(label, text::SM, line_height(text::SM, 1.5), fg).ellipsis()),
+                div().min_w_0().child(
+                    line(
+                        label,
+                        text::SM,
+                        line_height(text::SM, density.line_height()),
+                        fg,
+                    )
+                    .ellipsis(),
+                ),
             )
     }
 }

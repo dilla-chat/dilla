@@ -44,9 +44,24 @@ pub struct ScreenFixture {
     /// that phase sees (`/welcome` is the sign-in screen of a device with no account).
     #[serde(default)]
     pub phase: Phase,
+    /// The density the screen is drawn at (Task 19b: the web shooter sets `data-density` on the document root, the GPUI
+    /// window takes it); regular when absent.
+    #[serde(default)]
+    pub density: FixtureDensity,
     /// The same actions on both sides, in order.
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+
+/// A fixture's density: the three steps of the web's stylesheet (`[data-density]`, tokens.ts `densities`). The web's
+/// setting admits only `compact` and `regular`; `cozy` is reachable here so its step can be drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixtureDensity {
+    Compact,
+    #[default]
+    Regular,
+    Cozy,
 }
 
 /// The account phase of the viewer's device (`AccountPhase`, narrowed to what a fixture draws).
@@ -906,6 +921,17 @@ mod tests {
         assert!(route.starts_with("/c/"), "{route}");
         assert_eq!(route.len(), "/c/".len() + 32 + 1 + 32);
         assert_eq!(f.steps.len(), 2);
+    }
+
+    /// Task 19b: a fixture names its density, regular when it names none, and an unknown one is refused.
+    #[test]
+    fn a_fixture_names_its_density() {
+        assert_eq!(fixture().density, FixtureDensity::Regular);
+        let named = |d: &str| MINIMAL.replacen('{', &format!("{{\"density\": \"{d}\","), 1);
+        let parse = |d: &str| ScreenFixture::parse(&named(d)).map(|f| f.density);
+        assert_eq!(parse("compact"), Ok(FixtureDensity::Compact));
+        assert_eq!(parse("cozy"), Ok(FixtureDensity::Cozy));
+        assert!(parse("tight").is_err());
     }
 
     #[test]

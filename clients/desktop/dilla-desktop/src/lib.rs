@@ -4,6 +4,7 @@
 pub mod app;
 #[cfg(feature = "automation")]
 pub mod automation;
+pub mod density;
 pub mod edit_state;
 #[cfg(feature = "automation")]
 pub mod fixture;

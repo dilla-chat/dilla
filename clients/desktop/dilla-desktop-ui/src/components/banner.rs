@@ -50,7 +50,8 @@ pub struct Banner {
     tone: BannerTone,
     text: SharedString,
     action: Option<(SharedString, ClickHandler)>,
-    density: Density,
+    /// The density to step by; the window's ([`Density::of`]) when none is given.
+    density: Option<Density>,
 }
 
 impl Banner {
@@ -60,7 +61,7 @@ impl Banner {
             tone,
             text: text.into(),
             action: None,
-            density: Density::Regular,
+            density: None,
         }
     }
 
@@ -74,17 +75,20 @@ impl Banner {
     }
 
     pub fn density(mut self, density: Density) -> Self {
-        self.density = density;
+        self.density = Some(density);
         self
     }
 }
 
 impl RenderOnce for Banner {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let density = self.density.unwrap_or_else(|| Density::of(window, cx));
+        // Banner.css sets no line height: the text takes the root's `--line-height`.
+        let lh = line_height(text::SM, density.line_height());
         let accent = self.tone.accent();
         let glyph = match self.tone.glyph() {
             Some(icon) => div().child(Icon::new(icon).size(px(14.0)).color(accent)),
-            None => div().child(line("›", text::SM, line_height(text::SM, 1.5), accent)),
+            None => div().child(line("›", text::SM, lh, accent)),
         };
         let id = self.id.clone();
         let mut root = div()
@@ -93,19 +97,19 @@ impl RenderOnce for Banner {
             .items_center()
             .gap(px(12.0))
             .w_full()
-            .pl(self.density.row_pad_x() + px(3.0))
-            .pr(self.density.row_pad_x())
+            .pl(density.row_pad_x() + px(3.0))
+            .pr(density.row_pad_x())
             .py(px(8.0))
             .bg(color::BG_2)
             .border_b_1()
             .border_color(color::HAIRLINE_2)
             .child(glyph.flex_none())
-            .child(div().flex_1().min_w_0().child(line(
-                self.text,
-                text::SM,
-                line_height(text::SM, 1.5),
-                color::FG,
-            )));
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(line(self.text, text::SM, lh, color::FG)),
+            );
         // The 3px left edge takes the tone while the bottom edge stays a hairline: GPUI has one border colour per box, so the
         // left edge is a bar over the padding that makes room for it.
         root = root.relative().child(

@@ -2,7 +2,9 @@
 //! steps, the focus ring), as constants named after `packages/design-tokens/src/tokens.ts`.
 //! `tests::constants_match_tokens_ts` reads that file and fails when one of them drifts.
 
-use gpui::{BoxShadow, Hsla, Pixels, point, px};
+use std::collections::HashMap;
+
+use gpui::{App, BoxShadow, Global, Hsla, Pixels, Window, WindowId, point, px};
 
 use crate::tokens::color;
 
@@ -82,7 +84,41 @@ impl Density {
             Self::Cozy => 1.55,
         }
     }
+
+    /// The density `window` draws at (the web's `data-density` on the document root): what the app set for it, regular
+    /// until it sets one. A component that steps with the density reads this unless it was given one.
+    pub fn of(window: &Window, cx: &App) -> Self {
+        Self::of_id(window.window_handle().window_id(), cx)
+    }
+
+    /// [`Self::of`] by the window's id.
+    pub fn of_id(window: WindowId, cx: &App) -> Self {
+        cx.try_global::<WindowDensities>()
+            .and_then(|d| d.0.get(&window).copied())
+            .unwrap_or_default()
+    }
+
+    /// Sets `window`'s density; answers whether it changed (the caller redraws the window then).
+    pub fn set_for(window: WindowId, density: Self, cx: &mut App) -> bool {
+        let map = &mut cx.default_global::<WindowDensities>().0;
+        map.insert(window, density) != Some(density)
+    }
+
+    /// Forgets a closed window's density.
+    pub fn forget(window: WindowId, cx: &mut App) {
+        if let Some(d) = cx.try_global::<WindowDensities>()
+            && d.0.contains_key(&window)
+        {
+            cx.global_mut::<WindowDensities>().0.remove(&window);
+        }
+    }
 }
+
+/// The density of each window that set one ([`Density::of`]).
+#[derive(Default)]
+struct WindowDensities(HashMap<WindowId, Density>);
+
+impl Global for WindowDensities {}
 
 /// GPUI's `blur_radius` for a CSS shadow blur `blur`: CSS blurs with a Gaussian of standard deviation half the blur
 /// radius (CSS Backgrounds 3, `box-shadow`), and GPUI's shadow shader takes `blur_radius` as that deviation.
@@ -361,11 +397,47 @@ mod tests {
         }
     }
 
+    /// Task 19b's table (tokens.ts:254-258, css.ts:44): every step of every density, written out, so a drift in any one of
+    /// the 18 lengths or the three line heights fails here even if tokens.ts drifts with it.
     #[test]
     fn density_steps_match_the_web() {
         assert_eq!(Density::default(), Density::Regular);
-        assert_eq!(Density::Compact.row_pad_x(), px(16.0));
-        assert_eq!(Density::Cozy.avatar(), px(36.0));
-        assert_eq!(Density::Regular.group_gap(), px(14.0));
+        // (density, row-pad-y, row-pad-x, row-gap, group-gap, avatar-size, line-height)
+        let table = [
+            (Density::Compact, 4.0, 16.0, 0.0, 8.0, 28.0, 1.4),
+            (Density::Regular, 6.0, 18.0, 2.0, 14.0, 32.0, 1.5),
+            (Density::Cozy, 10.0, 20.0, 4.0, 22.0, 36.0, 1.55),
+        ];
+        for (d, pad_y, pad_x, row_gap, group_gap, avatar, lh) in table {
+            assert_eq!(d.row_pad_y(), px(pad_y), "{d:?} row-pad-y");
+            assert_eq!(d.row_pad_x(), px(pad_x), "{d:?} row-pad-x");
+            assert_eq!(d.row_gap(), px(row_gap), "{d:?} row-gap");
+            assert_eq!(d.group_gap(), px(group_gap), "{d:?} group-gap");
+            assert_eq!(d.avatar(), px(avatar), "{d:?} avatar-size");
+            assert_eq!(d.line_height(), lh, "{d:?} line-height");
+        }
+    }
+
+    /// A window nobody set draws regular; a set density stays with its own window and goes when the window is forgotten.
+    #[gpui::test]
+    fn each_window_keeps_its_own_density(cx: &mut gpui::TestAppContext) {
+        let a = cx.add_empty_window().update(|w, _| w.window_handle());
+        let b = cx.add_empty_window().update(|w, _| w.window_handle());
+        cx.update(|cx| {
+            let a_id = a.window_id();
+            a.update(cx, |_, w, cx| {
+                assert_eq!(Density::of(w, cx), Density::Regular);
+                assert!(Density::set_for(a_id, Density::Compact, cx), "a change");
+                assert!(!Density::set_for(a_id, Density::Compact, cx), "no change");
+                assert_eq!(Density::of(w, cx), Density::Compact);
+            })
+            .unwrap();
+            b.update(cx, |_, w, cx| {
+                assert_eq!(Density::of(w, cx), Density::Regular)
+            })
+            .unwrap();
+            Density::forget(a_id, cx);
+            assert_eq!(Density::of_id(a_id, cx), Density::Regular);
+        });
     }
 }

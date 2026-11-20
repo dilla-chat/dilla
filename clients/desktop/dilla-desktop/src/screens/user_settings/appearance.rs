@@ -1,13 +1,14 @@
 //! Settings -> Appearance (packages/web/src/screens/settings/Appearance.tsx): the theme, the density and reduced motion.
 //!
 //! A choice applies at once. Density and reduced motion are kept in the store (`setSetting`, the client's
-//! `Profile::set_density` and `set_reduce_motion`); the density shown is what the section's own rows and the shared components
-//! step by ([`density_of`], `metrics::Density`). The theme has the one entry, Signal.
+//! `Profile::set_density` and `set_reduce_motion`); the chosen density restyles the whole window at once
+//! ([`crate::density`]: the shell follows the saved choice, and a window without a client takes the click itself). The
+//! theme has the one entry, Signal.
 //!
 //! The brief names three densities (compact, regular, cozy); the web client admits two (`isSettingValue`: `regular`, `compact`;
 //! the stylesheet's `cozy` is a Storybook step only), and parity wins, so the Segmented has the two.
 
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, Window, div};
 
 use dilla_client::state::profile::{DensitySetting, MotionSetting};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
@@ -15,30 +16,22 @@ use dilla_desktop_ui::components::segmented::Segmented;
 use dilla_desktop_ui::components::settings::frame::{Section, section_header};
 use dilla_desktop_ui::components::settings::row::{GroupPosition, SettingsRow};
 use dilla_desktop_ui::icon_names::IconName;
-use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::section::UserSettings;
 use crate::strings::t;
 
-/// The shared components' density step for a setting.
-pub fn density_of(setting: DensitySetting) -> Density {
-    match setting {
-        DensitySetting::Compact => Density::Compact,
-        DensitySetting::Regular => Density::Regular,
-    }
-}
-
 impl UserSettings {
-    fn set_density(&mut self, value: &str, cx: &mut Context<Self>) {
+    fn set_density(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(setting) = DensitySetting::from_id(value) else {
             return;
         };
         let Some(client) = self.ctx.client.clone() else {
             // No client (a fixture's window): the choice is kept in the window, as Notify keeps its own, so a click
-            // shows what it shows in the app.
+            // shows what it shows in the app, and the whole window takes the density at once.
             self.local_density = Some(setting);
+            crate::density::set(window, crate::density::of_setting(setting), cx);
             cx.notify();
             return;
         };
@@ -109,9 +102,9 @@ impl UserSettings {
                 .option_child(|v| option_probe("appearance-density", v))
                 .on_change({
                     let this = this.clone();
-                    move |v, _, cx| {
+                    move |v, window, cx| {
                         let v = v.to_owned();
-                        this.update(cx, |s, cx| s.set_density(&v, cx));
+                        this.update(cx, |s, cx| s.set_density(&v, window, cx));
                     }
                 }),
             );
@@ -188,8 +181,10 @@ mod tests {
 
     #[test]
     fn the_setting_steps_the_shared_components_density() {
-        assert_eq!(density_of(DensitySetting::Compact), Density::Compact);
-        assert_eq!(density_of(DensitySetting::Regular), Density::Regular);
+        use crate::density::of_setting;
+        use dilla_desktop_ui::metrics::Density;
+        assert_eq!(of_setting(DensitySetting::Compact), Density::Compact);
+        assert_eq!(of_setting(DensitySetting::Regular), Density::Regular);
         assert!(Density::Compact.group_gap() < Density::Regular.group_gap());
     }
 }

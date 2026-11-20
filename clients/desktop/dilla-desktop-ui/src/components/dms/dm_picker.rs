@@ -63,8 +63,8 @@ impl DmPickerList {
 }
 
 impl RenderOnce for DmPickerList {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let density = Density::Regular;
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let density = Density::of(window, cx);
         let busy = self.busy;
         div()
             .id("dm-picker")

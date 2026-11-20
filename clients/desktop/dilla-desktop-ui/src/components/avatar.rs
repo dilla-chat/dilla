@@ -153,7 +153,8 @@ pub struct Avatar {
     presence: Option<Presence>,
     size: AvatarSize,
     shape: AvatarShape,
-    density: Density,
+    /// The density `Md` steps by; the window's ([`Density::of`]) when none is given.
+    density: Option<Density>,
     fill: Option<Hsla>,
 }
 
@@ -167,7 +168,7 @@ impl Avatar {
             presence: None,
             size: AvatarSize::Md,
             shape: AvatarShape::Circle,
-            density: Density::Regular,
+            density: None,
             fill: None,
         }
     }
@@ -195,7 +196,7 @@ impl Avatar {
 
     /// The `Md` avatar follows `--avatar-size`: 28, 32 or 36px with the density (the other sizes are fixed).
     pub fn density(mut self, density: Density) -> Self {
-        self.density = density;
+        self.density = Some(density);
         self
     }
 
@@ -212,10 +213,13 @@ impl Avatar {
 }
 
 impl RenderOnce for Avatar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (mut side, initials_size) = self.size.metrics();
         if self.size == AvatarSize::Md {
-            side = self.density.avatar();
+            side = self
+                .density
+                .unwrap_or_else(|| Density::of(window, cx))
+                .avatar();
         }
         let initials = self
             .initials

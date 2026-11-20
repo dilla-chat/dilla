@@ -26,6 +26,7 @@ use dilla_client::testing::spec::{self, ChannelKind, Phase, ScreenFixture, Shot,
 
 use crate::router::Route;
 
+pub mod appearance;
 mod attachments;
 mod calls;
 mod devices;

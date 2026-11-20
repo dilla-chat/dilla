@@ -47,7 +47,8 @@ impl PresentBar {
 }
 
 impl RenderOnce for PresentBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let density = Density::of(window, cx);
         let mut jump = Button::new(self.id, self.jump).variant(ButtonVariant::Ghost);
         if let Some(on_jump) = self.on_jump {
             jump = jump.on_click(on_jump);
@@ -62,14 +63,15 @@ impl RenderOnce for PresentBar {
             .justify_center()
             .gap(px(GAP))
             .py(px(PAD_Y))
-            .px(Density::default().row_pad_x())
+            .px(density.row_pad_x())
             .bg(color::SURFACE)
             .border_t_1()
             .border_color(color::EDGE)
+            // No line height of its own: the root's `--line-height`.
             .child(line(
                 self.older,
                 text::SM,
-                line_height(text::SM, 1.5),
+                line_height(text::SM, density.line_height()),
                 color::FG_2,
             ))
             .child(jump)

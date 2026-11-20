@@ -11,7 +11,7 @@ use gpui::{
 
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, colour_of};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
-use dilla_desktop_ui::components::settings::frame::section_header;
+use dilla_desktop_ui::components::settings::frame::{SECTION_GAP, section_header};
 use dilla_desktop_ui::components::text_field::{Frame, TextField};
 use dilla_desktop_ui::text::{flow_paragraph, line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
@@ -238,7 +238,8 @@ impl UserSettings {
                 Failure::Wait => "profile.error.wait",
                 Failure::Save => "profile.error.save",
             };
-            col = col.child(div().pb(self.density().group_gap()).child(Banner::new(
+            // The frame steps a section's blocks a fixed 14px apart (`> * + *`), at every density.
+            col = col.child(div().pb(px(SECTION_GAP)).child(Banner::new(
                 "profile-failed",
                 BannerTone::Danger,
                 t(key),
