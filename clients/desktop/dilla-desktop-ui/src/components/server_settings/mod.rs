@@ -43,9 +43,9 @@ pub mod layout {
     pub const LIST_PAD_X: Pixels = px(16.0);
     /// The space between a group's head and its card (`--row-gap`).
     pub const HEAD_GAP: Pixels = px(2.0);
-    /// The gap between the lines of a ban row's text (`.dw-admin-ban__text` stacks name, details and reason 2px apart).
+    /// The gap between the lines of a manage-list row's text (`.d-manage-list__text { display: grid; gap: 2px }`, packages/ui/src/ManageList/ManageList.css:7).
     pub const BAN_TEXT_GAP: Pixels = px(2.0);
-    /// The width a ban row is laid out in by the wrapping test: the settings column's 640px.
+    /// The width the ban-row wrapping test lays a row out in: the test's own chosen width, with no web source.
     pub const BAN_TEST_W: Pixels = px(640.0);
     /// The gap between the blocks of the GIF settings (1.5rem).
     pub const GIFS_GAP: Pixels = px(24.0);

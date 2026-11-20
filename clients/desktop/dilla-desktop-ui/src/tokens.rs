@@ -325,8 +325,8 @@ pub mod layout {
     pub const ROW_H_2: Pixels = px(44.0);
     /// `--list-gap`: 0.0625rem
     pub const LIST_GAP: Pixels = px(1.0);
-    /// The gap between the blocks of a dialog's body (`.d-dialog__body` is an 8px column).
-    pub const DIALOG_BODY_GAP: Pixels = px(8.0);
+    /// The call-code dialog's digits-to-help gap (`.dw-call-code__help { margin: 0.5rem 0 0 }`, packages/web/src/app.css:176).
+    pub const CALL_CODE_HELP_GAP: Pixels = px(8.0);
 }
 
 /// Font families and weights (`--font-mono`, `--font-serif-italic`, `--weight-<name>`).

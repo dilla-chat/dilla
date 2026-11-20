@@ -1731,7 +1731,7 @@ impl Render for ShellView {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(layout::DIALOG_BODY_GAP)
+                                    .gap(layout::CALL_CODE_HELP_GAP)
                                     .child(
                                         dilla_desktop_ui::text::line(
                                             crate::screens::voice::group_code(&code),
