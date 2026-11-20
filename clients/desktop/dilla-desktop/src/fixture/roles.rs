@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use dilla_client::features::roles::perm::{self, PERM_ALL, PermInput, PermKey, PermRole};
 use dilla_client::features::roles::rank::{self, OWNER_TOP};
-use dilla_client::state::roles::RoleSummary;
+use dilla_client::state::roles::{RoleSummary, SelfRole};
 use dilla_client::state::{AppState, CommunityId};
 use dilla_client::testing::spec::{WorldSpec, derive_id};
 
@@ -177,10 +177,24 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
         };
         let mut access = rank::access_of(u64::from(bits), top, owner);
         access.everyone_id = Some(everyone);
+        // The web's world approves no self-service roles (SelfRolesSection.tsx reads an empty list, not a loading one); a
+        // GPUI-only fixture may approve some (`RoleSpec::self_service`, Task 29), which the viewer holds by their own choice
+        // only when they hold the role.
+        let approved: Vec<SelfRole> = server
+            .roles
+            .iter()
+            .zip(rows.iter().skip(1))
+            .filter(|(spec, _)| spec.self_service)
+            .map(|(spec, row)| SelfRole {
+                id: row.id,
+                name: row.name.clone(),
+                position: row.position,
+                self_selected: spec.members.iter().any(|m| m == viewer),
+            })
+            .collect();
         state.roles.roles.insert(community, rows);
         state.roles.access.insert(community, access);
         state.roles.overwrites.insert(community, HashMap::new());
-        // The world approves no self-service roles (SelfRolesSection.tsx reads an empty list, not a loading one).
-        state.roles.self_roles.insert(community, Vec::new());
+        state.roles.self_roles.insert(community, approved);
     }
 }

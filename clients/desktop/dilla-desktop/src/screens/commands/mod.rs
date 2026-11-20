@@ -9,6 +9,8 @@
 //! - [`poll_form`] (`slots::overlays`): `/poll create` opens the form, and Post sends the poll through the Bot.
 //! - [`announcement_form`] (`slots::overlays`): `/announcement list|create|edit|delete` read, save and delete the Bot's
 //!   scheduled announcements; `create` and `edit` open the editor.
+//! - [`role_panel_form`] (`slots::overlays`): `/rolepanel create` opens the role-panel editor, and Publish has the Bot post
+//!   the panel and registers its roles.
 //! - [`private_results`]: the rows only this device shows, for the log of their conversation; [`on_send`] decides what
 //!   a sent draft does (post it, or answer privately).
 
@@ -22,6 +24,7 @@ pub mod modlog_dialog;
 pub mod picker;
 pub mod poll_form;
 pub mod reminders;
+pub mod role_panel_form;
 
 use dilla_client::features::bot::{self, Plan, run};
 use dilla_client::features::utilities::{poll_claim, polls};
@@ -145,6 +148,7 @@ pub fn release_windows(windows: &[gpui::WindowId], cx: &mut App) {
         reminders::forget_window(window, cx);
         poll_form::forget_window(window, cx);
         announcement_form::forget_window(window, cx);
+        role_panel_form::forget_window(window, cx);
     }
     modlog_dialog::release_windows(windows, cx);
 }
@@ -583,6 +587,15 @@ pub fn on_send(
         && let Some(command) = announcement_form::Command::of(&definition.id)
     {
         announcement_form::run(ctx, command, args, attempt_of(ctx, at, draft), window, cx);
+        draft_changed(window, "", cx);
+        return SendDecision::Handled;
+    }
+    // `/rolepanel create` runs through its own handler too (bot-handlers.ts `rolePanelHandler`): the editor opens over the
+    // conversation, with or without a client. Its run takes the remembered request id (Task 30).
+    if let Plan::Bot { definition, .. } = &plan
+        && definition.id == role_panel_form::COMMAND
+    {
+        role_panel_form::run(ctx, attempt_of(ctx, at, draft), window, cx);
         draft_changed(window, "", cx);
         return SendDecision::Handled;
     }

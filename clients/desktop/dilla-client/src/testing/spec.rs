@@ -289,6 +289,10 @@ pub struct RoleSpec {
     pub permissions: Vec<String>,
     #[serde(default)]
     pub members: Vec<String>,
+    /// The community approves the role for self-service, as a GPUI fixture holds it (Task 29: `/rolepanel create` offers
+    /// the approved roles): the web's world approves none, so a world with one is a GPUI-only fixture.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_service: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]

@@ -2,9 +2,11 @@
 //! announcements capability: the Bot's command catalog in `AppState::bot` (the typed commands the picker lists, and the
 //! app operation 150 that tells the handler the Bot offers announcements), and the viewer's resolved bits in each text
 //! channel, which the shell hands the threads area as a conversation opens (a fixture has no shell loop to do it).
+//! Task 29 adds the roles capability's `/rolepanel create` to the same catalog, with the app operation 131 that tells the
+//! handler the Bot offers panel publication.
 //!
 //! It is the Bot's side of the world, as [`super::server_admin::apply_bot`] is the installation's: a server with no `bot`
-//! facet, or without the capability, has none of it, as before. The Bot is as the catalog the worker publishes
+//! facet, or without either capability, has none of it, as before. The Bot is as the catalog the worker publishes
 //! (`bot-catalog.fixture.ts`): ready, with the Bot person the server's members hold as its user.
 
 use dilla_client::features::roles::viewer_channel_bits;
@@ -17,11 +19,13 @@ use dilla_client::testing::spec::{ChannelKind, WorldSpec};
 
 use super::Ids;
 
-/// The capability bit of announcements (`BOT_CAPABILITIES`).
+/// The capability names of announcements and of roles (`BOT_CAPABILITIES`).
 const ANNOUNCEMENTS: &str = "announcements";
+const ROLES: &str = "roles";
 
-/// bot-catalog.fixture.ts: the commands of the announcements area, with the argument shapes the Bot declares.
-fn commands() -> Vec<BotCommandSpec> {
+/// bot-catalog.fixture.ts: the commands of the announcements area and of the role panel, with the argument shapes the Bot
+/// declares, for the capabilities the Bot has.
+fn commands(announcements: bool, roles: bool) -> Vec<BotCommandSpec> {
     let spec =
         |name: &str, operation: u64, args: &[(&str, bool)], needs_bot_channel| BotCommandSpec {
             name: name.to_owned(),
@@ -39,6 +43,20 @@ fn commands() -> Vec<BotCommandSpec> {
             needs_bot_channel,
             handler_kind: 0,
         };
+    let mut out = Vec::new();
+    if announcements {
+        out.extend(announcement_commands(&spec));
+    }
+    if roles {
+        // What the handler asks the catalog for (`catalogOffers(…, 31)`): the Bot's panel operation, sealed.
+        out.push(spec("rolepanel create", sealed_operation(31), &[], true));
+    }
+    out
+}
+
+fn announcement_commands(
+    spec: &dyn Fn(&str, u64, &[(&str, bool)], bool) -> BotCommandSpec,
+) -> Vec<BotCommandSpec> {
     vec![
         spec("announcement list", 50, &[], false),
         spec("announcement create", 51, &[("text", false)], true),
@@ -60,7 +78,9 @@ pub(super) fn apply(world: &WorldSpec, ids: Ids<'_>, state: &mut AppState) {
         let Some(bot) = &server.bot else {
             continue;
         };
-        if !bot.capabilities.iter().any(|c| c == ANNOUNCEMENTS) {
+        let has = |name: &str| bot.capabilities.iter().any(|c| c == name);
+        let (announcements, roles) = (has(ANNOUNCEMENTS), has(ROLES));
+        if !announcements && !roles {
             continue;
         }
         let community = ids.community(&server.id);
@@ -68,7 +88,7 @@ pub(super) fn apply(world: &WorldSpec, ids: Ids<'_>, state: &mut AppState) {
             community,
             BotCatalogView {
                 revision: 1,
-                commands: commands(),
+                commands: commands(announcements, roles),
                 status: BotStatus {
                     state: BotStatusState::Ready,
                     since: None,

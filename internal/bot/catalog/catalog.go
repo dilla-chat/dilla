@@ -179,6 +179,9 @@ var commands = []Command{
 	app(FeatureMusic, "music announce", protocol.OpAppMusicAnnounce, 0, ScopeChannel),
 	// The provider status names no channel; its handler admits only those who manage the community.
 	app(FeatureMusic, "music providers", protocol.OpAppMusicProvidersStatus, 0, ScopeCommunity),
+	// The typed command the composer offers for the role panel (bot-handlers.ts `rolePanelHandler`; the shape of the web's
+	// bot-catalog.fixture.ts). It names the app operation below, which has its own entry, and takes no rule of its own.
+	{FeatureRoles, "rolepanel create", "Publish a self-service role panel", protocol.OpAppRolePanelPublish, nil, permManageRoles, true, HandlerCommand, ScopeCommunity},
 	app(FeatureRoles, "rolepanel publish", protocol.OpAppRolePanelPublish, permManageRoles, ScopeCommunity),
 	// The typed commands the composer offers for the announcements (bot-handlers.ts `announcementHandler`; the shape of the
 	// web's bot-catalog.fixture.ts). The app lists, saves and deletes schedules with sealed operations, so these name the app
@@ -262,7 +265,7 @@ type Rule struct {
 func Operations(features []Feature) map[uint64]Rule {
 	out := map[uint64]Rule{}
 	for _, c := range Commands(features) {
-		if IsTypedAnnouncement(c) {
+		if IsTypedAnnouncement(c) || IsTypedRolePanel(c) {
 			continue
 		}
 		r := Rule{Permission: c.Permission, Read: c.HandlerKind == HandlerRead && !AppMutation(c.Operation), ChannelScoped: c.Scope != ScopeCommunity}
@@ -279,6 +282,11 @@ func Operations(features []Feature) map[uint64]Rule {
 // IsTypedAnnouncement is one of the announcements' typed commands: it names an app operation that has its own entry.
 func IsTypedAnnouncement(c Command) bool {
 	return c.Feature == FeatureAnnouncements && c.HandlerKind == HandlerCommand
+}
+
+// IsTypedRolePanel is the role panel's typed command: it names the app operation that has its own entry.
+func IsTypedRolePanel(c Command) bool {
+	return c.Feature == FeatureRoles && c.HandlerKind == HandlerCommand
 }
 
 func boolUint(b bool) uint64 {

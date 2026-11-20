@@ -1949,6 +1949,268 @@ fn the_composer_opens_the_announcement_editor() {
     app.wait_for("bot-result-failed", Duration::from_secs(5));
 }
 
+/// Task 29: `/rolepanel create` against a real dillad and its Bot (bot-handlers.ts `rolePanelHandler`). The owner approves
+/// Crew for self service and makes #general a Bot channel; the editor opens from the command, Crew is checked with the
+/// emoji 🎮 and Publish has the Bot post the panel and registers it ("Role panel published and registered."). Bea sees
+/// the panel and reacts 🎮: the reaction grants her Crew.
+#[gpui::test]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::{self, Plan};
+    use dilla_client::features::roles::viewer_channel_bits;
+    use dilla_client::state::CommunityId;
+    use dilla_client::state::bot::{Conversation, ResultStatus};
+    use dilla_client::state::bot_admin::sealed_operation;
+    use dilla_desktop::screens::commands::{self, SendDecision, role_panel_form};
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_bot_host("t29-panel", "127.0.0.1:0");
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t29-panel"));
+    let bea = rt.block_on(world::sign_up(&host, &invite, "bea", "Bea", "t29-panel"));
+    let c = CommunityId(world::community(&host, &ada, "Panels", &[&bea]));
+    world::clear_session(&ada);
+    world::clear_session(&bea);
+    let within = Duration::from_secs(30);
+    let client = Rc::new(rt.block_on(world::start(&ada)));
+    rt.block_on(world::bot::enable_bot(&client, c.0, world::bot::cap::ROLES));
+    let general = rt
+        .block_on(world::wait_for(&client, within, "#general", |s| {
+            s.channel_named(c, "general").is_some()
+        }))
+        .channel_named(c, "general")
+        .unwrap()
+        .id;
+    // Ada, the owner, makes "Crew", offers it as a self role, and makes #general a Bot channel (a panel posts into one).
+    let crew = rt.block_on(async {
+        client.roles().load_access(c).await.unwrap();
+        let crew = client
+            .roles()
+            .create_role(c, "Crew", 0, false, false, 0)
+            .await
+            .expect("ada makes Crew");
+        client
+            .roles()
+            .configure_self_roles(c, &[crew])
+            .await
+            .expect("ada offers Crew");
+        crew
+    });
+    rt.block_on(client.bot_admin().mark_bot_channel(c, general))
+        .expect("an answer")
+        .expect("#general is marked a Bot channel");
+    // The Bot's catalog lists the typed `/rolepanel create` and its panel operation, once its key is verified.
+    let ready = |state: &dilla_client::state::AppState| {
+        matches!(
+            bot::plan_in(state, Some(c), Some(general), "/rolepanel create"),
+            Plan::Bot { .. }
+        ) && state.bot.catalogs.get(&c).is_some_and(|v| {
+            v.commands
+                .iter()
+                .any(|x| u64::from(x.operation) == sealed_operation(31))
+        })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while !ready(&client.state().borrow()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Bot's catalog never offered the role panel: {:?} {:?}",
+            host.bot_refusals(),
+            client.state().borrow().bot.catalogs.get(&c).map(|v| v
+                .commands
+                .iter()
+                .map(|x| (x.name.clone(), x.operation))
+                .collect::<Vec<_>>())
+        );
+        let _ = rt.block_on(client.bot().sync_catalog(c));
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // The shell hands the open channel's resolved bits to the threads area; the owner holds everything.
+    client.threads().set_channel_bits(
+        general,
+        viewer_channel_bits(&client.state().borrow(), general),
+    );
+
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    let window = vcx.update(|window, _| window.window_handle().window_id());
+    let ctx = SlotCx {
+        state: client.state().borrow().clone(),
+        client: Some(client.clone()),
+        community: Some(c),
+        channel: Some(general),
+        ..SlotCx::default()
+    };
+    let conversation = Conversation {
+        channel: general,
+        thread: None,
+    };
+    assert_eq!(
+        vcx.update(|_, cx| commands::on_send(
+            &ctx,
+            "/rolepanel create",
+            &|t| t.to_owned(),
+            window,
+            cx
+        )),
+        SendDecision::Handled
+    );
+    // The editor is drawn once the approved roles were read, then filled as a person would: Crew, with 🎮.
+    let mut filled = false;
+    let mut answered = None;
+    for _ in 0..1200 {
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            commands::role_panel_form::overlay(&ctx, window, cx);
+            let w = window.window_handle().window_id();
+            let Some(form) = role_panel_form::form_of(w, cx) else {
+                return;
+            };
+            if filled {
+                return;
+            }
+            filled = true;
+            let emoji = form.emojis[&crew].clone();
+            role_panel_form::toggle_role(w, crew, cx);
+            emoji.update(cx, |s, cx| s.set_value("🎮", window, cx));
+            role_panel_form::submit(w, cx);
+        });
+        answered = client
+            .state()
+            .borrow()
+            .bot
+            .results(&conversation)
+            .last()
+            .filter(|r| r.status != ResultStatus::Pending)
+            .map(|r| (r.status, r.text.clone()));
+        if answered.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        answered,
+        Some((
+            ResultStatus::Success,
+            "Role panel published and registered.".to_owned()
+        )),
+        "{:?}",
+        host.bot_refusals()
+    );
+    assert!(
+        !vcx.update(|_, cx| role_panel_form::is_open(window, cx)),
+        "the accepted panel closed the editor"
+    );
+
+    // Bea sees the Bot's panel and reacts: the reaction grants her Crew.
+    let b = rt.block_on(world::start(&bea));
+    let s = rt.block_on(world::wait_for(&b, within, "#general at bea", |s| {
+        s.channel_named(c, "general").is_some()
+    }));
+    assert_eq!(s.channel_named(c, "general").unwrap().id, general);
+    rt.block_on(b.open_channel(general))
+        .unwrap()
+        .expect("bea opens general");
+    let s = rt.block_on(world::wait_for(
+        &b,
+        Duration::from_secs(60),
+        "the Bot's panel at bea",
+        |s| {
+            s.timelines.get(&general).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .any(|i| i.bot && i.body.contains("🎮 Crew") && i.seq.is_some())
+            })
+        },
+    ));
+    let panel = s.timelines[&general]
+        .items
+        .iter()
+        .find(|i| i.bot && i.body.contains("🎮 Crew"))
+        .unwrap();
+    let panel_msg = panel.msg_id.expect("the panel has a message id");
+    let bea_id = s.account.user_id.unwrap();
+    rt.block_on(b.reactions().react(general, panel_msg, "🎮", true))
+        .unwrap()
+        .expect("bea reacts");
+    rt.block_on(world::wait_for(
+        &b,
+        Duration::from_secs(60),
+        "the panel's grant",
+        |s| {
+            s.members
+                .get(&c)
+                .and_then(|m| m.iter().find(|m| m.user_id == bea_id))
+                .is_some_and(|m| m.role_ids.contains(&crew))
+        },
+    ));
+    b.stop();
+    drop(ctx);
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
+
+/// A GPUI-only reference (`native/rolepanel-editor`, Decision D2): `/rolepanel create` opens the editor, drawn with the
+/// Signal `Dialog`, `Select`, the 22px check box (Decision D20) and `TextField` where the web's `BotCommandDialogs` uses
+/// browser widgets. The fields are the web's, in its order and with its labels: Destination channel, the approved roles
+/// (a check box and "Reaction for {role}" each), then Close, Cancel and Publish panel.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_rolepanel_editor() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("commands/rolepanel-editor.json"),
+        "rolepanel-editor",
+        |app| {
+            // The fixture's steps are not replayed for a native frame: the same ones, by hand.
+            app.type_text("composer", "/rolepanel create");
+            app.wait_for("command-picker", Duration::from_secs(10));
+            app.press("tab");
+            app.wait_for("command-chips", Duration::from_secs(5));
+            app.press("enter");
+            app.wait_for("rolepanel-publish", Duration::from_secs(10));
+        },
+    )
+    .unwrap_or_else(|e| panic!("commands/rolepanel-editor differs from its golden shot: {e}"));
+}
+
+/// `/rolepanel create` typed in the composer and sent from its chips opens the editor on the server whose Bot offers role
+/// panels, its row pending under the log; Publish with no role chosen names the refusal in the editor and keeps it open;
+/// Cancel closes it and the row says the creation was cancelled.
+#[test]
+fn the_composer_opens_the_role_panel_editor() {
+    let mut app = Driver::launch_fixture(&fixture("commands/rolepanel-editor.json"), None, &[]);
+    app.type_text("composer", "/rolepanel create");
+    app.wait_for("command-picker", Duration::from_secs(10));
+    app.press("tab");
+    app.wait_for("command-chips", Duration::from_secs(5));
+    app.press("enter");
+    app.wait_for("rolepanel-publish", Duration::from_secs(10));
+    assert!(app.element("rolepanel-destination").is_some());
+    app.click("rolepanel-publish");
+    app.wait_for("rolepanel-error", Duration::from_secs(5));
+    assert!(
+        app.element("rolepanel-publish").is_some(),
+        "Publish kept it open"
+    );
+    app.click("rolepanel-cancel");
+    app.wait_idle();
+    assert!(
+        app.element("rolepanel-publish").is_none(),
+        "Cancel closed it"
+    );
+    app.wait_for("bot-result-failed", Duration::from_secs(5));
+}
+
 // ---- Task 30: an uncertain command keeps its request id, and a resend reconciles (dillad) ----
 
 /// The last private row of `conversation` once it settled (not Pending), after `sent` rows in all.

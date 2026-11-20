@@ -537,7 +537,7 @@ pub fn form_of(window: WindowId, cx: &App) -> Option<&AnnouncementForm> {
 }
 
 /// The command's row says how it ended. A fixture keeps its row in the window.
-fn finish(
+pub(super) fn finish(
     client: Option<&Rc<Client>>,
     window: WindowId,
     conversation: Conversation,
