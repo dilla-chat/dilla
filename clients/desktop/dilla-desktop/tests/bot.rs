@@ -153,23 +153,29 @@ fn parity_commands_private_result() {
     dilla_parity::screen::assert_screen(&fixture("commands/private-result.json")).unwrap();
 }
 
-/// Task 42: `/role add ` picked with Tab: the command's bar over the box, its chips in place of the field. Ignored for one
-/// reason that is the web client's, not the app's: in the shooter's browser the web frame has no suggestion list under the
-/// `user` chip (its Bot-world suggestion provider and presence snapshot do not settle after a key is typed: about one run in
-/// two, with the browser clock frozen or not, no HTTP or console error), while the app draws the list from the members it
-/// holds. The app's own differences found here are fixed (the bar over the box, the dim send, the chip input width).
-/// Fallback: a native golden, as `dms/home`.
+/// Task 42: `/role add ` picked with Tab: the command's bar over the box ("Add a role to a member" and the keys' hint), its
+/// chips in place of the field with send dim, and the member suggestions over the box. A GPUI-only reference
+/// (`native/commands-picker-chip`, Jonas 2026-11-21): the web's frame never gets its suggestion list (its presence snapshot
+/// does not settle after a key is typed in a Bot world, a race in the web client that is being removed), so there is no web
+/// reference; the golden was checked against the web's CSS (CommandPicker.css, Composer.css) before it was blessed.
 #[test]
 #[cfg_attr(
     not(any(target_os = "linux", target_os = "macos")),
     ignore = "references are Linux and macOS only"
 )]
-#[cfg_attr(
-    any(target_os = "linux", target_os = "macos"),
-    ignore = "the web frame has no suggestion list: its Bot-world suggestions and presence do not settle after typing (Task 42 report)"
-)]
 fn parity_commands_picker_chip() {
-    dilla_parity::screen::assert_screen(&fixture("commands/picker-chip.json")).unwrap();
+    dilla_parity::screen::assert_native_screen(
+        &fixture("commands/picker-chip.json"),
+        "commands-picker-chip",
+        |app| {
+            // The fixture's steps, which a native screen does not replay: the members pane closed, `/role add ` typed, Tab.
+            app.click("header-members");
+            app.type_text("composer", "/role add ");
+            app.press("tab");
+            app.wait_idle();
+        },
+    )
+    .unwrap_or_else(|e| panic!("commands/picker-chip differs from its golden shot: {e}"));
 }
 
 /// `/modlog` (CommandHost.tsx:411, Decision D1): the moderation history opens in a dialog over the channel, the row under
