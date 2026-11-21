@@ -8,8 +8,8 @@
 
 use gpui::{App, Global};
 
-use super::PickerState;
 use super::picker::{self, Effect, Key};
+use super::{PickerState, activate_focused};
 
 /// App-wide by design (final review sweep): the key interceptor is installed once per app; what it acts on is the window that took the
 /// key (`PickerState` is per window).
@@ -26,6 +26,8 @@ pub fn bind(cx: &mut App) {
         let stroke = &event.keystroke;
         // t28-bot-review I1: only while the composer the list and chips belong to holds the focus. Keys typed in a
         // settings field, a search, a dialog, or with nothing focused (push to talk) are never theirs.
+        // The focused composer is the one whose list and chips the keys act on (each composer has its own).
+        activate_focused(window, cx);
         if !takes_keys(window, cx) {
             return;
         }

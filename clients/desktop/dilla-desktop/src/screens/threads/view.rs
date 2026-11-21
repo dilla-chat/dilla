@@ -280,6 +280,9 @@ impl PaneView {
             return;
         }
         self.shown = Some(root);
+        // Another thread starts with an empty picker, as the web's `key={rootMsgId}` remounts its composer.
+        let focus = self.input.read(cx).focus_handle(cx);
+        crate::screens::commands::reset_composer(self.window, &focus, cx);
         let draft = current(self.window, cx)
             .and_then(|c| {
                 c.client.map(|client| {
@@ -830,12 +833,15 @@ mod tests {
                     send(&ctx, other_thread, other, "own text", cx),
                     SendDecision::Post("own text".into())
                 );
-                let state = commands::picker_state(w, cx);
-                assert!(state.chips.is_some(), "the owner's chips stay");
-                assert_eq!(state.draft, "/shrug", "and its draft");
                 assert_eq!(
                     chips::draft(&ctx, owner, w, cx).as_deref(),
-                    Some("/shrug text:\"hi\"")
+                    Some("/shrug text:\"hi\""),
+                    "the owner's chips stay"
+                );
+                assert_eq!(
+                    commands::picker_state(w, cx).draft,
+                    "/shrug",
+                    "and its draft"
                 );
                 // The owner's own send runs its chips and clears them.
                 let owner_thread = if owner == &thread { Some(root) } else { None };
@@ -845,6 +851,87 @@ mod tests {
                 ));
                 assert!(commands::picker_state(w, cx).chips.is_none());
             }
+        });
+    }
+
+    /// Each composer has its own picker (CommandPicker.tsx:153-169): a command picked in the thread, with its chip values,
+    /// survives typing in the channel's composer, and the channel's draft survives going back.
+    #[gpui::test]
+    fn typing_in_one_composer_keeps_the_other_composers_picked_command(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::screens::commands::{self, chips};
+        cx.update(crate::install);
+        let ctx = crate::slots::SlotCx {
+            channel: Some(ChannelId([3; 16])),
+            ..crate::slots::SlotCx::default()
+        };
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            let (channel, thread) = (cx.focus_handle(), cx.focus_handle());
+            commands::set_composer(w, &thread, cx);
+            let mut picked = chips::Chips::new("shrug".into());
+            picked.values = vec!["hi".into()];
+            let s = commands::picker_state_mut(w, cx);
+            s.draft = "/shrug".into();
+            s.chips = Some(picked);
+            // The channel composer types: its own state, its own draft.
+            commands::set_composer(w, &channel, cx);
+            commands::draft_changed(w, "hello", cx);
+            assert!(commands::picker_state(w, cx).chips.is_none());
+            assert_eq!(
+                chips::draft(&ctx, &thread, w, cx).as_deref(),
+                Some("/shrug text:\"hi\""),
+                "the thread's picked command and its chip values survive"
+            );
+            assert!(commands::activate(w, &channel, false, cx));
+            assert_eq!(commands::picker_state(w, cx).draft, "hello");
+        });
+    }
+
+    /// The pane starts a thread's composer with an empty picker (the web's `key={rootMsgId}`): what was picked for thread
+    /// A is not there to run in thread B.
+    #[gpui::test]
+    fn another_thread_starts_with_an_empty_picker(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands::{self, chips};
+        cx.update(crate::install);
+        let channel = ChannelId([3; 16]);
+        let (a, b) = (MessageId([7; 16]), MessageId([8; 16]));
+        let ctx = crate::slots::SlotCx {
+            channel: Some(channel),
+            ..crate::slots::SlotCx::default()
+        };
+        let (_host, vcx) = cx.add_window_view(|_, _| Host(ctx.clone()));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        let w = vcx.update(|window, cx| {
+            super::super::open_thread(channel, a, &ctx, cx);
+            window.window_handle().window_id()
+        });
+        draw(vcx);
+        let field = vcx.update(|_, cx| {
+            let pane = super::super::ui(cx)
+                .windows
+                .get(&w)
+                .and_then(|p| p.pane.clone())
+                .expect("the pane is drawn");
+            let input = pane.read(cx).input();
+            input.read(cx).focus_handle(cx)
+        });
+        vcx.update(|_, cx| {
+            commands::set_composer(w, &field, cx);
+            let mut picked = chips::Chips::new("shrug".into());
+            picked.values = vec!["hi".into()];
+            commands::picker_state_mut(w, cx).chips = Some(picked);
+            assert!(chips::draft(&ctx, &field, w, cx).is_some(), "picked in A");
+        });
+        vcx.update(|_, cx| super::super::open_thread(channel, b, &ctx, cx));
+        draw(vcx);
+        vcx.update(|_, cx| {
+            assert_eq!(chips::draft(&ctx, &field, w, cx), None, "nothing of A in B");
         });
     }
 

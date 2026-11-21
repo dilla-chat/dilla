@@ -326,7 +326,8 @@ fn a_thread_command_posts_into_the_thread() {
     let row = app.wait_for("bot-result-failed", Duration::from_secs(30));
     // The row is the pane's own, not the channel log's.
     let close = app.element("thread-close").expect("the pane is open");
-    assert!(row.x >= close.x + close.width - 340.0, "{row:?} {close:?}");
+    let pane = f32::from(dilla_desktop_ui::tokens::layout::THREAD);
+    assert!(row.x >= close.x + close.width - pane, "{row:?} {close:?}");
     drop(app);
     member.stop();
     let _ = std::fs::remove_dir_all(&dir);

@@ -943,9 +943,9 @@ pub fn draft(
     ctx: &SlotCx,
     owner: &gpui::FocusHandle,
     window: gpui::WindowId,
-    cx: &App,
+    cx: &mut App,
 ) -> Option<String> {
-    if !super::owns(window, owner, cx) {
+    if !super::activate(window, owner, false, cx) {
         return None;
     }
     let chips = super::picker_state(window, cx).chips?;
@@ -1254,7 +1254,7 @@ pub fn hold_unnamed_member(
     window: gpui::WindowId,
     cx: &mut App,
 ) -> bool {
-    if !super::owns(window, owner, cx) {
+    if !super::activate(window, owner, false, cx) {
         return false;
     }
     let Some(chips) = super::picker_state(window, cx).chips else {
@@ -1377,7 +1377,7 @@ pub fn view(
     cx: &mut App,
 ) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
-    if !super::owns(wid, owner, cx) {
+    if !super::activate(wid, owner, false, cx) {
         return None;
     }
     let chips = super::picker_state(wid, cx).chips?;

@@ -124,7 +124,7 @@ impl std::fmt::Debug for PickerState {
 
 /// The composer whose field is `focus` reports a draft in `window`: the list and chips belong to it.
 pub fn set_composer(window: gpui::WindowId, focus: &gpui::FocusHandle, cx: &mut App) {
-    picker_state_mut(window, cx).composer = Some(focus.downgrade());
+    activate(window, focus, true, cx);
 }
 
 /// `window`'s picker state (empty until its composer reports a draft).
@@ -145,6 +145,7 @@ pub fn picker_state_mut(window: gpui::WindowId, cx: &mut App) -> &mut PickerStat
 pub fn release_windows(windows: &[gpui::WindowId], cx: &mut App) {
     for &window in windows {
         crate::per_window::set::<PickerState>(window, None, cx);
+        crate::per_window::set::<Parked>(window, None, cx);
         reminders::forget_window(window, cx);
         poll_form::forget_window(window, cx);
         announcement_form::forget_window(window, cx);
@@ -516,12 +517,84 @@ pub fn gifs_on(ctx: &SlotCx, cx: &mut App) -> bool {
     }
 }
 
-/// Whether `owner`, a composer's field, is the one that reported the window's draft ([`set_composer`]): the channel's
-/// composer and a thread's both draw `slots::composer_popup`, and only the one being typed in draws the list and the chips.
-pub fn owns(window: gpui::WindowId, owner: &gpui::FocusHandle, cx: &App) -> bool {
-    crate::per_window::get::<PickerState>(window, cx)
-        .and_then(|s| s.composer.as_ref()?.upgrade())
-        .is_some_and(|focus| &focus == owner)
+/// The picker states of the window's other composers, parked while another one is [`activate`]d (the web keeps one
+/// `CommandPicker` state per composer, CommandPicker.tsx:153-169: typing in the channel's never clears the thread's).
+#[derive(Default)]
+struct Parked(Vec<PickerState>);
+
+/// Makes the picker state of the composer whose field is `owner` the window's [`picker_state`], parking the one that was.
+/// With `create`, a composer with no state yet gets an empty one (it reports a draft); without, `false` says it has none,
+/// and nothing changes. The command to reopen ([`reopen`]) is the window's and stays with whichever state is active.
+pub fn activate(
+    window: gpui::WindowId,
+    owner: &gpui::FocusHandle,
+    create: bool,
+    cx: &mut App,
+) -> bool {
+    let is = |s: &PickerState| {
+        s.composer
+            .as_ref()
+            .and_then(gpui::WeakFocusHandle::upgrade)
+            .is_some_and(|f| &f == owner)
+    };
+    if is(picker_state_mut(window, cx)) {
+        return true;
+    }
+    let parked = &mut crate::per_window::get_mut::<Parked>(window, cx).0;
+    parked.retain(|p| p.composer.as_ref().is_some_and(|c| c.upgrade().is_some()));
+    let incoming = match parked.iter().position(is) {
+        Some(i) => parked.remove(i),
+        None if create => PickerState {
+            composer: Some(owner.downgrade()),
+            ..PickerState::default()
+        },
+        None => return false,
+    };
+    let state = picker_state_mut(window, cx);
+    let reopen = state.reopen.take();
+    let mut old = std::mem::replace(state, incoming);
+    state.reopen = reopen;
+    old.reopen = None;
+    if old.composer.is_some() {
+        crate::per_window::get_mut::<Parked>(window, cx).0.push(old);
+    }
+    true
+}
+
+/// The composer `owner` starts over with an empty picker (a thread composer shown for another thread: the web remounts it
+/// per root, Shell.tsx:2257). The command to reopen is the window's and is kept.
+pub fn reset_composer(window: gpui::WindowId, owner: &gpui::FocusHandle, cx: &mut App) {
+    if activate(window, owner, false, cx) {
+        let state = picker_state_mut(window, cx);
+        *state = PickerState {
+            composer: state.composer.take(),
+            reopen: state.reopen.take(),
+            ..PickerState::default()
+        };
+    }
+}
+
+/// Whether the focused field of `window` belongs to a composer with a picker state: it is made the active one, so the
+/// keys act on its list and chips. `false` for any other field.
+pub fn activate_focused(window: &gpui::Window, cx: &mut App) -> bool {
+    let wid = window.window_handle().window_id();
+    let mut found = None;
+    let mut candidates: Vec<gpui::FocusHandle> = Vec::new();
+    candidates.extend(
+        crate::per_window::get::<PickerState>(wid, cx).and_then(|s| s.composer.as_ref()?.upgrade()),
+    );
+    candidates.extend(
+        crate::per_window::get::<Parked>(wid, cx)
+            .into_iter()
+            .flat_map(|p| p.0.iter())
+            .filter_map(|p| p.composer.as_ref()?.upgrade()),
+    );
+    for focus in candidates {
+        if focus.is_focused(window) {
+            found = Some(focus);
+        }
+    }
+    found.is_some_and(|focus| activate(wid, &focus, false, cx))
 }
 
 /// The command picker over the composer whose field is `owner` (`slots::composer_popup`).
@@ -532,7 +605,7 @@ pub fn picker(
     cx: &mut App,
 ) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
-    if !owns(wid, owner, cx) {
+    if !activate(wid, owner, false, cx) {
         return None;
     }
     let state = crate::per_window::get::<PickerState>(wid, cx)?.clone();
@@ -647,7 +720,7 @@ pub fn on_send(
 /// picker's state belongs to ([`owns`]) leaves it alone: sending its own text never clears the other composer's chips or
 /// draft. `None` (no composer named) is the picker's own.
 fn clear_picker(window: gpui::WindowId, sender: Option<&gpui::FocusHandle>, cx: &mut App) {
-    if sender.is_none_or(|focus| owns(window, focus, cx)) {
+    if sender.is_none_or(|focus| activate(window, focus, false, cx)) {
         draft_changed(window, "", cx);
     }
 }
