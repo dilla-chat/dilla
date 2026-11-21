@@ -67,6 +67,10 @@ pub const AVATAR: f32 = 30.0;
 pub const GAP: f32 = 10.0;
 const ROW_TOP: f32 = 7.0;
 const ROW_BOTTOM: f32 = 3.0;
+/// `.d-bot-result__meta`: `margin-top: 3px`, and its line 19px high (the 18px status chip and the baseline-aligned privacy
+/// text and Dismiss button in a flex row).
+const META_GAP: f32 = 3.0;
+const META_H: f32 = 19.0;
 const ROW_RIGHT: f32 = 16.0;
 
 type OnDismiss = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -144,8 +148,8 @@ impl BotResult {
             + crate::text::root_line_height(text::SM)
             + 1.0
             + lines as f32 * line_height(text::INPUT, 1.55)
-            + 3.0
-            + 18.0
+            + META_GAP
+            + META_H
             + ROW_BOTTOM
     }
 }
@@ -304,5 +308,24 @@ impl RenderOnce for BotResult {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_meta_line_is_19px_under_a_3px_gap() {
+        assert_eq!(META_GAP + META_H, 22.0);
+        // one body line: the row's padding, the head line, 1px, the line, the meta, the bottom padding.
+        let h = BotResult::height("x", 600.0);
+        let expect = ROW_TOP
+            + crate::text::root_line_height(text::SM)
+            + 1.0
+            + line_height(text::INPUT, 1.55)
+            + 22.0
+            + ROW_BOTTOM;
+        assert_eq!(h, expect);
     }
 }
