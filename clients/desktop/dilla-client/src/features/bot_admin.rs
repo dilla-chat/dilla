@@ -1573,6 +1573,34 @@ mod tests {
         }
     }
 
+    /// R21: the welcome template never prints in a read answer's or a save's Debug.
+    #[test]
+    fn the_welcome_template_stays_out_of_debug() {
+        let mut cfg = welcome_cfg();
+        cfg.template = "zebra-welcome-7 {member}".into();
+        let shown = [
+            format!(
+                "{:?}",
+                WelcomeAnswer::Read {
+                    config: Some(cfg.clone()),
+                    revision: 1
+                }
+            ),
+            format!(
+                "{:#?}",
+                WelcomeOp::Save {
+                    value: cfg.clone(),
+                    revision: 1
+                }
+            ),
+            format!("{cfg:?}"),
+        ];
+        for s in shown {
+            assert!(!s.contains("zebra"), "{} bytes", s.len());
+            assert!(s.contains("<24 bytes>"), "{} bytes", s.len());
+        }
+    }
+
     #[test]
     fn a_welcome_read_decodes_the_document_and_its_revision() {
         let cfg = welcome_cfg();

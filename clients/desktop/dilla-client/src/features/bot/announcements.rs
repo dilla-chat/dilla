@@ -264,11 +264,21 @@ pub fn confirmed(result: &BotResult, previous: u64) -> bool {
 }
 
 /// How a save or a deletion ended when it did not. `status` is Failed for a refusal, and Cancelled ("Not confirmed") when
-/// the mutation may or may not have taken effect: the same request id then settles it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// the mutation may or may not have taken effect: the same request id then settles it. Its Debug prints the text's
+/// length only (R21), as the other result types do.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Failure {
     pub status: ResultStatus,
     pub text: String,
+}
+
+impl std::fmt::Debug for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Failure")
+            .field("status", &self.status)
+            .field("text", &Redacted(&self.text))
+            .finish()
+    }
 }
 
 impl Failure {
@@ -781,6 +791,17 @@ impl Bot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_prints_its_text_as_a_length_only() {
+        let f = Failure {
+            status: ResultStatus::Failed,
+            text: "zebra-failure-7".into(),
+        };
+        let shown = format!("{f:?}");
+        assert!(!shown.contains("zebra"), "{} bytes", shown.len());
+        assert!(shown.contains("<15 bytes>"), "{} bytes", shown.len());
+    }
     use crate::features::bot_admin::{SealedAnswer, SealedBot, SealedCommand, SendError};
     use std::collections::VecDeque;
     use std::sync::Mutex;

@@ -183,12 +183,22 @@ pub struct Overwrite {
 }
 
 /// The welcome configuration the Bot posts for a join (welcome-settings.ts `WelcomeSettingsValue`); `None` in the slice
-/// is a server that never configured one.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// is a server that never configured one. Its Debug prints the template's length only (R21): it is the server's own text.
+#[derive(Clone, PartialEq, Eq)]
 pub struct WelcomeSettings {
     pub channel: ChannelId,
     pub template: String,
     pub server_name: String,
+}
+
+impl std::fmt::Debug for WelcomeSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WelcomeSettings")
+            .field("channel", &self.channel)
+            .field("template", &super::Redacted(&self.template))
+            .field("server_name", &self.server_name)
+            .finish()
+    }
 }
 
 /// What each read has landed for each community; a community with no entry has not been read yet.

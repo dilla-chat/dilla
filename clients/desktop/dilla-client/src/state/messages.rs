@@ -34,8 +34,8 @@ pub struct ReplyRef {
     pub seq: Option<u64>,
 }
 
-/// `ReactionSummary`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `ReactionSummary`. Its Debug prints the emoji's length only: a reaction is message content.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Reaction {
     pub emoji: String,
     pub count: u32,
@@ -161,6 +161,16 @@ impl std::fmt::Debug for ReplyRef {
             .field("sender_user", &self.sender_user)
             .field("excerpt", &Redacted(&self.excerpt))
             .field("seq", &self.seq)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Reaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reaction")
+            .field("emoji", &Redacted(&self.emoji))
+            .field("count", &self.count)
+            .field("mine", &self.mine)
             .finish()
     }
 }
@@ -532,9 +542,9 @@ mod tests {
         }
     }
 
-    /// R21: a stored row, an outbox row, the timeline built from them (its items, their reply excerpts and attachment
-    /// names), a pinned item, and the whole `AppState` holding them, a reply target, a search, a tray file, a poll and a
-    /// reminder never print a decrypted text in Debug output.
+    /// R21: a stored row, an outbox row, the timeline built from them (its items, their reply excerpts, attachment
+    /// names and reaction emoji), a pinned item, and the whole `AppState` holding them, a reply target, a search, a tray
+    /// file, a poll and a reminder never print a decrypted text in Debug output.
     #[test]
     fn decrypted_texts_stay_out_of_debug() {
         const SECRET: &str = "zebra-body-7";
@@ -567,6 +577,12 @@ mod tests {
             t.items.iter().any(|i| i.body.contains(SECRET)),
             "the body is held"
         );
+        let mut t = t;
+        t.items[0].reactions.push(Reaction {
+            emoji: format!("{SECRET}-emoji"),
+            count: 1,
+            mine: true,
+        });
         let pin = PinnedItem {
             msg_id: MessageId([5; 16]),
             seq: 1,
