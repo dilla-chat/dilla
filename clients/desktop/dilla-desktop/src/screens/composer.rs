@@ -868,9 +868,10 @@ const FOCUS_RING_SPREAD: f32 = 3.0;
 
 /// Whether "send ↵" is the lit one (Composer.tsx `empty`: `value.trim() === ''` dims it). The picked command's chips hand the
 /// composer an empty draft (CommandPicker.tsx `PickerFrame.draft`: `'' with chips: send dims as in the prototype`), so with
-/// chips the button is dim whatever the fields hold; Enter runs the command.
-fn send_is_lit(draft: &str, chips: bool, blocked: bool) -> bool {
-    !chips && !draft.trim().is_empty() && !blocked
+/// chips the button is dim whatever the fields hold; Enter runs the command. A tray with a card lets a blank draft send
+/// (ComposerArea.tsx `canSendEmpty={tray.length > 0}`).
+fn send_is_lit(draft: &str, chips: bool, tray: bool, blocked: bool) -> bool {
+    !chips && (tray || !draft.trim().is_empty()) && !blocked
 }
 
 impl Render for Composer {
@@ -932,7 +933,7 @@ impl Render for Composer {
         // The field is as high as the draft's lines (20px each), up to the cap; soft-wrapped lines are not counted.
         let rows = value.split('\n').count().clamp(1, max_rows());
         let placeholder = format!("Message {}", self.target);
-        let sendable = send_is_lit(&value, chips.is_some(), blocked.is_some());
+        let sendable = send_is_lit(&value, chips.is_some(), tray.is_some(), blocked.is_some());
         let field = div()
             .relative()
             .flex_1()
@@ -1354,12 +1355,18 @@ mod tests {
 
     #[test]
     fn send_is_dim_for_an_empty_or_blank_draft_with_chips_and_while_blocked() {
-        assert!(send_is_lit("hello", false, false));
-        assert!(!send_is_lit("", false, false));
-        assert!(!send_is_lit("  \n", false, false));
-        assert!(!send_is_lit("hello", false, true));
+        assert!(send_is_lit("hello", false, false, false));
+        assert!(!send_is_lit("", false, false, false));
+        assert!(!send_is_lit("  \n", false, false, false));
+        assert!(!send_is_lit("hello", false, false, true));
         // The field still holds the typed `/role add ` under the chips: the chips' draft is empty.
-        assert!(!send_is_lit("/role add ", true, false));
+        assert!(!send_is_lit("/role add ", true, false, false));
+    }
+
+    #[test]
+    fn a_card_in_the_tray_lights_send_for_a_blank_draft() {
+        assert!(send_is_lit("", false, true, false));
+        assert!(!send_is_lit("", false, true, true), "not while blocked");
     }
 
     #[test]
