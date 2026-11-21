@@ -2,10 +2,14 @@
 //! `--r-seg`), then a hint, a note and a refusal. The host owns the `InputState` (or `TextareaState`) and reads its value;
 //! the field draws the frame around it. Hover raises the edge to `--fg-3`, focus to the accent, an error to the danger colour.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, ElementId, Entity, Focusable, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    App, Bounds, ElementId, Entity, Focusable, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels, RenderOnce,
+    SharedString, Styled, Window, canvas, div, point, px,
 };
 use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 
@@ -49,6 +53,7 @@ pub struct TextField {
     rows: usize,
     frame: Option<Frame>,
     overlay: Option<gpui::AnyElement>,
+    resizable: bool,
 }
 
 /// A host's own size for the input's frame (a form that restyles `.d-text-field__input`, as `.dw-profile-form` does).
@@ -70,6 +75,92 @@ const TEXTAREA_PAD_Y: f32 = 8.0;
 const TEXTAREA_RIGHT_MARGIN: f32 = 10.0;
 /// `.d-text-field__input`'s side padding (`0 0.75rem`).
 const FIELD_PAD_X: f32 = 12.0;
+
+/// `textarea.d-text-field__input { min-height: 2.125rem }`: the least a drag leaves a resizable field, edges included.
+pub const MIN_HEIGHT: f32 = 34.0;
+
+/// A resizable field's height after the grip is dragged `drag` px down (up is negative) from `start`: the grip follows
+/// the pointer, and the field stops at [`MIN_HEIGHT`].
+pub fn resized_height(start: f32, drag: f32) -> f32 {
+    (start + drag).max(MIN_HEIGHT)
+}
+
+/// The grip's box: Chromium's `resize: vertical` corner, 15px square at the border box's bottom-right.
+const GRIP_SIZE: f32 = 15.0;
+/// The grip's two strokes in px from the border box's bottom-right corner (measured on the web reference frame: 1px wide,
+/// at 45 degrees): each runs from its start, 2.5px in from the right edge, to its end, 3.5px up from the bottom.
+const GRIP_STROKES: [([f32; 2], [f32; 2]); 2] =
+    [([-2.5, -9.5], [-8.5, -3.5]), ([-2.5, -5.5], [-4.5, -3.5])];
+/// The strokes' width: Chromium draws them aliased, three device pixels across a diagonal; GPUI's anti-aliased path
+/// covers as much at 1.3px.
+const GRIP_STROKE_WIDTH: f32 = 1.3;
+/// Chromium's resizer on a dark colour scheme.
+const GRIP_COLOR: u32 = 0x9fa0a1;
+
+/// What a resizable field remembers between frames: the height a drag has left it at, and the drag in progress as the
+/// pointer's starting y with the height then.
+struct Resize {
+    height: Rc<Cell<Option<f32>>>,
+    drag: Rc<Cell<Option<(f32, f32)>>>,
+}
+
+/// The grip: the corner's hit box (a row-resize cursor, a press starts the drag) and the two strokes painted over it. The
+/// window follows the pointer for the drag, wherever it goes, and the release ends it.
+fn resize_grip(
+    id: ElementId,
+    state: Entity<Resize>,
+    height: Rc<Cell<Option<f32>>>,
+    drag: Rc<Cell<Option<(f32, f32)>>>,
+    shown: f32,
+) -> impl IntoElement {
+    let (down_drag, down_state) = (drag.clone(), state.clone());
+    div()
+        .id(id)
+        .absolute()
+        .right(px(-1.0))
+        .bottom(px(-1.0))
+        .size(px(GRIP_SIZE))
+        .cursor_row_resize()
+        .on_mouse_down(
+            MouseButton::Left,
+            move |event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                window.prevent_default();
+                down_drag.set(Some((f32::from(event.position.y), shown)));
+                down_state.update(cx, |_, cx| cx.notify());
+            },
+        )
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds: Bounds<Pixels>, (), window, _| {
+                    let corner = bounds.bottom_right();
+                    for ([x0, y0], [x1, y1]) in GRIP_STROKES {
+                        let mut path = PathBuilder::stroke(px(GRIP_STROKE_WIDTH));
+                        path.move_to(corner + point(px(x0), px(y0)));
+                        path.line_to(corner + point(px(x1), px(y1)));
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, gpui::rgb(GRIP_COLOR));
+                        }
+                    }
+                    let (move_drag, move_height, move_state) =
+                        (drag.clone(), height.clone(), state.clone());
+                    window.on_mouse_event(move |event: &MouseMoveEvent, _, _, cx| {
+                        if let (Some((from, start)), true) = (move_drag.get(), event.dragging()) {
+                            let moved = f32::from(event.position.y) - from;
+                            move_height.set(Some(resized_height(start, moved)));
+                            move_state.update(cx, |_, cx| cx.notify());
+                        }
+                    });
+                    let up_drag = drag.clone();
+                    window.on_mouse_event(move |_: &MouseUpEvent, _, _, _| {
+                        up_drag.set(None);
+                    });
+                },
+            )
+            .size_full(),
+        )
+}
 
 impl TextField {
     pub fn new(
@@ -106,6 +197,7 @@ impl TextField {
             rows: 3,
             frame: None,
             overlay: None,
+            resizable: false,
         }
     }
 
@@ -150,6 +242,13 @@ impl TextField {
         self
     }
 
+    /// `resize: vertical` (`textarea.d-text-field__input`, Decision D16): the framed multi-line field draws the browser's
+    /// grip in its bottom-right corner and its height follows a drag of the grip, down to [`MIN_HEIGHT`].
+    pub fn resizable(mut self) -> Self {
+        self.resizable = true;
+        self
+    }
+
     pub fn rows(mut self, rows: usize) -> Self {
         self.rows = rows.max(1);
         self
@@ -163,9 +262,27 @@ impl RenderOnce for TextField {
             Control::Single(input) => input.focus_handle(cx).contains_focused(window, cx),
             Control::Multi(input) => input.focus_handle(cx).contains_focused(window, cx),
         };
+        // A resizable field's height once its grip has been dragged; the host's frame height until then.
+        let resize = (self.resizable
+            && matches!(self.control, Control::Multi(_))
+            && self.frame.is_some())
+        .then(|| {
+            let state = window.use_keyed_state((self.id.clone(), "resize"), cx, |_, _| Resize {
+                height: Rc::new(Cell::new(None)),
+                drag: Rc::new(Cell::new(None)),
+            });
+            let (height, drag) = state.read_with(cx, |r, _| (r.height.clone(), r.drag.clone()));
+            (state, height, drag)
+        });
         let (frame_h, frame_pad_y) = match (&self.control, self.frame) {
             (Control::Single(_), Some(f)) => (Some(px(f.height)), 0.0),
-            (Control::Multi(_), Some(f)) => (Some(px(f.height)), f.pad_y),
+            (Control::Multi(_), Some(f)) => (
+                Some(px(resize
+                    .as_ref()
+                    .and_then(|(_, height, _)| height.get())
+                    .unwrap_or(f.height))),
+                f.pad_y,
+            ),
             (Control::Single(_), None) => (Some(px(36.0)), 0.0),
             (Control::Multi(_), None) => (None, 8.0),
         };
@@ -256,6 +373,16 @@ impl RenderOnce for TextField {
                 ),
             },
         };
+        if let (Some((state, height, drag)), Some(f)) = (resize, self.frame) {
+            let shown = height.get().unwrap_or(f.height);
+            frame = frame.relative().child(resize_grip(
+                (self.id.clone(), "grip").into(),
+                state,
+                height,
+                drag,
+                shown,
+            ));
+        }
         if self.disabled {
             frame = frame.opacity(OPACITY_MUTED).cursor_not_allowed();
         }
@@ -317,6 +444,14 @@ pub(crate) fn hint_lines(hint: SharedString, width: Option<f32>) -> gpui::AnyEle
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D16: a drag of the grip by +40px grows the field by 40px; a drag of -500px stops at the 34px minimum.
+    #[test]
+    fn a_resizable_textarea_drags_vertically() {
+        assert_eq!(resized_height(80.5, 40.0), 120.5);
+        assert_eq!(resized_height(80.5, -500.0), 34.0);
+        assert_eq!(resized_height(80.5, 0.0), 80.5);
+    }
 
     #[test]
     fn the_edge_follows_the_state() {

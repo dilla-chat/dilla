@@ -96,6 +96,17 @@ impl Toggle {
 impl RenderOnce for Toggle {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let on = self.checked;
+        // A disabled switch is dimmed as one group (`.d-toggle__switch[aria-disabled="true"] { opacity: var(--opacity-muted) }`):
+        // the knob is 0.8 of white over the page, not over the track beneath it. GPUI's element opacity dims each quad on
+        // its own, so the colours are laid over the page here and drawn solid. (The page is `--bg`; a switch on another
+        // surface is a few levels off.)
+        let dimmed = |c: gpui::Hsla| {
+            if self.disabled {
+                color::BG.blend(c.opacity(OPACITY_MUTED))
+            } else {
+                c
+            }
+        };
         let track = div()
             .relative()
             .flex_none()
@@ -103,12 +114,16 @@ impl RenderOnce for Toggle {
             .h(px(TRACK_H))
             .rounded(radius::PILL)
             .border_1()
-            .border_color(if on {
+            // The edge is the fill's own colour (`--accent` on, `--control-edge` off, which is `--track-off`): a dimmed track
+            // leaves it out and the fill shows to the rim, instead of the edge drawn over the fill a second time.
+            .border_color(if self.disabled {
+                gpui::transparent_black()
+            } else if on {
                 color::ACCENT
             } else {
                 color::CONTROL_EDGE
             })
-            .bg(if on { color::ACCENT } else { color::TRACK_OFF })
+            .bg(dimmed(if on { color::ACCENT } else { color::TRACK_OFF }))
             .child(
                 div()
                     .absolute()
@@ -117,7 +132,7 @@ impl RenderOnce for Toggle {
                     .left(px(knob_left(on)))
                     .size(px(KNOB))
                     .rounded(radius::PILL)
-                    .bg(color::KNOB)
+                    .bg(dimmed(color::KNOB))
                     .shadow(shadow_knob()),
             );
         let disabled = self.disabled;
@@ -142,10 +157,7 @@ impl RenderOnce for Toggle {
             Fit::Tight => switch,
         };
         switch = if disabled {
-            switch
-                .cursor_not_allowed()
-                .opacity(OPACITY_MUTED)
-                .node_props(|n| n.set_disabled())
+            switch.cursor_not_allowed().node_props(|n| n.set_disabled())
         } else {
             switch.cursor_pointer()
         };

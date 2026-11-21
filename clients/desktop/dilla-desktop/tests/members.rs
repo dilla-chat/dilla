@@ -886,8 +886,8 @@ parity! {
     parity_members_moderation_dialog_b => "members/moderation-dialog-b";
     parity_server_settings_members => "server-settings/members";
     parity_server_settings_members_b => "server-settings/members-b";
-    parity_server_settings_roles => "server-settings/roles", "parity after T6c: chrome 0.2172 % (lane E drew RolesSection.tsx's two panes; the residue is the permission switches: each single-line row's switch sits 1 css px lower than the web's, though it is where the CSS puts it (an isolated Chromium render of the same rule set agrees with GPUI); the two-line row matches)";
-    parity_server_settings_roles_b => "server-settings/roles-b", "parity after T6c: chrome 0.3006 % (as roles: the switches 1 css px low; the overflowing role row is drawn as the web draws it)";
+    parity_server_settings_roles => "server-settings/roles";
+    parity_server_settings_roles_b => "server-settings/roles-b";
     parity_server_settings_bans => "server-settings/bans";
     parity_server_settings_bans_b => "server-settings/bans-b";
     parity_server_settings_moderation_log => "server-settings/moderation-log";

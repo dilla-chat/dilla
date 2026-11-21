@@ -118,6 +118,8 @@ impl UserSettings {
         );
         let mut bio = TextField::multiline("profile-bio", t("profile.bio.label"), &self.bio)
             .frame(bio_frame())
+            // `textarea.d-text-field__input { resize: vertical }` (Decision D16): the grip and the drag.
+            .resizable()
             .text_overlay(typed);
         if let Some(text) = problem(e.problem_bio) {
             bio = bio.error(text);

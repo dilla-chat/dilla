@@ -618,7 +618,8 @@ impl IntoElement for FlowParagraph {
 }
 
 impl gpui::Element for FlowParagraph {
-    type RequestLayoutState = ();
+    /// The width the layout last sized the paragraph to when it was given one (the flexed size, before the layout snap).
+    type RequestLayoutState = std::rc::Rc<std::cell::Cell<Option<f32>>>;
     type PrepaintState = Option<AnyElement>;
 
     fn id(&self) -> Option<gpui::ElementId> {
@@ -637,9 +638,14 @@ impl gpui::Element for FlowParagraph {
         _cx: &mut gpui::App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
         let (text, size, lh) = (self.text.clone(), self.size, self.line_height);
+        let sized = std::rc::Rc::new(std::cell::Cell::new(None));
+        let sized_by_layout = sized.clone();
         let layout_id = window.request_measured_layout(
             gpui::Style::default(),
             move |known, available, _window, _cx| {
+                if let Some(w) = known.width {
+                    sized_by_layout.set(Some(f32::from(w)));
+                }
                 // CSS sizing of a block of text: its min-content width is its longest word, its max-content width its
                 // longest hard line, and in a definite space it fits: min(max-content, max(min-content, available)).
                 let (min, max) = flow_extent(&text, size);
@@ -655,7 +661,7 @@ impl gpui::Element for FlowParagraph {
                 }
             },
         );
-        (layout_id, ())
+        (layout_id, sized)
     }
 
     fn prepaint(
@@ -663,12 +669,20 @@ impl gpui::Element for FlowParagraph {
         _id: Option<&gpui::GlobalElementId>,
         _inspector_id: Option<&gpui::InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
+        sized: &mut Self::RequestLayoutState,
         window: &mut gpui::Window,
         cx: &mut gpui::App,
     ) -> Self::PrepaintState {
         let lh = self.line_height;
-        let lines = flow_lines(&self.text, self.size, Some(f32::from(bounds.size.width)));
+        // The lines break at the width the layout gave the paragraph, not at its snapped box: snapping the box between whole
+        // pixels can take most of a pixel off a width that was a column's worth exactly (a hint of 337.5px that is 45
+        // columns wide, snapped to 337), and the paragraph would break one word early where the height it was measured at
+        // (and the web, which keeps layout units) did not.
+        let wrap_at = match sized.get() {
+            Some(w) if (w - f32::from(bounds.size.width)).abs() <= 1.0 => w,
+            _ => f32::from(bounds.size.width),
+        };
+        let lines = flow_lines(&self.text, self.size, Some(wrap_at));
         let mut block = div()
             .relative()
             .w(bounds.size.width)

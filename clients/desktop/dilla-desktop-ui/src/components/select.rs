@@ -27,6 +27,16 @@ struct Memory {
     cursor: usize,
 }
 
+/// The start padding Chromium's `<select>` gives its value on top of the field's own.
+const SELECT_VALUE_INSET: f32 = 4.0;
+
+/// The value's line box: `line-height: normal` of 12.5px JetBrains Mono, its rounded ascent plus its rounded descent.
+fn select_value_line() -> f32 {
+    let (ascent, descent) =
+        crate::text::ascent_descent(crate::text::Face::Mono, f32::from(text::SM));
+    ascent + descent
+}
+
 /// The index of `value` among the options, else the first.
 pub fn selected_index(values: &[&str], value: &str) -> usize {
     values.iter().position(|v| *v == value).unwrap_or(0)
@@ -176,14 +186,14 @@ impl RenderOnce for Select {
             .border_color(edge)
             .hover(|s| s.border_color(color::FG_3))
             .focus_visible(|s| s.border_color(color::ACCENT))
+            // The native `<select>`'s value is an inner block with 4px of its own start padding (`line-height: normal`, the
+            // font's rounded ascent and descent: 17px at 12.5px), so it sits 4px further in and a pixel lower than a line at
+            // the root's leading would.
             .child(
-                line(
-                    current,
-                    text::SM,
-                    crate::text::root_line_height(text::SM),
-                    color::FG,
-                )
-                .ellipsis(),
+                div()
+                    .min_w_0()
+                    .ml(px(SELECT_VALUE_INSET))
+                    .child(line(current, text::SM, select_value_line(), color::FG).ellipsis()),
             )
             // The web's field is a native <select>: Chromium draws its arrow in the text colour, 9 x 5.5px with its right
             // tip 5px in from the outer edge, past the 10px padding. A 16px chevron-down (whose path spans 6..18 of 24)

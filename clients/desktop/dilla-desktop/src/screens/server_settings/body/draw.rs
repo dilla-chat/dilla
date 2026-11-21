@@ -668,14 +668,15 @@ impl Body {
         let access = self.access();
         let id = c.id;
         // The section's `<h3>` keeps the user agent's heading (only its margin is reset, `.dw-settings-section h3`): 1.17em of
-        // the section's 12px, bold.
+        // the section's 12px, bold, in the text colour the section inherits (`--fg-2`, layout.json's rgb(140, 147, 158)),
+        // not the `--fg` of the `.dw-admin-name` headings.
         let heading = || {
             let size = px(f32::from(text::UI) * UA_H3_EM);
             line(
                 t("chperm.title"),
                 size,
                 dilla_desktop_ui::text::root_line_height(size),
-                color::FG,
+                color::FG_2,
             )
             .weight(font::WEIGHT_DISPLAY)
         };

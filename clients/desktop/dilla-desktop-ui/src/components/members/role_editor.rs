@@ -57,6 +57,27 @@ const ROW_CONTENT_H: f32 = 46.;
 const ROW_INNER_GAP: Pixels = px(12.);
 /// `.d-permission-grid__text { line-height: 1.35 }`.
 const TEXT_LEADING: f32 = 1.35;
+/// A toggle row's switch is centred on its name and description (`.d-toggle`'s grid areas "name sw" "hint sw"). Chromium
+/// truncates the half-difference that centres it onto its 1/64px layout unit: with the name at 16.875px (1080 units) and
+/// one line of description at 14.171875px (907 units), (31.046875 - 24) / 2 is 3.515625 and not the 3.5234375 GPUI keeps,
+/// which lands the switch on 234.5 where the web has 234.484375. The layout snaps to whole px and rounds a tie up, so
+/// GPUI's switch sits a pixel under the web's. A margin of one unit (it also shrinks the switch's outer box, so half of
+/// it is the shift) takes it just under the tie, as the truncation does. It is only a half unit when the description has
+/// an odd number of lines (the name's lines are even units); two lines are 45.21875px and centre exactly.
+const SWITCH_NUDGE: f32 = 1.0 / 64.0;
+/// The text column of a toggle row at the section's width: the editor (the content column less the list and its gap), its
+/// 1px edges, the row's side padding, the gap and the 36px track.
+const TEXT_COLUMN_W: f32 = 720. - 200. - 18. - 2. - 28. - 12. - 36.;
+
+/// How far a row's switch is lifted so that its half-difference truncates as Chromium's does (see [`SWITCH_NUDGE`]).
+fn switch_nudge(hint: &str, text_column: f32) -> f32 {
+    let lines = if hint.is_empty() {
+        0
+    } else {
+        crate::text::wrap_mono(hint, crate::text::columns(text::META, text_column)).len()
+    };
+    if lines % 2 == 1 { SWITCH_NUDGE } else { 0.0 }
+}
 
 /// One role of the list.
 #[derive(Clone, Debug)]
@@ -614,6 +635,7 @@ fn perm_row(
                     div()
                         .flex_none()
                         .relative()
+                        .mt(px(-switch_nudge(&row.hint, TEXT_COLUMN_W)))
                         .debug_selector({
                             let (key, on) = (row.id.clone(), row.on);
                             move || {
@@ -650,4 +672,20 @@ fn perm_row(
         )));
     }
     out.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row with one line of description (the roles fixture: 31.046875px of text, an odd number of layout units, so
+    /// Chromium's centring truncates) lifts its switch; a row of two lines (45.21875px) or none centres exactly and does not.
+    #[test]
+    fn a_single_line_switch_centres_on_its_label() {
+        let hint = "See text and voice channels";
+        assert_eq!(switch_nudge(hint, TEXT_COLUMN_W), SWITCH_NUDGE);
+        let long = "Open the files sent in a channel. Messages sent before someone joins a channel are never shown to them, whatever their roles.";
+        assert_eq!(switch_nudge(long, TEXT_COLUMN_W), 0.0);
+        assert_eq!(switch_nudge("", TEXT_COLUMN_W), 0.0);
+    }
 }
