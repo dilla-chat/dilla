@@ -22,7 +22,7 @@ use gpui_component::input::{Input, InputState};
 use crate::a11y::{Accessible, Role};
 use crate::components::text_field::edge;
 use crate::text::{columns, line, line_height, wrap_mono};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 use crate::{Icon, IconName, metrics};
 
 /// The card's width (`max-width: 25rem`).
@@ -400,6 +400,7 @@ impl RenderOnce for OnboardingFrame {
             }
             card = card.child(footer);
         }
+        let card = card_in(card, (self.id.clone(), "enter"), desktop, cx);
         centred_scroll(
             (self.id, "page"),
             PAGE_PAD,
@@ -498,6 +499,18 @@ pub fn card_edge<E: Styled>(card: E, desktop: bool, web_width: impl FnOnce(E) ->
             .rounded(radius::XXL)
             .shadow(shadow_card())
     }
+}
+
+/// The card entering with `d-modal` over `--duration-card` (OnboardingFrame.css:7), once per mount. The desktop app's
+/// authentication window has no entrance (DesktopTitlebar.css:26 `animation: none`).
+pub fn card_in<E>(card: E, id: impl Into<ElementId>, desktop: bool, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if desktop {
+        return card.into_any_element();
+    }
+    crate::motion::modal_in(card, id, motion::CARD, cx)
 }
 
 /// The page's padding round the card.

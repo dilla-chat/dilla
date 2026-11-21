@@ -18,7 +18,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_MUTED, focus_ring};
 use crate::text::{flow_paragraph, line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// The panel's width: the prototype's 340 content and its 1px border.
 pub const WIDTH: f32 = 342.0;
@@ -181,7 +181,7 @@ impl RemindersPopover {
 }
 
 impl RenderOnce for RemindersPopover {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let xs = crate::text::root_line_height(text::XS);
         let due_count = self.items.iter().filter(|i| i.due).count();
         let upcoming_count = self.items.len() - due_count;
@@ -404,7 +404,8 @@ impl RenderOnce for RemindersPopover {
                     .child(line(empty, text::UI, ui, color::FG_3))
             }))
             .children(rows);
-        div()
+        let enter_id = (self.id.clone(), "enter");
+        let popover = div()
             .id(self.id)
             .w(px(WIDTH))
             .overflow_hidden()
@@ -427,7 +428,9 @@ impl RenderOnce for RemindersPopover {
                         crate::text::root_line_height(text::META),
                         color::FG_3,
                     )),
-            )
+            );
+        // RemindersPopover.css:3: `d-modal` over `--duration-popover`.
+        crate::motion::modal_in(popover, enter_id, motion::POPOVER, cx)
     }
 }
 

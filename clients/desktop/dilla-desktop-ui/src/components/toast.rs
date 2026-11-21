@@ -112,8 +112,9 @@ impl RenderOnce for ToastHost {
         match current_in(window_id, cx) {
             None => region,
             // `role="status"`: read out once as it appears (each toast is a new node, so a repeated "Copied" is too).
-            Some(message) => region.child(
-                div()
+            Some(message) => {
+                let enter = (self.id.clone(), format!("toast-enter-{n}"));
+                let toast = div()
                     .id((self.id, format!("toast-{n}")))
                     .a11y(Role::Status, message.clone())
                     .aria_value(message.clone())
@@ -135,8 +136,10 @@ impl RenderOnce for ToastHost {
                         text::UI,
                         line_height(text::UI, 1.5),
                         color::FG,
-                    )),
-            ),
+                    ));
+                // Toast.css:7: `d-toast` over `--duration-toast`, each toast on its own.
+                region.child(crate::motion::toast_in(toast, enter, cx))
+            }
         }
     }
 }

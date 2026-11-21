@@ -314,10 +314,42 @@ pub struct TitlebarHandlers {
 
 /// TopBar.css `.d-topbar__badge`: 14px high, at least as wide, 2px in from the bell's top right, a 2px ring of the bar.
 mod badge {
+    use dilla_desktop_ui::tokens::{color, font, radius, text};
+    use gpui::{AnyElement, IntoElement, Pixels, SharedString, Styled, div};
+
     pub const SIZE: f32 = 14.0;
     pub const INSET: f32 = 2.0;
     pub const PAD: f32 = 3.0;
     pub const RING: f32 = 2.0;
+
+    /// The count's pill at `scale` (1.0 is its size; its lengths and text are multiplied by the scale, as a CSS `scale()`
+    /// draws it, ring included).
+    pub fn pill(count: SharedString, scale: f32) -> AnyElement {
+        use gpui::ParentElement as _;
+        div()
+            .min_w(Pixels::from(SIZE * scale))
+            .h(Pixels::from(SIZE * scale))
+            .px(Pixels::from(PAD * scale))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(radius::PILL * scale)
+            .bg(color::MENTION)
+            .shadow(dilla_desktop_ui::metrics::spread_ring(
+                color::BG_2,
+                RING * scale,
+            ))
+            .child(
+                super::line(
+                    count,
+                    text::BADGE * scale,
+                    f32::from(text::BADGE) * scale,
+                    color::MENTION_INK,
+                )
+                .weight(font::WEIGHT_DISPLAY),
+            )
+            .into_any_element()
+    }
 }
 
 /// The bell (`.d-topbar__bell`): its button, its due count and, while open, the reminders popover hanging under it.
@@ -325,6 +357,7 @@ fn bell(
     model: &TitlebarModel,
     on_reminders: super::shell::Action,
     popover: Option<gpui::AnyElement>,
+    cx: &App,
 ) -> impl IntoElement + use<> {
     let open = model.reminders_open;
     let mut button = interactive(div().id("topbar-bell"))
@@ -357,31 +390,20 @@ fn bell(
         } else {
             due.to_string()
         };
+        // TopBar.css:40: `d-pop` over `--duration-pop` on the default curve, once while the count is above 0.
+        let count = gpui::SharedString::from(count);
+        let pop = dilla_desktop_ui::motion::pop_in(
+            "topbar-badge-pop",
+            dilla_desktop_ui::tokens::motion::POP,
+            dilla_desktop_ui::motion::EASE,
+            cx,
+            move |scale| badge::pill(count.clone(), scale.unwrap_or(1.0)),
+        );
         div()
             .absolute()
             .top(Pixels::from(badge::INSET))
             .right(Pixels::from(badge::INSET))
-            .min_w(Pixels::from(badge::SIZE))
-            .h(Pixels::from(badge::SIZE))
-            .px(Pixels::from(badge::PAD))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(radius::PILL)
-            .bg(color::MENTION)
-            .shadow(dilla_desktop_ui::metrics::spread_ring(
-                color::BG_2,
-                badge::RING,
-            ))
-            .child(
-                line(
-                    count,
-                    text::BADGE,
-                    f32::from(text::BADGE),
-                    color::MENTION_INK,
-                )
-                .weight(font::WEIGHT_DISPLAY),
-            )
+            .child(pop)
     });
     // The popover's press-outside check leaves a press on the bell to the bell's own toggle.
     let bounds = canvas(
@@ -491,6 +513,7 @@ pub fn render(
                 .h(Pixels::from(css::BRAND_CURSOR_H))
                 .bg(color::BRAND),
             "topbar-caret",
+            window,
             cx,
         ));
     let search = div()
@@ -513,7 +536,6 @@ pub fn render(
                 .h(Pixels::from(css::SEARCH_H))
                 .bg(color::SURFACE_2)
                 .border_1()
-            window,
                 .border_color(color::HAIRLINE_2)
                 .rounded(radius::MD)
                 .flex()
@@ -587,7 +609,7 @@ pub fn render(
         .justify_end()
         .gap(Pixels::from(css::END_GAP))
         .children(voice)
-        .child(bell(model, handlers.on_reminders.clone(), reminders))
+        .child(bell(model, handlers.on_reminders.clone(), reminders, cx))
         .child(
             interactive(div().id("topbar-settings"))
                 .a11y(Role::Button, t("shell.rail.settings"))

@@ -500,6 +500,230 @@ where
     ))
 }
 
+/// `d-modal`'s start offset (`translateY(-8px)`) and scale (`scale(0.985)`).
+const MODAL_PX: f32 = 8.0;
+const MODAL_SCALE: f32 = 0.985;
+
+/// `d-toast`'s start offset (`translateY(10px)`) and scale (`scale(0.96)`).
+const TOAST_PX: f32 = 10.0;
+const TOAST_SCALE: f32 = 0.96;
+
+/// `d-pop`'s keyframes: `scale(0.3)` at 0%, `scale(1.2)` at 60%, `scale(1)` at 100%.
+const POP_FROM: f32 = 0.3;
+const POP_PEAK: f32 = 1.2;
+const POP_PEAK_AT: f32 = 0.6;
+
+/// What an entrance that moves, scales and fades shows at one moment: its opacity, its offset down from its place in px
+/// (negative is up) and the scale CSS would draw it at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entrance {
+    pub opacity: f32,
+    pub offset_y: f32,
+    /// What the keyframe scales by. GPUI cannot scale an element and what is in it, so [`modal_in`] and [`toast_in`] do not
+    /// draw it (it is here so the keyframe is whole); [`pop_in`] draws its own scale by redrawing at it.
+    pub scale: f32,
+}
+
+impl Entrance {
+    /// The end state: in place, opaque, full size. What a zero-duration animation leaves.
+    pub const SETTLED: Self = Self {
+        opacity: 1.0,
+        offset_y: 0.0,
+        scale: 1.0,
+    };
+}
+
+fn progress(elapsed: Duration, run: Duration, curve: [f32; 4]) -> f32 {
+    cubic_bezier(curve, elapsed.as_secs_f32() / run.as_secs_f32())
+}
+
+/// `d-modal` (`from { opacity: 0; translateY(-8px) scale(0.985) } to { opacity: 1; none }`) `elapsed` into its run of `run` on
+/// `curve` (the components all name `--ease-out`). A run of zero is over at once.
+pub fn modal_at(elapsed: Duration, run: Duration, curve: [f32; 4]) -> Entrance {
+    if run.is_zero() {
+        return Entrance::SETTLED;
+    }
+    let p = progress(elapsed, run, curve);
+    Entrance {
+        opacity: p,
+        offset_y: -MODAL_PX * (1.0 - p),
+        scale: MODAL_SCALE + (1.0 - MODAL_SCALE) * p,
+    }
+}
+
+/// `d-toast` (`from { opacity: 0; translateY(10px) scale(0.96) } to { opacity: 1; none }`), as [`modal_at`].
+pub fn toast_at(elapsed: Duration, run: Duration, curve: [f32; 4]) -> Entrance {
+    if run.is_zero() {
+        return Entrance::SETTLED;
+    }
+    let p = progress(elapsed, run, curve);
+    Entrance {
+        opacity: p,
+        offset_y: TOAST_PX * (1.0 - p),
+        scale: TOAST_SCALE + (1.0 - TOAST_SCALE) * p,
+    }
+}
+
+/// `d-fade` (`from { opacity: 0 } to { opacity: 1 }`): the opacity `elapsed` into `run` on `curve` (`EASE` where the CSS
+/// names none, as it does for the scrims, the lightbox and the tooltip). A run of zero is over at once.
+pub fn fade_at(elapsed: Duration, run: Duration, curve: [f32; 4]) -> f32 {
+    if run.is_zero() {
+        return 1.0;
+    }
+    progress(elapsed, run, curve)
+}
+
+/// `d-pop` (`0% { scale(0.3) } 60% { scale(1.2) } 100% { scale(1) }`): the scale `elapsed` into `run`. The curve runs
+/// between each pair of keyframes, as CSS's `animation-timing-function` does. A run of zero is over at once.
+pub fn pop_at(elapsed: Duration, run: Duration, curve: [f32; 4]) -> f32 {
+    if run.is_zero() {
+        return 1.0;
+    }
+    let t = (elapsed.as_secs_f32() / run.as_secs_f32()).clamp(0.0, 1.0);
+    if t < POP_PEAK_AT {
+        POP_FROM + (POP_PEAK - POP_FROM) * cubic_bezier(curve, t / POP_PEAK_AT)
+    } else {
+        POP_PEAK + (1.0 - POP_PEAK) * cubic_bezier(curve, (t - POP_PEAK_AT) / (1.0 - POP_PEAK_AT))
+    }
+}
+
+/// `el` entering by `at`'s keyframe over `run` on `--ease-out`, once for as long as it stays drawn at `id`'s place: it
+/// fades in while it moves from its offset into position (its layout does not move). `el` must be in the flow of its
+/// parent (not `.absolute()`: put the entrance on the box inside an absolute wrapper). With reduced motion it is drawn as
+/// it is.
+fn enter<E>(
+    el: E,
+    id: impl Into<ElementId>,
+    run: Duration,
+    cx: &App,
+    at: fn(Duration, Duration, [f32; 4]) -> Entrance,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if cx.reduce_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(id, Animation::new(run), move |el, delta| {
+        // The finished entrance is the element itself, with nothing laid over it.
+        if delta >= 1.0 {
+            return el;
+        }
+        let now = at(run.mul_f32(delta), run, motion::EASE_OUT);
+        el.relative().top(px(now.offset_y)).opacity(now.opacity)
+    })
+    .into_any_element()
+}
+
+/// `el` entering with `d-modal` over `run` on `--ease-out`, once per mount (see [`enter`]). Draws the fade and the 8px
+/// settling from above; the keyframe's `scale(0.985)` is not drawn, because GPUI cannot scale an element and what is in it
+/// (0.985 of a 300px menu is 2px a side).
+pub fn modal_in<E>(el: E, id: impl Into<ElementId>, run: Duration, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    enter(el, id, run, cx, modal_at)
+}
+
+/// `el` entering with `d-toast` over [`motion::TOAST`] on `--ease-out`, once per mount (see [`enter`]). The `scale(0.96)` is
+/// not drawn, as with [`modal_in`].
+pub fn toast_in<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    enter(el, id, motion::TOAST, cx, toast_at)
+}
+
+/// `el` fading in with `d-fade` over `run` on `curve`, once per mount. The whole element fades, what is in it too.
+pub fn fade_in<E>(
+    el: E,
+    id: impl Into<ElementId>,
+    run: Duration,
+    curve: [f32; 4],
+    cx: &App,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if cx.reduce_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(id, Animation::new(run), move |el, delta| {
+        if delta >= 1.0 {
+            el
+        } else {
+            el.opacity(fade_at(run.mul_f32(delta), run, curve))
+        }
+    })
+    .into_any_element()
+}
+
+/// A backdrop of `scrim` covering its positioned parent, fading in with `d-fade` over [`motion::SCRIM`] (`--duration-scrim`,
+/// the CSS's default curve, `both`). It is a layer of its own, the parent's first child, so the panel above it does not
+/// fade with it, as the web's `::backdrop` is not the dialog.
+pub fn scrim_layer(id: impl Into<ElementId>, scrim: Hsla, cx: &App) -> AnyElement {
+    let layer = move |alpha: f32| div().absolute().inset_0().bg(scrim.opacity(alpha));
+    if cx.reduce_motion() {
+        return layer(1.0).into_any_element();
+    }
+    let run = motion::SCRIM;
+    layer(0.0)
+        .with_animation(id, Animation::new(run), move |_, delta| {
+            layer(fade_at(run.mul_f32(delta), run, EASE))
+        })
+        .into_any_element()
+}
+
+/// How often a popping badge repaints: its 450ms pop reads as smooth at 30 frames a second, like the other indicators.
+const POP_FPS: f32 = INDICATOR_FPS;
+
+/// A badge popping in with `d-pop` over `run` on `curve`, once per mount. `build(None)` draws the badge at its size and
+/// `build(Some(scale))` a copy of it with every length and its text multiplied by the scale (a copy must not share the
+/// badge's element id): GPUI cannot scale an element, so the pop redraws the badge at each scale, about its centre, over a
+/// hidden full-size one that keeps its place in the layout, as the CSS transform leaves the layout alone. A finished pop is
+/// the badge at full size and nothing else; with reduced motion it is drawn so at once.
+pub fn pop_in(
+    id: impl Into<ElementId>,
+    run: Duration,
+    curve: [f32; 4],
+    cx: &App,
+    build: impl Fn(Option<f32>) -> AnyElement + 'static,
+) -> AnyElement {
+    if cx.reduce_motion() {
+        return build(None);
+    }
+    let frame = move |scale: Option<f32>| {
+        let slot = div().relative().flex().flex_none();
+        match scale {
+            None => slot.child(build(None)),
+            Some(scale) => slot
+                .child(div().flex().flex_none().invisible().child(build(None)))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(build(Some(scale))),
+                ),
+        }
+    };
+    frame(Some(POP_FROM))
+        .with_animation(
+            id,
+            Animation::new(run).with_max_fps(POP_FPS),
+            move |_, delta| {
+                if delta >= 1.0 {
+                    frame(None)
+                } else {
+                    frame(Some(pop_at(run.mul_f32(delta), run, curve)))
+                }
+            },
+        )
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,6 +1071,155 @@ mod tests {
             "a re-render after the flash asks for no more frames"
         );
         assert_eq!(renders_over(cx, true, 1600, flashing), 0, "reduced motion");
+    }
+
+    /// An entrance `build` draws runs once: it repaints while it runs, and a parent that renders again after its run asks
+    /// for no more frames; reduced motion repaints nothing.
+    fn runs_once(
+        cx: &mut gpui::TestAppContext,
+        run_ms: u64,
+        build: impl Fn(&App) -> AnyElement + Clone + 'static,
+    ) {
+        let during = renders_over(cx, false, run_ms + 100, build.clone());
+        assert!(during > 0, "the entrance repaints while it runs");
+        let (host, vcx) = cx.add_window_view(|_, _| Host {
+            renders: 0,
+            build: Box::new(build.clone()),
+        });
+        vcx.run_until_parked();
+        for _ in 0..(run_ms / 10 + 20) {
+            vcx.executor().advance_clock(Duration::from_millis(10));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        let settled = host.read_with(vcx, |h, _| h.renders);
+        host.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        for _ in 0..10 {
+            vcx.executor().advance_clock(Duration::from_millis(10));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.renders),
+            settled + 1,
+            "a re-render after the entrance asks for no more frames"
+        );
+        assert_eq!(
+            renders_over(cx, true, run_ms + 100, build),
+            0,
+            "reduced motion"
+        );
+    }
+
+    /// `d-modal` at its start, half way and its end: it rises from 8px above and 0.985 of its size, opaque only at the end.
+    #[test]
+    fn the_modal_settles_from_eight_px_above_and_clear() {
+        let run = motion::DIALOG;
+        let start = modal_at(Duration::ZERO, run, motion::EASE_OUT);
+        assert!(near(start.opacity, 0.0) && near(start.offset_y, -8.0) && near(start.scale, 0.985));
+        let mid = modal_at(run / 2, run, motion::EASE_OUT);
+        let p = cubic_bezier(motion::EASE_OUT, 0.5);
+        assert!(near(mid.opacity, p) && near(mid.offset_y, -8.0 * (1.0 - p)));
+        assert!(near(mid.scale, 0.985 + 0.015 * p));
+        assert!(mid.opacity > 0.5, "--ease-out is ahead of linear");
+        let end = modal_at(run, run, motion::EASE_OUT);
+        assert!(near(end.opacity, 1.0) && near(end.offset_y, 0.0) && near(end.scale, 1.0));
+    }
+
+    /// A zero run is the end state, for every one of the keyframes (reduced motion zeroes the durations).
+    #[test]
+    fn a_zero_run_is_the_end_state() {
+        let mid = Duration::from_millis(50);
+        assert_eq!(modal_at(mid, Duration::ZERO, EASE), Entrance::SETTLED);
+        assert_eq!(toast_at(mid, Duration::ZERO, EASE), Entrance::SETTLED);
+        assert_eq!(fade_at(mid, Duration::ZERO, EASE), 1.0);
+        assert_eq!(pop_at(mid, Duration::ZERO, EASE), 1.0);
+    }
+
+    /// `d-toast` at its start, half way and its end: it rises from 10px below at 0.96 of its size.
+    #[test]
+    fn the_toast_rises_from_ten_px_below_at_ninety_six_percent() {
+        let run = motion::TOAST;
+        let start = toast_at(Duration::ZERO, run, motion::EASE_OUT);
+        assert!(near(start.opacity, 0.0) && near(start.offset_y, 10.0) && near(start.scale, 0.96));
+        let mid = toast_at(run / 2, run, motion::EASE_OUT);
+        let p = cubic_bezier(motion::EASE_OUT, 0.5);
+        assert!(near(mid.offset_y, 10.0 * (1.0 - p)) && near(mid.scale, 0.96 + 0.04 * p));
+        let end = toast_at(run, run, motion::EASE_OUT);
+        assert!(near(end.opacity, 1.0) && near(end.offset_y, 0.0) && near(end.scale, 1.0));
+    }
+
+    /// `d-fade` at its start, half way (on `ease`: 0.8024) and its end.
+    #[test]
+    fn the_fade_goes_from_clear_to_opaque_on_ease() {
+        let run = motion::SCRIM;
+        assert!(near(fade_at(Duration::ZERO, run, EASE), 0.0));
+        assert!(near(fade_at(run / 2, run, EASE), 0.8024));
+        assert!(near(fade_at(run, run, EASE), 1.0));
+    }
+
+    /// `d-pop` at its start, at its 60% stop, between the stops (on the curve) and its end: 0.3, 1.2 and back to 1.
+    #[test]
+    fn the_pop_overshoots_to_one_and_a_fifth_at_sixty_percent() {
+        let run = motion::BADGE;
+        assert!(near(pop_at(Duration::ZERO, run, motion::EASE_OUT), 0.3));
+        assert!(near(pop_at(run.mul_f32(0.6), run, motion::EASE_OUT), 1.2));
+        assert!(near(pop_at(run, run, motion::EASE_OUT), 1.0));
+        // Half way up the first interval (30% of the run) the curve has gone further than half.
+        let first = pop_at(run.mul_f32(0.3), run, motion::EASE_OUT);
+        assert!(near(first, 0.3 + 0.9 * cubic_bezier(motion::EASE_OUT, 0.5)));
+        assert!(first > 0.75, "--ease-out is ahead of linear");
+        // Half way down the second (80%) it is between the peak and its rest.
+        let second = pop_at(run.mul_f32(0.8), run, motion::EASE_OUT);
+        assert!(near(
+            second,
+            1.2 - 0.2 * cubic_bezier(motion::EASE_OUT, 0.5)
+        ));
+        let between = pop_at(run.mul_f32(0.45), run, EASE);
+        assert!(between > 1.0 && between < 1.2);
+    }
+
+    #[gpui::test]
+    fn a_modal_enters_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 260, |cx| modal_in(div(), "modal", motion::DIALOG, cx));
+    }
+
+    #[gpui::test]
+    fn a_toast_enters_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 220, |cx| toast_in(div(), "toast", cx));
+    }
+
+    #[gpui::test]
+    fn a_fade_runs_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 160, |cx| {
+            fade_in(div(), "fade", motion::PRESS, EASE, cx)
+        });
+    }
+
+    #[gpui::test]
+    fn a_scrim_fades_in_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 160, |cx| scrim_layer("scrim", color::SCRIM, cx));
+    }
+
+    #[gpui::test]
+    fn a_badge_pops_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 450, |cx| {
+            pop_in("pop", motion::BADGE, motion::EASE_OUT, cx, |scale| {
+                div()
+                    .size(px(16.0 * scale.unwrap_or(1.0)))
+                    .into_any_element()
+            })
+        });
+    }
+
+    /// An overlay that is not drawn (a closed menu, a hidden tooltip) schedules no frames at all.
+    #[gpui::test]
+    fn an_overlay_that_is_not_drawn_costs_no_frames(cx: &mut gpui::TestAppContext) {
+        assert_eq!(
+            renders_over(cx, false, 500, |_| div().into_any_element()),
+            0
+        );
     }
 
     /// A view that draws a caret while `show`, and counts its renders.

@@ -652,6 +652,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .child(drop_overlay::drop_overlay(
                 t("shell.drop.title"),
                 t("shell.drop.body"),
+                cx,
             ));
         out.push(
             deferred(anchored().position(point(left, top)).child(pane))
@@ -932,38 +933,41 @@ fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
         seq,
         index,
     };
-    Some(lightbox::lightbox(lightbox::LightboxProps {
-        label: tf(
-            "shell.lightbox.label",
-            &[("name", &name), ("size", &ui::format_size(size))],
-        )
-        .into(),
-        image,
-        save_label: t("shell.lightbox.save").into(),
-        on_save: click({
-            let name = name.clone();
-            move |_, cx| {
-                if let Some(c) = &client {
-                    ui::save(c, card, &name, cx)
+    Some(lightbox::lightbox(
+        lightbox::LightboxProps {
+            label: tf(
+                "shell.lightbox.label",
+                &[("name", &name), ("size", &ui::format_size(size))],
+            )
+            .into(),
+            image,
+            save_label: t("shell.lightbox.save").into(),
+            on_save: click({
+                let name = name.clone();
+                move |_, cx| {
+                    if let Some(c) = &client {
+                        ui::save(c, card, &name, cx)
+                    }
                 }
-            }
-        }),
-        close_label: t("shell.lightbox.close").into(),
-        on_close: click(|_, cx| ui::close_lightbox(cx)),
-        close_focus: focus,
-        previous: (at > 0).then(|| {
-            (
-                t("shell.lightbox.previous").into(),
-                click(|_, cx| ui::step_lightbox(-1, cx)),
-            )
-        }),
-        next: (at + 1 < count).then(|| {
-            (
-                t("shell.lightbox.next").into(),
-                click(|_, cx| ui::step_lightbox(1, cx)),
-            )
-        }),
-    }))
+            }),
+            close_label: t("shell.lightbox.close").into(),
+            on_close: click(|_, cx| ui::close_lightbox(cx)),
+            close_focus: focus,
+            previous: (at > 0).then(|| {
+                (
+                    t("shell.lightbox.previous").into(),
+                    click(|_, cx| ui::step_lightbox(-1, cx)),
+                )
+            }),
+            next: (at + 1 < count).then(|| {
+                (
+                    t("shell.lightbox.next").into(),
+                    click(|_, cx| ui::step_lightbox(1, cx)),
+                )
+            }),
+        },
+        cx,
+    ))
 }
 
 fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -1033,30 +1037,33 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
             }),
         )
     });
-    Some(gif_picker::gif_picker(gif_picker::GifPickerProps {
-        search: div()
-            .h(px(m::SEARCH_H))
-            .px(px(m::SEARCH_PAD_X))
-            .flex()
-            .items_center()
-            .bg(color::BG_2)
-            .border_1()
-            .border_color(color::HAIRLINE_2)
-            .rounded(radius::MD)
-            .text_size(text::INPUT)
-            .child(
-                gpui_component::input::Input::new(&input)
-                    .aria_label(t("gif.search"))
-                    .appearance(false),
-            )
-            .into_any_element(),
-        powered: t("gif.powered").into(),
-        tiles,
-        active: g.active,
-        picking: g.picking.clone().map(Into::into),
-        status,
-        more,
-    }))
+    Some(gif_picker::gif_picker(
+        gif_picker::GifPickerProps {
+            search: div()
+                .h(px(m::SEARCH_H))
+                .px(px(m::SEARCH_PAD_X))
+                .flex()
+                .items_center()
+                .bg(color::BG_2)
+                .border_1()
+                .border_color(color::HAIRLINE_2)
+                .rounded(radius::MD)
+                .text_size(text::INPUT)
+                .child(
+                    gpui_component::input::Input::new(&input)
+                        .aria_label(t("gif.search"))
+                        .appearance(false),
+                )
+                .into_any_element(),
+            powered: t("gif.powered").into(),
+            tiles,
+            active: g.active,
+            picking: g.picking.clone().map(Into::into),
+            status,
+            more,
+        },
+        cx,
+    ))
 }
 
 /// The DM GIF privacy setting (settings/DmGifPrivacySetting.tsx), drawn inside the Privacy section. Task 13's Privacy

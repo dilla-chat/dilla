@@ -311,11 +311,18 @@ pub fn render(
                     .absolute()
                     .right(Pixels::from(-css::BADGE_OUT))
                     .bottom(Pixels::from(-css::BADGE_OUT))
-                    .child(Badge::new(
-                        SharedString::from(format!("rail-badge-{}", c.id.hex())),
-                        BadgeKind::Mention,
-                        mentions,
-                    )),
+                    .child(
+                        Badge::new(
+                            SharedString::from(format!("rail-badge-{}", c.id.hex())),
+                            BadgeKind::Mention,
+                            mentions,
+                        )
+                        // CommunityRail.css:25: the badge pops in over `--duration-rail-badge`.
+                        .pop(
+                            dilla_desktop_ui::tokens::motion::RAIL_BADGE,
+                            dilla_desktop_ui::tokens::motion::EASE_OUT,
+                        ),
+                    ),
             )
         });
         slot(picked, tile)

@@ -23,7 +23,7 @@ use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring, shadow_menu, shadow_status
 use crate::roving::menu_next;
 pub use crate::roving::opens_context_menu;
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 use gpui::accesskit::HasPopup;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -559,6 +559,12 @@ impl RenderOnce for ActionMenu {
             ));
         }
 
+        // ActionMenu.css:11: `d-modal` over `--duration-focus`; the status menu is `--duration-popover` (UserPanel.css:20).
+        let run = match self.look {
+            MenuLook::Context => motion::FOCUS,
+            MenuLook::Status => motion::POPOVER,
+        };
+        let popup = crate::motion::modal_in(popup, (self.id.clone(), "enter"), run, cx);
         let popup: AnyElement = match self.at {
             Some(at) if self.no_trigger => anchored()
                 .position(at)

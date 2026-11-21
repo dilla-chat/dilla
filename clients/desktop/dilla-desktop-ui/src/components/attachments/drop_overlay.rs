@@ -1,19 +1,51 @@
 //! `DropOverlay` (packages/ui/src/DropOverlay): over the main pane while files are dragged over it, a dashed accent
 //! frame and a panel with its title and body. Pointer-only, so it takes no focus; it covers its positioned parent.
 
-use gpui::{AnyElement, IntoElement, ParentElement, SharedString, Styled, div, px};
+use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, div, px};
 
 use crate::text::line;
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// `.d-drop-overlay::before { inset: 0.5rem }`.
 const FRAME_INSET: f32 = 8.0;
 
 /// The overlay; place it as the last child of a `relative` box.
-pub fn drop_overlay(title: impl Into<SharedString>, body: impl Into<SharedString>) -> AnyElement {
+pub fn drop_overlay(
+    title: impl Into<SharedString>,
+    body: impl Into<SharedString>,
+    cx: &App,
+) -> AnyElement {
     // `color-mix(in srgb, var(--bg) 80%, transparent)`.
     let mut veil = color::BG;
     veil.a = 0.8;
+    // DropOverlay.css:5: the panel's `d-modal` over `--duration-spin`.
+    let panel = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(4.0))
+        .px(px(24.0))
+        .py(px(16.0))
+        .bg(color::SURFACE_2)
+        .border_1()
+        .border_color(color::LINE_STRONG)
+        .rounded(radius::XL)
+        .child(
+            line(
+                title,
+                text::MD,
+                crate::text::root_line_height(text::MD),
+                color::FG,
+            )
+            .weight(font::WEIGHT_DISPLAY),
+        )
+        .child(line(
+            body,
+            text::SM,
+            crate::text::root_line_height(text::SM),
+            color::FG_2,
+        ));
     div()
         .absolute()
         .inset_0()
@@ -30,34 +62,11 @@ pub fn drop_overlay(title: impl Into<SharedString>, body: impl Into<SharedString
                 .border_color(color::ACCENT)
                 .rounded(radius::XL),
         )
-        .child(
-            div()
-                .relative()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(4.0))
-                .px(px(24.0))
-                .py(px(16.0))
-                .bg(color::SURFACE_2)
-                .border_1()
-                .border_color(color::LINE_STRONG)
-                .rounded(radius::XL)
-                .child(
-                    line(
-                        title,
-                        text::MD,
-                        crate::text::root_line_height(text::MD),
-                        color::FG,
-                    )
-                    .weight(font::WEIGHT_DISPLAY),
-                )
-                .child(line(
-                    body,
-                    text::SM,
-                    crate::text::root_line_height(text::SM),
-                    color::FG_2,
-                )),
-        )
+        .child(crate::motion::modal_in(
+            panel,
+            "drop-overlay-enter",
+            motion::SPIN,
+            cx,
+        ))
         .into_any_element()
 }

@@ -178,3 +178,21 @@ that stays on, the plain 2px `--ok` ring, and MessageRow.css's own reduced form 
 - `d-row-flash`'s tint is a layer in the row, under its content, standing in for the row's background (the row has no fill of
   its own and no hover style while it flashes, as a CSS animation beats both). A focused flashing row under reduced motion
   loses its focus ring to the flash's edge, as the CSS's `box-shadow` replaces the other shadows.
+
+### Overlays, toasts and badges (Task 36d)
+
+Menus, dialogs, pickers, the toast, the tooltip, the scrims and the badges all draw their reduced-motion form in the
+references (the same `reduce_motion`): in place, opaque, full size. Accepted differences from the web's animation, none
+visible in a reference:
+
+- `d-modal` and `d-toast` also scale (`0.985` and `0.96` from the first frame). GPUI cannot scale an element and what is in
+  it, so the desktop draws their fade and their 8px (modal) or 10px (toast) settling and not the scale: a 300px menu is 2px
+  narrower for the first frames on the web. `d-pop` (the channel-row pill, the rail badge, the bell's count) is only a scale,
+  so it is drawn: the badge is rebuilt at each scale about its centre (every length and its text multiplied), over a hidden
+  full-size copy that keeps the layout, so its text is laid out at fractional sizes for the pop (the web scales the
+  rasterised glyphs).
+- The dialog's and the search palette's backdrops are a layer of their own over the window (`d-fade` on that layer), the panel
+  above it entering by itself, as the web's `::backdrop` and `<dialog>` do.
+- The share picker is a `Dialog` here (the web's is a popover above the Share button), so its panel enters with the
+  popover's `--duration-popover` but a scrim fades in behind it.
+- Overlays repaint at the display's frame rate while they enter (at most 450 ms); the badge pop at 30 frames a second.

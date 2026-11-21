@@ -26,7 +26,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
 use crate::text::{line, line_height, paragraph};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
@@ -399,7 +399,7 @@ impl RenderOnce for SettingsFrame {
             .justify_center()
             .bg(color::BG)
             .occlude()
-            .child(
+            .child(crate::motion::modal_in(
                 div()
                     .id((self.id.clone(), "panel"))
                     .modal_dialog(self.title.clone())
@@ -425,7 +425,11 @@ impl RenderOnce for SettingsFrame {
                     .child(side)
                     .child(pane)
                     .child(close),
-            );
+                // SettingsFrame.css:5: the panel's `d-modal` over `--duration-modal`.
+                (self.id.clone(), "panel-enter"),
+                motion::MODAL,
+                cx,
+            ));
         deferred(frame).with_priority(8).into_any_element()
     }
 }

@@ -770,9 +770,15 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     };
     Some(
         deferred(
-            ui::scrim("search-palette", vh)
+            ui::scrim("search-palette", vh, cx)
                 .on_mouse_down(MouseButton::Left, scrim_close)
-                .child(panel_el),
+                // SearchPalette.css:10: the panel's `d-modal` over `--duration-normal`, `backwards`.
+                .child(dilla_desktop_ui::motion::modal_in(
+                    panel_el,
+                    "search-palette-enter",
+                    dilla_desktop_ui::tokens::motion::NORMAL,
+                    cx,
+                )),
         )
         .with_priority(OVERLAY_PRIORITY)
         .into_any_element(),

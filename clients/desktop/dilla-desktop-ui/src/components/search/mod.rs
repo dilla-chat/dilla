@@ -86,7 +86,14 @@ pub fn step_active(ids: &[SharedString], active: Option<&str>, step: i32) -> Opt
 
 /// The scrim over the window with the palette's column in it (`.d-search-palette-dialog` and its `::backdrop`): `14vh` from
 /// the top, the panel centred. The caller adds the panel and the handlers, and draws it as an overlay.
-pub fn scrim(id: impl Into<ElementId>, viewport_h: f32) -> gpui::Stateful<gpui::Div> {
+pub fn scrim(
+    id: impl Into<ElementId>,
+    viewport_h: f32,
+    cx: &gpui::App,
+) -> gpui::Stateful<gpui::Div> {
+    let id = id.into();
+    // SearchPalette.css:12: the backdrop's `d-fade` over `--duration-scrim`.
+    let backdrop = crate::motion::scrim_layer((id.clone(), "scrim"), color::SCRIM, cx);
     div()
         .id(id)
         .absolute()
@@ -95,8 +102,8 @@ pub fn scrim(id: impl Into<ElementId>, viewport_h: f32) -> gpui::Stateful<gpui::
         .flex_col()
         .items_center()
         .pt(px(top_offset(viewport_h)))
-        .bg(color::SCRIM)
         .occlude()
+        .child(backdrop)
 }
 
 /// The panel (`.d-search-palette`): `--surface` in the `--line-strong` edge, 12px corners, the `--shadow-3`, at most 600px

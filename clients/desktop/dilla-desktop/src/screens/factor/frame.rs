@@ -410,6 +410,12 @@ impl AuthFrame {
                     .children(self.below),
             )
         });
+        let card = dilla_desktop_ui::components::onboarding::frame::card_in(
+            card,
+            "auth-card-enter",
+            desktop,
+            cx,
+        );
         dilla_desktop_ui::components::onboarding::frame::centred_scroll(
             "auth-page",
             0.0,

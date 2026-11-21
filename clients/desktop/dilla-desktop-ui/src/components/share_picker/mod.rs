@@ -407,6 +407,8 @@ impl RenderOnce for SharePicker {
             self.labels.cancel.clone(),
         )
         .width(WIDTH)
+        // SharePicker.css:8: `d-modal` over `--duration-popover`, not the dialog's `--duration-dialog`.
+        .enter_run(crate::tokens::motion::POPOVER)
         .initial_focus(InitialFocus::Handle(
             tab_handles[if self.tab == TileKind::Screen { 0 } else { 1 }].clone(),
         ))

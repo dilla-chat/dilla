@@ -761,7 +761,7 @@ fn tool(icon: IconName) -> impl IntoElement {
 
 /// The mention list over the box (MentionList.css): 340px (less the 32px sides) wide, the members title, 34px lines, the
 /// chosen one on `--surface-hi` with a 2px accent bar.
-fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
+fn mention_list(options: &[MentionOption], active: usize, cx: &gpui::App) -> gpui::AnyElement {
     let mut list = div().flex().flex_col().px(len(4.)).pb(len(4.));
     for (n, o) in options.iter().enumerate() {
         let lead = if let Some(user) = o.id.strip_prefix("m-") {
@@ -833,8 +833,8 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
         }
         list = list.child(row);
     }
-    // MentionList.css: `box-shadow: var(--shadow-2)`.
-    div()
+    // MentionList.css: `box-shadow: var(--shadow-2)`; `d-modal` over `--duration-tab`.
+    let panel = div()
         .w(len(340.))
         .overflow_hidden()
         .bg(color::SURFACE_2)
@@ -854,8 +854,13 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
                 .tracking(LABEL_TRACKING_WIDE),
             ),
         )
-        .child(list)
-        .into_any_element()
+        .child(list);
+    dilla_desktop_ui::motion::modal_in(
+        panel,
+        "mention-list-enter",
+        dilla_desktop_ui::tokens::motion::TAB,
+        cx,
+    )
 }
 
 /// Composer.css `.d-composer__box:focus-within`: `box-shadow: 0 0 0 3px var(--accent-soft)`.
@@ -1218,7 +1223,7 @@ impl Render for Composer {
                     .left(len(16.))
                     .bottom_full()
                     .mb(len(6.))
-                    .child(mention_list(&options, active))
+                    .child(mention_list(&options, active, cx))
                     .child(crate::screens::messages::probe("mention-list"))
             }))
             .children(popup.map(|popup| {

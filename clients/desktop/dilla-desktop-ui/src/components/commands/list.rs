@@ -16,7 +16,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, TRACKING_TAG};
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// The list's scroll box: 260px of rows (`max-height: 16.25rem`) inside 4px of padding.
 pub const LIST_MAX: f32 = 260.0;
@@ -209,7 +209,7 @@ fn row(item: &ListItem, active: bool) -> impl IntoElement {
 }
 
 impl RenderOnce for CommandList {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let head = div()
             .flex()
             .items_center()
@@ -306,7 +306,8 @@ impl RenderOnce for CommandList {
                         )),
                 )
         });
-        div()
+        let enter_id = (self.id.clone(), "enter");
+        let list = div()
             .id(self.id)
             .overflow_hidden()
             .bg(color::SURFACE_2)
@@ -323,7 +324,9 @@ impl RenderOnce for CommandList {
                     .p(px(SCROLL_PAD))
                     .children(rows)
                     .children(none),
-            )
+            );
+        // CommandPicker.css:8: `d-modal` over `--duration-spin`.
+        crate::motion::modal_in(list, enter_id, motion::SPIN, cx)
     }
 }
 

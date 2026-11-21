@@ -12,7 +12,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::LABEL_TRACKING;
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, layout, radius, text};
+use crate::tokens::{color, font, layout, motion, radius, text};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
@@ -295,10 +295,14 @@ impl RenderOnce for Row {
             slot.child(
                 Badge::new((id.clone(), "badge"), BadgeKind::Mention, self.mentions)
                     .text(format!("@{}", capped(self.mentions)))
-                    .in_row(),
+                    .in_row()
+                    // ChannelRow.css:35: `.d-chrow .d-pill` pops in over `--duration-badge`.
+                    .pop(motion::BADGE, motion::EASE_OUT),
             )
         } else if unread > 0 {
-            let badge = Badge::new((id, "badge"), BadgeKind::Unread, unread).in_row();
+            let badge = Badge::new((id, "badge"), BadgeKind::Unread, unread)
+                .in_row()
+                .pop(motion::BADGE, motion::EASE_OUT);
             slot.child(match self.unread_label {
                 Some(label) => badge.text(label),
                 None => badge,

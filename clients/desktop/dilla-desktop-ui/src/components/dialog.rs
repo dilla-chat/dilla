@@ -13,6 +13,7 @@
 //! a child of a settings section ([`Dialog::in_settings_section`]).
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, Global, InteractiveElement, IntoElement, KeyBinding,
@@ -23,7 +24,7 @@ use gpui::{
 use super::button::{Button, ButtonSize, ButtonVariant};
 use crate::a11y::Accessible;
 use crate::metrics::shadow_3;
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 actions!(
     dilla_dialog,
@@ -193,6 +194,8 @@ pub struct Dialog {
     /// The heading column's least height (`.d-poll-dialog .d-dialog__heading { min-height: 28px }`), its title centred in it.
     heading_min: Option<f32>,
     a11y_description: Option<SharedString>,
+    /// How long the panel's `d-modal` runs when it is not `--duration-dialog` (`--duration-normal` for a confirm).
+    enter: Option<Duration>,
 }
 
 impl Dialog {
@@ -222,7 +225,15 @@ impl Dialog {
             wide: None,
             heading_min: None,
             a11y_description: None,
+            enter: None,
         }
+    }
+
+    /// The panel enters over `run`, where the web's CSS for this dialog says so (the share picker's `d-modal` runs over
+    /// `--duration-popover`, SharePicker.css:8).
+    pub fn enter_run(mut self, run: Duration) -> Self {
+        self.enter = Some(run);
+        self
     }
 
     /// `.d-dialog__heading { min-height: <height>px; align-content: center }`: the head's title column is at least this tall.
@@ -501,6 +512,15 @@ impl RenderOnce for Dialog {
                 }
             });
 
+        // Dialog.css:7-10: the panel's `d-modal` over `--duration-dialog` (`--duration-normal` for a confirm), its backdrop's
+        // `d-fade` over `--duration-scrim`.
+        let run = self.enter.unwrap_or(if confirm {
+            motion::NORMAL
+        } else {
+            motion::DIALOG
+        });
+        let panel_el = crate::motion::modal_in(panel_el, (self.id.clone(), "enter"), run, cx);
+        let scrim = crate::motion::scrim_layer((self.id.clone(), "scrim"), color::SCRIM, cx);
         let top = if self.in_section {
             super::settings::frame::SECTION_GAP
         } else {
@@ -515,11 +535,11 @@ impl RenderOnce for Dialog {
                     .flex_col()
                     .items_center()
                     .pt(px(top))
-                    .bg(color::SCRIM)
                     .occlude()
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         on_backdrop(window, cx)
                     })
+                    .child(scrim)
                     .child(panel_el),
             ),
         )
