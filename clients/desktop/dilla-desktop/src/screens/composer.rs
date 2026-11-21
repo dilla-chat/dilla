@@ -18,6 +18,7 @@
 use std::time::Duration;
 
 use dilla_client::state::{Channel, ChannelId, Member};
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Render, SharedString,
@@ -811,6 +812,17 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
         .into_any_element()
 }
 
+/// Composer.css `.d-composer__box:focus-within`: `box-shadow: 0 0 0 3px var(--accent-soft)`.
+fn composer_focus_ring() -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: color::ACCENT_SOFT,
+        offset: gpui::point(px(0.0), px(0.0)),
+        blur_radius: px(0.0),
+        spread_radius: px(3.0),
+        inset: false,
+    }]
+}
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.switch_channel(window, cx);
@@ -829,6 +841,7 @@ impl Render for Composer {
         let value = self.input.read(cx).value();
         let empty = value.is_empty();
         let ctx = self.slots.clone();
+        let reply_bar = slots::composer_reply_bar(&ctx, window, cx);
         let leading = slots::composer_leading(&ctx, window, cx);
         let buttons = slots::composer_buttons(&ctx, window, cx);
         let field_focus = self.input.read(cx).focus_handle(cx);
@@ -1060,12 +1073,21 @@ impl Render for Composer {
         }
         let used = self.used as i64;
         let remaining = MAX_LEN as i64 - used;
+        // Composer.css: the box takes the accent border and a 3px accent-soft ring while the field holds the keyboard; a
+        // reply bar above it squares its top corners off.
+        let focused = field_focus.contains_focused(window, cx);
         let box_ = div()
             .w_full()
             .bg(color::SURFACE)
             .border_1()
-            .border_color(color::HAIRLINE_2)
+            .border_color(if focused {
+                color::ACCENT
+            } else {
+                color::HAIRLINE_2
+            })
+            .when(focused, |d| d.shadow(composer_focus_ring()))
             .rounded(radius::LG)
+            .when(reply_bar.is_some(), |d| d.rounded_t_none())
             .flex()
             .flex_col()
             .child(div().h(len(2.)))
@@ -1110,6 +1132,7 @@ impl Render for Composer {
                     (width - 32.0).max(1.0),
                 ))
             }))
+            .children(reply_bar)
             .child(box_)
             .children(reason.map(|r| {
                 div().mt(len(4.)).children(paragraph(
@@ -1171,6 +1194,17 @@ mod tests {
         assert_eq!(byte_of_char(s, 99), s.len());
         assert_eq!(chars_of_byte(s, 7), 3);
         assert_eq!(chars_of_byte(s, 99), 4);
+    }
+
+    /// Composer.css `.d-composer__box:focus-within`: a 3px `--accent-soft` ring outside the box, no blur.
+    #[test]
+    fn the_focused_box_has_a_three_px_accent_soft_ring() {
+        let ring = composer_focus_ring();
+        assert_eq!(ring.len(), 1);
+        assert_eq!(f32::from(ring[0].spread_radius), 3.0);
+        assert_eq!(f32::from(ring[0].blur_radius), 0.0);
+        assert_eq!(ring[0].color, color::ACCENT_SOFT);
+        assert!(!ring[0].inset);
     }
 
     #[test]

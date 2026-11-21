@@ -201,9 +201,14 @@ pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> 
 pub fn composer_leading(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
     column([
         messages::moderation_status(ctx, window, cx),
-        threads::reply_bar(ctx, window, cx),
         attachments::tray(ctx, window, cx),
     ])
+}
+
+/// The reply bar over the composer's box (ComposerArea.tsx `top`, ReplyChip.css): it sits on the box, outside it, and the
+/// box's top corners square off to join it (Composer.css `[data-replying]`).
+pub fn composer_reply_bar(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    threads::reply_bar(ctx, window, cx)
 }
 
 /// The composer's tool buttons, in Composer.tsx's foot order: attach (12), emoji (10), then GIF (12).
