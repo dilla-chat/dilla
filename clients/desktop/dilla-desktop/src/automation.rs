@@ -1028,7 +1028,14 @@ pub fn run(args: Vec<String>) {
         family: std::env::var_os(FALLBACK_FONT_VAR).map(|_| "Dilla Parity Missing Font"),
         hidden: std::env::var_os(HIDE_TEXT_VAR).is_some(),
     });
+    let drawn_fixture = matches!(&mode, Mode::App(launch) if launch.fixture.is_some());
     let mut session = Session::open(mode);
+    // A drawn fixture's clock is frozen (the web shooter's is): a toast stays on screen for the frame.
+    if drawn_fixture {
+        session
+            .cx
+            .update(dilla_desktop_ui::components::toast::freeze);
+    }
     let mut out = std::io::stdout().lock();
     writeln!(out, "ready {AUTOMATION_MARKER}")
         .and_then(|()| out.flush())
