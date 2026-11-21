@@ -928,6 +928,7 @@ impl Render for Composer {
         let typing_text = ctx
             .channel
             .and_then(|c| typing::text(&ctx.state, c, now_ms));
+        let sweep = self.sweep_strip(typing_text.is_some(), cx);
         let options = self.open_options(cx);
         let active = self.active.min(options.len().saturating_sub(1));
         // The field is as high as the draft's lines (20px each), up to the cap; soft-wrapped lines are not counted.
