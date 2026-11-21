@@ -399,12 +399,12 @@ pub fn attachment_cards(
                 });
                 let state = state_text.clone();
                 // AttachmentCard.css:14: the file card rises in once, from its first draw.
-                let entered = (!cx.reduce_motion())
-                    .then(|| {
-                        let now = cx.background_executor().now();
-                        ui::ui(cx).entered.touch(id.clone(), now)
-                    })
-                    .filter(|e| *e < dilla_desktop_ui::tokens::motion::SLOW);
+                // (Remembered by `motion::entered_age`, which bounds what it keeps and forgets it when the log mounts anew.)
+                let entered = dilla_desktop_ui::motion::entered_age(
+                    cx,
+                    format!("file-card-{id}"),
+                    dilla_desktop_ui::tokens::motion::SLOW,
+                );
                 if entered.is_some() {
                     window.request_animation_frame();
                 }

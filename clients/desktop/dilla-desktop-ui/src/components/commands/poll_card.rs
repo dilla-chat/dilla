@@ -245,6 +245,16 @@ impl RenderOnce for PollCard {
         // stops drawing off screen, so the entrances are remembered by key, not by element state.
         let card_key = format!("poll-card-{:?}", self.id);
         let card_age = crate::motion::entered_age(cx, card_key.clone(), motion::STEP);
+        // A vote taken back is a voter gone: when it is cast again the voter pops again, as the web's new span does.
+        let voter_prefix = format!("{card_key}|");
+        crate::motion::forget_entered(cx, &voter_prefix, |k| {
+            self.options.iter().enumerate().any(|(i, o)| {
+                o.voters
+                    .iter()
+                    .take(5)
+                    .any(|name| k == format!("{voter_prefix}{i}|{name}"))
+            })
+        });
         let voter_ages: Vec<Vec<Option<std::time::Duration>>> = self
             .options
             .iter()

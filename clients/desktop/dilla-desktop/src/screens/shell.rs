@@ -1883,7 +1883,12 @@ impl Render for ShellView {
             );
         }
         let log = match channel {
-            Some(_) if takeover.is_some() => div().into_any_element(),
+            Some(_) if takeover.is_some() => {
+                // The web unmounts the log under a stage: it mounts anew (and enters again) when the stage goes.
+                let ui = crate::screens::messages::ui::ui(window, cx);
+                ui.update(cx, |u, _| u.log.unmount());
+                div().into_any_element()
+            }
             Some(c) => {
                 let weak = shell.clone();
                 let scroll = self.log.clone();

@@ -249,6 +249,13 @@ impl RenderOnce for ReactionBar {
         // ReactionBar.css:6: a chip pops in (`d-pop` over `--duration-slow`, `ease`) when its reaction first appears. The bar
         // is drawn inside a message row, which the log stops drawing off screen, so the pop is remembered by key.
         let mut popping = false;
+        // A reaction taken down to nothing is a chip gone: when it returns it pops again, as the web's new chip does.
+        let pop_prefix = format!("{:?}-pop-", self.id);
+        crate::motion::forget_entered(cx, &pop_prefix, |k| {
+            self.chips
+                .iter()
+                .any(|c| k.strip_prefix(&pop_prefix) == Some(c.emoji.as_ref()))
+        });
         for (i, chip) in self.chips.iter().enumerate() {
             let build = |scale: Option<f32>| {
                 chip_view(
@@ -260,11 +267,8 @@ impl RenderOnce for ReactionBar {
                     scale.unwrap_or(1.0),
                 )
             };
-            let age = crate::motion::entered_age(
-                cx,
-                format!("{:?}-pop-{}", self.id, chip.emoji),
-                motion::SLOW,
-            );
+            let age =
+                crate::motion::entered_age(cx, format!("{pop_prefix}{}", chip.emoji), motion::SLOW);
             popping |= age.is_some();
             let view = match age {
                 Some(age) => crate::motion::pop_frame(

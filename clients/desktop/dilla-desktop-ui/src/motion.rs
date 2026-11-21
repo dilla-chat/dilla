@@ -850,24 +850,66 @@ where
 }
 
 /// The entrances of things that are drawn inside a list that is not drawn whole (a poll card in a message row), by a key the
-/// caller makes of the thing's identity: remembered for the process, so that a row leaving the drawn range and coming back
-/// plays nothing again. Past [`REMEMBERED_MAX`] keys the oldest knowledge is dropped wholesale (a card then enters once more).
+/// caller makes of the thing's identity: remembered, so that a row leaving the drawn range and coming back plays nothing
+/// again. Every draw of a key stamps it; past [`REMEMBERED_MAX`] keys the least recently drawn are dropped (those of rows
+/// long off screen), never the ones on screen, so no visible card enters again for want of room.
 #[derive(Default)]
-struct Remembered(Entrances<String>);
+pub struct Remembered {
+    keys: std::collections::HashMap<String, (std::time::Instant, u64)>,
+    tick: u64,
+}
 impl gpui::Global for Remembered {}
 
-/// How many keys [`entered_age`] remembers before it forgets them all.
+/// How many keys [`Remembered`] keeps before it drops the least recently drawn.
 pub const REMEMBERED_MAX: usize = 4096;
+
+/// How many of the least recently drawn keys go at once when the map is full.
+const REMEMBERED_EVICT: usize = REMEMBERED_MAX / 8;
+
+impl Remembered {
+    /// `key` is drawn at `now`: how long it has been entering. A new key enters now.
+    pub fn touch(&mut self, key: String, now: std::time::Instant) -> Duration {
+        self.tick += 1;
+        let tick = self.tick;
+        if !self.keys.contains_key(&key) && self.keys.len() >= REMEMBERED_MAX {
+            let mut stamps: Vec<u64> = self.keys.values().map(|(_, t)| *t).collect();
+            stamps.sort_unstable();
+            let below = stamps[REMEMBERED_EVICT.min(stamps.len()) - 1];
+            self.keys.retain(|_, (_, t)| *t > below);
+        }
+        let entry = self.keys.entry(key).or_insert((now, tick));
+        entry.1 = tick;
+        now.saturating_duration_since(entry.0)
+    }
+
+    /// Forgets every key that starts with `prefix` and is not `keep`: the thing it stood for is gone (a reaction removed, a
+    /// vote taken back), so it enters again if it returns.
+    pub fn forget(&mut self, prefix: &str, keep: impl Fn(&str) -> bool) {
+        self.keys.retain(|k, _| !k.starts_with(prefix) || keep(k));
+    }
+
+    /// Forgets everything: a log mounted anew (what lives in its rows enters again).
+    pub fn clear(&mut self) {
+        self.keys.clear();
+    }
+
+    /// How many keys are remembered.
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Whether no key is remembered.
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
 
 /// `key` is drawn now: how long its entrance (of `run`) has been running, `None` when it is over or motion is reduced. The
 /// first draw starts it. The caller asks for another frame while this answers `Some`.
 pub fn entered_age(cx: &mut App, key: String, run: Duration) -> Option<Duration> {
     let now = cx.background_executor().now();
     let reduced = cx.reduce_motion();
-    let remembered = &mut cx.default_global::<Remembered>().0;
-    if remembered.len() >= REMEMBERED_MAX {
-        remembered.clear();
-    }
+    let remembered = cx.default_global::<Remembered>();
     let age = if reduced {
         // Taken in as already over, so that turning motion on plays nothing back.
         remembered.touch(
@@ -878,6 +920,17 @@ pub fn entered_age(cx: &mut App, key: String, run: Duration) -> Option<Duration>
         remembered.touch(key, now)
     };
     (!reduced && age < run).then_some(age)
+}
+
+/// The things drawn under `prefix` that are still there are `keep`: the rest are forgotten (see [`Remembered::forget`]).
+pub fn forget_entered(cx: &mut App, prefix: &str, keep: impl Fn(&str) -> bool) {
+    cx.default_global::<Remembered>().forget(prefix, keep);
+}
+
+/// A message log mounted anew: what [`entered_age`] knows is forgotten, so the cards, chips and voters in its rows enter
+/// again with it, as the web's new DOM does.
+pub fn remount_log(cx: &mut App) {
+    cx.default_global::<Remembered>().clear();
 }
 
 /// A badge `scale` times its size about its centre, over a hidden full-size copy that keeps its place in the layout (the
@@ -1820,5 +1873,51 @@ mod tests {
     #[gpui::test]
     fn the_splash_fades_in_once_per_mount(cx: &mut gpui::TestAppContext) {
         runs_once(cx, 300, |cx| splash_in(div(), "splash", motion::SLOW, cx));
+    }
+
+    /// What the process remembers of its entrances is bounded and drops the least recently drawn: the keys on screen are
+    /// drawn every frame and stay, so a full map never makes visible things enter again together.
+    #[test]
+    fn the_remembered_entrances_drop_the_least_recently_drawn_not_everything() {
+        let t0 = std::time::Instant::now();
+        let mut r = Remembered::default();
+        for n in 0..REMEMBERED_MAX {
+            r.touch(format!("k{n}"), t0);
+        }
+        assert_eq!(r.len(), REMEMBERED_MAX);
+        // The newest 100 are on screen: drawn again 50ms later.
+        let later = t0 + Duration::from_millis(50);
+        for n in REMEMBERED_MAX - 100..REMEMBERED_MAX {
+            assert_eq!(r.touch(format!("k{n}"), later), Duration::from_millis(50));
+        }
+        // A new key finds the map full: the oldest eighth goes, the on-screen keys keep their clocks.
+        r.touch("new".into(), later);
+        assert!(r.len() < REMEMBERED_MAX && r.len() > REMEMBERED_MAX - REMEMBERED_MAX / 4);
+        for n in REMEMBERED_MAX - 100..REMEMBERED_MAX {
+            let age = r.touch(format!("k{n}"), later);
+            assert_eq!(age, Duration::from_millis(50), "k{n} enters again");
+        }
+        assert_eq!(
+            r.touch("k0".into(), later),
+            Duration::ZERO,
+            "k0 was dropped"
+        );
+    }
+
+    /// A thing that is gone is forgotten and enters again when it returns; a remounted log forgets them all.
+    #[test]
+    fn a_thing_that_is_gone_enters_again_when_it_returns() {
+        let t0 = std::time::Instant::now();
+        let later = t0 + Duration::from_secs(1);
+        let mut r = Remembered::default();
+        for k in ["bar-pop-a", "bar-pop-b", "other"] {
+            r.touch(k.into(), t0);
+        }
+        r.forget("bar-pop-", |k| k == "bar-pop-a");
+        assert_eq!(r.touch("bar-pop-a".into(), later), Duration::from_secs(1));
+        assert_eq!(r.touch("bar-pop-b".into(), later), Duration::ZERO);
+        assert_eq!(r.touch("other".into(), later), Duration::from_secs(1));
+        r.clear();
+        assert!(r.is_empty());
     }
 }

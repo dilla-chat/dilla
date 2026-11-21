@@ -130,6 +130,8 @@ pub struct PaneView {
     shown: Option<MessageId>,
     /// The "load earlier" press is in flight (ThreadView's pages read apart from the open thread's own read).
     loading_earlier: bool,
+    /// The pane's log mount and the entrances of its rows (Task 36c), per thread.
+    log: crate::screens::messages::ui::LogEntrances<MessageId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,6 +154,7 @@ impl PaneView {
             in_flight: false,
             shown: None,
             loading_earlier: false,
+            log: Default::default(),
             _subscriptions: vec![sub],
         }
     }
@@ -299,6 +302,8 @@ impl PaneView {
 
     /// The pane was closed: its composer's picker starts empty when it opens again, and its draft is read afresh.
     pub(super) fn closed(&mut self, cx: &mut Context<Self>) {
+        // The web unmounts the pane's log with it: it mounts anew (and enters again) when a thread opens.
+        self.log.unmount();
         if self.shown.take().is_some() {
             let focus = self.input.read(cx).focus_handle(cx);
             crate::screens::commands::reset_composer(self.window, &focus, cx);
@@ -559,6 +564,12 @@ impl Render for PaneView {
             )
             .into_any_element(),
         });
+        // Task 36c: the pane's log mounts per thread (Shell.tsx:2257 `key={rootMsgId}`) and fades in with a 6px rise
+        // (MessageLog.css:3-4); its replies rise in (`d-up`), the first paint's last 20 staggered. What lives in the rows
+        // (cards, chips, voters) enters again with a new mount.
+        if self.log.remounts(open.root) {
+            dilla_desktop_ui::motion::remount_log(cx);
+        }
         let mut replies: Vec<_> = data
             .map(|d| {
                 d.replies
@@ -568,27 +579,53 @@ impl Render for PaneView {
                     .collect()
             })
             .unwrap_or_default();
+        let mut enter_keys: Vec<String> = data
+            .map(|d| d.replies.iter().map(|i| i.key.clone()).collect())
+            .unwrap_or_default();
         // The thread's private results (a command's answer, only this device shows it) come after its replies
         // (ThreadView.tsx:243-244), in the log's width: the pane less the rows' 14px sides.
         let result_width =
             f32::from(dilla_desktop_ui::tokens::layout::THREAD) - 2.0 * thread_row::SIDE;
-        replies.extend(
-            crate::screens::commands::private_results_in(
-                &ctx,
-                Some(open.root),
-                result_width,
-                window,
-                cx,
-            )
-            .into_iter()
-            .map(|(row, height)| {
-                div()
-                    .w(px(result_width))
-                    .h(px(height))
-                    .child(row)
-                    .into_any_element()
-            }),
+        let privates = crate::screens::commands::private_results_in(
+            &ctx,
+            Some(open.root),
+            result_width,
+            window,
+            cx,
         );
+        enter_keys.extend((0..privates.len()).map(|n| format!("private-{n}")));
+        replies.extend(privates.into_iter().map(|(row, height)| {
+            div()
+                .w(px(result_width))
+                .h(px(height))
+                .child(row)
+                .into_any_element()
+        }));
+        let now = cx.background_executor().now();
+        let entering = self
+            .log
+            .enter(open.root, &enter_keys, now, cx.reduce_motion());
+        if entering.running {
+            window.request_animation_frame();
+        }
+        let replies: Vec<gpui::AnyElement> = replies
+            .into_iter()
+            .zip(&enter_keys)
+            .map(|(row, key)| match self.log.of(key, now) {
+                Some((elapsed, delay)) if !cx.reduce_motion() => {
+                    // MessageRow.css:8, as in the channel's log.
+                    dilla_desktop_ui::motion::rise_style(
+                        div().child(row),
+                        elapsed,
+                        delay,
+                        dilla_desktop_ui::tokens::motion::ENTER,
+                        dilla_desktop_ui::tokens::motion::EASE_OUT,
+                    )
+                    .into_any_element()
+                }
+                _ => row,
+            })
+            .collect();
         // Fix round 2 of the web: the rule counts the thread's replies (the root's summary), not only those read so far.
         let count = data.map_or(0, |d| d.count.max(d.replies.len() as u32));
         let rule = match count {
@@ -803,6 +840,7 @@ impl Render for PaneView {
             root,
             rule: rule.map(Into::into),
             replies,
+            log_enter: entering.log,
             earlier,
             busy: self.loading_earlier,
             empty: empty.map(Into::into),

@@ -63,6 +63,9 @@ pub struct PaneParts {
     /// "3 replies", drawn uppercase; `None` draws no rule.
     pub rule: Option<SharedString>,
     pub replies: Vec<AnyElement>,
+    /// The log's own entrance (`d-log-fade`, `d-log-rise`, MessageLog.css:3-4) as it stands: its opacity and its offset down
+    /// in px; `None` once over, or with reduced motion.
+    pub log_enter: Option<(f32, f32)>,
     /// The "load earlier" button over the first reply, while the thread has older replies unread.
     pub earlier: Option<AnyElement>,
     /// An older page is being read: the reply list is busy (`aria-busy`).
@@ -192,6 +195,10 @@ pub fn pane(parts: PaneParts) -> impl IntoElement {
         replies.node_props(|n| n.set_busy())
     } else {
         replies
+    };
+    let replies = match parts.log_enter {
+        Some((opacity, offset)) => replies.relative().top(px(offset)).opacity(opacity),
+        None => replies,
     };
     let replies = replies
         .children(parts.earlier)

@@ -1152,7 +1152,7 @@ fn draw_row(
     };
     // CodeBlock.css:2: a code card rises in over `--duration-slow` from the row's mount (the row's stagger does not delay it).
     let code_age = (!cx.reduce_motion())
-        .then(|| ui.read(cx).entrances.of(&item.key, cx_row.now))
+        .then(|| ui.read(cx).log.of(&item.key, cx_row.now))
         .flatten()
         .map(|(elapsed, _)| elapsed);
     let laid = shown
@@ -1392,7 +1392,7 @@ fn draw_row(
         .group(group.clone());
     // MessageRow.css:8: `d-up` over `--duration-enter` on `--ease-out`, delayed by the first paint's stagger.
     if !cx.reduce_motion()
-        && let Some((elapsed, delay)) = ui.read(cx).entrances.of(&item.key, cx_row.now)
+        && let Some((elapsed, delay)) = ui.read(cx).log.of(&item.key, cx_row.now)
         && elapsed < delay + token::ENTER
     {
         let (opacity, offset) =
@@ -1589,6 +1589,12 @@ pub fn render(
     // Task 20's private results: the rows only this device shows, after the conversation's last message. They are rows
     // of the log too (MessageLog.tsx `d-message-log__rows`), so with one shown the last message is no longer the log's
     // last child and keeps its attachments slot.
+    // Task 36c: the log mounts for a channel and its read state (Conversation.tsx `logKey`). A new mount makes what lives in
+    // the rows (file cards, reaction chips, poll cards and voters) enter again with them, so it is known before they draw.
+    let ready = state.timelines.contains_key(&channel.id);
+    if ui.read(cx).log.remounts((channel.id, ready)) {
+        motion::remount_log(cx);
+    }
     let privates = crate::screens::commands::private_results(ctx, width, window, cx);
     let mut shown = Vec::with_capacity(items.len());
     for (n, item) in items.iter().enumerate() {
@@ -1786,13 +1792,17 @@ pub fn render(
             .filter(|k| order.contains(k))
             .or_else(|| order.last().cloned())
     });
-    // Task 36c: the log mounts for a channel and its read state (Conversation.tsx `logKey`); its rows enter once, from the
-    // frame the log first holds them, and the log asks for frames while any of it is still moving.
+    // Its rows enter once, from the frame the log first holds them, and the log asks for frames while any of it is still
+    // moving. The private results are `.d-message-row`s of the log too (BotResult.tsx:60): they enter and count in the stagger.
     let now = cx.background_executor().now();
     let reduced = cx.reduce_motion();
-    let ready = state.timelines.contains_key(&channel.id);
+    let enter_keys: Vec<String> = order
+        .iter()
+        .cloned()
+        .chain((0..privates.len()).map(|n| format!("private-{n}")))
+        .collect();
     let entering = ui.update(cx, |u, _| {
-        u.enter_log((channel.id, ready), &order, now, reduced)
+        u.enter_log((channel.id, ready), &enter_keys, now, reduced)
     });
     if entering.running {
         window.request_animation_frame();
@@ -1932,16 +1942,28 @@ pub fn render(
             .get(n)
             .copied()
             .unwrap_or("private-result");
-        placer.block(
-            0.0,
-            private_top,
-            div()
-                .id(id)
-                .debug_selector(move || id.to_owned())
-                .w(px(width))
-                .h(px(h))
-                .child(el),
-        );
+        let mut block = div()
+            .absolute()
+            .left(len(0.))
+            .top(px(private_top.round()))
+            .child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.to_owned())
+                    .w(px(width))
+                    .h(px(h))
+                    .child(el),
+            );
+        // MessageRow.css:8 through BotResult's own `d-message-row`: it rises in as a message row does.
+        if !reduced
+            && let Some((elapsed, delay)) = ui.read(cx).log.of(&format!("private-{n}"), now)
+            && elapsed < delay + token::ENTER
+        {
+            let (opacity, offset) =
+                motion::rise_after_at(elapsed, delay, token::ENTER, token::EASE_OUT);
+            block = block.top(px(private_top.round() + offset)).opacity(opacity);
+        }
+        placer.out.push(block.into_any_element());
         private_top += h;
     }
     let pager = scroll.clone();
