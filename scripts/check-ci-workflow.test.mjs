@@ -2901,6 +2901,9 @@ test('parity tests parked until the shared-component pass need no --ignored run,
   assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-and-macOS forwarded R22 reason needs no run line');
   writeFileSync(join(dir, 'parked.rs'), linuxMac('needs dillad'));
   assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a Linux-and-macOS forwarded other reason still needs its run line');
+  // A forwarding macro passed no reason at all (every parked test un-parked) ignores nothing on Linux.
+  writeFileSync(join(dir, 'parked.rs'), linuxMac('x').replace('p!(a; "x", b);', 'p!(a, b);'));
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'a forwarding macro passed no reason needs no run line');
   // The Linux-and-macOS spelling (macOS CI plan, Task 3) is off Linux too; an ignore off macOS alone is not.
   writeFileSync(join(dir, 'parked.rs'), '#[test]\n#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), ignore = "references are Linux and macOS only")]\nfn parity_a() {}\n');
   assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('parked.rs')), 'an ignore off Linux and macOS needs no Linux run line');
