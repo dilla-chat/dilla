@@ -874,6 +874,15 @@ fn send_is_lit(draft: &str, chips: bool, tray: bool, blocked: bool) -> bool {
     !chips && (tray || !draft.trim().is_empty()) && !blocked
 }
 
+impl Composer {
+    /// Composer.css `.d-composer__box:focus-within`: the focus is on something inside the box (the field, a tool, send). A
+    /// press on the box's own blank area makes GPUI focus the box's tracked handle itself, which is no control: on the web the
+    /// same press blurs the textarea and the ring drops, so the bare box does not light it.
+    fn ring_lit(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.box_focus.contains_focused(window, cx) && !self.box_focus.is_focused(window)
+    }
+}
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.switch_channel(window, cx);
@@ -1132,7 +1141,7 @@ impl Render for Composer {
         let remaining = MAX_LEN as i64 - used;
         // Composer.css: the box takes the accent border and a 3px accent-soft ring while the focus is anywhere in it; a
         // reply bar above it squares its top corners off.
-        let focused = self.box_focus.contains_focused(window, cx);
+        let focused = self.ring_lit(window, cx);
         let box_ = div()
             .debug_selector(|| "composer-box".to_owned())
             .track_focus(&self.box_focus)
@@ -1310,6 +1319,31 @@ mod tests {
                 "a tool is in the box too"
             );
         });
+    }
+
+    /// The web's `:focus-within` follows real focus: a press on the box's blank area (GPUI focuses the tracked box itself)
+    /// leaves the ring off, as the web's press blurs the textarea.
+    #[gpui::test]
+    fn the_bare_box_does_not_light_the_ring(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (field, boxed) = composer.read_with(vcx, |c, cx| {
+            (c.input.read(cx).focus_handle(cx), c.box_focus.clone())
+        });
+        let lit = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| composer.read(cx).ring_lit(window, cx))
+        };
+        vcx.update(|window, cx| window.focus(&field, cx));
+        draw(vcx);
+        assert!(lit(vcx), "the field holds the focus");
+        vcx.update(|window, cx| window.focus(&boxed, cx));
+        draw(vcx);
+        assert!(!lit(vcx), "the box itself is no control");
     }
 
     /// ComposerArea.tsx `top`: the attachment tray is over the composer's box, outside it, as the reply bar is.
