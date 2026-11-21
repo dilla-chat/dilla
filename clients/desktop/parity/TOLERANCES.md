@@ -199,3 +199,14 @@ visible in a reference:
   Chromium's native overflow menu, which has none. The shot is taken still (every shot through the automation driver and the
   video-player test sets reduced motion), so it compares the end state.
 - Overlays repaint at the display's frame rate while they enter (at most 450 ms).
+- Entrances of Task 36c (Jonas 2026-11-21, "Fade + slide is enough"): `d-up`, `d-invite-up`, `d-poll-card-entry`,
+  `d-poll-answer-entry`, `d-log-fade`/`d-log-rise` and `d-fade` are drawn as their opacity and offset, which GPUI can put on
+  a subtree. The log's 6px rise moves the log's content, not its scroll box. `d-pop` (the reaction chip, the poll voters) is
+  only a scale, so it is drawn with the rebuild-at-scale helper, as the badges are. No entrance of 36c has a `scale(...)`
+  part on a subtree; `d-sheet-up` and `d-in` have no desktop site (phone sheets; `d-in` is used nowhere on the web).
+- The message log remembers each row's entrance by the message's key (the web's row is a DOM node that mounts once), so
+  scrolling a row out of the drawn range and back, or any redraw, never plays it again. A file card, a poll card, a reaction
+  chip and a poll voter, which live in a row the log may not draw, start at their first draw instead of at the row's mount (a
+  row that arrives off screen plays them when it is first scrolled to).
+- Entrances ask for a frame at the display's rate while they run (a message row: at most 380 ms plus its stagger, the first
+  paint's last row 1.14 s); nothing asks once they are over.

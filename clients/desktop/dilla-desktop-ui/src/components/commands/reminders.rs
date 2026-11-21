@@ -298,6 +298,7 @@ impl RenderOnce for RemindersPopover {
         let sm = line_height(text::SM, TEXT_LINE);
         let meta = line_height(text::META, TEXT_LINE);
         let action_line = crate::text::root_line_height(text::META);
+        let app: &App = cx;
         let rows = shown.iter().map(|&(index, item)| {
             let act = self.on_action.clone();
             let label = if item.due {
@@ -338,7 +339,7 @@ impl RenderOnce for RemindersPopover {
                         }
                     })
             };
-            div()
+            let row = div()
                 .id(SharedString::from(row_id.clone()))
                 .relative()
                 .flex()
@@ -379,7 +380,16 @@ impl RenderOnce for RemindersPopover {
                         .child(line(where_, text::META, meta, color::FG_3)),
                 )
                 .child(action)
-                .children(probed(&row_id))
+                .children(probed(&row_id));
+            // RemindersPopover.css:15: each row rises in (`d-up` over `--duration-popover`, `ease`), once per mount.
+            crate::motion::up_in(
+                row,
+                SharedString::from(format!("reminder-enter-{}", item.id)),
+                std::time::Duration::ZERO,
+                motion::POPOVER,
+                crate::motion::EASE,
+                app,
+            )
         });
         let ui = crate::text::root_line_height(text::UI);
         let body = div()

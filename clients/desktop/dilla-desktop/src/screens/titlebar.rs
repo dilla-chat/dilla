@@ -579,7 +579,7 @@ pub fn render(
     let on_voice = handlers.on_voice.clone();
     // TopBar.tsx's voice chip, only while in a call: the room (and the link's ping once the client reads one).
     let voice = model.voice.clone().map(|room| {
-        interactive(div().id("topbar-voice"))
+        let chip = interactive(div().id("topbar-voice"))
             .a11y(Role::Button, room.clone())
             .tab_index(0)
             .cursor_pointer()
@@ -599,7 +599,16 @@ pub fn render(
                 text::BTN,
                 dilla_desktop_ui::text::root_line_height(text::BTN),
                 color::OK_TEXT,
-            ))
+            ));
+        // TopBar.css:30: the chip enters with `d-up` over `--duration-slow` on `--ease-out`.
+        dilla_desktop_ui::motion::up_in(
+            chip,
+            "topbar-voice-enter",
+            std::time::Duration::ZERO,
+            dilla_desktop_ui::tokens::motion::SLOW,
+            dilla_desktop_ui::tokens::motion::EASE_OUT,
+            cx,
+        )
     });
     let mut end = div()
         .flex_1()

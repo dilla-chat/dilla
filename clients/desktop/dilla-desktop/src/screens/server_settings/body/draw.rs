@@ -1393,7 +1393,8 @@ impl Body {
                 SettingsRow::new("invite-link", t("serverSettings.invites.link"))
                     .hint(made.note.clone())
                     .layout(Layout::Stacked)
-                    .child(
+                    // InvitePanel.css:16: the made link rises in (`d-invite-up` over `--duration-slow`, `--ease-out`).
+                    .child(dilla_desktop_ui::motion::invite_up_in(
                         div()
                             .flex()
                             .items_center()
@@ -1413,7 +1414,11 @@ impl Body {
                                 Button::new("invite-copy", t("serverSettings.invites.copy"))
                                     .on_click(act_click(cx, |this, _, cx| this.copy_invite(cx))),
                             ),
-                    ),
+                        "invite-made-enter",
+                        dilla_desktop_ui::tokens::motion::SLOW,
+                        dilla_desktop_ui::tokens::motion::EASE_OUT,
+                        cx,
+                    )),
             );
         }
         if let Some((message, is_alert)) = &self.invite_message {
@@ -1531,7 +1536,15 @@ impl Body {
                         })),
                     );
                 }
-                card = card.child(row);
+                // InvitePanel.css:27: each row rises in (`d-invite-up` over `--duration-slow`, `--ease-out`) when it joins the
+                // list.
+                card = card.child(dilla_desktop_ui::motion::invite_up_in(
+                    row,
+                    SharedString::from(format!("invite-row-enter-{}", id.hex())),
+                    dilla_desktop_ui::tokens::motion::SLOW,
+                    dilla_desktop_ui::tokens::motion::EASE_OUT,
+                    cx,
+                ));
             }
             out.push(card.into_any_element());
         }
