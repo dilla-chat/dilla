@@ -238,6 +238,27 @@ receiver's transformer by identity rather than by a track id the SFU chose.
 
 Remove this copy when upstream makes the handle public or the webrtc-sys hook is upstreamed.
 
+## livekit 0.11.0
+
+Upstream: <https://github.com/livekit/rust-sdks> (`livekit/`; `.cargo_vcs_info.json` has the commit).
+Apache-2.0. The published copy is the first commit that adds it (`vendor: livekit 0.11.0 as
+published`), so the diff of that commit's successor shows the whole patch. Patched into the root
+workspace (`[patch.crates-io]`, 2026-11-22).
+
+The one change (`src/rtc_engine/rtc_session.rs`, `DILLA PATCH`): a closed session's fast-publish
+negotiation stops. dillad's SFU asks for fast publish, and `execute_negotiation_with_retry` sends the
+publisher's offer and then waits up to 10 s for the answer, holding the session (both
+PeerConnections, every transceiver and its dilla frame transformer). A room closed while an offer
+was out (a leave during a publish or an unpublish renegotiation, including the one `Room::close`
+itself starts) never gets that answer, so the closed call's media stayed alive for 10 s after the
+leave. `SessionInner::close` now wakes the wait (`negotiation_queue.waker.notify_one()`, which keeps
+the wake-up for a negotiation about to wait), and the loop ends when the session is closed. Found by
+the desktop's dock-leave test on CI; pinned by dilla-media's
+`leaving_while_the_publisher_renegotiates_releases_every_frame_transformer` (tests/call.rs), which
+leaves right after publishing a camera and failed every time before the patch.
+
+Remove this copy when upstream stops the negotiation on close.
+
 ## gpui-pre-wgpu 0.3.12
 
 Upstream: <https://crates.io/crates/gpui-pre-wgpu> (Zed's GPUI, wgpu renderer and cosmic-text system). Apache-2.0. The

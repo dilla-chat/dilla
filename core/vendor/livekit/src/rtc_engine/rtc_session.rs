@@ -2143,6 +2143,10 @@ impl SessionInner {
     async fn close(&self, reason: DisconnectReason) {
         self.closed.store(true, Ordering::Release);
         self.pc_state_notify.notify_waiters();
+        // DILLA PATCH: a fast-publish negotiation waiting for its answer stops now and lets the
+        // session go (see `execute_negotiation_with_retry`). `notify_one` keeps the wake-up for a
+        // negotiation about to wait, which then sees `closed`.
+        self.negotiation_queue.waker.notify_one();
 
         // Both awaits below are unbounded, and `PeerTransport::close` is synchronous, so
         // closing here — before the future can suspend — is what stops a cancelled
@@ -2627,6 +2631,17 @@ impl SessionInner {
 
     async fn execute_negotiation_with_retry(self: &Arc<Self>) {
         loop {
+            // DILLA PATCH: a closed session negotiates no more. Its offer's answer never comes, and
+            // this task holds the session (both PeerConnections, every transceiver and its frame
+            // transformer) for as long as it waits: up to 10 s after the room closed. `close` wakes
+            // the wait below, and the loop ends here.
+            if self.closed.load(Ordering::Acquire) {
+                log::debug!("session closed, negotiation stopped");
+                self.negotiation_queue.waiting_for_answer.store(false, Ordering::Release);
+                *self.negotiation_queue.state.lock() = NegotiationState::Idle;
+                break;
+            }
+
             log::debug!("negotiating the publisher (fast mode)");
 
             self.negotiation_queue.waiting_for_answer.store(true, Ordering::Release);

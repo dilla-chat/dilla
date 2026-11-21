@@ -1003,6 +1003,35 @@ fn leaving_a_call_releases_every_frame_transformer() {
     }
 }
 
+/// A call left while its publisher renegotiates (a camera published just now: its offer goes out, and the room closes
+/// before the answer is in) releases every frame transformer as a settled call's leave does. dillad's SFU asks for fast
+/// publish, and livekit 0.11's fast-publish negotiation waited up to 10 s for an answer a closed room never gets, holding
+/// the closed session and both its PeerConnections (core/vendor/README.md, "livekit 0.11.0"). The desktop's dock leave
+/// met it on CI: its leave landed on the microphone's renegotiation.
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn leaving_while_the_publisher_renegotiates_releases_every_frame_transformer() {
+    let _alone = alone();
+    let rt = call_runtime();
+    let (call, _bob, _host) = seat_alice_with_bob(&rt);
+    rt.block_on(async {
+        call.publish_video(Box::new(dilla_media::TestPattern::new(
+            dilla_media::ShareKind::Camera,
+            320,
+            240,
+            15,
+        )))
+        .await
+        .expect("the camera is published");
+        call.leave().await;
+    });
+    if let Err(live) = every_transformer_released() {
+        panic!(
+            "{live} frame transformers still alive 5 s after a leave during the publisher's renegotiation"
+        );
+    }
+}
+
 #[test]
 #[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
 fn a_dropped_call_releases_every_frame_transformer() {

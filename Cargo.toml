@@ -57,6 +57,10 @@ webrtc-sys = { path = "core/vendor/webrtc-sys" }
 # LiveKit's libwebrtc 0.4.1 with a track's C++ handle public (Task 11), so a receiver is bound by
 # its own track object, never by a track id the SFU chose. core/vendor/README.md, "libwebrtc 0.4.1".
 libwebrtc = { path = "core/vendor/libwebrtc" }
+# LiveKit's Rust SDK 0.11.0 whose fast-publish negotiation stops when its session closes: it waited up to 10 s for an
+# answer a closed room never gets, holding the closed PeerConnections and their frame transformers. core/vendor/README.md,
+# "livekit 0.11.0".
+livekit = { path = "core/vendor/livekit" }
 # GPUI's text system 0.3.12 with Noto Color Emoji allowed as a font family (R20): upstream skips any face whose cmap lacks
 # 'm', which drops the colour emoji face, so emoji drew as monochrome symbols. core/vendor/README.md, "gpui-pre-wgpu 0.3.12".
 gpui-pre-wgpu = { path = "core/vendor/gpui-pre-wgpu" }
