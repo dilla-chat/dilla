@@ -221,7 +221,15 @@ pub fn picker_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> Op
             tf("shell.banner.commandError", &[("code", code)]),
         ));
     }
-    body = body.child(body_text(t(body_key)));
+    // The dialog body's colour (`.d-dialog__body`: fg-2, text-ui), not the Privacy section's paragraph.
+    body = body.child(
+        body_text(t(body_key))
+            .text_color(dilla_desktop_ui::tokens::color::FG_2)
+            .text_size(dilla_desktop_ui::tokens::text::UI)
+            .line_height(gpui::px(dilla_desktop_ui::text::root_line_height(
+                dilla_desktop_ui::tokens::text::UI,
+            ))),
+    );
     if !members.is_empty() {
         let picked = members.clone();
         let rows = DmPickerList::new(
@@ -239,6 +247,7 @@ pub fn picker_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> Op
             },
         )
         .selected(m.selected)
+        .focused(list.contains_focused(window, cx))
         .busy(m.busy);
         let keyed = members.clone();
         body = body.child(

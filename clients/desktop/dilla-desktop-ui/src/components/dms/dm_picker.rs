@@ -23,6 +23,17 @@ pub struct PickerMember {
     pub name: SharedString,
 }
 
+/// A member's name: the dialog body's colour (`.d-dialog__body { color: var(--fg-2) }`; `.dw-dm-picker__name` sets none).
+pub const NAME_COLOR: gpui::Hsla = color::FG_2;
+
+/// And its size: `.d-dialog__body { font-size: var(--text-ui) }`.
+pub const NAME_SIZE: gpui::Pixels = text::UI;
+
+/// Whether row `i` carries the keyboard's fill: the keyboard is only on a row while the list holds the focus.
+fn highlighted(selected: Option<usize>, i: usize, focused: bool) -> bool {
+    focused && selected == Some(i)
+}
+
 type PickHandler = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
@@ -30,6 +41,7 @@ pub struct DmPickerList {
     members: Vec<PickerMember>,
     selected: Option<usize>,
     busy: bool,
+    focused: bool,
     button: SharedString,
     on_pick: PickHandler,
 }
@@ -45,6 +57,7 @@ impl DmPickerList {
             members,
             selected: None,
             busy: false,
+            focused: true,
             button: button.into(),
             on_pick: Rc::new(on_pick),
         }
@@ -52,6 +65,12 @@ impl DmPickerList {
 
     pub fn selected(mut self, index: Option<usize>) -> Self {
         self.selected = index;
+        self
+    }
+
+    /// Whether the list holds the focus: the selected row shows the keyboard's fill only then. Defaults to true.
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
         self
     }
 
@@ -88,8 +107,8 @@ impl RenderOnce for DmPickerList {
                         div()
                             .min_w_0()
                             .flex_1()
-                            .text_size(text::SM)
-                            .text_color(color::FG)
+                            .text_size(NAME_SIZE)
+                            .text_color(NAME_COLOR)
                             .child(m.name),
                     )
                     .child(
@@ -104,10 +123,29 @@ impl RenderOnce for DmPickerList {
                                 }),
                         ),
                     );
-                if self.selected == Some(i) {
+                if highlighted(self.selected, i, self.focused) {
                     row = row.bg(color::HOVER);
                 }
                 row
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_name_is_the_dialog_bodys_colour() {
+        assert_eq!(NAME_COLOR, color::FG_2);
+        assert_eq!(NAME_SIZE, text::UI);
+    }
+
+    #[test]
+    fn the_keyboards_row_is_filled_only_while_the_list_has_the_focus() {
+        assert!(highlighted(Some(1), 1, true));
+        assert!(!highlighted(Some(1), 1, false));
+        assert!(!highlighted(Some(1), 0, true));
+        assert!(!highlighted(None, 0, true));
     }
 }
