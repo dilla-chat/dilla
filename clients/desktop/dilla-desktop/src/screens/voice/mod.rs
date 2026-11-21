@@ -19,7 +19,9 @@ use std::time::Duration;
 
 use dilla_client::Client;
 use dilla_client::calls::CallPhase;
-use dilla_client::state::voice::{STRANGER_USER, SfuRemote, VoiceNotice, VoiceParticipant};
+#[cfg(any(test, feature = "test-hooks"))]
+use dilla_client::state::voice::SfuRemote;
+use dilla_client::state::voice::{STRANGER_USER, VoiceNotice, VoiceParticipant};
 use dilla_client::state::{AppState, Channel, ChannelId, DeviceId, UserId};
 use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
 use gpui::{

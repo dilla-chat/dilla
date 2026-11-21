@@ -54,9 +54,10 @@ fn commands(announcements: bool, roles: bool) -> Vec<BotCommandSpec> {
     out
 }
 
-fn announcement_commands(
-    spec: &dyn Fn(&str, u64, &[(&str, bool)], bool) -> BotCommandSpec,
-) -> Vec<BotCommandSpec> {
+/// Builds one catalog entry: its name, operation, `(argument, optional)` pairs and whether it needs a Bot channel.
+type SpecFn<'a> = &'a dyn Fn(&str, u64, &[(&str, bool)], bool) -> BotCommandSpec;
+
+fn announcement_commands(spec: SpecFn<'_>) -> Vec<BotCommandSpec> {
     vec![
         spec("announcement list", 50, &[], false),
         spec("announcement create", 51, &[("text", false)], true),
