@@ -571,6 +571,14 @@ impl Render for PaneView {
             .state
             .channel(open.channel)
             .map(|c| format!("#{}", c.name));
+        // Task 36c: the pane's log mounts per thread (Shell.tsx:2257 `key={rootMsgId}`) and fades in with a 6px rise
+        // (MessageLog.css:3-4); its replies rise in (`d-up`), the first paint's last 20 staggered. What lives in the rows
+        // (cards, chips, voters), the root's included, enters again with a new mount, in this window only.
+        let window_id = window.window_handle().window_id();
+        dilla_desktop_ui::motion::set_scope(cx, window_id, THREAD_SCOPE);
+        if self.log.remounts(open.root) {
+            dilla_desktop_ui::motion::remount_log(cx, window_id, THREAD_SCOPE);
+        }
         let root = data.map(|d| match &d.root {
             // The web passes the root's id for the root row too (ThreadView `rootMsgId`): a channel poll that is a thread's root
             // is no card in the pane, its record is the log's.
@@ -583,13 +591,6 @@ impl Render for PaneView {
             )
             .into_any_element(),
         });
-        // Task 36c: the pane's log mounts per thread (Shell.tsx:2257 `key={rootMsgId}`) and fades in with a 6px rise
-        // (MessageLog.css:3-4); its replies rise in (`d-up`), the first paint's last 20 staggered. What lives in the rows
-        // (cards, chips, voters) enters again with a new mount.
-        dilla_desktop_ui::motion::set_scope(cx, THREAD_SCOPE);
-        if self.log.remounts(open.root) {
-            dilla_desktop_ui::motion::remount_log(cx, THREAD_SCOPE);
-        }
         let mut replies: Vec<_> = data
             .map(|d| {
                 d.replies
@@ -613,6 +614,8 @@ impl Render for PaneView {
             window,
             cx,
         );
+        // The rows are built: what is drawn after them is in no log.
+        dilla_desktop_ui::motion::end_scope(cx);
         enter_keys.extend((0..privates.len()).map(|n| format!("private-{n}")));
         replies.extend(privates.into_iter().map(|(row, height)| {
             div()

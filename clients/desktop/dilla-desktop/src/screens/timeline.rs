@@ -1595,9 +1595,11 @@ pub fn render(
     // Task 36c: the log mounts for a channel and its read state (Conversation.tsx `logKey`). A new mount makes what lives in
     // the rows (file cards, reaction chips, poll cards and voters) enter again with them, so it is known before they draw.
     let ready = state.timelines.contains_key(&channel.id);
-    motion::set_scope(cx, LOG_SCOPE);
+    // Each window's log is its own (final review I1): its keys never move another window's entrances.
+    let window_id = window.window_handle().window_id();
+    motion::set_scope(cx, window_id, LOG_SCOPE);
     if ui.read(cx).log.remounts((channel.id, ready)) {
-        motion::remount_log(cx, LOG_SCOPE);
+        motion::remount_log(cx, window_id, LOG_SCOPE);
     }
     let privates = crate::screens::commands::private_results(ctx, width, window, cx);
     let mut shown = Vec::with_capacity(items.len());
@@ -1674,6 +1676,8 @@ pub fn render(
             index: n,
         });
     }
+    // The rows are built: what is drawn after them is in no log.
+    motion::end_scope(cx);
     // A DM's log: its channel record is the DM's (Shell.tsx: the at-sign and the DM's name).
     let dm = state.dms.get(channel.id).is_some();
     let (title, body_lines) = welcome_lines(&channel.name, dm, width, density);

@@ -403,7 +403,7 @@ pub fn attachment_cards(
                 let entered = dilla_desktop_ui::motion::entered_age(
                     cx,
                     dilla_desktop_ui::motion::scoped(
-                        dilla_desktop_ui::motion::scope(cx),
+                        &dilla_desktop_ui::motion::scope(cx),
                         &format!("file-card-{id}"),
                     ),
                     dilla_desktop_ui::tokens::motion::SLOW,

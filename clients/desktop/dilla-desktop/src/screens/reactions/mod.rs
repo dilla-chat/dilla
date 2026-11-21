@@ -193,7 +193,7 @@ pub fn reaction_bar(
     let scope = dilla_desktop_ui::motion::scope(cx);
     let bar_id = SharedString::from(format!("reactions-{}", item.key));
     let pop_prefix =
-        dilla_desktop_ui::components::reactions::bar::pop_prefix(scope, &bar_id.clone().into());
+        dilla_desktop_ui::components::reactions::bar::pop_prefix(&scope, &bar_id.clone().into());
     dilla_desktop_ui::motion::forget_entered(cx, &pop_prefix, |k| {
         item.reactions
             .iter()
@@ -515,7 +515,7 @@ mod tests {
             format!(
                 "{}👍",
                 dilla_desktop_ui::components::reactions::bar::pop_prefix(
-                    dilla_desktop_ui::motion::scope(cx),
+                    &dilla_desktop_ui::motion::scope(cx),
                     &SharedString::from(format!("reactions-{}", with.key)).into(),
                 )
             )

@@ -110,7 +110,7 @@ pub struct ReactionBar {
     on_add: Option<OnAdd>,
     decorate: Option<Decorate>,
     /// The log the bar is drawn in ([`crate::motion::scope`]): its chips' pops are remembered under it.
-    scope: &'static str,
+    scope: SharedString,
 }
 
 /// The key prefix of a bar's chips in [`crate::motion::entered_age`]: the log's scope, then the bar's id.
@@ -135,13 +135,13 @@ impl ReactionBar {
             on_toggle: None,
             on_add: None,
             decorate: None,
-            scope: "",
+            scope: SharedString::default(),
         }
     }
 
     /// The log the bar is drawn in.
-    pub fn scope(mut self, scope: &'static str) -> Self {
-        self.scope = scope;
+    pub fn scope(mut self, scope: impl Into<SharedString>) -> Self {
+        self.scope = scope.into();
         self
     }
 
@@ -266,7 +266,7 @@ impl RenderOnce for ReactionBar {
         // is drawn inside a message row, which the log stops drawing off screen, so the pop is remembered by key.
         let mut popping = false;
         // (A reaction taken down is a chip gone: the screen forgets its pop, so it pops again when it returns.)
-        let pop_prefix = pop_prefix(self.scope, &self.id);
+        let pop_prefix = pop_prefix(&self.scope, &self.id);
         for (i, chip) in self.chips.iter().enumerate() {
             let build = |pop: crate::motion::Pop| {
                 chip_view(

@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, ElementId, Hsla, IntoElement,
-    ParentElement, Pixels, Styled, Window, div, linear_color_stop, linear_gradient, point, px,
-    relative,
+    ParentElement, Pixels, SharedString, Styled, Window, div, linear_color_stop, linear_gradient,
+    point, px, relative,
 };
 
 use crate::icon::Icon;
@@ -971,32 +971,46 @@ pub fn forget_entered(cx: &mut App, prefix: &str, keep: impl Fn(&str) -> bool) {
     cx.default_global::<Remembered>().forget(prefix, keep);
 }
 
-/// A key of [`entered_age`] in the log `scope` names (the channel's log, a thread's): the logs are mounted and unmounted
-/// apart, so each has its own keys.
+/// A key of [`entered_age`] in the log `scope` names (the channel's log, a thread's, each in its window): the logs are
+/// mounted and unmounted apart, so each has its own keys.
 pub fn scoped(scope: &str, key: &str) -> String {
     format!("{scope}\u{1}{key}")
 }
 
+/// The scope of the log `log` (the channel's log, a thread's) in `window`: each window's logs are their own, as each web
+/// tab's DOM is, so a log mounting in one window never replays what another window's rows show.
+pub fn window_scope(window: gpui::WindowId, log: &str) -> SharedString {
+    format!("{log}#{}", window.as_u64()).into()
+}
+
 /// The log being drawn (see [`set_scope`]).
 #[derive(Default)]
-struct LogScope(&'static str);
+struct LogScope(SharedString);
 impl gpui::Global for LogScope {}
 
-/// A log starts drawing its rows: what they key their entrances by (file cards, reaction chips, poll cards) is `scope`'s, so
-/// that the log's mount or unmount forgets its own and no other log's.
-pub fn set_scope(cx: &mut App, scope: &'static str) {
-    cx.set_global(LogScope(scope));
+/// The log `log` of `window` starts drawing its rows: what they key their entrances by (file cards, reaction chips, poll
+/// cards) is that log's in that window ([`window_scope`]), so that its mount or unmount forgets its own and no other log's.
+/// The log calls [`end_scope`] once its rows are built.
+pub fn set_scope(cx: &mut App, window: gpui::WindowId, log: &str) {
+    cx.set_global(LogScope(window_scope(window, log)));
+}
+
+/// The log's rows are built: what is drawn after them (outside any log) takes no log's scope.
+pub fn end_scope(cx: &mut App) {
+    cx.set_global(LogScope::default());
 }
 
 /// The scope of the log whose rows are being built ([`set_scope`]); empty outside one.
-pub fn scope(cx: &App) -> &'static str {
-    cx.try_global::<LogScope>().map_or("", |s| s.0)
+pub fn scope(cx: &App) -> SharedString {
+    cx.try_global::<LogScope>()
+        .map_or_else(SharedString::default, |s| s.0.clone())
 }
 
-/// The log of `scope` mounted anew: what [`entered_age`] knows of its rows is forgotten, so the cards, chips and voters in
-/// them enter again with it, as the web's new DOM does. Another log's stay.
-pub fn remount_log(cx: &mut App, scope: &str) {
-    cx.default_global::<Remembered>().clear_scope(scope);
+/// The log `log` of `window` mounted anew: what [`entered_age`] knows of its rows is forgotten, so the cards, chips and
+/// voters in them enter again with it, as the web's new DOM does. Another log's stay, and so do other windows' logs.
+pub fn remount_log(cx: &mut App, window: gpui::WindowId, log: &str) {
+    cx.default_global::<Remembered>()
+        .clear_scope(&window_scope(window, log));
 }
 
 /// `d-up` drawn on `el` by hand, `elapsed` into an entrance whose delay is `delay` (the entrances a list remembers per key,
@@ -1944,6 +1958,41 @@ mod tests {
             Duration::ZERO,
             "k0 was dropped"
         );
+    }
+
+    /// Final review I1: entrances are remembered per window. A log mounting anew in window A replays A's cards and chips,
+    /// never window B's (B keeps its key, its entrance over); a second window drawing the same log enters its own. A
+    /// log's scope ends with its rows: what is drawn after them is in no log.
+    #[gpui::test]
+    fn a_log_remounting_in_one_window_leaves_the_other_windows_entrances(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let run = motion::SLOW;
+        let draw = |window, cx: &mut App| {
+            set_scope(cx, window, "channel-log");
+            let key = scoped(&scope(cx), "poll-card-x");
+            let age = entered_age(cx, key, run);
+            end_scope(cx);
+            age
+        };
+        cx.update(|cx| {
+            assert_eq!(draw(a, cx), Some(Duration::ZERO), "A's card enters");
+            assert_eq!(draw(b, cx), Some(Duration::ZERO), "B's own card enters too");
+            assert!(scope(cx).is_empty(), "no log after the rows");
+        });
+        cx.executor().advance_clock(run * 2);
+        cx.update(|cx| {
+            remount_log(cx, a, "channel-log");
+            assert_eq!(draw(b, cx), None, "B's entrance stays over");
+            assert_eq!(draw(a, cx), Some(Duration::ZERO), "A's log mounted anew");
+        });
     }
 
     /// A remounted log forgets its own scope's keys and keeps every other scope's.
