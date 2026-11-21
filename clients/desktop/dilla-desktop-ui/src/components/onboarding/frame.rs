@@ -351,6 +351,11 @@ impl RenderOnce for OnboardingFrame {
                     .when_some(self.progress, |d, (n, total)| d.child(dots(n, total))),
             );
         }
+        // OnboardingFrame.css:21: the body rises in (`d-up` over `--duration-step`) when a step opens.
+        let body_key = (
+            self.id.clone(),
+            SharedString::from(format!("body-{}", self.title)),
+        );
         card = card.child(
             line(
                 self.title,
@@ -378,7 +383,14 @@ impl RenderOnce for OnboardingFrame {
                 part
             });
         }
-        card = card.child(body);
+        card = card.child(crate::motion::up_in(
+            body,
+            body_key,
+            std::time::Duration::ZERO,
+            motion::STEP,
+            motion::EASE_OUT,
+            cx,
+        ));
         if self.primary.is_some() || self.back.is_some() || self.link.is_some() {
             let mut footer = div()
                 .flex()
@@ -914,8 +926,9 @@ impl ReadyPanel {
 }
 
 impl RenderOnce for ReadyPanel {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div()
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        // OnboardingFrame.css:67: `d-up` over `--duration-step` on `--ease-out`, once when the done step opens.
+        let panel = div()
             .flex()
             .items_center()
             .gap(px(12.0))
@@ -945,7 +958,15 @@ impl RenderOnce for ReadyPanel {
                 text::UI,
                 crate::text::root_line_height(text::UI),
                 color::OK_PANEL_TEXT,
-            ))
+            ));
+        crate::motion::up_in(
+            panel,
+            "onboarding-ready-enter",
+            std::time::Duration::ZERO,
+            motion::STEP,
+            motion::EASE_OUT,
+            cx,
+        )
     }
 }
 

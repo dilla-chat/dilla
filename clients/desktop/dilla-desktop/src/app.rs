@@ -1648,7 +1648,7 @@ impl Render for AppView {
             );
         }
         let body = match &self.screen {
-            Screen::Starting => boot::loading(),
+            Screen::Starting => boot::loading(cx),
             Screen::Fatal(error, cfg) => {
                 let (this, cfg) = (cx.entity().downgrade(), cfg.clone());
                 let (retry, sign_in, confirming, reset) =
@@ -1680,9 +1680,10 @@ impl Render for AppView {
                             });
                         }),
                     },
+                    cx,
                 )
             }
-            Screen::Resetting => boot::resetting(),
+            Screen::Resetting => boot::resetting(cx),
             #[cfg(feature = "automation")]
             Screen::FixtureBoot(error) => {
                 let noop: boot::Press = Rc::new(|_, _| {});
@@ -1696,6 +1697,7 @@ impl Render for AppView {
                         on_confirming: Rc::new(|_, _, _| {}),
                         on_reset: noop,
                     },
+                    cx,
                 )
             }
             Screen::SignIn(view) => view.clone().into_any_element(),

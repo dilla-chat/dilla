@@ -191,7 +191,12 @@ pub type Press = Rc<dyn Fn(&mut Window, &mut App)>;
 pub type Toggle = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
 /// The splash: the brand, the status and detail, and the action when there is one. It fills its parent.
-pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>) -> AnyElement {
+pub fn splash(
+    boot: &Boot,
+    on_action: Option<Press>,
+    on_secondary: Option<Press>,
+    cx: &App,
+) -> AnyElement {
     let status = div()
         .flex()
         .flex_col()
@@ -238,8 +243,9 @@ pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>
             .variant(ButtonVariant::Ghost)
             .on_click(move |_, window, cx| press(window, cx))
     });
-    tracked(
-        "boot-splash",
+    // Splash.css:1: the splash fades in (`d-splash-in` over `--duration-slow`, `--ease-out`) when it opens, and not under
+    // reduced motion (Splash.css:7).
+    let page = dilla_desktop_ui::motion::splash_in(
         div()
             .size_full()
             .bg(color::BG)
@@ -253,13 +259,16 @@ pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>
             .child(status)
             .children(action)
             .children(secondary),
-    )
-    .into_any_element()
+        "boot-splash-enter",
+        dilla_desktop_ui::tokens::motion::SLOW,
+        cx,
+    );
+    tracked("boot-splash", page).into_any_element()
 }
 
 /// "Starting dilla".
-pub fn loading() -> AnyElement {
-    splash(&Boot::Loading, None, None)
+pub fn loading(cx: &App) -> AnyElement {
+    splash(&Boot::Loading, None, None, cx)
 }
 
 /// What the failure splash's buttons do: the action (Try again, or open the reset's confirmation), the secondary (back
@@ -280,6 +289,7 @@ pub fn fatal(
     confirming: bool,
     viewport_width: f32,
     actions: FailureActions,
+    cx: &App,
 ) -> AnyElement {
     let boot = failure_boot(error);
     let FailureActions {
@@ -289,13 +299,14 @@ pub fn fatal(
         on_reset,
     } = actions;
     let Some((title, body, confirm)) = boot.confirm_keys() else {
-        return splash(&boot, Some(on_retry), Some(on_sign_in));
+        return splash(&boot, Some(on_retry), Some(on_sign_in), cx);
     };
     let open = on_confirming.clone();
     let page = splash(
         &boot,
         Some(Rc::new(move |window, cx| open(true, window, cx))),
         None,
+        cx,
     );
     let close = on_confirming;
     let dialog = Dialog::new("boot-confirm", t(title), t("dialog.close"))
@@ -329,8 +340,8 @@ pub fn fatal(
 }
 
 /// "Clearing this browser's data", while a Forget or a Reset wipes the instance's data.
-pub fn resetting() -> AnyElement {
-    splash(&Boot::Resetting, None, None)
+pub fn resetting(cx: &App) -> AnyElement {
+    splash(&Boot::Resetting, None, None, cx)
 }
 
 /// The wordmark, page size: the 20px tile, DILLA and the caret (`BrandMark`, `size="page"`).
