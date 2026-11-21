@@ -640,7 +640,16 @@ pub fn on_send(
     window: gpui::WindowId,
     cx: &mut App,
 ) -> SendDecision {
-    on_send_in(ctx, None, draft, encode, window, cx)
+    on_send_in(ctx, None, None, draft, encode, window, cx)
+}
+
+/// The picker's draft and chips go once a send of the composer `sender` is taken. A composer that is not the one the
+/// picker's state belongs to ([`owns`]) leaves it alone: sending its own text never clears the other composer's chips or
+/// draft. `None` (no composer named) is the picker's own.
+fn clear_picker(window: gpui::WindowId, sender: Option<&gpui::FocusHandle>, cx: &mut App) {
+    if sender.is_none_or(|focus| owns(window, focus, cx)) {
+        draft_changed(window, "", cx);
+    }
 }
 
 /// [`on_send`] for the composer of `thread` in the channel of `ctx` (`None`: the channel's own). The thread binding is the
@@ -649,6 +658,7 @@ pub fn on_send(
 pub fn on_send_in(
     ctx: &SlotCx,
     thread: Option<dilla_client::state::MessageId>,
+    sender: Option<&gpui::FocusHandle>,
     draft: &str,
     encode: &dyn Fn(&str) -> String,
     window: gpui::WindowId,
@@ -666,7 +676,7 @@ pub fn on_send_in(
         && definition.id == "poll create"
     {
         poll_form::open(ctx, at, args, attempt_of(ctx, at, draft), window, cx);
-        draft_changed(window, "", cx);
+        clear_picker(window, sender, cx);
         return SendDecision::Handled;
     }
     // The four announcement commands run through their own handler as well (bot-handlers.ts `announcementHandler`): the
@@ -683,7 +693,7 @@ pub fn on_send_in(
             window,
             cx,
         );
-        draft_changed(window, "", cx);
+        clear_picker(window, sender, cx);
         return SendDecision::Handled;
     }
     // `/rolepanel create` runs through its own handler too (bot-handlers.ts `rolePanelHandler`): the editor opens over the
@@ -692,7 +702,7 @@ pub fn on_send_in(
         && definition.id == role_panel_form::COMMAND
     {
         role_panel_form::run(ctx, at, attempt_of(ctx, at, draft), window, cx);
-        draft_changed(window, "", cx);
+        clear_picker(window, sender, cx);
         return SendDecision::Handled;
     }
     let decision = match (&ctx.client, plan) {
@@ -782,7 +792,7 @@ pub fn on_send_in(
         }
     };
     if decision != SendDecision::Keep {
-        draft_changed(window, "", cx);
+        clear_picker(window, sender, cx);
     }
     decision
 }

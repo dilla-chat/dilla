@@ -37,8 +37,9 @@ const COMPOSER_BOTTOM: f32 = 12.0;
 const ROW_GAP: f32 = 8.0;
 const ROW_LEFT: f32 = 10.0;
 const ROW_PAD: f32 = 4.0;
-/// Extra space between the list and the composer's top edge: the web pane draws the list 4px higher than the channel does
-/// (the 8px padding above the box and the list's own 6px lie under it).
+/// Extra space between the list and the composer's top edge. No CSS rule of the web gives it: ThreadPane.css:44 pads the
+/// composer 8px and CommandPicker.css:71 lifts the list 6px (`bottom: calc(100% + 6px)`), which the list's own gap and the
+/// padding above already draw; the web frame still has the list 4px higher (the reference of `threads/command-list`).
 const POPUP_GAP: f32 = 4.0;
 /// The hover toolbar's gap between its buttons (MessageRow.css `__toolbar` gap 2px).
 const TOOL_GAP: f32 = 2.0;
@@ -200,15 +201,12 @@ impl PaneView {
                     .is_some();
                 // A picked command's chips are what is sent (composer.rs `send`), while this composer's own are shown.
                 let focus = input.read(cx).focus_handle(cx);
-                let chips = crate::screens::commands::owns(wid, &focus, cx);
-                if chips && crate::screens::commands::chips::hold_unnamed_member(&ctx, wid, cx) {
+                if crate::screens::commands::chips::hold_unnamed_member(&ctx, &focus, wid, cx) {
                     window.refresh();
                     return;
                 }
-                let typed = chips
-                    .then(|| crate::screens::commands::chips::draft(&ctx, wid, cx))
-                    .flatten();
-                let draft = typed.unwrap_or_else(|| input.read(cx).value().to_string());
+                let draft = crate::screens::commands::chips::draft(&ctx, &focus, wid, cx)
+                    .unwrap_or_else(|| input.read(cx).value().to_string());
                 // A reader who cannot send has a disabled composer (ThreadView `blocked`).
                 if composing || draft.trim().is_empty() || !ctx.state.threads.can_send(open.channel)
                 {
@@ -224,6 +222,7 @@ impl PaneView {
                 let draft = match crate::screens::commands::on_send_in(
                     &at_thread,
                     Some(open.root),
+                    Some(&focus),
                     &draft,
                     &|t| t.to_owned(),
                     wid,
@@ -787,6 +786,65 @@ mod tests {
             assert!(commands::picker(&ctx, &thread_focus, window, cx).is_some());
             // The chips follow the same owner.
             assert!(crate::slots::composer_chips(&ctx, &channel_focus, window, cx).is_none());
+        });
+    }
+
+    /// The picker's chips belong to the composer that reported the draft. The other composer sends its own text, never reads
+    /// or clears the owner's chips or draft, and the owner's send still runs them. Both directions: the thread owns them,
+    /// then the channel's composer does.
+    #[gpui::test]
+    fn a_composer_never_sends_or_clears_the_other_composers_chips(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands::{self, SendDecision, chips};
+        cx.update(crate::install);
+        let ctx = crate::slots::SlotCx {
+            channel: Some(ChannelId([3; 16])),
+            ..crate::slots::SlotCx::default()
+        };
+        let root = MessageId([7; 16]);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            let (channel, thread) = (cx.focus_handle(), cx.focus_handle());
+            let picked = |cx: &mut gpui::App| {
+                let mut c = chips::Chips::new("shrug".into());
+                c.values = vec!["hi".into()];
+                let s = commands::picker_state_mut(w, cx);
+                s.draft = "/shrug".into();
+                s.chips = Some(c);
+            };
+            let send = |ctx: &crate::slots::SlotCx,
+                        thread: Option<MessageId>,
+                        from: &gpui::FocusHandle,
+                        draft: &str,
+                        cx: &mut gpui::App| {
+                commands::on_send_in(ctx, thread, Some(from), draft, &|t| t.to_owned(), w, cx)
+            };
+            for (owner, other, other_thread) in
+                [(&thread, &channel, None), (&channel, &thread, Some(root))]
+            {
+                commands::set_composer(w, owner, cx);
+                picked(cx);
+                assert_eq!(chips::draft(&ctx, other, w, cx), None, "not the other's");
+                assert!(!chips::hold_unnamed_member(&ctx, other, w, cx));
+                assert_eq!(
+                    send(&ctx, other_thread, other, "own text", cx),
+                    SendDecision::Post("own text".into())
+                );
+                let state = commands::picker_state(w, cx);
+                assert!(state.chips.is_some(), "the owner's chips stay");
+                assert_eq!(state.draft, "/shrug", "and its draft");
+                assert_eq!(
+                    chips::draft(&ctx, owner, w, cx).as_deref(),
+                    Some("/shrug text:\"hi\"")
+                );
+                // The owner's own send runs its chips and clears them.
+                let owner_thread = if owner == &thread { Some(root) } else { None };
+                assert!(matches!(
+                    send(&ctx, owner_thread, owner, "/shrug text:\"hi\"", cx),
+                    SendDecision::Post(t) if t.ends_with(" hi") && t.contains('¯')
+                ));
+                assert!(commands::picker_state(w, cx).chips.is_none());
+            }
         });
     }
 

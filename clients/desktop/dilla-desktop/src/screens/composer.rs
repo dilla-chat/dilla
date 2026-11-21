@@ -491,9 +491,12 @@ impl Composer {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only the chips this composer owns are its own: another composer's (the thread's) are never sent from here.
+        let field = self.input.read(cx).focus_handle(cx);
         // w2 I-B1: a member chip naming nobody (a display name typed, no member picked) runs nothing; its list shows.
         if crate::screens::commands::chips::hold_unnamed_member(
             &self.slots,
+            &field,
             window.window_handle().window_id(),
             cx,
         ) {
@@ -503,6 +506,7 @@ impl Composer {
         // Task 28 follow-up 14: with a command picked, the chips' typed form is what is sent.
         let chips = crate::screens::commands::chips::draft(
             &self.slots,
+            &field,
             window.window_handle().window_id(),
             cx,
         );
@@ -526,8 +530,10 @@ impl Composer {
         let raw = if files && !chipped {
             raw
         } else {
-            match crate::screens::commands::on_send(
+            match crate::screens::commands::on_send_in(
                 &self.slots,
+                None,
+                Some(&field),
                 &raw,
                 &|t| self.encoded(t),
                 window.window_handle().window_id(),

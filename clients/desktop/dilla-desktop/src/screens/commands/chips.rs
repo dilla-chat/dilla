@@ -937,8 +937,17 @@ fn zone_name() -> String {
         .unwrap_or_else(|| "UTC".to_owned())
 }
 
-/// What Enter sends while `window`'s composer shows chips: their typed form (`None` with no chips).
-pub fn draft(ctx: &SlotCx, window: gpui::WindowId, cx: &App) -> Option<String> {
+/// What Enter sends while `window`'s composer shows chips: their typed form (`None` with no chips, or when the chips belong
+/// to another composer than `owner`: a composer sends its own text, never the other's chips).
+pub fn draft(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    window: gpui::WindowId,
+    cx: &App,
+) -> Option<String> {
+    if !super::owns(window, owner, cx) {
+        return None;
+    }
     let chips = super::picker_state(window, cx).chips?;
     let definition = definition(&ctx.state, ctx.community, &chips.command)?;
     let member = |text: &str| resolve_member(&ctx.state, ctx.community, &chips.command, text);
@@ -1239,7 +1248,15 @@ pub fn unnamed_member(
 /// Enter while `window`'s chips hold a member field that names nobody (a display name typed, no member picked): nothing
 /// runs; that field becomes the active one, so its members are listed to pick from (coordinator's ruling on I-B1, as the
 /// web's "No member called …"). `true`: held.
-pub fn hold_unnamed_member(ctx: &SlotCx, window: gpui::WindowId, cx: &mut App) -> bool {
+pub fn hold_unnamed_member(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    window: gpui::WindowId,
+    cx: &mut App,
+) -> bool {
+    if !super::owns(window, owner, cx) {
+        return false;
+    }
     let Some(chips) = super::picker_state(window, cx).chips else {
         return false;
     };

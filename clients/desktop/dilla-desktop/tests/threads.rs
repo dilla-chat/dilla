@@ -323,7 +323,10 @@ fn a_thread_command_posts_into_the_thread() {
     app.type_text("thread-composer", &format!("/pin message:{}", reply.hex()));
     app.wait_idle();
     app.press("enter");
-    app.wait_for("bot-result-failed", Duration::from_secs(30));
+    let row = app.wait_for("bot-result-failed", Duration::from_secs(30));
+    // The row is the pane's own, not the channel log's.
+    let close = app.element("thread-close").expect("the pane is open");
+    assert!(row.x >= close.x + close.width - 340.0, "{row:?} {close:?}");
     drop(app);
     member.stop();
     let _ = std::fs::remove_dir_all(&dir);
