@@ -351,11 +351,10 @@ impl RenderOnce for OnboardingFrame {
                     .when_some(self.progress, |d, (n, total)| d.child(dots(n, total))),
             );
         }
-        // OnboardingFrame.css:21: the body rises in (`d-up` over `--duration-step`) when a step opens.
-        let body_key = (
-            self.id.clone(),
-            SharedString::from(format!("body-{}", self.title)),
-        );
+        // OnboardingFrame.css:21: the body rises in (`d-up` over `--duration-step`) when the frame mounts.
+        // The web keeps one body across the connect, identity and keys steps (the same place in the tree), so the entrance plays
+        // when the frame mounts, not at each step: the key is the frame's, not the title's.
+        let body_key = (self.id.clone(), "body-enter");
         card = card.child(
             line(
                 self.title,
@@ -1018,5 +1017,63 @@ mod wrap_tests {
         assert_eq!(lines(true).last().unwrap(), "another device.");
         assert_eq!(lines(false).last().unwrap(), "device.");
         assert!(matches!(Part::of(div()), Part::Other(_)));
+    }
+}
+
+#[cfg(test)]
+mod entrance_tests {
+    use super::*;
+    use gpui::{Context, IntoElement, Render, TestAppContext};
+    use std::time::Duration;
+
+    struct Host {
+        title: &'static str,
+        renders: usize,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders += 1;
+            OnboardingFrame::new("onboarding", self.title)
+        }
+    }
+
+    fn run(vcx: &mut gpui::VisualTestContext, ms: u64) {
+        for _ in 0..ms / 10 {
+            vcx.executor().advance_clock(Duration::from_millis(10));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+    }
+
+    /// OnboardingFrame.css:21: the web keeps one body across the connect, identity and keys steps, so its `d-up` plays when
+    /// the frame mounts and a step change plays nothing: the frame asks for no frames after the entrance, whatever the title.
+    #[gpui::test]
+    fn the_body_rises_when_the_frame_mounts_and_not_at_each_step(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (host, vcx) = cx.add_window_view(|_, _| Host {
+            title: "Connect",
+            renders: 0,
+        });
+        vcx.run_until_parked();
+        let during = host.read_with(vcx, |h, _| h.renders);
+        run(vcx, 100);
+        assert!(
+            host.read_with(vcx, |h, _| h.renders) > during,
+            "the entrance repaints while it runs"
+        );
+        run(vcx, 1000);
+        host.update(vcx, |h, cx| {
+            h.title = "Your name";
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let after_step = host.read_with(vcx, |h, _| h.renders);
+        run(vcx, 600);
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.renders),
+            after_step,
+            "a step change starts no entrance"
+        );
     }
 }
