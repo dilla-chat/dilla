@@ -1323,7 +1323,9 @@ pub fn popup(
             let owner = owner.clone();
             move |i, window, cx| {
                 // Each composer's list acts on its own picker state, not on whichever drew last.
-                super::activate(window_id(window), &owner, false, cx);
+                if !super::activate(window_id(window), &owner, false, cx) {
+                    return;
+                }
                 if let Some(c) = super::picker_state_mut(window_id(window), cx)
                     .chips
                     .as_mut()
@@ -1337,7 +1339,9 @@ pub fn popup(
         .on_pick({
             let owner = owner.clone();
             move |i, w, cx| {
-                super::activate(window, &owner, false, cx);
+                if !super::activate(window, &owner, false, cx) {
+                    return;
+                }
                 if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
                     c.accept(i);
                 }
@@ -1366,7 +1370,9 @@ pub fn focus_field(
     window: &mut Window,
     cx: &mut App,
 ) {
-    super::activate(wid, owner, false, cx);
+    if !super::activate(wid, owner, false, cx) {
+        return;
+    }
     let state = super::picker_state_mut(wid, cx);
     if let Some(c) = state.chips.as_mut()
         && c.active != i

@@ -203,7 +203,8 @@ fn has_files(client: &Client, cx: &App) -> bool {
         })
 }
 
-/// A composer of instance `id` holds text its channel's draft in the prefs does not have yet.
+/// A composer of instance `id` holds text its draft in the prefs does not have yet: every composer of each window counts,
+/// the channel's (against its channel's draft) and the thread pane's (against its thread's).
 fn has_unwritten_text(id: InstanceId, client: &Rc<Client>, cx: &App) -> bool {
     let Some(ui) = cx.try_global::<crate::screens::attachments::ui::AttachmentsUi>() else {
         return false;
@@ -221,15 +222,40 @@ fn has_unwritten_text(id: InstanceId, client: &Rc<Client>, cx: &App) -> bool {
             if !Rc::ptr_eq(owner, client) {
                 return false;
             }
-            let typed = crate::screens::commands::picker_state(window, cx).draft;
-            if typed.is_empty() {
-                return false;
-            }
-            let kept: String = client
-                .prefs()
-                .get(&crate::screens::messages::composing::draft_key(channel))
-                .unwrap_or_default();
-            typed != kept
+            unwritten_in(
+                &crate::screens::commands::picker_states(window, cx),
+                crate::screens::threads::composer_of(window, cx),
+                &|| {
+                    client
+                        .prefs()
+                        .get(&crate::screens::messages::composing::draft_key(channel))
+                        .unwrap_or_default()
+                },
+                &|root| client.threads().draft(root),
+            )
+        })
+}
+
+/// Whether one of a window's composers (`states`) holds text its kept draft does not have: the thread pane's composer
+/// (`thread`: its field and root) against its thread's draft, any other against the channel's.
+fn unwritten_in(
+    states: &[crate::screens::commands::PickerState],
+    thread: Option<(gpui::FocusHandle, dilla_client::state::MessageId)>,
+    channel_kept: &dyn Fn() -> String,
+    thread_kept: &dyn Fn(dilla_client::state::MessageId) -> String,
+) -> bool {
+    states
+        .iter()
+        .filter(|state| !state.draft.is_empty())
+        .any(|state| {
+            let field = state.composer.as_ref().and_then(|c| c.upgrade());
+            let kept = match &thread {
+                Some((thread_field, root)) if field.as_ref() == Some(thread_field) => {
+                    thread_kept(*root)
+                }
+                _ => channel_kept(),
+            };
+            state.draft != kept
         })
 }
 
@@ -507,6 +533,46 @@ mod tests {
         assert_eq!(showing_now(cx), None);
         assert!(!cx.update(|cx| NativeShell::is_asking_quit(cx)));
         assert!(!quitting(cx));
+    }
+
+    /// Every composer of a window counts for the unsaved-draft question, whichever drew last: the channel's against its
+    /// channel's draft, the thread's against its thread's.
+    #[gpui::test]
+    fn every_composer_of_a_window_is_checked_for_an_unsaved_draft(cx: &mut TestAppContext) {
+        use crate::screens::commands;
+        use dilla_client::state::MessageId;
+        cx.update(crate::install);
+        let vcx = cx.add_empty_window();
+        let root = MessageId([7; 16]);
+        vcx.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            let (channel, thread) = (cx.focus_handle(), cx.focus_handle());
+            commands::set_composer(w, &channel, cx);
+            commands::draft_changed(w, "kept in the channel", cx);
+            commands::set_composer(w, &thread, cx);
+            commands::draft_changed(w, "kept in the thread", cx);
+            let states = commands::picker_states(w, cx);
+            assert_eq!(states.len(), 2, "both composers' states");
+            let at = Some((thread.clone(), root));
+            let check = |channel_kept: &'static str, thread_kept: &'static str| {
+                unwritten_in(&states, at.clone(), &|| channel_kept.into(), &|r| {
+                    assert_eq!(r, root);
+                    thread_kept.into()
+                })
+            };
+            assert!(
+                !check("kept in the channel", "kept in the thread"),
+                "both kept: the thread's text is not read against the channel's draft"
+            );
+            assert!(
+                check("", "kept in the thread"),
+                "the channel's text is unsaved, though the thread's state drew last"
+            );
+            assert!(
+                check("kept in the channel", ""),
+                "the thread's text is unsaved"
+            );
+        });
     }
 
     #[test]

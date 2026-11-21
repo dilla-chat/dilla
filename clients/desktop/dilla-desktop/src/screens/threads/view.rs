@@ -215,10 +215,7 @@ impl PaneView {
                 // The Bot area decides first, as for the channel's composer: a literal text or `//x` is posted into the
                 // thread, a built-in answers privately or runs in it, and a command still lacking arguments keeps its
                 // draft. The thread composer encodes no mentions, so the encoder is the identity.
-                let at_thread = crate::slots::SlotCx {
-                    channel: Some(open.channel),
-                    ..ctx.clone()
-                };
+                let at_thread = at_thread(&ctx, open);
                 let draft = match crate::screens::commands::on_send_in(
                     &at_thread,
                     Some(open.root),
@@ -293,6 +290,11 @@ impl PaneView {
             .unwrap_or_default();
         self.input
             .update(cx, |s, cx| s.set_value(draft, window, cx));
+    }
+
+    /// The composer's field and the root whose draft it holds (`None` while no thread is shown).
+    pub(super) fn composer(&self, cx: &gpui::App) -> Option<(FocusHandle, MessageId)> {
+        Some((self.input.read(cx).focus_handle(cx), self.shown?))
     }
 
     /// The pane was closed: its composer's picker starts empty when it opens again, and its draft is read afresh.
@@ -465,6 +467,26 @@ impl PaneView {
     }
 }
 
+/// `ctx` aimed at `open`'s conversation: its channel, and the server that channel is in (a DM's thread has none). The pane
+/// is drawn only beside its own channel ([`super::open_of`]), so this is the shown server too; the community is still read
+/// from the thread's channel, so no command of the thread is planned or run under another server's roles and Bots. A
+/// channel the state does not list (a fixture's) keeps the view's.
+pub(super) fn at_thread(ctx: &crate::slots::SlotCx, open: OpenThread) -> crate::slots::SlotCx {
+    let community = if ctx.state.dms.get(open.channel).is_some() {
+        None
+    } else {
+        ctx.state
+            .channel(open.channel)
+            .map(|c| c.community_id)
+            .or(ctx.community)
+    };
+    crate::slots::SlotCx {
+        channel: Some(open.channel),
+        community,
+        ..ctx.clone()
+    }
+}
+
 impl Render for PaneView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(ctx) = current(self.window, cx) else {
@@ -475,11 +497,8 @@ impl Render for PaneView {
         };
         self.settle_draft(open, window, cx);
         self.reopen(open, window, cx);
-        // The rows' actions act on the thread's channel (the shell's view may show another one).
-        let ctx = crate::slots::SlotCx {
-            channel: Some(open.channel),
-            ..ctx
-        };
+        // The rows' actions act on the thread's channel and its server.
+        let ctx = at_thread(&ctx, open);
         let data = ctx
             .state
             .threads
@@ -981,6 +1000,139 @@ mod tests {
         vcx.update(|_, cx| {
             assert_eq!(chips::draft(&ctx, &field, w, cx), None, "nothing of A in B");
         });
+    }
+
+    /// A view of `channel`, which the state lists in `community`.
+    fn view_of(
+        community: dilla_client::state::CommunityId,
+        channel: ChannelId,
+        shown: crate::slots::SlotCx,
+    ) -> crate::slots::SlotCx {
+        let mut state = (*shown.state).clone();
+        state.channels.push(dilla_client::state::Channel {
+            id: channel,
+            community_id: community,
+            kind: 0,
+            mode: 0,
+            name: "general".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: dilla_client::state::ChannelGroupState::Active,
+        });
+        crate::slots::SlotCx {
+            state: std::sync::Arc::new(state),
+            community: Some(community),
+            channel: Some(channel),
+            ..shown
+        }
+    }
+
+    /// The web closes the thread when the conversation changes (Shell.tsx:391) and draws one only beside its own channel
+    /// (Shell.tsx:1478): moving to another server's channel closes the pane and empties its composer's picker, so no
+    /// command picked in the thread runs under the other server. A thread of a channel that is not shown is no pane.
+    #[gpui::test]
+    fn another_server_closes_the_thread_and_runs_none_of_its_commands(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::screens::commands::{self, chips};
+        use dilla_client::state::CommunityId;
+        cx.update(crate::install);
+        let (x, y) = (ChannelId([3; 16]), ChannelId([4; 16]));
+        let root = MessageId([7; 16]);
+        let in_a = view_of(CommunityId([1; 16]), x, crate::slots::SlotCx::default());
+        let in_b = view_of(CommunityId([2; 16]), y, in_a.clone());
+        let (host, vcx) = cx.add_window_view(|_, _| Host(in_a.clone()));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        let w = vcx.update(|window, cx| {
+            super::super::open_thread(x, root, &in_a, cx);
+            window.window_handle().window_id()
+        });
+        draw(vcx);
+        let field = vcx.update(|_, cx| {
+            let (field, shown) = super::super::composer_of(w, cx).expect("the pane is drawn");
+            assert_eq!(shown, root);
+            commands::set_composer(w, &field, cx);
+            commands::picker_state_mut(w, cx).chips = Some(chips::Chips::new("shrug".into()));
+            assert!(
+                chips::draft(&in_a, &field, w, cx).is_some(),
+                "picked in the thread"
+            );
+            field
+        });
+        vcx.update(|_, cx| host.update(cx, |host, _| host.0 = in_b.clone()));
+        draw(vcx);
+        vcx.update(|window, cx| {
+            assert_eq!(
+                super::super::ui(cx).local_open,
+                None,
+                "the thread is closed"
+            );
+            assert!(!super::super::is_open(&in_b, cx));
+            assert!(super::super::pane(&crate::router::Route::Root, window, cx).is_none());
+            assert_eq!(super::super::composer_of(w, cx), None, "no thread is shown");
+            assert_eq!(
+                chips::draft(&in_b, &field, w, cx),
+                None,
+                "nothing picked runs"
+            );
+        });
+        // A thread still open in a channel that is not shown (another window of the client opened it) draws no pane.
+        vcx.update(|_, cx| super::super::ui(cx).local_open = Some(OpenThread { channel: x, root }));
+        draw(vcx);
+        vcx.update(|window, cx| {
+            assert!(!super::super::is_open(&in_b, cx));
+            assert!(super::super::pane(&crate::router::Route::Root, window, cx).is_none());
+            assert_eq!(
+                super::super::ui(cx).local_open,
+                Some(OpenThread { channel: x, root }),
+                "not this window's to close"
+            );
+        });
+        // Another channel of the same server closes it too.
+        vcx.update(|_, cx| host.update(cx, |host, _| host.0 = in_a.clone()));
+        draw(vcx);
+        assert!(vcx.update(|_, cx| super::super::is_open(&in_a, cx)));
+        let in_a_other = view_of(CommunityId([1; 16]), y, in_a.clone());
+        vcx.update(|_, cx| host.update(cx, |host, _| host.0 = in_a_other));
+        draw(vcx);
+        assert_eq!(vcx.update(|_, cx| super::super::ui(cx).local_open), None);
+    }
+
+    /// A thread's commands carry the thread's own server, read from its channel, never only the view's.
+    #[test]
+    fn a_thread_command_runs_under_the_threads_community() {
+        use dilla_client::state::CommunityId;
+        let (a, b) = (CommunityId([1; 16]), CommunityId([2; 16]));
+        let (x, y) = (ChannelId([3; 16]), ChannelId([4; 16]));
+        let in_a = view_of(a, x, crate::slots::SlotCx::default());
+        let in_b = view_of(b, y, in_a);
+        let at = at_thread(
+            &in_b,
+            OpenThread {
+                channel: x,
+                root: MessageId([7; 16]),
+            },
+        );
+        assert_eq!(at.channel, Some(x));
+        assert_eq!(
+            at.community,
+            Some(a),
+            "the thread's server, not the shown one"
+        );
+        let own = at_thread(
+            &in_b,
+            OpenThread {
+                channel: y,
+                root: MessageId([8; 16]),
+            },
+        );
+        assert_eq!(own.community, Some(b));
     }
 
     /// The pane's window: it records what it draws as the shell does (`threads::sync`), then draws the pane.

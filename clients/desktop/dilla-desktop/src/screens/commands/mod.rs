@@ -134,6 +134,20 @@ pub fn picker_state(window: gpui::WindowId, cx: &App) -> PickerState {
         .unwrap_or_default()
 }
 
+/// The picker states of every composer of `window` (the active one and the parked ones) whose field is still alive.
+pub fn picker_states(window: gpui::WindowId, cx: &App) -> Vec<PickerState> {
+    crate::per_window::get::<PickerState>(window, cx)
+        .into_iter()
+        .chain(
+            crate::per_window::get::<Parked>(window, cx)
+                .into_iter()
+                .flat_map(|p| p.0.iter()),
+        )
+        .filter(|s| s.composer.as_ref().is_some_and(|c| c.upgrade().is_some()))
+        .cloned()
+        .collect()
+}
+
 /// `window`'s picker state, to change.
 pub fn picker_state_mut(window: gpui::WindowId, cx: &mut App) -> &mut PickerState {
     crate::per_window::get_mut::<PickerState>(window, cx)
@@ -598,24 +612,28 @@ pub fn activate_focused(window: &gpui::Window, cx: &mut App) -> bool {
 }
 
 /// A row of the list of the composer `owner` was hovered: it moves that composer's highlight. Each composer's list acts on
-/// its own picker state, not on whichever drew last. `true` when the highlight moved.
+/// its own picker state, not on whichever drew last (a composer with none moves nothing). `true` when the highlight moved.
 pub(crate) fn highlight_in(
     window: gpui::WindowId,
     owner: &gpui::FocusHandle,
     i: usize,
     cx: &mut App,
 ) -> bool {
-    activate(window, owner, false, cx);
+    if !activate(window, owner, false, cx) {
+        return false;
+    }
     let s = picker_state_mut(window, cx);
     let moved = s.selected != i;
     s.selected = i;
     moved
 }
 
-/// A row of the list of the composer `owner` was clicked: that composer's state picks it.
+/// A row of the list of the composer `owner` was clicked: that composer's state picks it (a composer with none picks
+/// nothing).
 pub(crate) fn pick_in(window: gpui::WindowId, owner: &gpui::FocusHandle, i: usize, cx: &mut App) {
-    activate(window, owner, false, cx);
-    keys::pick(window, i, cx);
+    if activate(window, owner, false, cx) {
+        keys::pick(window, i, cx);
+    }
 }
 
 /// The command picker over the composer whose field is `owner` (`slots::composer_popup`).
