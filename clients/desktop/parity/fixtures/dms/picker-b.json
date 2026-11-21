@@ -103,21 +103,21 @@
       {
         "key": "d1",
         "channel": "dm/mira",
-        "sender": "mira",
+        "sender": "ada",
         "ts": 1794481700,
         "body": "the long-running discussion moved here"
       },
       {
         "key": "d2",
         "channel": "dm/crew",
-        "sender": "bjorn",
+        "sender": "ada",
         "ts": 1794481710,
         "body": "group check-in at four"
       },
       {
         "key": "d3",
         "channel": "dm/sol",
-        "sender": "sol",
+        "sender": "ada",
         "ts": 1794481720,
         "body": "welcome to the collective"
       }

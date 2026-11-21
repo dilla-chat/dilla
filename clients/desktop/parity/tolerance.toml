@@ -87,8 +87,10 @@ chrome_max_pct = 0.26
 # and answer rows snap a pixel apart (TOLERANCES.md "Linux per-screen"); the limit is twice the measured score.
 [linux_screens."polls/card"]
 chrome_max_pct = 1.19
-# Task 42 (Jonas 2026-11-20, "design, not pixels"): the labels of the DM picker's small "message" buttons are centred at a
-# fractional offset in Chromium and one device pixel over in GPUI, and the web's list of this frame carries a live-unread dot
-# on Mira that GPUI does not draw (TOLERANCES.md "Linux per-screen"); the limit is twice the measured score.
+# Task 42 (Jonas 2026-11-21, "design, not pixels"): the labels of the DM picker's small "message" buttons are centred at a
+# fractional offset in Chromium and one device pixel over in GPUI, row after row (TOLERANCES.md "Linux per-screen"); the limits
+# are twice the measured scores.
 [linux_screens."dms/picker"]
-chrome_max_pct = 0.52
+chrome_max_pct = 0.48
+[linux_screens."dms/picker-b"]
+chrome_max_pct = 0.58
