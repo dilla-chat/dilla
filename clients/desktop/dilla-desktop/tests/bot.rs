@@ -2041,6 +2041,20 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
         general,
         viewer_channel_bits(&client.state().borrow(), general),
     );
+    // A channel has its text group once someone opens it; the Bot posts a panel only into a channel that has one (and
+    // waits itself for its join of a newly marked Bot channel).
+    rt.block_on(client.open_channel(general))
+        .unwrap()
+        .expect("ada opens general");
+    // Bea is in the channel's group before the panel is posted, so she receives it.
+    let b = rt.block_on(world::start(&bea));
+    let s = rt.block_on(world::wait_for(&b, within, "#general at bea", |s| {
+        s.channel_named(c, "general").is_some()
+    }));
+    assert_eq!(s.channel_named(c, "general").unwrap().id, general);
+    rt.block_on(b.open_channel(general))
+        .unwrap()
+        .expect("bea opens general");
 
     cx.update(dilla_desktop::install);
     cx.executor().allow_parking();
@@ -2069,6 +2083,7 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
     );
     // The editor is drawn once the approved roles were read, then filled as a person would: Crew, with 🎮.
     let mut filled = false;
+    let mut retries = 0;
     let mut answered = None;
     for _ in 0..1200 {
         vcx.run_until_parked();
@@ -2095,6 +2110,25 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
             .last()
             .filter(|r| r.status != ResultStatus::Pending)
             .map(|r| (r.status, r.text.clone()));
+        // The Bot may not have joined the Bot channel's group yet (status 5, unavailable): the answer is not confirmed,
+        // the editor stays open and locked on its attempt, and Publish sends that attempt again under the same request
+        // id (bot-handlers.ts:496), which the Bot answers once it is ready and never posts twice.
+        if let Some((ResultStatus::Failed, text)) = &answered
+            && text.starts_with("The role panel publication result is not confirmed")
+            && filled
+            && retries < 60
+        {
+            retries += 1;
+            std::thread::sleep(Duration::from_millis(500));
+            vcx.update(|_, cx| {
+                assert!(
+                    role_panel_form::form_of(window, cx).is_some_and(|f| f.locked()),
+                    "an unconfirmed answer keeps the editor locked on its attempt"
+                );
+                role_panel_form::submit(window, cx);
+            });
+            continue;
+        }
         if answered.is_some() {
             break;
         }
@@ -2115,14 +2149,6 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
     );
 
     // Bea sees the Bot's panel and reacts: the reaction grants her Crew.
-    let b = rt.block_on(world::start(&bea));
-    let s = rt.block_on(world::wait_for(&b, within, "#general at bea", |s| {
-        s.channel_named(c, "general").is_some()
-    }));
-    assert_eq!(s.channel_named(c, "general").unwrap().id, general);
-    rt.block_on(b.open_channel(general))
-        .unwrap()
-        .expect("bea opens general");
     let s = rt.block_on(world::wait_for(
         &b,
         Duration::from_secs(60),
@@ -2135,6 +2161,15 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
             })
         },
     ));
+    assert_eq!(
+        s.timelines[&general]
+            .items
+            .iter()
+            .filter(|i| i.bot && i.body.contains("🎮 Crew"))
+            .count(),
+        1,
+        "a resend of an unconfirmed publication posts no second panel"
+    );
     let panel = s.timelines[&general]
         .items
         .iter()

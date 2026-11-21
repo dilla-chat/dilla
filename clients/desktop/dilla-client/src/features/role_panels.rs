@@ -428,9 +428,28 @@ pub enum PanelError {
     /// (`admin.bot.rolePanel.uncertain`, Retry).
     #[error("the role panel's publication is not confirmed")]
     Uncertain { request_id: [u8; 16] },
+    /// The Bot answered the publication with a status other than accepted or forbidden (busy, stale, unavailable, …).
+    /// Nothing was posted, but the web's command handler reads it as not confirmed and keeps its attempt
+    /// (bot-handlers.ts:496); the Role panels page shows its code like a refusal.
+    #[error("the Bot's answer to the role panel was {0}")]
+    Status(String),
     /// Refused, by code (`admin.bot.rolePanel.error`).
     #[error("the role panel was refused ({0})")]
     Refused(String),
+}
+
+/// The accepted panel message's seq, or the failure of a receipt that cannot be read once the Bot has posted: the panel
+/// exists, so the answer is uncertain and a retry under the same request id finishes without posting again
+/// (bot-handlers.ts:500-501, R30).
+fn receipt_seq(data: &[u8], channel: ChannelId, request_id: [u8; 16]) -> Result<u64, PanelError> {
+    accepted_seq(data, channel).ok_or(PanelError::Uncertain { request_id })
+}
+
+/// A failure after the Bot posted the panel (the registration's refusal, a timeout or a lost answer): the panel exists, so
+/// it is uncertain whatever the code, and a retry under the same request id registers it without posting a second one
+/// (bot-handlers.ts:533-535).
+fn after_post(request_id: [u8; 16]) -> PanelError {
+    PanelError::Uncertain { request_id }
 }
 
 /// The CBOR the Bot posts from: `[[emoji, role, name], …]`.
@@ -506,7 +525,8 @@ impl RolePanels {
         async move {
             match rx.await {
                 Ok(Ok(answer)) => answer,
-                _ => Err(PanelError::Refused("E_STOPPED".into())),
+                // The runtime stopped: the Bot may or may not have posted, and the request id settles it.
+                _ => Err(PanelError::Uncertain { request_id }),
             }
         }
     }
@@ -546,13 +566,17 @@ impl RolePanels {
             Err(OpError::Invalid) => return Err(PanelError::Invalid),
         };
         if result.status != 0 {
-            return Err(PanelError::Refused(status_code(result.status).to_owned()));
+            let code = status_code(result.status).to_owned();
+            return Err(if result.status == 2 {
+                PanelError::Refused(code)
+            } else {
+                PanelError::Status(code)
+            });
         }
-        let seq = accepted_seq(&result.data, channel)
-            .ok_or_else(|| PanelError::Refused("E_CBOR_SHAPE".into()))?;
+        let seq = receipt_seq(&result.data, channel, request_id)?;
         self.register(community, request_id, channel, seq, options)
             .await
-            .map_err(|e| PanelError::Refused(e.code))
+            .map_err(|_| after_post(request_id))
     }
 
     /// routes.ts `registerRolePanel`: `PUT …/role-panels [request, channel, seq, [[emoji, role], …]]`, acknowledged
@@ -684,6 +708,33 @@ mod tests {
         });
         s.timelines.insert(GENERAL, t);
         s
+    }
+
+    /// bot-handlers.ts:498-536: once the Bot has posted the panel, a receipt that cannot be read and any failure of the
+    /// registration (a refusal, a timeout, a lost answer) are uncertain under the same request id, never a refusal: a refusal
+    /// would let the next publish post a second panel.
+    #[test]
+    fn a_failure_after_the_post_is_uncertain_under_the_same_request() {
+        let request = [0x42; 16];
+        let ok = Value::Array(vec![Value::Bytes(GENERAL.0.to_vec()), Value::Uint(7)]).encode();
+        assert_eq!(receipt_seq(&ok, GENERAL, request), Ok(7));
+        let other = Value::Array(vec![Value::Bytes(vec![9; 16]), Value::Uint(7)]).encode();
+        for bad in [&b"\xff\x00"[..], &[][..], &other[..]] {
+            assert_eq!(
+                receipt_seq(bad, GENERAL, request),
+                Err(PanelError::Uncertain {
+                    request_id: request
+                }),
+                "an undecodable or mismatched receipt"
+            );
+        }
+        assert_eq!(
+            after_post(request),
+            PanelError::Uncertain {
+                request_id: request
+            },
+            "the registration failed after the post"
+        );
     }
 
     #[test]

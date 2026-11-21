@@ -167,7 +167,7 @@ impl Answer {
     pub fn of(result: Result<(), PanelError>) -> (Self, Outcome) {
         match result {
             Ok(()) => (Self::Accepted, Outcome::Success(PUBLISHED.to_owned())),
-            Err(PanelError::Uncertain { .. }) => (
+            Err(PanelError::Uncertain { .. } | PanelError::Status(_)) => (
                 Self::Uncertain,
                 Outcome::Uncertain(NOT_CONFIRMED.to_owned()),
             ),
@@ -734,6 +734,8 @@ pub fn submit(w: WindowId, cx: &mut App) {
         return;
     }
     form.error = None;
+    // The choices are what goes out: they take no change from the first Publish on (a refusal unlocks them again).
+    lock_inputs(w, true, cx);
     match planned {
         Planned::Resend(a) => send(job, a.channel, a.options, cx),
         Planned::First(channel, options) => {
@@ -910,6 +912,7 @@ pub fn cancel(w: WindowId, cx: &mut App) {
 pub fn choose_channel(w: WindowId, channel: Option<ChannelId>, cx: &mut App) {
     if let Some(form) = slot(w, cx).form.as_mut()
         && !form.locked()
+        && !form.busy
     {
         form.channel = channel;
         form.error = None;
@@ -1002,7 +1005,7 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
         &pairs,
         channel.map_or_else(|| NO_CHANNEL.to_owned(), |c| c.hex()),
     )
-    .disabled(locked)
+    .disabled(locked || busy)
     .on_change(move |value, _, cx| {
         choose_channel(
             w,
@@ -1050,7 +1053,7 @@ fn editor(w: WindowId, cx: &mut App) -> Option<impl IntoElement> {
                 tf("botCommand.rolepanel.emojiFor", &[("role", &name)]),
                 &input,
             )
-            .disabled(locked),
+            .disabled(locked || busy),
         );
         list = list.child(
             div()
@@ -1580,16 +1583,55 @@ mod tests {
             outcome,
             Outcome::Failure("Manage Roles permission is required.".into())
         );
-        let (_, outcome) = Answer::of(Err(PanelError::Refused("E_BUSY".into())));
+        // A Bot status other than accepted or forbidden is not confirmed (bot-handlers.ts:496): the attempt stays.
+        let (answer, outcome) = Answer::of(Err(PanelError::Status("E_BUSY".into())));
+        assert_eq!(answer, Answer::Uncertain);
         assert_eq!(
             outcome,
-            Outcome::Failure("Command was refused (E_BUSY).".into())
+            Outcome::Uncertain(
+                "The role panel publication result is not confirmed. Retry this command to reconcile it."
+                    .into()
+            )
+        );
+        // A refusal of the request itself (the transport's code) is a refusal.
+        let (_, outcome) = Answer::of(Err(PanelError::Refused("E_ROUTE_INPUT".into())));
+        assert_eq!(
+            outcome,
+            Outcome::Failure("Command was refused (E_ROUTE_INPUT).".into())
         );
         let (answer, outcome) = Answer::of(Err(PanelError::Invalid));
         assert!(matches!(answer, Answer::Refused(_)));
         assert_eq!(
             outcome,
             Outcome::Failure("Command was refused (E_INVALID).".into())
+        );
+    }
+
+    /// C1: a failure after the Bot posted the panel (a registration timeout or refusal, an unreadable receipt) reaches the
+    /// editor as an uncertain answer: the stored attempt and the request id stay, the fields stay locked, and the next
+    /// Publish sends that attempt again under the same id, so the Bot posts no second panel.
+    #[gpui::test]
+    fn a_failure_after_the_post_keeps_the_attempt_and_its_id(cx: &mut gpui::TestAppContext) {
+        let mut form = form(cx);
+        hold_sent(&form);
+        assert_eq!(form.begin_publish(), Some([9; 16]));
+        // What `answered` does with the client's post-publication answer.
+        let (answer, _) = Answer::of(Err(PanelError::Uncertain {
+            request_id: [9; 16],
+        }));
+        assert_eq!(answer, Answer::Uncertain, "never a refusal");
+        form.end_publish(true);
+        assert!(form.locked(), "the attempt is still held");
+        assert_eq!(form.request, [9; 16], "and its id");
+        assert_eq!(
+            form.begin_publish(),
+            Some([9; 16]),
+            "the next Publish sends it again"
+        );
+        assert_eq!(
+            form.held().map(|a| (a.channel, a.options.len())),
+            Some((ChannelId(CHANNEL), 1)),
+            "exactly as it went out"
         );
     }
 

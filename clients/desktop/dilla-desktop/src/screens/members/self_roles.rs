@@ -558,7 +558,7 @@ fn publish(
                     u.notice = None;
                     u.error = Some(t("admin.bot.rolePanel.invalid").to_owned());
                 }
-                Err(PanelError::Refused(code)) => {
+                Err(PanelError::Refused(code) | PanelError::Status(code)) => {
                     u.pending = None;
                     u.notice = None;
                     u.error = Some(tf("admin.bot.rolePanel.error", &[("code", &code)]));
