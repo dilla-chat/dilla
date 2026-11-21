@@ -1946,7 +1946,7 @@ mod tests {
         );
     }
 
-    /// A thing that is gone is forgotten and enters again when it returns; a remounted log forgets them all.
+    /// A remounted log forgets its own scope's keys and keeps every other scope's.
     #[test]
     fn a_log_mounting_anew_forgets_its_own_keys_only() {
         let t0 = std::time::Instant::now();
@@ -1962,6 +1962,7 @@ mod tests {
         assert_eq!(r.touch(scoped("thread", "chip"), later), Duration::ZERO);
     }
 
+    /// A thing that is gone is forgotten and enters again when it returns; a cleared memory forgets them all.
     #[test]
     fn a_thing_that_is_gone_enters_again_when_it_returns() {
         let t0 = std::time::Instant::now();

@@ -960,7 +960,6 @@ impl Inner {
         rx
     }
 
-    /// The account's upkeep (key packages, backups: [`crate::account`]).
     /// Tells the publisher a leave or delete of `community` went through (controller.ts `listWritten`).
     pub(crate) fn list_written(&self, community: CommunityId) {
         let _ = self.updates.send(Update::ListWritten(community));
@@ -973,6 +972,7 @@ impl Inner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The account's upkeep (key packages, backups: [`crate::account`]).
     pub(crate) fn upkeep(&self) -> &Arc<Upkeep> {
         &self.upkeep
     }

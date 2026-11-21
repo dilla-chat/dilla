@@ -188,16 +188,6 @@ pub enum OpError {
     Invalid,
 }
 
-impl OpError {
-    /// The request that may have taken effect: no answer in time, or an accepted answer that cannot be read.
-    pub fn uncertain_request(&self) -> Option<[u8; 16]> {
-        match self {
-            Self::Uncertain { request_id } | Self::Unreadable { request_id } => Some(*request_id),
-            Self::Refused { .. } | Self::Invalid => None,
-        }
-    }
-}
-
 /// The v1 argument positions that hold an id (sent as 16 bytes when given as hex).
 fn id_args(operation: u64) -> &'static [usize] {
     match operation {
