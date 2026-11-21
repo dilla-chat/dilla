@@ -167,9 +167,19 @@ impl Answer {
     pub fn of(result: Result<(), PanelError>) -> (Self, Outcome) {
         match result {
             Ok(()) => (Self::Accepted, Outcome::Success(PUBLISHED.to_owned())),
-            Err(PanelError::Uncertain { .. } | PanelError::Status(_)) => (
+            Err(PanelError::Uncertain { .. }) => (
                 Self::Uncertain,
                 Outcome::Uncertain(NOT_CONFIRMED.to_owned()),
+            ),
+            // A Bot status other than accepted or forbidden (busy, stale, unavailable, ...) is an answer from before the
+            // post: the Bot posted nothing. Deliberately NOT the web's stuck path (bot-handlers.ts:496 keeps the attempt
+            // as uncertain, and a resend under the same request id replays the intake's kept answer, so the editor could
+            // never succeed): Jonas decided (2026-11-21, Task 29 fix round 2) it is a refusal that drops the attempt,
+            // unlocks the fields and makes the next Publish a fresh request (R29). It keeps the web's "not confirmed"
+            // copy, the web having no hint of its own for these codes. A failure after the post stays uncertain.
+            Err(PanelError::Status(code)) => (
+                Self::Refused(code),
+                Outcome::Failure(NOT_CONFIRMED.to_owned()),
             ),
             Err(PanelError::Refused(code)) if code == "E_FORBIDDEN" => {
                 (Self::Refused(code), Outcome::Failure(FORBIDDEN.to_owned()))
@@ -1583,12 +1593,13 @@ mod tests {
             outcome,
             Outcome::Failure("Manage Roles permission is required.".into())
         );
-        // A Bot status other than accepted or forbidden is not confirmed (bot-handlers.ts:496): the attempt stays.
-        let (answer, outcome) = Answer::of(Err(PanelError::Status("E_BUSY".into())));
-        assert_eq!(answer, Answer::Uncertain);
+        // A Bot status other than accepted or forbidden came before any post: a refusal (Jonas's decision, see
+        // `Answer::of`), with the web's "not confirmed" copy.
+        let (answer, outcome) = Answer::of(Err(PanelError::Status("E_UNAVAILABLE".into())));
+        assert_eq!(answer, Answer::Refused("E_UNAVAILABLE".into()));
         assert_eq!(
             outcome,
-            Outcome::Uncertain(
+            Outcome::Failure(
                 "The role panel publication result is not confirmed. Retry this command to reconcile it."
                     .into()
             )
@@ -1605,6 +1616,28 @@ mod tests {
             outcome,
             Outcome::Failure("Command was refused (E_INVALID).".into())
         );
+    }
+
+    /// Jonas's decision (fix round 2): a Bot status answer (status 5, nothing was posted) drops the stored attempt, unlocks the
+    /// fields and makes the next Publish a fresh request, so the intake does not replay the kept status.
+    #[gpui::test]
+    fn a_bot_status_unlocks_the_editor_and_the_next_publish_is_fresh(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut form = form(cx);
+        hold_sent(&form);
+        assert_eq!(form.begin_publish(), Some([9; 16]));
+        let (answer, _) = Answer::of(Err(PanelError::Status("E_UNAVAILABLE".into())));
+        assert!(
+            matches!(answer, Answer::Refused(_)),
+            "a refusal, not uncertain"
+        );
+        // What `answered` does with a refusal: the attempt goes, the editor takes a new request.
+        release_sent(&form);
+        form.refused();
+        assert!(!form.locked(), "the fields are free again");
+        assert_ne!(form.request, [9; 16], "a fresh request id");
+        assert_ne!(form.begin_publish(), Some([9; 16]));
     }
 
     /// C1: a failure after the Bot posted the panel (a registration timeout or refusal, an unreadable receipt) reaches the

@@ -2083,7 +2083,6 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
     );
     // The editor is drawn once the approved roles were read, then filled as a person would: Crew, with 🎮.
     let mut filled = false;
-    let mut retries = 0;
     let mut answered = None;
     for _ in 0..1200 {
         vcx.run_until_parked();
@@ -2110,25 +2109,6 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
             .last()
             .filter(|r| r.status != ResultStatus::Pending)
             .map(|r| (r.status, r.text.clone()));
-        // The Bot may not have joined the Bot channel's group yet (status 5, unavailable): the answer is not confirmed,
-        // the editor stays open and locked on its attempt, and Publish sends that attempt again under the same request
-        // id (bot-handlers.ts:496), which the Bot answers once it is ready and never posts twice.
-        if let Some((ResultStatus::Failed, text)) = &answered
-            && text.starts_with("The role panel publication result is not confirmed")
-            && filled
-            && retries < 60
-        {
-            retries += 1;
-            std::thread::sleep(Duration::from_millis(500));
-            vcx.update(|_, cx| {
-                assert!(
-                    role_panel_form::form_of(window, cx).is_some_and(|f| f.locked()),
-                    "an unconfirmed answer keeps the editor locked on its attempt"
-                );
-                role_panel_form::submit(window, cx);
-            });
-            continue;
-        }
         if answered.is_some() {
             break;
         }

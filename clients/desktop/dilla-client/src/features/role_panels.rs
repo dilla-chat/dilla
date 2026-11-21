@@ -429,8 +429,9 @@ pub enum PanelError {
     #[error("the role panel's publication is not confirmed")]
     Uncertain { request_id: [u8; 16] },
     /// The Bot answered the publication with a status other than accepted or forbidden (busy, stale, unavailable, …).
-    /// Nothing was posted, but the web's command handler reads it as not confirmed and keeps its attempt
-    /// (bot-handlers.ts:496); the Role panels page shows its code like a refusal.
+    /// Nothing was posted. The web's command handler keeps its attempt (bot-handlers.ts:496), which the Bot would only
+    /// answer again; the desktop's command takes it as a refusal with a fresh request instead (Jonas's decision, Task 29
+    /// fix round 2), and the Role panels page shows its code like a refusal.
     #[error("the Bot's answer to the role panel was {0}")]
     Status(String),
     /// Refused, by code (`admin.bot.rolePanel.error`).
