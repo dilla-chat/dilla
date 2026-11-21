@@ -295,6 +295,14 @@ impl PaneView {
             .update(cx, |s, cx| s.set_value(draft, window, cx));
     }
 
+    /// The pane was closed: its composer's picker starts empty when it opens again, and its draft is read afresh.
+    pub(super) fn closed(&mut self, cx: &mut Context<Self>) {
+        if self.shown.take().is_some() {
+            let focus = self.input.read(cx).focus_handle(cx);
+            crate::screens::commands::reset_composer(self.window, &focus, cx);
+        }
+    }
+
     /// Task 30 (CommandHost.tsx:293-296): a command run from this thread's composer whose answer was uncertain comes back
     /// into it, so the list opens on the same draft and a resend is the same request. The draft the window was handed
     /// (`commands::reopen`) is taken first, else the one the command memory keeps for this thread. Only for the composer
@@ -887,6 +895,46 @@ mod tests {
             );
             assert!(commands::activate(w, &channel, false, cx));
             assert_eq!(commands::picker_state(w, cx).draft, "hello");
+        });
+    }
+
+    /// Both composers show a list at once: a click or hover on one's row acts on that composer's own state, whichever drew
+    /// last (so whichever is active between frames).
+    #[gpui::test]
+    fn a_click_on_a_list_picks_in_the_composer_it_belongs_to(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands;
+        cx.update(crate::install);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            let (channel, thread) = (cx.focus_handle(), cx.focus_handle());
+            for (focus, rows) in [(&thread, ["help", "me"]), (&channel, ["shrug", "code"])] {
+                commands::set_composer(w, focus, cx);
+                let s = commands::picker_state_mut(w, cx);
+                s.draft = "/".into();
+                s.rows = Some(rows.map(str::to_owned).to_vec());
+            }
+            // The channel's state is the active one (it drew last); the click is on the thread's list.
+            commands::pick_in(w, &thread, 1, cx);
+            assert_eq!(
+                commands::picker_state(w, cx).chips.map(|c| c.command),
+                Some("me".into()),
+                "the thread's row 1"
+            );
+            assert!(commands::highlight_in(w, &channel, 1, cx));
+            assert_eq!(commands::picker_state(w, cx).selected, 1);
+            commands::pick_in(w, &channel, 0, cx);
+            assert_eq!(
+                commands::picker_state(w, cx).chips.map(|c| c.command),
+                Some("shrug".into()),
+                "the channel's row 0"
+            );
+            assert!(commands::activate(w, &thread, false, cx));
+            assert_eq!(
+                commands::picker_state(w, cx).chips.map(|c| c.command),
+                Some("me".into()),
+                "the thread's pick is still its own"
+            );
         });
     }
 

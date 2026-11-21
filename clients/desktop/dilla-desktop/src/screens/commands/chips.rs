@@ -1286,6 +1286,7 @@ pub const SUGGESTION_IDS: [&str; MAX_SUGGESTIONS] = [
 /// a row clicked goes in the field as Tab would put it; `None` with nothing to suggest.
 pub fn popup(
     ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
     chips: &Chips,
     gifs: bool,
     window: gpui::WindowId,
@@ -1318,21 +1319,30 @@ pub fn popup(
                     .into(),
             )
         })
-        .on_active(move |i, window, cx| {
-            if let Some(c) = super::picker_state_mut(window_id(window), cx)
-                .chips
-                .as_mut()
-                && c.sug != i
-            {
-                c.sug = i;
-                window.refresh();
+        .on_active({
+            let owner = owner.clone();
+            move |i, window, cx| {
+                // Each composer's list acts on its own picker state, not on whichever drew last.
+                super::activate(window_id(window), &owner, false, cx);
+                if let Some(c) = super::picker_state_mut(window_id(window), cx)
+                    .chips
+                    .as_mut()
+                    && c.sug != i
+                {
+                    c.sug = i;
+                    window.refresh();
+                }
             }
         })
-        .on_pick(move |i, w, cx| {
-            if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
-                c.accept(i);
+        .on_pick({
+            let owner = owner.clone();
+            move |i, w, cx| {
+                super::activate(window, &owner, false, cx);
+                if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
+                    c.accept(i);
+                }
+                w.refresh();
             }
-            w.refresh();
         });
     Some(
         div()
@@ -1349,7 +1359,14 @@ fn window_id(window: &Window) -> gpui::WindowId {
 
 /// A chip field was pressed (CommandField's `onFocus`): it becomes the active field, and the composer, whose keys the
 /// chips take, holds the focus.
-pub fn focus_field(wid: gpui::WindowId, i: usize, window: &mut Window, cx: &mut App) {
+pub fn focus_field(
+    wid: gpui::WindowId,
+    owner: &gpui::FocusHandle,
+    i: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    super::activate(wid, owner, false, cx);
     let state = super::picker_state_mut(wid, cx);
     if let Some(c) = state.chips.as_mut()
         && c.active != i
@@ -1477,12 +1494,13 @@ pub fn view(
         .invalid(invalid);
         // CommandField's `onFocus`: a press makes the field the active one and keeps the typing in the composer (whose
         // keys the chips take). Left to the shell, the press would take the focus and the keys would open its search.
-        let field = div()
-            .child(el)
-            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+        let field = div().child(el).on_mouse_down(gpui::MouseButton::Left, {
+            let owner = owner.clone();
+            move |_, window, cx| {
                 cx.stop_propagation();
-                focus_field(wid, i, window, cx);
-            });
+                focus_field(wid, &owner, i, window, cx);
+            }
+        });
         row = row.field(crate::tracked_box(
             FIELD_IDS.get(i).copied().unwrap_or("command-field"),
             field,
@@ -1525,11 +1543,11 @@ mod tests {
                 sug: 3,
                 ..Chips::default()
             });
-            focus_field(wid, 1, window, cx);
+            focus_field(wid, &composer, 1, window, cx);
             let chips = super::super::picker_state(wid, cx).chips.unwrap();
             assert_eq!((chips.active, chips.sug), (1, 0));
             assert!(composer.is_focused(window), "the composer holds the focus");
-            focus_field(wid, 0, window, cx);
+            focus_field(wid, &composer, 0, window, cx);
             assert_eq!(super::super::picker_state(wid, cx).chips.unwrap().active, 0);
         });
     }

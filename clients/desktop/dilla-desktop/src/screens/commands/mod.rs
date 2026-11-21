@@ -597,6 +597,27 @@ pub fn activate_focused(window: &gpui::Window, cx: &mut App) -> bool {
     found.is_some_and(|focus| activate(wid, &focus, false, cx))
 }
 
+/// A row of the list of the composer `owner` was hovered: it moves that composer's highlight. Each composer's list acts on
+/// its own picker state, not on whichever drew last. `true` when the highlight moved.
+pub(crate) fn highlight_in(
+    window: gpui::WindowId,
+    owner: &gpui::FocusHandle,
+    i: usize,
+    cx: &mut App,
+) -> bool {
+    activate(window, owner, false, cx);
+    let s = picker_state_mut(window, cx);
+    let moved = s.selected != i;
+    s.selected = i;
+    moved
+}
+
+/// A row of the list of the composer `owner` was clicked: that composer's state picks it.
+pub(crate) fn pick_in(window: gpui::WindowId, owner: &gpui::FocusHandle, i: usize, cx: &mut App) {
+    activate(window, owner, false, cx);
+    keys::pick(window, i, cx);
+}
+
 /// The command picker over the composer whose field is `owner` (`slots::composer_popup`).
 pub fn picker(
     ctx: &SlotCx,
@@ -611,7 +632,7 @@ pub fn picker(
     let state = crate::per_window::get::<PickerState>(wid, cx)?.clone();
     // A picked command's chips: the popup is the active chip's suggestions instead of the list.
     if let Some(chips) = &state.chips {
-        return chips::popup(ctx, chips, gifs_on(ctx, cx), wid);
+        return chips::popup(ctx, owner, chips, gifs_on(ctx, cx), wid);
     }
     let (zone, _) = zone_of(ctx.clock);
     let rows = picker::list(
@@ -653,16 +674,20 @@ pub fn picker(
     )
     .active(active)
     .row_ids(|i| ElementId::Name(ROW_IDS.get(i).copied().unwrap_or("command-row").into()))
-    .on_active(move |i, window, cx| {
-        let s = picker_state_mut(wid, cx);
-        if s.selected != i {
-            s.selected = i;
-            window.refresh();
+    .on_active({
+        let owner = owner.clone();
+        move |i, window, cx| {
+            if highlight_in(wid, &owner, i, cx) {
+                window.refresh();
+            }
         }
     })
-    .on_pick(move |i, window, cx| {
-        keys::pick(wid, i, cx);
-        window.refresh();
+    .on_pick({
+        let owner = owner.clone();
+        move |i, window, cx| {
+            pick_in(wid, &owner, i, cx);
+            window.refresh();
+        }
     });
     // CommandPicker.css: 16px in from the composer's sides, 6px above it.
     Some(
@@ -716,9 +741,9 @@ pub fn on_send(
     on_send_in(ctx, None, None, draft, encode, window, cx)
 }
 
-/// The picker's draft and chips go once a send of the composer `sender` is taken. A composer that is not the one the
-/// picker's state belongs to ([`owns`]) leaves it alone: sending its own text never clears the other composer's chips or
-/// draft. `None` (no composer named) is the picker's own.
+/// The picker's draft and chips go once a send of the composer `sender` is taken: its own ([`activate`] brings its state
+/// in), never the other composer's. A composer with no picker state clears nothing. `None` (no composer named) is the
+/// active one.
 fn clear_picker(window: gpui::WindowId, sender: Option<&gpui::FocusHandle>, cx: &mut App) {
     if sender.is_none_or(|focus| activate(window, focus, false, cx)) {
         draft_changed(window, "", cx);

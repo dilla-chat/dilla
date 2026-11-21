@@ -481,8 +481,14 @@ pub fn reply_bar(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<Any
 pub fn pane(_route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let here = wid(window);
     let ctx = current(here, cx)?;
-    open_of(&ctx, cx)?;
     let existing = per_window(here, cx).pane.clone();
+    if open_of(&ctx, cx).is_none() {
+        // A closed pane is unmounted in the web: its composer's picker starts empty the next time.
+        if let Some(view) = existing {
+            view.update(cx, |view, cx| view.closed(cx));
+        }
+        return None;
+    }
     let view = match existing {
         Some(view) => view,
         None => {

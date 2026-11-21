@@ -300,6 +300,10 @@ impl Composer {
         };
         self.dismissed = None;
         self.active = 0;
+        // Another conversation starts with an empty picker, as the web remounts its composer per target
+        // (`<ComposerArea key={targetId}>`, Shell.tsx:1464): what was picked in the last one never runs here.
+        let field = self.input.read(cx).focus_handle(cx);
+        crate::screens::commands::reset_composer(window.window_handle().window_id(), &field, cx);
         self.input
             .update(cx, |s, cx| s.set_value(draft, window, cx));
     }
@@ -1172,6 +1176,48 @@ mod tests {
     #[test]
     fn the_field_grows_to_the_css_cap() {
         assert_eq!(max_rows(), 10);
+    }
+
+    /// The web remounts the composer per conversation (`<ComposerArea key={targetId}>`): a command picked in channel X is
+    /// not there to run in channel Y.
+    #[gpui::test]
+    fn another_channel_starts_with_an_empty_picker(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands::{self, chips};
+        cx.update(crate::install);
+        let (x, y) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let on = |channel| SlotCx {
+            channel: Some(channel),
+            ..SlotCx::default()
+        };
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| c.set_slots(on(x)));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (w, field) = vcx.update(|window, cx| {
+            (
+                window.window_handle().window_id(),
+                composer.read(cx).input.read(cx).focus_handle(cx),
+            )
+        });
+        vcx.update(|_, cx| {
+            commands::set_composer(w, &field, cx);
+            let mut picked = chips::Chips::new("shrug".into());
+            picked.values = vec!["hi".into()];
+            commands::picker_state_mut(w, cx).chips = Some(picked);
+            assert!(chips::draft(&on(x), &field, w, cx).is_some(), "picked in X");
+        });
+        composer.update(vcx, |c, _| c.set_slots(on(y)));
+        draw(vcx);
+        vcx.update(|_, cx| {
+            assert_eq!(
+                chips::draft(&on(y), &field, w, cx),
+                None,
+                "nothing of X in Y"
+            );
+        });
     }
 
     /// Task 28 item 13 (Task 9's listing): a sign-out lets go of the composer's draft. The field it shows empties (the
