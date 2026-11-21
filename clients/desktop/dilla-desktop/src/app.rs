@@ -1805,7 +1805,11 @@ impl Render for AppView {
                 // The quit question, when this window carries it (Package 7).
                 .children(crate::native::quit::overlay(window, cx))
                 // The window's live region (Package 11): what `a11y::announce` reads out.
-                .child(dilla_desktop_ui::a11y::announcer(window, cx)),
+                .child(dilla_desktop_ui::a11y::announcer(window, cx))
+                // The toast (Toast.tsx's `ToastHost`): last in the root, 24px over its bottom edge.
+                .child(dilla_desktop_ui::components::toast::ToastHost::new(
+                    "toast-host",
+                )),
         )
     }
 }
