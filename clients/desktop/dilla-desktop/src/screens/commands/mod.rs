@@ -318,6 +318,36 @@ pub fn poll_card_in(
     item: &TimelineItem,
     ctx: &SlotCx,
     thread: Option<dilla_client::state::MessageId>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    poll_card_led(item, ctx, thread, 0.0, window, cx)
+}
+
+/// The card of a post in the channel's log, whose `last` says whether it is the log's last row. The web draws it in the
+/// attachments slot's card container (`.d-message-row__card`: the grid's 1px gap and 6px above it), and the card has its
+/// own 6px margin above it too; the timeline puts the part under the empty slot's 1px gap and 4px margin (none in the
+/// last row), so the card is led by the rest of the container's 6px.
+pub fn poll_card_below_body(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    last: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    let lead = CONTAINER_MARGIN - crate::screens::timeline::attachments_slot(last);
+    poll_card_led(item, ctx, None, lead, window, cx)
+}
+
+/// MessageRow.css `.d-message-row__attachments.d-message-row__card`: `margin-top: 6px`.
+const CONTAINER_MARGIN: f32 = 6.0;
+
+/// [`poll_card_in`] with `lead` px of the box above the card (the loading line has none).
+fn poll_card_led(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    thread: Option<dilla_client::state::MessageId>,
+    lead: f32,
     _window: &mut Window,
     _cx: &mut App,
 ) -> Option<Extra> {
@@ -356,7 +386,6 @@ pub fn poll_card_in(
     };
     // The card is at most 440px of content; at the desktop sizes the log is always wider than the card's box.
     let width = f32::MAX;
-    let height = PollCard::height(&poll.question, poll.answers.len(), width);
     let mine = ctx.state.account.user_id == Some(poll.creator);
     let options = polls::card_options(poll)
         .into_iter()
@@ -367,7 +396,15 @@ pub fn poll_card_in(
             winner: o.winner,
             voters: o.voters.into_iter().map(Into::into).collect(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let closed_tag = t("poll.closedTag");
+    let height = PollCard::height(
+        &poll.question,
+        &options,
+        width,
+        poll.closed.then_some(closed_tag),
+        !poll.closed && mine,
+    );
     let card = PollCard::new(
         ElementId::Name(format!("poll-{}", item.key).into()),
         poll.question.clone(),
@@ -384,8 +421,11 @@ pub fn poll_card_in(
     .can_vote(!poll.closed && ctx.client.is_some())
     .can_close(mine);
     Some(Extra {
-        element: crate::tracked_box("poll-card", card).into_any_element(),
-        height,
+        element: div()
+            .pt(gpui::px(lead))
+            .child(crate::tracked_box("poll-card", card))
+            .into_any_element(),
+        height: height + lead,
     })
 }
 

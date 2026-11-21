@@ -67,12 +67,26 @@ pub(super) fn apply(
         });
     }
     let me: Option<UserId> = state.account.user_id;
+    // A server's real Bot (`ServerSpec::bot`) stays connected to the gateway while the browser is shot, with no input: idle.
+    let running_bots: Vec<(CommunityId, UserId)> = world
+        .servers
+        .iter()
+        .filter(|s| s.bot.is_some())
+        .flat_map(|s| {
+            world
+                .people
+                .iter()
+                .filter(|p| p.bot && s.members.contains(&p.id))
+                .map(|p| (ids.community(&s.id), ids.user(&p.id)))
+        })
+        .collect();
     let mut all: Vec<(CommunityId, HashMap<UserId, Presence>)> = Vec::new();
     for (community, members) in &state.members {
         let presence = members
             .iter()
             .map(|m| {
-                let p = if Some(m.user_id) == me {
+                let p = if Some(m.user_id) == me || running_bots.contains(&(*community, m.user_id))
+                {
                     Presence::Idle
                 } else {
                     Presence::Offline

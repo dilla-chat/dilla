@@ -355,6 +355,7 @@ pub fn build_state(
     server_admin::apply_bot(world, ids, &mut state);
     // After the roles: the viewer's bits in the Bot's channels are resolved from them.
     announcements::apply(world, ids, &mut state);
+    polls::apply_bot(world, ids, &mut state);
     gifs::apply(&fixture.name, &mut state);
     invites::apply(&fixture.name, fixture.clock + shift, &mut state);
     threads::apply(world, viewer, &mut state);

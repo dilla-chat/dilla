@@ -1,9 +1,9 @@
 //! Task 20's parity, behaviour and keyboard tests for the bot area (standard procedure S4-S6), driven through the
 //! automation build.
 //!
-//! The poll card draws from the polls facet of a fixture (`src/fixture/polls.rs`). Its web references cannot be shot
-//! yet: the parity world has no Bot to post and keep a poll (`examples/parity_world/seed/polls.rs` refuses the facet),
-//! so the parity tests are ignored with that reason until the world can seed one.
+//! The poll card draws from the polls facet of a fixture (`src/fixture/polls.rs`). Its web references are shot with the
+//! server's test Bot (`ServerSpec::bot`): the world's creator asks it for the poll, the voters vote and it posts the card
+//! (`examples/parity_world/seed/polls.rs`).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -48,15 +48,19 @@ fn poll_card_b_wraps_and_grows_with_its_answers() {
 }
 
 #[test]
-#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a poll yet (it needs a running Bot; seed/polls.rs refuses the facet)"]
 fn parity_polls_card() {
     dilla_parity::screen::assert_screen(&fixture("polls/card.json")).unwrap();
 }
 
 #[test]
-#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a poll yet (it needs a running Bot; seed/polls.rs refuses the facet)"]
 fn parity_polls_card_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/card-b.json")).unwrap();
+}
+
+/// `/poll create` typed and run: the poll dialog over the channel (Task 26), shot with the server's Bot installed.
+#[test]
+fn parity_polls_dialog() {
+    dilla_parity::screen::assert_screen(&fixture("polls/dialog.json")).unwrap();
 }
 
 /// The Bot's poll post with no poll held and no client: the web gives up at once (`botDefinitelyUnavailable`) and the row
@@ -81,13 +85,13 @@ fn an_unverified_poll_post_shows_its_text_and_no_card() {
 }
 
 #[test]
-#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a Bot account yet (seed/members.rs refuses `bot: true` people; Task 40 adds it)"]
+#[ignore = "parity after T6c: no reference: the web draws a poll post's own text only for the real Bot's post, and the parity world cannot make the Bot post arbitrary text (its posts come from its operations, seed/polls.rs), nor give up reading a poll it made (Task 40)"]
 fn parity_polls_fallback() {
     dilla_parity::screen::assert_screen(&fixture("polls/fallback.json")).unwrap();
 }
 
 #[test]
-#[ignore = "parity after T6c: no reference (R22, final review M5): the parity world cannot seed a Bot account yet (seed/members.rs refuses `bot: true` people; Task 40 adds it)"]
+#[ignore = "parity after T6c: no reference: the web draws a poll post's own text only for the real Bot's post, and the parity world cannot make the Bot post arbitrary text (its posts come from its operations, seed/polls.rs), nor give up reading a poll it made (Task 40)"]
 fn parity_polls_fallback_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/fallback-b.json")).unwrap();
 }

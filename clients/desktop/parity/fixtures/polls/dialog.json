@@ -38,6 +38,7 @@
           "mira",
           "dillabot"
         ],
+        "bot": {"capabilities": ["polls"], "botChannels": ["general"]},
         "channels": [
           {
             "id": "general",

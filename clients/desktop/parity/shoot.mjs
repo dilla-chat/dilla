@@ -130,6 +130,25 @@ function parseArgs(argv) {
   return args;
 }
 
+/** `[ticket text, expires uint]` with the expiry moved back by the instance's lead over the wall clock: the page reads its
+ *  instance clock as `expires - TTL` at the mint. Anything but that exact shape is passed on as it came. */
+export function wallExpiry(body, lead) {
+  if (body[0] !== 0x82 || body[1] >> 5 !== 3) return body;
+  const info = body[1] & 31;
+  const [length, at] = info < 24 ? [info, 2] : info === 24 ? [body[2], 3] : info === 25 ? [body.readUInt16BE(2), 4] : [-1, 0];
+  const end = at + length;
+  if (length < 0 || body[end] !== 0x1a || body.length !== end + 5) return body;
+  const out = Buffer.from(body);
+  out.writeUInt32BE(body.readUInt32BE(end + 1) - lead, end + 1);
+  return out;
+}
+
+async function wallTicket(route, control) {
+  const response = await route.fetch();
+  const lead = (await (await fetch(`${control}/debug/clock`)).json()).now - Math.floor(Date.now() / 1000);
+  await route.fulfill({ response, body: wallExpiry(await response.body(), lead) });
+}
+
 /** Where the PNG and its sidecar go: the committed references, or `<out>/shots/<area>` when `--out` is given (so a trial run never overwrites them). */
 export function shotDir(parity, os, name, out) {
   const area = name.split('/').slice(0, -1);
@@ -289,6 +308,10 @@ async function shoot(args, fixture, text) {
     let page = await context.newPage();
     page.setDefaultTimeout(WAIT);
     await page.clock.setFixedTime(state.now * 1000);
+    // A world with the Bot: the Bot refuses a command whose `sent_at` is more than 120 s from the wall clock it runs on, and
+    // the page signs its commands with the instance's clock as its last gateway ticket gave it, which the world has moved
+    // far past the wall to reach the frame. The ticket the page is given tells the wall's time instead.
+    if (state.bot) await context.route('**/v1/gateway/ticket', (route) => wallTicket(route, state.control));
     await page.goto(`${state.publicUrl}/welcome`);
     // A `signed_out` fixture is a browser with no account on it: no sign-in, the route opened as a fresh load.
     const signedOut = fixture.phase === 'signed_out';

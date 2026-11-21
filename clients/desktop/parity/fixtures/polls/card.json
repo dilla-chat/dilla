@@ -17,6 +17,7 @@
         "name": "Midgard Crew",
         "owner": "ada",
         "members": ["ada", "bjorn", "mira", "dillabot"],
+        "bot": {"capabilities": ["polls"], "botChannels": ["general"]},
         "channels": [
           { "id": "general", "kind": "text", "name": "general" },
           { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }

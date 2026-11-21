@@ -124,7 +124,7 @@ pub fn message_extras(
     let slot = attachments::attachment_cards(item, ctx, window, cx);
     let parts = [
         bot_admin::player::music_card(item, ctx, last, window, cx),
-        commands::poll_card(item, ctx, window, cx),
+        commands::poll_card_below_body(item, ctx, last, window, cx),
         reactions::reaction_bar(item, ctx, window, cx),
         threads::thread_count(item, ctx, window, cx),
         crate::screens::messages::send_state::send_state(item, ctx, window, cx),

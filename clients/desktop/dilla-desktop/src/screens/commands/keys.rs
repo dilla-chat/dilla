@@ -75,6 +75,13 @@ pub fn apply(window: gpui::WindowId, key: Key, cx: &mut App) -> bool {
             true
         }
         Effect::Pick(i) => {
+            // CommandPicker.tsx `onRunDetached`: `poll create` opens a form, so picking it runs it with no chips. The draft
+            // already names it whole, so Enter is left to the composer, whose send runs the draft (`on_send`).
+            let names_form = state.draft.trim().eq_ignore_ascii_case("/poll create")
+                && rows.get(i).is_some_and(|id| id == "poll create");
+            if names_form {
+                return false;
+            }
             pick(window, i, cx);
             true
         }

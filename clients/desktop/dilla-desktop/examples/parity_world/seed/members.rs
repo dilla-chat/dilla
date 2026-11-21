@@ -13,11 +13,18 @@ use dilla_client::state::{CommunityId, UserId};
 use dilla_client::testing::host::{self as world, Person};
 use dilla_client::testing::spec::ScreenFixture;
 
-/// Names the facet when the fixture asks for it and this world cannot seed it yet: a Bot account (it needs a running
-/// Bot).
+/// Names the facet when the fixture asks for it and this world cannot seed it yet: a Bot account of no server with the
+/// real Bot (`ServerSpec::bot`, seed/bot.rs). The world makes a member of kind 1 only by enabling the Bot, and the Bot
+/// posts only through its operations (a poll's, seed/polls.rs), never arbitrary text.
 pub(super) fn unseedable(f: &ScreenFixture, out: &mut Vec<String>) {
-    if f.world.people.iter().any(|p| p.bot) {
-        out.push("Bot accounts".to_owned());
+    let real = |id: &str| {
+        f.world
+            .servers
+            .iter()
+            .any(|s| s.bot.is_some() && s.members.iter().any(|m| m == id))
+    };
+    if f.world.people.iter().any(|p| p.bot && !real(&p.id)) {
+        out.push("Bot accounts of a server with no Bot".to_owned());
     }
 }
 

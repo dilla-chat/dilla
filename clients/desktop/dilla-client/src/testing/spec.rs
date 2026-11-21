@@ -672,6 +672,12 @@ impl ScreenFixture {
             if !clients.contains(&m.sender) {
                 clients.push(m.sender.clone());
             }
+            // A poll's voters vote through the Bot from their own clients (the parity world's seed/polls.rs).
+            for v in m.poll.iter().flat_map(|p| &p.votes) {
+                if !clients.contains(&v.by) {
+                    clients.push(v.by.clone());
+                }
+            }
             if !m.channel.starts_with("dm/") && !history.contains(&m.channel) {
                 history.push(m.channel.clone());
             }

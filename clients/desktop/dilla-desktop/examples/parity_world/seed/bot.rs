@@ -19,12 +19,17 @@ pub(super) fn needs_bot(f: &ScreenFixture) -> bool {
 
 pub(super) fn unseedable(_f: &ScreenFixture, _out: &mut Vec<String>) {}
 
-/// Enables each server's Bot and marks its Bot channels, on the owner's headless client.
+/// Enables each server's Bot and marks its Bot channels, on the owner's headless client. A fixture with a poll has the
+/// Bot enabled before the history is posted (`early`, since the poll is made through it); every other one after it.
 pub(super) async fn seed(
     f: &ScreenFixture,
     clients: &[(&str, Client)],
     ids: &BTreeMap<String, String>,
+    early: bool,
 ) {
+    if super::polls::needs_bot_first(f) != early {
+        return;
+    }
     for server in &f.world.servers {
         let Some(bot) = &server.bot else {
             continue;

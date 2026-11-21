@@ -17,7 +17,8 @@ use crate::text::{line, root_line_height};
 use crate::tokens::{color, font, radius, text};
 
 /// `.d-poll-dialog__close` (PollDialog.css:43) at the head's top right: the lead is the tile's box, so the button is placed
-/// from it: the form dialog's 520px panel, its head's 16px side padding (and 14px top) and the button's 28px at 14px/16px (the lead starts 14px down, so its top is 0).
+/// from it: the form dialog's 520px panel, its head's 16px side padding (and 14px top) and the button's 28px at 14px/16px
+/// (the 26px tile is centred in the 28px heading, 1px down, so the button's top is -1).
 const PANEL_W: f32 = 520.0;
 const HEAD_PAD: f32 = 16.0;
 const CLOSE_RIGHT: f32 = 16.0;
@@ -432,7 +433,7 @@ impl RenderOnce for PollDialog {
         // top right.
         let x = click("poll-dismiss", self.on_cancel.clone())
             .absolute()
-            .top(px(0.0))
+            .top(px(-1.0))
             .left(px(PANEL_W - CLOSE_RIGHT - CLOSE_SIZE - HEAD_PAD))
             .size(px(CLOSE_SIZE))
             .rounded(radius::MD)
@@ -495,6 +496,7 @@ impl RenderOnce for PollDialog {
             self.labels.title.clone(),
             self.labels.close.clone(),
         )
+        .heading_min(28.0)
         .lead(lead)
         .show_default_close(false)
         .body(body)

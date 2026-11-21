@@ -78,3 +78,8 @@ colour_max_pct = 0.88
 # compact than GPUI's whole-px layout does (TOLERANCES.md "Linux per-screen"); the limit just covers the measured score.
 [linux_screens."user-settings/appearance-compact"]
 chrome_max_pct = 0.26
+# Task 40 (Jonas 2026-11-20, "design, not pixels"): the log keeps whole-pixel row tops where Chromium keeps the fractions of
+# its 20.14 px body lines, so the card of a poll post (three rows down) sits half a pixel lower than the web's and its borders
+# and answer rows snap a pixel apart (TOLERANCES.md "Linux per-screen"); the limit is twice the measured score.
+[linux_screens."polls/card"]
+chrome_max_pct = 1.19

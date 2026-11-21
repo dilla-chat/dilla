@@ -30,7 +30,7 @@ use gpui::{
 use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
-use dilla_desktop_ui::components::{Avatar, AvatarSize};
+use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
 use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{
     Face, Line, MONO_ADVANCE, chromium_baseline, line, line_height, paragraph,
@@ -1159,6 +1159,11 @@ fn draw_row(
         );
         // MessageRow.tsx `avatarSrc`: a webhook post shows its avatar, read only from the instance (Task 28 item 15),
         // once it is in; the placeholder meanwhile and on a miss.
+        let bot = item.bot
+            && cx_row
+                .members
+                .iter()
+                .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1);
         let webhook_avatar = webhook_of(cx_row.state, cx_row.community, item)
             .and_then(|w| w.avatar_id)
             .zip(ctx.client.as_ref())
@@ -1177,6 +1182,7 @@ fn draw_row(
                     gpui::ObjectFit::Cover,
                 ),
             ),
+            // A Bot member's avatar is the brand square (Avatar.tsx `bot`), as the members pane draws it.
             None => placer.block(
                 GUTTER + COLUMN_GAP,
                 row_top,
@@ -1184,15 +1190,15 @@ fn draw_row(
                     gpui::SharedString::from(format!("avatar-{}", item.key)),
                     name.clone(),
                 )
-                .size(AvatarSize::Msg),
+                .size(AvatarSize::Msg)
+                .shape(if bot {
+                    AvatarShape::Bot
+                } else {
+                    AvatarShape::Circle
+                }),
             ),
         }
         let name_width = name.chars().count() as f32 * f32::from(text::SM) * MONO_ADVANCE;
-        let bot = item.bot
-            && cx_row
-                .members
-                .iter()
-                .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1);
         let name_color = if bot { color::ACCENT_2 } else { color::FG };
         placer.line(
             line(name, text::SM, head_line(d), name_color).weight(font::WEIGHT_DISPLAY),

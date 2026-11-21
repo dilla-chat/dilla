@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { playwrightChord, replayStep, shotDir, typedText, typingBodies } from './shoot.mjs';
+import { playwrightChord, replayStep, shotDir, typedText, typingBodies, wallExpiry } from './shoot.mjs';
 
 test('shotDir without --out is the committed references', () => {
   assert.equal(shotDir('/p', 'linux', 'shell/channel-view', null), join('/p', 'references', 'linux', 'shell'));
@@ -50,4 +50,17 @@ test('the offline step cuts the network of the browser context and then settles'
   const context = { setOffline: async (on) => calls.push(`offline ${on}`) };
   await replayStep(page, { do: 'offline' }, {}, context);
   assert.deepEqual(calls, ['offline true', 'fonts', 'wait 500']);
+});
+
+test('a gateway ticket of a Bot world tells the wall clock: the expiry moves back by the instance lead, nothing else', () => {
+  const ticket = Buffer.from('tk');
+  const body = (expires) => {
+    const out = Buffer.alloc(2 + ticket.length + 5);
+    out[0] = 0x82; out[1] = 0x60 | ticket.length; ticket.copy(out, 2);
+    out[2 + ticket.length] = 0x1a; out.writeUInt32BE(expires, 3 + ticket.length);
+    return out;
+  };
+  assert.deepEqual(wallExpiry(body(1_795_218_000), 1000), body(1_795_217_000));
+  const other = Buffer.from([0x81, 0x01]);
+  assert.equal(wallExpiry(other, 1000), other);
 });

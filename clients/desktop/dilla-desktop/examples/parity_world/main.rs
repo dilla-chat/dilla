@@ -127,6 +127,8 @@ async fn main() {
                 .members
                 .iter()
                 .filter(|m| **m != server.owner)
+                // The real Bot is the server's Bot member: the fixture's Bot person is only its name in the history.
+                .filter(|m| !(server.bot.is_some() && seed::is_bot_person(&f, m)))
                 .map(|m| person_of(m))
                 .collect();
             let channels = extra_channels(server);
@@ -145,7 +147,11 @@ async fn main() {
     // everyone who posts: an empty world has only the viewer's.
     let plan = f.seed_plan();
     let mut clients = Vec::new();
-    for id in &plan.clients {
+    for id in plan
+        .clients
+        .iter()
+        .filter(|id| !seed::is_server_bot(&f, id))
+    {
         clients.push((id.as_str(), world::start(person_of(id)).await));
     }
     // The real ids of every server and channel: by name within the server.
@@ -230,6 +236,8 @@ async fn main() {
         "window": [f.window.0, f.window.1],
         "now": f.clock + shift,
         "shift": shift,
+        // Whether the host supervises the Bot, which checks a command's `sent_at` against the wall clock (shoot.mjs).
+        "bot": bot,
         "ids": ids,
         "lastMessage": f.world.messages.iter().max_by_key(|m| m.ts).map(|m| m.body.clone()),
     });
@@ -239,6 +247,7 @@ async fn main() {
     std::io::stdin().read_line(&mut line).unwrap();
     assert_eq!(line.trim(), "post", "expected `post` on stdin");
     // History in time order (the file's order within a tie).
+    seed::before_history(&f, &clients, &ids).await;
     let mut order: Vec<&spec::MessageSpec> = f.world.messages.iter().collect();
     order.sort_by_key(|m| m.ts);
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -257,10 +266,12 @@ async fn main() {
             tokio::task::block_in_place(|| world::advance_clock(&host, at - now));
         }
         let channel = channel_real(&m.channel);
-        let client = &clients.iter().find(|(id, _)| *id == m.sender).unwrap().1;
-        let sent = match seed::post(m, client, channel, &posted).await {
+        let sent = match seed::post(&f, m, &clients, &ids, channel, &posted).await {
             Some(sent) => sent,
-            None => client.send_text(channel, m.body.clone()).await.unwrap(),
+            None => {
+                let client = &clients.iter().find(|(id, _)| *id == m.sender).unwrap().1;
+                client.send_text(channel, m.body.clone()).await.unwrap()
+            }
         };
         posted.insert(m.key.clone(), sent.expect("queued"));
         let n = counts.entry(&m.channel).or_default();
