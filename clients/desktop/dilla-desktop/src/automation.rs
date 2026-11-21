@@ -1057,6 +1057,11 @@ pub fn run(args: Vec<String>) {
         hidden: std::env::var_os(HIDE_TEXT_VAR).is_some(),
     });
     let drawn_fixture = matches!(&mode, Mode::App(launch) if launch.fixture.is_some());
+    // A drawn fixture runs under the web shooter's locale (en-US), pinned in the app, not through the environment: the
+    // environment is bypassed by `LANGUAGE` on Unix and not read at all on macOS.
+    if drawn_fixture {
+        crate::format::pin_locale("en-US");
+    }
     let mut session = Session::open(mode);
     // A drawn fixture's clock is frozen (the web shooter's is): a toast stays on screen for the frame.
     if drawn_fixture {

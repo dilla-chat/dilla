@@ -117,6 +117,9 @@ pub fn install(cx: &mut App) {
     }
     cx.set_global(Installed);
     // Names are ordered by the OS locale, as the browser's `localeCompare` is (the DM picker, the member lists).
+    // The unit tests run under en-US whatever the machine says.
+    #[cfg(test)]
+    format::pin_locale("en-US");
     dilla_client::features::collate::set_locale(&format::date_locale());
     dilla_desktop_ui::theme::install(cx);
     gpui_component::init(cx);

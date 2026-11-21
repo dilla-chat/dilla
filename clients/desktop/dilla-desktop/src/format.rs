@@ -16,10 +16,32 @@ use jiff::{
 
 use crate::strings::{t, tf};
 
-/// The locale dates follow: the OS region as a BCP 47 tag, `en-GB` when the OS gives none (the web's fallback).
+/// The locale the app was pinned to ([`pin_locale`]): a drawn fixture's and the unit tests', which must not depend on the
+/// machine (`sys-locale` reads `LANGUAGE` before `LC_ALL` on Unix and no environment at all on macOS).
+static PINNED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Pins the locale dates and name order follow, whatever the OS says: `tag` is a BCP 47 tag (`en-US`, the web shooter's).
+pub fn pin_locale(tag: &str) {
+    *PINNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tag.to_owned());
+    dilla_client::features::collate::set_locale(tag);
+}
+
+/// The locale dates follow: the pinned one, else the OS region as a BCP 47 tag, `en-GB` when the OS gives none (the web's
+/// fallback).
 pub fn date_locale() -> String {
-    sys_locale::get_locale()
-        .map(|raw| canonical(&raw))
+    let pinned = PINNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    locale_of(pinned, sys_locale::get_locale())
+}
+
+/// [`date_locale`]'s rule: a pin wins over the OS, an OS tag over the fallback.
+fn locale_of(pinned: Option<String>, os: Option<String>) -> String {
+    pinned
+        .or_else(|| os.map(|raw| canonical(&raw)))
         .filter(|tag| !tag.is_empty())
         .unwrap_or_else(|| "en-GB".to_owned())
 }
@@ -286,6 +308,18 @@ fn fmt_day(when: &DateTime, locale: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_locale_wins_over_whatever_the_os_says() {
+        let os = Some("sv_SE.UTF-8".to_owned());
+        assert_eq!(locale_of(Some("en-US".into()), os.clone()), "en-US");
+        assert_eq!(locale_of(None, os), "sv-SE");
+        assert_eq!(locale_of(None, None), "en-GB");
+        assert_eq!(
+            locale_of(Some(String::new()), Some("de_DE".into())),
+            "en-GB"
+        );
+    }
 
     const UTC: &dyn Fn(i64) -> Offset = &|_| Offset::UTC;
 
