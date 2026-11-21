@@ -372,7 +372,8 @@ async function shoot(args, fixture, text) {
     }
     // The last message of the route's own channel is on screen before the frame.
     const target = [...fixture.route.matchAll(/\{([^}/]+\/[^}]+)\}/g)].map((m) => m[1]).at(-1);
-    const last = (fixture.world.messages ?? []).filter((m) => m.channel === target).at(-1);
+    // A thread's reply is not a row of the log: it is on screen only once the thread is open (a step), so it is never the one waited for.
+    const last = (fixture.world.messages ?? []).filter((m) => m.channel === target && m.thread_of === undefined).at(-1);
     // A poll post the browser gives up on (its read is refused and tried again 2, 5 and 10 s later) is drawn as its own text,
     // the marker line gone and the time tag a local time, so the last message is found by its fixed line instead.
     // A Bot world: the Bot's member row is in the page's members list before the frame (the members pane draws it and a command

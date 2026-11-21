@@ -332,8 +332,9 @@ impl PaneView {
     fn row(
         &self,
         item: &TimelineItem,
-
         spaced: bool,
+        // The thread a reply was posted in (`None` for the root, a message of the channel's log): where its poll is read.
+        thread: Option<MessageId>,
         ctx: &crate::slots::SlotCx,
         window: &mut Window,
         cx: &mut gpui::App,
@@ -350,8 +351,9 @@ impl PaneView {
             .flatten()
             .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1)
             || item.bot;
+        let live = ctx.client.is_some();
         let (kind, body) = match item.state {
-            TimelineItemState::Ok => (ThreadRowKind::Ok, item.body.clone()),
+            TimelineItemState::Ok => (ThreadRowKind::Ok, thread_body(item, ctx, live)),
             TimelineItemState::Pending => (ThreadRowKind::Pending, item.body.clone()),
             TimelineItemState::Failed => (ThreadRowKind::Failed, item.body.clone()),
             TimelineItemState::CannotRead => (
@@ -374,6 +376,13 @@ impl PaneView {
         .spaced(spaced)
         .kind(kind)
         .bot(bot);
+        // A Bot's poll post has its card under the body (MessageItem mounts `PollCard` in a thread as in the log).
+        let column = dilla_desktop_ui::components::threads::thread_row::body_width(pane_width);
+        if let Some(e) =
+            crate::screens::commands::poll_card_in_width(item, ctx, thread, column, window, cx)
+        {
+            row = row.extra(e.element, e.height);
+        }
         // Task 28 item 12: the message being edited shows the messages area's editor in its body's place.
         let ui = crate::screens::messages::ui::handle(window, cx);
         let editing = ui.as_ref().and_then(|ui| {
@@ -467,6 +476,23 @@ impl PaneView {
     }
 }
 
+/// What a thread message's body reads (MessageItem.tsx `displayBody`): a poll post is its `{name} asked:` line, nothing while
+/// its card is being verified, or its own text without the marker line; any other message, and any state but Ok, is as it
+/// was. `live` is whether a client is running. The times in the fallback are in the zone of the log's (UTC under a
+/// frozen fixture clock).
+pub fn thread_body(item: &TimelineItem, ctx: &crate::slots::SlotCx, live: bool) -> String {
+    if item.state != TimelineItemState::Ok {
+        return item.body.clone();
+    }
+    let zone = crate::screens::timeline::zone_for(ctx.clock);
+    match crate::screens::timeline::poll_body(item, &ctx.state, ctx.community, live, &zone) {
+        crate::screens::timeline::PollBody::Asked(s) => tf("poll.asked", &[("name", s.as_str())]),
+        crate::screens::timeline::PollBody::Pending => String::new(),
+        crate::screens::timeline::PollBody::Fallback(s) => s,
+        crate::screens::timeline::PollBody::NoMarker => item.body.clone(),
+    }
+}
+
 /// `ctx` aimed at `open`'s conversation: its channel, and the server that channel is in (a DM's thread has none). The pane
 /// is drawn only beside its own channel ([`super::open_of`]), so this is the shown server too; the community is still read
 /// from the thread's channel, so no command of the thread is planned or run under another server's roles and Bots. A
@@ -510,7 +536,8 @@ impl Render for PaneView {
             .channel(open.channel)
             .map(|c| format!("#{}", c.name));
         let root = data.map(|d| match &d.root {
-            Some(root) => self.row(root, false, &ctx, window, cx),
+            // The root is the channel's own message (its poll is the log's, held with no thread).
+            Some(root) => self.row(root, false, None, &ctx, window, cx),
             None => line(
                 t("thread.rootMissing"),
                 text::SM,
@@ -524,7 +551,7 @@ impl Render for PaneView {
                 d.replies
                     .iter()
                     .enumerate()
-                    .map(|(n, item)| self.row(item, n > 0, &ctx, window, cx))
+                    .map(|(n, item)| self.row(item, n > 0, Some(open.root), &ctx, window, cx))
                     .collect()
             })
             .unwrap_or_default();
@@ -1000,6 +1027,118 @@ mod tests {
         vcx.update(|_, cx| {
             assert_eq!(chips::draft(&ctx, &field, w, cx), None, "nothing of A in B");
         });
+    }
+
+    /// A Bot's poll post in a thread reads as in the log (MessageItem.tsx `displayBody`): who asked while the poll is held,
+    /// nothing while it is being verified, its own text once given up; a plain reply is untouched. The poll is held under
+    /// its message's id with the thread it was posted in, so a poll of the log never shares its record.
+    #[test]
+    fn a_poll_in_a_thread_reads_who_asked() {
+        use dilla_client::state::bot::{PollCheck, PollView};
+        use dilla_client::state::{CommunityId, Member, UserId};
+        let (community, channel) = (CommunityId([7; 16]), ChannelId([8; 16]));
+        let (root, reply, plain) = (MessageId([3; 16]), MessageId([4; 16]), MessageId([5; 16]));
+        let member = |user: u8, name: &str, kind: u8| Member {
+            user_id: UserId([user; 16]),
+            username: name.to_lowercase(),
+            display: name.to_owned(),
+            kind,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut state = dilla_client::state::AppState::default();
+        state.members.insert(
+            community,
+            vec![
+                member(1, "Ada", 0),
+                member(2, "bob", 0),
+                member(9, "Glenn", 1),
+            ],
+        );
+        state.account.user_id = Some(UserId([1; 16]));
+        let item = |msg: MessageId, bot: bool, body: String| TimelineItem {
+            key: format!("k{}", msg.0[0]),
+            state: TimelineItemState::Ok,
+            reason: String::new(),
+            sender_user: Some(UserId([if bot { 9 } else { 1 }; 16])),
+            sender_device: Some(dilla_client::state::DeviceId([9; 16])),
+            own: false,
+            bot,
+            ts: 5,
+            body,
+            msg_id: Some(msg),
+            seq: Some(5),
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        };
+        let marker = format!("[dilla-poll:v1:{}]", "ab".repeat(16));
+        let poll_post = item(
+            reply,
+            true,
+            format!("Raid?\nBridge\nCloses: <t:1800003600:R>\n{marker}"),
+        );
+        let ctx = |state: &dilla_client::state::AppState| crate::slots::SlotCx {
+            state: std::sync::Arc::new(state.clone()),
+            community: Some(community),
+            channel: Some(channel),
+            clock: crate::screens::threads::Clock::Fixed { now: 0, utc: true },
+            ..crate::slots::SlotCx::default()
+        };
+        let held = |thread| PollView {
+            id: [0xab; 16],
+            channel,
+            thread,
+            creator: UserId([2; 16]),
+            question: "Raid?".into(),
+            answers: vec!["Bridge".into()],
+            multi: false,
+            created_at: 0,
+            due_at: 0,
+            closed: false,
+            counts: vec![0],
+            my_choices: None,
+            revision: 1,
+            previews: vec![Vec::new()],
+            distinct: 0,
+            capped: false,
+        };
+        // Nothing held and a client running: the card's loading line stands for the text.
+        assert_eq!(thread_body(&poll_post, &ctx(&state), true), "");
+        // A thread's poll and the log's, held side by side under their own message ids.
+        let log_post = item(root, true, format!("Other?\n{marker}"));
+        state.bot.polls.insert(reply, held(Some(root)));
+        state.bot.polls.insert(root, held(None));
+        assert_eq!(thread_body(&poll_post, &ctx(&state), true), "bob asked:");
+        assert_eq!(thread_body(&log_post, &ctx(&state), true), "bob asked:");
+        assert_eq!(state.bot.polls[&reply].thread, Some(root));
+        assert_eq!(state.bot.polls[&root].thread, None);
+        state.bot.polls.remove(&reply);
+        assert_eq!(
+            state.bot.polls[&root].thread, None,
+            "the log's poll stays as it was"
+        );
+        assert_eq!(thread_body(&poll_post, &ctx(&state), true), "");
+        // A read that was given up shows the post's own text, local time and no marker.
+        state
+            .bot
+            .poll_checks
+            .insert(reply, PollCheck::GaveUp(channel));
+        let text = thread_body(&poll_post, &ctx(&state), true);
+        assert!(
+            text.contains("Closes: Fri 15 Jan, 09:00 UTC"),
+            "{} bytes",
+            text.len()
+        );
+        assert!(!text.contains("[dilla-poll"), "{} bytes", text.len());
+        // A plain reply is its body.
+        let plain_post = item(plain, false, "hello".into());
+        assert_eq!(thread_body(&plain_post, &ctx(&state), true), "hello");
     }
 
     /// A view of `channel`, which the state lists in `community`.

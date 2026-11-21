@@ -336,7 +336,20 @@ pub fn poll_card_in(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Extra> {
-    poll_card_led(item, ctx, thread, 0.0, window, cx)
+    poll_card_led(item, ctx, thread, f32::MAX, 0.0, window, cx)
+}
+
+/// [`poll_card_in`] in a column `width` wide (the thread pane's text column is narrower than the card's 466px), under the
+/// message's body as the thread row draws it: the card's container has its 6px margin above it (no attachments slot there).
+pub fn poll_card_in_width(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    thread: Option<dilla_client::state::MessageId>,
+    width: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    poll_card_led(item, ctx, thread, width, CONTAINER_MARGIN, window, cx)
 }
 
 /// The card of a post in the channel's log, whose `last` says whether it is the log's last row. The web draws it in the
@@ -351,7 +364,7 @@ pub fn poll_card_below_body(
     cx: &mut App,
 ) -> Option<Extra> {
     let lead = CONTAINER_MARGIN - crate::screens::timeline::attachments_slot(last);
-    poll_card_led(item, ctx, None, lead, window, cx)
+    poll_card_led(item, ctx, None, f32::MAX, lead, window, cx)
 }
 
 /// MessageRow.css `.d-message-row__attachments.d-message-row__card`: `margin-top: 6px`.
@@ -365,11 +378,12 @@ fn poll_card_led(
     item: &TimelineItem,
     ctx: &SlotCx,
     thread: Option<dilla_client::state::MessageId>,
+    width: f32,
     lead: f32,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Extra> {
-    let drawn = poll_card_drawn(item, ctx, thread, lead, window, cx);
+    let drawn = poll_card_drawn(item, ctx, thread, width, lead, window, cx);
     if drawn.is_some() || lead <= 0.0 || polls::final_poll_marker(&item.body).is_none() {
         return drawn;
     }
@@ -383,6 +397,7 @@ fn poll_card_drawn(
     item: &TimelineItem,
     ctx: &SlotCx,
     thread: Option<dilla_client::state::MessageId>,
+    width: f32,
     lead: f32,
     _window: &mut Window,
     _cx: &mut App,
@@ -420,8 +435,7 @@ fn poll_card_drawn(
             }
         };
     };
-    // The card is at most 440px of content; at the desktop sizes the log is always wider than the card's box.
-    let width = f32::MAX;
+    // The card is at most 440px of content: the log is always wider than the card's box, the thread pane's column is not.
     let mine = ctx.state.account.user_id == Some(poll.creator);
     let options = polls::card_options(poll)
         .into_iter()
@@ -439,7 +453,8 @@ fn poll_card_drawn(
         &options,
         width,
         poll.closed.then_some(closed_tag),
-        !poll.closed && mine,
+        &poll_meta(poll),
+        (!poll.closed && mine).then(|| t("poll.close")),
     );
     let card = PollCard::new(
         ElementId::Name(format!("poll-{}", item.key).into()),

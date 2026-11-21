@@ -8,6 +8,7 @@ use gpui::{
 };
 
 use crate::components::avatar::{colour_of, initials_of};
+use crate::components::tag::{Tag, TagKind, look};
 use crate::text::{Face, chromium_baseline, line, line_height, paragraph};
 use crate::tokens::{color, font, radius, text};
 
@@ -50,6 +51,14 @@ fn head() -> (f32, f32, f32) {
     (above + below, above - name_base, above - time_base)
 }
 
+/// The head's baseline from its top.
+fn head_base() -> (f32, f32, f32) {
+    let (name_h, time_h) = (name_line(), time_line());
+    let name_base = chromium_baseline(Face::Mono, f32::from(text::UI), name_h);
+    let time_base = chromium_baseline(Face::Mono, f32::from(text::MICRO), time_h);
+    (name_base.max(time_base), name_base, time_base)
+}
+
 /// A row's height with `lines` body lines (without the gap above it).
 pub fn row_height(grouped: bool, lines: usize) -> f32 {
     let body = lines as f32 * body_line();
@@ -86,6 +95,8 @@ pub struct ThreadRow {
     width: f32,
     /// What stands in the body's place (the inline message editor while the message is edited).
     replace_body: Option<gpui::AnyElement>,
+    /// What is drawn under the body (a poll's card) and its height.
+    extra: Option<(gpui::AnyElement, f32)>,
 }
 
 impl ThreadRow {
@@ -107,6 +118,7 @@ impl ThreadRow {
             bot: false,
             width: body_width(pane_width),
             replace_body: None,
+            extra: None,
         }
     }
 
@@ -114,6 +126,19 @@ impl ThreadRow {
     pub fn replace_body(mut self, element: impl IntoElement) -> Self {
         self.replace_body = Some(element.into_any_element());
         self
+    }
+
+    /// Draws `element`, `height` high, under the body at the body's left inset (MessageItem's attachments slot: the poll
+    /// card). It sits in the main column, whose 1px gap is the log's extras gap (`slots::EXTRA_GAP`), so the row is
+    /// [`ThreadRow::extra_height`] higher.
+    pub fn extra(mut self, element: gpui::AnyElement, height: f32) -> Self {
+        self.extra = Some((element, height));
+        self
+    }
+
+    /// What an extra of `height` adds to a row: the gap above it and the part itself (none for no part).
+    pub fn extra_height(height: f32) -> f32 {
+        if height > 0.0 { MAIN_GAP + height } else { 0.0 }
     }
 
     pub fn grouped(mut self, grouped: bool) -> Self {
@@ -169,6 +194,9 @@ impl RenderOnce for ThreadRow {
                 self.width,
             )),
         };
+        let extra = self
+            .extra
+            .map(|(element, height)| div().flex_none().h(px(height)).child(element));
         let mut root = div().id(self.id).flex().gap(px(COLUMN_GAP)).min_w_0();
         if self.spaced && !self.grouped {
             root = root.mt(px(ROW_GAP));
@@ -177,7 +205,16 @@ impl RenderOnce for ThreadRow {
             return root
                 .pt(px(FOLLOW_PAD))
                 .child(div().w(px(AVATAR)).flex_none())
-                .child(div().flex_1().min_w_0().child(body));
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(MAIN_GAP))
+                        .child(body)
+                        .children(extra),
+                );
         }
         let (palette_h, palette_s, palette_l) = colour_of(&self.author);
         let disc = if self.bot {
@@ -217,6 +254,15 @@ impl RenderOnce for ThreadRow {
             .child(div().pt(px(name_dy)).child(
                 line(self.author, text::UI, name_line(), name_colour).weight(font::WEIGHT_DISPLAY),
             ))
+            .children(self.bot.then(|| {
+                // The Bot's tag (MessageRow's `.d-tag`) sits on the head's baseline, between the name and the time.
+                let l = look(TagKind::Bot);
+                let tag_base = chromium_baseline(Face::Mono, f32::from(l.size), l.line_height);
+                let (above, _, _) = head_base();
+                div()
+                    .pt(px((above - tag_base).max(0.0)))
+                    .child(Tag::new("thread-bot-tag", TagKind::Bot))
+            }))
             .child(div().pt(px(time_dy)).child(line(
                 self.time,
                 text::MICRO,
@@ -231,7 +277,8 @@ impl RenderOnce for ThreadRow {
                 .flex_col()
                 .gap(px(MAIN_GAP))
                 .child(head)
-                .child(body),
+                .child(body)
+                .children(extra),
         )
     }
 }
@@ -254,6 +301,12 @@ mod tests {
             name_dy == 0.0 || time_dy == 0.0,
             "one of them sits on the top"
         );
+    }
+
+    #[test]
+    fn an_extra_adds_its_height_and_the_one_pixel_gap() {
+        assert_eq!(ThreadRow::extra_height(80.0), 81.0);
+        assert_eq!(ThreadRow::extra_height(0.0), 0.0);
     }
 
     #[test]

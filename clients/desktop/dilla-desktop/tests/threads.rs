@@ -49,6 +49,9 @@ parity! {
     // Task 31: `/` typed in the thread's composer opens the command list over it.
     parity_threads_command_list => "command-list",
     parity_threads_command_list_b => "command-list-b",
+    // Task 41: a Bot's poll posted in the thread (`/poll create` from its composer) has its card in the pane.
+    parity_threads_poll_card => "poll-card",
+    parity_threads_poll_card_b => "poll-card-b",
 }
 
 /// A GPUI-only reference (the web never draws a "load earlier" in a thread): `pane-open`'s world with 201 replies, so the
@@ -112,6 +115,18 @@ fn thread_pane_opens_in_the_aside_with_its_composer_unfocused() {
         Some("thread-composer"),
         "no script focus on open"
     );
+}
+
+/// Task 41 (ThreadView.tsx:242-244): a Bot's poll posted in a thread is drawn by the same row as the log's, so its card is in
+/// the pane (the aside), not behind the log.
+#[test]
+fn a_poll_in_a_thread_draws_its_card() {
+    let mut app = launch("poll-card");
+    assert!(app.element("poll-card").is_none(), "closed until opened");
+    app.click("thread-chip");
+    let card = app.wait_for("poll-card", SOON);
+    let composer = app.wait_for("thread-composer", SOON);
+    assert!(card.x >= composer.x, "{card:?} {composer:?}");
 }
 
 /// The pane's × closes it.

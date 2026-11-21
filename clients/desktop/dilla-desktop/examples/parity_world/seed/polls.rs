@@ -152,14 +152,14 @@ pub(super) async fn post(
             Err(e) => panic!("poll {}: the Bot refused it ({e:?})", m.key),
         }
     };
-    let post = held_item(creator, channel, created.id)
+    let post = held_item(creator, channel, thread, created.id)
         .await
         .msg_id
         .expect("found by it");
     for (who, choices) in &voters {
         let voter = client_of(who);
         wait_for_catalog(voter, community.0, CATALOG).await;
-        let item = held_item(voter, channel, created.id).await;
+        let item = held_item(voter, channel, thread, created.id).await;
         let utilities = voter.utilities();
         utilities
             .read_poll(community, channel, thread, &item)
@@ -177,7 +177,7 @@ pub(super) async fn post(
             .unwrap_or_else(|e| panic!("poll {}: a vote ({e:?})", m.key));
     }
     if poll.closed {
-        let item = held_item(creator, channel, created.id).await;
+        let item = held_item(creator, channel, thread, created.id).await;
         let utilities = creator.utilities();
         utilities
             .read_poll(community, channel, thread, &item)
@@ -196,13 +196,44 @@ pub(super) async fn post(
     Some(Ok(post))
 }
 
-/// The Bot's post of poll `id` as `client` holds it (its final line names the poll).
-async fn held_item(client: &Client, channel: ChannelId, id: [u8; 16]) -> TimelineItem {
-    let state = world::wait_for(client, WAIT, "the poll's post", |s| {
-        find(s, channel, id).is_some()
-    })
-    .await;
-    find(&state, channel, id).expect("waited for")
+/// The Bot's post of poll `id` as `client` holds it (its final line names the poll). A thread's post is not a row of the
+/// channel: the client reads the thread `thread` (opening it) and finds the post among its replies.
+async fn held_item(
+    client: &Client,
+    channel: ChannelId,
+    thread: Option<MessageId>,
+    id: [u8; 16],
+) -> TimelineItem {
+    let Some(root) = thread else {
+        let state = world::wait_for(client, WAIT, "the poll's post", |s| {
+            find(s, channel, id).is_some()
+        })
+        .await;
+        return find(&state, channel, id).expect("waited for");
+    };
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        // The read is one page of the thread's newest replies; the post may not have reached the worker yet.
+        let _ = client.threads().open(channel, root).await;
+        let state = client.state().borrow().clone();
+        let found = state
+            .threads
+            .threads
+            .get(&root)
+            .and_then(|d| d.replies.iter().find(|i| is_poll_post(i, id)).cloned());
+        if let Some(item) = found {
+            return item;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the poll's post in its thread"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+fn is_poll_post(i: &TimelineItem, id: [u8; 16]) -> bool {
+    i.state == TimelineItemState::Ok && i.msg_id.is_some() && final_poll_marker(&i.body) == Some(id)
 }
 
 fn find(state: &AppState, channel: ChannelId, id: [u8; 16]) -> Option<TimelineItem> {
@@ -211,11 +242,7 @@ fn find(state: &AppState, channel: ChannelId, id: [u8; 16]) -> Option<TimelineIt
         .get(&channel)?
         .items
         .iter()
-        .find(|i| {
-            i.state == TimelineItemState::Ok
-                && i.msg_id.is_some()
-                && final_poll_marker(&i.body) == Some(id)
-        })
+        .find(|i| is_poll_post(i, id))
         .cloned()
 }
 

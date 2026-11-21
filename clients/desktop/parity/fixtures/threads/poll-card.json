@@ -1,0 +1,130 @@
+{
+  "name": "threads/poll-card",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "mira",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "dillabot",
+        "display": "Dilla Bot",
+        "bot": true
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "dillabot"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ],
+        "bot": {
+          "capabilities": [
+            "polls"
+          ],
+          "botChannels": [
+            "general"
+          ]
+        }
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481700,
+        "body": "release plan: cut on friday, voice e2e on all three platforms first"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481708,
+        "body": "I pushed the fix for the sealed-command retry"
+      },
+      {
+        "key": "t1",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481714,
+        "body": "friday works for me, I will watch the macos run",
+        "thread_of": "m1"
+      },
+      {
+        "key": "t2",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481720,
+        "body": "great, ping me when it is green",
+        "thread_of": "m1"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481726,
+        "body": "on it, give me ten minutes"
+      },
+      {
+        "key": "tp",
+        "channel": "midgard/general",
+        "sender": "dillabot",
+        "ts": 1794481730,
+        "body": "Mira asked:",
+        "thread_of": "m1",
+        "poll": {
+          "question": "What should we raid on Friday?",
+          "options": [
+            "the bridge",
+            "the harbour"
+          ]
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=button[name=\"3 replies\"s]",
+      "gpui": "thread-chip"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

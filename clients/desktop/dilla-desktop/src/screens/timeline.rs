@@ -582,7 +582,7 @@ fn poll_fallback(body: &str, zone: &jiff::tz::TimeZone) -> String {
 }
 
 /// The zone times in the log are drawn in: UTC under a fixture's frozen clock, else the system's.
-fn zone_for(clock: Clock) -> jiff::tz::TimeZone {
+pub(crate) fn zone_for(clock: Clock) -> jiff::tz::TimeZone {
     match clock {
         Clock::Fixed { utc: true, .. } => jiff::tz::TimeZone::UTC,
         _ => jiff::tz::TimeZone::system(),

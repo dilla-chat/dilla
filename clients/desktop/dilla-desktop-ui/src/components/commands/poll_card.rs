@@ -159,12 +159,34 @@ impl PollCard {
         .max(1)
     }
 
-    /// The meta line's height: the Close poll button's (26px with its border) or the text's line.
-    fn meta_height(button: bool) -> f32 {
-        if button {
-            26.0
+    /// The Close poll button's box: its label, 8px padding and 1px border either side.
+    fn close_width(label: &str) -> f32 {
+        label.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE + 2.0 * (8.0 + 1.0)
+    }
+
+    /// The meta text's room (`.d-poll-card__meta > span { flex: 1 }`): the content width less the Close poll button and the
+    /// line's 10px gap, so a narrow column wraps the text beside the button.
+    fn meta_width(width: f32, close: Option<&str>) -> f32 {
+        Self::inner(width) - close.map_or(0.0, |l| Self::close_width(l) + 10.0)
+    }
+
+    /// The meta line's height: the text's wrapped lines, or the Close poll button's (26px with its border) when that is taller.
+    fn meta_height(meta: &str, width: f32, close: Option<&str>) -> f32 {
+        let lh = crate::text::root_line_height(text::META);
+        let lines = paragraph(
+            meta,
+            text::META,
+            lh,
+            color::FG_3,
+            Self::meta_width(width, close),
+        )
+        .len()
+        .max(1) as f32;
+        let text = lines * lh;
+        if close.is_some() {
+            text.max(26.0)
         } else {
-            crate::text::root_line_height(text::META)
+            text
         }
     }
 
@@ -190,14 +212,15 @@ impl PollCard {
     }
 
     /// The card's height under a message, its 6px top margin included (R21: from the content and the tokens). `closed` is the
-    /// closed tag's label of a closed poll, and `button` whether the meta line holds Close poll (an open poll of the viewer's:
-    /// its 26px button; else the line is as tall as its text). An answer's row is as tall as its lines, at least the 34px row.
+    /// closed tag's label of a closed poll, `meta` the meta line's text, and `close` the label of Close poll when the meta line
+    /// holds it (an open poll of the viewer's: its 26px button; else the line is as tall as its text). An answer's row is as tall as its lines, at least the 34px row.
     pub fn height(
         question: &str,
         options: &[Option_],
         width: f32,
         closed: Option<&str>,
-        button: bool,
+        meta: &str,
+        close: Option<&str>,
     ) -> f32 {
         let head = Self::question_lines(question, width, closed) as f32
             * crate::text::root_line_height(text::INPUT);
@@ -209,7 +232,7 @@ impl PollCard {
                 (lines * ui_lh).max(ROW) + 2.0
             })
             .sum();
-        let meta = Self::meta_height(button);
+        let meta = Self::meta_height(meta, width, close);
         TOP_MARGIN + 2.0 + 2.0 * PAD + head + rows + meta + GAP * (options.len() as f32 + 1.0)
     }
 }
@@ -362,16 +385,23 @@ impl RenderOnce for PollCard {
                 )
         });
         let close = self.on_close.clone();
+        let close_label = (self.can_close && !self.closed).then(|| self.labels.close.to_string());
+        let meta_lh = crate::text::root_line_height(text::META);
         let meta = div()
             .flex()
             .items_center()
             .gap(px(10.0))
-            .min_h(px(Self::meta_height(self.can_close && !self.closed)))
-            .child(div().flex_1().child(line(
-                self.meta.clone(),
+            .min_h(px(Self::meta_height(
+                &self.meta,
+                self.width,
+                close_label.as_deref(),
+            )))
+            .child(div().flex_1().flex().flex_col().children(paragraph(
+                &self.meta,
                 text::META,
-                crate::text::root_line_height(text::META),
+                meta_lh,
                 color::FG_3,
+                Self::meta_width(self.width, close_label.as_deref()),
             )))
             .children((self.can_close && !self.closed).then(|| {
                 div()
@@ -492,8 +522,22 @@ mod tests {
                 })
                 .collect()
         };
-        let two = PollCard::height("Raid?", &answers(2), 700.0, None, true);
-        let three = PollCard::height("Raid?", &answers(3), 700.0, None, true);
+        let two = PollCard::height(
+            "Raid?",
+            &answers(2),
+            700.0,
+            None,
+            "Open",
+            Some("Close poll"),
+        );
+        let three = PollCard::height(
+            "Raid?",
+            &answers(3),
+            700.0,
+            None,
+            "Open",
+            Some("Close poll"),
+        );
         assert_eq!(three - two, 36.0 + 8.0);
     }
 }
