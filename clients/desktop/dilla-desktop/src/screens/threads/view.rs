@@ -333,27 +333,22 @@ impl PaneView {
         &self,
         item: &TimelineItem,
         spaced: bool,
-        // The thread a reply was posted in (`None` for the root, a message of the channel's log): where its poll is read.
+        // The thread the pane shows (the root's id, also for the root row): where a poll must be held to be drawn.
         thread: Option<MessageId>,
         ctx: &crate::slots::SlotCx,
         window: &mut Window,
         cx: &mut gpui::App,
     ) -> gpui::AnyElement {
         let author = name_of(&ctx.state, ctx.community, item.sender_user);
-        let bot = ctx
-            .state
-            .members
-            .get(
-                &ctx.community
-                    .unwrap_or(dilla_client::state::CommunityId([0; 16])),
-            )
-            .into_iter()
-            .flatten()
-            .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1)
-            || item.bot;
+        // The tag and the Bot's tone need the credential's claim and a Bot member row both (MessageItem `item.bot && isCommunityBot`).
+        let members = ctx
+            .community
+            .and_then(|c| ctx.state.members.get(&c))
+            .map_or(&[][..], Vec::as_slice);
+        let bot = crate::screens::timeline::is_community_bot(members, item);
         let live = ctx.client.is_some();
         let (kind, body) = match item.state {
-            TimelineItemState::Ok => (ThreadRowKind::Ok, thread_body(item, ctx, live)),
+            TimelineItemState::Ok => (ThreadRowKind::Ok, thread_body(item, ctx, live, thread)),
             TimelineItemState::Pending => (ThreadRowKind::Pending, item.body.clone()),
             TimelineItemState::Failed => (ThreadRowKind::Failed, item.body.clone()),
             TimelineItemState::CannotRead => (
@@ -480,12 +475,24 @@ impl PaneView {
 /// its card is being verified, or its own text without the marker line; any other message, and any state but Ok, is as it
 /// was. `live` is whether a client is running. The times in the fallback are in the zone of the log's (UTC under a
 /// frozen fixture clock).
-pub fn thread_body(item: &TimelineItem, ctx: &crate::slots::SlotCx, live: bool) -> String {
+pub fn thread_body(
+    item: &TimelineItem,
+    ctx: &crate::slots::SlotCx,
+    live: bool,
+    thread: Option<MessageId>,
+) -> String {
     if item.state != TimelineItemState::Ok {
         return item.body.clone();
     }
     let zone = crate::screens::timeline::zone_for(ctx.clock);
-    match crate::screens::timeline::poll_body(item, &ctx.state, ctx.community, live, &zone) {
+    match crate::screens::timeline::poll_body_in(
+        item,
+        &ctx.state,
+        ctx.community,
+        live,
+        &zone,
+        thread,
+    ) {
         crate::screens::timeline::PollBody::Asked(s) => tf("poll.asked", &[("name", s.as_str())]),
         crate::screens::timeline::PollBody::Pending => String::new(),
         crate::screens::timeline::PollBody::Fallback(s) => s,
@@ -536,8 +543,9 @@ impl Render for PaneView {
             .channel(open.channel)
             .map(|c| format!("#{}", c.name));
         let root = data.map(|d| match &d.root {
-            // The root is the channel's own message (its poll is the log's, held with no thread).
-            Some(root) => self.row(root, false, None, &ctx, window, cx),
+            // The web passes the root's id for the root row too (ThreadView `rootMsgId`): a channel poll that is a thread's root
+            // is no card in the pane, its record is the log's.
+            Some(root) => self.row(root, false, Some(open.root), &ctx, window, cx),
             None => line(
                 t("thread.rootMissing"),
                 text::SM,
@@ -1108,28 +1116,44 @@ mod tests {
             distinct: 0,
             capped: false,
         };
+        let at = Some(root);
         // Nothing held and a client running: the card's loading line stands for the text.
-        assert_eq!(thread_body(&poll_post, &ctx(&state), true), "");
+        assert_eq!(thread_body(&poll_post, &ctx(&state), true, at), "");
         // A thread's poll and the log's, held side by side under their own message ids.
         let log_post = item(root, true, format!("Other?\n{marker}"));
         state.bot.polls.insert(reply, held(Some(root)));
         state.bot.polls.insert(root, held(None));
-        assert_eq!(thread_body(&poll_post, &ctx(&state), true), "bob asked:");
-        assert_eq!(thread_body(&log_post, &ctx(&state), true), "bob asked:");
-        assert_eq!(state.bot.polls[&reply].thread, Some(root));
-        assert_eq!(state.bot.polls[&root].thread, None);
+        assert_eq!(
+            thread_body(&poll_post, &ctx(&state), true, at),
+            "bob asked:"
+        );
+        assert_eq!(
+            thread_body(&log_post, &ctx(&state), true, None),
+            "bob asked:"
+        );
+        // Each record is read only for its own place: the log's poll shown as the thread's root (the web passes the root's
+        // id for the root row too) is no card there but its text, and the thread's poll is none in the log.
+        let in_pane = thread_body(&log_post, &ctx(&state), true, at);
+        assert!(
+            in_pane.contains("Other?") && !in_pane.contains("[dilla-poll"),
+            "{} bytes",
+            in_pane.len()
+        );
+        let in_log = thread_body(&poll_post, &ctx(&state), true, None);
+        assert!(in_log.contains("Raid?"), "{} bytes", in_log.len());
+        // Dropping the thread's record leaves the log's one drawing as before.
         state.bot.polls.remove(&reply);
         assert_eq!(
-            state.bot.polls[&root].thread, None,
-            "the log's poll stays as it was"
+            thread_body(&log_post, &ctx(&state), true, None),
+            "bob asked:"
         );
-        assert_eq!(thread_body(&poll_post, &ctx(&state), true), "");
+        assert_eq!(thread_body(&poll_post, &ctx(&state), true, at), "");
         // A read that was given up shows the post's own text, local time and no marker.
         state
             .bot
             .poll_checks
             .insert(reply, PollCheck::GaveUp(channel));
-        let text = thread_body(&poll_post, &ctx(&state), true);
+        let text = thread_body(&poll_post, &ctx(&state), true, at);
         assert!(
             text.contains("Closes: Fri 15 Jan, 09:00 UTC"),
             "{} bytes",
@@ -1138,7 +1162,61 @@ mod tests {
         assert!(!text.contains("[dilla-poll"), "{} bytes", text.len());
         // A plain reply is its body.
         let plain_post = item(plain, false, "hello".into());
-        assert_eq!(thread_body(&plain_post, &ctx(&state), true), "hello");
+        assert_eq!(thread_body(&plain_post, &ctx(&state), true, at), "hello");
+        // A forged marker (a person's reply, or one whose credential claims Bot while the member is not) is plain text:
+        // no "asked" line, and the card's gate draws nothing.
+        let mut forged = item(MessageId([6; 16]), false, format!("Raid?\n{marker}"));
+        let mut claimed = forged.clone();
+        claimed.bot = true;
+        forged.msg_id = Some(MessageId([6; 16]));
+        claimed.msg_id = Some(MessageId([7; 16]));
+        state.bot.polls.insert(MessageId([6; 16]), held(Some(root)));
+        state.bot.polls.insert(MessageId([7; 16]), held(Some(root)));
+        for post in [&forged, &claimed] {
+            let body = thread_body(post, &ctx(&state), true, at);
+            assert_eq!(body, post.body, "the raw text, {} bytes", body.len());
+        }
+    }
+
+    /// The Bot's tag and tone need the credential's claim and a Bot member row both: a claim alone (a member who set the bit in
+    /// its own credential) is a person (MessageItem `item.bot && isCommunityBot`).
+    #[test]
+    fn a_self_signed_bot_claim_is_no_bot_in_a_thread() {
+        use dilla_client::state::{Member, UserId};
+        let member = |user: u8, kind: u8| Member {
+            user_id: UserId([user; 16]),
+            username: "x".into(),
+            display: String::new(),
+            kind,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let members = [member(1, 0), member(9, 1)];
+        let post = |sender: u8, bot: bool| TimelineItem {
+            key: "k".into(),
+            state: TimelineItemState::Ok,
+            reason: String::new(),
+            sender_user: Some(UserId([sender; 16])),
+            sender_device: None,
+            own: false,
+            bot,
+            ts: 1,
+            body: "hi".into(),
+            msg_id: None,
+            seq: None,
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        };
+        let is_bot = crate::screens::timeline::is_community_bot;
+        assert!(is_bot(&members, &post(9, true)), "claim and member row");
+        assert!(!is_bot(&members, &post(1, true)), "the claim alone");
+        assert!(!is_bot(&members, &post(9, false)), "the member row alone");
     }
 
     /// A view of `channel`, which the state lists in `community`.

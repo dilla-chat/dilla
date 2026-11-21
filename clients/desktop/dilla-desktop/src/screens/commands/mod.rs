@@ -435,6 +435,11 @@ fn poll_card_drawn(
             }
         };
     };
+    // PollCard.tsx:133: a record held for another place (the channel's poll shown as a thread's root, or the reverse) is no
+    // card here, and it is not read again: the held record stays the log's.
+    if poll.thread != thread {
+        return None;
+    }
     // The card is at most 440px of content: the log is always wider than the card's box, the thread pane's column is not.
     let mine = ctx.state.account.user_id == Some(poll.creator);
     let options = polls::card_options(poll)
@@ -1273,6 +1278,42 @@ mod tests {
             mention: false,
             actions: Vec::new(),
         }
+    }
+
+    /// PollCard.tsx:133: a record is a card only in its own place. The channel's poll shown as a thread's root (the web
+    /// passes the root's id for the root row) and a thread's poll shown in the log are none, and neither is read again.
+    #[gpui::test]
+    fn a_poll_is_a_card_only_where_it_was_posted(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let root = dilla_client::state::MessageId([3; 16]);
+        let (log_post, thread_post) = (bot_post(7), bot_post(8));
+        let mut bot = dilla_client::state::bot::BotState::default();
+        let mut log_poll = poll(vec![0], false, false, 60);
+        log_poll.thread = None;
+        let mut thread_poll = poll(vec![0], false, false, 60);
+        thread_poll.thread = Some(root);
+        bot.polls.insert(log_post.msg_id.unwrap(), log_poll);
+        bot.polls.insert(thread_post.msg_id.unwrap(), thread_poll);
+        let ctx = SlotCx {
+            state: std::sync::Arc::new(dilla_client::state::AppState {
+                bot,
+                ..Default::default()
+            }),
+            ..SlotCx::default()
+        };
+        let drawn = |item: &TimelineItem, thread, vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| poll_card_in(item, &ctx, thread, window, cx).is_some())
+        };
+        assert!(drawn(&log_post, None, vcx));
+        assert!(
+            !drawn(&log_post, Some(root), vcx),
+            "the log's poll as a thread's root"
+        );
+        assert!(drawn(&thread_post, Some(root), vcx));
+        assert!(
+            !drawn(&thread_post, None, vcx),
+            "a thread's poll in the log"
+        );
     }
 
     /// PollCard.tsx: a poll being read says so (`poll.loading`), a held record is the card, a read that was given up

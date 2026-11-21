@@ -510,6 +510,19 @@ pub fn poll_body(
     live: bool,
     zone: &jiff::tz::TimeZone,
 ) -> PollBody {
+    poll_body_in(item, state, community, live, zone, None)
+}
+
+/// [`poll_body`] of a post shown in `thread` (the thread's root id; `None` in the channel's log). A poll held for another
+/// place is no card here (PollCard.tsx rejects a record whose `threadId` differs), so the post reads as its text.
+pub fn poll_body_in(
+    item: &TimelineItem,
+    state: &AppState,
+    community: Option<CommunityId>,
+    live: bool,
+    zone: &jiff::tz::TimeZone,
+    thread: Option<dilla_client::state::MessageId>,
+) -> PollBody {
     let members = community
         .and_then(|c| state.members.get(&c))
         .map_or(&[][..], Vec::as_slice);
@@ -521,6 +534,9 @@ pub fn poll_body(
     }
     let readable = !item.edited && item.state == TimelineItemState::Ok;
     if readable && let Some(poll) = item.msg_id.and_then(|m| state.bot.polls.get(&m)) {
+        if poll.thread != thread {
+            return PollBody::Fallback(poll_fallback(&item.body, zone));
+        }
         return PollBody::Asked(user_name(state, members, poll.creator));
     }
     // `Retry` is a given-up post being read again: it still shows as given up until the read succeeds.
@@ -587,6 +603,15 @@ pub(crate) fn zone_for(clock: Clock) -> jiff::tz::TimeZone {
         Clock::Fixed { utc: true, .. } => jiff::tz::TimeZone::UTC,
         _ => jiff::tz::TimeZone::system(),
     }
+}
+
+/// Whether `item` is the community Bot's post: its credential claims it AND the member row of its sender is a Bot (kind 1),
+/// as the web's `item.bot && isCommunityBot(...)`; the claim is signed by the sender alone, so it is never trusted alone.
+pub(crate) fn is_community_bot(members: &[Member], item: &TimelineItem) -> bool {
+    item.bot
+        && members
+            .iter()
+            .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1)
 }
 
 fn sender_kind(members: &[Member], item: &TimelineItem) -> Option<u8> {
@@ -1159,11 +1184,7 @@ fn draw_row(
         );
         // MessageRow.tsx `avatarSrc`: a webhook post shows its avatar, read only from the instance (Task 28 item 15),
         // once it is in; the placeholder meanwhile and on a miss.
-        let bot = item.bot
-            && cx_row
-                .members
-                .iter()
-                .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1);
+        let bot = is_community_bot(cx_row.members, item);
         let webhook_avatar = webhook_of(cx_row.state, cx_row.community, item)
             .and_then(|w| w.avatar_id)
             .zip(ctx.client.as_ref())
