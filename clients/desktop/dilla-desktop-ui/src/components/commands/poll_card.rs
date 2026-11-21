@@ -9,7 +9,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
-use crate::components::avatar::{colour_of, initials_of};
+use crate::components::avatar::colour_of;
+use crate::components::commands::poll_dialog::grapheme_initials;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::LABEL_TRACKING;
@@ -434,7 +435,7 @@ fn voter(id: impl Into<ElementId>, name: &str) -> impl IntoElement {
         .justify_center()
         .child(
             line(
-                initials_of(name),
+                grapheme_initials(name),
                 text::POLL_VOTER,
                 crate::text::root_line_height(text::POLL_VOTER),
                 color::BRAND_INK,

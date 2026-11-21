@@ -62,6 +62,8 @@ fn extra_channels(server: &ServerSpec) -> Vec<world::PlacedChannel<'_>> {
 
 /// internal/gateway/presence.go `presenceIdleAfter`: a device with no input for this long is idle.
 const PRESENCE_IDLE_S: u64 = 10 * 60;
+/// The Bot's `sent_at` window (core/dilla-bot-core command.rs `CLOCK_SKEW_SECS`): a command further than this from its wall clock is stale.
+const BOT_SENT_AT_WINDOW_S: u64 = 120;
 /// What the browser's sign-in may move the host clock by (shoot.mjs `nextCode` steps it 30 s at a time).
 const SIGN_IN_CLOCK_S: u64 = 5 * 60;
 
@@ -221,6 +223,16 @@ async fn main() {
     // (`fixture/members.rs`). Whether that input reached the gateway before its socket was ready used to decide it. Five
     // more minutes cover the clock the sign-in moves (the shooter steps it 30 s per authenticator code it needs).
     let shift = (host_now + 60 + PRESENCE_IDLE_S + SIGN_IN_CLOCK_S).saturating_sub(first_ts);
+    // A poll post the browser gives up on relies on the Bot refusing the page's reads as stale (seed/polls.rs): the page signs them
+    // with the instance clock, which must lead the Bot's wall clock by more than the window the Bot accepts (the sent_at window
+    // of core/dilla-bot-core, 120 s) from the first message on. Fail here, not as a card that verifies.
+    if seed::polls_give_up(&f) {
+        let lead = first_ts + shift - host_now;
+        assert!(
+            lead > BOT_SENT_AT_WINDOW_S,
+            "the clock leads the Bot's by {lead} s: a poll read would verify and its give-up would never come"
+        );
+    }
     let viewer = person_of(&f.viewer);
     let secrets = serde_json::json!({
         "publicUrl": host.public,

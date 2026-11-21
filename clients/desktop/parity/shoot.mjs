@@ -375,8 +375,8 @@ async function shoot(args, fixture, text) {
     const last = (fixture.world.messages ?? []).filter((m) => m.channel === target).at(-1);
     // A poll post the browser gives up on (its read is refused and tried again 2, 5 and 10 s later) is drawn as its own text,
     // the marker line gone and the time tag a local time, so the last message is found by its fixed line instead.
-    // A Bot world: the Bot's member row is in the page's members list before the frame (a command dialog names the Bot from that
-    // list, and draws the fallback name's initials while the row is missing).
+    // A Bot world: the Bot's member row is in the page's members list before the frame (the members pane draws it and a command
+    // dialog names the Bot from that list).
     const botName = (fixture.world.people ?? []).find((person) => person.bot)?.display;
     if (state.bot && botName !== undefined && !boot) {
       await page.locator(`.d-member-list__open[aria-label^="${botName}"]`).first().waitFor({ state: 'attached' });

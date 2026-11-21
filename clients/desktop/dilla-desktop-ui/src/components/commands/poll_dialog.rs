@@ -9,7 +9,6 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
-use crate::components::avatar::initials_of;
 use crate::components::dialog::{Dialog, InitialFocus};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
@@ -422,7 +421,7 @@ impl RenderOnce for PollDialog {
             .justify_center()
             .child(
                 line(
-                    initials_of(&self.bot_name),
+                    grapheme_initials(&self.bot_name),
                     text::BADGE,
                     root_line_height(text::BADGE),
                     color::BRAND_INK,
@@ -524,5 +523,91 @@ trait When: Sized {
 impl When for gpui::Stateful<gpui::Div> {
     fn when_bg(self, on: bool, bg: gpui::Hsla) -> Self {
         if on { self.bg(bg) } else { self }
+    }
+}
+
+/// Whether `c` continues the grapheme cluster before it (UAX #29 Extend and SpacingMark for the scripts a name is written in,
+/// plus the emoji pieces): combining marks, variation selectors, the zero-width non-joiner, the emoji skin tones and the tag
+/// characters of a flag.
+fn extends(c: char) -> bool {
+    matches!(c,
+        '\u{0300}'..='\u{036F}' | '\u{0483}'..='\u{0489}' | '\u{0591}'..='\u{05BD}' | '\u{0610}'..='\u{061A}'
+        | '\u{064B}'..='\u{065F}' | '\u{0900}'..='\u{0903}' | '\u{093A}'..='\u{094F}' | '\u{1AB0}'..='\u{1AFF}'
+        | '\u{1DC0}'..='\u{1DFF}' | '\u{200C}' | '\u{20D0}'..='\u{20FF}' | '\u{3099}'..='\u{309A}'
+        | '\u{FE00}'..='\u{FE0F}' | '\u{FE20}'..='\u{FE2F}' | '\u{1F3FB}'..='\u{1F3FF}' | '\u{E0020}'..='\u{E007F}')
+}
+
+fn regional(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
+/// The first `count` grapheme clusters of `text` as one string. A cluster is a character with the characters that extend it,
+/// a zero-width joiner with the character it joins (an emoji family), a pair of regional indicators (a flag), or CRLF; this
+/// is the extended-cluster rule of `Intl.Segmenter` for names, short of Hangul jamo and the rarest Indic marks.
+fn first_graphemes(text: &str, count: usize) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    for _ in 0..count {
+        let Some(first) = chars.next() else { break };
+        out.push(first);
+        if first == '\r' && chars.peek() == Some(&'\n') {
+            out.extend(chars.next());
+            continue;
+        }
+        if regional(first) && chars.peek().is_some_and(|c| regional(*c)) {
+            out.extend(chars.next());
+        }
+        while let Some(&next) = chars.peek() {
+            if extends(next) {
+                out.extend(chars.next());
+            } else if next == '\u{200D}' {
+                out.extend(chars.next());
+                out.extend(chars.next());
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// packages/ui/src/initials.ts `graphemeInitials`: the tile's two characters, the first two grapheme clusters of the name
+/// upper-cased ("Dilla Bot" is "DI", not the two-word "DB" of an `Avatar`), so an emoji or a combining sequence is never
+/// split. The poll dialog's Bot tile and the poll card's voters use it.
+pub fn grapheme_initials(name: &str) -> String {
+    first_graphemes(name, 2).to_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grapheme_initials;
+
+    /// initials.test.ts: the first two characters of the whole name, not the first letters of two words.
+    #[test]
+    fn the_tile_takes_the_first_two_characters() {
+        assert_eq!(grapheme_initials("Dilla Bot"), "DI");
+        assert_eq!(grapheme_initials("Mr. Kim"), "MR");
+        assert_eq!(grapheme_initials("x"), "X");
+        assert_eq!(grapheme_initials(""), "");
+    }
+
+    /// A cluster of several code points is one character: a base with a combining mark, an emoji family joined by zero-width
+    /// joiners, a skin-toned emoji and a flag (two regional indicators) are never cut.
+    #[test]
+    fn a_multi_codepoint_grapheme_is_one_character() {
+        assert_eq!(grapheme_initials("e\u{301}a b"), "E\u{301}A");
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(
+            grapheme_initials(&format!("{family}xyz")),
+            format!("{family}X")
+        );
+        let wave = "\u{1F44B}\u{1F3FD}";
+        assert_eq!(grapheme_initials(&format!("a{wave}b")), format!("A{wave}"));
+        let flags = "\u{1F1F8}\u{1F1EA}\u{1F1F3}\u{1F1F4}\u{1F1E9}";
+        assert_eq!(
+            grapheme_initials(flags),
+            "\u{1F1F8}\u{1F1EA}\u{1F1F3}\u{1F1F4}"
+        );
+        assert_eq!(grapheme_initials("a\r\nb"), "A\r\n");
     }
 }

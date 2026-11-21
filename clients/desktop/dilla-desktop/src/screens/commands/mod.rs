@@ -1175,6 +1175,38 @@ mod tests {
         assert!(vcx.update(|window, cx| poll_card(&deleted, &ctx, window, cx).is_none()));
     }
 
+    /// MessageItem.tsx mounts the card's container for any post that ends in the poll marker, so a post whose card gave up (or
+    /// that no card is drawn for) keeps the container's room under it: the 6px margin less what the row's empty slot already
+    /// holds (none in the log's last row, 1px gap and 4px margin elsewhere), and a post with no marker keeps nothing.
+    #[gpui::test]
+    fn a_marker_post_with_no_card_keeps_the_containers_room(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let item = bot_post(7);
+        let mut bot = dilla_client::state::bot::BotState::default();
+        bot.poll_checks
+            .insert(item.msg_id.unwrap(), PollCheck::GaveUp(ChannelId([4; 16])));
+        let ctx = SlotCx {
+            state: std::sync::Arc::new(dilla_client::state::AppState {
+                bot,
+                ..Default::default()
+            }),
+            ..SlotCx::default()
+        };
+        let room = |item: &TimelineItem, last: bool, vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                poll_card_below_body(item, &ctx, last, window, cx).map(|e| e.height)
+            })
+        };
+        let slot = crate::screens::timeline::attachments_slot(false);
+        assert_eq!(room(&item, true, vcx), Some(CONTAINER_MARGIN));
+        assert_eq!(room(&item, false, vcx), Some(CONTAINER_MARGIN - slot));
+        // The thread pane's card has no container lead: nothing is added.
+        assert!(vcx.update(|window, cx| poll_card_in(&item, &ctx, None, window, cx).is_none()));
+        let mut plain = bot_post(7);
+        plain.body = "Mira asked:".into();
+        assert_eq!(room(&plain, true, vcx), None);
+    }
+
     /// Integration 3, final review M4: each window's composer has its own `/` list: a draft typed in window A opens
     /// nothing in window B, a send in B leaves A's list as it was, and B's keys never move A's highlight.
     #[gpui::test]
