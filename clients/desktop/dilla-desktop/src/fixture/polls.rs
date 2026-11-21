@@ -115,7 +115,7 @@ pub(super) fn apply_bot(world: &WorldSpec, ids: Ids<'_>, state: &mut AppState) {
 }
 
 /// Maps the facet into `state`.
-pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
+pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: Ids<'_>, state: &mut AppState) {
     let Some(me) = state.account.user_id else {
         return;
     };
@@ -148,12 +148,13 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
                 .msg_id
         });
         let mut counts = vec![0u64; p.options.len()];
-        let mut previews = vec![Vec::new(); p.options.len()];
+        // The Bot's voter previews (polls/store.go `VoterSummary`) are its vote keys in order: by the voter's id.
+        let mut previews: Vec<Vec<([u8; 16], String)>> = vec![Vec::new(); p.options.len()];
         let mut voters: Vec<&str> = Vec::new();
         for v in &p.votes {
             if let Some(c) = counts.get_mut(v.option) {
                 *c += 1;
-                previews[v.option].push(display(&v.by));
+                previews[v.option].push((ids.user(&v.by).0, display(&v.by)));
             }
             if !voters.contains(&v.by.as_str()) {
                 voters.push(&v.by);
@@ -184,7 +185,10 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
                 revision: 1,
                 previews: previews
                     .into_iter()
-                    .map(|v| v.into_iter().take(5).collect())
+                    .map(|mut v| {
+                        v.sort_by_key(|(id, _)| *id);
+                        v.into_iter().take(5).map(|(_, name)| name).collect()
+                    })
                     .collect(),
                 distinct: voters.len() as u64,
                 capped: false,
@@ -198,6 +202,25 @@ mod tests {
     use std::path::Path;
 
     use crate::fixture::{Fixture, FixtureScreen};
+
+    /// The voters each answer shows are the Bot's (polls/store.go `VoterSummary`): in the order of the voters' ids, as
+    /// the web's card-b reference was shot with (Mira, Björn, Ada, Liv; Kari, Sven), not in the order they voted.
+    #[test]
+    fn the_voters_come_in_the_bots_order() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity");
+        let f = Fixture::load(
+            &dir.join("fixtures/polls/card-b.json"),
+            Some(&dir.join("references/linux/polls/card-b.shot.json")),
+        )
+        .unwrap();
+        let poll = f.state.bot.polls.values().next().expect("the poll");
+        let initials = |names: &[String]| -> Vec<String> {
+            names.iter().map(|n| n.chars().take(2).collect()).collect()
+        };
+        assert_eq!(initials(&poll.previews[0]), ["Mi", "Bj", "Ad", "Li"]);
+        assert_eq!(initials(&poll.previews[1]), ["Ka", "Sv"]);
+        assert_eq!(initials(&poll.previews[2]), ["Mi"]);
+    }
 
     /// A poll message that is a reply in a thread is held with that thread (the root's message id) and its channel, and a
     /// poll of the log with none; the two share nothing.

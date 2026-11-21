@@ -352,7 +352,7 @@ pub fn build_state(
     messages::apply(world, viewer, ids, fixture.clock + shift, &mut state);
     music::apply(world, ids, &mut state);
     notify::apply(fixture, ids, &mut state);
-    polls::apply(world, viewer, &mut state);
+    polls::apply(world, viewer, ids, &mut state);
     reactions::apply(world, viewer, &mut state);
     roles::apply(world, viewer, &mut state);
     server_admin::apply(world, viewer, &mut state);

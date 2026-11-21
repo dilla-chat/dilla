@@ -56,6 +56,8 @@ const TOP_MARGIN: f32 = 6.0;
 /// An answer row's side padding, and the width one voter's avatar takes in the voters' span (18px less its -5px margin).
 const ANSWER_PAD: f32 = 10.0;
 const VOTER_STEP: f32 = 13.0;
+/// The check's outer size (`.d-poll-card__check`: 14px content in a 1px border).
+const CHECK: f32 = 16.0;
 
 type OnVote = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 type OnClose = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -204,7 +206,7 @@ impl PollCard {
     /// (8px gap).
     fn answer_width(width: f32, voters: usize) -> f32 {
         let content = Self::inner(width) - 2.0 - 2.0 * ANSWER_PAD;
-        content - (16.0 + 8.0) - 36.0 - 2.0 * 8.0 - voters.min(5) as f32 * VOTER_STEP
+        content - (CHECK + 8.0) - 36.0 - 2.0 * 8.0 - voters.min(5) as f32 * VOTER_STEP
     }
 
     /// An answer's wrapped lines.
@@ -335,9 +337,10 @@ impl RenderOnce for PollCard {
             } else {
                 color::POLL_FILL
             };
+            // `.d-poll-card__check` is content-box: 14px inside its 1px border, 16px outer.
             let check = div()
                 .flex_none()
-                .size(px(14.0))
+                .size(px(CHECK))
                 .rounded(if self.multi {
                     radius::TAG
                 } else {
@@ -402,23 +405,29 @@ impl RenderOnce for PollCard {
                         .px(px(10.0))
                         .child(check)
                         .child(
-                            div().flex_1().min_w_0().flex().flex_col().children(
-                                paragraph(
-                                    &o.text,
-                                    text::UI,
-                                    ui_lh,
-                                    color::FG,
-                                    Self::answer_width(self.width, o.voters.len()),
-                                )
-                                .into_iter()
-                                .map(|l| {
-                                    l.weight(if winner {
-                                        font::WEIGHT_DISPLAY
-                                    } else {
-                                        font::WEIGHT_BTN
-                                    })
-                                }),
-                            ),
+                            div()
+                                .debug_selector(move || format!("poll-answer-text-{i}"))
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .children(
+                                    paragraph(
+                                        &o.text,
+                                        text::UI,
+                                        ui_lh,
+                                        color::FG,
+                                        Self::answer_width(self.width, o.voters.len()),
+                                    )
+                                    .into_iter()
+                                    .map(|l| {
+                                        l.weight(if winner {
+                                            font::WEIGHT_DISPLAY
+                                        } else {
+                                            font::WEIGHT_BTN
+                                        })
+                                    }),
+                                ),
                         )
                         .child(voters)
                         .child(div().w(px(36.0)).flex().justify_end().child(line(
@@ -497,14 +506,20 @@ impl RenderOnce for PollCard {
 }
 
 /// A voter's disc in its 2px `--surface` ring, `scale` times its size (a pop's frame, [`crate::motion::pop_frame`]); at
-/// full size it keeps its element id.
+/// full size it keeps its element id. The ring is PollCard.css's `box-shadow: 0 0 0 2px var(--surface)`: drawn outside the
+/// 18px disc and taking no room, so each voter after the first adds [`VOTER_STEP`] to the row.
 fn voter_disc(n: usize, name: &str, pop: crate::motion::Pop) -> gpui::AnyElement {
     let s = pop.scale();
     let disc = voter(("poll-voter", n), name, s, pop.live());
     div()
         .rounded(radius::PILL)
-        .border(px(2.0 * s))
-        .border_color(color::SURFACE)
+        .shadow(vec![gpui::BoxShadow {
+            color: color::SURFACE,
+            offset: gpui::point(px(0.0), px(0.0)),
+            blur_radius: px(0.0),
+            spread_radius: px(2.0 * s),
+            inset: false,
+        }])
         .child(disc)
         .into_any_element()
 }
@@ -571,6 +586,61 @@ impl WhenClick for gpui::Stateful<gpui::Div> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review (ui I1): the drawn answer row is the row [`PollCard::answer_width`] wraps the answer for, with five
+    /// voters as with none: the check 16px outer, each voter 13px (its 2px ring is a shadow, taking no room), so a wrapped
+    /// answer never runs under the avatars.
+    #[gpui::test]
+    fn the_answer_column_is_as_wide_as_its_lines_are_wrapped(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Render};
+
+        struct Host {
+            voters: usize,
+        }
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let voters = ["Ada", "Bjorn", "Liv", "Mira", "Sven", "Kari"][..self.voters]
+                    .iter()
+                    .map(|n| SharedString::from(*n))
+                    .collect();
+                div().w(px(WIDTH)).child(PollCard::new(
+                    "poll",
+                    "Which route?",
+                    false,
+                    false,
+                    "Open",
+                    vec![Option_ {
+                        text: "the long coastal road past the old lighthouse".into(),
+                        pct: 50,
+                        mine: true,
+                        winner: false,
+                        voters,
+                    }],
+                    Labels {
+                        closed: "CLOSED".into(),
+                        close: "Close poll".into(),
+                    },
+                    WIDTH,
+                ))
+            }
+        }
+        const WIDTH: f32 = 400.0;
+
+        cx.update(|cx| cx.set_reduce_motion(true));
+        for voters in [0, 1, 5, 6] {
+            let (_, vcx) = cx.add_window_view(|_, _| Host { voters });
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            let column = vcx
+                .debug_bounds("poll-answer-text-0")
+                .expect("the answer is drawn");
+            assert_eq!(
+                f32::from(column.size.width),
+                PollCard::answer_width(WIDTH, voters),
+                "{voters} voters"
+            );
+        }
+    }
 
     #[test]
     fn the_card_takes_at_most_440px_of_content() {
