@@ -161,3 +161,17 @@ from the web's animation, none visible in a reference:
   through the portal on Linux; other Linux desktops animate), read again at most every 10 s on a state change, not on the
   OS's own notification.
 - The dock's compact row draws no equaliser, as the web's does not (the task brief named it by mistake).
+
+### Live indicators (Task 36e)
+
+The speaking meter, typing sweep, pending spinner, brand caret, ring wave and jump-to flash all draw their reduced-motion form
+in the references (the same `reduce_motion` as above): full meter bars, a still sweep gradient, an upright spinner, a caret
+that stays on, the plain 2px `--ok` ring, and MessageRow.css's own reduced form of the flash (the tint plus an inset 2px
+`--accent` edge). Accepted differences from the web's animation, none visible in a reference:
+
+- The caret changes at the first frame after its 49% / 50% stops, up to 100 ms late (it asks for frames at 10 per second,
+  not at every display frame); the other indicators repaint at 30 frames a second.
+- The sweep's `opacity` fade-in on `.d-composer__sweep` (a transition, `--duration-turn`) is not drawn: the strip is there
+  or it is not.
+- `d-row-flash` replaces the row's background while it runs, as CSS does; a hover on the row during the flash does not show
+  until the flash is over.

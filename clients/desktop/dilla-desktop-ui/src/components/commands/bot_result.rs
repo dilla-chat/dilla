@@ -151,8 +151,15 @@ impl BotResult {
 }
 
 impl RenderOnce for BotResult {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (chip_bg, chip_fg) = self.status.chip();
+        // BotResult.css: the pending status's icon spins (`d-spin`); a settled result's icon is still and schedules nothing.
+        let status_icon = Icon::new(self.status.icon()).size(px(11.0)).color(chip_fg);
+        let status_icon = if self.status == Status::Pending {
+            crate::motion::spinning(status_icon, (self.id.clone(), "spin"), cx)
+        } else {
+            status_icon.into_any_element()
+        };
         let meta_lh = crate::text::root_line_height(text::META);
         let avatar = match &self.author {
             Author::Bot { name } => Avatar::new("bot-result-avatar", name.clone())
@@ -250,9 +257,7 @@ impl RenderOnce for BotResult {
                                     .px(px(6.0))
                                     .rounded(radius::SM)
                                     .bg(chip_bg)
-                                    .child(
-                                        Icon::new(self.status.icon()).size(px(11.0)).color(chip_fg),
-                                    )
+                                    .child(status_icon)
                                     .child(line(self.labels.status, text::META, meta_lh, chip_fg)),
                             )
                             .child(

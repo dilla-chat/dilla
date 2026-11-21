@@ -23,7 +23,7 @@ use dilla_client::state::{
     UserId,
 };
 use gpui::{
-    AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
@@ -1290,7 +1290,10 @@ fn draw_row(
     }
     // The row's box: the hover fill and bar, the mention tint, the flash; the toolbar over its top edge.
     let group = shown.group.clone();
-    let flash = ui.read(cx).flashing(&item.key);
+    let flash = ui
+        .read(cx)
+        .flashing(&item.key)
+        .then(|| ui.read(cx).flash_seq);
     // MessageRow.tsx's `<article>`: one node per message, named by its author, time and text. Its id is the message's
     // key, so a row keeps its node while earlier messages load above it.
     let spoken = spoken_item(
@@ -1379,9 +1382,8 @@ fn draw_row(
             .filter(|r| Some(r.channel) == ctx.channel)
             .map(|r| r.msg_id),
     );
-    row = if flash {
-        row.bg(color::ACCENT_FLASH)
-    } else if replying {
+    // The jump's flash (`d-row-flash`) is laid over the row's own fill below.
+    row = if replying {
         row.bg(color::ACCENT_FAINT)
     } else if item.mention {
         row.bg(color::WARN_SOFT)
@@ -1428,7 +1430,15 @@ fn draw_row(
     {
         row = row.child(bar);
     }
-    row.children(placer.out).into_any_element()
+    let row = row.children(placer.out);
+    match flash {
+        Some(seq) => dilla_desktop_ui::motion::flash(
+            row,
+            ElementId::NamedInteger(format!("row-flash-{}", item.key).into(), seq),
+            cx,
+        ),
+        None => row.into_any_element(),
+    }
 }
 
 /// Whether the row of message `msg` is the one the reply bar aims at (`target`).

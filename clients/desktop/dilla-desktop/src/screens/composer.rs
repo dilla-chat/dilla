@@ -1090,7 +1090,13 @@ impl Render for Composer {
             .when(reply_bar.is_some(), |d| d.rounded_t_none())
             .flex()
             .flex_col()
-            .child(div().h(len(2.)))
+            // The 2px sweep (Composer.css `__sweep`): it slides only while someone else types, and an idle strip is
+            // empty and schedules no frames.
+            .child(if typing_text.is_some() {
+                dilla_desktop_ui::motion::sweep("composer-sweep", cx)
+            } else {
+                div().h(len(2.)).into_any_element()
+            })
             // The reply bar and the attachment tray (11, 12): no gap, so an empty slot takes no height.
             .child(leading)
             .child(row)

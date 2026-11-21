@@ -456,6 +456,7 @@ pub fn render(
     handlers: &TitlebarHandlers,
     reminders: Option<gpui::AnyElement>,
     menu: Option<gpui::AnyElement>,
+    cx: &App,
 ) -> impl IntoElement + use<> {
     let brand_name_line = dilla_desktop_ui::text::root_line_height(text::XS);
     let mark = centred(
@@ -482,12 +483,15 @@ pub fn render(
                 .weight(font::WEIGHT_DISPLAY)
                 .tracking(LABEL_TRACKING_WIDE),
         )
-        .child(
+        // The brand caret blinks (TopBar.css `d-caret` on `--duration-caret`).
+        .child(dilla_desktop_ui::motion::blink(
             div()
                 .w(Pixels::from(css::BRAND_CURSOR_W))
                 .h(Pixels::from(css::BRAND_CURSOR_H))
                 .bg(color::BRAND),
-        );
+            "topbar-caret",
+            cx,
+        ));
     let search = div()
         .w(Pixels::from(css::SEARCH_SLOT))
         .flex_none()

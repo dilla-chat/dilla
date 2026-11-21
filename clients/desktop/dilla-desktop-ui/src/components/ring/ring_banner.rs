@@ -11,8 +11,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, BoxShadow, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, actions, div, point, px,
+    App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, Window, actions, div, px,
 };
 
 use crate::a11y::{Accessible, Live, Role};
@@ -42,8 +42,8 @@ const ACTIONS_GAP: f32 = 0.375 * REM;
 const BUTTON_H: f32 = 2.0 * REM;
 const BUTTON_MIN_W: f32 = 2.75 * REM;
 const BUTTON_PAD_X: f32 = 0.875 * REM;
-/// The ring around an incoming caller's avatar: `box-shadow: 0 0 0 2px var(--ok)`.
-const WAVE: f32 = 2.0;
+/// The caller's avatar (`AvatarSize::Row`) the wave rings.
+const GLYPH: f32 = 32.0;
 
 /// What a ring's action does: called with the ring's key.
 pub type OnRing = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
@@ -170,7 +170,7 @@ fn button(
 }
 
 impl RenderOnce for RingBanner {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let rows = self.rows.into_iter().enumerate().map(|(i, ring)| {
             let key = ring.key.clone();
             let (answer_key, answer_click, answer_on) =
@@ -191,14 +191,14 @@ impl RenderOnce for RingBanner {
                     )
                     .size(AvatarSize::Row),
                 );
+            // The incoming ring's wave (`d-ring`): a 2px `--ok` ring that grows and fades, over and over; a busy ring has none.
             if !ring.busy {
-                glyph = glyph.shadow(vec![BoxShadow {
-                    color: color::OK,
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(0.0),
-                    spread_radius: px(WAVE),
-                    inset: false,
-                }]);
+                glyph = glyph.child(crate::motion::ring_wave(
+                    SharedString::from(format!("ring-wave-{key}")),
+                    GLYPH,
+                    radius::AVATAR,
+                    cx,
+                ));
             }
             // A ring is read out at once as it arrives (the web's ring region is `aria-live`; a ring interrupts).
             let mut row = div()

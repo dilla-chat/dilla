@@ -2492,6 +2492,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 (&images, &stats),
                 (values.as_ref(), &bounds),
                 silent(&state, k, &sound),
+                cx,
             )
         })
         .collect();
@@ -2507,6 +2508,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             (&images, &stats),
             (values.as_ref(), &bounds),
             silent(&state, &k, &sound),
+            cx,
         );
         let size = window.viewport_size();
         deferred(
@@ -2816,6 +2818,7 @@ fn state_word(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tile(
     state: &AppState,
     channel: &Channel,
@@ -2827,6 +2830,7 @@ fn tile(
         &TileBounds,
     ),
     silent: bool,
+    cx: &App,
 ) -> AnyElement {
     let p = state
         .voice
@@ -2993,16 +2997,25 @@ fn tile(
             )
             .weight(font::WEIGHT_LABEL),
         )
-        .child(
+        // The bars bounce only while speaking (`d-bar`, the equaliser's helper); a silent tile holds the meter's room
+        // and schedules no frames.
+        .child(if speaking {
+            dilla_desktop_ui::motion::equaliser(
+                format!("voice-tile-meter-{}", k.device.hex()),
+                m::METER_H,
+                cx,
+            )
+        } else {
             div()
                 .flex_none()
                 .flex()
                 .items_end()
                 .gap(px(m::METER_GAP))
                 .h(px(m::METER_H))
-                .when(!speaking, |d| d.invisible())
-                .children((0..3).map(|_| div().w(px(m::METER_W)).h(px(m::METER_H)).bg(color::OK))),
-        )
+                .invisible()
+                .children((0..3).map(|_| div().w(px(m::METER_W)).h(px(m::METER_H)).bg(color::OK)))
+                .into_any_element()
+        })
         .children(state_word(
             format!("voice-tile-state-{}", k.device.hex()),
             tile_state,
