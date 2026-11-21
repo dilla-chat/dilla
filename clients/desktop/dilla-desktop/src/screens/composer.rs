@@ -813,15 +813,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
 }
 
 /// Composer.css `.d-composer__box:focus-within`: `box-shadow: 0 0 0 3px var(--accent-soft)`.
-fn composer_focus_ring() -> Vec<gpui::BoxShadow> {
-    vec![gpui::BoxShadow {
-        color: color::ACCENT_SOFT,
-        offset: gpui::point(px(0.0), px(0.0)),
-        blur_radius: px(0.0),
-        spread_radius: px(3.0),
-        inset: false,
-    }]
-}
+const FOCUS_RING_SPREAD: f32 = 3.0;
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1085,7 +1077,12 @@ impl Render for Composer {
             } else {
                 color::HAIRLINE_2
             })
-            .when(focused, |d| d.shadow(composer_focus_ring()))
+            .when(focused, |d| {
+                d.shadow(dilla_desktop_ui::metrics::spread_ring(
+                    color::ACCENT_SOFT,
+                    FOCUS_RING_SPREAD,
+                ))
+            })
             .rounded(radius::LG)
             .when(reply_bar.is_some(), |d| d.rounded_t_none())
             .flex()
@@ -1205,7 +1202,7 @@ mod tests {
     /// Composer.css `.d-composer__box:focus-within`: a 3px `--accent-soft` ring outside the box, no blur.
     #[test]
     fn the_focused_box_has_a_three_px_accent_soft_ring() {
-        let ring = composer_focus_ring();
+        let ring = dilla_desktop_ui::metrics::spread_ring(color::ACCENT_SOFT, FOCUS_RING_SPREAD);
         assert_eq!(ring.len(), 1);
         assert_eq!(f32::from(ring[0].spread_radius), 3.0);
         assert_eq!(f32::from(ring[0].blur_radius), 0.0);
