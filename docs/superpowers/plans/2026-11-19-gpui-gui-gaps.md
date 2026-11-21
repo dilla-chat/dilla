@@ -1676,6 +1676,138 @@ Modify D screens/voice/mod.rs:1993-2002 (the stage body column) · Test in D tes
       gate row for `e2e/voice/csp-axe.spec.ts` ("…a player…") is unchanged.
 - [ ] Step 6: Commit `desktop: the now-playing bar on top of the voice stage`.
 
+### Task 36b: The now-playing equaliser bounces and its surfaces rise in, as the web's do [B3b]
+
+**Size:** M. **Decision:** Jonas 2026-11-21, "Animate, like the web": the Task 36 review found the desktop draws the now-playing bars static, and draws no entrance.
+
+Web spec (packages/ui/src):
+- Keyframes, styles/base.css:170-177:
+  - `@keyframes d-bar { 0%, 100% { transform: scaleY(0.2); } 50% { transform: scaleY(1); } }`
+  - `@keyframes d-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }`
+- The equaliser, NowPlaying/NowPlaying.css:10-14: three 2px `--ok` bars, `transform-origin: bottom`, `animation: d-bar var(--duration-beat) infinite`, the second delayed by beat/4 and the third by beat/2. The bars show only in a playing state.
+- The entrances, all `d-up`:
+  - the card (`.d-np--card`, :24, `--duration-player`);
+  - the queue (`.d-np__queue`, :47, `--duration-queue`);
+  - the compact dock row (`.d-np--compact`, :56, `--duration-player-row`);
+  - the stage bar (:70, `--duration-player-bar`, `--ease-out`).
+- The durations come from the `--duration-*` tokens (packages/design-tokens/src, `motion`). Reduced motion zeroes those tokens (`[data-motion="reduced"]` and prefers-reduced-motion), so a reduced-motion user sees static full bars and no entrance.
+
+GPUI today:
+- The bars are drawn static at full height in the stage bar (Task 36, D/screens/bot_admin/player.rs `stage_bar`), the music card (Task 35, `music_card`), and the voice dock's compact player.
+- There is no `with_animation` anywhere.
+- The motion choice exists: Task 19 added Appearance → Motion, saved and read as user settings and shown at once.
+
+Build:
+1. A small shared animation helper in dilla-desktop-ui, beside the tokens. It drives the d-bar scale and the d-up opacity and offset from GPUI's animation API, with durations read from the generated motion tokens; never hand-edit generated files, and if tokens.rs lacks the motion durations, extend the generator. Under reduced motion, the duration is 0, which means static full bars and no entrance.
+2. Apply the equaliser to all three places (stage bar, card, dock compact player), only while playing. Apply the d-up entrances to the card, the queue, the compact row and the stage bar, once per mount; don't replay on every re-render.
+3. Repaint cost: an infinite bar animation must repaint only while the bars are on screen and playing. It must not keep the window rendering when music is paused, the player isn't shown, or the window is hidden. Measure and report.
+
+Tests:
+- Unit: the d-bar scale at 0, beat/4, beat/2 and 3·beat/4 for each of the three bars (with delays); the d-up opacity and offset at 0, half and the end.
+- Reduced motion: duration 0 gives scale 1 and no entrance offset.
+- A paused player schedules no animation frames.
+- Parity: existing goldens must still pass. Shoot at a fixed animation time, or have the parity harness freeze animations, the same way the web shots freeze CSS animations. Don't re-bless to hide a difference.
+
+Rules: no literal px in D/src/screens; decrypted content never in Debug; stage only your own hunks.
+
+Commit: `desktop: the now-playing equaliser bounces and its player rises in, as the web's do`
+
+**Common to 36c, 36d, 36e** (Jonas 2026-11-21, "All of them": the desktop matches all of the web's motion before alpha.2):
+- **Reference:** the web's keyframes are in packages/ui/src/styles/base.css:170-181: `d-up`, `d-in`, `d-fade`, `d-modal`, `d-sheet-up`, `d-pop`, `d-toast`, `d-bar`, `d-sweep`, `d-caret`, `d-ring` and `d-spin`. Component-local keyframes sit in each component's CSS. Durations and easings come from the `--duration-*` / `--ease-*` tokens.
+- **Build on Task 36b's helper**, clients/desktop/dilla-desktop-ui/src/motion.rs, which has `rise_in`, `equaliser`, `bar_scale`, `rise_at` and `cubic_bezier`:
+  - Add one pure function per keyframe, giving the transform and opacity at an elapsed time.
+  - Add one element helper per keyframe that only hands GPUI's clock to that function.
+  - Read durations from the generated motion tokens (extend scripts/gen-gpui-tokens.mjs and never hand-edit tokens.rs).
+  - Honour CSS `animation-delay` and the stagger tokens.
+- **Reduced motion:** use `cx.reduce_motion()`, which follows the Appearance setting and the OS (D/src/motion.rs). The web zeroes the duration tokens under reduced motion, so the desktop draws the end state: no entrance, and a static indicator in its resting frame. Where a component's own CSS says something different under `prefers-reduced-motion` (e.g. MessageRow's flash keeps the flash background plus an inset accent edge), follow that CSS.
+- **Repaint cost:**
+  - An entrance runs once per mount and never replays on re-render. Its element state is keyed to a stable id, such as the message key or the section id.
+  - An infinite animation asks for frames only while it is drawn and active, capped as 36b caps the equaliser (`with_max_fps`). Nothing may keep the window rendering when idle or hidden.
+  - Measure and report it.
+- **Inventory first:**
+  - The task's first commit is a table in the report covering every web site in the task's scope: web file:line, keyframe, duration token, delay, and the GPUI counterpart's file:line or "no GPUI counterpart".
+  - Grep for the sites: `grep -rnE "animation" packages/ui/src packages/web/src -g '*.css'`.
+  - A web site with no GPUI counterpart is listed, not built.
+  - A GPUI counterpart that differs in structure, so that the animation can't be applied as the web does it, is a concern for the controller, not a design call.
+- **Tests:**
+  - Unit tests for each new pure function, at its keyframe stops (0, the midpoint, the end, plus any custom stops such as d-pop's 60 %).
+  - Reduced motion gives the end state.
+  - One GPUI test per helper proves that an entrance does not replay on re-render and that an idle or inactive indicator schedules no frames.
+- **Parity:**
+  - Existing goldens must still pass. The parity harness already freezes animations as the web shots freeze CSS (36b); confirm this for each new helper.
+  - Never re-bless to hide a difference. Sub-pixel artefacts go in TOLERANCES.md with a reason ("design, not pixels").
+- **Rules:**
+  - No literal px in D/src/screens; offsets come from the keyframe definitions in motion.rs.
+  - Decrypted content never in logs or Debug.
+  - Stage only your own hunks, because another builder works in the same worktree.
+  - Clippy must be clean with and without `--features automation`.
+
+### Task 36c: Entrances rise and fade in as the web's do [B3c]
+
+**Size:** L. **Decision:** Jonas 2026-11-21, "All of them".
+
+Read task-36-motion-common.md (same directory) first; it binds this task.
+
+Scope: every **entrance** on the web, meaning a one-shot animation when an element mounts:
+- `d-up` on:
+  - message rows, staggered by `--d-enter-i` × `--duration-stagger`, MessageRow.css:8;
+  - settings sections, SettingsFrame.css:30;
+  - the attachment card and tray items;
+  - code blocks;
+  - the onboarding body and ready panel;
+  - reminder rows;
+  - top-bar items;
+  - the voice dock;
+  - the stage preview, AFK view and focus tile;
+  - call-stage tiles, with their nth-child stagger, CallStage.css:56-62.
+- `d-invite-up` on the invite panel.
+- The log's channel-switch `d-log-fade` + `d-log-rise`, MessageLog.css:3-8.
+- The splash.
+- `d-fade` on the command picker's chips and bar, CommandPicker.css:31/63.
+- The poll card's `d-poll-card-entry`, its voters' `d-poll-voter-pop`, and the poll dialog answers' `d-poll-answer-entry`.
+- `d-sheet-up` only if the desktop draws the ProfileCard sheet layout.
+
+Already done, out of scope: the NowPlaying entrances (36b).
+
+Commits:
+- `desktop: messages, settings and the stage rise in as the web's do`, plus one commit per further area if the diff is large.
+
+### Task 36d: Overlays, toasts and badges animate in as the web's do [B3d]
+
+**Size:** M. **Decision:** Jonas 2026-11-21, "All of them".
+
+Read task-36-motion-common.md (same directory) first; it binds this task.
+
+Scope: every **overlay and badge** on the web:
+- `d-modal` on:
+  - the action menu, dialogs (with the confirm kind's `--duration-normal`), the GIF picker, the emoji grid, the mention list, the drop overlay, the search palette (both copies, including packages/web/src/app.css:65), the share picker, the command list and suggestions, and the onboarding card;
+  - the reminders popover, if its CSS animates.
+- `d-fade` on dialog and search backdrops, the lightbox and tooltips.
+- `d-toast` on toasts.
+- `d-pop` on the channel-row pill, the community-rail badge and the top-bar badge.
+
+Commit:
+- `desktop: menus, dialogs, toasts and badges animate in as the web's do`
+
+### Task 36e: Live indicators move as the web's do [B3e]
+
+**Size:** M. **Decision:** Jonas 2026-11-21, "All of them".
+
+Read task-36-motion-common.md (same directory) first; it binds this task.
+
+Scope: every **infinite or attention** animation on the web:
+- The call tile's speaking meter: three 2 × 10 px `--ok` bars using `d-bar` over `--duration-beat`, 1/4 and 1/2 beat apart, shown only while speaking (CallTile.css:24-29). Reuse 36b's `bar_scale`.
+- The composer's typing sweep, `d-sweep` (Composer.css:15), only while `data-typing`.
+- The Bot result's pending spinner, `d-spin` (BotResult.css:9).
+- The brand caret blink, `d-caret` (TopBar.css:13).
+- The incoming-ring pulse, `d-ring` (RingBanner.css:8-10).
+- The jump-to row flash, `d-row-flash` (MessageRow.css:99-102). Its reduced-motion form keeps the flash background plus an inset 2 px accent edge.
+
+Every infinite indicator schedules frames only while it is drawn and active, capped at a fixed fps as the equaliser is. A silent tile, an idle composer or a settled result draws its resting frame and schedules nothing; prove this per indicator.
+
+Commit:
+- `desktop: the speaking meter, typing sweep, spinner, caret, ring pulse and row flash move as the web's do`
+
 ### Task 37: The dock's link quality (good, poor, bad) [S5]
 
 **Size:** S
