@@ -193,6 +193,9 @@ mod driven {
         // Task 34: the composer foot's typing line, for one person and for several (`world.typing`).
         parity_messages_typing => "typing";
         parity_messages_typing_several => "typing-several";
+        // Task 42: the reply action on a hovered row puts the reply chip over the composer.
+        parity_messages_reply_compose => "reply-compose";
+        parity_messages_reply_compose_b => "reply-compose-b";
     }
 
     fn launch(name: &str) -> Driver {
