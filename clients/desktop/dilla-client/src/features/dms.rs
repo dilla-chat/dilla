@@ -119,7 +119,39 @@ pub fn picker_members(
             }
         }
     }
+    // shell-model.ts `dmCandidates`: by shown name (`localeCompare` with base sensitivity), then by user id.
+    out.sort_by(|a, b| {
+        let shown = |m: &crate::state::Member| {
+            if m.display.is_empty() {
+                m.username.clone()
+            } else {
+                m.display.clone()
+            }
+        };
+        base_key(&shown(a))
+            .cmp(&base_key(&shown(b)))
+            .then(a.user_id.0.cmp(&b.user_id.0))
+    });
     out
+}
+
+/// A name's collation key at base sensitivity: case folded and the Latin accents taken off, so "Björn" sorts with "Bjorn"
+/// and "Åsa" with "Asa", as the browser's `localeCompare(.., { sensitivity: 'base' })` puts them.
+fn base_key(name: &str) -> Vec<char> {
+    name.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'à'..='å' => 'a',
+            'ç' => 'c',
+            'è'..='ë' => 'e',
+            'ì'..='ï' => 'i',
+            'ñ' => 'n',
+            'ò'..='ö' | 'ø' => 'o',
+            'ù'..='ü' => 'u',
+            'ý' | 'ÿ' => 'y',
+            c => c,
+        })
+        .collect()
 }
 
 /// The DmPicker's type-ahead: the index of the first member at or after `from` (wrapping) whose shown name starts with
@@ -360,6 +392,44 @@ pub(crate) async fn publish_dms(inner: &Arc<Inner>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pickers_members_are_by_shown_name_at_base_sensitivity() {
+        use crate::state::{CommunityId, Member, UserId};
+        let c = CommunityId([9; 16]);
+        let member = |id: u8, username: &str, display: &str| Member {
+            user_id: UserId([id; 16]),
+            username: username.into(),
+            display: display.into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(UserId([1; 16]));
+        s.members.insert(
+            c,
+            vec![
+                member(1, "ada", "Ada"),
+                member(2, "mira", "Mira"),
+                member(3, "bjorn", "Björn"),
+                member(4, "asa", "Åsa"),
+                member(5, "zed", ""),
+            ],
+        );
+        let names: Vec<String> = picker_members(&s, Some(c))
+            .iter()
+            .map(|m| {
+                if m.display.is_empty() {
+                    m.username.clone()
+                } else {
+                    m.display.clone()
+                }
+            })
+            .collect();
+        assert_eq!(names, ["Åsa", "Björn", "Mira", "zed"]);
+    }
 
     #[test]
     fn type_ahead_wraps_and_ignores_case() {
