@@ -15,8 +15,9 @@ use super::settings_index::{self, Access, Section};
 use crate::screens::shell::Clock;
 use crate::strings::{t, tf};
 
-/// A result and what choosing it does.
-#[derive(Clone, Debug)]
+/// A result and what choosing it does. Its Debug gives the label's and sub-line's lengths only (R21: a message hit's
+/// label is its decrypted snippet).
+#[derive(Clone)]
 pub struct Item {
     /// Unique across the groups: `ch:<id>`, `dm:<id>`, `set:<scope>|<section>|<anchor>`, `msg:<id>`, `act:<id>`.
     pub id: String,
@@ -24,6 +25,19 @@ pub struct Item {
     pub sub: Option<String>,
     pub glyph: Glyph,
     pub target: Navigate,
+}
+
+impl std::fmt::Debug for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use dilla_client::state::Redacted;
+        f.debug_struct("Item")
+            .field("id", &self.id)
+            .field("label", &Redacted(&self.label))
+            .field("sub", &self.sub.as_deref().map(Redacted))
+            .field("glyph", &self.glyph)
+            .field("target", &self.target)
+            .finish()
+    }
 }
 
 /// A group of results under its heading.
@@ -350,6 +364,33 @@ fn actions(inputs: &Inputs<'_>, q: &str) -> Option<Group> {
 mod tests {
     use super::*;
     use dilla_client::state::{Channel, ChannelGroupState, Community, UserId};
+
+    /// R21: a message result (its label is the hit's decrypted snippet) and its group print no decrypted text.
+    #[test]
+    fn a_message_result_stays_out_of_debug() {
+        let hit = SearchHit {
+            channel: ChannelId([9; 16]),
+            community: None,
+            seq: 1,
+            snippet: "zebra snippet".into(),
+            author: None,
+            ts: None,
+            thread_root: None,
+        };
+        let group = Group {
+            id: "messages",
+            label: "Messages".into(),
+            items: vec![Item {
+                id: "msg:1".into(),
+                label: "zebra snippet".into(),
+                sub: Some("zebra sub".into()),
+                glyph: Glyph::Icon(IconName::Hash),
+                target: Navigate::Message(hit),
+            }],
+        };
+        let shown = format!("{group:#?}");
+        assert!(!shown.contains("zebra"), "{} bytes", shown.len());
+    }
 
     fn ch(id: u8, community: u8, name: &str, kind: u8) -> Channel {
         Channel {

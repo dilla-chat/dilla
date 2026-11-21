@@ -85,7 +85,7 @@ func TestTheRTCGateRefusesAClientProtocolNoDillaClientSends(t *testing.T) {
 		tok + "&protocol=0" + strconv.Itoa(sfu.ClientProtocol),
 		v1(clientInfo()),
 		v1(&livekit.ClientInfo{Sdk: livekit.ClientInfo_GO, Protocol: sfu.ClientProtocol}),
-		// The GPUI desktop's livekit 0.10.1 Rust SDK: protocol 18, on the v0 query and in a v1 client info.
+		// The GPUI desktop's livekit 0.11.0 Rust SDK: protocol 18, on the v0 query and in a v1 client info.
 		tok + "&sdk=rust&protocol=" + strconv.Itoa(sfu.RustClientProtocol),
 		v1(&livekit.ClientInfo{Sdk: livekit.ClientInfo_RUST, Protocol: sfu.RustClientProtocol}),
 	} {

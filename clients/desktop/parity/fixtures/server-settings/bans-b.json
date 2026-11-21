@@ -289,6 +289,13 @@
             "system": true,
             "position": 1073741824
           }
+        ],
+        "bans": [
+          {
+            "user": "bjorn",
+            "by": "ada",
+            "reason": ""
+          }
         ]
       }
     ],

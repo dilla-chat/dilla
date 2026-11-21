@@ -1231,7 +1231,10 @@ impl ServerAdmin {
         let inner = self.inner.clone();
         self.run(async move {
             let body = Value::Array(Vec::new()).encode();
-            request::<r::LeaveCommunity>(&inner, &[&id_hex(community)], Some(body), &[]).await?;
+            inner.self_removed().begin(community);
+            let sent =
+                request::<r::LeaveCommunity>(&inner, &[&id_hex(community)], Some(body), &[]).await;
+            end_removal(&inner, community, sent.as_ref().err())?;
             forget(&inner, community);
             Ok(())
         })
@@ -1241,7 +1244,10 @@ impl ServerAdmin {
     pub fn delete_community(&self, community: CommunityId) -> Reply<()> {
         let inner = self.inner.clone();
         self.run(async move {
-            request::<r::DeleteCommunity>(&inner, &[&id_hex(community)], None, &[]).await?;
+            inner.self_removed().begin(community);
+            let sent =
+                request::<r::DeleteCommunity>(&inner, &[&id_hex(community)], None, &[]).await;
+            end_removal(&inner, community, sent.as_ref().err())?;
             forget(&inner, community);
             Ok(())
         })
@@ -1743,6 +1749,25 @@ async fn read_access_with(
 }
 
 /// A server this account left or deleted: gone from the lists and from this slice.
+/// The leave or delete request ended (admin/controller.ts 197-214): a 4xx other than 404 clears the self-removed mark;
+/// a 404, a 5xx and no answer keep it. A 404 means the server is already gone, which is the goal: it is no failure.
+fn end_removal(
+    inner: &Inner,
+    community: CommunityId,
+    failed: Option<&AdminError>,
+) -> Result<(), AdminError> {
+    inner
+        .self_removed()
+        .end(community, failed.map(|e| e.status));
+    match failed {
+        Some(e) if e.status != 404 => Err(e.clone()),
+        _ => {
+            inner.list_written(community);
+            Ok(())
+        }
+    }
+}
+
 fn forget(inner: &Inner, community: CommunityId) {
     inner.publish(move |s| {
         s.communities.retain(|c| c.id != community);

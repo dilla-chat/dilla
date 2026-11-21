@@ -23,10 +23,11 @@ use gpui::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
     SharedString, Styled, Subscription, Window, div,
 };
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState, TextareaState};
 
 use super::model;
-mod draw;
+use super::welcome::WelcomeDraft;
+pub(super) mod draw;
 use crate::router::ServerSection;
 use crate::screens::shell::Clock;
 use crate::strings::{t, tf};
@@ -240,15 +241,18 @@ fn after_revoke(made: Option<Made>, revoked: InviteId) -> Option<Made> {
 }
 
 pub struct Body {
-    community: CommunityId,
-    state: Arc<AppState>,
-    client: Option<Rc<Client>>,
+    pub(super) community: CommunityId,
+    pub(super) state: Arc<AppState>,
+    pub(super) client: Option<Rc<Client>>,
     clock: Clock,
     section: ServerSection,
     pub overview: Rc<RefCell<OverviewDraft>>,
     /// The Join roles page's draft.
     pub join_role: Rc<RefCell<JoinRoleDraft>>,
-    name: Entity<InputState>,
+    /// The Welcome page's draft, and its template field.
+    pub welcome: Rc<RefCell<WelcomeDraft>>,
+    pub welcome_template: Entity<TextareaState>,
+    pub name: Entity<InputState>,
     // The dialogs: one at a time, with their one action's state.
     dialogue: Dialogue,
     dialogue_busy: bool,
@@ -364,6 +368,33 @@ impl Body {
             ));
         }
         let host = String::new();
+        let welcome_template = cx.new(|cx| TextareaState::new(window, cx));
+        let welcome = Rc::new(RefCell::new(WelcomeDraft::default()));
+        {
+            let draft = welcome.clone();
+            subscriptions.push(cx.subscribe_in(
+                &welcome_template,
+                window,
+                move |this: &mut Self, input, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        let mut value = input.read(cx).value().to_string();
+                        // The template's `maxLength={2000}`: typing (or a paste) past the limit is cut.
+                        if let Some(kept) = super::welcome::capped_typing(&value) {
+                            value = kept.to_owned();
+                            let again = value.clone();
+                            input.update(cx, |s, cx| s.set_value(again, window, cx));
+                        }
+                        let mut d = draft.borrow_mut();
+                        if d.template != value {
+                            d.template = value;
+                            d.error = None;
+                        }
+                        drop(d);
+                        this.notify_flags(cx);
+                    }
+                },
+            ));
+        }
         // A fixture has no client: its Join roles page draws as an instance with no Bot installation answers it.
         let join_role = Rc::new(RefCell::new(JoinRoleDraft {
             loaded: client.is_none().then_some(None),
@@ -377,6 +408,8 @@ impl Body {
             section: ServerSection::Overview,
             overview,
             join_role,
+            welcome,
+            welcome_template,
             name,
             dialogue: Dialogue::None,
             dialogue_busy: false,
@@ -467,6 +500,11 @@ impl Body {
         }
     }
 
+    /// A dialogue is open (the shell's channel edit drops its body once this turns false).
+    pub fn dialog_open(&self) -> bool {
+        !matches!(self.dialogue, Dialogue::None)
+    }
+
     pub fn current(&self) -> ServerSection {
         self.section
     }
@@ -475,7 +513,7 @@ impl Body {
         cx.notify();
     }
 
-    fn access(&self) -> dilla_client::state::server_admin::Access {
+    pub(super) fn access(&self) -> dilla_client::state::server_admin::Access {
         dilla_client::state::server_admin::access_in(&self.state, self.community)
     }
 
@@ -562,6 +600,8 @@ impl Body {
                 self.run(reply, window, cx, |_, _, _, cx| cx.notify());
             }
             ServerSection::JoinRoles => self.load_join_role(cx),
+            // The Welcome page reads on its Load button; what it depends on is the installation and the catalog.
+            ServerSection::Welcome => drop(client.bot_admin().refresh_installation(community)),
             _ => {}
         }
     }
@@ -696,6 +736,7 @@ impl Body {
     /// failed (OverviewSection.tsx `save`).
     pub fn flush_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_join_role(window, cx);
+        self.flush_welcome(cx);
         let (rename, timeout) = {
             let mut d = self.overview.borrow_mut();
             if !d.save_requested {
@@ -947,7 +988,7 @@ impl Body {
         });
     }
 
-    fn open_edit(&mut self, channel: ChannelId, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_edit(&mut self, channel: ChannelId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.state.channel(channel).cloned() else {
             return;
         };
@@ -1574,7 +1615,7 @@ impl Render for Body {
             ServerSection::Channels => self.channels_section(window, cx),
             ServerSection::Gifs => self.gifs_section(window, cx),
             ServerSection::Invites => self.invites_section(window, cx),
-            ServerSection::Welcome | ServerSection::JoinRoles => self.bot_page(section, cx),
+            ServerSection::Welcome | ServerSection::JoinRoles => self.bot_page(section, window, cx),
             ServerSection::Danger => self.danger_section(window, cx),
             // Other areas' sections: their own hooks draw them.
             _ => Vec::new(),

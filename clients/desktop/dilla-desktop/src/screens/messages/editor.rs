@@ -10,7 +10,7 @@ use gpui::{
 use gpui_component::input::{Enter, Textarea, TextareaState};
 
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
 use super::ui::{EDIT_MAX, MessageUi};
@@ -35,6 +35,13 @@ pub fn field_height(lines: usize) -> f32 {
     (lines as f32 * LINE + 2.0 * PAD_Y + 2.0).clamp(MIN_FIELD, MAX_FIELD)
 }
 
+/// The width the field gives its text, for a row body `body_w` wide: less `.d-message-editor__input`'s `0.3125rem 0.75rem`
+/// padding on each side (MessageEditor.css:2). The 1px edge is not taken off as well: the field's text box
+/// was 2px narrower than the web's, which broke a word one line early (messages/edit-b).
+pub fn content_width(body_w: f32) -> f32 {
+    body_w - 2.0 * PAD_X
+}
+
 /// The editor's height: the field, the gap, the foot.
 pub fn height(lines: usize) -> f32 {
     field_height(lines) + GAP + FOOT
@@ -47,13 +54,8 @@ pub fn counter_visible(remaining: i64) -> bool {
 
 /// The rows of the text being edited in a field `width` px wide (the textarea grows with its soft-wrapped lines,
 /// `field-sizing: content`): each hard line takes as many rows as the mono pre-wrap breaks it into.
-/// The width the field gives its text: less the padding and the 1px edge on each side.
-fn text_width(width: f32) -> f32 {
-    width - 2.0 * PAD_X - 2.0
-}
-
 pub fn lines_of(value: &str, width: f32) -> usize {
-    let inner = text_width(width);
+    let inner = content_width(width);
     let columns = dilla_desktop_ui::text::columns(text::INPUT, inner);
     dilla_desktop_ui::text::wrap_mono(value, columns)
         .len()
@@ -105,7 +107,7 @@ pub fn editor(
                 .absolute()
                 .left(px(PAD_X))
                 .top(px(PAD_Y))
-                .w(px(text_width(width)))
+                .w(px(content_width(width)))
                 .h(px(lines as f32 * LINE)),
             &value,
             LINE,
@@ -117,7 +119,7 @@ pub fn editor(
                 .appearance(false)
                 .text_size(text::INPUT)
                 .line_height(px(LINE))
-                .w(px(text_width(width) + super::TEXTAREA_WRAP_EXTRA))
+                .w(px(content_width(width) + super::TEXTAREA_WRAP_EXTRA))
                 // Its own 8px above and below the lines take room in its box too, or the last line is cut.
                 .h(px(
                     field_height(lines) - 2.0 * PAD_Y - 2.0 + 2.0 * super::TEXTAREA_PAD_Y
@@ -131,7 +133,7 @@ pub fn editor(
         .child(line(
             t("shell.edit.hint"),
             text::META,
-            line_height(text::META, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::META),
             color::FG_3,
         ));
     if counter_visible(remaining) {
@@ -145,7 +147,12 @@ pub fn editor(
         } else {
             color::FG_3
         };
-        foot = foot.child(line(label, text::XS, line_height(text::XS, 1.5), tone));
+        foot = foot.child(line(
+            label,
+            text::XS,
+            dilla_desktop_ui::text::root_line_height(text::XS),
+            tone,
+        ));
     }
     let cancel = ui.clone();
     let save = ui.clone();
@@ -208,10 +215,17 @@ mod tests {
     }
 
     #[test]
+    fn editor_content_width() {
+        // The body's width less the input's 0.75rem of padding on both sides.
+        assert_eq!(content_width(400.0), 376.0);
+        assert_eq!(content_width(100.0), 100.0 - 24.0);
+    }
+
+    #[test]
     fn lines_are_the_hard_breaks() {
         assert_eq!(lines_of("", 400.0), 1);
         assert_eq!(lines_of("a\nb\n", 400.0), 3);
-        // 400px less the padding and edge is 48 columns of 7.8px: a 100-character line takes three rows.
+        // 400px less the padding is 48 columns of 7.8px: a 100-character line takes three rows.
         assert_eq!(lines_of(&"x".repeat(100), 400.0), 3);
     }
 }

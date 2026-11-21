@@ -15,7 +15,6 @@
 //! takes both from `performance.timeOrigin + now()`.
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
@@ -42,16 +41,7 @@ pub const WAIT: Duration = Duration::from_secs(90);
 /// e2e/voice/support/voice.ts `AUDIBLE_RMS` (dilla-media's).
 pub const AUDIBLE_RMS: f64 = 0.005;
 
-/// A free TCP port on loopback.
-pub(super) fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-/// The host flags of a music host: the in-process SFU on free ports with bot-music.spec.ts's 90 s departure timeout,
+/// The host flags of a music host: the in-process SFU on ports the host picks (`-sfu-any-port`) with bot-music.spec.ts's 90 s departure timeout,
 /// and a one-page web root, so the call starts name the host's own listener as the LiveKit URL (dilla-testhost's
 /// `-web-root` rule): the Bot and every device's media reach the SFU there.
 pub(super) fn sfu_args(cmd: &mut Command, data: &Path) {
@@ -65,8 +55,8 @@ pub(super) fn sfu_args(cmd: &mut Command, data: &Path) {
     )
     .unwrap();
     cmd.arg("-web-root").arg(web);
-    cmd.args(["-sfu", "-sfu-port", &free_port().to_string()]);
-    cmd.args(["-sfu-udp-port", &free_port().to_string()]);
+    // Never ports probed here and released: a parallel test can take one before the host binds it.
+    cmd.args(["-sfu", "-sfu-any-port"]);
     cmd.args(["-sfu-departure-timeout", "90"]);
 }
 

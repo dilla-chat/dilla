@@ -76,14 +76,14 @@ fn spawn_host(
     flags: &[&str],
 ) -> Result<(Host, BufReader<std::process::ChildStdout>), String> {
     let child = Command::new(testhost_binary(root))
-        .args(["-listen", &format!("127.0.0.1:{}", free_port())])
+        .args(["-listen", "127.0.0.1:0"])
         .args(["-control", control])
         .arg("-core")
         .arg(core)
         .args(["-log-level", "warn", "-sfu"])
         .args(flags)
-        .args(["-sfu-port", &free_port().to_string()])
-        .args(["-sfu-udp-port", &free_port().to_string()])
+        // The host picks the SFU's ports where it binds them, and fresh ones if a parallel test took one first.
+        .arg("-sfu-any-port")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -122,8 +122,8 @@ pub fn start_host_with(flags: &[&str]) -> Host {
     let root = repo_root();
     let core = wasi_core(&root);
     assert!(core.exists(), "{} is missing", core.display());
-    // free_port() hands back a port it has already released, so a parallel test (each host takes four) can bind
-    // it first. The host then exits with "address already in use": start it again on fresh ports. Any other exit
+    // free_port() hands back a port it has already released, so a parallel test can bind it first: the control
+    // port is the one left (the public listener is the host's own :0 pick, the SFU's are -sfu-any-port's). The host then exits with "address already in use": start it again on fresh ports. Any other exit
     // fails with the host's own stderr.
     let mut attempt = 1;
     let (host, mut out) = loop {

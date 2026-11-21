@@ -57,6 +57,7 @@ fn labels() -> NowPlayingLabels {
         skip: "Skip".into(),
         stop: "Stop".into(),
         queue: "Up next · 2".into(),
+        up_next: "3 up next".into(),
     }
 }
 
@@ -66,10 +67,17 @@ struct Player {
     log: Rc<RefCell<Vec<&'static str>>>,
     can_control: bool,
     queue_open: bool,
+    /// Card (the default) or the stage bar; `track` false draws the variant with no track playing.
+    variant: NowPlayingVariant,
+    track: bool,
+    /// The music is playing (the default), or paused.
+    playing: bool,
+    renders: usize,
 }
 
 impl Render for Player {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
         let (toggle, skip, stop) = (self.log.clone(), self.log.clone(), self.log.clone());
         let this = cx.entity();
         let queue = self.log.clone();
@@ -86,13 +94,14 @@ impl Render for Player {
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .child(
-                NowPlaying::new("np", NowPlayingVariant::Card, labels())
-                    .track(Some(PlayerTrack {
+                NowPlaying::new("np", self.variant, labels())
+                    .bot("Mr. Kim")
+                    .track(self.track.then(|| PlayerTrack {
                         title: "Harbour Lights".into(),
                         duration_s: 214.0,
                     }))
                     .position(37.0)
-                    .playing(true)
+                    .playing(self.playing)
                     .meta("YouTube · requested by Ada · harbour")
                     .volume("75%")
                     .can_control(self.can_control, "Join harbour to control playback")
@@ -117,12 +126,25 @@ fn player(
     cx: &mut TestAppContext,
     can_control: bool,
 ) -> (gpui::Entity<Player>, &mut VisualTestContext) {
+    player_of(cx, can_control, NowPlayingVariant::Card, true)
+}
+
+fn player_of(
+    cx: &mut TestAppContext,
+    can_control: bool,
+    variant: NowPlayingVariant,
+    track: bool,
+) -> (gpui::Entity<Player>, &mut VisualTestContext) {
     install(cx);
     let (host, cx) = cx.add_window_view(|_, cx| Player {
         root: cx.focus_handle(),
         log: Rc::default(),
         can_control,
         queue_open: false,
+        variant,
+        track,
+        playing: true,
+        renders: 0,
     });
     let root = host.read_with(cx, |p, _| p.root.clone());
     cx.update(|window, cx| root.focus(window, cx));
@@ -158,6 +180,83 @@ fn keyboard_bot_admin_focus_order(cx: &mut TestAppContext) {
         Some("stop"),
         "Shift+Tab returns to Stop"
     );
+}
+
+/// Task 36: the stage bar's Tab stops are play/pause, skip and stop, in that order (it has no card stop of its own), and
+/// Enter on each runs it.
+#[gpui::test]
+fn keyboard_stage_bar_focus_order(cx: &mut TestAppContext) {
+    let (host, cx) = player_of(cx, true, NowPlayingVariant::Stage, true);
+    for expect in ["toggle", "skip", "stop"] {
+        cx.simulate_keystrokes("tab");
+        press(cx, "enter");
+        assert_eq!(log(&host, cx).last().copied(), Some(expect), "{expect}");
+    }
+    assert_eq!(log(&host, cx), ["toggle", "skip", "stop"]);
+}
+
+/// Task 36: the bar says how many tracks are up next (`music.upNext`, "{n} up next"): the player's own words for a queue of
+/// the track playing and three more, drawn at the bar's end.
+#[gpui::test]
+fn the_stage_bar_names_its_up_next_count(cx: &mut TestAppContext) {
+    use dilla_desktop::screens::bot_admin::player::labels as player_labels;
+    use dilla_desktop_ui::components::bot_admin::now_playing::up_next;
+    let row = |current| QueueRow {
+        title: "t".into(),
+        by: "b".into(),
+        duration_s: None,
+        current,
+    };
+    let queue = [row(true), row(false), row(false), row(false)];
+    assert_eq!(player_labels(up_next(&queue)).up_next.as_ref(), "3 up next");
+    let (_host, cx) = player_of(cx, true, NowPlayingVariant::Stage, true);
+    let bar = cx.debug_bounds("now-playing-stage").expect("the bar");
+    assert_eq!(f32::from(bar.size.height), 48.0);
+    let count = cx
+        .debug_bounds("now-playing-stage-up-next")
+        .expect("the up next count");
+    assert!(count.right() <= bar.right(), "{count:?} inside {bar:?}");
+}
+
+/// Task 36b: once its entrance has run, a paused player asks for no repaint at all, and a playing one repaints only for
+/// its equaliser (the stage bar draws it, at a capped rate, so a second of it is about 30 renders).
+#[gpui::test]
+fn a_paused_player_schedules_no_frames_and_a_playing_one_only_its_equaliser(
+    cx: &mut TestAppContext,
+) {
+    use std::time::Duration;
+    let renders_over_a_second = |cx: &mut VisualTestContext, host: &gpui::Entity<Player>| {
+        let before = host.read_with(cx, |p, _| p.renders);
+        for _ in 0..100 {
+            cx.executor().advance_clock(Duration::from_millis(10));
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+        }
+        host.read_with(cx, |p, _| p.renders) - before
+    };
+    let (host, cx) = player_of(cx, true, NowPlayingVariant::Stage, true);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    // Past the bar's 300ms entrance first.
+    host.update(cx, |_, cx| cx.notify());
+    renders_over_a_second(cx, &host);
+    let playing = renders_over_a_second(cx, &host);
+    assert!(
+        (20..=40).contains(&playing),
+        "{playing} renders while playing"
+    );
+    host.update(cx, |p, cx| {
+        p.playing = false;
+        cx.notify();
+    });
+    renders_over_a_second(cx, &host);
+    assert_eq!(renders_over_a_second(cx, &host), 0, "paused");
+}
+
+/// Task 36: a stage with no track draws nothing (NowPlaying.tsx returns null without one).
+#[gpui::test]
+fn the_stage_bar_is_not_drawn_without_a_track(cx: &mut TestAppContext) {
+    let (_host, cx) = player_of(cx, true, NowPlayingVariant::Stage, false);
+    assert!(cx.debug_bounds("now-playing-stage").is_none());
 }
 
 /// S6: Space on the card itself plays and pauses.
@@ -261,6 +360,68 @@ fn parity_bot_admin_music() {
 )]
 fn parity_bot_admin_music_b() {
     parity("bot-admin/music-b.json");
+}
+
+/// A GPUI-only reference (`native/music-card-live`, Task 35): the Bot's "started music" message in `#general` reads "Ada
+/// started music in harbour" with the live now-playing card under it (the track playing, a queue of two, Ada may control).
+/// Native because the web's frame needs a Bot playing real audio in a real call; checked by eye.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_music_card_live() {
+    native("bot-admin/music-card-live", "music-card-live");
+}
+
+/// `native/music-card-ended`: the same message when the announced track no longer plays (another does): the card says
+/// "Glenn played this in harbour" over "Finished", with no track and no queue.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_music_card_ended() {
+    native("bot-admin/music-card-ended", "music-card-ended");
+}
+
+fn native(name: &str, golden: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures")
+        .join(format!("{name}.json"));
+    let report = dilla_parity::screen::assert_native_screen(&path, golden, |_| {})
+        .unwrap_or_else(|e| panic!("{name} differs from its golden shot: {e}"));
+    println!(
+        "SCREEN native/{golden}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
+/// The card is the message column's width up to the web's 442px (NowPlaying.css `max-width` in a `minmax(0, 1fr)` column):
+/// in the 1280px window it takes 442, and in a compact 400px window it shrinks and stays inside the window.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_card_shrinks_with_the_log_and_stops_at_442(cx: &mut TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/bot-admin/music-card-live.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the card fixture");
+    cx.update(dilla_desktop::install);
+    let (_app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let width = |vcx: &mut VisualTestContext| {
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        vcx.debug_bounds("music-card-box").expect("the card")
+    };
+    assert_eq!(f32::from(width(vcx).size.width), 442.0);
+    vcx.simulate_resize(gpui::size(gpui::px(400.0), gpui::px(800.0)));
+    let narrow = width(vcx);
+    assert!(
+        f32::from(narrow.size.width) < 442.0 && f32::from(narrow.right()) <= 400.0,
+        "{narrow:?}"
+    );
 }
 
 // ---- integration 3, step 5: the pages' navigation inside the server settings host ----

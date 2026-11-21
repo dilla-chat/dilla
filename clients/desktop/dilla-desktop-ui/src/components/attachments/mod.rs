@@ -15,8 +15,3 @@ use gpui::{App, ClickEvent, Window};
 
 /// A click handler of these components.
 pub type OnClick = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
-
-/// tokens.css `--row-gap` (0.125rem): the gap between a message's attachment cards (app.css `.dw-attachments`).
-pub const ROW_GAP: f32 = 2.0;
-/// The body line height of a component's text (`body { line-height: 1.5 }`).
-pub const LEADING: f32 = 1.5;

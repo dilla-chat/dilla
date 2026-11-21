@@ -292,16 +292,44 @@ impl Composer {
         self.write_draft(cx);
         self.loaded = next;
         let draft = match (&self.slots.client, next) {
-            (Some(client), Some(channel)) => client
-                .prefs()
-                .get::<String>(&composing::draft_key(channel))
-                .unwrap_or_default(),
+            (Some(client), Some(channel)) => loaded_draft(
+                crate::screens::commands::with_memory(client, |m| m.take_reopen(here(channel))),
+                || client.prefs().get::<String>(&composing::draft_key(channel)),
+            ),
             _ => String::new(),
         };
         self.dismissed = None;
         self.active = 0;
+        // Another conversation starts with an empty picker, as the web remounts its composer per target
+        // (`<ComposerArea key={targetId}>`, Shell.tsx:1464): what was picked in the last one never runs here.
+        let field = self.input.read(cx).focus_handle(cx);
+        crate::screens::commands::reset_composer(window.window_handle().window_id(), &field, cx);
         self.input
             .update(cx, |s, cx| s.set_value(draft, window, cx));
+    }
+
+    /// Task 30 (CommandHost.tsx:293-296): a command run from this field whose answer was uncertain comes back into it, so
+    /// the picker opens on the same draft and a resend is the same request. The draft the window was handed
+    /// (`commands::reopen`) is taken first, else the one the command memory keeps for this conversation (an answer that
+    /// landed off the window's thread). Only this composer's own client's drafts: one left for another session is dropped.
+    fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(channel) = self.loaded else {
+            return;
+        };
+        let wid = window.window_handle().window_id();
+        let serial = self.slots.client.as_ref().map(|c| c.serial());
+        let handed = crate::screens::commands::take_reopen(wid, serial, here(channel), cx);
+        let text = handed.or_else(|| {
+            self.slots.client.as_ref().and_then(|client| {
+                crate::screens::commands::with_memory(client, |m| m.take_reopen(here(channel)))
+            })
+        });
+        if let Some(text) = text {
+            self.set_text(&text, None, window, cx);
+            let field = self.input.read(cx).focus_handle(cx);
+            crate::screens::commands::set_composer(wid, &field, cx);
+            crate::screens::commands::draft_changed(wid, &text, cx);
+        }
     }
 
     fn on_input_event(
@@ -467,9 +495,12 @@ impl Composer {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only the chips this composer owns are its own: another composer's (the thread's) are never sent from here.
+        let field = self.input.read(cx).focus_handle(cx);
         // w2 I-B1: a member chip naming nobody (a display name typed, no member picked) runs nothing; its list shows.
         if crate::screens::commands::chips::hold_unnamed_member(
             &self.slots,
+            &field,
             window.window_handle().window_id(),
             cx,
         ) {
@@ -479,6 +510,7 @@ impl Composer {
         // Task 28 follow-up 14: with a command picked, the chips' typed form is what is sent.
         let chips = crate::screens::commands::chips::draft(
             &self.slots,
+            &field,
             window.window_handle().window_id(),
             cx,
         );
@@ -502,9 +534,12 @@ impl Composer {
         let raw = if files && !chipped {
             raw
         } else {
-            match crate::screens::commands::on_send(
+            match crate::screens::commands::on_send_in(
                 &self.slots,
+                None,
+                Some(&field),
                 &raw,
+                &|t| self.encoded(t),
                 window.window_handle().window_id(),
                 cx,
             ) {
@@ -646,6 +681,20 @@ impl Composer {
 
 /// The field's accessible name (`shell.composer.label`, "message #general"): the target is the channel's `#name` or the
 /// DM's `@name`, put where the web's `#{channel}` is.
+/// The conversation of `channel`'s composer (its own log; a thread has a composer of its own).
+fn here(channel: ChannelId) -> dilla_client::state::bot::Conversation {
+    dilla_client::state::bot::Conversation {
+        channel,
+        thread: None,
+    }
+}
+
+/// The draft a composer loads for a channel (Task 30, CommandHost.tsx:123-129: an active row restores its text): the
+/// draft of an uncertain command to reopen wins over the stored `drafts.<channel>`.
+fn loaded_draft(reopen: Option<String>, stored: impl FnOnce() -> Option<String>) -> String {
+    reopen.or_else(stored).unwrap_or_default()
+}
+
 fn composer_label(target: &str) -> String {
     t("shell.composer.label").replace("#{channel}", target)
 }
@@ -751,7 +800,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
                 line(
                     t("shell.composer.mentionsTitle").to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
@@ -765,6 +814,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.switch_channel(window, cx);
+        self.reopen(window, cx);
         // ComposerArea.tsx: a reply started (the toolbar's Reply) puts the keyboard in the field.
         let reply = crate::screens::threads::replying_of(&self.slots, cx)
             .filter(|r| Some(r.channel) == self.slots.channel)
@@ -781,9 +831,10 @@ impl Render for Composer {
         let ctx = self.slots.clone();
         let leading = slots::composer_leading(&ctx, window, cx);
         let buttons = slots::composer_buttons(&ctx, window, cx);
-        let popup = slots::composer_popup(&ctx, window, cx);
+        let field_focus = self.input.read(cx).focus_handle(cx);
+        let popup = slots::composer_popup(&ctx, &field_focus, window, cx);
         // A picked command's chips in place of the field (Task 20's hook, Task 28 follow-up 14).
-        let chips = slots::composer_chips(&ctx, window, cx);
+        let chips = slots::composer_chips(&ctx, &field_focus, window, cx);
         let now_ms = ctx.clock.now() * 1000;
         let now_ms = match ctx.clock {
             crate::screens::shell::Clock::Local => std::time::SystemTime::now()
@@ -882,9 +933,14 @@ impl Render for Composer {
             .items_center()
             .child(
                 // JetBrains Mono has no ↵: Chromium draws it from fontconfig's fallback face, DejaVu Sans (0.838em).
-                line("send ↵", text::BTN, line_height(text::BTN, 1.5), send_fg)
-                    .weight(font::WEIGHT_DISPLAY)
-                    .fallback(SYMBOL_FALLBACK),
+                line(
+                    "send ↵",
+                    text::BTN,
+                    dilla_desktop_ui::text::root_line_height(text::BTN),
+                    send_fg,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .fallback(SYMBOL_FALLBACK),
             )
             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)));
         let row = div()
@@ -896,8 +952,13 @@ impl Render for Composer {
             .pb(len(4.))
             .pl(len(12.))
             .child(
-                line("›", text::BASE, line_height(text::BASE, 1.5), color::ACCENT)
-                    .weight(font::WEIGHT_DISPLAY),
+                line(
+                    "›",
+                    text::BASE,
+                    dilla_desktop_ui::text::root_line_height(text::BASE),
+                    color::ACCENT,
+                )
+                .weight(font::WEIGHT_DISPLAY),
             )
             .child(match chips {
                 // The textarea stays in the tree, empty-sized: it keeps the focus and its Enter sends the chips.
@@ -941,7 +1002,7 @@ impl Render for Composer {
                 line(
                     who.clone(),
                     text::META,
-                    line_height(text::META, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::META),
                     color::ACCENT,
                 )
                 .ellipsis(),
@@ -952,7 +1013,7 @@ impl Render for Composer {
                 line(
                     t("shell.composer.newLine"),
                     text::META,
-                    line_height(text::META, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::META),
                     color::FG_3,
                 )
                 .fallback(SYMBOL_FALLBACK),
@@ -1044,7 +1105,7 @@ impl Render for Composer {
                 div().mb(len(4.)).children(paragraph(
                     &n,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_2,
                     (width - 32.0).max(1.0),
                 ))
@@ -1054,7 +1115,7 @@ impl Render for Composer {
                 div().mt(len(4.)).children(paragraph(
                     &r,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_2,
                     (width - 32.0).max(1.0),
                 ))
@@ -1068,7 +1129,7 @@ impl Render for Composer {
                 div().mt(len(4.)).flex().justify_end().child(line(
                     label,
                     text::XS,
-                    line_height(text::XS, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::XS),
                     if remaining < 0 {
                         color::DANGER
                     } else {
@@ -1117,6 +1178,48 @@ mod tests {
         assert_eq!(max_rows(), 10);
     }
 
+    /// The web remounts the composer per conversation (`<ComposerArea key={targetId}>`): a command picked in channel X is
+    /// not there to run in channel Y.
+    #[gpui::test]
+    fn another_channel_starts_with_an_empty_picker(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands::{self, chips};
+        cx.update(crate::install);
+        let (x, y) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let on = |channel| SlotCx {
+            channel: Some(channel),
+            ..SlotCx::default()
+        };
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| c.set_slots(on(x)));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (w, field) = vcx.update(|window, cx| {
+            (
+                window.window_handle().window_id(),
+                composer.read(cx).input.read(cx).focus_handle(cx),
+            )
+        });
+        vcx.update(|_, cx| {
+            commands::set_composer(w, &field, cx);
+            let mut picked = chips::Chips::new("shrug".into());
+            picked.values = vec!["hi".into()];
+            commands::picker_state_mut(w, cx).chips = Some(picked);
+            assert!(chips::draft(&on(x), &field, w, cx).is_some(), "picked in X");
+        });
+        composer.update(vcx, |c, _| c.set_slots(on(y)));
+        draw(vcx);
+        vcx.update(|_, cx| {
+            assert_eq!(
+                chips::draft(&on(y), &field, w, cx),
+                None,
+                "nothing of X in Y"
+            );
+        });
+    }
+
     /// Task 28 item 13 (Task 9's listing): a sign-out lets go of the composer's draft. The field it shows empties (the
     /// next account never sees it), with no write of it anywhere.
     #[gpui::test]
@@ -1134,6 +1237,97 @@ mod tests {
             "",
             "the draft left the field"
         );
+    }
+
+    /// Task 30 (CommandHost.tsx:123-129, :293-296): an uncertain command's draft comes back into the composer of its
+    /// conversation on the next draw, once; and when the composer next loads a conversation the person left, the draft
+    /// the command memory keeps for it wins over the stored `drafts.<channel>`.
+    #[gpui::test]
+    fn an_uncertain_command_reopens_its_draft(cx: &mut gpui::TestAppContext) {
+        use dilla_client::features::bot::memory::CommandMemory;
+        use dilla_client::state::bot::Conversation;
+        cx.update(crate::install);
+        let (a, b) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.set_slots(SlotCx {
+                channel: Some(a),
+                ..SlotCx::default()
+            });
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let w = vcx.update(|window, _| window.window_handle().window_id());
+        vcx.update(|_, cx| {
+            // Fix round 2 (I3): a draft left for another session (here, a client numbered 7; this composer has none, as
+            // after a sign-out) is never shown, and is dropped.
+            crate::screens::commands::reopen(
+                w,
+                Some(7),
+                Conversation {
+                    channel: a,
+                    thread: None,
+                },
+                "/warn user:other reason:secret".into(),
+                cx,
+            );
+        });
+        draw(vcx);
+        assert_eq!(composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(), "");
+        assert!(
+            vcx.update(|_, cx| crate::screens::commands::picker_state(w, cx).reopen)
+                .is_none(),
+            "dropped unread"
+        );
+        vcx.update(|_, cx| {
+            crate::screens::commands::reopen(
+                w,
+                None,
+                Conversation {
+                    channel: a,
+                    thread: None,
+                },
+                "/warn user:x reason:y".into(),
+                cx,
+            );
+        });
+        draw(vcx);
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "/warn user:x reason:y"
+        );
+        assert_eq!(
+            vcx.update(|_, cx| crate::screens::commands::picker_state(w, cx).draft),
+            "/warn user:x reason:y",
+            "the picker opens on it"
+        );
+        // Taken once: a later edit is not overwritten.
+        vcx.update(|window, cx| {
+            let input = composer.read(cx).input.clone();
+            input.update(cx, |s, cx| s.set_value("/warn", window, cx));
+        });
+        draw(vcx);
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "/warn"
+        );
+        // Another conversation the person comes back to: the memory's draft wins over the stored one, once.
+        let at_b = Conversation {
+            channel: b,
+            thread: None,
+        };
+        let mut memory = CommandMemory::default();
+        memory.uncertain(at_b, "/topic text:z", [1; 16], "topic\0text=z");
+        let stored = || Some("old".to_owned());
+        assert_eq!(
+            loaded_draft(memory.take_reopen(at_b), stored),
+            "/topic text:z"
+        );
+        assert_eq!(loaded_draft(memory.take_reopen(at_b), stored), "old");
+        assert_eq!(loaded_draft(None, || None), "");
     }
 
     /// A server with one text channel, the viewer holding only @everyone (allow `everyone_allow`), and one mentionable

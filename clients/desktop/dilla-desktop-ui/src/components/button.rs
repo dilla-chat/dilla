@@ -9,7 +9,7 @@ use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_DISABLED, focus_ring};
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -306,7 +306,9 @@ impl RenderOnce for Button {
         } else {
             font::WEIGHT_BTN
         };
-        base = base.child(line(self.label, size, line_height(size, 1.5), p.fg).weight(weight));
+        base = base.child(
+            line(self.label, size, crate::text::root_line_height(size), p.fg).weight(weight),
+        );
         if let Some(hint) = self.key_hint {
             base = base.child(
                 div()

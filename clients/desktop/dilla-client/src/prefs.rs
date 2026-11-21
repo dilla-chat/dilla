@@ -25,11 +25,22 @@ pub enum PrefsError {
     Io(String),
 }
 
-/// One preferences file. Cheap to clone; clones share the cache.
-#[derive(Clone, Debug)]
+/// One preferences file. Cheap to clone; clones share the cache. Its Debug names the file and counts the keys: a value
+/// can be a decrypted message draft (`drafts.<channel>`), so none is printed (R21).
+#[derive(Clone)]
 pub struct Prefs {
     path: PathBuf,
     cache: Arc<Mutex<Map<String, Value>>>,
+}
+
+impl std::fmt::Debug for Prefs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys = self.cache.lock().map_or(0, |c| c.len());
+        f.debug_struct("Prefs")
+            .field("path", &self.path)
+            .field("keys", &keys)
+            .finish()
+    }
 }
 
 /// Serialises read-modify-write of every preferences file in this process.
@@ -222,6 +233,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// R21: a saved draft (a decrypted message being written) never reaches the preferences' Debug output.
+    #[test]
+    fn a_saved_draft_stays_out_of_debug() {
+        let dir = scratch("debug");
+        let prefs = Prefs::instance(&dir);
+        prefs
+            .set(&format!("drafts.{}", "ab".repeat(16)), &"zebra draft")
+            .unwrap();
+        let shown = format!("{prefs:?}");
+        assert!(!shown.contains("zebra"), "{} bytes", shown.len());
+        assert!(shown.contains("keys: 1"), "the keys are counted");
     }
 
     #[test]

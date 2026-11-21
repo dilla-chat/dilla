@@ -21,7 +21,7 @@ use dilla_client::state::{
     TimelineItem, TimelineItemState, UserId,
 };
 use dilla_desktop::router::UserSection;
-use dilla_desktop::screens::search::{self, Navigate, SearchEnv};
+use dilla_desktop::screens::search::{self, NavOutcome, Navigate, SearchEnv};
 use dilla_desktop::screens::shell::Clock;
 use dilla_desktop::screens::{FocusNext, FocusPrevious};
 use dilla_desktop::slots::{self, SlotCx};
@@ -202,7 +202,12 @@ struct Host {
 type Opened = Rc<RefCell<Vec<Navigate>>>;
 
 impl Host {
-    fn new(state: Arc<AppState>, opened: Opened, answer: bool, cx: &mut Context<Self>) -> Self {
+    fn new(
+        state: Arc<AppState>,
+        opened: Opened,
+        answer: Rc<dyn Fn() -> NavOutcome>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let ctx = SlotCx {
             state,
             client: None,
@@ -213,13 +218,14 @@ impl Host {
                 utc: true,
             },
             workspace: None,
+            composer: None,
         };
         Self {
             env: SearchEnv {
                 ctx,
                 navigate: Rc::new(move |target, _, _| {
                     opened.borrow_mut().push(target);
-                    answer
+                    answer()
                 }),
             },
             opener: cx.focus_handle().tab_stop(true),
@@ -250,6 +256,22 @@ impl Render for Host {
 }
 
 fn host(cx: &mut TestAppContext, answer: bool) -> (Entity<Host>, &mut VisualTestContext, Opened) {
+    host_with(
+        cx,
+        Rc::new(move || {
+            if answer {
+                NavOutcome::Done
+            } else {
+                NavOutcome::Gone
+            }
+        }),
+    )
+}
+
+fn host_with(
+    cx: &mut TestAppContext,
+    answer: Rc<dyn Fn() -> NavOutcome>,
+) -> (Entity<Host>, &mut VisualTestContext, Opened) {
     cx.update(|cx| {
         dilla_desktop::install(cx);
     });
@@ -418,6 +440,43 @@ fn a_result_that_is_gone_keeps_the_palette_open(cx: &mut TestAppContext) {
     assert!(is_open(cx), "the palette stays open");
     assert_eq!(status(cx).as_deref(), Some(t("search.unavailable")));
     assert_eq!(focus_name(cx), Some("search-input"));
+}
+
+/// A result that is looked for (a message further back loads earlier pages) keeps the palette open until it answers; a
+/// `false` says `search.unavailable` and the palette stays, a `true` closes it (Search.tsx:44-49).
+#[gpui::test]
+fn a_late_result_keeps_the_palette_open_until_it_answers(cx: &mut TestAppContext) {
+    let senders: Rc<RefCell<Vec<tokio::sync::oneshot::Sender<bool>>>> = Rc::default();
+    let held = senders.clone();
+    let (_host, cx, opened) = host_with(
+        cx,
+        Rc::new(move || {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            held.borrow_mut().push(tx);
+            NavOutcome::Later(rx)
+        }),
+    );
+    open(cx);
+    cx.simulate_input("rope");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(opened.borrow().len(), 1);
+    assert!(is_open(cx), "the palette waits for the answer");
+    let first = senders.borrow_mut().pop().unwrap();
+    let _ = first.send(false);
+    cx.run_until_parked();
+    assert!(is_open(cx), "the palette stays after a no");
+    assert_eq!(status(cx).as_deref(), Some(t("search.unavailable")));
+    assert_eq!(focus_name(cx), Some("search-input"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(opened.borrow().len(), 2);
+    assert!(is_open(cx), "waiting again");
+    let second = senders.borrow_mut().pop().unwrap();
+    let _ = second.send(true);
+    cx.run_until_parked();
+    assert!(!is_open(cx), "a yes closes it");
 }
 
 /// Nothing found says so, with the query in it; nothing typed says nothing.

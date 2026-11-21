@@ -285,13 +285,19 @@ func TestKeyStaleChecksTheKeyAtOnce(t *testing.T) {
 	<-done
 }
 
+// nameOf is the entry that carries operation op: the app's own entry where a typed command (the announcements', the role
+// panel's) names the same operation, so the answer does not depend on the map's order.
 func nameOf(rows map[string][]any, op uint64) string {
+	found := ""
 	for name, row := range rows {
-		if row[2] == op {
-			return name
+		if row[2] != op {
+			continue
+		}
+		if row[6] == HandlerRead || found == "" {
+			found = name
 		}
 	}
-	return ""
+	return found
 }
 
 func waitFor(t *testing.T, cond func() bool) {
@@ -437,5 +443,64 @@ func TestExistingPollsAndRemindersStayOperableWithTheirFeatureOff(t *testing.T) 
 	}
 	if len(Commands(nil)) == 0 || len(decoded(t, Build(nil))) == 0 {
 		t.Fatal("an installation with no feature offers nothing, but its existing polls and reminders must stay operable")
+	}
+}
+
+// The announcements offer typed commands for the composer (the shape of the web's bot-catalog.fixture.ts), each naming the
+// existing app operation, only with the feature on; the app entries and their intake rules are unchanged.
+func TestAnnouncementsOfferTheTypedCommands(t *testing.T) {
+	if rows := decoded(t, Build([]Feature{FeatureMusic})); rows["announcement list"] != nil || rows["announcement rows"] != nil {
+		t.Fatalf("announcements are offered without their feature: %v", rows)
+	}
+	rows := decoded(t, Build([]Feature{FeatureAnnouncements}))
+	for name, op := range map[string]protocol.Operation{
+		"announcement list":   protocol.OpAppAnnouncementsList,
+		"announcement create": protocol.OpAppAnnouncementsPut,
+		"announcement edit":   protocol.OpAppAnnouncementsPut,
+		"announcement delete": protocol.OpAppAnnouncementsDelete,
+	} {
+		row := rows[name]
+		if row == nil || row[2] != uint64(op) || row[6] != HandlerCommand || row[4] != permManageCommunity {
+			t.Fatalf("%s = %v", name, row)
+		}
+	}
+	if rows["announcement create"][5] != uint64(1) || rows["announcement list"][5] != uint64(0) {
+		t.Fatalf("only create needs a Bot channel: %v %v", rows["announcement create"], rows["announcement list"])
+	}
+	if args := rows["announcement delete"][3].([]any); len(args) != 1 || args[0].([]any)[0] != "announcement" || args[0].([]any)[2] != uint64(1) {
+		t.Fatalf("delete args = %v", args)
+	}
+	// The app entries stay, and the typed commands add no rule of their own: 150 is still a read, 151 and 152 mutations.
+	for _, name := range []string{"announcement rows", "announcement save", "announcement remove"} {
+		if rows[name] == nil || rows[name][6] != HandlerRead {
+			t.Fatalf("%s = %v", name, rows[name])
+		}
+	}
+	rules := Operations([]Feature{FeatureAnnouncements})
+	if !rules[uint64(protocol.OpAppAnnouncementsList)].Read || rules[uint64(protocol.OpAppAnnouncementsPut)].Read || rules[uint64(protocol.OpAppAnnouncementsDelete)].Read {
+		t.Fatalf("announcement rules = %+v", rules)
+	}
+}
+
+// The roles feature offers the role panel's typed command for the composer, naming the app's publish operation; the app
+// entry and its intake rule are unchanged.
+func TestRolePanelOffersTheTypedCommand(t *testing.T) {
+	if rows := decoded(t, Build([]Feature{FeatureMusic})); rows["rolepanel create"] != nil || rows["rolepanel publish"] != nil {
+		t.Fatalf("the role panel is offered without its feature: %v", rows)
+	}
+	rows := decoded(t, Build([]Feature{FeatureRoles}))
+	row := rows["rolepanel create"]
+	if row == nil || row[2] != uint64(protocol.OpAppRolePanelPublish) || row[6] != HandlerCommand || row[4] != permManageRoles || row[5] != uint64(1) {
+		t.Fatalf("rolepanel create = %v", row)
+	}
+	if args := row[3].([]any); len(args) != 0 {
+		t.Fatalf("rolepanel create takes no arguments: %v", args)
+	}
+	if rows["rolepanel publish"] == nil || rows["rolepanel publish"][6] != HandlerRead {
+		t.Fatalf("rolepanel publish = %v", rows["rolepanel publish"])
+	}
+	rule := Operations([]Feature{FeatureRoles})[uint64(protocol.OpAppRolePanelPublish)]
+	if rule.Permission != permManageRoles || rule.Read {
+		t.Fatalf("role panel rule = %+v", rule)
 	}
 }

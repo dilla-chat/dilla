@@ -461,6 +461,15 @@ fn layout_run(out: &mut Vec<AnyElement>, parts: &[Body], top: f32, avail: f32, f
     y - top
 }
 
+/// The card's outer width in a body `body_w` wide: the whole body, up to `max-width: 40rem` of content plus the 1px frame on
+/// each side (CodeBlock.css sets no `box-sizing`, so the 640px is the content box).
+pub(crate) fn card_width(body_w: f32) -> f32 {
+    body_w.min(CARD_MAX + 2.0)
+}
+
+/// `.d-code-block__head`'s right padding, 0.375rem: the Copy button's inset from the head's right (inner) edge.
+pub(crate) const COPY_RIGHT: f32 = 6.0;
+
 fn code_height(lines: usize) -> f32 {
     let body = (lines as f32 * CARD_LINE).min(CARD_BODY_MAX) + 2.0 * CARD_BODY_PAD;
     // The 1px frame, the head (its 1px rule inside it), then the body.
@@ -500,13 +509,13 @@ fn code_card(lang: Option<&str>, code: &str, width: f32) -> (AnyElement, f32) {
     let meta_lh = line_height(meta, 1.5);
     let copy = t("shell.code.copy");
     let copy_w = copy.chars().count() as f32 * f32::from(meta) * MONO_ADVANCE;
-    // 22px high, 0 8px padding, a 12px icon and 5px between it and the label; 6px from the head's right edge.
+    // 22px high, 0 8px padding, a 12px icon and 5px between it and the label; `COPY_RIGHT` from the head's right edge
+    // (anchored by its right, so rounding its width never moves its edge off the web's).
     let btn_w = 8.0 + 12.0 + 5.0 + copy_w + 8.0;
-    let btn_x = inner - 6.0 - btn_w;
     kids.push(
         div()
             .absolute()
-            .left(px(btn_x.round()))
+            .right(len(COPY_RIGHT))
             .top(px((CARD_HEAD_CONTENT - 22.0) / 2.0))
             .w(px(btn_w.round()))
             .h(len(22.))
@@ -613,9 +622,52 @@ pub fn forget_cached() {
 }
 
 /// [`layout`]'s height, remembered by (parts, width): a draw of a body already laid out in this width costs one lookup.
+///
+/// The density is not part of the key (Task 19b): a body's height never depends on it. MessageRow.css gives the body its
+/// own `line-height: 1.55` and CodeBlock.css its card fixed lengths, so no part of a body takes the root's
+/// `--line-height`; what the density moves in a row (its head line) is added outside the memo, in `timeline::row_height`.
+/// `tests::a_body_is_as_tall_at_every_density` holds the memo to that.
 pub fn height_cached(parts: &[Body], width: f32) -> f32 {
-    let key = format!("{:x}|{parts:?}", width.to_bits());
+    let mut key = format!("{:x}|", width.to_bits());
+    content_key(parts, &mut key);
     *heights().memo(&key, || layout(parts, width, color::FG_BODY).height)
+}
+
+/// The memo's key for `parts`: their whole structure and every text in it, each text length-prefixed so no two different
+/// bodies share a key. It is built from the content itself, never from `Body`'s Debug (which R21 reduces to shape and
+/// lengths); it stays in memory and is never logged.
+fn content_key(parts: &[Body], out: &mut String) {
+    use std::fmt::Write as _;
+    let text = |tag: char, s: &str, out: &mut String| {
+        let _ = write!(out, "{tag}{}:{s}", s.len());
+    };
+    for p in parts {
+        match p {
+            Body::Text(t) => text('t', t, out),
+            Body::Mention(pill) => {
+                text('m', &pill.label, out);
+                let _ = write!(out, "{}{}", u8::from(pill.me), u8::from(pill.broadcast));
+                text('u', pill.user.as_deref().unwrap_or(""), out);
+            }
+            Body::Strong(c) | Body::Em(c) | Body::Strike(c) | Body::Quote(c) => {
+                let tag = match p {
+                    Body::Strong(_) => 'S',
+                    Body::Em(_) => 'E',
+                    Body::Strike(_) => 'K',
+                    _ => 'Q',
+                };
+                let _ = write!(out, "{tag}{}(", c.len());
+                content_key(c, out);
+                out.push(')');
+            }
+            Body::Code(t) => text('c', t, out),
+            Body::CodeBlock { text: t, lang } => {
+                text('b', t, out);
+                text('l', lang.as_deref().unwrap_or(""), out);
+            }
+            Body::Link { href } => text('h', href, out),
+        }
+    }
 }
 
 /// The body `parts` laid out in `width` px, in the colour `fg`.
@@ -657,7 +709,7 @@ pub fn layout_from(parts: &[Body], width: f32, fg: Hsla, y0: f32) -> Laid {
                 y += BLOCK_GAP;
             }
             first = false;
-            let (card, h) = code_card(lang.as_deref(), text, width.min(CARD_MAX + 2.0));
+            let (card, h) = code_card(lang.as_deref(), text, card_width(width));
             out.push(
                 div()
                     .absolute()
@@ -765,6 +817,33 @@ mod tests {
         assert_ne!(height_cached(&p, 60.0), height_cached(&p, 400.0));
     }
 
+    /// R21 round 1 (C1): two bodies of the same shape and text lengths are different entries. The key is the content,
+    /// not `Body`'s redacted Debug, so a one-line body never takes a two-line body's height (or the reverse).
+    #[test]
+    fn equal_shape_bodies_keep_their_own_heights() {
+        let (two, one) = (
+            vec![Body::Text("a\nb".into())],
+            vec![Body::Text("a b".into())],
+        );
+        assert_eq!(
+            format!("{two:?}"),
+            format!("{one:?}"),
+            "Debug alone cannot tell them apart"
+        );
+        let (h2, h1) = (
+            layout(&two, 400.0, color::FG_BODY).height,
+            layout(&one, 400.0, color::FG_BODY).height,
+        );
+        assert!(h2 > h1, "the line break takes a line");
+        assert_eq!(height_cached(&two, 400.0), h2);
+        assert_eq!(height_cached(&one, 400.0), h1);
+        let mut a = String::new();
+        let mut b = String::new();
+        content_key(&[Body::Text("ab".into()), Body::Text("c".into())], &mut a);
+        content_key(&[Body::Text("a".into()), Body::Text("bc".into())], &mut b);
+        assert_ne!(a, b, "the texts' boundaries are part of the key");
+    }
+
     /// Underlines and strikes are placed from the CSS offset and the font's ascent, not from fixed guesses: a link and a
     /// struck word draw a rule each.
     #[test]
@@ -778,6 +857,25 @@ mod tests {
             .len();
         assert_eq!(link, plain + 1);
         assert_eq!(strike, plain + 1);
+    }
+
+    /// Task 19b: a body takes no part of the density. Its lines are MessageRow.css's own 1.55, which is none of the
+    /// densities' `--line-height` but cozy's by coincidence and is never replaced by it, so the one memo entry per (body,
+    /// width) is right at every density: what the memo answers is what the layout makes.
+    #[test]
+    fn a_body_is_as_tall_at_every_density() {
+        use dilla_desktop_ui::metrics::Density;
+        assert_eq!(body_line(), line_height(text::INPUT, 1.55));
+        for d in [Density::Compact, Density::Regular] {
+            assert_ne!(
+                body_line(),
+                line_height(text::INPUT, d.line_height()),
+                "{d:?}"
+            );
+        }
+        let body = parts("> a quote\nsome text\n```rust\nfn main() {}\n```");
+        let laid = layout(&body, 420.0, color::FG_BODY).height;
+        assert_eq!(height_cached(&body, 420.0), laid);
     }
 
     #[test]

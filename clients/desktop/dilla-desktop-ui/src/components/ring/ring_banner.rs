@@ -18,7 +18,7 @@ use gpui::{
 use crate::a11y::{Accessible, Live, Role};
 use crate::components::avatar::{Avatar, AvatarSize};
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 actions!(ring_banner, [Answer, Decline]);
@@ -158,7 +158,15 @@ fn button(
         .rounded(radius::MD)
         .cursor_pointer()
         .focus_visible(|s| s.shadow(focus_ring()))
-        .child(line(label, text::BTN, line_height(text::BTN, 1.5), fg).weight(weight))
+        .child(
+            line(
+                label,
+                text::BTN,
+                crate::text::root_line_height(text::BTN),
+                fg,
+            )
+            .weight(weight),
+        )
 }
 
 impl RenderOnce for RingBanner {
@@ -217,8 +225,13 @@ impl RenderOnce for RingBanner {
                         .flex_basis(px(TEXT_BASIS))
                         .min_w_0()
                         .child(
-                            line(ring.text, text::UI, line_height(text::UI, 1.5), color::FG)
-                                .weight(font::WEIGHT_LABEL),
+                            line(
+                                ring.text,
+                                text::UI,
+                                crate::text::root_line_height(text::UI),
+                                color::FG,
+                            )
+                            .weight(font::WEIGHT_LABEL),
                         ),
                 )
                 .child(

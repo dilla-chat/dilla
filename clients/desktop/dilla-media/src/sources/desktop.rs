@@ -90,6 +90,68 @@ pub fn list(kind: SourceKind) -> Vec<DesktopSource> {
         .collect()
 }
 
+/// The process that owns a shared window, for its sound (Task 44). `None` for a screen, under the portal (Linux on
+/// Wayland; macOS until Task 45: the system's dialog chooses and Dilla never holds a window id), and when the system
+/// does not say.
+///
+/// Blocking (an X11 round trip): call it off the UI thread.
+pub fn window_owner_pid(source: &DesktopSource) -> Option<u32> {
+    if source.kind != SourceKind::Window || portal() {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        x11_client_pid(u32::try_from(source.id).ok()?)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        hwnd_pid(source.id)
+    }
+    // macOS: Task 45 makes this the owner the window list carried; today the portal answers first.
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+/// The process behind an X11 client window, from the X server's own record of the client's socket peer (XRes 1.2
+/// `LOCAL_CLIENT_PID`), so a window cannot claim another process's pid. `_NET_WM_PID` is client-written and is
+/// deliberately not read. No XRes 1.2, a remote client or any error is `None`.
+#[cfg(target_os = "linux")]
+fn x11_client_pid(window: u32) -> Option<u32> {
+    use x11rb::protocol::res::{ClientIdMask, ClientIdSpec, ConnectionExt};
+    let (conn, _) = x11rb::rust_connection::RustConnection::connect(None).ok()?;
+    let reply = conn
+        .res_query_client_ids(&[ClientIdSpec {
+            client: window,
+            mask: ClientIdMask::LOCAL_CLIENT_PID,
+        }])
+        .ok()?
+        .reply()
+        .ok()?;
+    let pid = *reply.ids.first()?.value.first()?;
+    (pid != 0).then_some(pid)
+}
+
+/// The process of a window handle; `None` when the window is gone or the system gives no process. Store (UWP) windows
+/// belong to `ApplicationFrameHost.exe`, which never plays, so they fall back to no application (documented, not
+/// worked around).
+#[cfg(target_os = "windows")]
+fn hwnd_pid(hwnd: u64) -> Option<u32> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
+    let hwnd = HWND(hwnd as usize as *mut _);
+    // SAFETY: both calls take a handle value only; a stale or invalid one answers false or 0.
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return None;
+        }
+        let mut pid = 0u32;
+        let thread = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        (thread != 0 && pid != 0).then_some(pid)
+    }
+}
+
 /// One frame of `source`, scaled to fit `max_w` x `max_h` (RGBA), for the picker's tile; `None` when the source gives
 /// no frame within a second (a minimised window).
 pub fn thumbnail(source: &DesktopSource, max_w: u32, max_h: u32) -> Option<Frame> {
@@ -350,6 +412,50 @@ mod tests {
         assert_eq!(&t.data, &[0, 0, 255, 255, 255, 0, 0, 255]);
         let same = fit_rgba(&f, 320, 180);
         assert_eq!((same.width, same.height), (4, 2), "never scaled up");
+    }
+
+    #[test]
+    fn a_screen_has_no_window_owner() {
+        let screen = DesktopSource {
+            kind: SourceKind::Screen,
+            id: 1,
+            title: "Screen 1".to_owned(),
+        };
+        assert_eq!(window_owner_pid(&screen), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs an X11 display: DISPLAY set (Xorg or Xwayland with X-Resource)"]
+    fn an_x11_window_s_owner_is_the_process_that_made_it() {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConnectionExt, CreateWindowAux, WindowClass};
+        let (conn, screen) = x11rb::connect(None).expect("an X11 display");
+        let root = conn.setup().roots[screen].root;
+        let win = conn.generate_id().expect("an id");
+        conn.create_window(
+            0,
+            win,
+            root,
+            0,
+            0,
+            8,
+            8,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .expect("create")
+        .check()
+        .expect("created");
+        assert_eq!(x11_client_pid(win), Some(std::process::id()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_window_that_is_gone_has_no_owner() {
+        assert_eq!(hwnd_pid(1), None);
     }
 
     #[test]

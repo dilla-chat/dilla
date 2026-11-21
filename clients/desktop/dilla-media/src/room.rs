@@ -106,6 +106,40 @@ pub struct CallOptions {
     /// Join muted: the microphone track is muted before it is published, so no frame of the person's voice is ever
     /// encoded before the mute (a muted or push-to-talk join).
     pub muted: bool,
+    /// Where the call's room close goes when the call is dropped without `leave` (see [`RoomCloses`]). The runtime the
+    /// call joins on awaits it before it shuts down; the default is a registry of this call's own.
+    pub room_closes: RoomCloses,
+}
+
+/// The room closes that dropped calls handed to their runtime, until they finish. A `Call` dropped without
+/// [`leave`](Call::leave) cannot wait for its room's close: it spawns it on the runtime it joined on and registers it
+/// here. Whoever shuts that runtime down awaits [`closed`](RoomCloses::closed) first, since a shutdown cancels a close
+/// still running, and a room that is never closed keeps its PeerConnection and frame transformers for the life of the
+/// process. One registry per runtime (a desktop media session's), so one window never waits on another window's
+/// close, and one window's wait never takes another window's closes.
+#[derive(Clone, Default)]
+pub struct RoomCloses(Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>);
+
+impl RoomCloses {
+    fn add(&self, close: tokio::task::JoinHandle<()>) {
+        let mut closes = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        closes.retain(|c| !c.is_finished());
+        closes.push(close);
+    }
+
+    /// Waits until every room registered here has closed (its close task ended), those registered while it waits
+    /// included. The caller bounds it.
+    pub async fn closed(&self) {
+        loop {
+            let pending = std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()));
+            if pending.is_empty() {
+                return;
+            }
+            for close in pending {
+                let _ = close.await;
+            }
+        }
+    }
 }
 
 impl Default for CallOptions {
@@ -119,6 +153,7 @@ impl Default for CallOptions {
             key_timeout: Duration::from_secs(10),
             apm_flags: ApmFlags::default(),
             muted: false,
+            room_closes: RoomCloses::default(),
         }
     }
 }
@@ -457,6 +492,10 @@ pub struct LinkRead {
     pub rtt_ms: Option<u32>,
     pub sent: HashMap<String, u64>,
     pub received: HashMap<String, u64>,
+    /// The packets received and lost (cumulative) of each inbound RTP stream, by stream id.
+    pub inbound_packets: HashMap<String, (u64, i64)>,
+    /// The largest `fractionLost` (0..1) any remote report gives of what this device sends (stats.ts `connectionOf`).
+    pub remote_fraction_lost: Option<f64>,
 }
 
 impl LinkRead {
@@ -479,6 +518,14 @@ impl LinkRead {
                     read.received
                         .entry(i.rtc.id.clone())
                         .or_insert(i.inbound.bytes_received);
+                    read.inbound_packets
+                        .entry(i.rtc.id.clone())
+                        .or_insert((i.received.packets_received, i.received.packets_lost));
+                }
+                RtcStats::RemoteInboundRtp(r) => {
+                    let f = r.remote_inbound.fraction_lost;
+                    read.remote_fraction_lost =
+                        Some(read.remote_fraction_lost.map_or(f, |m| m.max(f)));
                 }
                 _ => {}
             }
@@ -502,6 +549,27 @@ impl LinkRead {
             kbps(delta(&self.sent, &before.sent)),
             kbps(delta(&self.received, &before.received)),
         ))
+    }
+
+    /// stats.ts `linkSample`'s `lossPct`: the larger of the remote report's worst `fractionLost` and the worst inbound
+    /// stream's lost share of the packets since `before`, in percent to one decimal. Only the streams in both reads
+    /// count, and one whose counters went down (a restart) is skipped.
+    pub fn loss_since(&self, before: &LinkRead) -> f32 {
+        let remote = self.remote_fraction_lost.map_or(0.0, |f| f * 100.0);
+        let inbound = self
+            .inbound_packets
+            .iter()
+            .filter_map(|(id, (recv, lost))| {
+                let (was_recv, was_lost) = before.inbound_packets.get(id)?;
+                if recv < was_recv || lost < was_lost {
+                    return None;
+                }
+                let lost = (lost - was_lost) as f64;
+                let total = (recv - was_recv) as f64 + lost;
+                (total > 0.0).then(|| lost / total * 100.0)
+            })
+            .fold(0.0, f64::max);
+        ((remote.max(inbound) * 10.0).round() / 10.0) as f32
     }
 }
 
@@ -630,7 +698,14 @@ async fn feed(
 }
 
 pub struct Call {
-    room: Room,
+    /// The room until it is closed: `leave` takes and closes it, or `Drop` hands it to `runtime` to close. livekit's
+    /// `Room` has no `Drop` of its own, so a room that is never closed keeps its engine, its PeerConnection and every
+    /// transceiver's frame transformer for the life of the process.
+    room: Option<Room>,
+    /// The runtime the call joined on, where a dropped call's room is closed.
+    runtime: tokio::runtime::Handle,
+    /// Where that close is registered, for the runtime's owner to await.
+    room_closes: RoomCloses,
     router: Arc<Router>,
     media: Arc<CallMedia>,
     local: Option<LocalAudioTrack>,
@@ -639,6 +714,8 @@ pub struct Call {
     events_tx: mpsc::UnboundedSender<MediaEvent>,
     events: Mutex<Option<mpsc::UnboundedReceiver<MediaEvent>>>,
     levels: watch::Receiver<RemoteLevels>,
+    /// The identities of the room's remote participants, verified or not (session.ts `remotes()`).
+    remotes: watch::Receiver<Vec<String>>,
     tails: Tails,
     screen_sound: ScreenSound,
     muted: Arc<AtomicBool>,
@@ -845,6 +922,15 @@ impl Call {
             })?;
 
         let (levels_tx, levels) = watch::channel(RemoteLevels::new());
+        // The room's remotes in the order they joined (livekit-client's `remoteParticipants` is a Map in that order).
+        let (remotes_tx, remotes) = watch::channel({
+            let mut present: Vec<_> = room.remote_participants().into_values().collect();
+            present.sort_by_key(|p| p.joined_at());
+            present
+                .iter()
+                .map(|p| p.identity().as_str().to_owned())
+                .collect::<Vec<String>>()
+        });
         let (videos_tx, videos) = watch::channel(RemoteVideos::new());
         let (shares_ended, shares_ended_rx) = mpsc::unbounded_channel();
         let (app_audio_ended, app_audio_ended_rx) = mpsc::unbounded_channel();
@@ -856,13 +942,16 @@ impl Call {
             events,
             media.clone(),
             (levels_tx, videos_tx),
+            remotes_tx,
             (tails.clone(), screen_sound.clone()),
             speaker.as_ref().map(|s| s.sink()),
             ended_tx,
         ))];
 
         let mut call = Call {
-            room,
+            room: Some(room),
+            runtime: tokio::runtime::Handle::current(),
+            room_closes: options.room_closes,
             router,
             media,
             local: None,
@@ -871,6 +960,7 @@ impl Call {
             events_tx,
             events: Mutex::new(Some(events_rx)),
             levels,
+            remotes,
             tails,
             screen_sound,
             muted,
@@ -946,7 +1036,7 @@ impl Call {
         if self.muted.load(Ordering::SeqCst) {
             track.mute();
         }
-        self.room
+        self.room()
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(track.clone()),
@@ -1057,6 +1147,12 @@ impl Call {
         self.muted.load(Ordering::SeqCst)
     }
 
+    /// The identities of the room's remote participants, whether their frames verified or not: the web's SFU remotes,
+    /// each of which has a tile (an unverified one says so).
+    pub fn remote_participants(&self) -> watch::Receiver<Vec<String>> {
+        self.remotes.clone()
+    }
+
     /// The speaking level of each verified remote device.
     pub fn remote_audio_levels(&self) -> watch::Receiver<RemoteLevels> {
         self.levels.clone()
@@ -1141,7 +1237,7 @@ impl Call {
     /// while no round trip is measured or the stats cannot be read. It never goes to the server.
     /// One read of the link ([`LinkRead`]): the ping and the RTP byte counters, `None` when the stats could not be read.
     pub async fn link(&self) -> Option<LinkRead> {
-        let stats = self.room.get_stats().await.ok()?;
+        let stats = self.room().get_stats().await.ok()?;
         Some(LinkRead::of(
             &stats.publisher_stats,
             &stats.subscriber_stats,
@@ -1149,7 +1245,7 @@ impl Call {
     }
 
     pub async fn rtt_ms(&self) -> Option<u32> {
-        let stats = self.room.get_stats().await.ok()?;
+        let stats = self.room().get_stats().await.ok()?;
         rtt_ms_of(&stats.publisher_stats).or_else(|| rtt_ms_of(&stats.subscriber_stats))
     }
 
@@ -1157,7 +1253,7 @@ impl Call {
     /// the bytes it sent (the publisher's statistics). The check that a server offering AV1 still gets VP8.
     pub async fn sent_video(&self) -> Vec<(String, u64)> {
         use livekit::webrtc::stats::RtcStats;
-        let Ok(stats) = self.room.get_stats().await else {
+        let Ok(stats) = self.room().get_stats().await else {
             return Vec::new();
         };
         let report = &stats.publisher_stats;
@@ -1235,7 +1331,7 @@ impl Call {
         };
         share.feeder.abort();
         if let Err(e) = self
-            .room
+            .room()
             .local_participant()
             .unpublish_track(&share.sid)
             .await
@@ -1272,7 +1368,7 @@ impl Call {
         let track_id = track.rtc_track().id();
         self.media.expect_local(&track_id, slot);
         let publication = self
-            .room
+            .room()
             .local_participant()
             .publish_track(
                 LocalTrack::Video(track.clone()),
@@ -1305,7 +1401,7 @@ impl Call {
             ))),
         };
         if let Err(e) = bound_sender {
-            let _ = self.room.local_participant().unpublish_track(&sid).await;
+            let _ = self.room().local_participant().unpublish_track(&sid).await;
             return Err(e);
         }
         let fps = {
@@ -1328,7 +1424,7 @@ impl Call {
             fps,
             sent.clone(),
             EndOfShare {
-                participant: self.room.local_participant(),
+                participant: self.room().local_participant(),
                 shares: self.shares.clone(),
                 sid: sid.clone(),
                 ended: self.shares_ended.clone(),
@@ -1367,7 +1463,7 @@ impl Call {
                     .take(),
             );
             if let Err(e) = self
-                .room
+                .room()
                 .local_participant()
                 .unpublish_track(&share.sid)
                 .await
@@ -1403,7 +1499,7 @@ impl Call {
         let track_id = track.rtc_track().id();
         self.media.expect_local(&track_id, Slot::ScreenAudio);
         let publication = self
-            .room
+            .room()
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(track.clone()),
@@ -1429,7 +1525,7 @@ impl Call {
             )),
         };
         if let Err(e) = bound {
-            let _ = self.room.local_participant().unpublish_track(&sid).await;
+            let _ = self.room().local_participant().unpublish_track(&sid).await;
             return Err(e);
         }
         let (tx, rx) = mpsc::channel::<Vec<f32>>(50);
@@ -1444,7 +1540,7 @@ impl Call {
         let capture = match capture {
             Ok(c) => c,
             Err(e) => {
-                let _ = self.room.local_participant().unpublish_track(&sid).await;
+                let _ = self.room().local_participant().unpublish_track(&sid).await;
                 return Err(MediaError::Audio(e.to_string()));
             }
         };
@@ -1453,7 +1549,7 @@ impl Call {
             rx,
             rtc,
             (
-                self.room.local_participant(),
+                self.room().local_participant(),
                 sid.clone(),
                 self.app_audio.clone(),
                 self.app_audio_ended.clone(),
@@ -1478,7 +1574,7 @@ impl Call {
             a.feeder.abort();
             let sid = a.sid.clone();
             drop(a);
-            if let Err(e) = self.room.local_participant().unpublish_track(&sid).await {
+            if let Err(e) = self.room().local_participant().unpublish_track(&sid).await {
                 log::warn!("dilla-media: unpublish the application sound: {e}");
             }
         }
@@ -1530,9 +1626,33 @@ impl Call {
         }
     }
 
+    /// The open room. Only `leave` and `Drop` take it, and both consume the call.
+    fn room(&self) -> &Room {
+        self.room
+            .as_ref()
+            .expect("the room is open while the call is")
+    }
+
     /// This device's identity in the room.
     pub fn identity(&self) -> String {
-        self.room.local_participant().identity().as_str().to_owned()
+        self.room()
+            .local_participant()
+            .identity()
+            .as_str()
+            .to_owned()
+    }
+
+    /// Ends the call's media now, without waiting for its room: the shares stop (their sources are
+    /// let go), the keys are dropped and the process's media router is free for the next call. The
+    /// room is still to be left ([`leave`](Call::leave), which does this first, or the drop).
+    ///
+    /// The router is free before this call's room has closed, so another call can join while it
+    /// closes. That is safe: this call's media is closed, so a frame of its PeerConnection that
+    /// still arrives is dropped. A receive frame that reaches the new call's transformers before the
+    /// old ones detach is counted as a failure in the new call's stats.
+    pub fn end_media(&self) {
+        self.stop_shares();
+        self.router.end(&self.media);
     }
 
     /// Leaves the room and ends the call's media: its keys are dropped and every later frame of
@@ -1543,7 +1663,9 @@ impl Call {
         for t in self.tasks.drain(..) {
             t.abort();
         }
-        if let Err(e) = self.room.close().await {
+        if let Some(room) = self.room.take()
+            && let Err(e) = room.close().await
+        {
             log::warn!("dilla-media: room close: {e}");
         }
         self.router.end(&self.media);
@@ -1554,11 +1676,20 @@ impl Call {
 
 impl Drop for Call {
     fn drop(&mut self) {
-        // A call dropped without `leave` still ends its media at once; the room closes with it.
+        // A call dropped without `leave` still ends its media at once, and its room is closed on the call's runtime
+        // (drop cannot wait for it): the close leaves the room and releases the PeerConnection.
         self.stop_shares();
         self.router.end(&self.media);
         for t in self.tasks.drain(..) {
             t.abort();
+        }
+        if let Some(room) = self.room.take() {
+            let close = self.runtime.spawn(async move {
+                if let Err(e) = room.close().await {
+                    log::warn!("dilla-media: room close: {e}");
+                }
+            });
+            self.room_closes.add(close);
         }
     }
 }
@@ -1661,10 +1792,20 @@ pub fn gain_group(device: &str, stream: bool) -> String {
     format!("{device}:{}", if stream { "stream" } else { "voice" })
 }
 
+/// Adds `identity` to the room's remotes in joining order, once; whether the list changed.
+fn join_remote(list: &mut Vec<String>, identity: &str) -> bool {
+    if list.iter().any(|i| i == identity) {
+        return false;
+    }
+    list.push(identity.to_owned());
+    true
+}
+
 async fn remote_tracks(
     mut events: mpsc::UnboundedReceiver<RoomEvent>,
     media: Arc<CallMedia>,
     (levels, videos): (watch::Sender<RemoteLevels>, watch::Sender<RemoteVideos>),
+    remotes: watch::Sender<Vec<String>>,
     (tails, screen_sound): (Tails, ScreenSound),
     playout: Option<PlayoutSink>,
     ended: watch::Sender<Option<RoomEnd>>,
@@ -1679,6 +1820,7 @@ async fn remote_tracks(
                 participant,
             } => {
                 let identity = participant.identity().as_str().to_owned();
+                remotes.send_if_modified(|list| join_remote(list, &identity));
                 // An unverified stream (identity not 32 lowercase hex), a source without a slot or a
                 // NONE-flagged publication is never bound: its frames are held, then dropped.
                 let (Some(device), Some(slot)) =
@@ -1793,6 +1935,18 @@ async fn remote_tracks(
                         });
                     }
                 }
+            }
+            RoomEvent::ParticipantConnected(participant) => {
+                let identity = participant.identity().as_str().to_owned();
+                remotes.send_if_modified(|list| join_remote(list, &identity));
+            }
+            RoomEvent::ParticipantDisconnected(participant) => {
+                let identity = participant.identity().as_str().to_owned();
+                remotes.send_if_modified(|list| {
+                    let before = list.len();
+                    list.retain(|i| *i != identity);
+                    list.len() != before
+                });
             }
             RoomEvent::Disconnected { reason } => {
                 why = Some(RoomEnd::of(reason));
@@ -2288,6 +2442,7 @@ mod rtt_tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_owned(), *v))
                 .collect(),
+            ..LinkRead::default()
         };
         let before = read(&[("a", 1_000)], &[("x", 10_000), ("y", 500)]);
         let now = read(
@@ -2297,6 +2452,30 @@ mod rtt_tests {
         // 5 000 bytes in 2 s up: 20 kb/s; down 10 000 + 100 (y restarted) bytes: 40.4 -> 40 kb/s.
         assert_eq!(now.rate_since(&before, 2_000.0), Some((20, 40)));
         assert_eq!(now.rate_since(&before, 0.0), None);
+    }
+
+    /// stats.ts `linkSample`'s `lossPct`: the worse of the remote report's `fractionLost` and the inbound streams' lost
+    /// share since the previous read, to one decimal; a stream that appeared adds nothing.
+    #[test]
+    fn loss_is_the_worse_of_the_remote_report_and_the_inbound_delta() {
+        let read = |packets: &[(&str, u64, i64)], remote: Option<f64>| LinkRead {
+            inbound_packets: packets
+                .iter()
+                .map(|(k, r, l)| ((*k).to_owned(), (*r, *l)))
+                .collect(),
+            remote_fraction_lost: remote,
+            ..LinkRead::default()
+        };
+        let before = read(&[("a", 100, 0)], None);
+        // 10 lost of 100 since: 10 %, over the remote report's 2 %.
+        assert_eq!(
+            read(&[("a", 190, 10)], Some(0.02)).loss_since(&before),
+            10.0
+        );
+        // 1 lost of 100: the remote report's 2 % is the worse.
+        assert_eq!(read(&[("a", 199, 1)], Some(0.02)).loss_since(&before), 2.0);
+        // A stream only in the new read adds nothing.
+        assert_eq!(read(&[("b", 50, 50)], None).loss_since(&before), 0.0);
     }
 
     #[test]

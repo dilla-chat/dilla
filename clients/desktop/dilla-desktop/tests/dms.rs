@@ -3,6 +3,7 @@
 //! The views run in a real (test) window over a trust slice as the client publishes it, and are driven with keystrokes.
 //! The trust behaviours against a real dillad (trust-polish.spec.ts) are the client's `tests/dms.rs`; here: what the
 //! Privacy section and the compare dialog do with the slice, the focus rules, and the DM picker's keys.
+//! `parity_dms_*` compare each fixture of `parity/fixtures/dms/` with its web reference (`assert_screen`, Linux and macOS).
 
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use dilla_desktop::screens::dms::{compare, conversation, picker, privacy};
 use dilla_desktop::screens::shell::Clock;
 use dilla_desktop::screens::{FocusNext, FocusPrevious};
 use dilla_desktop::slots::SlotCx;
+use dilla_parity::screen::assert_screen;
 use gpui::{
     Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     TestAppContext, VisualTestContext, Window, div, px,
@@ -58,6 +60,7 @@ impl Render for Host {
             channel: None,
             clock: Clock::Local,
             workspace: None,
+            composer: None,
         };
         div()
             .id("host")
@@ -349,4 +352,52 @@ fn conversation_block_and_removed_note(cx: &mut TestAppContext) {
     state.trust.contacts[0].removed_in.push(channel);
     assert_eq!(conversation::composer_block(&state, channel), None);
     assert!(state.trust.removed_here(channel));
+}
+
+fn parity(name: &str) {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/dms")
+        .join(format!("{name}.json"));
+    let report = assert_screen(&fixture)
+        .unwrap_or_else(|e| panic!("dms/{name} differs from its web reference: {e}"));
+    println!(
+        "SCREEN dms/{name}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_home() {
+    parity("home");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_home_b() {
+    parity("home-b");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_conversation() {
+    parity("conversation");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_conversation_b() {
+    parity("conversation-b");
 }

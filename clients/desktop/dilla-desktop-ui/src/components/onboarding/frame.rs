@@ -21,7 +21,7 @@ use gpui_component::input::{Input, InputState};
 
 use crate::a11y::{Accessible, Role};
 use crate::components::text_field::edge;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{columns, line, line_height, wrap_mono};
 use crate::tokens::{color, font, radius, text};
 use crate::{Icon, IconName, metrics};
 
@@ -47,22 +47,145 @@ pub fn shadow_card() -> Vec<gpui::BoxShadow> {
 
 /// The body text's line height: `--text-sm` at the base 1.5.
 pub fn body_line() -> f32 {
-    line_height(text::SM, 1.5)
+    crate::text::root_line_height(text::SM)
+}
+
+/// A mono paragraph wrapped as Chromium's `text-wrap: pretty` wraps it (OnboardingFrame.css, "fix round 1": the body's
+/// first `<p>`, the subtitle): the greedy lines, except that a last line of a single word takes the word before it along,
+/// so a paragraph never ends on an orphan. The pulled word is kept only when the line it joins still fits `width`.
+fn pretty_lines(text_: &str, size: gpui::Pixels, width: f32) -> Vec<String> {
+    let cols = columns(size, width);
+    let mut lines = wrap_mono(text_, cols);
+    if let [.., prev, last] = lines.as_mut_slice()
+        && !last.is_empty()
+        && !last.contains(' ')
+        && let Some((head, word)) = prev.trim_end().rsplit_once(' ')
+        && word.chars().count() + 1 + last.chars().count() <= cols
+    {
+        *last = format!("{word} {last}");
+        *prev = head.trim_end().to_owned();
+    }
+    lines
+}
+
+/// A paragraph of the frame's body, wrapped to the card (12.5px, in the card's width). The frame decides how it wraps:
+/// the body's first paragraph is `.d-onboarding-frame__body > p:first-child`, which the web sets `text-wrap: pretty`
+/// (OnboardingFrame.css:24); [`Part::of`] tells the frame which parts are paragraphs, so every step gets it without its
+/// call site saying so.
+#[derive(IntoElement)]
+pub struct BodyParagraph {
+    text: SharedString,
+    color: gpui::Hsla,
+    first: std::cell::Cell<bool>,
+    flow: Flow,
+}
+
+/// Where GPUI flows a paragraph's text itself instead of the frame wrapping it to the card's 342px.
+#[derive(Clone, Copy, PartialEq)]
+enum Flow {
+    Never,
+    /// In the desktop authentication window, where the card is the window's width.
+    Desktop,
+    /// Always: text outside the card (a dialog).
+    Always,
+}
+
+impl BodyParagraph {
+    pub fn new(text_: impl Into<SharedString>, color_: gpui::Hsla) -> Self {
+        Self {
+            text: text_.into(),
+            color: color_,
+            first: std::cell::Cell::new(false),
+            flow: Flow::Never,
+        }
+    }
+
+    /// In the desktop authentication window the card is the window's width, not 342px: the text then wraps where GPUI
+    /// flows it, as a block of text does.
+    pub fn flowing(mut self) -> Self {
+        self.flow = Flow::Desktop;
+        self
+    }
+
+    /// Text that is not in the card at all (a dialog's): GPUI flows it wherever it is.
+    pub fn flowing_always(mut self) -> Self {
+        self.flow = Flow::Always;
+        self
+    }
+}
+
+impl BodyParagraph {
+    /// The lines the card wraps the text into: `text-wrap: pretty` for the body's first paragraph, greedy otherwise.
+    fn lines(&self) -> Vec<String> {
+        if self.first.get() {
+            pretty_lines(&self.text, text::SM, CARD_INNER_W)
+        } else {
+            wrap_mono(&self.text, columns(text::SM, CARD_INNER_W))
+        }
+    }
+}
+
+impl RenderOnce for BodyParagraph {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if self.flow == Flow::Always || (self.flow == Flow::Desktop && desktop_window(window, cx)) {
+            return div()
+                .min_h(px(body_line()))
+                .text_size(text::SM)
+                .line_height(px(body_line()))
+                .font_family(font::MONO)
+                .text_color(self.color)
+                .child(self.text)
+                .into_any_element();
+        }
+        let lines = self.lines();
+        div()
+            .flex()
+            .flex_col()
+            .children(
+                lines
+                    .into_iter()
+                    .map(|l| line(l, text::SM, body_line(), self.color)),
+            )
+            .into_any_element()
+    }
+}
+
+/// One part of a card's body: a paragraph (whose wrap depends on its place) or any other element.
+pub enum Part {
+    Paragraph(BodyParagraph),
+    Other(AnyElement),
+}
+
+impl Part {
+    /// `part` as a body part: a [`BodyParagraph`] stays one.
+    pub fn of<E: IntoElement + 'static>(part: E) -> Self {
+        let mut slot = Some(part);
+        match (&mut slot as &mut dyn std::any::Any).downcast_mut::<Option<BodyParagraph>>() {
+            Some(p) => Part::Paragraph(p.take().expect("just wrapped")),
+            None => Part::Other(slot.take().expect("just wrapped").into_any_element()),
+        }
+    }
+
+    /// The part in its place: `first` is the body's `:first-child` (no banner before it).
+    fn placed(self, first: bool) -> Self {
+        if let Part::Paragraph(p) = &self {
+            p.first.set(first);
+        }
+        self
+    }
+
+    /// The part drawn in its place ([`Part::placed`]).
+    pub fn render(self, first: bool) -> AnyElement {
+        match self.placed(first) {
+            Part::Paragraph(p) => p.into_any_element(),
+            Part::Other(e) => e,
+        }
+    }
 }
 
 /// A paragraph of the frame's body, wrapped to the card.
-pub fn body_paragraph(text_: &str, color_: gpui::Hsla) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .children(paragraph(
-            text_,
-            text::SM,
-            body_line(),
-            color_,
-            CARD_INNER_W,
-        ))
-        .into_any_element()
+pub fn body_paragraph(text_: &str, color_: gpui::Hsla) -> BodyParagraph {
+    BodyParagraph::new(text_.to_owned(), color_)
 }
 
 /// TopBar.tsx `BrandMark` at page size: the 20px brand tile with its D, the tracked DILLA and the 6x12 caret.
@@ -90,9 +213,14 @@ impl RenderOnce for BrandMark {
                     ),
             )
             .child(
-                line("DILLA", text::XS, line_height(text::XS, 1.5), color::FG)
-                    .weight(font::WEIGHT_DISPLAY)
-                    .tracking(metrics::LABEL_TRACKING_WIDE),
+                line(
+                    "DILLA",
+                    text::XS,
+                    crate::text::root_line_height(text::XS),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .tracking(metrics::LABEL_TRACKING_WIDE),
             )
             .child(div().w(px(6.0)).h(px(12.0)).flex_none().bg(color::BRAND))
     }
@@ -106,7 +234,7 @@ pub struct OnboardingFrame {
     step: Option<SharedString>,
     progress: Option<(u8, u8)>,
     banner: Option<AnyElement>,
-    body: Vec<AnyElement>,
+    body: Vec<Part>,
     primary: Option<AnyElement>,
     back: Option<AnyElement>,
     link: Option<AnyElement>,
@@ -147,8 +275,8 @@ impl OnboardingFrame {
     }
 
     /// The next part of the body.
-    pub fn child(mut self, part: impl IntoElement) -> Self {
-        self.body.push(part.into_any_element());
+    pub fn child(mut self, part: impl IntoElement + 'static) -> Self {
+        self.body.push(Part::of(part));
         self
     }
 
@@ -212,7 +340,7 @@ impl RenderOnce for OnboardingFrame {
                         Some(step) => line(
                             step.to_uppercase(),
                             text::MICRO,
-                            line_height(text::MICRO, 1.5),
+                            crate::text::root_line_height(text::MICRO),
                             color::FG_3,
                         )
                         .weight(font::WEIGHT_LABEL)
@@ -239,8 +367,10 @@ impl RenderOnce for OnboardingFrame {
             .gap(px(BODY_GAP))
             .mt(px(-BODY_GAP))
             .min_w_0();
+        let has_banner = self.banner.is_some();
         body = body.children(self.banner);
         for (i, part) in self.body.into_iter().enumerate() {
+            let part = part.render(i == 0 && !has_banner);
             // The first paragraph keeps 6px more under it (OnboardingFrame.css fix round 2).
             body = body.child(if i == 0 {
                 div().mb(px(6.0)).child(part).into_any_element()
@@ -576,8 +706,13 @@ impl RenderOnce for PrimaryAction {
             .justify_center()
             .gap(px(8.0))
             .child(
-                line(self.label, text::INPUT, line_height(text::INPUT, 1.5), ink)
-                    .weight(font::WEIGHT_DISPLAY),
+                line(
+                    self.label,
+                    text::INPUT,
+                    crate::text::root_line_height(text::INPUT),
+                    ink,
+                )
+                .weight(font::WEIGHT_DISPLAY),
             )
             .when(self.arrow, |d| {
                 d.child(Icon::new(IconName::ArrowRight).size(px(15.0)).color(ink))
@@ -642,7 +777,7 @@ impl RenderOnce for NavLink {
             .child(line(
                 self.label,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                crate::text::root_line_height(text::BTN),
                 ink,
             ));
         pressable(base, self.focus.as_ref(), self.on_click)
@@ -727,7 +862,7 @@ impl RenderOnce for OnboardingField {
             .child(line(
                 self.label,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 color::FG_2,
             ))
             .child(frame)
@@ -735,7 +870,7 @@ impl RenderOnce for OnboardingField {
                 d.child(line(
                     hint,
                     text::BTN,
-                    line_height(text::BTN, 1.5),
+                    crate::text::root_line_height(text::BTN),
                     color::FG_3,
                 ))
             })
@@ -795,7 +930,7 @@ impl RenderOnce for ReadyPanel {
             .child(line(
                 self.text,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::OK_PANEL_TEXT,
             ))
     }
@@ -807,5 +942,47 @@ mod shadow_tests {
     #[test]
     fn the_card_shadow_blurs_as_css_does() {
         assert_eq!(super::shadow_card()[0].blur_radius, gpui::px(40.0));
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    /// The recovery key step's subtitle: greedy fits "Shown once. You need it to add another" on the first line and leaves
+    /// "device." alone; `text-wrap: pretty` (the web's wrap, 30 characters then 15) takes "another" down with it.
+    #[test]
+    fn a_pretty_paragraph_never_ends_on_one_word() {
+        let body = "Shown once. You need it to add another device.";
+        let greedy = wrap_mono(body, columns(text::SM, CARD_INNER_W));
+        assert_eq!(
+            greedy,
+            ["Shown once. You need it to add another", "device."]
+        );
+        assert_eq!(
+            pretty_lines(body, text::SM, CARD_INNER_W),
+            ["Shown once. You need it to add", "another device."]
+        );
+        // A paragraph that already ends on several words, or fits one line, is left as it is.
+        let two = "one two three four five six seven eight nine ten eleven twelve thirteen";
+        assert_eq!(
+            pretty_lines(two, text::SM, CARD_INNER_W),
+            wrap_mono(two, columns(text::SM, CARD_INNER_W))
+        );
+    }
+
+    /// Every step's first body paragraph gets `text-wrap: pretty` from the frame, not from its call site: a paragraph
+    /// placed first (`Part::render` places it, then draws the lines it picked) never ends on a single word, a later one
+    /// wraps greedily as the web's does.
+    #[test]
+    fn the_frame_wraps_a_first_paragraph_pretty_in_any_step() {
+        let body = "Shown once. You need it to add another device.";
+        let lines = |first: bool| match Part::of(body_paragraph(body, color::FG_2)).placed(first) {
+            Part::Paragraph(p) => p.lines(),
+            Part::Other(_) => panic!("a paragraph stays one"),
+        };
+        assert_eq!(lines(true).last().unwrap(), "another device.");
+        assert_eq!(lines(false).last().unwrap(), "device.");
+        assert!(matches!(Part::of(div()), Part::Other(_)));
     }
 }

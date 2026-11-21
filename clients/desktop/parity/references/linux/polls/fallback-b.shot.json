@@ -1,0 +1,21 @@
+{
+  "digest": "b60393f7ce8b9e4b9d5eb180ac1efcaed9e69607bc35f158234f249870034a6d",
+  "shift": 754360,
+  "hand_migrated": false,
+  "ids": {
+    "channel:asgard/afk": "b0020ac035c27bb835acefd76047a1d4",
+    "channel:asgard/general": "317779ef0912bfb803eba61f4153b339",
+    "channel:asgard/war-council": "612219998e490134f3e95266c16d7cec",
+    "channel:midgard/afk": "de57389ba44f28674ac28c3c90cdd71d",
+    "channel:midgard/general": "ff60855446872cd101060fb732db56e6",
+    "person:ada": "c46688a70c7cda232e2a89fc990f955e",
+    "person:bjorn": "7b02d78d4ec66efe6a9f829619a9c9d7",
+    "person:dillabot": "0acfeabfe63b2a6ae4f255b5d48afef4",
+    "person:kari": "d225b97f204e7a0db6d7b5d4ccaed5ce",
+    "person:liv": "4246b349123e9d5715185c013842788d",
+    "person:mira": "53af8bc561d824314cada770f2875bd7",
+    "person:sven": "a1835681e9a3c039824fd308b0d0224b",
+    "server:asgard": "fbd38f5c22945b380868d63ebc71715f",
+    "server:midgard": "6391b48567dd388f97b439e995994961"
+  }
+}

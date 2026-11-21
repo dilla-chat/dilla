@@ -11,7 +11,7 @@ use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{line, paragraph};
 use crate::tokens::{color, font, radius, text};
 
 /// CSS `rem`.
@@ -87,7 +87,7 @@ impl RenderOnce for AfkPage {
             .child(line(
                 self.action,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::FG,
             ));
         action = match &self.focus {
@@ -119,7 +119,7 @@ impl RenderOnce for AfkPage {
                 line(
                     self.title,
                     text::CARD,
-                    line_height(text::CARD, 1.5),
+                    crate::text::root_line_height(text::CARD),
                     color::FG,
                 )
                 .weight(font::WEIGHT_DISPLAY),
@@ -134,7 +134,7 @@ impl RenderOnce for AfkPage {
                     .children(paragraph(
                         &self.text,
                         text::UI,
-                        line_height(text::UI, 1.5),
+                        crate::text::root_line_height(text::UI),
                         color::FG_2,
                         TEXT_MAX,
                     )),

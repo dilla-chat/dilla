@@ -30,10 +30,10 @@ pub fn body_width(pane_width: f32) -> f32 {
 }
 
 fn name_line() -> f32 {
-    line_height(text::UI, 1.5)
+    crate::text::root_line_height(text::UI)
 }
 fn time_line() -> f32 {
-    line_height(text::MICRO, 1.5)
+    crate::text::root_line_height(text::MICRO)
 }
 fn body_line() -> f32 {
     line_height(text::SM, 1.5)
@@ -202,7 +202,7 @@ impl RenderOnce for ThreadRow {
                 line(
                     initials_of(&self.author),
                     text::CHIP,
-                    line_height(text::CHIP, 1.5),
+                    crate::text::root_line_height(text::CHIP),
                     color::BRAND_INK,
                 )
                 .weight(font::WEIGHT_DISPLAY),

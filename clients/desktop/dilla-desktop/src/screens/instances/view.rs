@@ -459,6 +459,8 @@ impl ManagerView {
 
 impl Render for ManagerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The manager window has no account and so no density: regular, whatever the last drawn window had.
+        dilla_desktop_ui::metrics::Density::enter(window, cx);
         let rem = window.rem_size();
         let entries = self.entries();
         while self.row_focus.len() < entries.len() {

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, S_OK, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, FILETIME, HANDLE, S_OK, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
@@ -44,22 +44,21 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::System::Threading::{
-    CreateEventW, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW, WaitForMultipleObjects,
+    CreateEventW, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW,
+    WaitForMultipleObjects,
 };
 use windows::Win32::System::Variant::VT_BLOB;
 use windows::core::{HRESULT, IUnknown, Interface, PCWSTR, PWSTR, implement, w};
 
 use super::{
     AppAudioError, AppCapture, AppSource, CHANNELS, MAX_CHUNK_BYTES, RATE,
-    frames::{SampleFrames, ancestors, exclude_tree_and_ancestors},
-    in_tree,
+    frames::{SampleFrames, ancestors, exclude_tree_and_ancestors, keep_fresh_links},
+    in_tree, windows_build_supported,
 };
 
 /// mmreg.h `WAVE_FORMAT_IEEE_FLOAT` (kept here rather than enabling the whole `Win32_Media_Multimedia` module).
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
-/// Process loopback's first build (Windows 10 2004).
-const MIN_BUILD: u32 = 19_041;
 /// At most this many sessions are looked at (beta.5 lists at most 256 applications).
 const MAX_SESSIONS: i32 = 1024;
 /// The client's buffer: 20 ms, in 100 ns units (Microsoft's ApplicationLoopback sample).
@@ -69,17 +68,15 @@ fn server(e: impl std::fmt::Display) -> AppAudioError {
     AppAudioError::Server(e.to_string())
 }
 
-/// Below build 19041 there is no process loopback.
-fn supported() -> Result<(), AppAudioError> {
+/// Below build 19041 there is no process loopback ([`windows_build_supported`]). Reads the version only.
+pub(super) fn supported() -> Result<(), AppAudioError> {
     let mut info = OSVERSIONINFOW {
         dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
         ..Default::default()
     };
     // SAFETY: `info` is a valid OSVERSIONINFOW with its size set, as RtlGetVersion requires.
     let status = unsafe { RtlGetVersion(&mut info) };
-    let new_enough =
-        info.dwMajorVersion > 10 || (info.dwMajorVersion == 10 && info.dwBuildNumber >= MIN_BUILD);
-    if status.0 >= 0 && new_enough {
+    if status.0 >= 0 && windows_build_supported(info.dwMajorVersion, info.dwBuildNumber) {
         Ok(())
     } else {
         Err(AppAudioError::Unsupported)
@@ -277,6 +274,30 @@ fn active_session_pids() -> Result<Vec<u32>, AppAudioError> {
             }
         }
         Ok(out)
+    }
+}
+
+/// Every process's parent pid, one Toolhelp snapshot (empty when the snapshot fails): the shared window's lookup
+/// ([`super::sound_of_window`]). `th32ParentProcessID` is never updated when the parent exits, and Windows reuses
+/// pids, so a link counts only when the parent was created no later than the child ([`keep_fresh_links`]); a process
+/// whose creation time cannot be read has no link.
+pub(super) fn parents() -> HashMap<u32, u32> {
+    let links = processes()
+        .into_iter()
+        .map(|(pid, p)| (pid, p.parent))
+        .collect();
+    keep_fresh_links(links, creation_time)
+}
+
+/// When `pid` was created (a FILETIME as one 64-bit count), `None` when it cannot be opened for that.
+fn creation_time(pid: u32) -> Option<u64> {
+    // SAFETY: a query-only handle, closed by `Owned`; the four times are plain out values.
+    unsafe {
+        let handle = Owned(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?);
+        let mut created = FILETIME::default();
+        let (mut exited, mut kernel, mut user) = (created, created, created);
+        GetProcessTimes(handle.0, &mut created, &mut exited, &mut kernel, &mut user).ok()?;
+        Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
     }
 }
 

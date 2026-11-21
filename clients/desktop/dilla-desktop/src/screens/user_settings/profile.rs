@@ -11,7 +11,7 @@ use gpui::{
 
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, colour_of};
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
-use dilla_desktop_ui::components::settings::frame::section_header;
+use dilla_desktop_ui::components::settings::frame::{SECTION_GAP, section_header};
 use dilla_desktop_ui::components::text_field::{Frame, TextField};
 use dilla_desktop_ui::text::{flow_paragraph, line, line_height, paragraph};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
@@ -118,6 +118,8 @@ impl UserSettings {
         );
         let mut bio = TextField::multiline("profile-bio", t("profile.bio.label"), &self.bio)
             .frame(bio_frame())
+            // `textarea.d-text-field__input { resize: vertical }` (Decision D16): the grip and the drag.
+            .resizable()
             .text_overlay(typed);
         if let Some(text) = problem(e.problem_bio) {
             bio = bio.error(text);
@@ -143,13 +145,13 @@ impl UserSettings {
             .child(flow_paragraph(
                 t("profile.footnote"),
                 text::XS,
-                line_height(text::XS, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::XS),
                 color::FG_3,
             ))
             .child(div().pt(px(NOTE_PAD)).child(line(
                 saved_line,
                 text::XS,
-                line_height(text::XS, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::XS),
                 color::FG_3,
             )));
 
@@ -189,7 +191,7 @@ impl UserSettings {
                     flow_paragraph(
                         name.clone(),
                         text::MD,
-                        line_height(text::MD, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::MD),
                         color::FG,
                     )
                     .weight(font::WEIGHT_DISPLAY),
@@ -198,14 +200,14 @@ impl UserSettings {
             .child(flow_paragraph(
                 handle_line,
                 text::XS,
-                line_height(text::XS, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::XS),
                 color::FG_2,
             ));
         if !preview.bio.is_empty() {
             body = body.child(div().mt(px(NAME_GAP)).children(paragraph(
                 &preview.bio,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BTN),
                 color::FG_STRONG,
                 PREVIEW_WIDTH - 2.0 * (EDGE + BODY_PAD),
             )));
@@ -238,7 +240,8 @@ impl UserSettings {
                 Failure::Wait => "profile.error.wait",
                 Failure::Save => "profile.error.save",
             };
-            col = col.child(div().pb(self.density().group_gap()).child(Banner::new(
+            // The frame steps a section's blocks a fixed 14px apart (`> * + *`), at every density.
+            col = col.child(div().pb(px(SECTION_GAP)).child(Banner::new(
                 "profile-failed",
                 BannerTone::Danger,
                 t(key),

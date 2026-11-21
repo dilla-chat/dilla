@@ -289,8 +289,9 @@ async fn remove(host: &Host, alice: &Person, group: [u8; 16], seq: u64) -> u16 {
     status
 }
 
+/// Every decrypted text the state holds (R21 keeps them out of its Debug output, so it is not searched).
 fn shows_moderated(s: &AppState) -> bool {
-    format!("{s:?}").contains(MODERATED)
+    dilla_client::testing::holds_text(s, MODERATED)
 }
 
 /// Jonas (2026-11-13), stricter than the web: history stays hidden until the removal feed is read. A message a

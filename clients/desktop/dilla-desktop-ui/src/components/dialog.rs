@@ -23,7 +23,6 @@ use gpui::{
 use super::button::{Button, ButtonSize, ButtonVariant};
 use crate::a11y::Accessible;
 use crate::metrics::shadow_3;
-use crate::text::line_height;
 use crate::tokens::{color, font, radius, text};
 
 actions!(
@@ -191,6 +190,8 @@ pub struct Dialog {
     /// A wider form dialog's own width (`min(width, 100vw - 24px)`), as a component's CSS widens `.d-dialog` (the
     /// screen-share picker's 680px).
     wide: Option<f32>,
+    /// The heading column's least height (`.d-poll-dialog .d-dialog__heading { min-height: 28px }`), its title centred in it.
+    heading_min: Option<f32>,
     a11y_description: Option<SharedString>,
 }
 
@@ -219,8 +220,15 @@ impl Dialog {
             on_backdrop: None,
             in_section: false,
             wide: None,
+            heading_min: None,
             a11y_description: None,
         }
+    }
+
+    /// `.d-dialog__heading { min-height: <height>px; align-content: center }`: the head's title column is at least this tall.
+    pub fn heading_min(mut self, height: f32) -> Self {
+        self.heading_min = Some(height);
+        self
     }
 
     /// `.d-dialog:has(...) { width: min(<width>px, calc(100vw - 24px)) }`: a form dialog wider than 520px.
@@ -399,19 +407,19 @@ impl RenderOnce for Dialog {
             head = head.child(lead);
         }
         let title_size = if confirm { text::CARD } else { text::BASE };
+        let heading = div().flex().flex_col().gap(px(4.0)).flex_1().min_w_0();
+        let heading = match self.heading_min {
+            Some(height) => heading.min_h(px(height)).justify_center(),
+            None => heading,
+        };
         head = head.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .flex_1()
-                .min_w_0()
+            heading
                 .child(
                     // `.d-dialog__title` is an h2 that wraps in the heading column.
                     crate::text::flow_paragraph(
                         self.title.clone(),
                         title_size,
-                        line_height(title_size, 1.5),
+                        crate::text::root_line_height(title_size),
                         color::FG,
                     )
                     .weight(font::WEIGHT_DISPLAY),

@@ -30,6 +30,12 @@ const SEGMENT_H: f32 = 28.0;
 const SEGMENT_GAP: f32 = 2.0;
 const SEGMENT_RADIUS: f32 = 2.0;
 
+/// Where the line (and its label) stands across the meter: `left: ${threshold - MIN}%` of the meter's whole width
+/// (SensitivityMeter.tsx), not a count of segments, whose gaps would put it up to a cell off.
+fn line_fraction(threshold: i32) -> f32 {
+    (threshold - MIN) as f32 / (MAX - MIN) as f32
+}
+
 /// A threshold or level as the prototype writes it: `-48 dB`.
 pub fn format_db(db: f32) -> String {
     format!("{} dB", db.round().clamp(-100.0, 0.0) as i32)
@@ -177,7 +183,7 @@ impl RenderOnce for SensitivityMeter {
             })
         };
 
-        let left = gpui::relative((threshold - MIN) as f32 / (MAX - MIN) as f32);
+        let left = gpui::relative(line_fraction(threshold));
         // `flex: 1` shares of what the gaps leave (11.76px at 686px); the layout snap paints each between whole pixels.
         let mut segments = div().flex().gap(px(SEGMENT_GAP)).h(px(SEGMENT_H));
         for state in segment_states(self.level_db, threshold as f32, self.testing) {
@@ -307,6 +313,14 @@ impl RenderOnce for SensitivityMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The line is a fraction of the meter's width: -50 dB of -100..0 is half of it, so at 200px wide at x = 100.
+    #[test]
+    fn threshold_x_is_proportional() {
+        assert_eq!(line_fraction(-50) * 200.0, 100.0);
+        assert_eq!(line_fraction(MIN), 0.0);
+        assert_eq!(line_fraction(MAX), 1.0);
+    }
 
     #[test]
     fn nothing_is_lit_unless_the_test_runs() {

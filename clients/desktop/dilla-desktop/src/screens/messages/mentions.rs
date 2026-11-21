@@ -5,12 +5,22 @@ use dilla_client::state::Member;
 
 use crate::strings::t;
 
-/// A body cut at its mention tokens (`splitMentions`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A body cut at its mention tokens (`splitMentions`). Its Debug gives a text's length only (R21: a decrypted body); a
+/// mention's target (`everyone`, `here` or an id) shows.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Part {
     Text(String),
     /// `everyone`, `here` or 32 lower-case hex digits.
     Mention(String),
+}
+
+impl std::fmt::Debug for Part {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text(t) => write!(f, "Text({:?})", dilla_client::state::Redacted(t)),
+            Self::Mention(m) => f.debug_tuple("Mention").field(m).finish(),
+        }
+    }
 }
 
 /// `<@everyone>`, `<@here>` and `<@` + 32 hex digits + `>`: the web's `TOKEN`.

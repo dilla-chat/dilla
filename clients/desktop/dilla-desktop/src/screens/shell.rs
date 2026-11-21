@@ -20,13 +20,14 @@ use gpui::{
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
+use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::shell::panes::{
     ASIDE_DEFAULT_MEMBERS, ASIDE_DEFAULT_THREAD, COLUMN_FROM, SIDEBAR_DEFAULT, range,
 };
 use dilla_desktop_ui::components::shell::{
     Pane, PaneInput, Panes, Splitter, SplitterKey, clamp_panes,
 };
-use dilla_desktop_ui::tokens::{color, font, layout};
+use dilla_desktop_ui::tokens::{color, font, layout, text};
 
 pub mod keys;
 pub mod resize;
@@ -39,6 +40,51 @@ fn warn(what: &str, result: Result<(), dilla_client::prefs::PrefsError>) {
     }
 }
 
+/// Shell.tsx `loadEarlier` (1029-1042): the log of `channel` is busy while the client reads its longer page; a failure is
+/// the command error toast in `window` (the web's `report`). A shell without a client (fixtures) only redraws.
+fn load_earlier(
+    client: Option<Rc<Client>>,
+    channel: ChannelId,
+    ui: gpui::Entity<crate::screens::messages::ui::MessageUi>,
+    window: gpui::WindowId,
+) -> timeline::OnEarlier {
+    Rc::new(move |cx| {
+        let Some(client) = &client else {
+            return;
+        };
+        ui.update(cx, |u, cx| {
+            u.loading_earlier = Some(channel);
+            cx.notify();
+        });
+        let answer = client.load_earlier(channel);
+        let ui = ui.clone();
+        cx.spawn(async move |cx| {
+            let failed = match answer.await {
+                Ok(Ok(())) => None,
+                Ok(Err(dilla_client::ClientError::Sync(code))) => Some(code),
+                Ok(Err(_)) => Some("E_NETWORK".to_owned()),
+                Err(_) => Some("E_STOPPED".to_owned()),
+            };
+            cx.update(|cx| {
+                ui.update(cx, |u, cx| {
+                    if u.loading_earlier == Some(channel) {
+                        u.loading_earlier = None;
+                    }
+                    cx.notify();
+                });
+                if let Some(code) = failed {
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        Some(window),
+                        tf("shell.banner.commandError", &[("code", &code)]),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    })
+}
+
 /// A button's handler: it gets the window and the app.
 pub type Action = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 /// A server tile's handler.
@@ -47,9 +93,10 @@ pub type PickServer = Rc<dyn Fn(CommunityId, &mut Window, &mut gpui::App)>;
 use crate::router::{History, Route, UserSection};
 use crate::screens::composer::{Composer, Sent};
 use crate::screens::header::{self, AsideKind};
-use crate::screens::search::{self, Navigate, SearchEnv};
+use crate::screens::search::{self, NavOutcome, Navigate, SearchEnv};
 use crate::screens::{
-    FocusNext, FocusPrevious, channel_list, dms, rail, timeline, titlebar, user_panel,
+    FocusNext, FocusPrevious, channel_list, dms, rail, server_settings, timeline, titlebar,
+    user_panel,
 };
 use crate::slots::{self, SlotCx};
 use crate::strings::{t, tf};
@@ -97,9 +144,25 @@ impl Clock {
     }
 }
 
-/// The labels of the channel row's menu that `strings.rs` has no key for (the web client's row menu holds pins, mute and
-/// edit; the Wave 1 plan's holds mark read, mute and copy link). "copy link" is `invite.copy`'s.
-const MARK_READ: &str = "Mark as read";
+/// Whether the viewer may edit `community`'s channels (Shell.tsx `canManageChannels`): the access read once it landed,
+/// the owner's say until then.
+/// The safety code of the call this device is in at `channel` (Shell.tsx `callCodeOf`), once the call is joined.
+fn call_code_of(state: &AppState, channel: ChannelId) -> Option<String> {
+    crate::screens::voice::joined(state, channel)
+        .then(|| state.voice.call.code.clone())
+        .flatten()
+}
+
+fn can_manage_channels(state: &AppState, community: CommunityId) -> bool {
+    let access = dilla_client::state::server_admin::access_in(state, community);
+    if access.loaded {
+        return access.manage_channels;
+    }
+    state
+        .communities
+        .iter()
+        .any(|k| k.id == community && Some(k.owner) == state.account.user_id)
+}
 
 /// A pane drag in progress: where the pointer went down and the width the pane had then.
 #[derive(Clone, Copy, Debug)]
@@ -188,6 +251,15 @@ pub struct ShellView {
     controls: bool,
     /// The text channel last opened in each server: the AFK page's Come back returns there (Shell.tsx `lastText`).
     last_text: HashMap<CommunityId, ChannelId>,
+    /// The servers whose access this shell asked the client to read (Shell.tsx's worker reads it on every community select;
+    /// once per server here), so the row menu's Edit channel follows the permissions, not only the owner fallback.
+    access_asked: HashSet<CommunityId>,
+    /// The channel edit dialog a row menu's Edit channel opened: the server settings' own channel body, drawn over the
+    /// conversation (Shell.tsx `ChannelEditFlow`). Dropped when its dialog closes.
+    channel_edit: Option<Entity<server_settings::body::Body>>,
+    /// The voice row whose call code is shown (Shell.tsx `codeFor`): the row menu's "call code" opens it, and it closes
+    /// with the call.
+    code_for: Option<ChannelId>,
     /// The window this shell is drawn in: the voice area keeps its state per window (one per instance).
     window_id: gpui::WindowId,
     _subscriptions: Vec<Subscription>,
@@ -210,6 +282,27 @@ impl ShellView {
     #[cfg(feature = "test-hooks")]
     pub fn composer_value(&self, cx: &gpui::App) -> String {
         self.composer.read(cx).value(cx).to_string()
+    }
+
+    /// Tests (the automation command `connection <status>`): the gateway's status as the shell draws it. `reconnecting` is
+    /// the link that dropped and is being made again (`ConnectionStatus::Offline`: the link banner's "Offline.
+    /// Reconnecting…", which the web draws when the browser loses its network); `connecting` and `online` are the others.
+    #[cfg(feature = "test-hooks")]
+    pub fn simulate_connection(
+        &mut self,
+        status: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let status = match status {
+            "reconnecting" => ConnectionStatus::Offline,
+            "connecting" => ConnectionStatus::Connecting,
+            "online" => ConnectionStatus::Online,
+            other => return Err(format!("unknown connection status `{other}`")),
+        };
+        let mut state = (*self.state).clone();
+        state.connection.status = status;
+        self.set_state(Arc::new(state), cx);
+        Ok(())
     }
 
     pub fn new(
@@ -265,6 +358,9 @@ impl ShellView {
             aside_splitter: cx.focus_handle().tab_stop(true),
             controls: false,
             last_text: HashMap::new(),
+            access_asked: HashSet::new(),
+            channel_edit: None,
+            code_for: None,
             window_id: window.window_handle().window_id(),
             _subscriptions: vec![sent],
         };
@@ -341,6 +437,10 @@ impl ShellView {
         crate::screens::voice::sync(self.window_id, state.clone(), self.client.as_ref(), cx);
         self.state = state;
         self.settle_selection(cx);
+        if let Some(body) = &self.channel_edit {
+            let (state, client) = (self.state.clone(), self.client.clone());
+            body.update(cx, |b, cx| b.sync(state, client, cx));
+        }
         if grew {
             self.pinned = true;
         }
@@ -373,6 +473,7 @@ impl ShellView {
         {
             self.community = self.state.communities.first().map(|c| c.id);
         }
+        self.read_access(cx);
         let valid = self
             .channel
             .and_then(|c| self.state.channel(c))
@@ -384,7 +485,7 @@ impl ShellView {
                     .find(|c| c.is_text())
                     .map(|c| c.id)
             });
-            self.channel = None;
+            self.show(None);
             if let Some(first) = first {
                 self.focus_channel(first, cx);
             }
@@ -410,6 +511,7 @@ impl ShellView {
             channel: self.channel,
             clock: self.clock,
             workspace: None,
+            composer: None,
         }
     }
 
@@ -453,13 +555,13 @@ impl ShellView {
         match route {
             Route::Dm(dm) => self.focus_dm(*dm, cx),
             Route::Dms => {
-                self.channel = None;
+                self.show(None);
                 self.settle_selection(cx);
             }
             Route::Channel { community, channel } => {
                 if self.community != Some(*community) {
                     self.community = Some(*community);
-                    self.channel = None;
+                    self.show(None);
                 }
                 match channel {
                     Some(c) => self.focus_channel(*c, cx),
@@ -490,12 +592,29 @@ impl ShellView {
         Some(route)
     }
 
+    /// The conversation this shell shows becomes `next` (Shell.tsx:855-860): the one it showed is closed and `next` is
+    /// opened, so its page starts at one page again (Task 12).
+    fn show(&mut self, next: Option<ChannelId>) {
+        if self.channel == next {
+            return;
+        }
+        if let Some(client) = &self.client {
+            if let Some(prev) = self.channel {
+                client.close_page(prev);
+            }
+            if let Some(next) = next {
+                client.open_page(next);
+            }
+        }
+        self.channel = next;
+    }
+
     /// Shows `channel`: its group is opened (joined) so its timeline is kept, and it is marked read while shown.
     fn focus_channel(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
         if self.channel == Some(channel) {
             return;
         }
-        self.channel = Some(channel);
+        self.show(Some(channel));
         self.pinned = true;
         if let Some(c) = self.state.channel(channel).filter(|c| c.is_text()) {
             self.last_text.insert(c.community_id, channel);
@@ -519,7 +638,7 @@ impl ShellView {
         if self.channel == Some(dm) {
             return;
         }
-        self.channel = Some(dm);
+        self.show(Some(dm));
         self.pinned = true;
         // The composer's slots and its "Message {name}".
         self.settle_selection(cx);
@@ -554,9 +673,15 @@ impl ShellView {
         }
     }
 
-    /// Opens what a search result names (Task 23). `false` when it is gone, or is a screen the shell does not draw yet
-    /// (the settings, the direct messages and the voice mute arrive with their areas, which add their arms here).
-    fn open_search_result(&mut self, target: Navigate, cx: &mut Context<Self>) -> bool {
+    /// Opens what a search result names (Task 23). [`NavOutcome::Gone`] when it is gone, or is a screen the shell does not
+    /// draw yet (the voice mute arrives with its area, which adds its arm here). A hit on a message is looked for in its
+    /// conversation ([`Client::find_loaded`]) and answers later: `ui` is the log the row is brought into view in.
+    fn open_search_result(
+        &mut self,
+        target: Navigate,
+        ui: Option<gpui::Entity<crate::screens::messages::ui::MessageUi>>,
+        cx: &mut Context<Self>,
+    ) -> NavOutcome {
         let open = |this: &mut Self,
                     community: CommunityId,
                     channel: ChannelId,
@@ -572,34 +697,67 @@ impl ShellView {
             this.select(channel, cx);
             true
         };
+        let done = |opened: bool| {
+            if opened {
+                NavOutcome::Done
+            } else {
+                NavOutcome::Gone
+            }
+        };
         match target {
-            Navigate::Channel { community, channel } => open(self, community, channel, cx),
-            Navigate::Message(hit) => match hit.community {
-                Some(community) => {
-                    if !open(self, community, hit.channel, cx) {
-                        return false;
+            Navigate::Channel { community, channel } => done(open(self, community, channel, cx)),
+            Navigate::Message(hit) => {
+                // The target must be known: a channel in the rail, or a DM in the DM list (Shell.tsx:1746-1748).
+                let known = match hit.community {
+                    Some(community) => open(self, community, hit.channel, cx),
+                    None if self.state.dms.get(hit.channel).is_some() => {
+                        self.navigate(Route::Dm(hit.channel), cx);
+                        true
                     }
-                    // A reply is no row of the channel: its hit opens its thread (Shell.tsx, threads.spec.ts test 4).
-                    if let Some(root) = hit.thread_root {
-                        crate::screens::threads::open_thread(
-                            hit.channel,
-                            root,
-                            &self.slot_cx(),
-                            cx,
-                        );
-                    }
-                    true
+                    None => false,
+                };
+                if !known {
+                    return NavOutcome::Gone;
                 }
-                None => false,
-            },
+                // A reply is no row of the channel: its hit opens its thread (Shell.tsx, threads.spec.ts test 4).
+                if let Some(root) = hit.thread_root {
+                    crate::screens::threads::open_thread(hit.channel, root, &self.slot_cx(), cx);
+                    return NavOutcome::Done;
+                }
+                // A shell without a client (a fixture) has no log to load.
+                let Some(client) = self.client.clone() else {
+                    return NavOutcome::Done;
+                };
+                let found = client.find_loaded(hit.channel, hit.seq);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let channel = hit.channel;
+                cx.spawn(async move |this, cx| {
+                    let focused = match (found.await.ok().flatten(), ui) {
+                        (Some(key), Some(ui)) => this
+                            .update(cx, |shell, cx| {
+                                // The reader moved on while the pages loaded: nothing to scroll.
+                                let here = shell.channel == Some(channel);
+                                if here {
+                                    ui.update(cx, |u, cx| u.focus_row(key, cx));
+                                }
+                                here
+                            })
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    let _ = tx.send(focused);
+                })
+                .detach();
+                NavOutcome::Later(rx)
+            }
             // A setting's result opens its section (search-settings.spec.ts): the app's settings host over the shell.
             Navigate::Settings(section) => {
                 self.navigate(Route::Settings(Some(section)), cx);
-                true
+                NavOutcome::Done
             }
             Navigate::ServerSettings { community, section } => {
                 if !self.state.communities.iter().any(|c| c.id == community) {
-                    return false;
+                    return NavOutcome::Gone;
                 }
                 self.navigate(
                     Route::ServerSettings {
@@ -608,9 +766,9 @@ impl ShellView {
                     },
                     cx,
                 );
-                true
+                NavOutcome::Done
             }
-            _ => false,
+            _ => NavOutcome::Gone,
         }
     }
 
@@ -626,7 +784,7 @@ impl ShellView {
         }
         self.dm_view = false;
         self.community = Some(community);
-        self.channel = None;
+        self.show(None);
         self.settle_selection(cx);
         self.history.push(self.current_route());
         cx.notify();
@@ -790,7 +948,47 @@ impl ShellView {
 
     // ---- the channel row's menu -------------------------------------------------------------------------------
 
+    /// Reads the open server's access once (controller.ts's worker does on every community select). Its result is ignored:
+    /// a failure leaves the owner fallback of [`can_manage_channels`].
+    fn read_access(&mut self, cx: &mut Context<Self>) {
+        let (Some(client), Some(community)) = (self.client.clone(), self.community) else {
+            return;
+        };
+        if dilla_client::state::server_admin::access_in(&self.state, community).loaded
+            || !self.access_asked.insert(community)
+        {
+            return;
+        }
+        let reply = client.server_admin().load_access(community);
+        cx.background_spawn(async move {
+            let _ = reply.wait().await;
+        })
+        .detach();
+    }
+
+    /// Row menu Edit channel (Shell.tsx `edit`): the channel edit dialog over the conversation.
+    fn open_channel_edit(
+        &mut self,
+        channel: ChannelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(community) = self.state.channel(channel).map(|c| c.community_id) else {
+            return;
+        };
+        let (state, client, clock) = (self.state.clone(), self.client.clone(), self.clock);
+        let body = cx.new(|cx| {
+            server_settings::body::Body::new(community, state, client, clock, window, cx)
+        });
+        body.update(cx, |b, cx| b.open_edit(channel, window, cx));
+        self.channel_edit = Some(body);
+    }
+
     fn open_menu(&mut self, channel: ChannelId, at: Point<Pixels>, cx: &mut Context<Self>) {
+        // A row with no items opens no menu (a voice row outside its call, the AFK row).
+        if self.menu_items(channel).is_empty() {
+            return;
+        }
         self.menu = Some(ChannelMenu { channel, at });
         cx.notify();
     }
@@ -817,15 +1015,49 @@ impl ShellView {
                     MenuItem::new("pins", t("shell.pins.open")),
                     MenuItem::new("mute", t("notify.mute")).check(muted),
                 ])
+                .chain(self.row_modes(channel))
                 .collect();
         }
-        vec![
+        // Shell.tsx `rowMenu`: a voice row's menu holds the call code while this device is in its call, otherwise nothing
+        // (the stage has no code of its own); a category has none either.
+        let Some(kind) = self.state.channel(channel).map(|c| c.kind) else {
+            return Vec::new();
+        };
+        if kind == 1 {
+            return call_code_of(&self.state, channel)
+                .map(|_| MenuItem::new("code", t("voice.code")))
+                .into_iter()
+                .collect();
+        }
+        if kind != 0 {
+            return Vec::new();
+        }
+        // Shell.tsx `rowMenu`: pins, Mute, the four notify modes, then Edit channel for managers. Mark as read and copy
+        // link are desktop only (Decision D6), after the web's items.
+        let mut items = vec![
             // Ruling X: the channel row's menu holds the pins (the header has no pin button).
             MenuItem::new("pins", t("shell.pins.open")),
-            MenuItem::new("read", MARK_READ),
             MenuItem::new("mute", t("notify.mute")).check(muted),
-            MenuItem::new("link", t("invite.copy")),
-        ]
+        ];
+        items.extend(self.row_modes(channel));
+        if self
+            .state
+            .channel(channel)
+            .is_some_and(|c| can_manage_channels(&self.state, c.community_id))
+        {
+            items.push(MenuItem::new("edit", t("admin.channel.open")));
+        }
+        items.push(MenuItem::new("read", t("shell.channels.markRead")));
+        items.push(MenuItem::new("link", t("invite.copy")));
+        items
+    }
+
+    /// The row menu's four notify modes, the stored one checked (none stored without preferences: a fixture).
+    fn row_modes(&self, channel: ChannelId) -> Vec<MenuItem> {
+        match &self.prefs {
+            Some(prefs) => channel_list::row_mode_items(prefs, channel),
+            None => channel_list::row_mode_items(&HashMap::<String, String>::new(), channel),
+        }
     }
 
     fn choose(
@@ -876,6 +1108,30 @@ impl ShellView {
                     );
                 }
             }
+            // Shell.tsx `mode:<value>` (handled before the other items): the channel's own notify mode; `default` deletes it.
+            mode if mode.starts_with(channel_list::ROW_MODE) => {
+                let mode = notify::NotifyMode::parse(&mode[channel_list::ROW_MODE.len()..]);
+                if let Some(client) = &self.client {
+                    warn(
+                        "the channel's notify mode",
+                        client.notify().set_channel_mode(channel, mode),
+                    );
+                } else if let Some(prefs) = &self.prefs {
+                    // A shell without a client (tests): the same key in the same preferences.
+                    let key = notify::key_channel_mode(channel);
+                    warn(
+                        "the channel's notify mode",
+                        match mode {
+                            Some(m) => prefs.set(&key, &m.as_str().to_owned()),
+                            None => prefs.remove(&key),
+                        },
+                    );
+                }
+            }
+            // Shell.tsx `edit`: ChannelEditFlow opens over the conversation.
+            "edit" => self.open_channel_edit(channel, window, cx),
+            // Shell.tsx `code`: the call's code in a dialog.
+            "code" => self.code_for = Some(channel),
             "link" => {
                 if let Some(community) = self.state.channel(channel).map(|c| c.community_id) {
                     let route = Route::Channel {
@@ -1149,7 +1405,9 @@ impl Render for ShellView {
                 dilla_desktop_ui::a11y::announce(text, window, cx);
             }
         }
-        let ctx = self.slot_cx();
+        let mut ctx = self.slot_cx();
+        // A banner's action (a dismissed removal notice) gives the focus back to the composer.
+        ctx.composer = Some(gpui::Focusable::focus_handle(self.composer.read(cx), cx));
         // The threads area reads this shell's view (its pane, the header's toggle, the reply keys), and the Threads button
         // is pressed while a thread is open (11).
         crate::screens::threads::sync(&ctx, window, cx);
@@ -1438,36 +1696,6 @@ impl Render for ShellView {
         let log_width = window_width - f32::from(layout::RAIL) - panes.sidebar - aside_width;
         // The reaction bars wrap to the message column (10).
         crate::screens::reactions::set_log_width(window.window_handle().window_id(), log_width, cx);
-        let log = match channel {
-            Some(c) => {
-                let weak = shell.clone();
-                let scroll = self.log.clone();
-                let on_wheel: timeline::OnWheel = Rc::new(move |up, cx| {
-                    // Up leaves the end; reaching the end again follows it.
-                    let at_end = scroll.offset().y <= -scroll.max_offset().y + Pixels::from(1.0f32);
-                    let _ = weak.update(cx, |shell, cx| {
-                        shell.pinned = !up && at_end;
-                        cx.notify();
-                    });
-                });
-                timeline::render(
-                    &state,
-                    c,
-                    self.clock,
-                    log_width,
-                    &self.log,
-                    self.pinned,
-                    on_wheel,
-                    &ctx,
-                    window,
-                    cx,
-                )
-                .into_any_element()
-            }
-            // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
-            None if no_server(&state) => crate::screens::create::empty_view(&ctx, window, cx),
-            None => div().size_full().bg(color::BG).into_any_element(),
-        };
         let banners = slots::banners(&ctx, window, cx);
         // What the search palette (23) draws with, and how it opens a result.
         let host = cx.entity().downgrade();
@@ -1475,9 +1703,10 @@ impl Render for ShellView {
             window.window_handle().window_id(),
             SearchEnv {
                 ctx: ctx.clone(),
-                navigate: Rc::new(move |target, _, cx| {
-                    host.update(cx, |shell, cx| shell.open_search_result(target, cx))
-                        .unwrap_or(false)
+                navigate: Rc::new(move |target, window, cx| {
+                    let ui = crate::screens::messages::ui::handle(window, cx);
+                    host.update(cx, |shell, cx| shell.open_search_result(target, ui, cx))
+                        .unwrap_or(NavOutcome::Gone)
                 }),
             },
             cx,
@@ -1518,6 +1747,54 @@ impl Render for ShellView {
                 .into_any_element(),
             );
         }
+        // The call code, from a voice row's menu; it goes with the call.
+        if let Some(channel) = self.code_for {
+            match call_code_of(&state, channel) {
+                Some(code) => {
+                    let close = shell.clone();
+                    overlays.push(
+                        Dialog::new("call-code-dialog", t("voice.code"), t("dialog.close"))
+                            .body(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(crate::layout::CALL_CODE_HELP_GAP)
+                                    .child(
+                                        dilla_desktop_ui::text::line(
+                                            crate::screens::voice::group_code(&code),
+                                            text::MD,
+                                            dilla_desktop_ui::text::line_height(text::MD, 1.3),
+                                            color::FG,
+                                        )
+                                        .tracking(dilla_desktop_ui::metrics::LABEL_TRACKING),
+                                    )
+                                    .child(dilla_desktop_ui::text::flow_paragraph(
+                                        t("voice.codeHelp"),
+                                        text::XS,
+                                        dilla_desktop_ui::text::line_height(text::XS, 1.3),
+                                        color::FG_2,
+                                    )),
+                            )
+                            .on_close(move |_, cx| {
+                                let _ = close.update(cx, |shell, cx| {
+                                    shell.code_for = None;
+                                    cx.notify();
+                                });
+                            })
+                            .into_any_element(),
+                    );
+                }
+                None => self.code_for = None,
+            }
+        }
+        // The channel edit dialog (and the private-channel question it can ask) sits over the shell until it closes.
+        if let Some(body) = self.channel_edit.clone() {
+            if body.read(cx).dialog_open() {
+                overlays.extend(body.update(cx, |b, cx| b.edit_dialogs(window, cx)));
+            } else {
+                self.channel_edit = None;
+            }
+        }
         // The open palette is one of these too; a second Ctrl+K over it is ignored either way.
         self.overlay_open = !overlays.is_empty();
         // The ring banner (18) reads this window's view; it is the first thing in the main column (AppShell's `ring`), not
@@ -1547,7 +1824,54 @@ impl Render for ShellView {
             }),
             cx,
         );
+        // Built after the stage's own setters above (`set_come_back`, `ring::provide`): the AFK stage reads them as it is made.
+        // The log's "started music" cards read their players only while the log is on screen (Decision D10): a stage in its
+        // place, or no channel, shows none.
         let takeover = channel.and_then(|c| slots::main_takeover(c, window, cx));
+        if takeover.is_some() || channel.is_none() {
+            crate::screens::bot_admin::player::cards_off_screen(
+                window.window_handle().window_id(),
+                cx,
+            );
+        }
+        let log = match channel {
+            Some(_) if takeover.is_some() => div().into_any_element(),
+            Some(c) => {
+                let weak = shell.clone();
+                let scroll = self.log.clone();
+                let on_wheel: timeline::OnWheel = Rc::new(move |up, cx| {
+                    // Up leaves the end; reaching the end again follows it.
+                    let at_end = scroll.offset().y <= -scroll.max_offset().y + Pixels::from(1.0f32);
+                    let _ = weak.update(cx, |shell, cx| {
+                        shell.pinned = !up && at_end;
+                        cx.notify();
+                    });
+                });
+                let on_earlier = load_earlier(
+                    self.client.clone(),
+                    c.id,
+                    crate::screens::messages::ui::ui(window, cx),
+                    window.window_handle().window_id(),
+                );
+                timeline::render(
+                    &state,
+                    c,
+                    self.clock,
+                    log_width,
+                    &self.log,
+                    self.pinned,
+                    on_wheel,
+                    on_earlier,
+                    &ctx,
+                    window,
+                    cx,
+                )
+                .into_any_element()
+            }
+            // An account in no server: "Start a server" and "Join a server" (Shell.tsx `noServerState`, Task 25).
+            None if no_server(&state) => crate::screens::create::empty_view(&ctx, window, cx),
+            None => div().size_full().bg(color::BG).into_any_element(),
+        };
         // A DM: the call's notice strip under the header while this device is not in its call. Its call is in the DM row's
         // menu (Ruling Z), not in the header.
         let dm_strip = channel
@@ -1577,7 +1901,10 @@ impl Render for ShellView {
         let no_server = takeover.is_none() && channel.is_none() && no_server(&state);
         let main = match takeover {
             Some(stage) => main.child(div().flex_1().min_h_0().flex().flex_col().child(stage)),
+            // Shell.tsx checks `noServerState` before it leaves `main` null, so the no-server view wins on `/dm` too.
             None if no_server => main.child(div().flex_1().min_h_0().relative().child(log)),
+            // `/dm` with no conversation open: Shell.tsx leaves `main` null, so the column is empty (no header, no composer).
+            None if dm_home_is_empty(self.dm_view, channel.is_some()) => main,
             None => main
                 .child(header::render(
                     &header::HeaderModel {
@@ -1625,6 +1952,9 @@ impl Render for ShellView {
                         wrapped
                     });
                     let log = div().flex_1().min_h_0().relative().child(log).children(bar);
+                    // The log's viewport, for a fixture's press on the log (`messages/log-earlier`).
+                    #[cfg(feature = "automation")]
+                    let log = log.child(crate::automation::bounds_probe("message-log"));
                     div()
                         .flex_1()
                         .min_h_0()
@@ -1912,6 +2242,12 @@ fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
     );
 }
 
+/// `/dm` with no conversation open draws an empty main column (Shell.tsx leaves `main` null). The caller has already
+/// answered the no-server state, which Shell.tsx checks first.
+fn dm_home_is_empty(dm_view: bool, has_channel: bool) -> bool {
+    dm_view && !has_channel
+}
+
 /// Shell.tsx `noServer`: `communities !== undefined && communities.length === 0`.
 pub(crate) fn no_server(state: &AppState) -> bool {
     state.communities_loaded && state.communities.is_empty()
@@ -2164,6 +2500,39 @@ mod tests {
         });
     }
 
+    /// `/dm` with no server draws the no-server state, not an empty column: the shell's main column asks the no-server
+    /// view before the empty `/dm` one (Shell.tsx:1165), and with a server the DM home is empty.
+    #[gpui::test]
+    fn dm_home_without_a_server_is_the_no_server_state(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let mut s = AppState::default();
+        s.account.phase = dilla_client::state::AccountPhase::Ready;
+        s.communities_loaded = true;
+        let state = Arc::new(s);
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        shell.update(vcx, |s, cx| s.navigate(Route::Dms, cx));
+        vcx.run_until_parked();
+        shell.read_with(vcx, |s, _| {
+            assert!(s.dm_view && s.in_no_server());
+            assert!(
+                no_server(&s.state),
+                "the no-server state is what is asked first"
+            );
+        });
+        assert!(dm_home_is_empty(true, false));
+        assert!(!dm_home_is_empty(true, true));
+        assert!(!dm_home_is_empty(false, false));
+    }
+
     /// Integration 3, step 1: Ctrl+, in the shell asks the app for the user settings host (`OpenSettings`).
     #[gpui::test]
     fn ctrl_comma_asks_for_the_settings_host(cx: &mut gpui::TestAppContext) {
@@ -2290,6 +2659,162 @@ mod tests {
         assert!(!notify::is_muted(&prefs, ChannelId([3; 16]), None));
         assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Shell.tsx `rowMenu`: a channel's row menu holds pins, Mute, the four notify modes, Edit channel for managers, then the
+    /// desktop-only Mark as read and copy link (Decision D6); a mode writes the channel's own key and `default` deletes it; a
+    /// DM's menu has the modes and no edit.
+    #[gpui::test]
+    fn the_row_menu_sets_the_channel_notify_mode_and_offers_edit_to_managers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::install);
+        let dir = scratch("row-menu");
+        let ch = ChannelId([3; 16]);
+        let dm = ChannelId([9; 16]);
+        let mut owned = (*world()).clone();
+        owned.account.user_id = Some(UserId([9; 16]));
+        owned.dms.list = Some(vec![dilla_client::state::dms::DmSummary {
+            id: dm,
+            kind: dilla_client::state::dms::DM_KIND_PAIR,
+            members: Vec::new(),
+            name: "Mira".into(),
+            group: ChannelGroupState::None,
+        }]);
+        let owned = Arc::new(owned);
+        let (shell, vcx) = cx.add_window_view({
+            let (state, prefs) = (owned.clone(), Prefs::instance(&dir));
+            move |window, cx| {
+                ShellView::new(
+                    state,
+                    None,
+                    None,
+                    Clock::Fixed { now: 0, utc: true },
+                    window,
+                    cx,
+                )
+                .with_prefs(prefs)
+            }
+        });
+        let ids = |s: &ShellView, c| -> Vec<String> {
+            s.menu_items(c).iter().map(|i| i.id.to_string()).collect()
+        };
+        let modes = ["mode:default", "mode:all", "mode:mentions", "mode:nothing"];
+        let with = |head: &[&str], tail: &[&str]| -> Vec<String> {
+            head.iter()
+                .chain(modes.iter())
+                .chain(tail.iter())
+                .map(|i| (*i).to_owned())
+                .collect()
+        };
+        shell.update_in(vcx, |s, window, cx| {
+            assert_eq!(
+                ids(s, ch),
+                with(&["pins", "mute"], &["edit", "read", "link"])
+            );
+            assert_eq!(
+                s.menu_items(ch)[7].label.as_ref(),
+                t("shell.channels.markRead")
+            );
+            assert_eq!(t("shell.channels.markRead"), "Mark as read");
+            assert_eq!(s.menu_items(ch)[2].checked, Some(true));
+            s.choose(ch, "mode:mentions", window, cx);
+            let prefs = Prefs::instance(&dir);
+            assert_eq!(
+                prefs
+                    .get::<String>(&notify::key_channel_mode(ch))
+                    .as_deref(),
+                Some("mentions")
+            );
+            assert_eq!(s.menu_items(ch)[4].checked, Some(true));
+            s.choose(ch, "mode:default", window, cx);
+            let prefs = Prefs::instance(&dir);
+            assert!(prefs.get::<String>(&notify::key_channel_mode(ch)).is_none());
+            assert_eq!(s.menu_items(ch)[2].checked, Some(true));
+            // A DM: the call to start (none while in it), pins, Mute and the modes; no edit, no Mark as read, no link.
+            assert_eq!(ids(s, dm), with(&["call", "pins", "mute"], &[]));
+        });
+        // A viewer who is no owner and whose access has not been read: no Edit channel.
+        let mut member = (*owned).clone();
+        member.account.user_id = Some(UserId([5; 16]));
+        let member = Arc::new(member);
+        shell.update_in(vcx, |s, _, cx| {
+            s.set_state(member.clone(), cx);
+            assert_eq!(ids(s, ch), with(&["pins", "mute"], &["read", "link"]));
+        });
+        // The same viewer once the access read says they manage channels.
+        let mut manager = (*member).clone();
+        manager.roles.access.insert(
+            CommunityId([1; 16]),
+            dilla_client::state::roles::CommunityAccess {
+                loaded: true,
+                manage_channels: true,
+                ..Default::default()
+            },
+        );
+        shell.update_in(vcx, |s, _, cx| {
+            s.set_state(Arc::new(manager), cx);
+            assert_eq!(
+                ids(s, ch),
+                with(&["pins", "mute"], &["edit", "read", "link"])
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Shell.tsx `rowMenu`: a voice row's menu holds only the call code while this device is in its call; outside it, and
+    /// on the AFK row, the row has no items and opens no menu. Choosing the code shows it until the call ends.
+    #[gpui::test]
+    fn a_voice_row_menu_is_the_call_code_while_in_the_call(cx: &mut gpui::TestAppContext) {
+        use dilla_client::calls::CallPhase;
+        cx.update(crate::install);
+        let (voice, afk) = (ChannelId([6; 16]), ChannelId([7; 16]));
+        let mut world = (*world()).clone();
+        for (n, name) in [(6, "lobby"), (7, "AFK")] {
+            world.channels.push(Channel {
+                kind: 1,
+                ..channel(n, name, 5)
+            });
+        }
+        let (shell, vcx) = cx.add_window_view({
+            let state = Arc::new(world.clone());
+            move |window, cx| {
+                ShellView::new(
+                    state,
+                    None,
+                    None,
+                    Clock::Fixed { now: 0, utc: true },
+                    window,
+                    cx,
+                )
+            }
+        });
+        shell.update_in(vcx, |s, window, cx| {
+            assert!(s.menu_items(voice).is_empty(), "no menu outside the call");
+            assert!(s.menu_items(afk).is_empty(), "the AFK row has none");
+            s.open_menu(voice, Point::default(), cx);
+            assert!(s.menu.is_none(), "an empty menu is not opened");
+            let mut joined = world.clone();
+            joined.voice.call.channel = Some(voice);
+            joined.voice.call.phase = CallPhase::In;
+            joined.voice.call.code = Some("0".repeat(30));
+            s.set_state(Arc::new(joined), cx);
+            let ids: Vec<_> = s
+                .menu_items(voice)
+                .iter()
+                .map(|i| i.id.to_string())
+                .collect();
+            assert_eq!(ids, ["code"]);
+            assert_eq!(s.menu_items(voice)[0].label.as_ref(), t("voice.code"));
+            assert!(
+                s.menu_items(afk).is_empty(),
+                "another voice row stays empty"
+            );
+            s.open_menu(voice, Point::default(), cx);
+            assert!(s.menu.is_some());
+            s.choose(voice, "code", window, cx);
+            assert_eq!(s.code_for, Some(voice));
+        });
     }
 
     /// A DM route (13) shows the DM list and the DM: a new state keeps it (a DM is no server channel), and a server route

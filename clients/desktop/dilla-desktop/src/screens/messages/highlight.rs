@@ -19,10 +19,22 @@ pub enum TokenKind {
     Text,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One highlighted run of a message's code block. Its Debug gives the text's length only (R21: a decrypted body).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Token {
     pub kind: TokenKind,
     pub text: String,
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Token({:?}, {:?})",
+            self.kind,
+            dilla_client::state::Redacted(&self.text)
+        )
+    }
 }
 
 /// The leftmost match of a rule in the rest of the line, as a character range.

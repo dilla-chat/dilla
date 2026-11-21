@@ -12,7 +12,8 @@ use dilla_client::state::{
     AppState, ChannelId, CommunityId, MessageId, TimelineItem, TimelineItemState, UserId,
 };
 use dilla_client::testing::host::{
-    Host, Person, clear_session, community, hex, sign_up, start, start_host, wait_for,
+    Host, Person, clear_session, community, community_with, hex, sign_up, start, start_host,
+    wait_for,
 };
 
 const SHORT: Duration = Duration::from_secs(20);
@@ -409,6 +410,225 @@ async fn receiver_never_fetches_link_preview() {
             .all(|l| !l.contains("preview.recorded.invalid")),
         "nothing asked for the link's host: {record:?}"
     );
+}
+
+/// The timeline of `channel` holds `len` rows, has (or has not) more before them, and starts with `first`.
+fn holds(s: &AppState, channel: ChannelId, len: usize, earlier: bool, first: &str) -> bool {
+    s.timelines.get(&channel).is_some_and(|t| {
+        t.items.len() == len
+            && t.has_earlier == earlier
+            && t.items.first().is_some_and(|i| i.body == first)
+    })
+}
+
+/// Task 12, client-core worker/controller.ts `loadEarlier` (4450-4457), `openOnce` (4395) and `closeChannel` (4445):
+/// "load earlier" grows the open channel's page by `TIMELINE_PAGE`, a later refresh keeps the grown page, two presses
+/// before the first read lands lose or double no row, a press that lands after the conversation closed grows nothing,
+/// and every open (#general, a DM, #general again) starts at one page. A DM's page grows and resets the same way. No body
+/// is printed (E2EE content).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+async fn load_earlier_grows_the_channel_page_by_one_hundred() {
+    let tag = "msg-load-earlier";
+    let host = tokio::task::spawn_blocking(move || start_host(tag, "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let pa = sign_up(&host, &invite, "alice", "alice", tag).await;
+    let pb = sign_up(&host, &invite, "bob", "bob", tag).await;
+    let (_host, pa, pb, c) = tokio::task::spawn_blocking(move || {
+        let c = community_with(&host, &pa, "gpui", &[&pb], &[(0, "random", None)]);
+        clear_session(&pa);
+        clear_session(&pb);
+        (host, pa, pb, c)
+    })
+    .await
+    .unwrap();
+    let alice = start(&pa).await;
+    alice.dms().start();
+    let s = wait_for(&alice, SHORT, "the channel list", |s| {
+        s.channel_named(CommunityId(c), "general").is_some()
+    })
+    .await;
+    let ch = s.channel_named(CommunityId(c), "general").unwrap().id;
+    alice.open_channel(ch).await.unwrap().expect("alice opens");
+    alice.open_page(ch);
+    alice.focus(Some(ch));
+    for n in 0..=100 {
+        alice
+            .send_text(ch, format!("m{n}"))
+            .await
+            .unwrap()
+            .expect("alice sends");
+    }
+    let page =
+        |s: &AppState, len: usize, earlier: bool, first: &str| holds(s, ch, len, earlier, first);
+    wait_for(&alice, SHORT, "the first page of 100", |s| {
+        page(s, 100, true, "m1")
+    })
+    .await;
+
+    assert!(matches!(alice.load_earlier(ch).await, Ok(Ok(()))));
+    wait_for(&alice, SHORT, "the whole history of 101", |s| {
+        page(s, 101, false, "m0")
+    })
+    .await;
+
+    // The page is 200 now: a refresh (a new message) keeps it.
+    alice
+        .send_text(ch, "m101".into())
+        .await
+        .unwrap()
+        .expect("alice sends");
+    wait_for(&alice, SHORT, "102 rows after a new message", |s| {
+        page(s, 102, false, "m0")
+    })
+    .await;
+
+    // Two presses before the first read lands (the web allows it, Shell.tsx:1029-1042): both answer, and no row is lost
+    // or doubled.
+    let (a, b) = (alice.load_earlier(ch), alice.load_earlier(ch));
+    assert!(matches!(a.await, Ok(Ok(()))));
+    assert!(matches!(b.await, Ok(Ok(()))));
+    let s = alice.state().borrow().clone();
+    assert!(page(&s, 102, false, "m0"), "102 rows, none earlier");
+
+    // #general, then a DM, then #general again: the reopen starts at one page (controller.ts:4395).
+    let dm = alice
+        .dms()
+        .open_dm(UserId(pb.user_id))
+        .await
+        .unwrap()
+        .expect("the DM opens");
+    wait_for(&alice, SHORT, "the DM listed", |s| s.dms.get(dm).is_some()).await;
+    alice
+        .dms()
+        .open(dm)
+        .await
+        .unwrap()
+        .expect("alice registers the DM's group");
+    alice.close_page(ch);
+    alice.open_page(dm);
+    alice.close_page(dm);
+    alice.open_page(ch);
+    wait_for(&alice, SHORT, "one page again after reopening", |s| {
+        page(s, 100, true, "m2")
+    })
+    .await;
+
+    // A press that lands after the conversation closed grows nothing (controller.ts:4451-4452).
+    alice.close_page(ch);
+    assert!(matches!(alice.load_earlier(ch).await, Ok(Ok(()))));
+    alice.open_page(ch);
+    alice
+        .send_text(ch, "m102".into())
+        .await
+        .unwrap()
+        .expect("alice sends");
+    wait_for(&alice, SHORT, "still one page after a late press", |s| {
+        page(s, 100, true, "m3")
+    })
+    .await;
+    alice.close_page(ch);
+
+    // A DM's page grows and resets as a channel's does.
+    alice.open_page(dm);
+    for n in 0..=100 {
+        alice
+            .dms()
+            .send_text(dm, format!("d{n}"))
+            .await
+            .unwrap()
+            .expect("alice sends in the DM");
+    }
+    let dm_page =
+        |s: &AppState, len: usize, earlier: bool, first: &str| holds(s, dm, len, earlier, first);
+    wait_for(&alice, SHORT, "the DM's first page of 100", |s| {
+        dm_page(s, 100, true, "d1")
+    })
+    .await;
+    assert!(matches!(alice.load_earlier(dm).await, Ok(Ok(()))));
+    wait_for(&alice, SHORT, "the DM's whole history of 101", |s| {
+        dm_page(s, 101, false, "d0")
+    })
+    .await;
+    // The same DM opened again (another conversation in between, or none) starts at one page.
+    alice.close_page(dm);
+    alice.open_page(dm);
+    wait_for(&alice, SHORT, "the DM at one page after reopening", |s| {
+        dm_page(s, 100, true, "d1")
+    })
+    .await;
+}
+
+/// Task 16, Shell.tsx:1760-1785: a search hit's jump finds an old message by loading earlier pages until it is in the
+/// timeline, and answers `None` once a load publishes nothing new. No body is printed (E2EE content).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+async fn find_loaded_reaches_an_old_message() {
+    let tag = "msg-find-loaded";
+    let host = tokio::task::spawn_blocking(move || start_host(tag, "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let pa = sign_up(&host, &invite, "alice", "alice", tag).await;
+    let pb = sign_up(&host, &invite, "bob", "bob", tag).await;
+    let (_host, pa, _pb, c) = tokio::task::spawn_blocking(move || {
+        let c = community_with(&host, &pa, "gpui", &[&pb], &[(0, "random", None)]);
+        clear_session(&pa);
+        clear_session(&pb);
+        (host, pa, pb, c)
+    })
+    .await
+    .unwrap();
+    let alice = start(&pa).await;
+    let s = wait_for(&alice, SHORT, "the channel list", |s| {
+        s.channel_named(CommunityId(c), "general").is_some()
+    })
+    .await;
+    let ch = s.channel_named(CommunityId(c), "general").unwrap().id;
+    alice.open_channel(ch).await.unwrap().expect("alice opens");
+    alice.open_page(ch);
+    alice.focus(Some(ch));
+    for n in 0..=150 {
+        alice
+            .send_text(ch, format!("m{n}"))
+            .await
+            .unwrap()
+            .expect("alice sends");
+    }
+    wait_for(&alice, SHORT, "the first page of 100", |s| {
+        s.timelines
+            .get(&ch)
+            .is_some_and(|t| t.items.len() == 100 && t.has_earlier)
+    })
+    .await;
+    // Everything loaded once, to learn m0's seq and key; then back to one page, where m0 is not in the timeline.
+    assert!(matches!(alice.load_earlier(ch).await, Ok(Ok(()))));
+    let s = wait_for(&alice, SHORT, "all 151 rows", |s| {
+        s.timelines.get(&ch).is_some_and(|t| t.items.len() == 151)
+    })
+    .await;
+    let m0 = s.timelines[&ch]
+        .items
+        .iter()
+        .find(|i| i.body == "m0")
+        .unwrap();
+    let (seq0, key0) = (m0.seq.unwrap(), m0.key.clone());
+    alice.close_page(ch);
+    alice.open_page(ch);
+    wait_for(&alice, SHORT, "one page again", |s| {
+        s.timelines.get(&ch).is_some_and(|t| t.items.len() == 100)
+    })
+    .await;
+    let found = alice.find_loaded(ch, seq0).await.unwrap();
+    assert_eq!(found, Some(key0), "the key of the row holding m0");
+    let s = alice.state().borrow().clone();
+    let t = &s.timelines[&ch];
+    assert_eq!(t.items.len(), 151);
+    assert!(t.items.iter().any(|i| i.body == "m0"));
+    // A seq no row has: the page grows until it stops, then the answer is `None`.
+    assert_eq!(alice.find_loaded(ch, 999_999).await.unwrap(), None);
 }
 
 type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;

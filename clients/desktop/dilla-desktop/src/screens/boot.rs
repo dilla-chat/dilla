@@ -203,13 +203,13 @@ pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>
                 .child(line(
                     "› ",
                     text::MD,
-                    line_height(text::MD, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::MD),
                     color::ACCENT,
                 ))
                 .child(line(
                     t(boot.status_key()),
                     text::MD,
-                    line_height(text::MD, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::MD),
                     color::FG,
                 )),
         )
@@ -220,7 +220,7 @@ pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>
                 paragraph(
                     &detail,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_2,
                     width,
                 )
@@ -305,7 +305,7 @@ pub fn fatal(
                 paragraph(
                     t(body),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG_2,
                     DialogKind::Form.body_width(viewport_width),
                 )
@@ -353,9 +353,14 @@ fn brand() -> impl IntoElement {
         .gap_2()
         .child(tile)
         .child(
-            line("DILLA", text::XS, line_height(text::XS, 1.5), color::FG)
-                .weight(font::WEIGHT_DISPLAY)
-                .tracking(LABEL_TRACKING_WIDE),
+            line(
+                "DILLA",
+                text::XS,
+                dilla_desktop_ui::text::root_line_height(text::XS),
+                color::FG,
+            )
+            .weight(font::WEIGHT_DISPLAY)
+            .tracking(LABEL_TRACKING_WIDE),
         )
         .child(div().flex_none().w_1p5().h_3().bg(color::BRAND))
 }

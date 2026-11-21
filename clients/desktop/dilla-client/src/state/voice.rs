@@ -76,7 +76,7 @@ pub enum VoiceNotice {
 }
 
 /// This device's own call (types.ts `CallState`, the parts the desktop draws).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OwnCall {
     pub phase: CallPhase,
     pub channel: Option<ChannelId>,
@@ -86,8 +86,12 @@ pub struct OwnCall {
     pub epoch: Option<u64>,
     /// The epoch's safety code (6 groups of 5 digits).
     pub code: Option<String>,
-    /// The `E_*` code of the last join or leave that failed.
+    /// The `E_*` code of the last join or leave that failed; while the call is `In`, the code its newest epoch was refused
+    /// with (the call is paused: [`OwnCall::paused`]).
     pub error: Option<String>,
+    /// The contact whose changed identity paused the call (controller.ts `changedUser`), only for an `E_UMK_CHANGED`
+    /// pause and only among the call's own roster; `None` when none is known.
+    pub changed_user: Option<UserId>,
     /// `(user, device, leaf)` of every member of the call group.
     pub roster: Vec<(UserId, DeviceId, u16)>,
     /// The link's ping to the SFU in ms (session.ts `link.rttMs`), read by the media every few seconds; `None` until
@@ -96,6 +100,18 @@ pub struct OwnCall {
     /// What this device sends and receives, kb/s (stats.ts `linkSample`'s `upKbps` / `downKbps`), from the media's link
     /// reads; `None` until two reads gave a rate (the dock and the call bar then say the ping alone).
     pub rate_kbps: Option<(u32, u32)>,
+    /// The link's packet loss in percent (stats.ts `linkSample`'s `lossPct`), from the media's link reads; `None` until
+    /// two reads gave one. With the ping it names the dock's link quality.
+    pub loss_pct: Option<f32>,
+}
+
+impl OwnCall {
+    /// The web's call phase `paused` (controller.ts `rekey`, RV-3): the call is joined but its newest epoch was refused,
+    /// so every media key is dropped (`RefusedEpoch::Pause`), nothing is sent or played and the error stands until an
+    /// epoch passes again.
+    pub fn paused(&self) -> bool {
+        self.phase == CallPhase::In && self.error.is_some()
+    }
 }
 
 /// What this device publishes besides its microphone.
@@ -107,8 +123,40 @@ pub struct LocalShare {
     pub screen_audio: bool,
 }
 
+/// The user a tile of an unidentified stream carries (the web's `userId ''`): nobody known, no name.
+pub const STRANGER_USER: UserId = UserId([0xff; 16]);
+
+/// One remote of the call's SFU room: a device (its identity is the device id in hex), or a stream whose identity is not a
+/// device id at all, which the stage shows as an unverified stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SfuRemote {
+    Device(DeviceId),
+    /// The raw identity the room reported.
+    Other(String),
+}
+
+impl SfuRemote {
+    /// The key the stage's tiles use for it: the device itself, or a stand-in made from the identity (stable within a
+    /// run) for a stream that has no device id.
+    pub fn device(&self) -> DeviceId {
+        match self {
+            SfuRemote::Device(d) => *d,
+            SfuRemote::Other(identity) => {
+                use std::hash::{Hash, Hasher};
+                let mut out = [0u8; 16];
+                for (i, half) in out.chunks_mut(8).enumerate() {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    (i, identity).hash(&mut h);
+                    half.copy_from_slice(&h.finish().to_le_bytes());
+                }
+                DeviceId(out)
+            }
+        }
+    }
+}
+
 /// The voice slice.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct VoiceState {
     /// `voice`: each channel's (and DM's) live call, by channel.
     pub calls: BTreeMap<ChannelId, VoiceCall>,
@@ -122,6 +170,15 @@ pub struct VoiceState {
     pub ptt_held: bool,
     /// The devices heard speaking now (this device's own included while its microphone is live).
     pub speaking: BTreeSet<DeviceId>,
+    /// The remotes in the call's SFU room, in the room's participant order, whether verified or not (session.ts
+    /// `remotes()`): the stage draws a tile for each of them. Not the call group's roster, and not the instance's voice
+    /// list.
+    pub sfu_remotes: Vec<SfuRemote>,
+    /// The SFU remotes whose frames authenticated (session.ts `verified`): their tile is `ok`, the others' `not-heard`
+    /// (in the roster) or `unverified` (not in it).
+    pub verified_peers: BTreeSet<DeviceId>,
+    /// The remote devices a screen stream is arriving from: their screen tile needs it, not the voice list's flag.
+    pub screen_streams: BTreeSet<DeviceId>,
     pub share: LocalShare,
     /// The last media notice, until the person dismisses it.
     pub notice: Option<VoiceNotice>,
@@ -141,6 +198,11 @@ impl VoiceState {
     /// The flags this device asks the instance to show for it (`voice_self`: bit 0 mute, bit 1 deafen).
     pub fn self_flags(&self) -> u8 {
         u8::from(self.self_mute || self.self_deaf) | (u8::from(self.self_deaf) << 1)
+    }
+
+    /// Whether `device` is among the call's SFU remotes.
+    pub fn in_room(&self, device: DeviceId) -> bool {
+        self.sfu_remotes.iter().any(|r| r.device() == device)
     }
 
     /// The people of a channel's call.

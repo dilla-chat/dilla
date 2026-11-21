@@ -11,6 +11,7 @@ use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, text};
 use dilla_media::app_audio::{AppAudioError, AppSource};
+use dilla_media::sources::desktop::DesktopSource;
 use gpui::{
     AnyElement, App, Global, InteractiveElement, IntoElement, ParentElement, Styled, Window,
     WindowId, div, px,
@@ -27,11 +28,15 @@ const ROW_GAP: f32 = 6.0;
 pub type AppLister =
     std::sync::Arc<dyn Fn() -> Result<Vec<AppSource>, AppAudioError> + Send + Sync>;
 
+/// Finds the application a shared window plays (the real `dilla_media::app_audio::sound_of_window`; the tests' fake).
+pub type WindowSound = std::sync::Arc<dyn Fn(&DesktopSource) -> Option<AppSource> + Send + Sync>;
+
 /// Every window's open chooser: `None` while its list is read.
 #[derive(Default)]
 pub struct AppChoosers {
     open: HashMap<WindowId, Option<Vec<AppSource>>>,
     lister: Option<AppLister>,
+    window_sound: Option<WindowSound>,
 }
 
 impl Global for AppChoosers {}
@@ -41,7 +46,28 @@ pub fn set_lister(lister: AppLister, cx: &mut App) {
     cx.default_global::<AppChoosers>().lister = Some(lister);
 }
 
-/// Whether this system has application audio (Linux), or a test list stands in.
+/// The tests' lookup of a shared window's application.
+pub fn set_window_sound(f: WindowSound, cx: &mut App) {
+    cx.default_global::<AppChoosers>().window_sound = Some(f);
+}
+
+/// The lookup of a shared window's application (Task 44): the tests' fake when one is set, else the real one; `None`
+/// where application audio does not exist.
+pub fn window_sound(cx: &App) -> Option<WindowSound> {
+    if let Some(f) = cx
+        .try_global::<AppChoosers>()
+        .and_then(|c| c.window_sound.clone())
+    {
+        return Some(f);
+    }
+    available_now().then(|| {
+        std::sync::Arc::new(|source: &DesktopSource| {
+            dilla_media::app_audio::sound_of_window(source)
+        }) as WindowSound
+    })
+}
+
+/// Whether this system has application audio ([`available_now`]), or a test list stands in.
 pub fn available(cx: &App) -> bool {
     available_now()
         || cx
@@ -49,9 +75,10 @@ pub fn available(cx: &App) -> bool {
             .is_some_and(|c| c.lister.is_some())
 }
 
-/// Whether this build has application audio (Linux; macOS and Windows not yet).
+/// Whether this system has application audio: Linux, macOS 14.2 and later, Windows 10 2004 (build 19041) and later
+/// (`dilla_media::app_audio::supported`, a version check read once: no permission is asked, nothing is listed).
 pub fn available_now() -> bool {
-    cfg!(target_os = "linux")
+    dilla_media::app_audio::supported()
 }
 
 pub fn is_open(window: WindowId, cx: &App) -> bool {
@@ -122,7 +149,7 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             body = body.child(line(
                 t("callStage.share.appNone"),
                 text::UI,
-                line_height(text::UI, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::UI),
                 color::FG_2,
             ));
         }
@@ -131,7 +158,7 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
                 .child(line(
                     t("callStage.share.appChoose"),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG,
                 ))
                 .child(line(

@@ -24,6 +24,7 @@ use dilla_desktop_ui::components::settings::row::{GroupPosition, Layout, Setting
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toggle::Toggle;
 use dilla_desktop_ui::components::trailing_slot::TrailingSlot;
+use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 
@@ -55,7 +56,7 @@ fn track_id(id: String) -> &'static str {
 type GifKeyRow<'a> = Option<(&'a str, &'a [&'a str])>;
 
 /// A handler of the settings' own entity, for the components that take a plain closure.
-fn act(
+pub(in crate::screens::server_settings) fn act(
     cx: &Context<Body>,
     f: impl Fn(&mut Body, &mut Window, &mut Context<Body>) + 'static,
 ) -> impl Fn(&mut Window, &mut App) + 'static {
@@ -66,7 +67,7 @@ fn act(
 }
 
 /// [`act`] for a click.
-fn act_click(
+pub(in crate::screens::server_settings) fn act_click(
     cx: &Context<Body>,
     f: impl Fn(&mut Body, &mut Window, &mut Context<Body>) + 'static,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
@@ -86,18 +87,18 @@ fn dim(text_: impl Into<SharedString>) -> AnyElement {
         .child(line(
             text_,
             text::UI,
-            line_height(text::UI, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::FG_2,
         ))
         .into_any_element()
 }
 
-fn alert(text_: impl Into<SharedString>) -> AnyElement {
+pub(in crate::screens::server_settings) fn alert(text_: impl Into<SharedString>) -> AnyElement {
     div()
         .child(line(
             text_,
             text::SM,
-            line_height(text::SM, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::SM),
             color::DANGER,
         ))
         .into_any_element()
@@ -299,6 +300,7 @@ impl Body {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let density = Density::of(window, cx);
         let afk = self.afk_channel();
         let all = self.channels();
         let groups = model::grouped(&all);
@@ -339,14 +341,15 @@ impl Body {
                 .gap(layout::INVITE_GAP)
                 .h(layout::HEAD_H)
                 .pr(layout::LIST_PAD_X)
-                .mb(layout::HEAD_GAP)
+                // `.dw-admin-group`: its head and its card `--row-gap` apart.
+                .mb(density.row_gap())
                 .child(
                     div().flex_1().min_w_0().child(
                         // The `h3` inherits the page's `--text-base` (`.dw-admin-grouphead h3 { font-size: inherit }`).
                         line(
                             head_name,
                             text::BASE,
-                            line_height(text::BASE, 1.5),
+                            dilla_desktop_ui::text::root_line_height(text::BASE),
                             color::FG,
                         )
                         .weight(font::WEIGHT_DISPLAY)
@@ -389,7 +392,7 @@ impl Body {
                             line(
                                 model::shown(c),
                                 text::BASE,
-                                line_height(text::BASE, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::BASE),
                                 color::FG,
                             )
                             .ellipsis(),
@@ -502,6 +505,12 @@ impl Body {
             .into_any_element()
     }
 
+    /// The two dialogs reachable from a channel's Edit: the edit form and the private-channel question. The shell draws them
+    /// over the conversation for the channel row menu's Edit channel.
+    pub fn edit_dialogs(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![self.edit_dialog(window, cx), self.private_dialog(cx)]
+    }
+
     fn edit_dialog(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Dialogue::Edit(channel_id) = self.dialogue else {
             return div().into_any_element();
@@ -607,7 +616,7 @@ impl Body {
             body = body.child(dim(t("afk.channel.note")));
         }
         if c.kind != 2 && !afk && access.manage_roles {
-            body = body.child(self.permissions_panel(&c, cx));
+            body = body.child(self.permissions_panel(&c, Density::of(window, cx), cx));
         }
         if let Some(e) = &self.dialogue_error {
             body = body.child(alert(e.clone()));
@@ -651,7 +660,7 @@ impl Body {
 
     /// ChannelPermissions.tsx: the private switch, who has settings of their own here (each a disclosure over a tri-state grid
     /// of the channel's rights, rank-gated), and the Add select. While the overwrites are unknown nothing is called public.
-    fn permissions_panel(&self, c: &Channel, cx: &Context<Self>) -> AnyElement {
+    fn permissions_panel(&self, c: &Channel, density: Density, cx: &Context<Self>) -> AnyElement {
         use dilla_client::features::server_admin::{
             PERM_GROUPS, PermContext, Tri, add_options, channel_grid_bits, my_channel_bits,
             perm_entries, tri_of,
@@ -659,17 +668,24 @@ impl Body {
         let access = self.access();
         let id = c.id;
         // The section's `<h3>` keeps the user agent's heading (only its margin is reset, `.dw-settings-section h3`): 1.17em of
-        // the section's 12px, bold.
+        // the section's 12px, bold, in the text colour the section inherits (`--fg-2`, layout.json's rgb(140, 147, 158)),
+        // not the `--fg` of the `.dw-admin-name` headings.
         let heading = || {
             let size = px(f32::from(text::UI) * UA_H3_EM);
-            line(t("chperm.title"), size, line_height(size, 1.5), color::FG)
-                .weight(font::WEIGHT_DISPLAY)
+            line(
+                t("chperm.title"),
+                size,
+                dilla_desktop_ui::text::root_line_height(size),
+                color::FG_2,
+            )
+            .weight(font::WEIGHT_DISPLAY)
         };
         let (Some(everyone), true) = (access.everyone, access.overwrites_loaded) else {
+            // The unread state is the same `.dw-settings-section` (ChannelPermissions.tsx:200): `--group-gap`.
             return div()
                 .flex()
                 .flex_col()
-                .gap(layout::ROW_GAP)
+                .gap(density.group_gap())
                 .child(heading())
                 .child(alert(t("chperm.error.unread")))
                 .into_any_element();
@@ -726,11 +742,11 @@ impl Body {
             }
         };
 
-        // `.dw-settings-section`: a column, `--group-gap` apart.
+        // `.dw-settings-section`: a column, `--group-gap` apart (the window's density).
         let mut panel = div()
             .flex()
             .flex_col()
-            .gap(layout::GROUP_GAP)
+            .gap(density.group_gap())
             .child(heading());
         panel = panel.child(
             Toggle::new("channel-private", t("chperm.private"), private)
@@ -749,7 +765,7 @@ impl Body {
                 line(
                     t("chperm.who"),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG,
                 )
                 .weight(font::WEIGHT_DISPLAY),
@@ -758,6 +774,13 @@ impl Body {
         if entries.is_empty() {
             panel = panel.child(dim(t("chperm.none")));
         }
+        // `ul.dw-admin-rows`: `--group-gap` in from the left, its entries `--row-gap` apart; each entry an
+        // `li.dw-admin-group`, its row and its grid `--row-gap` apart.
+        let mut rows = div()
+            .flex()
+            .flex_col()
+            .pl(density.group_gap())
+            .gap(density.row_gap());
         for entry in &entries {
             let key = (entry.kind, entry.target);
             let shown = self.perm_open == Some(key);
@@ -767,11 +790,12 @@ impl Body {
                 entry.kind,
                 dilla_client::features::server_admin::hex_id(&entry.target)
             );
+            // `.dw-admin-row`: `--row-gap` between its parts.
             let mut head = div()
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(layout::ROW_GAP)
+                .gap(density.row_gap())
                 .child(
                     Button::new(
                         SharedString::from(format!("perm-entry-{suffix}")),
@@ -805,7 +829,7 @@ impl Body {
                     })),
                 );
             }
-            panel = panel.child(head);
+            let mut group = div().flex().flex_col().gap(density.row_gap()).child(head);
             if shown {
                 let groups: Vec<GridGroup> = PERM_GROUPS
                     .iter()
@@ -825,7 +849,7 @@ impl Body {
                     })
                     .filter(|g| !g.rows.is_empty())
                     .collect();
-                panel = panel.child(
+                group = group.child(
                     PermissionGrid::new(
                         SharedString::from(format!("perm-grid-{suffix}")),
                         groups,
@@ -850,6 +874,10 @@ impl Body {
                     }),
                 );
             }
+            rows = rows.child(group);
+        }
+        if !entries.is_empty() {
+            panel = panel.child(rows);
         }
         if !options.is_empty() {
             let picked = self
@@ -880,7 +908,8 @@ impl Body {
                 div()
                     .flex()
                     .items_end()
-                    .gap(layout::ROW_GAP)
+                    // `.dw-admin-row` (ChannelPermissions.tsx:248): `--row-gap`.
+                    .gap(density.row_gap())
                     .child(
                         Select::new("perm-add", t("chperm.addLabel"), &pairs, current).on_change(
                             act_value(cx, |this, value, _w, cx| {
@@ -1119,7 +1148,7 @@ impl Body {
         inner = inner.child(line(
             t("gif.settings.getKey"),
             text::BASE,
-            line_height(text::BASE, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::BASE),
             color::FG_LINK,
         ));
         match gifs {
@@ -1137,7 +1166,7 @@ impl Body {
                             .child(div().mr(layout::ROW_GAP).child(line(
                                 t("gif.settings.maskedLabel"),
                                 text::BASE,
-                                line_height(text::BASE, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::BASE),
                                 color::FG,
                             )))
                             .child(
@@ -1294,7 +1323,7 @@ impl Body {
                 .child(line(
                     label.to_owned(),
                     text::XS,
-                    line_height(text::XS, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::XS),
                     color::FG_2,
                 ))
                 .child(control)
@@ -1374,7 +1403,7 @@ impl Body {
                                     line(
                                         made.url.clone(),
                                         text::SM,
-                                        line_height(text::SM, 1.5),
+                                        dilla_desktop_ui::text::root_line_height(text::SM),
                                         color::FG,
                                     )
                                     .ellipsis(),
@@ -1417,7 +1446,7 @@ impl Body {
                         )
                         .to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::MICRO),
                         color::FG_3,
                     )
                     .weight(font::WEIGHT_LABEL)
@@ -1469,21 +1498,21 @@ impl Body {
                             .child(line(
                                 texts.code,
                                 text::UI,
-                                line_height(text::UI, 1.5),
+                                dilla_desktop_ui::text::root_line_height(text::UI),
                                 color::FG,
                             )),
                     )
                     .child(div().w(meta_width).child(line(
                         texts.uses,
                         text::XS,
-                        line_height(text::XS, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::XS),
                         color::FG_2,
                     )))
                     .child(div().w(meta_width).flex().flex_col().children(
                         dilla_desktop_ui::text::paragraph(
                             &texts.expires,
                             text::XS,
-                            line_height(text::XS, 1.5),
+                            dilla_desktop_ui::text::root_line_height(text::XS),
                             color::FG_2,
                             f32::from(meta_width),
                         ),
@@ -1514,6 +1543,7 @@ impl Body {
     pub(super) fn bot_page(
         &mut self,
         section: ServerSection,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let title = if section == ServerSection::Welcome {
@@ -1558,40 +1588,7 @@ impl Body {
             );
         }
         if section == ServerSection::Welcome {
-            // The panel until the bot installation (Task 21) fills it: its heading and help, why it cannot be used, and
-            // its disabled load button.
-            let para = |key: &str| {
-                line(
-                    t(key),
-                    text::BASE,
-                    line_height(text::BASE, 1.5),
-                    color::FG_2,
-                )
-            };
-            out.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        line(
-                            title,
-                            text::PREVIEW,
-                            line_height(text::PREVIEW, 1.5),
-                            color::FG,
-                        )
-                        .weight(font::WEIGHT_DISPLAY),
-                    )
-                    .child(para("admin.bot.welcomeSettings.help"))
-                    .child(para("admin.bot.welcomeSettings.requiresCapability"))
-                    .child(para("admin.bot.welcomeSettings.noChannels"))
-                    .child(
-                        div().flex().child(
-                            Button::new("welcome-load", t("admin.bot.welcomeSettings.load"))
-                                .disabled(true),
-                        ),
-                    )
-                    .into_any_element(),
-            );
+            out.push(self.welcome_panel(window, cx));
         } else {
             out.push(self.join_role_panel(cx));
         }
@@ -1607,7 +1604,7 @@ impl Body {
             line(
                 t(key),
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BASE),
                 color::FG_2,
             )
         };
@@ -1619,7 +1616,7 @@ impl Body {
                 line(
                     t("admin.bot.joinRole.title"),
                     size,
-                    line_height(size, 1.5),
+                    dilla_desktop_ui::text::root_line_height(size),
                     color::FG,
                 )
                 .weight(font::WEIGHT_DISPLAY),
@@ -1889,12 +1886,12 @@ fn hex_id(id: &[u8; 16]) -> String {
 }
 
 /// A select's value as a role id (`""`, "No role", is none).
-fn parse_id(value: &str) -> Option<[u8; 16]> {
+pub(in crate::screens::server_settings) fn parse_id(value: &str) -> Option<[u8; 16]> {
     dilla_client::features::server_admin::unhex_id(value)
 }
 
 /// A `Select`'s or `Segmented`'s change handler on the settings' own entity.
-fn act_value(
+pub(in crate::screens::server_settings) fn act_value(
     cx: &Context<Body>,
     f: impl Fn(&mut Body, &str, &mut Window, &mut Context<Body>) + 'static,
 ) -> impl Fn(&str, &mut Window, &mut App) + 'static {

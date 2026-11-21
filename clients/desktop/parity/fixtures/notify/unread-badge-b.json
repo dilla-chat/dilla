@@ -37,6 +37,13 @@
             "id": "general",
             "kind": "text",
             "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
           }
         ]
       },
@@ -69,6 +76,13 @@
             "id": "weekly",
             "kind": "text",
             "name": "weekly-triage-notes-for-the-whole-collective"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
           }
         ]
       }

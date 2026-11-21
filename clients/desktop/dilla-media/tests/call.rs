@@ -871,3 +871,223 @@ fn a_join_without_an_output_device_gets_past_the_speaker() {
         Ok(_) => panic!("there is no room at that port"),
     }
 }
+
+// ---- A call that ends releases its PeerConnections ----
+//
+// Every sender and receiver of a PeerConnection holds one frame transformer, so the process's live transformer count
+// (`dilla_media::ffi::live_transformers`) is how many of them are still alive. Alice is a desktop `Call` in this
+// process (the hook is process-wide: one call per process); Bob is a `call-peer` process sending a tone, so Alice holds
+// a sender (her microphone) and a receiver (his) through dilla-testhost's in-process SFU.
+
+mod support {
+    pub mod live;
+}
+
+use std::time::Duration;
+
+use dilla_media::ffi::live_transformers;
+
+/// Seats Alice (this process, a PCM microphone of silence) and Bob (a `call-peer`) in one call, and waits until Alice
+/// hears Bob's verified device: her PeerConnections then hold her sender's and Bob's receiver's transformers.
+fn seat_alice_with_bob(
+    rt: &tokio::runtime::Runtime,
+) -> (dilla_media::Call, support::live::Peer, support::live::Host) {
+    seat_alice_with_bob_closing(rt, dilla_media::RoomCloses::default())
+}
+
+/// [`seat_alice_with_bob`] whose call registers its room's close, should it be dropped, with `room_closes`.
+fn seat_alice_with_bob_closing(
+    rt: &tokio::runtime::Runtime,
+    room_closes: dilla_media::RoomCloses,
+) -> (dilla_media::Call, support::live::Peer, support::live::Host) {
+    let host = support::live::start_host();
+    let (_group, alice, bob, _) = call_raw_bob();
+    let (a_dev, b_dev) = (hex(&alice.device), hex(&bob.device));
+    let room = hex(&CALL);
+    let (url, a_token) = support::live::token(&host.control, &room, &a_dev);
+    let (_, b_token) = support::live::token(&host.control, &room, &b_dev);
+    let mut bob_peer = support::live::Peer::start(&url, &b_token, 440);
+    bob_peer.epoch(&support::live::bob_epoch(&bob));
+
+    let feed = EpochFeed::new();
+    feed.publish(alice_epoch(&alice));
+    let call = rt.block_on(async {
+        let (tx, frames) = tokio::sync::mpsc::channel::<Vec<i16>>(50);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                tick.tick().await;
+                if tx.send(vec![0; FRAME_SAMPLES]).await.is_err() {
+                    break;
+                }
+            }
+        });
+        dilla_media::Call::join_with(
+            dilla_media::LiveKitToken {
+                url,
+                token: zeroize::Zeroizing::new(a_token),
+                ice_servers: Vec::new(),
+            },
+            feed as std::sync::Arc<dyn EpochKeys>,
+            dilla_media::CallOptions {
+                mic: dilla_media::Mic::Pcm {
+                    frames,
+                    noise: NoiseMode::Off,
+                },
+                playout: false,
+                key_timeout: Duration::from_secs(30),
+                room_closes,
+                ..dilla_media::CallOptions::default()
+            },
+        )
+        .await
+        .expect("Alice joins")
+    });
+    bob_peer.next("connected", Duration::from_secs(30));
+    let mut levels = call.remote_audio_levels();
+    rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            levels.wait_for(|l| l.contains_key(&b_dev)),
+        )
+        .await
+        .expect("Alice hears Bob within 30 s")
+        .expect("the call is live");
+    });
+    (call, bob_peer, host)
+}
+
+/// Polls every 50 ms, for at most 5 s, until no frame transformer is alive in this process; the count left otherwise.
+fn every_transformer_released() -> Result<(), usize> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live = live_transformers();
+        if live == 0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(live);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn call_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn leaving_a_call_releases_every_frame_transformer() {
+    let _s = serial();
+    let rt = call_runtime();
+    let (call, _bob, _host) = seat_alice_with_bob(&rt);
+    assert!(live_transformers() > 0, "the call holds its transformers");
+    rt.block_on(call.leave());
+    if let Err(live) = every_transformer_released() {
+        panic!("{live} frame transformers still alive 5 s after the leave");
+    }
+}
+
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn a_dropped_call_releases_every_frame_transformer() {
+    let _s = serial();
+    let rt = call_runtime();
+    let (call, _bob, _host) = seat_alice_with_bob(&rt);
+    assert!(live_transformers() > 0, "the call holds its transformers");
+    {
+        // Dropped inside the runtime, as the desktop drops a call it never left.
+        let _on = rt.enter();
+        drop(call);
+    }
+    if let Err(live) = every_transformer_released() {
+        panic!("{live} frame transformers still alive 5 s after the drop");
+    }
+}
+
+/// A call dropped on a runtime that then shuts down, as a dropped desktop session's runtime does (its join cancelled
+/// after the room connected): the drop hands the room's close to the runtime, and the shutdown would cancel it. A
+/// runtime that awaits its `dilla_media::RoomCloses` before it shuts down leaves no PeerConnection behind.
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn a_call_dropped_before_its_runtime_shuts_down_still_closes_its_room() {
+    let _s = serial();
+    // A current-thread runtime runs nothing between its `block_on`s: the drop's close cannot have started before the
+    // shutdown unless something awaits it (on a multi-thread runtime a worker usually starts it at once, which hid
+    // the leak).
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let closes = dilla_media::RoomCloses::default();
+    let (call, _bob, _host) = seat_alice_with_bob_closing(&rt, closes.clone());
+    assert!(live_transformers() > 0, "the call holds its transformers");
+    {
+        let _on = rt.enter();
+        drop(call);
+    }
+    let closed =
+        rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), closes.closed()).await });
+    assert!(
+        closed.is_ok(),
+        "the dropped call's room did not close within 5 s"
+    );
+    // At once: nothing that runs on the runtime is waited for.
+    rt.shutdown_timeout(Duration::ZERO);
+    if let Err(live) = every_transformer_released() {
+        panic!("{live} frame transformers still alive 5 s after the runtime shut down");
+    }
+}
+
+/// Two runtimes (two desktop windows' media sessions), each with a dropped call whose room close it was handed. Each
+/// awaits only its own closes: B's wait does not take A's close (A's room would then never close: A's wait would find
+/// nothing and its shutdown would cancel the close), and does not wait on A's runtime either. B first, then A; both
+/// shut down; no PeerConnection is left.
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn two_runtimes_each_await_only_their_own_dropped_calls_rooms() {
+    let _s = serial();
+    let current = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    };
+    let (rt_a, rt_b) = (current(), current());
+    let (closes_a, closes_b) = (
+        dilla_media::RoomCloses::default(),
+        dilla_media::RoomCloses::default(),
+    );
+    // One call per process at a time (the frame hook's router): A's is dropped before B's joins.
+    let (call_a, _bob_a, _host_a) = seat_alice_with_bob_closing(&rt_a, closes_a.clone());
+    {
+        let _on = rt_a.enter();
+        drop(call_a);
+    }
+    let (call_b, _bob_b, _host_b) = seat_alice_with_bob_closing(&rt_b, closes_b.clone());
+    {
+        let _on = rt_b.enter();
+        drop(call_b);
+    }
+    let within = Duration::from_secs(10);
+    assert!(
+        rt_b.block_on(async { tokio::time::timeout(within, closes_b.closed()).await })
+            .is_ok(),
+        "B's dropped call's room did not close within {within:?}"
+    );
+    assert!(
+        rt_a.block_on(async { tokio::time::timeout(within, closes_a.closed()).await })
+            .is_ok(),
+        "A's dropped call's room did not close within {within:?}"
+    );
+    rt_b.shutdown_timeout(Duration::ZERO);
+    rt_a.shutdown_timeout(Duration::ZERO);
+    if let Err(live) = every_transformer_released() {
+        panic!("{live} frame transformers still alive 5 s after both runtimes shut down");
+    }
+}

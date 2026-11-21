@@ -83,8 +83,8 @@ fn server(what: &str, status: i32) -> AppAudioError {
     AppAudioError::Server(format!("{what} ({status})"))
 }
 
-/// Below 14.2 there are no process taps.
-fn supported() -> Result<(), AppAudioError> {
+/// Below 14.2 there are no process taps. Reads the version only (no permission is asked).
+pub(super) fn supported() -> Result<(), AppAudioError> {
     if available!(macos = 14.2) {
         Ok(())
     } else {
@@ -255,7 +255,7 @@ fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     (wrote == size).then_some(info)
 }
 
-fn parent(pid: u32) -> Option<u32> {
+pub(super) fn parent(pid: u32) -> Option<u32> {
     bsd_info(pid).map(|i| i.pbi_ppid)
 }
 

@@ -106,8 +106,9 @@ pub enum ResultProvider {
     Bot,
 }
 
-/// One private result row (private-results.ts `PrivateResult`): shown only on this device, in its conversation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One private result row (private-results.ts `PrivateResult`): shown only on this device, in its conversation. Its Debug
+/// gives the text's length only: a moderation command's row names the member it acted on ("{name} was banned.").
+#[derive(Clone, PartialEq, Eq)]
 pub struct PrivateResult {
     pub id: u64,
     /// When it was added, unix milliseconds (the rows' order).
@@ -119,6 +120,20 @@ pub struct PrivateResult {
     pub hold: bool,
     /// When it last finished (unix ms), while it is finished and not held: it goes away [`PRIVATE_RESULT_TTL_MS`] later.
     pub settled_at: Option<u64>,
+}
+
+impl std::fmt::Debug for PrivateResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrivateResult")
+            .field("id", &self.id)
+            .field("at", &self.at)
+            .field("status", &self.status)
+            .field("text_len", &self.text.len())
+            .field("provider", &self.provider)
+            .field("hold", &self.hold)
+            .field("settled_at", &self.settled_at)
+            .finish()
+    }
 }
 
 /// private-results.ts `PRIVATE_RESULT_TTL_MS`: a finished private reply goes away this long after it finished.
@@ -139,7 +154,7 @@ pub struct Conversation {
 }
 
 /// A poll as the Bot's durable record says (utilities.ts `PollSummary`), with the voters a card shows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PollView {
     /// The poll's id (its post's final `[dilla-poll:v1:<id>]` line).
     pub id: [u8; 16],
@@ -175,7 +190,7 @@ pub enum ReminderStatus {
 }
 
 /// utilities.ts `ReminderSummary`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReminderView {
     pub id: [u8; 16],
     pub text: String,
@@ -188,6 +203,49 @@ pub struct ReminderView {
     pub revision: u64,
 }
 
+// R21: a poll's question and answers and a reminder's text are decrypted posts; Debug gives their lengths only.
+
+impl std::fmt::Debug for PollView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PollView")
+            .field("id", &self.id)
+            .field("channel", &self.channel)
+            .field("thread", &self.thread)
+            .field("question", &super::Redacted(&self.question))
+            .field("answers", &super::RedactedList(&self.answers))
+            .field("multi", &self.multi)
+            .field("closed", &self.closed)
+            .field("counts", &self.counts)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ReminderView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReminderView")
+            .field("id", &self.id)
+            .field("text", &super::Redacted(&self.text))
+            .field("due", &self.due)
+            .field("state", &self.state)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Where the read of a poll post's record stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PollCheck {
+    /// Being read, or waiting to read again: the card says it is loading.
+    Pending,
+    /// The Bot said no for good, or the retries ran out, for a post in this channel: the post's own text shows and no card
+    /// is drawn, until a read of it succeeds (PollCard.tsx's `gaveUp`).
+    GaveUp(crate::state::ChannelId),
+    /// A given-up post being read again, as a pushed hint of its channel asks: it still shows as given up while it reads,
+    /// and goes back to `GaveUp` if the read fails again.
+    Retry(crate::state::ChannelId),
+}
+
 /// The bot area's slice.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BotState {
@@ -197,8 +255,14 @@ pub struct BotState {
     pub private_results: BTreeMap<Conversation, Vec<PrivateResult>>,
     /// The verified polls, by the message that carries each.
     pub polls: BTreeMap<MessageId, PollView>,
+    /// The polls being read from the Bot, by the message that claims each (PollCard.tsx's retry state). A message with
+    /// neither a check nor a held poll has not been asked about yet; a successful read removes its check.
+    pub poll_checks: BTreeMap<MessageId, PollCheck>,
     /// This member's reminders, by community, soonest first.
     pub reminders: BTreeMap<CommunityId, Vec<ReminderView>>,
+    /// The scheduled announcements the Bot last listed, by community (Task 28; the chips' suggestions). A community with
+    /// no entry was not listed yet.
+    pub announcements: BTreeMap<CommunityId, Vec<crate::features::bot::announcements::ScheduleRow>>,
 }
 
 impl BotState {

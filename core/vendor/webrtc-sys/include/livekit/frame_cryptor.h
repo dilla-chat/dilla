@@ -50,12 +50,18 @@ class KeyProvider {
   ~KeyProvider() {}
 
   bool set_shared_key(int32_t index, rust::Vec<::std::uint8_t> key) const {
+    if (index < 0 || index >= key_ring_size_) {
+      return false;
+    }
     std::vector<uint8_t> key_vec;
     std::copy(key.begin(), key.end(), std::back_inserter(key_vec));
     return impl_->SetSharedKey(index, key_vec);
   }
 
   rust::Vec<::std::uint8_t> ratchet_shared_key(int32_t key_index) const {
+    if (key_index < 0 || key_index >= key_ring_size_) {
+      throw std::runtime_error("ratchet_shared_key failed: index out of bounds");
+    }
     rust::Vec<uint8_t> vec;
     auto data = impl_->RatchetSharedKey(key_index);
     if (data.empty()) {
@@ -67,6 +73,9 @@ class KeyProvider {
   }
 
   rust::Vec<::std::uint8_t> get_shared_key(int32_t key_index) const {
+    if (key_index < 0 || key_index >= key_ring_size_) {
+      throw std::runtime_error("get_shared_key failed: index out of bounds");
+    }
     rust::Vec<uint8_t> vec;
     auto data = impl_->ExportSharedKey(key_index);
     if (data.empty()) {
@@ -81,6 +90,9 @@ class KeyProvider {
   bool set_key(const ::rust::String participant_id,
                int32_t index,
                rust::Vec<::std::uint8_t> key) const {
+    if (index < 0 || index >= key_ring_size_) {
+      return false;
+    }
     std::vector<uint8_t> key_vec;
     std::copy(key.begin(), key.end(), std::back_inserter(key_vec));
     return impl_->SetKey(
@@ -90,6 +102,9 @@ class KeyProvider {
 
   rust::Vec<::std::uint8_t> ratchet_key(const ::rust::String participant_id,
                                         int32_t key_index) const {
+    if (key_index < 0 || key_index >= key_ring_size_) {
+      throw std::runtime_error("ratchet_key failed: index out of bounds");
+    }
     rust::Vec<uint8_t> vec;
     auto data = impl_->RatchetKey(
         std::string(participant_id.data(), participant_id.size()), key_index);
@@ -103,6 +118,9 @@ class KeyProvider {
 
   rust::Vec<::std::uint8_t> get_key(const ::rust::String participant_id,
                                     int32_t key_index) const {
+    if (key_index < 0 || key_index >= key_ring_size_) {
+      throw std::runtime_error("get_key failed: index out of bounds");
+    }
     rust::Vec<uint8_t> vec;
     auto data = impl_->ExportKey(
         std::string(participant_id.data(), participant_id.size()), key_index);
@@ -123,10 +141,13 @@ class KeyProvider {
     dilla_set_sif_trailer(trailer_vec);
   }
 
+  int32_t key_ring_size() const { return key_ring_size_; }
+
   webrtc::scoped_refptr<webrtc::KeyProvider> rtc_key_provider() { return impl_; }
 
  private:
   webrtc::scoped_refptr<webrtc::DefaultKeyProviderImpl> impl_;
+  int32_t key_ring_size_ = 16;
 };
 
 class FrameCryptor {

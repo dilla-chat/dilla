@@ -56,21 +56,30 @@ fn parity_reactions_bar_b() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2392 % (the colour emoji glyphs: the bitmap face scaled to 15px samples otherwise than Skia's, and a chip's width follows the emoji's advance, so some chips' edges sit a device px apart; re-measured in the wave 2 fix round; which advance each side gives the emoji is not measured yet, so the root is still open)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2331 % (as many-wrapping: the emoji glyphs and the chip edges they move)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2812 % (the picker grid's colour emoji glyphs, as many-wrapping)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }
@@ -511,6 +520,22 @@ fn app_chip_click_toggles_the_reaction() {
         ));
     };
     expect(vec![("👍", 2, true)]);
+    // The chip's toggle direction is what Alice's own window knows (`mine`): clicking before it learned the reaction is hers
+    // would add again. The pressed state is on the accessibility tree, so wait for it, never a sleep.
+    let started = std::time::Instant::now();
+    loop {
+        let tree = app.a11y_tree();
+        if tree.by_role("Button").any(|n| {
+            n.toggled.as_deref() == Some("True") && n.name().is_some_and(|l| l.ends_with(", 2"))
+        }) {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "alice's window never showed the chip pressed"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     app.click(&chip);
     expect(vec![("👍", 1, true)]);
     assert_eq!(count(&bob_client), [("👍".to_owned(), 1, true)]);

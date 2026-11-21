@@ -32,6 +32,10 @@ pub struct GridGroup {
 
 type Change = Rc<dyn Fn(&str, &str, &mut Window, &mut App) + 'static>;
 
+/// `.d-permission-grid__text { line-height: 1.35 }` (PermissionGrid.css:9): a row's label and hint keep it at every
+/// density.
+const TEXT_LEADING: f32 = 1.35;
+
 #[derive(IntoElement)]
 pub struct PermissionGrid {
     id: ElementId,
@@ -116,13 +120,13 @@ impl RenderOnce for PermissionGrid {
                                 .child(line(
                                     row.label,
                                     text::SM,
-                                    line_height(text::SM, 1.5),
+                                    line_height(text::SM, TEXT_LEADING),
                                     color::FG,
                                 ))
                                 .child(line(
                                     row.hint,
                                     text::XS,
-                                    line_height(text::XS, 1.5),
+                                    line_height(text::XS, TEXT_LEADING),
                                     color::FG_2,
                                 )),
                         )

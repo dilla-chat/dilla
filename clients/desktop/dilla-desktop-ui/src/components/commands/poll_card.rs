@@ -9,21 +9,35 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
-use crate::components::avatar::{colour_of, initials_of};
+use crate::components::avatar::colour_of;
+use crate::components::commands::poll_dialog::grapheme_initials;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::LABEL_TRACKING;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{MONO_ADVANCE, line, paragraph};
 use crate::tokens::{color, font, radius, text};
 
-/// One answer (`PollCardOption`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One answer (`PollCardOption`). Its Debug gives the answer's length and the voters' count only: the answer is a
+/// decrypted post.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Option_ {
     pub text: SharedString,
     pub pct: u32,
     pub mine: bool,
     pub winner: bool,
     pub voters: Vec<SharedString>,
+}
+
+impl std::fmt::Debug for Option_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Option_")
+            .field("text_len", &self.text.len())
+            .field("pct", &self.pct)
+            .field("mine", &self.mine)
+            .field("winner", &self.winner)
+            .field("voters", &self.voters.len())
+            .finish()
+    }
 }
 
 /// The card's copy.
@@ -39,6 +53,9 @@ const PAD: f32 = 12.0;
 const GAP: f32 = 8.0;
 const ROW: f32 = 34.0;
 const TOP_MARGIN: f32 = 6.0;
+/// An answer row's side padding, and the width one voter's avatar takes in the voters' span (18px less its -5px margin).
+const ANSWER_PAD: f32 = 10.0;
+const VOTER_STEP: f32 = 13.0;
 
 type OnVote = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 type OnClose = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -113,38 +130,101 @@ impl PollCard {
         (width - 2.0 * PAD - 2.0).clamp(0.0, MAX_WIDTH)
     }
 
-    /// The question's wrapped lines, in the content width beside its 14px icon and 8px gap.
-    fn question_lines(question: &str, width: f32) -> usize {
+    /// The closed tag's width (`.d-poll-card__tag`: 6px padding and a 1px border either side, its label tracked), which the
+    /// question shares the head with (`h3 { flex: 1 }`); none for a poll that is open.
+    fn tag_width(closed: Option<&str>) -> f32 {
+        closed.map_or(0.0, |label| {
+            let size = f32::from(text::CHIP);
+            14.0 + label.chars().count() as f32 * size * (MONO_ADVANCE + LABEL_TRACKING)
+        })
+    }
+
+    /// The question's room in the head: the content width beside its 14px icon and 8px gap, and the closed tag with its own
+    /// 8px gap.
+    fn question_width(width: f32, closed: Option<&str>) -> f32 {
+        let tag = Self::tag_width(closed);
+        Self::inner(width) - 22.0 - if tag > 0.0 { tag + GAP } else { 0.0 }
+    }
+
+    /// The question's wrapped lines, in [`PollCard::question_width`].
+    fn question_lines(question: &str, width: f32, closed: Option<&str>) -> usize {
         paragraph(
             question,
             text::INPUT,
-            line_height(text::INPUT, 1.5),
+            crate::text::root_line_height(text::INPUT),
             color::FG,
-            Self::inner(width) - 22.0,
+            Self::question_width(width, closed),
         )
         .len()
         .max(1)
     }
 
-    /// The card's height under a message, its 6px top margin included (R21: from the content and the tokens).
-    pub fn height(question: &str, answers: usize, width: f32) -> f32 {
-        let head = Self::question_lines(question, width) as f32 * line_height(text::INPUT, 1.5);
-        let rows = answers as f32 * (ROW + 2.0);
-        let meta = 26.0;
-        TOP_MARGIN + 2.0 + 2.0 * PAD + head + rows + meta + GAP * (answers as f32 + 1.0)
+    /// The meta line's height: the Close poll button's (26px with its border) or the text's line.
+    fn meta_height(button: bool) -> f32 {
+        if button {
+            26.0
+        } else {
+            crate::text::root_line_height(text::META)
+        }
+    }
+
+    /// An answer's room in its row (`.d-poll-card__text { flex: 1 }`): the row's content beside the check (14px and its 1px
+    /// border, 8px gap), the voters (their span's `13px` each, 8px gap, present even with none) and the 36px percentage
+    /// (8px gap).
+    fn answer_width(width: f32, voters: usize) -> f32 {
+        let content = Self::inner(width) - 2.0 - 2.0 * ANSWER_PAD;
+        content - (16.0 + 8.0) - 36.0 - 2.0 * 8.0 - voters.min(5) as f32 * VOTER_STEP
+    }
+
+    /// An answer's wrapped lines.
+    fn answer_lines(text: &str, width: f32, voters: usize) -> usize {
+        paragraph(
+            text,
+            text::UI,
+            crate::text::root_line_height(text::UI),
+            color::FG,
+            Self::answer_width(width, voters),
+        )
+        .len()
+        .max(1)
+    }
+
+    /// The card's height under a message, its 6px top margin included (R21: from the content and the tokens). `closed` is the
+    /// closed tag's label of a closed poll, and `button` whether the meta line holds Close poll (an open poll of the viewer's:
+    /// its 26px button; else the line is as tall as its text). An answer's row is as tall as its lines, at least the 34px row.
+    pub fn height(
+        question: &str,
+        options: &[Option_],
+        width: f32,
+        closed: Option<&str>,
+        button: bool,
+    ) -> f32 {
+        let head = Self::question_lines(question, width, closed) as f32
+            * crate::text::root_line_height(text::INPUT);
+        let ui_lh = crate::text::root_line_height(text::UI);
+        let rows: f32 = options
+            .iter()
+            .map(|o| {
+                let lines = Self::answer_lines(&o.text, width, o.voters.len()) as f32;
+                (lines * ui_lh).max(ROW) + 2.0
+            })
+            .sum();
+        let meta = Self::meta_height(button);
+        TOP_MARGIN + 2.0 + 2.0 * PAD + head + rows + meta + GAP * (options.len() as f32 + 1.0)
     }
 }
 
 impl RenderOnce for PollCard {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let ui_lh = line_height(text::UI, 1.5);
+        let ui_lh = crate::text::root_line_height(text::UI);
         let inner = Self::inner(self.width);
+        let tag = self.closed.then(|| self.labels.closed.to_string());
         let question = paragraph(
             &self.question,
             text::INPUT,
-            line_height(text::INPUT, 1.5),
+            crate::text::root_line_height(text::INPUT),
             color::FG,
-            inner - 22.0,
+            Self::question_width(self.width, tag.as_deref()),
         )
         .into_iter()
         .map(|l| l.weight(font::WEIGHT_DISPLAY));
@@ -253,13 +333,25 @@ impl RenderOnce for PollCard {
                         .min_h(px(ROW))
                         .px(px(10.0))
                         .child(check)
-                        .child(div().flex_1().min_w_0().child(
-                            line(o.text.clone(), text::UI, ui_lh, color::FG).weight(if winner {
-                                font::WEIGHT_DISPLAY
-                            } else {
-                                font::WEIGHT_BTN
-                            }),
-                        ))
+                        .child(
+                            div().flex_1().min_w_0().flex().flex_col().children(
+                                paragraph(
+                                    &o.text,
+                                    text::UI,
+                                    ui_lh,
+                                    color::FG,
+                                    Self::answer_width(self.width, o.voters.len()),
+                                )
+                                .into_iter()
+                                .map(|l| {
+                                    l.weight(if winner {
+                                        font::WEIGHT_DISPLAY
+                                    } else {
+                                        font::WEIGHT_BTN
+                                    })
+                                }),
+                            ),
+                        )
                         .child(voters)
                         .child(div().w(px(36.0)).flex().justify_end().child(line(
                             format!("{}%", o.pct),
@@ -274,11 +366,11 @@ impl RenderOnce for PollCard {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .min_h(px(26.0))
+            .min_h(px(Self::meta_height(self.can_close && !self.closed)))
             .child(div().flex_1().child(line(
                 self.meta.clone(),
                 text::META,
-                line_height(text::META, 1.5),
+                crate::text::root_line_height(text::META),
                 color::FG_3,
             )))
             .children((self.can_close && !self.closed).then(|| {
@@ -300,7 +392,7 @@ impl RenderOnce for PollCard {
                     .child(line(
                         self.labels.close.clone(),
                         text::META,
-                        line_height(text::META, 1.5),
+                        crate::text::root_line_height(text::META),
                         color::FG,
                     ))
             }));
@@ -343,9 +435,9 @@ fn voter(id: impl Into<ElementId>, name: &str) -> impl IntoElement {
         .justify_center()
         .child(
             line(
-                initials_of(name),
+                grapheme_initials(name),
                 text::POLL_VOTER,
-                line_height(text::POLL_VOTER, 1.5),
+                crate::text::root_line_height(text::POLL_VOTER),
                 color::BRAND_INK,
             )
             .weight(font::WEIGHT_DISPLAY),
@@ -389,8 +481,19 @@ mod tests {
 
     #[test]
     fn its_height_grows_by_answer() {
-        let two = PollCard::height("Raid?", 2, 700.0);
-        let three = PollCard::height("Raid?", 3, 700.0);
+        let answers = |n: usize| -> Vec<Option_> {
+            (0..n)
+                .map(|i| Option_ {
+                    text: format!("answer {i}").into(),
+                    pct: 0,
+                    mine: false,
+                    winner: false,
+                    voters: Vec::new(),
+                })
+                .collect()
+        };
+        let two = PollCard::height("Raid?", &answers(2), 700.0, None, true);
+        let three = PollCard::height("Raid?", &answers(3), 700.0, None, true);
         assert_eq!(three - two, 36.0 + 8.0);
     }
 }

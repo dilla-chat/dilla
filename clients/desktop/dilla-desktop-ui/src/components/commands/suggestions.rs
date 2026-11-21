@@ -168,7 +168,7 @@ impl RenderOnce for CommandSuggestions {
         let title = line(
             self.title.to_uppercase(),
             text::MICRO,
-            line_height(text::MICRO, 1.5),
+            crate::text::root_line_height(text::MICRO),
             color::FG_3,
         )
         .weight(font::WEIGHT_LABEL)

@@ -9,9 +9,9 @@ use gpui::{
     StatefulInteractiveElement, Styled, StyledImage, div, img, px,
 };
 
-use super::{LEADING, OnClick};
+use super::OnClick;
 use crate::metrics::LABEL_TRACKING;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 
 /// `.d-gif-picker`: 23.75rem wide, 0.5rem padding, 0.375rem gaps.
@@ -143,12 +143,12 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
                 .child(line(
                     label,
                     text::UI,
-                    line_height(text::UI, LEADING),
+                    crate::text::root_line_height(text::UI),
                     color::FG,
                 )),
         );
     }
-    let status_h = line_height(text::SM, LEADING).max(20.0);
+    let status_h = crate::text::root_line_height(text::SM).max(20.0);
     let status = div().min_h(px(20.0)).child(match p.status {
         Some((s, error)) => line(
             s,
@@ -185,7 +185,7 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
                     line(
                         p.powered,
                         text::CHIP,
-                        line_height(text::CHIP, LEADING),
+                        crate::text::root_line_height(text::CHIP),
                         color::FG_3,
                     )
                     .tracking(LABEL_TRACKING),

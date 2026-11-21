@@ -9,7 +9,7 @@
 //! end-to-end ones run against dilla's real Bot (Task 28, `testing::host::bot`): the Bot reaching ready and the join
 //! role are below; the rest are listed in `BEHAVIOUR-GATES.md`.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dilla_client::state::{ChannelId, CommunityId};
 use dilla_client::testing::host::bot::enable_bot;
@@ -348,6 +348,103 @@ async fn a_roles_bot_applies_the_join_role_on_join_and_rejoin() {
         },
     )
     .await;
+    a.stop();
+    b.stop();
+    drop(host);
+}
+
+/// e2e/web/bot-channels.spec.ts "mark a channel, enable welcome, a new member is welcomed there": the owner enables the Bot with
+/// the Welcome capability, marks `general` as a Bot channel, reads the settings (never configured), saves a template and reads it
+/// back at the new revision; Bea joins by invite and the Bot greets her by name in `general`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn a_welcome_saved_in_settings_greets_a_new_member() {
+    use dilla_client::features::bot_admin::{WelcomeAnswer, WelcomeOp};
+    use dilla_client::state::server_admin::WelcomeSettings;
+    use dilla_client::testing::host::bot::cap;
+    let (host, pa, c) = bot_owner("welcome-greets").await;
+    let invite = host.invites.last().unwrap().clone();
+    let pb = sign_up(&host, &invite, "bea", "Bea", "welcome-greets").await;
+    clear_session(&pb);
+    let a = start(&pa).await;
+    let community = CommunityId(c);
+    let s = wait_for(&a, Duration::from_secs(30), "the channel list", |s| {
+        s.channel_named(community, "general").is_some()
+    })
+    .await;
+    let general: ChannelId = s.channel_named(community, "general").unwrap().id;
+    // Opening the channel makes its encrypted group, which the Bot joins once the channel is marked.
+    a.open_channel(general)
+        .await
+        .unwrap()
+        .expect("alice opens general");
+    enable_bot(&a, c, cap::WELCOME).await;
+    recv(a.bot_admin().mark_bot_channel(community, general)).await;
+    wait_for(&a, Duration::from_secs(10), "general a Bot channel", |s| {
+        s.bot
+            .catalogs
+            .get(&community)
+            .and_then(|c| c.bot_channels.as_ref())
+            .is_some_and(|ids| ids.contains(&general))
+    })
+    .await;
+
+    let WelcomeAnswer::Read { config, revision } =
+        recv(a.bot_admin().welcome(community, WelcomeOp::Read)).await
+    else {
+        panic!("the read is answered");
+    };
+    assert_eq!(config, None, "never configured");
+    let value = WelcomeSettings {
+        channel: general,
+        template: "Welcome {member} to {server}!".to_owned(),
+        server_name: "gpui".to_owned(),
+    };
+    let saved = recv(a.bot_admin().welcome(
+        community,
+        WelcomeOp::Save {
+            value: value.clone(),
+            revision,
+        },
+    ))
+    .await;
+    let WelcomeAnswer::Saved { revision: next } = saved else {
+        panic!("the save took: {saved:?}");
+    };
+    assert!(next > revision, "the save moved the revision");
+    assert_eq!(
+        recv(a.bot_admin().welcome(community, WelcomeOp::Read)).await,
+        WelcomeAnswer::Read {
+            config: Some(value),
+            revision: next
+        },
+        "read back"
+    );
+
+    let code = invite_code(&host, &pa, c);
+    let b = start(&pb).await;
+    let greeted = |s: &dilla_client::state::AppState| {
+        s.timelines
+            .get(&general)
+            .is_some_and(|t| t.items.iter().any(|i| i.bot && i.body.contains("Bea")))
+    };
+    // The Bot joins a freshly marked Bot channel's group in the background, and a join it sees before that is not welcomed
+    // ("bot has not joined the channel's group yet"). Nothing on the client says when it is in, so a join that went
+    // unwelcomed is done once more, as a member would who left and came back.
+    b.onboarding().join(&code).await.expect("bea joins");
+    let first = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < first && !greeted(&a.state().borrow()) {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    if !greeted(&a.state().borrow()) {
+        b.server_admin()
+            .leave(community)
+            .wait()
+            .await
+            .expect("bea leaves");
+        b.onboarding().join(&code).await.expect("bea joins again");
+        wait_for(&a, Duration::from_secs(90), "the Bot greets Bea", greeted).await;
+    }
     a.stop();
     b.stop();
     drop(host);

@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use dilla_client::features::threads::THREAD_PAGE;
 use dilla_client::state::AppState;
 use dilla_client::state::threads::{ThreadData, ThreadSummary};
 use dilla_client::testing::spec::WorldSpec;
@@ -48,6 +49,11 @@ pub(super) fn apply(world: &WorldSpec, _viewer: &str, state: &mut AppState) {
             items.sort_by_key(|i| i.ts);
             let count = u32::try_from(items.len()).unwrap_or(u32::MAX);
             let last_ts = items.last().map_or(0, |i| i.ts);
+            // The open thread's first read is the newest page, with more before it once the read filled the page
+            // (threads.ts `THREAD_PAGE`), as the channel's own page above.
+            let page = THREAD_PAGE as usize;
+            let has_earlier = items.len() >= page;
+            items.drain(..items.len().saturating_sub(page));
             summaries
                 .entry(*channel)
                 .or_insert_with(HashMap::new)
@@ -58,7 +64,7 @@ pub(super) fn apply(world: &WorldSpec, _viewer: &str, state: &mut AppState) {
                     channel: *channel,
                     root: Some(root),
                     replies: items,
-                    has_earlier: false,
+                    has_earlier,
                     count,
                 },
             );
@@ -109,5 +115,18 @@ mod tests {
         assert_eq!(data.replies.len(), 2);
         assert_eq!(data.root.as_ref().unwrap().key, timeline.items[0].key);
         assert!(data.replies[0].ts <= data.replies[1].ts);
+        assert!(!data.has_earlier, "two replies fill no page");
+    }
+
+    /// A thread that fills the page keeps its newest page and says there are older replies (`thread-earlier` fixture).
+    #[test]
+    fn a_full_thread_holds_its_newest_page_and_has_earlier() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../parity/fixtures/threads/thread-earlier.json");
+        let f = Fixture::parse(&std::fs::read_to_string(&path).unwrap(), None).unwrap();
+        let data = f.state.threads.threads.values().next().expect("a thread");
+        assert!(data.has_earlier);
+        assert_eq!(data.replies.len(), 200);
+        assert_eq!(data.count, 201);
     }
 }

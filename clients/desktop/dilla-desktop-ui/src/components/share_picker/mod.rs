@@ -264,7 +264,7 @@ impl RenderOnce for SharePicker {
             div().py(px(24.0)).flex().justify_center().child(line(
                 self.labels.empty.clone(),
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::FG_3,
             ))
         } else {

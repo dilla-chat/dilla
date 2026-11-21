@@ -7,7 +7,7 @@ use gpui::{AnyElement, App, AppContext as _, IntoElement, ParentElement, Styled,
 
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::components::dialog::Dialog;
-use dilla_desktop_ui::text::{line, line_height, paragraph};
+use dilla_desktop_ui::text::{line, paragraph};
 use dilla_desktop_ui::tokens::{color, font, text};
 
 use super::mentions::excerpt;
@@ -42,7 +42,7 @@ pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
         let body = div().flex().flex_col().children(paragraph(
             t("shell.delete.body"),
             text::UI,
-            line_height(text::UI, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::FG_2,
             440.0,
         ));
@@ -114,7 +114,7 @@ fn pins_dialog(
         list = list.child(div().w_full().pb(len(12.)).children(paragraph(
             t(note),
             text::META,
-            line_height(text::META, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::META),
             color::FG_3,
             480.0 - 32.0,
         )));
@@ -129,7 +129,7 @@ fn pins_dialog(
                 .child(line(
                     t("shell.pins.empty"),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG_3,
                 )),
         );
@@ -144,7 +144,7 @@ fn pins_dialog(
         let text_lines = paragraph(
             &excerpt(&pin.excerpt, 120),
             text::SM,
-            line_height(text::SM, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::SM),
             color::FG_BODY,
             480.0 - 32.0,
         );
@@ -175,13 +175,18 @@ fn pins_dialog(
                     .items_baseline()
                     .gap(len(8.))
                     .child(
-                        line(author, text::SM, line_height(text::SM, 1.5), color::FG)
-                            .weight(font::WEIGHT_DISPLAY),
+                        line(
+                            author,
+                            text::SM,
+                            dilla_desktop_ui::text::root_line_height(text::SM),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY),
                     )
                     .child(line(
                         when,
                         text::META,
-                        line_height(text::META, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::META),
                         color::FG_3,
                     )),
             )
@@ -194,7 +199,7 @@ fn pins_dialog(
                     .child(div().flex_1().child(line(
                         by,
                         text::META,
-                        line_height(text::META, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::META),
                         color::FG_3,
                     )))
                     .child(jump)

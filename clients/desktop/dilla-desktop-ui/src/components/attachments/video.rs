@@ -28,7 +28,7 @@ use crate::components::action_menu::{ActionMenu, MenuItem};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 
 /// `.d-media-player__video`: at most 30rem wide, 16:9 (`max-height: 16.875rem`).
@@ -338,7 +338,7 @@ pub fn video_frame(v: VideoView, w: f32, h: f32) -> AnyElement {
             .child(line(
                 notice.clone(),
                 text::UI,
-                line_height(text::UI, super::LEADING),
+                crate::text::root_line_height(text::UI),
                 color::FG_2,
             ))
             .into_any_element();
@@ -454,7 +454,7 @@ pub fn video_frame(v: VideoView, w: f32, h: f32) -> AnyElement {
                         clock(v.duration.unwrap_or_default())
                     ),
                     text::UI,
-                    line_height(text::UI, super::LEADING),
+                    crate::text::root_line_height(text::UI),
                     WHITE,
                 )),
         );

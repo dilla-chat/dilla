@@ -4,9 +4,10 @@
 //! dur", play/pause and skip, a 3px bar, under a 0.15 `--ok` hairline).
 //!
 //! The controls are Tab stops and activate with Enter or Space as any button does. When the card itself is focused, Space
-//! plays and pauses. Without control a press says why in a toast ([`show_toast`]) and does nothing else. Nothing animates
-//! (the references are shot with reduced motion); the playing state shows as its `--ok` colour and the equaliser bars at
-//! rest height.
+//! plays and pauses. Without control a press says why in a toast ([`show_toast`]) and does nothing else. The playing state
+//! shows as its `--ok` colour and the equaliser bars beside it, which bounce; the card, its queue, the dock row and the
+//! stage bar rise in once (`d-up`, [`crate::motion`]). With reduced motion (the references are shot with it) the bars
+//! stand at full height and nothing rises.
 
 use std::rc::Rc;
 
@@ -21,8 +22,9 @@ use crate::components::toast::show_toast_in;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::motion::{EASE, equaliser, rise_in};
+use crate::text::{line, line_height, root_line_height};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// What the player shows of the track playing.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +58,8 @@ pub struct NowPlayingLabels {
     pub stop: SharedString,
     /// The card's queue toggle, already filled: "Up next · 3".
     pub queue: SharedString,
+    /// The stage bar's count, already filled: "3 up next".
+    pub up_next: SharedString,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +68,8 @@ pub enum NowPlayingVariant {
     Card,
     /// The row inside the voice dock.
     Compact,
+    /// The bar on top of the voice stage (NowPlaying.css `.d-np--stage`).
+    Stage,
 }
 
 type Action = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -237,7 +243,11 @@ impl NowPlaying {
             .justify_center()
             .w(px(size.0))
             .h(px(size.1))
-            .rounded(if compact { radius::ROW } else { radius::MD })
+            .rounded(match self.variant {
+                NowPlayingVariant::Compact => radius::ROW,
+                NowPlayingVariant::Stage => radius::SEG,
+                NowPlayingVariant::Card => radius::MD,
+            })
             .bg(bg)
             .text_color(fg)
             .child(Icon::new(icon).size(px(glyph)).color(fg))
@@ -295,7 +305,7 @@ impl NowPlaying {
             .into_any_element()
     }
 
-    fn compact(self) -> AnyElement {
+    fn compact(self, cx: &App) -> AnyElement {
         let Some(track) = self.track.clone() else {
             return div().into_any_element();
         };
@@ -362,7 +372,7 @@ impl NowPlaying {
             self.on_skip.clone(),
             false,
         );
-        div()
+        let dock_row = div()
             .id(self.id.clone())
             .flex()
             .flex_col()
@@ -371,8 +381,166 @@ impl NowPlaying {
             .border_t_1()
             .border_color(color::OK_DIVIDER)
             .child(row.child(text_col).child(toggle).child(skip))
-            .child(self.bar(3.0))
-            .into_any_element()
+            .child(self.bar(3.0));
+        rise_in(
+            dock_row,
+            (self.id.clone(), "rise"),
+            motion::PLAYER_ROW,
+            EASE,
+            cx,
+        )
+    }
+
+    /// The stage bar (NowPlaying.css `.d-np--stage`, NowPlaying.tsx's `stage` branch): 48px, the Bot's 28px square, the
+    /// equaliser bars while playing, the title and meta over a 3px bar with `pos / dur`, play/pause, skip, stop and "n up
+    /// next". Not drawn without a track. The phone's layout (no meta, no count) is not the desktop's.
+    fn stage(self, cx: &App) -> AnyElement {
+        let Some(track) = self.track.clone() else {
+            return div().into_any_element();
+        };
+        let position = self.position_s.clamp(0.0, track.duration_s.max(0.0));
+        let mut title_line = div().flex().items_baseline().gap(px(8.0)).min_w_0().child(
+            div().min_w_0().child(
+                line(
+                    track.title.clone(),
+                    text::UI,
+                    root_line_height(text::UI),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .ellipsis(),
+            ),
+        );
+        if let Some(meta) = &self.meta {
+            title_line = title_line.child(
+                div().min_w_0().child(
+                    line(
+                        meta.clone(),
+                        text::META,
+                        root_line_height(text::META),
+                        color::FG_3,
+                    )
+                    .ellipsis(),
+                ),
+            );
+        }
+        let bar_line = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .min_w_0()
+            .child(div().flex_1().child(self.bar(3.0)))
+            .child(line(
+                format!(
+                    "{} / {}",
+                    player_time(position),
+                    player_time(track.duration_s)
+                ),
+                text::MICRO,
+                root_line_height(text::MICRO),
+                color::FG_3,
+            ));
+        let text_col = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .gap(px(3.0))
+            .child(title_line)
+            .child(bar_line);
+        let mut row = div()
+            .id(self.id.clone())
+            .debug_selector(|| "now-playing-stage".to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(10.0))
+            .h(px(48.0))
+            .pl(px(10.0))
+            .pr(px(8.0))
+            .bg(color::SURFACE)
+            .border_1()
+            .border_color(color::HAIRLINE_2)
+            .rounded(radius::XL);
+        if let Some(bot) = &self.bot {
+            row = row.child(
+                Avatar::new((self.id.clone(), "bot"), bot.clone())
+                    .shape(AvatarShape::Bot)
+                    .size(AvatarSize::NpStage),
+            );
+        }
+        if self.playing {
+            row = row.child(equaliser((self.id.clone(), "bars"), 11.0, cx));
+        }
+        let toggle_icon = if self.playing {
+            IconName::Pause
+        } else {
+            IconName::Play
+        };
+        let stage_bar = row
+            .child(text_col)
+            .child(self.control(
+                (self.id.clone(), "toggle").into(),
+                toggle_icon,
+                14.0,
+                (32.0, 32.0),
+                self.on_toggle.clone(),
+                true,
+            ))
+            .child(self.control(
+                (self.id.clone(), "skip").into(),
+                IconName::SkipForward,
+                14.0,
+                (32.0, 32.0),
+                self.on_skip.clone(),
+                false,
+            ))
+            .child(self.control(
+                (self.id.clone(), "stop").into(),
+                IconName::Square,
+                13.0,
+                (32.0, 32.0),
+                self.on_stop.clone(),
+                false,
+            ))
+            .child(
+                div()
+                    .debug_selector(|| "now-playing-stage-up-next".to_owned())
+                    .flex_none()
+                    .px(px(6.0))
+                    .child(line(
+                        self.labels.up_next.clone(),
+                        text::META,
+                        root_line_height(text::META),
+                        color::FG_3,
+                    )),
+            );
+        // The stage bar's entrance runs on `--ease-out`, the others' on `ease`.
+        rise_in(
+            stage_bar,
+            (self.id.clone(), "rise"),
+            motion::PLAYER_BAR,
+            motion::EASE_OUT,
+            cx,
+        )
+    }
+
+    /// The height the card variant takes in a row (NowPlaying.css), in layout px: the 1px edge twice; the head (12px above
+    /// the 52px art, 10px below); the progress block (the 4px bar, 4px, the times' micro line); the controls (6px, 30px
+    /// buttons, 8px). With the queue open and rows in it: its 1px rule, 4px above, 30px a row and 6px below. The log
+    /// lays its rows out from heights, so the card says its own (R21).
+    pub fn card_height(queue_rows: usize, queue_open: bool) -> f32 {
+        let edge = 2.0;
+        let head = 12.0 + 52.0 + 10.0;
+        let progress = 4.0 + 4.0 + line_height(text::MICRO, 1.4);
+        let controls = 6.0 + 30.0 + 8.0;
+        // `card` draws the list only for a queue with rows in it.
+        let queue = if queue_open && queue_rows > 0 {
+            1.0 + 4.0 + 30.0 * queue_rows as f32 + 6.0
+        } else {
+            0.0
+        };
+        edge + head + progress + controls + queue
     }
 
     fn card(self, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -397,6 +565,11 @@ impl NowPlaying {
             .rounded(radius::SEG)
             .bg(color::HOVER)
             .child(Icon::new(IconName::Music).size(px(18.0)).color(color::FG_4));
+        // The state line: the 9px equaliser (while it plays) before the label, 6px apart.
+        let mut state_line = div().flex().items_center().gap(px(6.0));
+        if live {
+            state_line = state_line.child(equaliser((self.id.clone(), "bars"), 9.0, cx));
+        }
         let mut text_col = div()
             .flex()
             .flex_col()
@@ -405,14 +578,16 @@ impl NowPlaying {
             .gap(px(2.0))
             .justify_center()
             .child(
-                line(
-                    self.state_label().to_uppercase(),
-                    text::CHIP,
-                    line_height(text::CHIP, 1.4),
-                    state_colour,
-                )
-                .weight(font::WEIGHT_LABEL)
-                .tracking(0.12),
+                state_line.child(
+                    line(
+                        self.state_label().to_uppercase(),
+                        text::CHIP,
+                        line_height(text::CHIP, 1.4),
+                        state_colour,
+                    )
+                    .weight(font::WEIGHT_LABEL)
+                    .tracking(0.12),
+                ),
             );
         text_col = text_col.child(
             line(title, text::INPUT, line_height(text::INPUT, 1.4), color::FG)
@@ -651,27 +826,33 @@ impl NowPlaying {
                 }
                 row
             });
-            card = card.child(
-                div()
-                    .id((self.id.clone(), "queue"))
-                    .flex()
-                    .flex_col()
-                    .px(px(6.0))
-                    .pt(px(4.0))
-                    .pb(px(6.0))
-                    .border_t_1()
-                    .border_color(color::HAIRLINE)
-                    .children(rows),
-            );
+            let list = div()
+                .id((self.id.clone(), "queue"))
+                .flex()
+                .flex_col()
+                .px(px(6.0))
+                .pt(px(4.0))
+                .pb(px(6.0))
+                .border_t_1()
+                .border_color(color::HAIRLINE)
+                .children(rows);
+            card = card.child(rise_in(
+                list,
+                (self.id.clone(), "queue-rise"),
+                motion::QUEUE,
+                EASE,
+                cx,
+            ));
         }
-        card.into_any_element()
+        rise_in(card, (self.id.clone(), "rise"), motion::PLAYER, EASE, cx)
     }
 }
 
 impl RenderOnce for NowPlaying {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self.variant {
-            NowPlayingVariant::Compact => self.compact(),
+            NowPlayingVariant::Compact => self.compact(cx),
+            NowPlayingVariant::Stage => self.stage(cx),
             NowPlayingVariant::Card => self.card(window, cx),
         }
     }
@@ -697,6 +878,21 @@ mod tests {
         assert_eq!(progress(500.0, 200.0), 1.0);
         assert_eq!(progress(-5.0, 200.0), 0.0);
         assert_eq!(progress(10.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn the_card_height_follows_the_css() {
+        // 2 (edge) + 74 (head) + 4 + 4 + 14 (the micro line) + 44 (controls).
+        assert_eq!(NowPlaying::card_height(0, false), 2.0 + 74.0 + 22.0 + 44.0);
+        assert_eq!(
+            NowPlaying::card_height(3, true) - NowPlaying::card_height(3, false),
+            1.0 + 4.0 + 90.0 + 6.0
+        );
+        // An open queue with no rows draws no list.
+        assert_eq!(
+            NowPlaying::card_height(0, true),
+            NowPlaying::card_height(0, false)
+        );
     }
 
     #[test]

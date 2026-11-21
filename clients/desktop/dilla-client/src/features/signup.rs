@@ -1093,7 +1093,11 @@ impl Onboarding {
                 .map_err(|()| FlowError::local("E_DECODE"))?
                 .ok_or_else(|| FlowError::local("E_INVITE_NOT_COMMUNITY"))?;
             join_path(&api, community, &code).await?;
-            Ok(CommunityId(community))
+            // controller.ts 3155-3165: a server joined is no longer self-removed, and its notice goes.
+            let joined = CommunityId(community);
+            inner.self_removed().joined(joined);
+            inner.publish(move |s| s.removal_notices.retain(|n| n.community != joined));
+            Ok(joined)
         });
         flatten(rx.await)
     }
@@ -1277,8 +1281,10 @@ impl Onboarding {
                     false,
                 )
                 .await?;
-            let id = first_id(&answer.body).ok_or_else(|| FlowError::local("E_DECODE"))?;
-            Ok(ChannelId(id))
+            let id = ChannelId(first_id(&answer.body).ok_or_else(|| FlowError::local("E_DECODE"))?);
+            // A new server's starter channels come through here as well (Create.tsx:160 and :368).
+            inner.publish(move |s| remember_made(s, id));
+            Ok(id)
         });
         flatten(rx.await)
     }
@@ -1513,10 +1519,23 @@ fn decode_invite(raw: &[u8]) -> Option<MadeInvite> {
     })
 }
 
-/// [`AreaFrames`](crate::sync::route::AreaFrames)-free: the onboarding area handles no gateway op.
+/// Create.tsx `rememberMade`: this session made `channel`.
+fn remember_made(state: &mut crate::state::AppState, channel: ChannelId) {
+    state.made_channels.insert(channel);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A channel this client made is remembered (Create.tsx `madeHere`), and only that one.
+    #[test]
+    fn a_made_channel_is_remembered() {
+        let mut s = crate::state::AppState::default();
+        remember_made(&mut s, ChannelId([1; 16]));
+        assert!(s.made_channels.contains(&ChannelId([1; 16])));
+        assert!(!s.made_channels.contains(&ChannelId([2; 16])));
+    }
 
     /// Integration 3, step 0 item 4: an instance served under a base path mints `<base URL>/i/<code>` (dillad
     /// invites.go `NewInvites`): the link names that instance, base path included, when the base is the instance's own

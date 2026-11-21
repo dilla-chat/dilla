@@ -77,8 +77,9 @@ fn tombstoned(s: &AppState, channel: ChannelId, seq: u64) -> bool {
 }
 
 fn body_nowhere(s: &AppState) {
+    // R21 keeps decrypted texts out of the state's Debug output: they are read directly.
     assert!(
-        !format!("{s:?}").contains(BODY),
+        !dilla_client::testing::holds_text(s, BODY),
         "the removed body is still in the state"
     );
 }

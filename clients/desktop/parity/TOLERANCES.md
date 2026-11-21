@@ -79,6 +79,44 @@ and the drag strip intersect `dilla_desktop::MAC_TRAFFIC_LIGHTS` (12, 16, 54 x 1
 All four values are exact placeholders (0 / 0.0): PENDING-CI. GPUI's headless mode has no renderer on Windows, so
 Windows parity is measured with a real window later.
 
+## Linux per-screen
+
+Six screens carry their own Linux limits in `[linux_screens."<fixture>"]` (Jonas 2026-11-19: "fix crop, tolerate emoji"; for
+`user-settings/appearance-compact` Jonas 2026-11-20: "design, not pixels", a limit just over its score),
+each 2x its honest score, the way the macOS ones are. Scores are the `DILLA_PARITY_MEASURE` lines of the Linux run.
+
+| screen | gate | before the crop fix | after | limit | reason |
+|---|---|---|---|---|---|
+| `attachments/cards` | chrome (shared 0.2) | 0.7293 | 0.0903 | shared | GPUI cropped the cover image in whole texels (`Window::paint_image`'s sub-tile rounds its offset and size); the tile now draws the whole picture into a clipped box offset by the cover offset (`card::cover_box`) |
+| `attachments/cards` | colour (shared 0.3) | 0.6533 | 0.3988 | 0.8 | raster resampling: GPUI scales the thumbnail bilinearly, Skia bicubically; the remaining row is the picture's blended top and bottom edge row (sub-pixel start) |
+| `attachments/cards-b` | chrome | 1.4499 | 0.4162 | 0.84 | as cards, over nine tiles |
+| `attachments/cards-b` | colour | 2.6966 | 1.0786 | 2.16 | as cards, over nine tiles |
+| `reactions/many-wrapping` | chrome / colour | 0.2392 / 0.2719 | unchanged | 0.48 / 0.54 | colour emoji bitmap scaled to 15 px otherwise than Skia's (raster) |
+| `reactions/many-wrapping-b` | chrome / colour | 0.2331 / 0.2545 | unchanged | 0.47 / 0.51 | as many-wrapping |
+| `reactions/emoji-grid` | chrome / colour | 0.2812 / 0.4397 | unchanged | 0.57 / 0.88 | the picker grid's colour emoji, as many-wrapping |
+| `user-settings/appearance-compact` | chrome (shared 0.2) | — | 0.2562 | 0.26 | Jonas 2026-11-20, "design, not pixels" (Task 19b): a browser-rendering artefact, accepted. Chromium places `.d-segmented`'s inline-flex group from its line's rounded baseline: laid out at y 213.5, the group's baseline is 213.5 + 19.95 = 233.45 at compact, rounded to 233, so the group paints at 213 (at regular 233.875 rounds to 234 and it paints at 214). GPUI's layout rounds the row's 1.5 px centring to whole px first (214 at both densities), so the three Segmented groups sit 1 px low at compact only. The label takes the root line height as the web's does |
+| `polls/card` | chrome (shared 0.2) | 0.5945 | unchanged | 1.19 | Jonas 2026-11-20, "design, not pixels" (Task 40): a browser-rendering artefact, accepted. Chromium lays the rows of the log at the fractions of its 20.14 px body lines (the third row starts at 475.61, its card at 535.5), where GPUI's log keeps whole-pixel row tops (476, card 536), so the card and everything in it sits half a pixel low and its borders, answer rows and the Close poll button snap one device pixel apart. Every difference is that offset: the card's height, its 6 + 6 px margins, the answers and the meta line were measured against the web's layout (`shoot.mjs --out`) and agree. `polls/card-b` (0.1789) and `polls/dialog` (0.1146) pass the shared limit |
+
+All of it is raster resampling, invisible to the eye at the screen's size: the trip crops (reference, GPUI, difference > 24)
+show the same pictures, the same rounded 8 px corners and the same chip and cell positions.
+
+**The emoji advance is the web's.** Chromium's `layout.json` (shot with `shoot.mjs --out`) gives every reaction chip a width of
+42.67 px (a pitch of 46.67 with the 4 px gap) and its count at x 422.36, 469.03, 515.70, 562.38, ...; GPUI's `text-bounds` put
+the same counts at x 422, 469, 516, 562, 609, 655, 702, 749, 795, 842, 889, 935 (whole pixels), the same pitch to rounding.
+The 12 picker emoji sit in fixed 38.5 px cells (the web's emoji span is 23.72 px wide at 19 px, every one alike), and both
+frames put every glyph in the same cell. So the advances match and the residue is the bitmap face's raster alone.
+
+macOS does not use these entries; the five tests stay `#[ignore]`d there until its own limits are measured.
+
+**`voice-settings/mic-test-running{,-b}`: the automatic threshold (Task 33, no limit raised).** The web's frame shows the line at
+-70 dB and "threshold -70 dB", GPUI's at -48 dB. The rule is the same on both sides (`packages/media/src/audio/sensitivity.ts`:
+start at -48 dB, then the room's noise floor plus 15 dB, held between -70 and -30 dB; the native gate's test is
+`automatic_starts_at_minus_48_then_follows_the_floor_plus_15`). The web fixture's microphone is silence (`silence.wav`), so by the
+shot its floor has fallen to the dead-silent end and the line sits on the -70 clamp; GPUI's headless test has measured no frame yet
+when it captures and shows the resting -48. It is the fixture's noise floor at capture time, not a drawing difference: the line is
+`left: ${threshold - MIN}%` of the meter's width on both sides (`SensitivityMeter::line_fraction`, `threshold_x_is_proportional`).
+The screens pass the shared gate (chrome 0.1638 / 0.0877).
+
 ## How screens supply the mask
 
 The automation interface reports text element bounds (`ElementInfo`); a screen test converts them to device pixels (logical x scale) and builds `TextMask::from_rects`. `TextMask::from_bright_pixels_fixture_only` must not be used by screen tests.
@@ -107,3 +145,16 @@ divider. macOS: see "macOS" above; Windows is a placeholder (PENDING-CI).
 
 The Task 3 evidence images in `tests/fixtures/` are cropped to the bottom 1000 rows (y 600..1600) of the 2560x1600 renders:
 the margins above were measured on the full frames, and the tests still hold on the crop.
+
+## Motion (Task 36b)
+
+The references are shot with reduced motion, so the parity fixtures run the app with GPUI's `reduce_motion` set: no entrance
+(`d-up`) and the equaliser bars at full height, as the web's zeroed `--duration-*` tokens leave them. Accepted differences
+from the web's animation, none visible in a reference:
+
+- `d-bar`'s first beat: CSS keeps the second and third bar at rest height until their delay (beat/4, beat/2) has passed;
+  the desktop draws them at the phase they would have, once, at the start.
+- "Reduced motion: Use system setting" follows the OS (Windows animation setting, macOS Reduce motion, GNOME `enable-animations`
+  through the portal on Linux; other Linux desktops animate), read again at most every 10 s on a state change, not on the
+  OS's own notification.
+- The dock's compact row draws no equaliser, as the web's does not (the task brief named it by mistake).

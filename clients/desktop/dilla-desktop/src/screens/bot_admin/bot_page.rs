@@ -800,10 +800,12 @@ impl Render for BotPage {
 
         if dirty {
             let (save, cancel) = (cx.entity(), cx.entity());
+            // `.dw-settings-actions`: the buttons `--group-gap` apart, the window's density.
+            let actions_gap = dilla_desktop_ui::metrics::Density::of(window, cx).group_gap();
             page = page.child(
                 div()
                     .flex()
-                    .gap_2()
+                    .gap(actions_gap)
                     .pt_3()
                     .child(
                         Button::new("bot-capabilities-save", t("admin.bot.capabilities.save"))

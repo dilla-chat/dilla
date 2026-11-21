@@ -115,6 +115,11 @@ pub fn replay(driver: &mut Driver, step: &Step) {
         Step::Settle => {
             driver.wait_idle();
         }
+        // The web shooter takes the browser offline; the link banner then says the connection is being re-established.
+        Step::Offline => {
+            let reply = driver.request("connection reconnecting");
+            assert_eq!(reply, "ok", "connection reconnecting: {reply}");
+        }
     }
 }
 
@@ -195,6 +200,85 @@ pub fn assert_screen_with(
         chrome_pct,
         shot: shot_path,
     })
+}
+
+/// Set, [`assert_native_screen`] reads and blesses its goldens under this directory instead of
+/// `references/linux/native/`. Test support only.
+pub const NATIVE_ROOT_VAR: &str = "DILLA_PARITY_NATIVE_ROOT";
+
+/// Compares the screen of a GPUI-only `fixture` with `references/linux/native/<golden>-2x.png`, the reference of a
+/// surface the web client never had (macOS compares with the same Linux frames under its own tolerance, decision D-A).
+/// The app launches with no sidecar, since there is no web shot to tie the fixture to. The fixture's own steps are not
+/// replayed: `prepare` does what the screen needs, the steps with no web counterpart (`quit-dialog <state>`).
+/// `DILLA_PARITY_BLESS` writes the golden from this frame and passes: look at it before committing it.
+/// [`MEASURE_VAR`] prints the frame's [`measure_line`] and skips the comparison.
+pub fn assert_native_screen(
+    fixture: &Path,
+    golden: &str,
+    prepare: impl FnOnce(&mut Driver),
+) -> Result<ScreenReport, ParityFailure> {
+    let root = std::env::var_os(NATIVE_ROOT_VAR)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("references/linux/native"));
+    let bless = std::env::var_os("DILLA_PARITY_BLESS").is_some();
+    assert_native_screen_at(&root, bless, fixture, golden, prepare)
+}
+
+/// [`assert_native_screen`] with its references `root` and `bless` given, not read from the environment: the harness
+/// test's entry, which cannot set variables (the workspace forbids `unsafe`).
+pub fn assert_native_screen_at(
+    root: &Path,
+    bless: bool,
+    fixture: &Path,
+    golden: &str,
+    prepare: impl FnOnce(&mut Driver),
+) -> Result<ScreenReport, ParityFailure> {
+    let os = Os::current();
+    let loaded = fixture::load(fixture, os).map_err(|e| fixture_failure(e.to_string(), fixture))?;
+    let tolerance = tolerance_for(os)?;
+    let mut driver = Driver::launch_fixture(fixture, None, &[]);
+    let fixture_line = driver
+        .fixture_line()
+        .expect("a fixture launch answers `fixture`");
+    driver.wait_idle();
+    prepare(&mut driver);
+    driver.rest();
+    driver.wait_idle();
+    let shot = driver.screenshot();
+    let text_lines = driver.text_bounds().len();
+    let mask = text_mask(&mut driver, TEXT_FRINGE_PX);
+    let out = crate::target_dir().join("screen-parity");
+    let shot_path = out.join(format!("native-{}-gpui-2x.png", golden.replace('/', "-")));
+    std::fs::create_dir_all(&out).expect("the screen-parity directory");
+    shot.save(&shot_path).expect("the shot is saved");
+    let path = root.join(format!("{golden}-2x.png"));
+    let report = |chrome_pct| ScreenReport {
+        name: format!("native/{golden}"),
+        digest: loaded.digest.clone(),
+        fixture_line: fixture_line.clone(),
+        text_lines,
+        chrome_pct,
+        shot: shot_path.clone(),
+    };
+    if bless {
+        std::fs::create_dir_all(root).map_err(|e| fixture_failure(e.to_string(), root))?;
+        shot.save(&path)
+            .map_err(|e| fixture_failure(e.to_string(), &path))?;
+        return Ok(report(0.0));
+    }
+    let reference = image::open(&path)
+        .map_err(|e| fixture_failure(e.to_string(), &path))?
+        .to_rgba8();
+    let chrome_pct = chrome_difference_pct(&shot, &reference, tolerance.chrome_max_delta, &mask)?;
+    if std::env::var_os(MEASURE_VAR).is_some() {
+        println!(
+            "{}",
+            measure_line(&format!("native/{golden}"), &shot, &reference, &mask)?
+        );
+        return Ok(report(chrome_pct));
+    }
+    assert_parity_masked_with(&shot, &path, tolerance, &mask)?;
+    Ok(report(chrome_pct))
 }
 
 /// What the web shooter does before its frame: with no hover step the pointer goes off the content and the focus is

@@ -13,7 +13,7 @@ use gpui::{
 use crate::a11y::{Accessible, Role};
 use crate::metrics::{OPACITY_MUTED, focus_ring};
 use crate::roving::Roving;
-use crate::text::{line, line_height};
+use crate::text::{line, root_line_height};
 use crate::tokens::{color, radius, text};
 
 type PickHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
@@ -163,7 +163,11 @@ impl RenderOnce for Segmented {
                 .min_w(px(24.0))
                 .min_h(px(if self.tall { 28.0 } else { 26.0 }))
                 .px(px(if self.tall { 12.0 } else { 10.0 }))
-                .py(px(if self.tall { 0.0 } else { 4.0 }))
+                // The web's label sits one pixel above the box's middle (the font's ascent rounds up in the browser, the
+                // frame in `parity/references/linux/user-settings/appearance-b-2x.png`): 3px above and 5px below keeps the
+                // 26px box and lifts the label.
+                .pt(px(if self.tall { 0.0 } else { 3.0 }))
+                .pb(px(if self.tall { 0.0 } else { 5.0 }))
                 .rounded(radius::SEG - px(2.0))
                 .when(checked, |o| o.bg(color::ACCENT))
                 .focus_visible(|s| s.shadow(focus_ring()))
@@ -171,7 +175,7 @@ impl RenderOnce for Segmented {
                 .child(line(
                     label.clone(),
                     text::BTN,
-                    line_height(text::BTN, 1.5),
+                    root_line_height(text::BTN),
                     fg,
                 ))
                 .children(self.option_child.as_ref().and_then(|f| f(value)))

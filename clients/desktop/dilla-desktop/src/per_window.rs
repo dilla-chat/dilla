@@ -113,6 +113,8 @@ pub fn window_closed(window: WindowId, cx: &mut App) {
     for f in pruners {
         f(window, cx);
     }
+    // The density lives beside the components that read it (dilla-desktop-ui `Density::of`), so it is pruned here.
+    dilla_desktop_ui::metrics::Density::forget(window, cx);
 }
 
 #[cfg(test)]

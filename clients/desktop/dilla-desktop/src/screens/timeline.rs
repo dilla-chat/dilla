@@ -7,13 +7,20 @@
 //!
 //! Every height is the web CSS's (MessageLog.css, MessageRow.css) in Chromium's layout units, so the log's content has
 //! the web's height and, at its end, the web's (whole-pixel) scroll offset. The log is not virtualised: every row of the
-//! open timeline (at most the client's 100-row page) is laid out.
+//! open timeline (the client's page: 100 rows, and 100 more for each "load earlier") is laid out.
+//!
+//! While the history has more, a ghost "load earlier" button sits centred above the first row in the welcome's place; the
+//! welcome shows only at the history's true start. Rows put in front keep the reader's place (MessageLog.tsx:103-114).
 //!
 //! Each row is a box of its own at its CSS position: it takes the hover fill and bar (`--bg-3`, 2px `--accent`), the
 //! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
+use dilla_client::features::utilities::polls;
+use dilla_client::state::bot::PollCheck;
+use dilla_client::state::bot_admin::{MusicMarker, music_marker};
 use dilla_client::state::{
-    AppState, Channel, ChannelId, CommunityId, Member, TimelineItem, TimelineItemState,
+    AppState, Channel, ChannelId, CommunityId, Member, Timeline, TimelineItem, TimelineItemState,
+    UserId,
 };
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
@@ -21,8 +28,10 @@ use gpui::{
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
+use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
-use dilla_desktop_ui::components::{Avatar, AvatarSize};
+use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
+use dilla_desktop_ui::metrics::Density;
 use dilla_desktop_ui::text::{
     Face, Line, MONO_ADVANCE, chromium_baseline, line, line_height, paragraph,
 };
@@ -76,22 +85,86 @@ const WELCOME_TILE: f32 = 42.0;
 const WELCOME_TITLE_GAP: f32 = 10.0;
 const DIVIDER_PAD: f32 = 4.0;
 const DIVIDER_GAP: f32 = 10.0;
+/// MessageLog.css `.d-message-log__earlier`: the 32px button (Button.css `.d-btn`); its `margin-bottom:
+/// var(--group-gap)` steps with the density ([`Density::group_gap`]).
+const EARLIER_HEIGHT: f32 = 32.0;
 
 fn body_line() -> f32 {
     body::body_line()
 }
-fn head_line() -> f32 {
-    line_height(text::SM, 1.5)
+
+// The head, its marks, the day divider and the welcome set no line height of their own (MessageRow.css, MessageLog.css):
+// they take the root's `--line-height`, which steps with the density (Task 19b). The gutter's time keeps its own 1.5 and
+// the body its 1.55, at every density.
+
+fn head_line(d: Density) -> f32 {
+    line_height(text::SM, d.line_height())
 }
-fn meta_line() -> f32 {
+fn meta_line(d: Density) -> f32 {
+    line_height(text::META, d.line_height())
+}
+/// `.d-message-row__gutter { line-height: 1.5 }`.
+fn gutter_line() -> f32 {
     line_height(text::META, 1.5)
 }
-fn divider_height() -> f32 {
-    2.0 * DIVIDER_PAD + line_height(text::MICRO, 1.5)
+fn divider_height(d: Density) -> f32 {
+    2.0 * DIVIDER_PAD + line_height(text::MICRO, d.line_height())
+}
+fn welcome_title_line(d: Density) -> f32 {
+    line_height(text::WELCOME, d.line_height())
+}
+fn welcome_body_line(d: Density) -> f32 {
+    line_height(text::UI, d.line_height())
 }
 
 /// The scroll handler of the log: whether the wheel moved up.
 pub type OnWheel = std::rc::Rc<dyn Fn(bool, &mut gpui::App)>;
+
+/// The "load earlier" button's press (Shell.tsx `loadEarlier`).
+pub type OnEarlier = std::rc::Rc<dyn Fn(&mut gpui::App)>;
+
+/// What the log shows above its first row (Conversation.tsx:394-399).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogHead {
+    /// The timeline is not read yet.
+    Loading,
+    /// The history has more: the "load earlier" button.
+    Earlier,
+    /// The history's true start: the welcome.
+    Welcome,
+}
+
+/// Conversation.tsx:396-399: the button while `hasEarlier`, the welcome only once the history is complete.
+pub fn log_head(t: Option<&Timeline>) -> LogHead {
+    match t {
+        None => LogHead::Loading,
+        Some(t) if t.has_earlier => LogHead::Earlier,
+        Some(_) => LogHead::Welcome,
+    }
+}
+
+/// MessageLog.tsx:103-114: the scroll offset that keeps the reader's place. A log that is not pinned and whose first row
+/// changed had rows put in front, and moves by the whole growth of its height (a row arriving at the bottom in the same
+/// frame included, as the web's does); a pinned log is set by the pin, and a first draw has nothing to keep.
+pub fn anchored_offset(
+    prev_first: Option<&str>,
+    first: Option<&str>,
+    prev_height: f32,
+    height: f32,
+    offset: f32,
+    pinned: bool,
+) -> f32 {
+    if pinned || prev_first.is_none() || prev_first == first {
+        return offset;
+    }
+    (offset + height - prev_height).max(0.0)
+}
+
+/// Shell.tsx:1788-1793 `scrollIntoView({ block: 'center' })`: the scroll offset that puts a row of `height` at `top` in the
+/// middle of a viewport of `viewport` over content of `inner`, kept within the log.
+pub fn centred_offset(top: f32, height: f32, viewport: f32, inner: f32) -> f32 {
+    (top + height / 2.0 - viewport / 2.0).clamp(0.0, (inner - viewport).max(0.0))
+}
 
 /// What the log draws for one item.
 struct Shown<'a> {
@@ -182,17 +255,32 @@ struct RowShape {
 }
 
 /// Each row's top, from `start`, and the end of the last row: a divider, then the row, one after another.
-fn row_tops(start: f32, rows: &[RowShape]) -> (Vec<f32>, f32) {
+fn row_tops(start: f32, rows: &[RowShape], d: Density) -> (Vec<f32>, f32) {
     let mut y = start;
     let mut tops = Vec::with_capacity(rows.len());
     for r in rows {
         if r.divider {
-            y += divider_height();
+            y += divider_height(d);
         }
         tops.push(y);
-        y += row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras);
+        y += r.height(d);
     }
     (tops, y)
+}
+
+impl RowShape {
+    /// The row's height at the density `d` ([`row_height`]).
+    fn height(&self, d: Density) -> f32 {
+        row_height(
+            self.grouped,
+            self.marks,
+            self.last,
+            self.before,
+            self.body,
+            self.extras,
+            d,
+        )
+    }
 }
 
 fn readable(i: &TimelineItem) -> bool {
@@ -233,6 +321,29 @@ pub fn day_label(ts: u64, clock: Clock) -> String {
     format::day_divider_in(ts, clock.now(), &zone, &format::date_locale())
 }
 
+/// The people a conversation names its authors from: a channel's server members; a DM's (a channel of no server) every
+/// server's members, a person's first row kept (Shell.tsx `allMembers`, which `nameBook` reads for a DM).
+fn log_members<'a>(state: &'a AppState, channel: &Channel) -> std::borrow::Cow<'a, [Member]> {
+    use std::borrow::Cow;
+    if state.dms.get(channel.id).is_none() {
+        return Cow::Borrowed(
+            state
+                .members
+                .get(&channel.community_id)
+                .map_or(&[][..], Vec::as_slice),
+        );
+    }
+    let mut all: Vec<Member> = Vec::new();
+    for community in &state.communities {
+        for m in state.members.get(&community.id).into_iter().flatten() {
+            if !all.iter().any(|a| a.user_id == m.user_id) {
+                all.push(m.clone());
+            }
+        }
+    }
+    Cow::Owned(all)
+}
+
 /// webhook.ts and shell-model.ts `authorName`: the member's display name, else the username, else the viewer's own,
 /// else the first eight digits of the id.
 fn author(state: &AppState, members: &[Member], item: &TimelineItem) -> String {
@@ -243,6 +354,12 @@ fn author(state: &AppState, members: &[Member], item: &TimelineItem) -> String {
             &[("id", &device[..device.len().min(8)])],
         );
     };
+    user_name(state, members, user)
+}
+
+/// [`author`] of a user with no message of their own to name: the requester a "started music" line names (the web's
+/// `authorName` with `senderDevice: null`).
+pub fn user_name(state: &AppState, members: &[Member], user: UserId) -> String {
     if let Some(m) = members.iter().find(|m| m.user_id == user) {
         if !m.display.is_empty() {
             return m.display.clone();
@@ -323,7 +440,160 @@ fn webhook_of(
     if !item.bot || item.edited || item.sender_user != Some(pinned) {
         return None;
     }
+    // MessageItem.tsx: a poll post or a music announcement is read as that, never as a webhook (`marker === null && music
+    // === null`).
+    if polls::final_poll_marker(&item.body).is_some() || music_marker(&item.body).is_some() {
+        return None;
+    }
     dilla_client::state::bot_admin::decode_webhook_label(&item.body)
+}
+
+/// A Bot's "started music" message (MessageItem.tsx:114-120): the unedited, non-poll message of a sender whose member row
+/// is of account kind 1 (`sender_kind`; `None` when they are no member) and whose credential claims a Bot, ending in the
+/// player marker. The credential alone is a claim any modified client can make, so a forged marker stays text. The row's
+/// text ([`body_parts`]) and its card ([`crate::screens::bot_admin::player::music_card`]) both read this gate, so they
+/// can never disagree.
+pub fn announcement_marker(item: &TimelineItem, sender_kind: Option<u8>) -> Option<MusicMarker> {
+    if !item.bot
+        || sender_kind != Some(1)
+        || item.edited
+        || polls::final_poll_marker(&item.body).is_some()
+    {
+        return None;
+    }
+    music_marker(&item.body)
+}
+
+/// [`announcement_marker`] of `item` in `community`, its sender's kind read from the community's member rows.
+pub fn announcement_in(
+    state: &AppState,
+    community: CommunityId,
+    item: &TimelineItem,
+) -> Option<MusicMarker> {
+    let members = state.members.get(&community).map_or(&[][..], Vec::as_slice);
+    announcement_marker(item, sender_kind(members, item))
+}
+
+/// What a poll post's body is (MessageItem.tsx `displayBody`): a Bot's post ending in the poll marker never reads as plain
+/// markdown until it is known whether its card verifies.
+#[derive(Clone, PartialEq, Eq)]
+pub enum PollBody {
+    /// Not a poll post: the body as it is.
+    NoMarker,
+    /// A verified poll: `poll.asked` naming the poll's creator (not the Bot).
+    Asked(String),
+    /// A post whose card is being verified: no text, the card's loading line stands for it.
+    Pending,
+    /// The post's own text with the marker line gone and its `<t:…>` tags as local times, before markdown.
+    Fallback(String),
+}
+
+/// The variant and the lengths only: `Asked` and `Fallback` hold decrypted text, which never goes in Debug.
+impl std::fmt::Debug for PollBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoMarker => f.write_str("NoMarker"),
+            Self::Asked(n) => write!(f, "Asked(<{} bytes>)", n.len()),
+            Self::Pending => f.write_str("Pending"),
+            Self::Fallback(t) => write!(f, "Fallback(<{} bytes>)", t.len()),
+        }
+    }
+}
+
+/// [`PollBody`] of `item`. `live` is whether a client is running (the web's `p.client !== undefined`): only then can a
+/// card verify, so a fixture or a closed session shows the text at once. The sender must be a kind-1 member (a credential
+/// alone is a claim any client can make), as [`announcement_marker`] gates the music line.
+pub fn poll_body(
+    item: &TimelineItem,
+    state: &AppState,
+    community: Option<CommunityId>,
+    live: bool,
+    zone: &jiff::tz::TimeZone,
+) -> PollBody {
+    let members = community
+        .and_then(|c| state.members.get(&c))
+        .map_or(&[][..], Vec::as_slice);
+    if !item.bot
+        || sender_kind(members, item) != Some(1)
+        || polls::final_poll_marker(&item.body).is_none()
+    {
+        return PollBody::NoMarker;
+    }
+    let readable = !item.edited && item.state == TimelineItemState::Ok;
+    if readable && let Some(poll) = item.msg_id.and_then(|m| state.bot.polls.get(&m)) {
+        return PollBody::Asked(user_name(state, members, poll.creator));
+    }
+    // `Retry` is a given-up post being read again: it still shows as given up until the read succeeds.
+    let gave_up = item
+        .msg_id
+        .and_then(|m| state.bot.poll_checks.get(&m))
+        .is_some_and(|c| matches!(c, PollCheck::GaveUp(_) | PollCheck::Retry(_)));
+    if readable
+        && live
+        && community.is_some()
+        && state.account.user_id.is_some()
+        && item.sender_user.is_some()
+        && !gave_up
+    {
+        return PollBody::Pending;
+    }
+    PollBody::Fallback(poll_fallback(&item.body, zone))
+}
+
+/// MessageItem.tsx `fallback` of a poll post: the final marker line removed (with the newline before it), each
+/// `<t:seconds:style>` tag as the local time, or left as it is when that gives none.
+fn poll_fallback(body: &str, zone: &jiff::tz::TimeZone) -> String {
+    const MARKER: usize = "[dilla-poll:v1:".len() + 32 + 1;
+    let mut text = body;
+    if let Some(at) = text.len().checked_sub(MARKER)
+        && text.is_char_boundary(at)
+        && polls::final_poll_marker(&text[at..]).is_some()
+        && text[at..].starts_with('[')
+    {
+        text = text[..at].strip_suffix('\n').unwrap_or(&text[..at]);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("<t:") {
+        out.push_str(&rest[..open]);
+        let tag = &rest[open..];
+        let digits = tag[3..].bytes().take_while(u8::is_ascii_digit).count();
+        let close = 3 + digits;
+        let style = tag.as_bytes().get(close + 1);
+        let shaped = digits > 0
+            && tag.as_bytes().get(close) == Some(&b':')
+            && style.is_some_and(|s| b"tTdDfFR".contains(s))
+            && tag.as_bytes().get(close + 2) == Some(&b'>');
+        if !shaped {
+            out.push_str("<t:");
+            rest = &tag[3..];
+            continue;
+        }
+        let raw = &tag[..close + 3];
+        let when = tag[3..close]
+            .parse::<i64>()
+            .ok()
+            .and_then(|s| format::local_utility_time(s, zone));
+        out.push_str(when.as_deref().unwrap_or(raw));
+        rest = &tag[close + 3..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The zone times in the log are drawn in: UTC under a fixture's frozen clock, else the system's.
+fn zone_for(clock: Clock) -> jiff::tz::TimeZone {
+    match clock {
+        Clock::Fixed { utc: true, .. } => jiff::tz::TimeZone::UTC,
+        _ => jiff::tz::TimeZone::system(),
+    }
+}
+
+fn sender_kind(members: &[Member], item: &TimelineItem) -> Option<u8> {
+    members
+        .iter()
+        .find(|m| Some(m.user_id) == item.sender_user)
+        .map(|m| m.kind)
 }
 
 /// The head's "via webhook <name>" after the tag, for a webhook post ([`webhook_of`]).
@@ -339,11 +609,40 @@ fn body_parts(
     members: &[Member],
     community: CommunityId,
     item: &TimelineItem,
+    live: bool,
+    zone: &jiff::tz::TimeZone,
 ) -> Vec<Body> {
     match item.state {
         TimelineItemState::CannotRead => vec![Body::Text(t("shell.message.cannotRead").to_owned())],
         TimelineItemState::Deleted => vec![Body::Text(t("shell.message.deleted").to_owned())],
         _ => {
+            // A poll post is read before anything else: its marker excludes a music announcement and a webhook.
+            let poll = poll_body(item, state, Some(community), live, zone);
+            match &poll {
+                PollBody::NoMarker => {}
+                PollBody::Asked(name) => {
+                    return vec![Body::Text(tf("poll.asked", &[("name", name.as_str())]))];
+                }
+                PollBody::Pending => return Vec::new(),
+                PollBody::Fallback(text) => {
+                    return markdown::parse_markdown(text, &|target| {
+                        mention_pill(state, members, target, item.mention)
+                    });
+                }
+            }
+            // The announcement's text is the Bot's line, whoever the marker names (MessageItem.tsx `displayBody`).
+            if let Some(marker) = announcement_marker(item, sender_kind(members, item)) {
+                let room = state
+                    .channels
+                    .iter()
+                    .find(|c| c.id == marker.voice_channel && c.community_id == community)
+                    .map_or_else(|| t("music.someRoom").to_owned(), |c| c.name.clone());
+                let name = user_name(state, members, marker.requester);
+                return vec![Body::Text(tf(
+                    "music.started",
+                    &[("name", name.as_str()), ("room", room.as_str())],
+                ))];
+            }
             let webhook = webhook_of(state, community, item);
             let text = webhook
                 .as_ref()
@@ -385,11 +684,18 @@ pub fn spoken_item(
     community: CommunityId,
     item: &TimelineItem,
     clock: Clock,
+    live: bool,
 ) -> String {
     let name = author(state, members, item);
     let zone = |secs: i64| zone_of(clock, secs);
     let time = format::time_in(item.ts, &zone);
-    let parts = body_parts(state, members, community, item);
+    let zone = zone_for(clock);
+    // A post whose card is being verified has no text; the card's `poll.loading` status is what the web's log announces
+    // with it (PollCard.tsx), so that is its body here.
+    if poll_body(item, state, Some(community), live, &zone) == PollBody::Pending {
+        return spoken_row(&name, &time, t("poll.loading"));
+    }
+    let parts = body_parts(state, members, community, item, live, &zone);
     spoken_row(&name, &time, &spoken_body(&parts))
 }
 
@@ -404,7 +710,21 @@ pub fn arrival(
 ) -> Option<((ChannelId, String), Option<String>)> {
     let items = &state.timelines.get(&channel.id)?.items;
     let last = items.last()?;
-    let key = (channel.id, last.key.clone());
+    // A poll post that has resolved (verified, or given up) is a new addition to the web's polite log (its text and card
+    // appear), so it is announced again under a key of its own.
+    let zone = zone_for(clock);
+    let resolved = !matches!(
+        poll_body(last, state, Some(channel.community_id), true, &zone),
+        PollBody::NoMarker | PollBody::Pending
+    );
+    let key = (
+        channel.id,
+        if resolved {
+            format!("{}#resolved", last.key)
+        } else {
+            last.key.clone()
+        },
+    );
     match seen {
         Some(s) if *s == key => None,
         // Another log (or the first look at this one): its tail is what was already there.
@@ -412,12 +732,9 @@ pub fn arrival(
         None => Some((key, None)),
         Some(_) if last.own || !readable(last) => Some((key, None)),
         Some(_) => {
-            let members = state
-                .members
-                .get(&channel.community_id)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            let text = spoken_item(state, members, channel.community_id, last, clock);
+            let members = log_members(state, channel);
+            // Only the running shell announces arrivals, so a poll's card can verify.
+            let text = spoken_item(state, &members, channel.community_id, last, clock, true);
             Some((key, Some(text)))
         }
     }
@@ -430,19 +747,19 @@ fn marks_head(state: &AppState, community: CommunityId, item: &TimelineItem) -> 
 }
 
 /// Where a row's body starts, below the row's top: a follow-up's at its padding, under its marks' line when it keeps one.
-fn body_offset(grouped: bool, marks: bool) -> f32 {
+fn body_offset(grouped: bool, marks: bool, d: Density) -> f32 {
     match (grouped, marks) {
         (true, false) => FOLLOW_PAD,
         // The grouped head is a flex row whose only in-flow children are meta spans (the author is screen-reader only,
         // absolutely placed): a flex container has no strut, so it is one meta line high (MessageRow.css).
-        (true, true) => FOLLOW_PAD + meta_line() + MAIN_GAP,
-        (false, _) => ROW_TOP + head_line() + MAIN_GAP,
+        (true, true) => FOLLOW_PAD + meta_line(d) + MAIN_GAP,
+        (false, _) => ROW_TOP + head_line(d) + MAIN_GAP,
     }
 }
 
 /// The attachments slot's height (the grid's 1px gap and its 4px margin) between the body and the other areas' parts:
 /// none in the log's last row when it is empty (MessageLog.css `:last-child .d-message-row__attachments:empty`).
-fn attachments_slot(last: bool) -> f32 {
+pub(crate) fn attachments_slot(last: bool) -> f32 {
     if last {
         0.0
     } else {
@@ -457,16 +774,24 @@ fn before_shift(height: f32) -> f32 {
 }
 
 /// The height Chromium gives a row with a body `body` px high, `extras` px of other areas' parts under the body and
-/// `before` px (a [`before_shift`]) above its head.
-fn row_height(grouped: bool, marks: bool, last: bool, before: f32, body: f32, extras: f32) -> f32 {
+/// `before` px (a [`before_shift`]) above its head, at the density `d` (its head line's).
+fn row_height(
+    grouped: bool,
+    marks: bool,
+    last: bool,
+    before: f32,
+    body: f32,
+    extras: f32,
+    d: Density,
+) -> f32 {
     let slot = attachments_slot(last);
     let body = before + body + extras;
     if grouped && marks {
-        FOLLOW_PAD + meta_line() + MAIN_GAP + body + slot + FOLLOW_PAD
+        FOLLOW_PAD + meta_line(d) + MAIN_GAP + body + slot + FOLLOW_PAD
     } else if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
     } else {
-        ROW_TOP + head_line() + MAIN_GAP + body + slot + ROW_BOTTOM
+        ROW_TOP + head_line(d) + MAIN_GAP + body + slot + ROW_BOTTOM
     }
 }
 
@@ -484,7 +809,7 @@ fn welcome_text(channel: &str, dm: bool) -> (String, String) {
     }
 }
 
-fn welcome_lines(channel: &str, dm: bool, width: f32) -> (Vec<Line>, Vec<Line>) {
+fn welcome_lines(channel: &str, dm: bool, width: f32, d: Density) -> (Vec<Line>, Vec<Line>) {
     let inner = width - 2.0 * WELCOME_X;
     let (title, body) = if dm {
         (channel.to_owned(), t("shell.log.welcomeDmBody").to_owned())
@@ -497,29 +822,56 @@ fn welcome_lines(channel: &str, dm: bool, width: f32) -> (Vec<Line>, Vec<Line>) 
     let title = paragraph(
         &title,
         text::WELCOME,
-        line_height(text::WELCOME, 1.5),
+        welcome_title_line(d),
         color::FG,
         inner,
     )
     .into_iter()
     .map(|l| l.weight(font::WEIGHT_DISPLAY))
     .collect();
-    let body = paragraph(
-        &body,
-        text::UI,
-        line_height(text::UI, 1.5),
-        color::FG_2,
-        inner,
-    );
+    let body = paragraph(&body, text::UI, welcome_body_line(d), color::FG_2, inner);
     (title, body)
 }
 
-fn welcome_height(title: usize, body: usize) -> f32 {
+/// Conversation.tsx:394-395: the note under the welcome of a community channel whose loaded log is empty. `shell.log.emptyMade`
+/// when this client made the channel in this session (`madeHere`), else `shell.log.empty`; a DM, a log with rows and one
+/// still loading have none.
+pub fn empty_note(
+    state: &AppState,
+    channel: ChannelId,
+    dm: bool,
+    items: usize,
+    loaded: bool,
+) -> Option<&'static str> {
+    if dm || items > 0 || !loaded {
+        return None;
+    }
+    Some(if state.made_channels.contains(&channel) {
+        "shell.log.emptyMade"
+    } else {
+        "shell.log.empty"
+    })
+}
+
+/// `.d-message-log__welcome + .d-message-log__empty { padding: 0 1.25rem 0.5rem }`: the note's bottom padding. Its sides are
+/// the welcome's ([`WELCOME_X`]).
+const EMPTY_NOTE_BOTTOM: f32 = 8.0;
+
+/// The note's lines (`font-size: var(--text-sm); color: var(--fg-3)`, no line height of its own, so the root's) and its
+/// height with the bottom padding.
+fn empty_note_lines(key: &str, width: f32) -> (Vec<Line>, f32) {
+    let lh = dilla_desktop_ui::text::root_line_height(text::SM);
+    let lines = paragraph(t(key), text::SM, lh, color::FG_3, width - 2.0 * WELCOME_X);
+    let height = lines.len() as f32 * lh + EMPTY_NOTE_BOTTOM;
+    (lines, height)
+}
+
+fn welcome_height(title: usize, body: usize, d: Density) -> f32 {
     WELCOME_TOP
         + WELCOME_TILE
         + WELCOME_TITLE_GAP
-        + title as f32 * line_height(text::WELCOME, 1.5)
-        + body as f32 * line_height(text::UI, 1.5)
+        + title as f32 * welcome_title_line(d)
+        + body as f32 * welcome_body_line(d)
         + WELCOME_BOTTOM
 }
 
@@ -527,6 +879,8 @@ fn welcome_height(title: usize, body: usize) -> f32 {
 /// ([`Line::exact`]); boxes take the whole pixel Chromium paints them on (the position rounded).
 struct Placer {
     out: Vec<AnyElement>,
+    /// The window's density: the welcome's and the divider's line heights.
+    density: Density,
 }
 
 impl Placer {
@@ -580,12 +934,13 @@ impl Placer {
                 .justify_center()
                 .child(Icon::new(glyph).size(len(20.)).color(color::ACCENT)),
         );
-        let height = welcome_height(title.len(), body.len());
+        let d = self.density;
+        let height = welcome_height(title.len(), body.len(), d);
         let mut y = top + WELCOME_TOP + WELCOME_TILE + WELCOME_TITLE_GAP;
         // The heading and the paragraph a reader finds, over the lines they are painted as.
         let (title_h, body_h) = (
-            title.len() as f32 * line_height(text::WELCOME, 1.5),
-            body.len() as f32 * line_height(text::UI, 1.5),
+            title.len() as f32 * welcome_title_line(d),
+            body.len() as f32 * welcome_body_line(d),
         );
         let inner = (width - 2.0 * WELCOME_X).max(1.0);
         self.block(
@@ -600,11 +955,11 @@ impl Placer {
         );
         for l in title {
             self.line(l, WELCOME_X, y);
-            y += line_height(text::WELCOME, 1.5);
+            y += welcome_title_line(d);
         }
         for l in body {
             self.line(l, WELCOME_X, y);
-            y += line_height(text::UI, 1.5);
+            y += welcome_body_line(d);
         }
         height
     }
@@ -615,7 +970,7 @@ impl Placer {
         let size = text::MICRO;
         let label_width =
             label.chars().count() as f32 * f32::from(size) * (MONO_ADVANCE + LABEL_TRACKING_WIDE);
-        let lh = line_height(size, 1.5);
+        let lh = line_height(size, self.density.line_height());
         self.line(
             line(label, size, lh, color::FG_3)
                 .weight(font::WEIGHT_LABEL)
@@ -626,7 +981,7 @@ impl Placer {
         let rule_x = WELCOME_X + label_width + DIVIDER_GAP;
         self.block(
             rule_x,
-            top + divider_height() / 2.0 - 0.5,
+            top + divider_height(self.density) / 2.0 - 0.5,
             div()
                 .w(px((width - WELCOME_X - rule_x).max(0.0)))
                 .h(len(1.))
@@ -659,11 +1014,15 @@ struct RowCx<'a> {
     /// The timeline's community: its pinned Bot user is the only author of a webhook post.
     community: CommunityId,
     clock: Clock,
+    /// Whether a client is running: only then can a poll's card verify (`poll_body`).
+    live: bool,
     width: f32,
     /// Every row's key in the log's order: the arrow keys step through it (Conversation.tsx `rowKey`).
     order: std::rc::Rc<Vec<String>>,
     /// The active row's key: the log's one tab stop.
     active: Option<String>,
+    /// The window's density.
+    density: Density,
 }
 
 /// The shaped width of meta text (a webhook's name is the admin's: wide glyphs and emoji are measured, not counted;
@@ -697,9 +1056,10 @@ fn draw_marks(
     meta_color: gpui::Hsla,
     window: &Window,
 ) {
+    let meta = meta_line(cx_row.density);
     if let Some(via) = via_mark(cx_row.state, cx_row.community, item) {
         let w = meta_width(window, &via);
-        placer.line(line(via, text::META, meta_line(), meta_color), x, meta_top);
+        placer.line(line(via, text::META, meta, meta_color), x, meta_top);
         x += w + HEAD_GAP;
     }
     let marks = head_marks(item);
@@ -711,7 +1071,7 @@ fn draw_marks(
         let tone = if failed { color::DANGER } else { meta_color };
         if failed {
             let em = f32::from(text::META);
-            let baseline = meta_top + chromium_baseline(Face::Mono, em, meta_line());
+            let baseline = meta_top + chromium_baseline(Face::Mono, em, meta);
             let glyph = 0.875 * em;
             placer.block_exact(
                 x,
@@ -721,7 +1081,7 @@ fn draw_marks(
             x += glyph + 0.25 * em;
         }
         let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
-        placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
+        placer.line(line(mark, text::META, meta, tone), x, meta_top);
         x += w + HEAD_GAP;
     }
 }
@@ -747,11 +1107,12 @@ fn draw_row(
     cx: &mut App,
 ) -> AnyElement {
     let item = shown.item;
+    let d = cx_row.density;
     let local = top - base;
     // The body's box sits on a whole pixel ([`snap_px`]); its lines keep the CSS position's fraction.
     let shift = before_shift(shown.before_height);
     let frac = {
-        let at = local + shift + body_offset(shown.grouped, shown.marks);
+        let at = local + shift + body_offset(shown.grouped, shown.marks, d);
         at - snap_px(at)
     };
     let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
@@ -762,8 +1123,12 @@ fn draw_row(
         shift,
         laid.height,
         shown.extras_height,
+        d,
     );
-    let mut placer = Placer { out: Vec::new() };
+    let mut placer = Placer {
+        out: Vec::new(),
+        density: d,
+    };
     // The reply line (11) sits where the head would, and the head, the avatar and the gutter move down (`data-reply`).
     let avatar_shift = if shown.before.is_some() {
         REPLY_AVATAR_SHIFT
@@ -788,12 +1153,17 @@ fn draw_row(
         // The time is right-aligned in the gutter, by its advance.
         let time_width = time.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
         placer.line(
-            line(time, text::META, meta_line(), color::FG_QUIET),
+            line(time, text::META, gutter_line(), color::FG_QUIET),
             GUTTER - time_width,
             row_top + GUTTER_TOP,
         );
         // MessageRow.tsx `avatarSrc`: a webhook post shows its avatar, read only from the instance (Task 28 item 15),
         // once it is in; the placeholder meanwhile and on a miss.
+        let bot = item.bot
+            && cx_row
+                .members
+                .iter()
+                .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1);
         let webhook_avatar = webhook_of(cx_row.state, cx_row.community, item)
             .and_then(|w| w.avatar_id)
             .zip(ctx.client.as_ref())
@@ -812,6 +1182,7 @@ fn draw_row(
                     gpui::ObjectFit::Cover,
                 ),
             ),
+            // A Bot member's avatar is the brand square (Avatar.tsx `bot`), as the members pane draws it.
             None => placer.block(
                 GUTTER + COLUMN_GAP,
                 row_top,
@@ -819,23 +1190,23 @@ fn draw_row(
                     gpui::SharedString::from(format!("avatar-{}", item.key)),
                     name.clone(),
                 )
-                .size(AvatarSize::Msg),
+                .size(AvatarSize::Msg)
+                .shape(if bot {
+                    AvatarShape::Bot
+                } else {
+                    AvatarShape::Circle
+                }),
             ),
         }
         let name_width = name.chars().count() as f32 * f32::from(text::SM) * MONO_ADVANCE;
-        let bot = item.bot
-            && cx_row
-                .members
-                .iter()
-                .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1);
         let name_color = if bot { color::ACCENT_2 } else { color::FG };
         placer.line(
-            line(name, text::SM, head_line(), name_color).weight(font::WEIGHT_DISPLAY),
+            line(name, text::SM, head_line(d), name_color).weight(font::WEIGHT_DISPLAY),
             CONTENT_X,
             head,
         );
         // The head is a baseline-aligned row of the name, the tag and the marks, 8px apart.
-        let baseline = head + chromium_baseline(Face::Mono, f32::from(text::SM), head_line());
+        let baseline = head + chromium_baseline(Face::Mono, f32::from(text::SM), head_line(d));
         let mut x = CONTENT_X + name_width + HEAD_GAP;
         if bot {
             let l = look(TagKind::Bot);
@@ -854,7 +1225,8 @@ fn draw_row(
             );
             x += tag_w + HEAD_GAP;
         }
-        let meta_top = baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line());
+        let meta_top =
+            baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line(d));
         draw_marks(&mut placer, cx_row, item, x, meta_top, meta_color, window);
     } else if shown.marks {
         // A follow-up that shows a mark keeps a head line of only its marks (the name and the tag are for a screen
@@ -871,7 +1243,7 @@ fn draw_row(
             window,
         );
     }
-    let body_top = local + shift + body_offset(shown.grouped, shown.marks);
+    let body_top = local + shift + body_offset(shown.grouped, shown.marks, d);
     let content_w = cx_row.width - CONTENT_X - ROW_RIGHT;
     let body_end = body_top + laid.height;
     placer.out.push(
@@ -900,6 +1272,7 @@ fn draw_row(
         cx_row.community,
         item,
         cx_row.clock,
+        cx_row.live,
     );
     // The keyboard (Conversation.tsx `rowKey`, MessageRow.css): the active row is the log's one tab stop; Up and Down
     // step to the row above and below, Home and End to the first and the newest, Escape goes to the composer. A row
@@ -1045,7 +1418,7 @@ fn inset_ring() -> Vec<gpui::BoxShadow> {
 }
 
 /// The log of `channel`, `width` wide, kept at its end through `scroll` while `pinned`. Each row's
-/// [`slots::message_extras`] sits under its body.
+/// [`slots::message_extras`] sits under its body. `on_earlier` is the "load earlier" button's press.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     state: &AppState,
@@ -1055,11 +1428,13 @@ pub fn render(
     scroll: &ScrollHandle,
     pinned: bool,
     on_wheel: OnWheel,
+    on_earlier: OnEarlier,
     ctx: &SlotCx,
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<> {
     let ui = ui::ui(window, cx);
+    let density = Density::of(window, cx);
     ui.update(cx, |u, _| u.ctx = Some(ctx.clone()));
     // Release lets go of this window's message state's client at once (review M5), not when the window next draws.
     if let Some(client) = &ctx.client {
@@ -1076,10 +1451,8 @@ pub fn render(
             cx,
         );
     }
-    let members: &[Member] = state
-        .members
-        .get(&channel.community_id)
-        .map_or(&[], Vec::as_slice);
+    let log_members = log_members(state, channel);
+    let members: &[Member] = &log_members;
     let items: Vec<&TimelineItem> = state
         .timelines
         .get(&channel.id)
@@ -1087,6 +1460,10 @@ pub fn render(
         .unwrap_or_default();
     let body_width = width - CONTENT_X - ROW_RIGHT;
     let editing_key = ui.read(cx).editing.as_ref().map(|e| e.key.clone());
+    // Task 20's private results: the rows only this device shows, after the conversation's last message. They are rows
+    // of the log too (MessageLog.tsx `d-message-log__rows`), so with one shown the last message is no longer the log's
+    // last child and keeps its attachments slot.
+    let privates = crate::screens::commands::private_results(ctx, width, window, cx);
     let mut shown = Vec::with_capacity(items.len());
     for (n, item) in items.iter().enumerate() {
         let prev = n.checked_sub(1).map(|p| items[p]);
@@ -1097,7 +1474,9 @@ pub fn render(
             TimelineItemState::Failed => color::FG_BODY,
             _ => color::FG_3,
         };
-        let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
+        // Only an empty attachments slot is hidden in the last row; one with cards keeps its gap and margin.
+        let last = n + 1 == items.len() && item.attachments.is_empty() && privates.is_empty();
+        let (extras, extras_height) = slots::message_extras(item, ctx, last, window, cx);
         let (before, before_height) = slots::message_before_head(item, ctx, window, cx)
             .map_or((None, 0.0), |b| (Some(b.element), b.height));
         let editing = editing_key.as_deref() == Some(item.key.as_str());
@@ -1122,7 +1501,14 @@ pub fn render(
                 }),
             }
         } else {
-            let parts = body_parts(state, members, channel.community_id, item);
+            let parts = body_parts(
+                state,
+                members,
+                channel.community_id,
+                item,
+                ctx.client.is_some(),
+                &zone_for(clock),
+            );
             // The height comes from the memo (by the parts and the width): a body is laid out once, not on every draw.
             let mut height = body::height_cached(&parts, body_width);
             // An empty body still keeps its line (the web's row holds the empty text node's line box).
@@ -1141,8 +1527,7 @@ pub fn render(
             grouped,
             marks: grouped && marks_head(state, channel.community_id, item),
             divider: starts_day(prev, item, clock).then(|| day_label(item.ts, clock)),
-            // Only an empty attachments slot is hidden in the last row; one with cards keeps its gap and margin.
-            last: n + 1 == items.len() && item.attachments.is_empty(),
+            last,
             body: laid,
             extras: Some(extras),
             extras_height,
@@ -1155,17 +1540,33 @@ pub fn render(
     }
     // A DM's log: its channel record is the DM's (Shell.tsx: the at-sign and the DM's name).
     let dm = state.dms.get(channel.id).is_some();
-    let (title, body_lines) = welcome_lines(&channel.name, dm, width);
+    let (title, body_lines) = welcome_lines(&channel.name, dm, width, density);
+    // Conversation.tsx:396-399: the "load earlier" button in the welcome's place while the history has more.
+    let head = log_head(state.timelines.get(&channel.id));
+    let head_height = match head {
+        LogHead::Earlier => EARLIER_HEIGHT + f32::from(density.group_gap()),
+        LogHead::Welcome | LogHead::Loading => {
+            welcome_height(title.len(), body_lines.len(), density)
+        }
+    };
+    // Conversation.tsx:394-395: the note under the welcome when the loaded log is empty.
+    let note = (head == LogHead::Welcome)
+        .then(|| {
+            empty_note(
+                state,
+                channel.id,
+                dm,
+                shown.len() + privates.len(),
+                state.timelines.contains_key(&channel.id),
+            )
+        })
+        .flatten()
+        .map(|key| (key, empty_note_lines(key, width)));
+    let head_height = head_height + note.as_ref().map_or(0.0, |(_, (_, h))| *h);
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
-    let (_, rows_end) = row_tops(0.0, &shapes);
-    // Task 20's private results: the rows only this device shows, after the conversation's last message.
-    let privates = crate::screens::commands::private_results(ctx, width, window, cx);
+    let (_, rows_end) = row_tops(0.0, &shapes, density);
     let privates_height: f32 = privates.iter().map(|(_, h)| *h).sum();
-    let content = LOG_TOP
-        + welcome_height(title.len(), body_lines.len())
-        + LOG_BOTTOM
-        + rows_end
-        + privates_height;
+    let content = LOG_TOP + head_height + LOG_BOTTOM + rows_end + privates_height;
     // Chromium's scroll range is whole pixels: the content's height rounds, and at the end that rounding sits below the
     // last row. A log shorter than its viewport keeps to the viewport's bottom (`margin-top: auto`).
     let viewport = f32::from(scroll.bounds().size.height);
@@ -1176,17 +1577,59 @@ pub fn render(
     // The scrolled box: the viewport exactly for a shorter log (no sub-pixel scroll range from `content`'s rounding),
     // else the rounded content (T28 parity review m1).
     let inner = if lift > 0.0 { viewport } else { height };
-    let mut placer = Placer { out: Vec::new() };
+    let mut placer = Placer {
+        out: Vec::new(),
+        density,
+    };
     let mut y = lift + LOG_TOP;
-    let glyph = if dm { IconName::AtSign } else { IconName::Hash };
-    y += placer.welcome(
-        y,
-        glyph,
-        (title, body_lines),
-        welcome_text(&channel.name, dm),
-        width,
-    );
-    let (tops, rows_bottom) = row_tops(y, &shapes);
+    if head == LogHead::Earlier {
+        // The button keeps to the log's top (`align-self: center`); the rows below it take the free room
+        // (`.d-message-log__rows { margin-top: auto }`).
+        placer.block(
+            0.0,
+            LOG_TOP,
+            div().w(px(width)).flex().justify_center().child(
+                Button::new("log-earlier", t("shell.log.earlier"))
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| on_earlier(cx)),
+            ),
+        );
+        y += head_height;
+    } else {
+        let glyph = if dm { IconName::AtSign } else { IconName::Hash };
+        y += placer.welcome(
+            y,
+            glyph,
+            (title, body_lines),
+            welcome_text(&channel.name, dm),
+            width,
+        );
+        if let Some((key, (lines, height))) = note {
+            let lh = dilla_desktop_ui::text::root_line_height(text::SM);
+            let text_height = height - EMPTY_NOTE_BOTTOM;
+            let inner_width = (width - 2.0 * WELCOME_X).max(1.0);
+            placer.block(
+                WELCOME_X,
+                y,
+                dilla_desktop_ui::a11y::paragraph(
+                    t(key).to_owned(),
+                    div().w(px(inner_width)).h(px(text_height)),
+                ),
+            );
+            for l in lines {
+                placer.line(l, WELCOME_X, y);
+                y += lh;
+            }
+            y += EMPTY_NOTE_BOTTOM;
+        }
+    }
+    let (tops, rows_bottom) = row_tops(y, &shapes, density);
+    // What the log was last drawn with, to keep the reader's place when earlier rows come in front.
+    let first_key = items.first().map(|i| i.key.clone());
+    let (prev_first, prev_height) = {
+        let u = ui.read(cx);
+        (u.prev_first.clone(), u.prev_height)
+    };
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
     // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.
     // Task 28 item 11 (Conversation.tsx): a message this log has not loaded is not jumped to; the conversation says so.
@@ -1221,10 +1664,7 @@ pub fn render(
     let revealed = reveal.as_deref().and_then(|key| {
         let i = shown.iter().position(|s| s.item.key == key)?;
         let r = &shapes[i];
-        let (top, bottom) = (
-            tops[i],
-            tops[i] + row_height(r.grouped, r.marks, r.last, r.before, r.body, r.extras),
-        );
+        let (top, bottom) = (tops[i], tops[i] + r.height(density));
         let now = -f32::from(scroll.offset().y);
         let max = (inner - viewport).max(0.0);
         let to = if top < now {
@@ -1247,9 +1687,26 @@ pub fn render(
     if revealed.is_some() {
         // The keyboard's row set the offset above; the end is not re-pinned under it.
     } else if let Some(at) = jumped {
-        let target = (tops[at] - 48.0).max(0.0);
         let max = (inner - viewport).max(0.0);
+        let r = &shapes[at];
+        let centre = ui.update(cx, |u, _| std::mem::take(&mut u.centre));
+        let target = if centre {
+            centred_offset(tops[at], r.height(density), viewport, inner)
+        } else {
+            (tops[at] - 48.0).max(0.0)
+        };
         scroll.set_offset(gpui::point(len(0.), px(-target.min(max))));
+        if centre {
+            // The search hit's row takes the focus (its handle is made here when the row has not been drawn yet).
+            let key = shown[at].item.key.clone();
+            let handle = ui.update(cx, |u, cx| {
+                u.row_focus
+                    .entry(key)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            });
+            window.focus(&handle, cx);
+        }
         // The log leaves the end. Its host (the shell) is drawing this log right now, so it hears of it once the frame is
         // done: an update of it from here would be a re-entrant update (a panic).
         let leave_end = on_wheel.clone();
@@ -1258,15 +1715,37 @@ pub fn render(
         scroll.set_offset(gpui::point(len(0.), px(-(height - viewport).max(0.0))));
     } else if pinned {
         scroll.scroll_to_bottom();
+    } else {
+        // Earlier rows put in front (MessageLog.tsx:103-114): the offset moves by the added height, so the rows in view
+        // stay put.
+        let now = -f32::from(scroll.offset().y);
+        let to = anchored_offset(
+            prev_first.as_deref(),
+            first_key.as_deref(),
+            prev_height,
+            inner,
+            now,
+            pinned,
+        );
+        if to != now {
+            let max = (inner - viewport).max(0.0);
+            scroll.set_offset(gpui::point(len(0.), px(-to.min(max))));
+        }
     }
+    ui.update(cx, |u, _| {
+        u.prev_first = first_key;
+        u.prev_height = inner;
+    });
     let row_cx = RowCx {
         state,
         members,
         community: channel.community_id,
         clock,
+        live: ctx.client.is_some(),
         width,
         order: order.clone(),
         active: active.clone(),
+        density,
     };
     // Only the rows near the viewport are drawn (a screen above and below it): the rest keep their height from the memo.
     let at = if jumped.is_some() || revealed.is_some() {
@@ -1277,29 +1756,38 @@ pub fn render(
         -f32::from(scroll.offset().y)
     };
     let (from, to) = (at - viewport, at + 2.0 * viewport);
+    // The voice channels of the "started music" cards that intersect the viewport (not the screen above and below it,
+    // which is only drawn): the player is read for these while the Bot is in the room (Decision D10).
+    let mut cards_on_screen = std::collections::BTreeSet::new();
     for (s, top) in shown.into_iter().zip(tops) {
         if let Some(label) = s.divider.clone() {
-            placer.divider(top - divider_height(), width, label);
+            placer.divider(top - divider_height(density), width, label);
         }
-        let bottom = top
-            + row_height(
-                s.grouped,
-                s.marks,
-                s.last,
-                before_shift(s.before_height),
-                s.body.height(),
-                s.extras_height,
-            );
+        let bottom = top + s.shape().height(density);
         let editing = matches!(s.body, Plan::Editor(_));
         // The active row is always drawn: it is the log's tab stop wherever the log is scrolled.
         let keyed = active.as_deref() == Some(s.item.key.as_str());
         if viewport > 0.0 && !editing && !keyed && (bottom < from || top > to) {
             continue;
         }
+        if (viewport <= 0.0 || (bottom >= at && top <= at + viewport))
+            && readable(s.item)
+            && let Some(marker) = announcement_in(state, channel.community_id, s.item)
+        {
+            cards_on_screen.insert(marker.voice_channel);
+        }
         let base = snap_px(top);
         let el = draw_row(&row_cx, s, top, base, &ui, ctx, window, cx);
         placer.out.push(el);
     }
+    crate::screens::bot_admin::player::card_on_screen(
+        window.window_handle().window_id(),
+        cards_on_screen,
+        state,
+        ctx.client.as_ref(),
+        crate::screens::bot_admin::player::clock_ms(ctx.clock),
+        cx,
+    );
     let mut private_top = rows_bottom;
     for (n, (el, h)) in privates.into_iter().enumerate() {
         let id: &'static str = PRIVATE_RESULT_IDS
@@ -1330,13 +1818,19 @@ pub fn render(
     } else {
         format!("#{}", channel.name)
     };
-    div()
-        .id("message-log")
-        .a11y(
-            Role::Log,
-            t("shell.log.label").replace("#{channel}", &target),
-        )
-        .key_context("MessageLog")
+    // Conversation.tsx:397: the log is busy while its timeline or a "load earlier" is being read.
+    let busy = head == LogHead::Loading || ui.read(cx).loading_earlier == Some(channel.id);
+    let log = div().id("message-log").a11y(
+        Role::Log,
+        t("shell.log.label").replace("#{channel}", &target),
+    );
+    let log = if busy {
+        log.node_props(|n| n.set_busy())
+    } else {
+        log
+    };
+    let to_top = (scroll.clone(), on_wheel.clone(), focus.clone(), ui.clone());
+    log.key_context("MessageLog")
         .track_focus(&focus)
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
             // A focusable control inside (a reaction chip, a button) took the focus on this press already (GPUI marks
@@ -1384,10 +1878,24 @@ pub fn render(
             let pager = scroll.clone();
             move |_: &PageDown, _, _| page(&pager, 1.0)
         })
+        // Ctrl+Home scrolls the log to its top, as the browser scrolls the web's focused log (Ruling R16), where "load
+        // earlier" sits; the log leaves the end. Only the log or a row holding the focus takes it: in a field inside the
+        // log (the inline editor) it is the field's, as a textarea keeps it on the web.
+        .on_action(move |_: &LogTop, window, cx| {
+            let (scroll, leave_end, log, ui) = &to_top;
+            let ours = log.is_focused(window)
+                || ui.read(cx).row_focus.values().any(|h| h.is_focused(window));
+            if !ours {
+                cx.propagate();
+                return;
+            }
+            scroll.set_offset(gpui::point(len(0.), len(0.)));
+            leave_end(true, cx);
+        })
         .child(div().relative().w_full().h(px(inner)).children(placer.out))
 }
 
-gpui::actions!(message_log, [PageUp, PageDown, FocusComposer]);
+gpui::actions!(message_log, [PageUp, PageDown, LogTop, FocusComposer]);
 
 /// PageUp and PageDown scroll the log by a viewport less a few lines.
 fn page(scroll: &ScrollHandle, direction: f32) {
@@ -1425,6 +1933,14 @@ mod tests {
             mention: false,
             actions: Vec::new(),
         }
+    }
+
+    /// Shell.tsx:1788-1793: a search hit's row goes to the middle of the viewport, within the log's ends.
+    #[test]
+    fn a_search_hit_is_centred() {
+        assert_eq!(centred_offset(1000.0, 40.0, 600.0, 3000.0), 720.0);
+        assert_eq!(centred_offset(100.0, 40.0, 600.0, 3000.0), 0.0);
+        assert_eq!(centred_offset(2950.0, 40.0, 600.0, 3000.0), 2400.0);
     }
 
     #[test]
@@ -1488,11 +2004,47 @@ mod tests {
     fn heights_come_from_the_css() {
         // The reference's DOM: 54.89 for a row, 49.89 for the log's last row, 75.03 for two lines; 131 for the welcome.
         let lh = body_line();
-        assert!((row_height(false, false, false, 0.0, lh, 0.0) - 54.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, true, 0.0, lh, 0.0) - 49.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, false, 0.0, 2.0 * lh, 0.0) - 75.031_25).abs() < 1e-4);
-        assert_eq!(welcome_height(1, 1), 131.0);
-        assert_eq!(divider_height(), 23.0);
+        assert!(
+            (row_height(false, false, false, 0.0, lh, 0.0, Density::Regular) - 54.890_625).abs()
+                < 1e-4
+        );
+        assert!(
+            (row_height(false, false, true, 0.0, lh, 0.0, Density::Regular) - 49.890_625).abs()
+                < 1e-4
+        );
+        assert!(
+            (row_height(false, false, false, 0.0, 2.0 * lh, 0.0, Density::Regular) - 75.031_25)
+                .abs()
+                < 1e-4
+        );
+        assert_eq!(welcome_height(1, 1, Density::Regular), 131.0);
+        assert_eq!(divider_height(Density::Regular), 23.0);
+    }
+
+    /// Task 19b: the head, the marks' line, the divider and the welcome take the density's `--line-height`; the body
+    /// keeps its 1.55 and the gutter's time its 1.5, so a row moves only by its head line.
+    #[test]
+    fn the_density_steps_the_lines_that_take_the_root_line_height() {
+        let lh = body_line();
+        let (c, r) = (Density::Compact, Density::Regular);
+        assert_eq!(head_line(c), line_height(text::SM, 1.4));
+        assert_eq!(meta_line(c), line_height(text::META, 1.4));
+        assert_eq!(gutter_line(), line_height(text::META, 1.5));
+        let compact = row_height(false, false, false, 0.0, lh, 0.0, c);
+        let regular = row_height(false, false, false, 0.0, lh, 0.0, r);
+        assert!(compact < regular);
+        assert!((regular - compact - (head_line(r) - head_line(c))).abs() < 1e-4);
+        // A plain follow-up has no head line: the same at every density.
+        assert_eq!(
+            row_height(true, false, false, 0.0, lh, 0.0, c),
+            row_height(true, false, false, 0.0, lh, 0.0, r)
+        );
+        assert_eq!(
+            divider_height(c),
+            2.0 * DIVIDER_PAD + line_height(text::MICRO, 1.4)
+        );
+        assert!(welcome_height(1, 1, c) < welcome_height(1, 1, r));
+        assert!(welcome_height(1, 1, Density::Cozy) > welcome_height(1, 1, r));
     }
 
     #[test]
@@ -1548,6 +2100,128 @@ mod tests {
         assert!(!unknown.me && unknown.user.is_none());
     }
 
+    /// A community "harbour" voice channel, the Bot "Glenn" (kind 1) and Ada (kind 0), and a Bot's announcement for a track
+    /// Ada asked for in it.
+    fn music_world() -> (AppState, CommunityId, TimelineItem) {
+        let community = CommunityId([7; 16]);
+        let mut s = AppState::default();
+        s.channels.push(Channel {
+            id: ChannelId([8; 16]),
+            community_id: community,
+            kind: 1,
+            mode: 0,
+            name: "harbour".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: Default::default(),
+        });
+        let member = |user: u8, name: &str, kind: u8| Member {
+            user_id: UserId([user; 16]),
+            username: name.to_lowercase(),
+            display: name.to_owned(),
+            kind,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        s.members
+            .insert(community, vec![member(1, "Ada", 0), member(9, "Glenn", 1)]);
+        let mut i = item(9, 5);
+        i.bot = true;
+        i.body = format!(
+            "Now playing\n[dilla-music:v1:{}:{}:{}]",
+            "08".repeat(16),
+            "01".repeat(16),
+            "0a".repeat(16)
+        );
+        (s, community, i)
+    }
+
+    /// MessageItem.tsx:180-181: the Bot's announcement reads "{name} started music in {room}", whatever text it carries; the
+    /// same body edited, or from a member of kind 0, is text.
+    #[test]
+    fn a_bot_music_announcement_reads_started_music() {
+        let (s, community, i) = music_world();
+        let members = s.members[&community].clone();
+        assert_eq!(
+            body_parts(&s, &members, community, &i, false, &UTC),
+            [Body::Text("Ada started music in harbour".into())]
+        );
+        // A room this viewer cannot see is "a voice channel".
+        let mut unseen = s.clone();
+        unseen.channels.clear();
+        assert_eq!(
+            body_parts(&unseen, &members, community, &i, false, &UTC),
+            [Body::Text("Ada started music in a voice channel".into())]
+        );
+        let verbatim = |item: &TimelineItem| {
+            body_parts(&s, &members, community, item, false, &UTC)
+                == body_parts(
+                    &s,
+                    &members,
+                    community,
+                    &item_with_body(&item.body),
+                    false,
+                    &UTC,
+                )
+        };
+        let mut edited = i.clone();
+        edited.edited = true;
+        assert!(verbatim(&edited), "an edited post stays text");
+        let mut member = i.clone();
+        member.sender_user = Some(UserId([1; 16]));
+        member.bot = false;
+        assert!(verbatim(&member), "a member's post stays text");
+    }
+
+    /// Review Focus 4: the announcement is the Bot's alone. A forged marker (a member's post, a credential that claims a Bot
+    /// with no Bot member row, an edit, a poll post) is no announcement and keeps its body, marker line included.
+    #[test]
+    fn a_forged_music_marker_stays_text() {
+        let (s, community, i) = music_world();
+        let members = s.members[&community].clone();
+        assert!(
+            announcement_marker(&i, Some(1)).is_some(),
+            "the Bot's own post"
+        );
+        let mut member_post = i.clone();
+        member_post.bot = false;
+        let mut edited = i.clone();
+        edited.edited = true;
+        let mut poll = i.clone();
+        poll.body = format!("{}\n[dilla-poll:v1:{}]", i.body, "ab".repeat(16));
+        let forged = [
+            ("a member's post", member_post, Some(1)),
+            ("the claim of a member of kind 0", i.clone(), Some(0)),
+            ("the claim of no member", i.clone(), None),
+            ("an edited post", edited, Some(1)),
+            ("a poll post", poll, Some(1)),
+        ];
+        for (what, item, kind) in forged {
+            assert!(announcement_marker(&item, kind).is_none(), "{what}");
+        }
+        // The row's text agrees: it shows the body as it is.
+        let mut kind0 = i.clone();
+        kind0.sender_user = Some(UserId([1; 16]));
+        assert_eq!(
+            body_parts(&s, &members, community, &kind0, false, &UTC),
+            body_parts(
+                &s,
+                &members,
+                community,
+                &item_with_body(&kind0.body),
+                false,
+                &UTC
+            ),
+            "a kind-0 member's claim"
+        );
+        assert!(announcement_in(&s, community, &kind0).is_none());
+        assert!(announcement_in(&s, community, &i).is_some());
+    }
+
     /// Integration 3, step 5 (Task 21's `decode_webhook_label` in Task 9's row): a webhook post is the community's pinned
     /// Bot user's unedited message ending in its label line. The row shows "via webhook <name>" in its head and the text
     /// before the label as its body; the same body from anyone else, or edited, stays text.
@@ -1587,8 +2261,15 @@ mod tests {
             Some("via webhook CI bot")
         );
         assert_eq!(
-            body_parts(&s, &[], community, &i),
-            body_parts(&s, &[], community, &item_with_body("Deploy done")),
+            body_parts(&s, &[], community, &i, false, &UTC),
+            body_parts(
+                &s,
+                &[],
+                community,
+                &item_with_body("Deploy done"),
+                false,
+                &UTC
+            ),
             "the body is the text before the label"
         );
         let mut edited = i.clone();
@@ -1661,11 +2342,180 @@ mod tests {
         );
         let lh = body_line();
         assert!(
-            row_height(true, true, false, 0.0, lh, 0.0)
-                > row_height(true, false, false, 0.0, lh, 0.0)
+            row_height(true, true, false, 0.0, lh, 0.0, Density::Regular)
+                > row_height(true, false, false, 0.0, lh, 0.0, Density::Regular)
         );
-        assert!(body_offset(true, true) > body_offset(true, false));
-        assert_eq!(body_offset(true, true), FOLLOW_PAD + meta_line() + MAIN_GAP);
+        assert!(
+            body_offset(true, true, Density::Regular) > body_offset(true, false, Density::Regular)
+        );
+        assert_eq!(
+            body_offset(true, true, Density::Regular),
+            FOLLOW_PAD + meta_line(Density::Regular) + MAIN_GAP
+        );
+    }
+
+    const UTC: jiff::tz::TimeZone = jiff::tz::TimeZone::UTC;
+
+    /// MessageItem.poll.test.tsx's world: the Bot (a kind-1 member) posts a poll of `bob`'s, the poll held or not.
+    fn poll_world(held: bool) -> (AppState, CommunityId, TimelineItem) {
+        let (mut s, community, mut i) = music_world();
+        s.members.get_mut(&community).unwrap().push(Member {
+            user_id: UserId([2; 16]),
+            username: "bob".into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        });
+        s.account.user_id = Some(UserId([1; 16]));
+        let id = dilla_client::state::MessageId([4; 16]);
+        i.msg_id = Some(id);
+        i.body = format!(
+            "Raid?\nBridge\nHarbour\nVote with /poll vote.\nCloses: <t:1800003600:R>\n[dilla-poll:v1:{}]",
+            "ab".repeat(16)
+        );
+        if held {
+            s.bot.polls.insert(
+                id,
+                dilla_client::state::bot::PollView {
+                    id: [0xab; 16],
+                    channel: ChannelId([8; 16]),
+                    thread: None,
+                    creator: UserId([2; 16]),
+                    question: "Raid?".into(),
+                    answers: vec!["Bridge".into(), "Harbour".into()],
+                    multi: false,
+                    created_at: 0,
+                    due_at: 0,
+                    closed: false,
+                    counts: vec![0, 0],
+                    my_choices: None,
+                    revision: 1,
+                    previews: vec![Vec::new(), Vec::new()],
+                    distinct: 0,
+                    capped: false,
+                },
+            );
+        }
+        (s, community, i)
+    }
+
+    fn poll_text(s: &AppState, community: CommunityId, i: &TimelineItem, live: bool) -> String {
+        let members = s.members[&community].clone();
+        spoken_body(&body_parts(s, &members, community, i, live, &UTC))
+    }
+
+    /// MessageItem.tsx:163-182: a verified poll post reads who asked, the poll's creator and not the Bot.
+    #[test]
+    fn a_verified_poll_post_reads_who_asked() {
+        let (s, community, i) = poll_world(true);
+        assert_eq!(poll_text(&s, community, &i, true), "bob asked:");
+    }
+
+    /// A post whose card is being verified shows no text: the card's loading line stands for it. A read the web gave up
+    /// (or is retrying after giving up) shows the text again.
+    #[test]
+    fn a_poll_post_being_verified_shows_no_text() {
+        let (mut s, community, i) = poll_world(false);
+        assert_eq!(poll_text(&s, community, &i, true), "");
+        let id = i.msg_id.unwrap();
+        s.bot.poll_checks.insert(id, PollCheck::Pending);
+        assert_eq!(poll_text(&s, community, &i, true), "");
+        for gave_up in [
+            PollCheck::GaveUp(ChannelId([8; 16])),
+            PollCheck::Retry(ChannelId([8; 16])),
+        ] {
+            s.bot.poll_checks.insert(id, gave_up);
+            assert!(poll_text(&s, community, &i, true).contains("Vote with /poll vote."));
+        }
+    }
+
+    #[test]
+    fn an_unverified_poll_post_shows_its_text_with_local_time() {
+        let (s, community, i) = poll_world(false);
+        let text = poll_text(&s, community, &i, false);
+        assert!(text.contains("Vote with /poll vote."), "{text}");
+        assert!(text.contains("Closes: Fri 15 Jan, 09:00 UTC"), "{text}");
+        assert!(
+            !text.contains("<t:") && !text.contains("[dilla-poll"),
+            "{text}"
+        );
+        // A poll post of a sender who is no Bot member is plain text, marker line and tag included.
+        let mut forged = i.clone();
+        forged.sender_user = Some(UserId([1; 16]));
+        forged.bot = false;
+        assert_eq!(
+            poll_body(&forged, &s, Some(community), true, &UTC),
+            PollBody::NoMarker
+        );
+        assert!(poll_text(&s, community, &forged, true).contains("[dilla-poll"));
+    }
+
+    /// Decrypted text never goes in Debug: only the variant and the lengths do.
+    #[test]
+    fn a_poll_body_debug_redacts_its_text() {
+        for body in [
+            PollBody::Asked("secret-name".into()),
+            PollBody::Fallback("secret text".into()),
+        ] {
+            let shown = format!("{body:?}");
+            assert!(!shown.contains("secret"), "{shown}");
+        }
+        assert_eq!(format!("{:?}", PollBody::Pending), "Pending");
+    }
+
+    /// MessageLog.tsx's polite log: a pending poll is announced with the card's loading line, and again, with "{name}
+    /// asked:", once it verifies.
+    #[test]
+    fn a_pending_poll_is_announced_loading_and_again_when_verified() {
+        let (mut s, _, i) = poll_world(false);
+        let channel = s.channels[0].clone();
+        let mut earlier = item(1, 1);
+        earlier.key = "first".into();
+        let id = i.msg_id.unwrap();
+        let tl = Timeline {
+            channel_id: channel.id,
+            group: Default::default(),
+            items: vec![earlier, i.clone()],
+            has_earlier: false,
+        };
+        s.timelines.insert(channel.id, tl);
+        let clock = Clock::Fixed { now: 0, utc: true };
+        let seen = Some((channel.id, "first".to_owned()));
+        let (key, text) = arrival(&s, &channel, clock, seen.as_ref()).expect("a new row");
+        let text = text.expect("announced");
+        assert!(text.ends_with(": Loading poll…"), "{text}");
+        // The same state again says nothing.
+        assert!(arrival(&s, &channel, clock, Some(&key)).is_none());
+        // The poll verifies: the row's new text is announced.
+        let held = poll_world(true).0.bot.polls[&id].clone();
+        s.bot.polls.insert(id, held);
+        let (_, text) = arrival(&s, &channel, clock, Some(&key)).expect("a change");
+        assert!(text.expect("announced").ends_with(": bob asked:"));
+    }
+
+    #[test]
+    fn an_edited_poll_post_shows_its_text() {
+        let (s, community, mut i) = poll_world(true);
+        i.edited = true;
+        let text = poll_text(&s, community, &i, true);
+        assert!(text.contains("Vote with /poll vote."), "{text}");
+        assert!(!text.contains("bob asked:"), "{text}");
+    }
+
+    /// The fallback keeps a tag it cannot turn into a time, and only a final marker line is removed.
+    #[test]
+    fn the_poll_fallback_keeps_what_it_cannot_read() {
+        let marker = format!("[dilla-poll:v1:{}]", "ab".repeat(16));
+        let text = poll_fallback(
+            &format!("a <t:x:R> <t:99999999999999999999:R> <t:1:Z> <t:\n{marker}"),
+            &UTC,
+        );
+        assert_eq!(text, "a <t:x:R> <t:99999999999999999999:R> <t:1:Z> <t:");
+        let mid = format!("{marker}\nmore");
+        assert_eq!(poll_fallback(&mid, &UTC), mid);
+        assert_eq!(poll_fallback(&marker, &UTC), "");
     }
 
     fn item_with_body(body: &str) -> TimelineItem {
@@ -1707,8 +2557,16 @@ mod tests {
             extras: 0.0,
             divider: true,
         };
-        let (plain, plain_end) = row_tops(12.0, &[row(0.0, false), row(0.0, false), follow]);
-        let (with, with_end) = row_tops(12.0, &[row(0.0, false), row(26.5, false), follow]);
+        let (plain, plain_end) = row_tops(
+            12.0,
+            &[row(0.0, false), row(0.0, false), follow],
+            Density::Regular,
+        );
+        let (with, with_end) = row_tops(
+            12.0,
+            &[row(0.0, false), row(26.5, false), follow],
+            Density::Regular,
+        );
         assert_eq!(with[0], plain[0]);
         assert_eq!(with[1], plain[1], "the row with extras starts where it did");
         assert!(
@@ -1735,8 +2593,70 @@ mod tests {
             body: lh + 70.0,
             ..one
         };
-        let (a, _) = row_tops(0.0, &[one, one]);
-        let (b, _) = row_tops(0.0, &[tall, one]);
+        let (a, _) = row_tops(0.0, &[one, one], Density::Regular);
+        let (b, _) = row_tops(0.0, &[tall, one], Density::Regular);
         assert!((b[1] - a[1] - 70.0).abs() < 1e-4);
+    }
+
+    /// Conversation.tsx:396-399: "load earlier" while the history has more, the welcome only at its true start, and
+    /// neither before the timeline is read.
+    #[test]
+    fn the_welcome_waits_for_the_start_of_the_history() {
+        let timeline = |has_earlier| dilla_client::state::Timeline {
+            channel_id: ChannelId([1; 16]),
+            group: Default::default(),
+            items: Vec::new(),
+            has_earlier,
+        };
+        assert_eq!(log_head(None), LogHead::Loading);
+        assert_eq!(log_head(Some(&timeline(true))), LogHead::Earlier);
+        assert_eq!(log_head(Some(&timeline(false))), LogHead::Welcome);
+    }
+
+    /// Conversation.tsx:394-395: the note under the welcome, `emptyMade` for a channel this client made, none in a DM, with
+    /// rows or while the log loads.
+    #[test]
+    fn an_empty_channel_says_older_messages_are_not_shown() {
+        let mut s = AppState::default();
+        let ch = ChannelId([1; 16]);
+        assert_eq!(empty_note(&s, ch, false, 0, true), Some("shell.log.empty"));
+        s.made_channels.insert(ch);
+        assert_eq!(
+            empty_note(&s, ch, false, 0, true),
+            Some("shell.log.emptyMade")
+        );
+        assert_eq!(empty_note(&s, ch, true, 0, true), None);
+        assert_eq!(empty_note(&s, ch, false, 1, true), None);
+        assert_eq!(empty_note(&s, ch, false, 0, false), None);
+    }
+
+    /// MessageLog.tsx:103-114: rows put in front move the offset by the added height, so the rows in view stay put.
+    #[test]
+    fn earlier_rows_put_in_front_keep_the_reader_in_place() {
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k0"), 1000.0, 1600.0, 40.0, false),
+            640.0
+        );
+        // The same first row: nothing was put in front.
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k5"), 1000.0, 1600.0, 40.0, false),
+            40.0
+        );
+        // Pinned: the pin path sets the offset.
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k0"), 1000.0, 1600.0, 40.0, true),
+            40.0
+        );
+        // The first draw has nothing to keep.
+        assert_eq!(
+            anchored_offset(None, Some("k0"), 0.0, 1600.0, 0.0, false),
+            0.0
+        );
+        // A message arriving at the bottom in the same frame as the earlier page: the whole growth is added, as the web
+        // adds it.
+        assert_eq!(
+            anchored_offset(Some("k5"), Some("k0"), 1000.0, 1640.0, 40.0, false),
+            680.0
+        );
     }
 }

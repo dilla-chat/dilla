@@ -28,23 +28,19 @@ pub struct Access {
 }
 
 impl Access {
-    /// The viewer's access in `community`. A member sees the sections every member sees; the owner has every right. The
-    /// roles area (Task 14) refines this for the other members when its slice lands: until then they are listed only the
-    /// sections the registry shows every member.
-    // T14: replace the owner stand-in with the real permission bits once the roles area (Task 14) publishes them.
+    /// The viewer's access in `community` (Shell.tsx: the server results are listed only once `access.loaded`): the one
+    /// access slice as the server settings read it (`server_admin::access_in`), which the shell reads when a community is
+    /// selected. Until that read lands nothing is loaded, so no server section is listed; there is no owner stand-in.
     pub fn of(state: &AppState, community: CommunityId) -> Self {
-        let Some(c) = state.communities.iter().find(|c| c.id == community) else {
-            return Self::default();
-        };
-        let owner = Some(c.owner) == state.account.user_id;
+        let a = dilla_client::state::server_admin::access_in(state, community);
         Self {
-            loaded: true,
-            manage_community: owner,
-            manage_channels: owner,
-            manage_roles: owner,
-            create_invite: owner,
-            ban_members: owner,
-            view_audit_log: owner,
+            loaded: a.loaded,
+            manage_community: a.manage_community,
+            manage_channels: a.manage_channels,
+            manage_roles: a.manage_roles,
+            create_invite: a.create_invite,
+            ban_members: a.ban_members,
+            view_audit_log: a.view_audit_log,
         }
     }
 }
@@ -577,5 +573,38 @@ mod tests {
         assert!(member.contains(&Section::Server(ServerSection::Members)));
         assert!(!member.contains(&Section::Server(ServerSection::Roles)));
         assert!(sections(&everything()).contains(&Section::Server(ServerSection::Roles)));
+    }
+
+    /// Shell.tsx: the server results follow the viewer's real access, so a member who may ban (and is not the owner)
+    /// finds the Bans section; before the access is read, no server section is listed.
+    #[test]
+    fn a_member_with_ban_rights_finds_the_bans_section() {
+        use dilla_client::state::roles::CommunityAccess;
+        use dilla_client::state::{Community, UserId};
+
+        let c = CommunityId([7; 16]);
+        let mut state = AppState::default();
+        state.account.user_id = Some(UserId([2; 16]));
+        state.communities.push(Community {
+            id: c,
+            name: "Midgard Crew".to_owned(),
+            owner: UserId([1; 16]),
+            policy_version: 0,
+        });
+        let bans = |state: &AppState| {
+            search(true, "bans", &Access::of(state, c))
+                .into_iter()
+                .any(|f| f.section == Section::Server(ServerSection::Bans))
+        };
+        assert!(!bans(&state));
+        state.roles.access.insert(
+            c,
+            CommunityAccess {
+                loaded: true,
+                ban_members: true,
+                ..CommunityAccess::default()
+            },
+        );
+        assert!(bans(&state));
     }
 }

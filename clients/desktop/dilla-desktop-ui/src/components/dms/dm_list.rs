@@ -15,9 +15,12 @@ use gpui::{
 use crate::components::icon_button::{IconButton, IconButtonSize};
 use crate::components::row::{Person, Row, RowKind};
 use crate::icon_names::IconName;
-use crate::metrics::LABEL_TRACKING_WIDE;
+use crate::metrics::{Density, LABEL_TRACKING_WIDE};
 use crate::text::{Face, line, line_height};
 use crate::tokens::{color, font, layout, text};
+
+/// `.d-channel-list__empty`: `padding: 1rem var(--row-pad-x)`.
+const EMPTY_PAD_Y: f32 = 16.0;
 
 /// One DM as the list draws it.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,7 +112,8 @@ impl DmList {
 }
 
 impl RenderOnce for DmList {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let density = Density::of(window, cx);
         let on_new = self.on_new.clone();
         let head = div()
             .flex_none()
@@ -138,7 +142,14 @@ impl RenderOnce for DmList {
                     .on_click(move |e, w, cx| on_new(e, w, cx)),
             )
             .children(self.menu);
-        let meta = |s: SharedString| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
+        let meta = |s: SharedString| {
+            line(
+                s,
+                text::META,
+                crate::text::root_line_height(text::META),
+                color::FG_3,
+            )
+        };
         let mut stats = div()
             .flex_none()
             .flex()
@@ -173,25 +184,35 @@ impl RenderOnce for DmList {
                 line(
                     self.section.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
                 .tracking(LABEL_TRACKING_WIDE),
             );
-        let rows: Vec<_> = if self.items.is_empty() {
-            vec![
-                div()
-                    .px(px(8.0))
-                    .child(line(
-                        self.empty,
-                        text::SM,
-                        line_height(text::SM, 1.5),
-                        color::FG_3,
-                    ))
-                    .into_any_element(),
-            ]
-        } else {
+        // ChannelList.tsx: with no DMs the list's body is `.d-channel-list__empty` alone (no section label), `1rem
+        // var(--row-pad-x)` around a line in the root's `--line-height`, both with the window's density.
+        if self.items.is_empty() {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(head)
+                .child(stats)
+                .child(
+                    div()
+                        .id("dm-list")
+                        .py(px(EMPTY_PAD_Y))
+                        .px(density.row_pad_x())
+                        .child(line(
+                            self.empty,
+                            text::SM,
+                            line_height(text::SM, density.line_height()),
+                            color::FG_3,
+                        )),
+                );
+        }
+        let rows: Vec<_> = {
             self.items
                 .into_iter()
                 .enumerate()

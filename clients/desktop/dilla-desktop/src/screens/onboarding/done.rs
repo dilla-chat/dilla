@@ -29,7 +29,7 @@ use dilla_desktop_ui::components::onboarding::{
     KeyAck, OnboardingFrame, PrimaryAction, ReadyPanel, frame,
 };
 use dilla_desktop_ui::metrics::focus_ring;
-use dilla_desktop_ui::text::{line, line_height, paragraph};
+use dilla_desktop_ui::text::{line, paragraph};
 use dilla_desktop_ui::tokens::{color, radius, text};
 
 use super::keys::Submit;
@@ -277,7 +277,7 @@ impl DoneView {
                 .child(line(
                     label.to_owned(),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG,
                 ))
         };
@@ -321,7 +321,7 @@ impl DoneView {
             .child(div().flex_none().child(line(
                 count,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BTN),
                 color::FG_3,
             )))
             .child(actions);
@@ -419,7 +419,7 @@ impl Render for DoneView {
         f = f.child(div().flex().flex_col().children(paragraph(
             t("onboarding.done.note"),
             text::BTN,
-            line_height(text::BTN, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::BTN),
             color::FG_3,
             CARD_INNER_W,
         )));

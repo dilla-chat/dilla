@@ -4,7 +4,7 @@
 //! (here one list with the community on each channel), `members:<id>`, `timeline:<id>` and `badges` (here `unread`).
 //! Nothing here holds key material: message bodies are plaintext the core already decrypted and stored.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 pub mod attachments;
@@ -19,6 +19,7 @@ pub mod messages;
 pub mod onboarding;
 pub mod profile;
 pub mod reactions;
+pub mod removed;
 pub mod ring;
 pub mod roles;
 pub mod search;
@@ -76,6 +77,26 @@ id16!(
     MessageId,
 );
 
+/// A decrypted text (a message body, an excerpt, a draft, a sealed Bot argument) in Debug output: its length only, so
+/// end-to-end-encrypted content never reaches a log, a panic message or test output through `{:?}`.
+pub struct Redacted<'a>(pub &'a str);
+
+impl fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes>", self.0.len())
+    }
+}
+
+/// [`Redacted`] for a list of texts: their count and total length.
+pub struct RedactedList<'a>(pub &'a [String]);
+
+impl fmt::Debug for RedactedList<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes: usize = self.0.iter().map(String::len).sum();
+        write!(f, "<{} texts, {bytes} bytes>", self.0.len())
+    }
+}
+
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use fmt::Write;
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -120,8 +141,9 @@ pub enum AccountPhase {
     /// The device was revoked: a refused session (close 4004 or 4003, an upgrade 401) could not be established again
     /// from the device key (the instance no longer answers its challenge). Sign in again.
     Revoked,
-    /// The instance refused this client's version (close 4006): `upgrade` when this client must update.
-    VersionRefused { upgrade: bool },
+    /// The instance refused this client's version (close 4006): `upgrade` when this client must update; `instance` when
+    /// the instance is the older side (controller.ts `reason: 'instance'`).
+    VersionRefused { upgrade: bool, instance: bool },
     /// The local store's core panicked mid-call (its lock is poisoned): it may be inconsistent, so the client stopped
     /// syncing. Restart the client (the store reopens from disk).
     Failed,
@@ -196,6 +218,12 @@ pub struct AppState {
     pub onboarding: onboarding::OnboardingState,
     /// Task 26.
     pub factors: factors::FactorState,
+    /// Task 15: the servers the community list dropped without this account leaving them, newest last (at most
+    /// [`removed::REMOVALS_MAX`]); the shell shows each as a dismissible banner.
+    pub removal_notices: Vec<removed::RemovalNotice>,
+    /// Task 32 (Create.tsx `rememberMade`): the channels this client made in this session, a new server's starters
+    /// among them. An empty one says "nothing here yet" instead of "older messages are not shown".
+    pub made_channels: BTreeSet<ChannelId>,
 }
 
 impl AppState {

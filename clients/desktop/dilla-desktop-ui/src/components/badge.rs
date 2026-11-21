@@ -87,7 +87,7 @@ impl RenderOnce for Badge {
             .bg(bg);
         let size = if self.in_row { text::MICRO } else { text::CHIP };
         let pill = pill.child(
-            line(label, size, crate::text::line_height(size, 1.5), fg).weight(font::WEIGHT_DISPLAY),
+            line(label, size, crate::text::root_line_height(size), fg).weight(font::WEIGHT_DISPLAY),
         );
         if self.in_row {
             pill.px(px(5.0)).rounded(radius::SM)

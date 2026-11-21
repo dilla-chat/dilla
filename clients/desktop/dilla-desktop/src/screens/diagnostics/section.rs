@@ -198,7 +198,7 @@ fn routes_table(routes: &[RouteTiming]) -> AnyElement {
     let heading = line(
         t("diagnostics.slowRoutes"),
         text::BASE,
-        line_height(text::BASE, 1.5),
+        dilla_desktop_ui::text::root_line_height(text::BASE),
         color::FG_2,
     );
     div()
@@ -224,13 +224,13 @@ fn errors_list(errors: &[ErrorEntry]) -> AnyElement {
                 .child(line(
                     e.code.clone(),
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG,
                 ))
                 .child(line(
                     format::clock(e.at_ms),
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_2,
                 ))
         }))
@@ -278,7 +278,7 @@ pub fn render(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
                 .child(line(
                     t("diagnostics.empty"),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::UI),
                     color::FG_2,
                 )),
         )

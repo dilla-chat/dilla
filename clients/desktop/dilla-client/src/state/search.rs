@@ -5,8 +5,8 @@
 
 use super::{ChannelId, CommunityId, MessageId};
 
-/// One message hit, as the palette lists it (`SearchHitView`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One message hit, as the palette lists it (`SearchHitView`). Its Debug gives the snippet's length only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub struct SearchHit {
     /// The channel or direct message the message is in.
     pub channel: ChannelId,
@@ -30,8 +30,21 @@ impl SearchHit {
     }
 }
 
-/// The newest search: [`Default`] is none yet.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+impl std::fmt::Debug for SearchHit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchHit")
+            .field("channel", &self.channel)
+            .field("community", &self.community)
+            .field("seq", &self.seq)
+            .field("snippet", &super::Redacted(&self.snippet))
+            .field("ts", &self.ts)
+            .field("thread_root", &self.thread_root)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The newest search: [`Default`] is none yet. Its Debug gives the query's length only: it searches decrypted text.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SearchState {
     /// The newest request's number; an answer for an older one is dropped.
     pub request: u64,
@@ -41,4 +54,15 @@ pub struct SearchState {
     pub hits: Vec<SearchHit>,
     /// The newest request has not been answered yet.
     pub loading: bool,
+}
+
+impl std::fmt::Debug for SearchState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchState")
+            .field("request", &self.request)
+            .field("query", &super::Redacted(&self.query))
+            .field("hits", &self.hits)
+            .field("loading", &self.loading)
+            .finish()
+    }
 }

@@ -176,6 +176,11 @@ type Pool struct {
 	rttEvery time.Duration
 
 	callGuards CallGuards
+
+	// reserveSem admits one counter reservation of the pool at a time (spare.go, lockReserve); spare is the next
+	// track's block, reserved while the current one plays. Both guarded by mu.
+	reserveSem chan struct{}
+	spare      *spareBlock
 }
 
 // RTTStep is how far the room's RTT must move before it is reported again.
@@ -314,7 +319,8 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		_ = source.Close()
 		return nil, startStage(ctx, "counter_reserve", ErrBinding)
 	}
-	sender, err := senderForReservedEpoch(ctx, state, boundGroup, initial)
+	// The block reserved while the last track played, when it is for this very epoch; else a fresh one (spare.go).
+	sender, err := p.senderForEpoch(ctx, state, boundGroup, initial)
 	if err = startStage(ctx, "counter_reserve", err); err != nil {
 		_ = source.Close()
 		return nil, err
@@ -403,6 +409,8 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 	p.finishStartingLocked(generation, startDone)
 	p.mu.Unlock()
 	_ = startStage(ctx, "track_publish", nil)
+	// The next track's block, reserved now and off its switch; it lives as long as the room, not this track.
+	go p.prepareSpare(client.WithBackground(roomCtx), state, boundGroup, initial, generation)
 	go s.monitorPooled(trackCtx, boundGroup, epochs, initial)
 	return s, nil
 }
@@ -608,6 +616,7 @@ func (p *Pool) markDead(generation uint64, cause error) {
 func (p *Pool) markDeadLocked(cause error) (*poolConnection, context.CancelFunc, func()) {
 	p.dead = true
 	p.deadReason = cause
+	p.spare = nil
 	var report func()
 	if errors.Is(cause, ErrPoolIdle) || errors.Is(cause, ErrPoolCallEnded) {
 		report = p.roomEnded
@@ -718,6 +727,7 @@ func (p *Pool) Reset() error {
 		if p.generation == gen && p.dead && p.connectDone == nil {
 			p.connection, p.roomCtx, p.roomCancel, p.bound = nil, nil, nil, nil
 			p.active, p.connecting, p.dead, p.deadReason = nil, false, false, nil
+			p.spare = nil
 			// Invalidate the old room's deadline watcher and disconnect callback.
 			p.generation++
 		}
@@ -737,6 +747,7 @@ func (p *Pool) Close() error {
 		return nil
 	}
 	p.closed, p.dead = true, true
+	p.spare = nil
 	active, cancel, connectDone, startDone := p.active, p.roomCancel, p.connectDone, p.startDone
 	p.mu.Unlock()
 	if cancel != nil {
@@ -881,12 +892,17 @@ func (s *Session) followEpoch(ctx context.Context, guards CallGuards, group id.I
 	if !ok || s.sender == nil {
 		return failed("counter_reserve", ErrBinding)
 	}
-	reserved, err := counter.Reserve(ctx, state, group, current.Epoch, uint16(current.OwnLeaf)) //nolint:gosec // G115: validateSenderEpoch bounds OwnLeaf to uint16
+	reserved, err := s.pool.reserveFor(ctx, state, group, current)
 	if err != nil {
 		return failed("counter_reserve", fmt.Errorf("music livekit: sender counter reservation failed: %w", err))
 	}
-	if err := s.sender.RekeyRange(current.BaseKey, uint16(current.OwnLeaf), current.Epoch, reserved.Start, reserved.End); err != nil { //nolint:gosec // G115: as above
+	if err := s.sender.RekeyRange(current.BaseKey, uint16(current.OwnLeaf), current.Epoch, reserved.Start, reserved.End); err != nil { //nolint:gosec // G115: validateSenderEpoch bounds OwnLeaf to uint16
 		return failed("rekey", err)
+	}
+	// The spare reserved under the old epoch is stale: the next track's block is reserved under this one, for as long as
+	// the room lives (a rekey near a track's end must not cancel it).
+	if roomCtx := s.pool.roomContext(s.generation); roomCtx != nil {
+		go s.pool.prepareSpare(client.WithBackground(roomCtx), state, group, current, s.generation)
 	}
 	return current, nil
 }

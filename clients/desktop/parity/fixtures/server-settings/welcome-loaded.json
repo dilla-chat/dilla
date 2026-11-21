@@ -1,0 +1,71 @@
+{
+  "name": "server-settings/welcome-loaded",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/settings/welcome",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Bj\u00f6rn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ],
+        "bot": {
+          "capabilities": [
+            "welcome"
+          ],
+          "botChannels": [
+            "general"
+          ]
+        }
+      }
+    ],
+    "messages": []
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "-",
+      "gpui": "welcome-load"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

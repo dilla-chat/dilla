@@ -508,7 +508,8 @@ func (p persistedMusicQueue) Save(ctx context.Context, channel id.ID, expected u
 }
 
 // notifyingMusicQueue is the supervisor's persisted queue that tells changed after each successful save: the playing
-// track or the queue changed (Bot v2 Task 17: a call hint for the room's members).
+// track or the queue changed (Bot v2 Task 17: a call hint for the room's members). An advance's save tells it once the
+// next track has started (music.DeferNotice): the members' reads the hint sets off would otherwise delay that start.
 type notifyingMusicQueue struct {
 	persistedMusicQueue
 	changed func(context.Context)
@@ -516,7 +517,7 @@ type notifyingMusicQueue struct {
 
 func (q notifyingMusicQueue) Save(ctx context.Context, channel id.ID, expected uint64, state music.State) (uint64, error) {
 	revision, err := q.persistedMusicQueue.Save(ctx, channel, expected, state)
-	if err == nil {
+	if err == nil && !music.DeferNotice(ctx, func() { q.changed(ctx) }) {
 		q.changed(ctx)
 	}
 	return revision, err

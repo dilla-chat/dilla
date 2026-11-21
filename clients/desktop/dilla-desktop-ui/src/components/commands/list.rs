@@ -117,7 +117,7 @@ impl CommandList {
 
     /// The list's height for `rows` matching rows (0: the no-match line), header and borders included.
     pub fn height(rows: usize) -> f32 {
-        let head = 2.0 * 8.0 + line_height(text::MICRO, 1.5) + 1.0;
+        let head = 2.0 * 8.0 + crate::text::root_line_height(text::MICRO) + 1.0;
         let body = if rows == 0 {
             2.0 * 10.0 + 28.0
         } else {
@@ -220,7 +220,7 @@ impl RenderOnce for CommandList {
                 line(
                     self.labels.title.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
@@ -231,7 +231,7 @@ impl RenderOnce for CommandList {
                 line(
                     self.labels.hint.clone(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_BTN)
@@ -275,7 +275,7 @@ impl RenderOnce for CommandList {
                 .child(div().flex_1().min_w_0().child(line(
                     self.labels.no_match.clone(),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::FG_2,
                 )))
                 .child(
@@ -298,7 +298,7 @@ impl RenderOnce for CommandList {
                         .child(line(
                             self.labels.send_as_text.clone(),
                             text::UI,
-                            line_height(text::UI, 1.5),
+                            crate::text::root_line_height(text::UI),
                             color::FG,
                         )),
                 )

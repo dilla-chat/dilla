@@ -457,7 +457,7 @@ pub fn render(
     reminders: Option<gpui::AnyElement>,
     menu: Option<gpui::AnyElement>,
 ) -> impl IntoElement + use<> {
-    let brand_name_line = line_height(text::XS, 1.5);
+    let brand_name_line = dilla_desktop_ui::text::root_line_height(text::XS);
     let mark = centred(
         Pixels::from(css::BRAND_MARK),
         line("D", text::XS, line_height(text::XS, 1.0), color::BRAND_INK)
@@ -525,7 +525,7 @@ pub fn render(
                         line(
                             t("topbar.search"),
                             text::UI,
-                            line_height(text::UI, 1.5),
+                            dilla_desktop_ui::text::root_line_height(text::UI),
                             color::FG_3,
                         )
                         .ellipsis(),
@@ -569,7 +569,7 @@ pub fn render(
             .child(line(
                 room,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BTN),
                 color::OK_TEXT,
             ))
     });

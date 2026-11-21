@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use dilla_client::calls::CallPhase;
 use dilla_client::state::{AppState, ChannelId};
-use dilla_desktop::screens::share_picker::{self, Found};
+use dilla_desktop::screens::share_picker::{self, Found, apps};
 use dilla_desktop::screens::voice::{self, ShareSources, TileKey};
 use dilla_media::sources::desktop::{DesktopSource, SourceKind};
 use dilla_media::{CaptureSource, Pull, ShareKind, ShareOptions, ShareResolution, TestPattern};
@@ -20,8 +20,9 @@ use gpui::{App, Context, IntoElement, Render, TestAppContext, Window, div};
 #[path = "../../dilla-client/tests/support/call_world.rs"]
 mod call_world;
 
-/// One process, one call's media (see tests/voice.rs `MEDIA_SLOT`): the tests here take turns.
-static MEDIA_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[path = "support/media.rs"]
+mod media_slot;
+use media_slot::{MediaSlot, media_slot};
 
 const CALL_WAIT: Duration = Duration::from_secs(45);
 
@@ -129,11 +130,11 @@ struct World {
     alice: Rc<dilla_client::Client>,
     bob: Rc<dilla_client::Client>,
     voice: ChannelId,
-    _slot: std::sync::MutexGuard<'static, ()>,
+    _slot: MediaSlot,
 }
 
 fn world(tag: &'static str) -> World {
-    let slot = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
+    let slot = media_slot();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -290,12 +291,16 @@ fn closing_the_owner_window_stops_its_capture(cx: &mut TestAppContext) {
     assert_eq!(rec.opened(), 1);
     a.update(cx, |_, window, _| window.remove_window()).unwrap();
     cx.run_until_parked();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while rec.alive() != 0 {
-        cx.run_until_parked();
-        assert!(Instant::now() < deadline, "the capture outlived its window");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // At once, as the window goes: its media session's drop ends the call's media before it returns (only the room's
+    // close runs on after), so the source is let go and the process's media router is free for the next call.
+    assert_eq!(rec.alive(), 0, "the capture outlived its window");
+    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
+    let probe = dilla_media::transform::CallMedia::new();
+    assert!(
+        router.begin(probe.clone()).is_ok(),
+        "the closed window's call media still holds the router"
+    );
+    router.end(&probe);
     w.rt.block_on(until(&w.alice, "the closed window's call is left", |s| {
         s.voice.call.phase == CallPhase::Idle
     }));
@@ -479,7 +484,6 @@ fn no_picker_without_a_press_on_a_focused_window(cx: &mut TestAppContext) {
 /// the window's share sound, Cancel leaves none, and switching it off clears it.
 #[gpui::test]
 fn the_sound_section_chooses_an_application_for_the_share(cx: &mut TestAppContext) {
-    use dilla_desktop::screens::share_picker::apps;
     use dilla_media::app_audio::AppSource;
     cx.update(dilla_desktop::install);
     let music = AppSource {
@@ -513,7 +517,7 @@ fn the_sound_section_chooses_an_application_for_the_share(cx: &mut TestAppContex
     );
     cx.update(|cx| apps::close(id, None, cx));
     assert!(
-        cx.read(|cx| voice::ui_of(id, cx).unwrap().share_app.is_none()),
+        cx.read(|cx| voice::ui_of(id, cx).unwrap().share_sound.app().is_none()),
         "Cancel chooses nothing"
     );
     assert!(
@@ -523,9 +527,150 @@ fn the_sound_section_chooses_an_application_for_the_share(cx: &mut TestAppContex
     cx.update(|cx| apps::close(id, Some(music.clone()), cx));
     assert!(!cx.read(|cx| apps::is_open(id, cx)));
     assert_eq!(
-        cx.read(|cx| voice::ui_of(id, cx).unwrap().share_app.clone()),
+        cx.read(|cx| voice::ui_of(id, cx).unwrap().share_sound.app().cloned()),
         Some(music)
     );
     cx.update(|cx| voice::set_share_app(id, None, cx));
-    assert!(cx.read(|cx| voice::ui_of(id, cx).unwrap().share_app.is_none()));
+    assert!(cx.read(|cx| voice::ui_of(id, cx).unwrap().share_sound.app().is_none()));
+}
+
+// ---- a shared window brings its application's sound (Task 44, D21) --------------------------------------------------
+
+/// A window with a live call but no client (so no session: nothing is published, only `share_sound` is checked), the
+/// recording sources, and a window lookup that finds `Music` for the window with id 7 and nothing for any other. Wayland
+/// and macOS (the system's dialog chooses) never reach `share_source`: that is `toggle_share`'s portal branch, and no
+/// lookup runs there.
+fn sound_world(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::WindowHandle<Host>,
+    gpui::WindowId,
+    dilla_media::app_audio::AppSource,
+    Arc<AtomicUsize>,
+) {
+    use dilla_media::app_audio::AppSource;
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let music = AppSource {
+        serial: 40,
+        pid: 4000,
+        label: "Music".to_owned(),
+    };
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (found, counted) = (music.clone(), asked.clone());
+    cx.update(|cx| {
+        apps::set_window_sound(
+            Arc::new(move |source| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                (source.id == 7).then(|| found.clone())
+            }),
+            cx,
+        )
+    });
+    let w = cx.add_window(|_, _| Host);
+    let id = w.window_id();
+    focus(cx, &w);
+    cx.update(|cx| voice::sync(id, call_state(false), None, cx));
+    (w, id, music, asked)
+}
+
+/// The state of a live call, with or without a screen share.
+fn call_state(screen: bool) -> Arc<AppState> {
+    let mut state = AppState::default();
+    state.voice.call.phase = CallPhase::In;
+    state.voice.share.screen = screen;
+    Arc::new(state)
+}
+
+/// The picker opens on `w` and the person picks `key`.
+fn pick(cx: &mut TestAppContext, w: &gpui::WindowHandle<Host>, key: &str) {
+    let id = w.window_id();
+    assert!(
+        w.update(cx, |_, window, cx| {
+            share_picker::open(ShareOptions::default(), window, cx)
+        })
+        .unwrap()
+    );
+    wait_listed(cx, id);
+    assert!(cx.update(|cx| share_picker::share(id, &key.into(), cx)));
+}
+
+fn sound(cx: &mut TestAppContext, id: gpui::WindowId) -> voice::ShareSound {
+    cx.read(|cx| voice::ui_of(id, cx).unwrap().share_sound.clone())
+}
+
+#[gpui::test]
+fn sharing_a_window_brings_its_application_sound(cx: &mut TestAppContext) {
+    let (w, id, music, _) = sound_world(cx);
+    pick(cx, &w, "window:7");
+    cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Window(music.clone()));
+    // The sound section reads it like a manual choice.
+    assert_eq!(
+        cx.read(|cx| voice::ui_of(id, cx).unwrap().share_sound.app().cloned()),
+        Some(music)
+    );
+}
+
+#[gpui::test]
+fn sharing_a_screen_brings_no_application_sound(cx: &mut TestAppContext) {
+    let (w, id, _, asked) = sound_world(cx);
+    pick(cx, &w, "screen:1");
+    cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "no window, no lookup");
+}
+
+#[gpui::test]
+fn the_person_s_choice_wins_over_the_window_s(cx: &mut TestAppContext) {
+    use dilla_media::app_audio::AppSource;
+    let (w, id, _, _) = sound_world(cx);
+    let other = AppSource {
+        serial: 41,
+        pid: 4100,
+        label: "Radio".to_owned(),
+    };
+    cx.update(|cx| voice::set_share_app(id, Some(other.clone()), cx));
+    pick(cx, &w, "window:7");
+    cx.run_until_parked();
+    assert_eq!(
+        sound(cx, id),
+        voice::ShareSound::Person(Some(other.clone()))
+    );
+    // That share ends: the remembered choice stays for the next one.
+    cx.update(|cx| voice::sync(id, call_state(true), None, cx));
+    cx.update(|cx| voice::sync(id, call_state(false), None, cx));
+    assert_eq!(sound(cx, id), voice::ShareSound::Person(Some(other)));
+    // Switched off, it stays off for that share.
+    cx.update(|cx| voice::set_share_app(id, None, cx));
+    pick(cx, &w, "window:7");
+    cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Person(None));
+}
+
+#[gpui::test]
+fn a_window_without_a_playing_owner_shares_no_sound(cx: &mut TestAppContext) {
+    // The lookup answers `None`: the no-owner and not-playing fallback (Wayland never gets here).
+    let (w, id, _, _) = sound_world(cx);
+    cx.update(|cx| apps::set_window_sound(Arc::new(|_| None), cx));
+    pick(cx, &w, "window:7");
+    cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
+}
+
+#[gpui::test]
+fn a_late_window_sound_is_dropped(cx: &mut TestAppContext) {
+    let (w, id, _, _) = sound_world(cx);
+    // The window's lookup is still running when a screen share starts: it lands late and is dropped.
+    pick(cx, &w, "window:7");
+    pick(cx, &w, "screen:1");
+    cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
+    // A lookup that lands after its share ended is dropped too.
+    pick(cx, &w, "window:7");
+    cx.update(|cx| voice::sync(id, call_state(true), None, cx));
+    cx.update(|cx| voice::sync(id, call_state(false), None, cx));
+    cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
 }

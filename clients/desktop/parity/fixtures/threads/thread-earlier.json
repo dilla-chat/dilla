@@ -1,0 +1,1693 @@
+{
+  "name": "threads/thread-earlier",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794482114,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481700,
+        "body": "release plan: cut on friday, voice e2e on all three platforms first"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481708,
+        "body": "I pushed the fix for the sealed-command retry"
+      },
+      {
+        "key": "r0",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481714,
+        "body": "reply 0",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481715,
+        "body": "reply 1",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481716,
+        "body": "reply 2",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481717,
+        "body": "reply 3",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r4",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481718,
+        "body": "reply 4",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r5",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481719,
+        "body": "reply 5",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r6",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481720,
+        "body": "reply 6",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r7",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481721,
+        "body": "reply 7",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r8",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481722,
+        "body": "reply 8",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r9",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481723,
+        "body": "reply 9",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r10",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481724,
+        "body": "reply 10",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r11",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481725,
+        "body": "reply 11",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r12",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481726,
+        "body": "reply 12",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r13",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481727,
+        "body": "reply 13",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r14",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481728,
+        "body": "reply 14",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r15",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481729,
+        "body": "reply 15",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r16",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "reply 16",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r17",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481731,
+        "body": "reply 17",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r18",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481732,
+        "body": "reply 18",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r19",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481733,
+        "body": "reply 19",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r20",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481734,
+        "body": "reply 20",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r21",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481735,
+        "body": "reply 21",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r22",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481736,
+        "body": "reply 22",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r23",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481737,
+        "body": "reply 23",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r24",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481738,
+        "body": "reply 24",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r25",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481739,
+        "body": "reply 25",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r26",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481740,
+        "body": "reply 26",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r27",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481741,
+        "body": "reply 27",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r28",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481742,
+        "body": "reply 28",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r29",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481743,
+        "body": "reply 29",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r30",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481744,
+        "body": "reply 30",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r31",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481745,
+        "body": "reply 31",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r32",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481746,
+        "body": "reply 32",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r33",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481747,
+        "body": "reply 33",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r34",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481748,
+        "body": "reply 34",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r35",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481749,
+        "body": "reply 35",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r36",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481750,
+        "body": "reply 36",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r37",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481751,
+        "body": "reply 37",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r38",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481752,
+        "body": "reply 38",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r39",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481753,
+        "body": "reply 39",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r40",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481754,
+        "body": "reply 40",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r41",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481755,
+        "body": "reply 41",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r42",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481756,
+        "body": "reply 42",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r43",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481757,
+        "body": "reply 43",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r44",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481758,
+        "body": "reply 44",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r45",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481759,
+        "body": "reply 45",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r46",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481760,
+        "body": "reply 46",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r47",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481761,
+        "body": "reply 47",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r48",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481762,
+        "body": "reply 48",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r49",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481763,
+        "body": "reply 49",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r50",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481764,
+        "body": "reply 50",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r51",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481765,
+        "body": "reply 51",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r52",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481766,
+        "body": "reply 52",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r53",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481767,
+        "body": "reply 53",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r54",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481768,
+        "body": "reply 54",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r55",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481769,
+        "body": "reply 55",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r56",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481770,
+        "body": "reply 56",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r57",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481771,
+        "body": "reply 57",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r58",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481772,
+        "body": "reply 58",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r59",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481773,
+        "body": "reply 59",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r60",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481774,
+        "body": "reply 60",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r61",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481775,
+        "body": "reply 61",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r62",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481776,
+        "body": "reply 62",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r63",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481777,
+        "body": "reply 63",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r64",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481778,
+        "body": "reply 64",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r65",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481779,
+        "body": "reply 65",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r66",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481780,
+        "body": "reply 66",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r67",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481781,
+        "body": "reply 67",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r68",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481782,
+        "body": "reply 68",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r69",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481783,
+        "body": "reply 69",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r70",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481784,
+        "body": "reply 70",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r71",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481785,
+        "body": "reply 71",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r72",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481786,
+        "body": "reply 72",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r73",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481787,
+        "body": "reply 73",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r74",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481788,
+        "body": "reply 74",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r75",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481789,
+        "body": "reply 75",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r76",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481790,
+        "body": "reply 76",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r77",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481791,
+        "body": "reply 77",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r78",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481792,
+        "body": "reply 78",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r79",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481793,
+        "body": "reply 79",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r80",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481794,
+        "body": "reply 80",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r81",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481795,
+        "body": "reply 81",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r82",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481796,
+        "body": "reply 82",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r83",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481797,
+        "body": "reply 83",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r84",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481798,
+        "body": "reply 84",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r85",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481799,
+        "body": "reply 85",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r86",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481800,
+        "body": "reply 86",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r87",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481801,
+        "body": "reply 87",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r88",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481802,
+        "body": "reply 88",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r89",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481803,
+        "body": "reply 89",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r90",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481804,
+        "body": "reply 90",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r91",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481805,
+        "body": "reply 91",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r92",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481806,
+        "body": "reply 92",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r93",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481807,
+        "body": "reply 93",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r94",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481808,
+        "body": "reply 94",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r95",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481809,
+        "body": "reply 95",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r96",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481810,
+        "body": "reply 96",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r97",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481811,
+        "body": "reply 97",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r98",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481812,
+        "body": "reply 98",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r99",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481813,
+        "body": "reply 99",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r100",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481814,
+        "body": "reply 100",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r101",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481815,
+        "body": "reply 101",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r102",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481816,
+        "body": "reply 102",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r103",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481817,
+        "body": "reply 103",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r104",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481818,
+        "body": "reply 104",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r105",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481819,
+        "body": "reply 105",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r106",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481820,
+        "body": "reply 106",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r107",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481821,
+        "body": "reply 107",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r108",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481822,
+        "body": "reply 108",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r109",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481823,
+        "body": "reply 109",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r110",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481824,
+        "body": "reply 110",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r111",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481825,
+        "body": "reply 111",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r112",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481826,
+        "body": "reply 112",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r113",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481827,
+        "body": "reply 113",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r114",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481828,
+        "body": "reply 114",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r115",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481829,
+        "body": "reply 115",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r116",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481830,
+        "body": "reply 116",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r117",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481831,
+        "body": "reply 117",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r118",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481832,
+        "body": "reply 118",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r119",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481833,
+        "body": "reply 119",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r120",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481834,
+        "body": "reply 120",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r121",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481835,
+        "body": "reply 121",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r122",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481836,
+        "body": "reply 122",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r123",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481837,
+        "body": "reply 123",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r124",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481838,
+        "body": "reply 124",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r125",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481839,
+        "body": "reply 125",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r126",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481840,
+        "body": "reply 126",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r127",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481841,
+        "body": "reply 127",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r128",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481842,
+        "body": "reply 128",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r129",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481843,
+        "body": "reply 129",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r130",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481844,
+        "body": "reply 130",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r131",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481845,
+        "body": "reply 131",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r132",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481846,
+        "body": "reply 132",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r133",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481847,
+        "body": "reply 133",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r134",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481848,
+        "body": "reply 134",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r135",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481849,
+        "body": "reply 135",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r136",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481850,
+        "body": "reply 136",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r137",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481851,
+        "body": "reply 137",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r138",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481852,
+        "body": "reply 138",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r139",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481853,
+        "body": "reply 139",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r140",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481854,
+        "body": "reply 140",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r141",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481855,
+        "body": "reply 141",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r142",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481856,
+        "body": "reply 142",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r143",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481857,
+        "body": "reply 143",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r144",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481858,
+        "body": "reply 144",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r145",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481859,
+        "body": "reply 145",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r146",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481860,
+        "body": "reply 146",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r147",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481861,
+        "body": "reply 147",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r148",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481862,
+        "body": "reply 148",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r149",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481863,
+        "body": "reply 149",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r150",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481864,
+        "body": "reply 150",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r151",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481865,
+        "body": "reply 151",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r152",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481866,
+        "body": "reply 152",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r153",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481867,
+        "body": "reply 153",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r154",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481868,
+        "body": "reply 154",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r155",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481869,
+        "body": "reply 155",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r156",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481870,
+        "body": "reply 156",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r157",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481871,
+        "body": "reply 157",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r158",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481872,
+        "body": "reply 158",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r159",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481873,
+        "body": "reply 159",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r160",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481874,
+        "body": "reply 160",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r161",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481875,
+        "body": "reply 161",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r162",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481876,
+        "body": "reply 162",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r163",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481877,
+        "body": "reply 163",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r164",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481878,
+        "body": "reply 164",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r165",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481879,
+        "body": "reply 165",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r166",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481880,
+        "body": "reply 166",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r167",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481881,
+        "body": "reply 167",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r168",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481882,
+        "body": "reply 168",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r169",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481883,
+        "body": "reply 169",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r170",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481884,
+        "body": "reply 170",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r171",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481885,
+        "body": "reply 171",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r172",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481886,
+        "body": "reply 172",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r173",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481887,
+        "body": "reply 173",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r174",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481888,
+        "body": "reply 174",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r175",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481889,
+        "body": "reply 175",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r176",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481890,
+        "body": "reply 176",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r177",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481891,
+        "body": "reply 177",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r178",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481892,
+        "body": "reply 178",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r179",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481893,
+        "body": "reply 179",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r180",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481894,
+        "body": "reply 180",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r181",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481895,
+        "body": "reply 181",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r182",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481896,
+        "body": "reply 182",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r183",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481897,
+        "body": "reply 183",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r184",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481898,
+        "body": "reply 184",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r185",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481899,
+        "body": "reply 185",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r186",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481900,
+        "body": "reply 186",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r187",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481901,
+        "body": "reply 187",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r188",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481902,
+        "body": "reply 188",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r189",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481903,
+        "body": "reply 189",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r190",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481904,
+        "body": "reply 190",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r191",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481905,
+        "body": "reply 191",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r192",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481906,
+        "body": "reply 192",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r193",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481907,
+        "body": "reply 193",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r194",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481908,
+        "body": "reply 194",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r195",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481909,
+        "body": "reply 195",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r196",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481910,
+        "body": "reply 196",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r197",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481911,
+        "body": "reply 197",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r198",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481912,
+        "body": "reply 198",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r199",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481913,
+        "body": "reply 199",
+        "thread_of": "m1"
+      },
+      {
+        "key": "r200",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481914,
+        "body": "reply 200",
+        "thread_of": "m1"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481916,
+        "body": "on it, give me ten minutes"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=button[name=\"2 replies\"s]",
+      "gpui": "thread-chip"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

@@ -179,7 +179,17 @@ var commands = []Command{
 	app(FeatureMusic, "music announce", protocol.OpAppMusicAnnounce, 0, ScopeChannel),
 	// The provider status names no channel; its handler admits only those who manage the community.
 	app(FeatureMusic, "music providers", protocol.OpAppMusicProvidersStatus, 0, ScopeCommunity),
+	// The typed command the composer offers for the role panel (bot-handlers.ts `rolePanelHandler`; the shape of the web's
+	// bot-catalog.fixture.ts). It names the app operation below, which has its own entry, and takes no rule of its own.
+	{FeatureRoles, "rolepanel create", "Publish a self-service role panel", protocol.OpAppRolePanelPublish, nil, permManageRoles, true, HandlerCommand, ScopeCommunity},
 	app(FeatureRoles, "rolepanel publish", protocol.OpAppRolePanelPublish, permManageRoles, ScopeCommunity),
+	// The typed commands the composer offers for the announcements (bot-handlers.ts `announcementHandler`; the shape of the
+	// web's bot-catalog.fixture.ts). The app lists, saves and deletes schedules with sealed operations, so these name the app
+	// operations below and take no rule of their own (Operations skips them: the rules are the app entries').
+	{FeatureAnnouncements, "announcement list", "List the scheduled announcements", protocol.OpAppAnnouncementsList, nil, permManageCommunity, false, HandlerCommand, ScopeCommunity},
+	{FeatureAnnouncements, "announcement create", "Schedule an announcement", protocol.OpAppAnnouncementsPut, []Arg{{"text", ArgText, false}}, permManageCommunity, true, HandlerCommand, ScopeCommunity},
+	{FeatureAnnouncements, "announcement edit", "Edit a scheduled announcement", protocol.OpAppAnnouncementsPut, []Arg{{"announcement", ArgText, true}, {"text", ArgText, false}}, permManageCommunity, false, HandlerCommand, ScopeCommunity},
+	{FeatureAnnouncements, "announcement delete", "Delete a scheduled announcement", protocol.OpAppAnnouncementsDelete, []Arg{{"announcement", ArgText, true}}, permManageCommunity, false, HandlerCommand, ScopeCommunity},
 	app(FeatureAnnouncements, "announcement rows", protocol.OpAppAnnouncementsList, permManageCommunity, ScopeCommunity),
 	app(FeatureAnnouncements, "announcement save", protocol.OpAppAnnouncementsPut, permManageCommunity, ScopeCommunity),
 	app(FeatureAnnouncements, "announcement remove", protocol.OpAppAnnouncementsDelete, permManageCommunity, ScopeCommunity),
@@ -255,6 +265,9 @@ type Rule struct {
 func Operations(features []Feature) map[uint64]Rule {
 	out := map[uint64]Rule{}
 	for _, c := range Commands(features) {
+		if IsTypedAnnouncement(c) || IsTypedRolePanel(c) {
+			continue
+		}
 		r := Rule{Permission: c.Permission, Read: c.HandlerKind == HandlerRead && !AppMutation(c.Operation), ChannelScoped: c.Scope != ScopeCommunity}
 		for i, a := range c.Args {
 			if a.Type == ArgChannel {
@@ -264,6 +277,16 @@ func Operations(features []Feature) map[uint64]Rule {
 		out[uint64(c.Operation)] = r
 	}
 	return out
+}
+
+// IsTypedAnnouncement is one of the announcements' typed commands: it names an app operation that has its own entry.
+func IsTypedAnnouncement(c Command) bool {
+	return c.Feature == FeatureAnnouncements && c.HandlerKind == HandlerCommand
+}
+
+// IsTypedRolePanel is the role panel's typed command: it names the app operation that has its own entry.
+func IsTypedRolePanel(c Command) bool {
+	return c.Feature == FeatureRoles && c.HandlerKind == HandlerCommand
 }
 
 func boolUint(b bool) uint64 {

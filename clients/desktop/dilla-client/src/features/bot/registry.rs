@@ -481,12 +481,24 @@ pub enum IssueCode {
     Duplicate,
 }
 
-/// `ArgumentIssue`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `ArgumentIssue`. Its Debug gives the name's and message's lengths: "Unexpected argument: …" quotes what was typed,
+/// and an unknown or repeated named argument's name is the key as typed.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ArgumentIssue {
     pub code: IssueCode,
     pub name: String,
     pub message: String,
+}
+
+impl std::fmt::Debug for ArgumentIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArgumentIssue")
+            .field("code", &self.code)
+            // An unknown or repeated named argument's name is the key as typed.
+            .field("name_len", &self.name.len())
+            .field("message_len", &self.message.len())
+            .finish()
+    }
 }
 
 fn issue(code: IssueCode, name: &str, message: String) -> ArgumentIssue {
@@ -500,12 +512,32 @@ fn issue(code: IssueCode, name: &str, message: String) -> ArgumentIssue {
 /// Named arguments, by option name.
 pub type Args = BTreeMap<String, String>;
 
-/// `CommandValidation`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `CommandValidation`. Its Debug gives the argument names, never their values: a `/ban` or `/warn` carries the member
+/// and the reason, and any command a message body.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Validation {
     pub valid: bool,
     pub issues: Vec<ArgumentIssue>,
     pub args: Args,
+}
+
+impl std::fmt::Debug for Validation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Validation")
+            .field("valid", &self.valid)
+            .field("issues", &self.issues)
+            .field("args", &ArgNames(&self.args))
+            .finish()
+    }
+}
+
+/// [`Args`] in Debug output: the names only.
+pub(crate) struct ArgNames<'a>(pub(crate) &'a Args);
+
+impl std::fmt::Debug for ArgNames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
 }
 
 /// `isDuration`: `10m`, `1h30m`, `1.5h`.
@@ -793,8 +825,9 @@ pub fn validate_command_args(command: &CommandDefinition, input: &Args) -> Valid
     }
 }
 
-/// `CommandParseResult`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `CommandParseResult`. Its Debug names the command and its argument names only: a literal is a message body, and an
+/// invocation's values carry members and reasons.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Parsed {
     /// Not a command: post this text (`//x` posts `/x`).
     Literal(String),
@@ -815,6 +848,31 @@ pub enum Parsed {
     Invalid {
         issues: Vec<ArgumentIssue>,
     },
+}
+
+impl std::fmt::Debug for Parsed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Literal(text) => write!(f, "Literal({} bytes)", text.len()),
+            Self::Unknown { command_text } => write!(f, "Unknown({} bytes)", command_text.len()),
+            Self::Incomplete {
+                command_id,
+                validation,
+                subcommands,
+            } => f
+                .debug_struct("Incomplete")
+                .field("command_id", command_id)
+                .field("validation", validation)
+                .field("subcommands", subcommands)
+                .finish(),
+            Self::Invocation { command_id, args } => f
+                .debug_struct("Invocation")
+                .field("command_id", command_id)
+                .field("args", &ArgNames(args))
+                .finish(),
+            Self::Invalid { issues } => f.debug_struct("Invalid").field("issues", issues).finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1612,5 +1670,48 @@ mod tests {
             "/code <language> <text>\nSend a code block\n• language (text, required): language argument\n• text (text, required): text argument"
         );
         assert!(all_help().starts_with("/help [command]\nShow command help"));
+    }
+
+    /// R20: a parsed `/ban` (complete, incomplete or refused) and its validation name the command and its argument names,
+    /// never the member or the reason typed; a literal is printed by its length.
+    #[test]
+    fn a_parsed_ban_keeps_its_member_and_reason_out_of_debug() {
+        let done = builtin("/ban user:Bjornsson duration:1h reason:\"secret-reason\"");
+        assert!(matches!(done, Parsed::Invocation { .. }), "{done:?}");
+        let refused = builtin("/ban user:Bjornsson reaso:secret-reason extra-secret");
+        assert!(matches!(refused, Parsed::Invalid { .. }), "{refused:?}");
+        let ban = commands().iter().find(|c| c.id == "ban").unwrap();
+        let validation = validate_command_args(
+            ban,
+            &args(&[("user", "Bjornsson"), ("reason", "secret-reason")]),
+        );
+        let incomplete = Parsed::Incomplete {
+            command_id: "ban".into(),
+            validation: validation.clone(),
+            subcommands: Vec::new(),
+        };
+        let literal = builtin("secret-reason for Bjornsson");
+        // An unknown and a repeated named argument: the issue's name is the key as typed.
+        let unknown_key = builtin("/ban user:x secretkey:1");
+        let repeated = builtin("/ban user:Bjornsson user:Bjornsson");
+        assert!(
+            matches!(unknown_key, Parsed::Invalid { .. }),
+            "{unknown_key:?}"
+        );
+        for shown in [format!("{unknown_key:?}"), format!("{repeated:?}")] {
+            assert!(!shown.contains("secretkey") && !shown.contains("Bjornsson"));
+        }
+        for shown in [
+            format!("{done:?}"),
+            format!("{done:#?}"),
+            format!("{refused:?}"),
+            format!("{validation:?}"),
+            format!("{incomplete:#?}"),
+            format!("{literal:?}"),
+        ] {
+            assert!(!shown.contains("Bjornsson"), "the member: {}", shown.len());
+            assert!(!shown.contains("secret"), "the reason: {}", shown.len());
+        }
+        assert!(format!("{done:?}").contains("\"reason\""), "the names show");
     }
 }

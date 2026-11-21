@@ -10,7 +10,7 @@ use gpui::{
 
 use super::frame::{Click, pressable};
 use crate::a11y::{Accessible, Role};
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 
 /// One choice row.
@@ -62,7 +62,7 @@ impl RenderOnce for AddServerChoice {
             .child(line(
                 self.label,
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                crate::text::root_line_height(text::BASE),
                 color::FG,
             ));
         pressable(base, self.focus.as_ref(), self.on_click)

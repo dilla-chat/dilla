@@ -4,13 +4,16 @@
 pub mod app;
 #[cfg(feature = "automation")]
 pub mod automation;
+pub mod density;
 pub mod edit_state;
 #[cfg(feature = "automation")]
 pub mod fixture;
 pub mod format;
 pub mod fullscreen;
 pub mod keys;
+pub mod layout;
 pub mod logging;
+pub mod motion;
 pub mod native;
 pub mod per_window;
 pub mod print;

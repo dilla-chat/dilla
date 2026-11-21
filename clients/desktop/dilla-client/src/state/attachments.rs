@@ -31,8 +31,9 @@ impl TrayPhase {
     }
 }
 
-/// core-port.ts `TrayItem`: one file waiting to be sent.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// core-port.ts `TrayItem`: one file waiting to be sent. Its Debug gives the file name's length only (R21: the name is
+/// sent end-to-end encrypted with the file).
+#[derive(Clone, PartialEq, Eq)]
 pub struct TrayItem {
     pub id: String,
     pub name: String,
@@ -43,6 +44,20 @@ pub struct TrayItem {
     pub phase: TrayPhase,
     /// The failure's code (`E_ATTACHMENT_TOO_LARGE`, a route's code), else empty.
     pub reason: String,
+}
+
+impl std::fmt::Debug for TrayItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrayItem")
+            .field("id", &self.id)
+            .field("name", &super::Redacted(&self.name))
+            .field("size", &self.size)
+            .field("mime", &self.mime)
+            .field("image", &self.image)
+            .field("phase", &self.phase)
+            .field("reason", &self.reason)
+            .finish()
+    }
 }
 
 /// Task 12's slice.

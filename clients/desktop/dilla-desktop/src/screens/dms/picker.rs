@@ -212,7 +212,7 @@ pub fn picker_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> Op
     } else {
         "shell.dms.newBody"
     };
-    let density = Density::Regular;
+    let density = Density::of(window, cx);
     let mut body = div().flex().flex_col().gap(density.group_gap());
     if let Some(code) = &m.error {
         body = body.child(Banner::new(

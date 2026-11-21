@@ -44,9 +44,24 @@ pub struct ScreenFixture {
     /// that phase sees (`/welcome` is the sign-in screen of a device with no account).
     #[serde(default)]
     pub phase: Phase,
+    /// The density the screen is drawn at (Task 19b: the web shooter sets `data-density` on the document root, the GPUI
+    /// window takes it); regular when absent.
+    #[serde(default)]
+    pub density: FixtureDensity,
     /// The same actions on both sides, in order.
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+
+/// A fixture's density: the three steps of the web's stylesheet (`[data-density]`, tokens.ts `densities`). The web's
+/// setting admits only `compact` and `regular`; `cozy` is reachable here so its step can be drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixtureDensity {
+    Compact,
+    #[default]
+    Regular,
+    Cozy,
 }
 
 /// The account phase of the viewer's device (`AccountPhase`, narrowed to what a fixture draws).
@@ -94,9 +109,12 @@ pub enum Step {
     },
     /// Waits until the screen is idle (no pending work, no animation, fonts loaded).
     Settle,
+    /// The device loses its network (the web shooter's `context.setOffline(true)`, then settle); the GPUI side's counterpart
+    /// is the automation command `connection reconnecting`. The screen then shows the link banner ("Offline. Reconnecting…").
+    Offline,
 }
 
-/// People, servers, channels, messages, DMs, roles and calls.
+/// People, servers, channels, messages, DMs, roles, calls and who is typing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldSpec {
@@ -112,6 +130,10 @@ pub struct WorldSpec {
     /// Who is in which voice channel or DM call.
     #[serde(default)]
     pub calls: Vec<CallSpec>,
+    /// Who is typing where when the frame is taken (Task 34). The web shooter sends each as the op 49 typing frame dillad
+    /// relays, just before the frame; the GPUI side holds a typing row that outlasts the frozen clock.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub typing: Vec<TypingSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -149,6 +171,111 @@ pub struct ServerSpec {
     pub roles: Vec<RoleSpec>,
     /// In creation order; the world makes `general` itself, so a seeded server lists a text channel `general`.
     pub channels: Vec<ChannelSpec>,
+    /// The server's bans, each made once the members have joined (the banned person leaves the member list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bans: Vec<BanSpec>,
+    /// The server's managed Bot: enabled with these capabilities, and its Bot channels. A world with one needs the
+    /// host's Bot (the web shooter's), and a GPUI fixture draws the installation as ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotSpec>,
+}
+
+/// The capability names a [`BotSpec`] may list and the bits they set (`host::bot::cap`, internal/api/bot_installations.go
+/// `botCap*`).
+pub const BOT_CAPABILITIES: [(&str, u64); 10] = [
+    ("music", 1),
+    ("welcome", 1 << 1),
+    ("roles", 1 << 2),
+    ("announcements", 1 << 3),
+    ("warnings", 1 << 4),
+    ("removal", 1 << 5),
+    ("kick", 1 << 6),
+    ("ban", 1 << 7),
+    ("polls", 1 << 8),
+    ("reminders", 1 << 9),
+];
+
+/// A server's Bot (decision D9): the installation is ready with `capabilities`, and each of `bot_channels` is marked a Bot
+/// channel.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BotSpec {
+    /// Names of [`BOT_CAPABILITIES`].
+    pub capabilities: Vec<String>,
+    /// Ids of the server's text channels.
+    pub bot_channels: Vec<String>,
+    /// The Bot's music player in one of the server's voice channels, as a GPUI fixture holds it (Task 35): the web has no
+    /// reference of it, so a world with one is a GPUI-only fixture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music: Option<MusicSpec>,
+}
+
+/// One player snapshot of a GPUI-only fixture: the voice channel it is read from and what it holds. Its clock is stopped,
+/// so the playhead stays at `position_ms`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MusicSpec {
+    /// A voice channel of the server.
+    pub channel: String,
+    /// The track playing; none for an idle player.
+    #[serde(default)]
+    pub track: Option<TrackSpec>,
+    /// The tracks up next.
+    #[serde(default)]
+    pub queue: Vec<TrackSpec>,
+    #[serde(default)]
+    pub position_ms: u64,
+    pub volume: u8,
+    #[serde(default)]
+    pub paused: bool,
+    /// The viewer may control playback.
+    #[serde(default)]
+    pub can_control: bool,
+}
+
+/// A track of a [`MusicSpec`].
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TrackSpec {
+    /// The queue item's id, 32 lower-case hex digits (what a "started music" message's marker names).
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub duration_ms: u64,
+    /// The person who asked for it.
+    #[serde(default)]
+    pub requester: Option<String>,
+}
+
+impl BotSpec {
+    /// The capability bits the names set (an unknown name adds none: [`WorldSpec::validate`] refuses it).
+    pub fn capability_bits(&self) -> u64 {
+        self.capabilities
+            .iter()
+            .filter_map(|n| BOT_CAPABILITIES.iter().find(|(name, _)| name == n))
+            .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
+/// One ban of a server: `user` banned by `by` (a member who may ban them), for `hours` from the frame's clock, or for
+/// ever without them.
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BanSpec {
+    pub user: String,
+    pub by: String,
+    pub reason: String,
+    #[serde(default)]
+    pub hours: Option<u32>,
+}
+
+/// Moderation content never reaches Debug output: who banned whom, and why, are left out.
+impl std::fmt::Debug for BanSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BanSpec")
+            .field("hours", &self.hours)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -162,6 +289,10 @@ pub struct RoleSpec {
     pub permissions: Vec<String>,
     #[serde(default)]
     pub members: Vec<String>,
+    /// The community approves the role for self-service, as a GPUI fixture holds it (Task 29: `/rolepanel create` offers
+    /// the approved roles): the web's world approves none, so a world with one is a GPUI-only fixture.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_service: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -297,6 +428,15 @@ pub struct ParticipantSpec {
     pub deafened: bool,
     #[serde(default)]
     pub sharing: bool,
+}
+
+/// One person typing in a text channel (`<server>/<channel>`) or a DM (`dm/<id>`). Never the viewer: the indicator names
+/// the others ([`ScreenFixture::validate`]).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypingSpec {
+    pub person: String,
+    pub channel: String,
 }
 
 /// What seeding a fixture's world needs (`ScreenFixture::seed_plan`).
@@ -532,8 +672,20 @@ impl ScreenFixture {
             if !clients.contains(&m.sender) {
                 clients.push(m.sender.clone());
             }
+            // A poll's voters vote through the Bot from their own clients (the parity world's seed/polls.rs).
+            for v in m.poll.iter().flat_map(|p| &p.votes) {
+                if !clients.contains(&v.by) {
+                    clients.push(v.by.clone());
+                }
+            }
             if !m.channel.starts_with("dm/") && !history.contains(&m.channel) {
                 history.push(m.channel.clone());
+            }
+        }
+        // The owner of a server with a Bot enables it (the parity world's seed/bot.rs), so it holds a client.
+        for s in &self.world.servers {
+            if s.bot.is_some() && !clients.contains(&s.owner) {
+                clients.push(s.owner.clone());
             }
         }
         // The route's own text channels come last, with or without history: an empty channel is still opened.
@@ -598,6 +750,12 @@ impl ScreenFixture {
                 self.clock
             ));
         }
+        if self.world.typing.iter().any(|t| t.person == self.viewer) {
+            return invalid(format!(
+                "typing: the viewer `{}` types for no one",
+                self.viewer
+            ));
+        }
         self.resolved_route()?;
         for (n, step) in self.steps.iter().enumerate() {
             let empty = |s: &str| s.trim().is_empty();
@@ -614,7 +772,7 @@ impl ScreenFixture {
                 }
                 Step::Key { chord } => validate_chord(chord)
                     .map_err(|e| SpecError::Invalid(format!("step {n}: {e}")))?,
-                Step::Settle => {}
+                Step::Settle | Step::Offline => {}
             }
         }
         Ok(())
@@ -741,6 +899,66 @@ impl WorldSpec {
                     }
                 }
             }
+            if let Some(bot) = &s.bot {
+                for name in &bot.capabilities {
+                    if !BOT_CAPABILITIES.iter().any(|(n, _)| n == name) {
+                        return invalid(format!(
+                            "server {}: bot capability `{name}` is unknown",
+                            s.id
+                        ));
+                    }
+                }
+                for id in &bot.bot_channels {
+                    let text = s
+                        .channels
+                        .iter()
+                        .any(|c| c.id == *id && c.kind == ChannelKind::Text);
+                    if !text {
+                        return invalid(format!(
+                            "server {}: bot channel `{id}` is not a text channel of the server",
+                            s.id
+                        ));
+                    }
+                }
+                if let Some(music) = &bot.music {
+                    let voice = s
+                        .channels
+                        .iter()
+                        .any(|c| c.id == music.channel && c.kind == ChannelKind::Voice);
+                    if !voice {
+                        return invalid(format!(
+                            "server {}: music channel `{}` is not a voice channel of the server",
+                            s.id, music.channel
+                        ));
+                    }
+                    for track in music.track.iter().chain(&music.queue) {
+                        let hex = track.id.len() == 32
+                            && track
+                                .id
+                                .bytes()
+                                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+                        let known = track
+                            .requester
+                            .as_ref()
+                            .is_none_or(|r| s.members.contains(r));
+                        if !hex || !known {
+                            return invalid(format!(
+                                "server {}: music track `{}` needs a 32-digit lower-case hex id and a member as requester",
+                                s.id, track.title
+                            ));
+                        }
+                    }
+                }
+            }
+            // The message names the ban by its place only: who banned whom is moderation content.
+            for (i, b) in s.bans.iter().enumerate() {
+                if !s.members.contains(&b.user) || !s.members.contains(&b.by) || b.user == s.owner {
+                    return invalid(format!(
+                        "server {} ban {i}: both people must be members, and the owner cannot be banned",
+                        s.id
+                    ));
+                }
+            }
         }
         for d in &self.dms {
             if d.members.len() < 2 {
@@ -842,6 +1060,26 @@ impl WorldSpec {
                 self.person(&p.person, "call participant")?;
             }
         }
+        for t in &self.typing {
+            self.person(&t.person, "typing")?;
+            let members: Vec<&str> = if let Some(dm) = t.channel.strip_prefix("dm/") {
+                let Some(dm) = self.dms.iter().find(|d| d.id == dm) else {
+                    return invalid(format!("typing: no dm `{}`", t.channel));
+                };
+                dm.members.iter().map(String::as_str).collect()
+            } else {
+                let Some((server, channel)) = self.channel(&t.channel) else {
+                    return invalid(format!("typing: no channel `{}`", t.channel));
+                };
+                if channel.kind != ChannelKind::Text {
+                    return invalid(format!("typing: `{}` is not a text channel", t.channel));
+                }
+                server.members.iter().map(String::as_str).collect()
+            };
+            if !members.contains(&t.person.as_str()) {
+                return invalid(format!("typing: `{}` is not in `{}`", t.person, t.channel));
+            }
+        }
         Ok(())
     }
 }
@@ -875,6 +1113,103 @@ mod tests {
         assert_eq!(f.steps.len(), 2);
     }
 
+    /// Decision D9: a server may carry a Bot, whose capabilities are known names and whose Bot channels are text channels
+    /// of the server; anything else is refused with the usual error text.
+    #[test]
+    fn a_bot_extension_parses_and_validates() {
+        let with = |bot: &str| {
+            MINIMAL.replacen(
+                r#""members": ["ada", "mira"],"#,
+                &format!(r#""members": ["ada", "mira"], "bot": {bot},"#),
+                1,
+            )
+        };
+        let f = ScreenFixture::parse(&with(
+            r#"{"capabilities": ["welcome", "polls"], "botChannels": ["general"]}"#,
+        ))
+        .unwrap();
+        let bot = f.world.servers[0].bot.as_ref().expect("a bot");
+        assert_eq!(bot.capability_bits(), (1 << 1) | (1 << 8));
+        assert_eq!(bot.bot_channels, ["general"]);
+        assert_eq!(fixture().world.servers[0].bot, None);
+        let refused = |bot: &str| ScreenFixture::parse(&with(bot)).unwrap_err().to_string();
+        assert!(
+            refused(r#"{"capabilities": ["welcom"], "botChannels": []}"#)
+                .contains("capability `welcom` is unknown")
+        );
+        assert!(
+            refused(r#"{"capabilities": [], "botChannels": ["lounge"]}"#)
+                .contains("bot channel `lounge` is not a text channel")
+        );
+        assert!(
+            ScreenFixture::parse(&with(
+                r#"{"capabilities": [], "botChannels": [], "extra": 1}"#
+            ))
+            .is_err()
+        );
+    }
+
+    /// Task 35: a Bot's player belongs to a voice channel of the server, and its tracks carry hex ids and member requesters.
+    #[test]
+    fn a_bot_music_player_names_a_voice_channel_and_hex_tracks() {
+        let with = |music: &str| {
+            MINIMAL
+                .replacen(
+                    r#""members": ["ada", "mira"],"#,
+                    &format!(
+                        r#""members": ["ada", "mira"], "bot": {{"capabilities": ["music"], "botChannels": [], "music": {music}}},"#
+                    ),
+                    1,
+                )
+                .replacen(
+                    r#""name": "general"}]"#,
+                    r#""name": "general"}, {"id": "lounge", "kind": "voice", "name": "Lounge"}]"#,
+                    1,
+                )
+        };
+        let track = |id: &str, by: &str| {
+            format!(
+                r#"{{"id": "{id}", "title": "T", "artist": "A", "durationMs": 1000, "requester": "{by}"}}"#
+            )
+        };
+        let hex = "0a".repeat(16);
+        let ok = ScreenFixture::parse(&with(&format!(
+            r#"{{"channel": "lounge", "track": {}, "volume": 50}}"#,
+            track(&hex, "ada")
+        )));
+        assert!(ok.is_ok(), "{ok:?}");
+        let refused = |music: String| ScreenFixture::parse(&with(&music)).unwrap_err().to_string();
+        assert!(
+            refused(r#"{"channel": "general", "volume": 50}"#.into())
+                .contains("music channel `general` is not a voice channel")
+        );
+        assert!(
+            refused(format!(
+                r#"{{"channel": "lounge", "track": {}, "volume": 50}}"#,
+                track("xyz", "ada")
+            ))
+            .contains("music track `T`")
+        );
+        assert!(
+            refused(format!(
+                r#"{{"channel": "lounge", "track": {}, "volume": 50}}"#,
+                track(&hex, "nobody")
+            ))
+            .contains("music track `T`")
+        );
+    }
+
+    /// Task 19b: a fixture names its density, regular when it names none, and an unknown one is refused.
+    #[test]
+    fn a_fixture_names_its_density() {
+        assert_eq!(fixture().density, FixtureDensity::Regular);
+        let named = |d: &str| MINIMAL.replacen('{', &format!("{{\"density\": \"{d}\","), 1);
+        let parse = |d: &str| ScreenFixture::parse(&named(d)).map(|f| f.density);
+        assert_eq!(parse("compact"), Ok(FixtureDensity::Compact));
+        assert_eq!(parse("cozy"), Ok(FixtureDensity::Cozy));
+        assert!(parse("tight").is_err());
+    }
+
     #[test]
     fn ids_are_stable_and_distinct() {
         let ids = fixture().ids();
@@ -906,6 +1241,38 @@ mod tests {
             Err(SpecError::Invalid(why)) => why,
             other => panic!("expected an invalid fixture, got {other:?}"),
         }
+    }
+
+    /// A ban is moderation content: neither its Debug output (nor a whole fixture's) nor the refusal of a bad one names who
+    /// banned whom, or why.
+    #[test]
+    fn a_ban_never_names_its_people_or_reason_in_debug_or_refusals() {
+        let banned = |user: &str| {
+            MINIMAL.replace(
+                "\"channels\": [{\"id\": \"general\", \"kind\": \"text\", \"name\": \"general\"}]}]",
+                &format!(
+                    "\"channels\": [{{\"id\": \"general\", \"kind\": \"text\", \"name\": \"general\"}}], \
+                     \"bans\": [{{\"user\": \"{user}\", \"by\": \"ada\", \"reason\": \"secret-reason\", \"hours\": 24}}]}}]"
+                ),
+            )
+        };
+        let f = ScreenFixture::parse(&banned("mira")).unwrap();
+        let ban = &f.world.servers[0].bans[0];
+        assert_eq!((ban.user.as_str(), ban.by.as_str()), ("mira", "ada"));
+        for shown in [format!("{ban:?}"), format!("{:?}", f.world.servers[0])] {
+            let bans = &shown[shown.find("BanSpec").expect("the ban is listed")..];
+            assert!(
+                !bans.contains("mira") && !bans.contains("ada") && !bans.contains("secret-reason"),
+                "the ban's Debug names no one and no reason"
+            );
+        }
+        // The owner cannot be banned; the refusal names neither the person nor the banner.
+        let why = refused(|_| banned("ada"));
+        assert!(why.contains("ban 0"), "{why}");
+        assert!(
+            !why.contains("ada") && !why.contains("secret-reason"),
+            "{why}"
+        );
     }
 
     #[test]
@@ -969,6 +1336,85 @@ mod tests {
         ] {
             assert!(validate_chord(bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    /// Task 34: who is typing where parses; an unknown person or channel, a channel the person is not in, a voice channel and
+    /// the viewer are refused with the usual error text.
+    #[test]
+    fn typing_parses_and_validates() {
+        let with = |typing: &str| {
+            MINIMAL.replacen(
+                r#""messages": ["#,
+                &format!(r#""typing": {typing}, "messages": ["#),
+                1,
+            )
+        };
+        let f = ScreenFixture::parse(&with(
+            r#"[{"person": "mira", "channel": "midgard/general"}]"#,
+        ))
+        .unwrap();
+        assert_eq!(f.world.typing.len(), 1);
+        assert_eq!(f.world.typing[0].person, "mira");
+        for (bad, why) in [
+            (
+                r#"[{"person": "zed", "channel": "midgard/general"}]"#,
+                "typing: `zed` is not a person of the world",
+            ),
+            (
+                r#"[{"person": "mira", "channel": "midgard/nope"}]"#,
+                "typing: no channel `midgard/nope`",
+            ),
+            (
+                r#"[{"person": "mira", "channel": "dm/none"}]"#,
+                "typing: no dm `dm/none`",
+            ),
+            (
+                r#"[{"person": "ada", "channel": "midgard/general"}]"#,
+                "typing: the viewer `ada` types for no one",
+            ),
+        ] {
+            let err = ScreenFixture::parse(&with(bad)).unwrap_err().to_string();
+            assert_eq!(err, why, "{bad}");
+        }
+        // A voice channel has no typing, and a person who is not in the server cannot type in it.
+        let voice = MINIMAL.replace(
+            r#"{"id": "general", "kind": "text", "name": "general"}]"#,
+            r#"{"id": "general", "kind": "text", "name": "general"}, {"id": "lounge", "kind": "voice", "name": "lounge"}]"#,
+        );
+        let voice = voice.replacen(
+            r#""messages": ["#,
+            r#""typing": [{"person": "mira", "channel": "midgard/lounge"}], "messages": ["#,
+            1,
+        );
+        assert_eq!(
+            ScreenFixture::parse(&voice).unwrap_err().to_string(),
+            "typing: `midgard/lounge` is not a text channel"
+        );
+        let outsider = MINIMAL
+            .replace(
+                r#"{"id": "mira", "display": "Mira"}]"#,
+                r#"{"id": "mira", "display": "Mira"}, {"id": "bjorn", "display": "Bjorn"}]"#,
+            )
+            .replacen(
+                r#""messages": ["#,
+                r#""typing": [{"person": "bjorn", "channel": "midgard/general"}], "messages": ["#,
+                1,
+            );
+        assert_eq!(
+            ScreenFixture::parse(&outsider).unwrap_err().to_string(),
+            "typing: `bjorn` is not in `midgard/general`"
+        );
+    }
+
+    /// Task 34: the `offline` step parses with no fields.
+    #[test]
+    fn the_offline_step_parses() {
+        let with = MINIMAL.replace(
+            r#""steps": [{"do": "key", "chord": "ctrl-k"}, {"do": "settle"}]"#,
+            r#""steps": [{"do": "offline"}, {"do": "settle"}]"#,
+        );
+        let f = ScreenFixture::parse(&with).unwrap();
+        assert_eq!(f.steps, [Step::Offline, Step::Settle]);
     }
 
     #[test]

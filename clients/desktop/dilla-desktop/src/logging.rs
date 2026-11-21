@@ -2,7 +2,8 @@
 //! to a file in the OS's log location, so a Dilla.app launched through `open` (stderr lost) still leaves a trace.
 //!
 //! - Filter: `RUST_LOG` when set (`level`, `target=level`, comma lists; a bare level sets the default, the longest
-//!   matching target prefix wins), else [`DEFAULT_FILTER`]: warn for everything, info for crates named `dilla*`.
+//!   matching target prefix wins), else [`DEFAULT_FILTER`]: warn for everything, info for crates named `dilla*`, and
+//!   errors only from libwebrtc's own log (target `libwebrtc`, libwebrtc's `ensure_log_sink`).
 //! - File: [`log_path`] per OS; rotated to `<name>.1` past [`ROTATE_BYTES`] (one old file kept). When the file can't be
 //!   opened the logger keeps stderr alone.
 //! - Lines: `<RFC 3339 local time> <LEVEL> <target>: <message>`.
@@ -17,8 +18,10 @@ use std::sync::Mutex;
 
 use log::{LevelFilter, Log, Metadata, Record};
 
-/// The filter when `RUST_LOG` is unset or empty.
-pub const DEFAULT_FILTER: &str = "warn,dilla=info";
+/// The filter when `RUST_LOG` is unset or empty. libwebrtc 0.4.1 forwards its own warnings at `warn` (they were all
+/// `debug` before): its ICE and network warnings can carry candidate IP addresses, and the C++ frame glue warns once per
+/// refused frame (`dilla: PassUnchanged refused`), so only its errors reach the user's log.
+pub const DEFAULT_FILTER: &str = "warn,dilla=info,libwebrtc=error";
 /// The file's size at which it is moved to `<name>.1` and a new one started.
 pub const ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 /// The log file's name in [`log_dir`].
@@ -329,6 +332,17 @@ mod tests {
         assert_eq!(f.level_for("livekit::room"), LevelFilter::Warn);
         assert_eq!(f.level_for("gpui"), LevelFilter::Warn);
         assert_eq!(f.max_level(), LevelFilter::Info);
+    }
+
+    /// libwebrtc's log bridge (target `libwebrtc`) reaches the default log with its errors only: its warnings (ICE
+    /// candidates with IP addresses, the per-frame PassUnchanged refusal) stay out.
+    #[test]
+    fn default_filter_keeps_libwebrtc_to_errors() {
+        let f = Filter::from_env_value(None);
+        assert_eq!(f.level_for("libwebrtc"), LevelFilter::Error);
+        assert_eq!(f.level_for("libwebrtc::native"), LevelFilter::Error);
+        assert_eq!(f.level_for("livekit"), LevelFilter::Warn);
+        assert_eq!(f.level_for("dilla_media"), LevelFilter::Info);
     }
 
     #[test]

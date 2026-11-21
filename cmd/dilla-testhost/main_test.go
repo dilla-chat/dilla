@@ -139,3 +139,23 @@ func TestAWebRootThatIsNotADirectoryIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// CI run 44520186466: -sfu-any-port leaves the SFU's ports to the host (dilladtest.HostOptions.SFUAnyPorts), which
+// alone can retry a port another process took; it does not mix with the fixed-port flags it replaces.
+func TestTheSFUAnyPortFlagLeavesThePortsToTheHost(t *testing.T) {
+	o, err := parseFlags([]string{"-sfu", "-sfu-any-port"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if ho := o.hostOptions("/data", "/core.wasm", ""); !ho.SFU || !ho.SFUAnyPorts {
+		t.Fatalf("host options %+v", ho)
+	}
+	if ho := (options{}).hostOptions("/data", "/core.wasm", ""); ho.SFUAnyPorts {
+		t.Fatal("without -sfu-any-port the host keeps the fixed ports")
+	}
+	for _, fixed := range []string{"-sfu-port", "-sfu-udp-port"} {
+		if _, err := parseFlags([]string{"-sfu", "-sfu-any-port", fixed, "7890"}); err == nil {
+			t.Errorf("-sfu-any-port with %s must be refused", fixed)
+		}
+	}
+}

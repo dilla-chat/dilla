@@ -158,7 +158,7 @@ pub fn items(state: &AppState, selected: Option<ChannelId>) -> Vec<DmItem> {
                 name: dm.name.clone().into(),
                 person: Person {
                     sub: if group {
-                        Some(dm.name.clone().into())
+                        Some(group_sub(state, dm).into())
                     } else {
                         sub.map(Into::into)
                     },
@@ -172,6 +172,24 @@ pub fn items(state: &AppState, selected: Option<ChannelId>) -> Vec<DmItem> {
             }
         })
         .collect()
+}
+
+/// Shell.tsx `dmPerson`: a group's sub line names every other member (a person no server shows by the first eight
+/// digits of the id) and then "you", in the DM's member order.
+fn group_sub(state: &AppState, dm: &DmSummary) -> String {
+    let own = state.account.user_id;
+    let mut names: Vec<String> = dm
+        .members
+        .iter()
+        .filter(|id| Some(**id) != own)
+        .map(|id| match member_anywhere(state, *id) {
+            Some(m) if !m.display.is_empty() => m.display.clone(),
+            Some(m) if !m.username.is_empty() => m.username.clone(),
+            _ => id.hex()[..8].to_owned(),
+        })
+        .collect();
+    names.push(t("shell.dm.you").to_owned());
+    names.join(", ")
 }
 
 fn ui_presence(p: Presence) -> dilla_desktop_ui::components::avatar::Presence {

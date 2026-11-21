@@ -179,7 +179,7 @@ fn header_at(title: impl Into<SharedString>, sub: Option<&str>, measure: f32) ->
                 .children(paragraph(
                     sub,
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::FG_2,
                     measure,
                 )),

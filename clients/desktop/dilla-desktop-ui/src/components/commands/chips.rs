@@ -10,7 +10,7 @@ use gpui::{
 use super::halo;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{MONO_ADVANCE, line, line_height};
+use crate::text::{MONO_ADVANCE, line};
 use crate::tokens::{color, font, radius, text};
 
 /// A chip's height: 26px (`height: 1.625rem`) inside its 1px border.
@@ -43,7 +43,7 @@ impl CommandChips {
 
 impl RenderOnce for CommandChips {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let lh = line_height(text::UI, 1.5);
+        let lh = crate::text::root_line_height(text::UI);
         div()
             .id(self.id)
             .flex()
@@ -152,7 +152,7 @@ impl RenderOnce for CommandField {
             (true, false) => (color::ACCENT, color::ACCENT_INK, color::ACCENT),
             (false, false) => (color::CONTROL_EDGE_FIELD, color::FG_2, color::HOVER),
         };
-        let lh = line_height(text::META, 1.5);
+        let lh = crate::text::root_line_height(text::META);
         let show_label = !self.ghost && !self.label.is_empty();
         let width = Self::input_width(&self.value, &self.placeholder);
         let value = self.input.unwrap_or_else(|| {
@@ -246,7 +246,7 @@ impl CommandBar {
 
     /// Its height in flow: the 11px line (1.5) and its 6px bottom margin.
     pub fn height() -> f32 {
-        line_height(text::XS, 1.5) + 6.0
+        crate::text::root_line_height(text::XS) + 6.0
     }
 }
 
@@ -256,7 +256,7 @@ impl RenderOnce for CommandBar {
             BarTone::Info => (color::FG_2, color::ACCENT),
             BarTone::Danger => (color::DANGER, color::DANGER),
         };
-        let lh = line_height(text::XS, 1.5);
+        let lh = crate::text::root_line_height(text::XS);
         div()
             .id(self.id)
             .flex()

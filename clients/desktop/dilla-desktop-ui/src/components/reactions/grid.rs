@@ -20,7 +20,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::a11y::{Accessible, Role};
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 /// The grid's columns (`COLUMNS`).
@@ -430,7 +430,7 @@ impl Render for EmojiGrid {
                         .child(line(
                             footer_name(&item.name),
                             text::XS,
-                            line_height(text::XS, 1.5),
+                            crate::text::root_line_height(text::XS),
                             color::FG_2,
                         ))
                         .into_any_element()

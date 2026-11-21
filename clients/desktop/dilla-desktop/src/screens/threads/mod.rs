@@ -135,7 +135,27 @@ pub fn sync(ctx: &SlotCx, window: &Window, cx: &mut App) {
         cx.windows().iter().map(|w| w.window_id()).collect();
     let here = wid(window);
     ui(cx).windows.retain(|w, _| *w == here || live.contains(w));
+    let before = per_window(here, cx).ctx.as_ref().and_then(|c| c.channel);
+    if before != ctx.channel {
+        left_conversation(ctx, before, cx);
+    }
     per_window(here, cx).ctx = Some(ctx.clone());
+}
+
+/// This window's shell left the conversation `before` for `ctx`'s: a thread of `before` closes, as the web's does when
+/// its conversation changes (Shell.tsx:391). A thread of another channel is not this window's to close (another window
+/// of the same client may show it).
+fn left_conversation(ctx: &SlotCx, before: Option<ChannelId>, cx: &mut App) {
+    let Some(open) = open_anywhere(ctx, cx) else {
+        return;
+    };
+    if Some(open.channel) != before {
+        return;
+    }
+    match &ctx.client {
+        Some(client) => client.threads().close(),
+        None => ui(cx).local_open = None,
+    }
 }
 
 /// Whether a thread is open in `ctx`'s view: the header draws its Threads button pressed.
@@ -181,13 +201,42 @@ fn current(window: WindowId, cx: &mut App) -> Option<SlotCx> {
     ui(cx).windows.get(&window)?.ctx.clone()
 }
 
-/// The open thread: the client's, or a fixture's own.
+/// The field of `window`'s thread composer and the root whose draft it holds, while its pane shows a thread.
+pub fn composer_of(window: WindowId, cx: &App) -> Option<(FocusHandle, MessageId)> {
+    let pane = cx.try_global::<Ui>()?.windows.get(&window)?.pane.as_ref()?;
+    pane.read(cx).composer(cx)
+}
+
+/// The channel `window`'s shell last drew (`None` before it drew, or where it shows no conversation): what a command that
+/// finished after an `await` checks the conversation it was typed in against (CommandHost.tsx `isCurrent`).
+pub fn channel_of(window: WindowId, cx: &mut App) -> Option<ChannelId> {
+    current(window, cx)?.channel
+}
+
+/// The open thread of `ctx`'s view: the client's, or a fixture's own, and only while its channel is the one shown. The web
+/// draws a thread only beside its own conversation (Shell.tsx:1478 `side.channelId === targetId`), so a thread of another
+/// channel is no pane here: nothing of it is drawn, and its composer runs nothing against the shown server.
 fn open_of(ctx: &SlotCx, cx: &mut App) -> Option<OpenThread> {
+    open_anywhere(ctx, cx).filter(|open| Some(open.channel) == ctx.channel)
+}
+
+/// The open thread, whichever channel it is in.
+fn open_anywhere(ctx: &SlotCx, cx: &mut App) -> Option<OpenThread> {
     if ctx.client.is_some() {
         ctx.state.threads.open
     } else {
         ui(cx).local_open
     }
+}
+
+/// The last thread the aside showed, if it is of `ctx`'s channel (the header's button reopens nothing of another one).
+fn last_of(ctx: &SlotCx, cx: &mut App) -> Option<OpenThread> {
+    let last = if ctx.client.is_some() {
+        ctx.state.threads.last_open
+    } else {
+        ui(cx).local_last
+    };
+    last.filter(|last| Some(last.channel) == ctx.channel)
 }
 
 /// The reply target: the client's, or a fixture's own.
@@ -239,13 +288,10 @@ pub fn toggle_pane(ctx: &SlotCx, cx: &mut App) {
             Some(client) => client.threads().close(),
             None => ui(cx).local_open = None,
         }
-    } else {
+    } else if let Some(last) = last_of(ctx, cx) {
         match &ctx.client {
             Some(client) => drop(client.threads().reopen_last()),
-            None => {
-                let u = ui(cx);
-                u.local_open = u.local_last;
-            }
+            None => ui(cx).local_open = Some(last),
         }
     }
     cx.refresh_windows();
@@ -475,8 +521,14 @@ pub fn reply_bar(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<Any
 pub fn pane(_route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let here = wid(window);
     let ctx = current(here, cx)?;
-    open_of(&ctx, cx)?;
     let existing = per_window(here, cx).pane.clone();
+    if open_of(&ctx, cx).is_none() {
+        // A closed pane is unmounted in the web: its composer's picker starts empty the next time.
+        if let Some(view) = existing {
+            view.update(cx, |view, cx| view.closed(cx));
+        }
+        return None;
+    }
     let view = match existing {
         Some(view) => view,
         None => {

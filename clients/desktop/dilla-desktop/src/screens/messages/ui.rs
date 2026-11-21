@@ -182,6 +182,9 @@ pub struct MessageUi {
     pub flash: Option<(String, Instant)>,
     /// A row the log still has to scroll into view (a jump from the pins or a reply).
     pub jump: Option<String>,
+    /// The pending [`MessageUi::jump`] puts its row in the middle of the log and takes the focus (a search hit,
+    /// Shell.tsx:1788-1793), instead of near the top with a flash.
+    pub centre: bool,
     /// What the timeline was last drawn with: the dialogs (drawn over the whole window by the shell's overlays) read it.
     pub ctx: Option<SlotCx>,
     /// The log's focus: PageUp and PageDown act while it holds the focus.
@@ -196,6 +199,12 @@ pub struct MessageUi {
     /// The conversation's notice and the channel it is about (Conversation.tsx `notice`): a jump to a message the log
     /// has not loaded says so.
     notice: Option<(ChannelId, &'static str)>,
+    /// The log's first row and its scrolled height when it was last drawn (MessageLog.tsx `prevFirst`, `prevHeight`):
+    /// a new first row is earlier rows put in front, and the offset moves by the added height.
+    pub prev_first: Option<String>,
+    pub prev_height: f32,
+    /// The channel whose "load earlier" is being read (Shell.tsx `loadingEarlier`): its log is busy meanwhile.
+    pub loading_earlier: Option<ChannelId>,
 }
 
 /// The window's message state, created on first use. Notifying it redraws the view that drew the timeline.
@@ -600,6 +609,15 @@ impl MessageUi {
     pub fn jump_to(&mut self, key: String, cx: &mut Context<Self>) {
         self.flash = Some((key.clone(), Instant::now()));
         self.jump = Some(key);
+        cx.notify();
+    }
+
+    /// A search hit's row (Shell.tsx:1788-1793): it becomes the log's active row, and the log scrolls it to the middle of
+    /// the viewport and gives it the focus on its next frame. The row does not flash.
+    pub fn focus_row(&mut self, key: String, cx: &mut Context<Self>) {
+        self.active = Some(key.clone());
+        self.jump = Some(key);
+        self.centre = true;
         cx.notify();
     }
 }

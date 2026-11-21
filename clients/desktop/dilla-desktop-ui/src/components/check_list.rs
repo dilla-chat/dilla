@@ -5,15 +5,15 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    App, Div, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
 
 use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, OPACITY_MUTED, focus_ring};
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,37 +113,72 @@ impl CheckList {
     }
 }
 
-/// The check box: 14px (the native box inside its 24px hit area), the accent fill and the tick when checked.
-fn check_box(checked: bool, disabled: bool) -> impl IntoElement {
-    let edge = if checked {
-        color::ACCENT
+/// The edge of the web's check box in CSS px. `.d-check-list__box` is `1.5rem` and Chromium's native box fills all of it:
+/// the accent square of `create/channel-private` spans 794..841 in the 2x shot, 48 device px, 24 CSS px. (The plan's
+/// "22px" is that box less its two border pixels; the outer edge, which is what parity compares, is 24.)
+pub const BOX_EDGE: f32 = 24.0;
+/// The tick's icon size. The native tick spans about 16 CSS px (33 device px across in the same shot); `check.svg`'s path
+/// spans two thirds of its 24 unit box, so the 24px icon is the one whose tick is 16px across (it overhangs the 22px
+/// inside the edge, which is invisible: the icon has no fill).
+const TICK: f32 = 24.0;
+/// Chromium's native box in the dark scheme: the unchecked fill (`#3B3B3B`, the reference pixel at the box centre), the
+/// 1px edge (`#858585`) and the tick drawn on the accent (the same grey, not `--accent-ink`).
+const FIELD: u32 = 0x3B_3B_3B;
+const EDGE: u32 = 0x85_85_85;
+/// Chromium rounds the native box by 2px.
+const BOX_RADIUS: f32 = 2.0;
+
+/// How the box is painted: fill, edge and whether it carries the tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxLook {
+    pub fill: Hsla,
+    pub edge: Hsla,
+    pub tick: Option<Hsla>,
+}
+
+/// The two states of the native box with `accent-color: var(--accent)`: the accent square with a grey tick, or the grey field.
+pub fn box_look(checked: bool) -> BoxLook {
+    if checked {
+        BoxLook {
+            fill: color::ACCENT,
+            edge: color::ACCENT,
+            tick: Some(Hsla::from(rgb(FIELD))),
+        }
     } else {
-        color::CONTROL_EDGE_KEY
-    };
+        BoxLook {
+            fill: Hsla::from(rgb(FIELD)),
+            edge: Hsla::from(rgb(EDGE)),
+            tick: None,
+        }
+    }
+}
+
+/// The web's check box alone (`<input type="checkbox">` at `1.5rem`): every checkbox of the app draws this one, rows
+/// of a `CheckList`, the safety number's confirmation, the two-step setup's acknowledgement and the role panel's roles.
+/// The caller makes it a target and handles the click; a disabled box is dimmed.
+pub fn check_box(id: impl Into<ElementId>, checked: bool, disabled: bool) -> Stateful<Div> {
+    let look = box_look(checked);
     let mut b = div()
+        .id(id)
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .size(px(14.0))
-        .rounded(radius::TAG)
+        .size(px(BOX_EDGE))
+        .rounded(px(BOX_RADIUS))
         .border_1()
-        .border_color(edge);
-    if checked {
-        b = b.bg(color::ACCENT).child(
-            Icon::new(IconName::Check)
-                .size(px(10.0))
-                .color(color::ACCENT_INK),
+        .border_color(look.edge)
+        .bg(look.fill)
+        .opacity(if disabled { OPACITY_MUTED } else { 1.0 });
+    if let Some(tick) = look.tick {
+        b = b.child(
+            div()
+                .flex_none()
+                .size(px(TICK))
+                .child(Icon::new(IconName::Check).size(px(TICK)).color(tick)),
         );
     }
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(24.0))
-        .opacity(if disabled { OPACITY_MUTED } else { 1.0 })
-        .child(b)
+    b
 }
 
 impl RenderOnce for CheckList {
@@ -153,7 +188,7 @@ impl RenderOnce for CheckList {
                 line(
                     self.label.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
@@ -164,7 +199,7 @@ impl RenderOnce for CheckList {
             return root.child(line(
                 self.empty_label,
                 text::SM,
-                line_height(text::SM, 1.5),
+                crate::text::root_line_height(text::SM),
                 color::FG_3,
             ));
         }
@@ -184,7 +219,7 @@ impl RenderOnce for CheckList {
             label = label.child(line(
                 item.label.clone(),
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                crate::text::root_line_height(text::BASE),
                 if item.disabled {
                     color::FG_2
                 } else {
@@ -205,7 +240,11 @@ impl RenderOnce for CheckList {
                 .border_color(color::HAIRLINE)
                 .tab_index(0)
                 .focus_visible(|s| s.shadow(focus_ring()))
-                .child(check_box(item.checked, item.disabled))
+                .child(check_box(
+                    (self.id.clone(), format!("box-{}", item.id)),
+                    item.checked,
+                    item.disabled,
+                ))
                 .child(label);
             if busy {
                 row = row.opacity(OPACITY_MUTED);
@@ -214,7 +253,7 @@ impl RenderOnce for CheckList {
                 row = row.child(div().w_full().pl(px(32.0)).pb(px(4.0)).child(line(
                     detail,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    crate::text::root_line_height(text::SM),
                     color::FG_3,
                 )));
             }
@@ -249,5 +288,19 @@ mod tests {
         assert!(!can_toggle(&item, Some("a")));
         assert!(can_toggle(&item, Some("b")));
         assert!(!can_toggle(&item.clone().disabled(true), None));
+    }
+
+    /// The box is the web's: 24px outer edge (the reference's accent square), the grey field unchecked with a 1px grey
+    /// edge, the accent square with a tick checked.
+    #[test]
+    fn box_matches_the_web_box() {
+        assert_eq!(BOX_EDGE, 24.0);
+        let off = box_look(false);
+        assert_eq!(off.fill, Hsla::from(rgb(0x3B_3B_3B)));
+        assert_eq!(off.edge, Hsla::from(rgb(0x85_85_85)));
+        assert_eq!(off.tick, None);
+        let on = box_look(true);
+        assert_eq!((on.fill, on.edge), (color::ACCENT, color::ACCENT));
+        assert!(on.tick.is_some());
     }
 }
