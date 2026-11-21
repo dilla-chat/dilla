@@ -2260,14 +2260,19 @@ fn the_tile_menu_sets_volume_and_mute_for_me(cx: &mut TestAppContext) {
     w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
         s.voice.call.phase == CallPhase::In
     }));
-    // Bob joins with his media (a `call-peer`): a device is in the call's roster once its media is in the room.
+    // Bob joins with his media (a `call-peer`). His tile follows the media session (the call group's roster, the SFU
+    // room), not the instance's voice list, which may list him before alice's roster poll has read his join commit: the
+    // wait is for his tile, and for his voice-list row the gains check below reads.
     let bob_media = bob_with_media(&w);
     let bob = w.bob.state().borrow().account.user_id.unwrap();
-    w.rt.block_on(until(&w.alice, "alice sees bob in the call", |s| {
-        s.voice
-            .participants(w.voice)
+    w.rt.block_on(until(&w.alice, "alice has bob's tile", |s| {
+        voice::tiles(s, w.voice)
             .iter()
-            .any(|p| p.user_id == bob)
+            .any(|k| k.user == bob && !k.screen)
+            && s.voice
+                .participants(w.voice)
+                .iter()
+                .any(|p| p.user_id == bob)
     }));
     resync(&mut vcx, &w.alice);
     let key = vcx.update(|window, cx| {
